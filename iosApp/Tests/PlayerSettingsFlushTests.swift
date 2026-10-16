@@ -1949,6 +1949,50 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(harness.settings.deviceChangedSettingCount, 0)
     }
 
+    /// Object Audio and Dolby Vision FEL belong to this device alone: neither
+    /// is sent to the server, a relaunch keeps both, and "Use Profile
+    /// Settings" puts back their defaults, Object Audio on and FEL off.
+    func testObjectAudioAndDolbyVisionFELStayOnTheDeviceAndResetToDefaults() async throws {
+        let harness = try PlayerSettingsHarness()
+        XCTAssertTrue(harness.settings.objectAudioEnabled)
+        XCTAssertFalse(harness.settings.dolbyVisionFELEnabled, "off by default, as in Aether")
+
+        harness.settings.setObjectAudioEnabled(false)
+        harness.settings.setDolbyVisionFELEnabled(true)
+        await harness.settings.flushPendingDeviceSettings()
+
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+        XCTAssertTrue(harness.settings.deviceChangesIncludeDeviceOnlySettings)
+        let relaunched = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: FakeSettingsTransport(), debounce: .milliseconds(10))
+        )
+        XCTAssertFalse(relaunched.objectAudioEnabled)
+        XCTAssertTrue(relaunched.dolbyVisionFELEnabled)
+
+        await harness.settings.resetAllDeviceSettings()
+
+        XCTAssertTrue(harness.settings.objectAudioEnabled)
+        XCTAssertFalse(harness.settings.dolbyVisionFELEnabled)
+    }
+
+    /// Object Audio was first called TrueHD Atmos. A choice stored under that
+    /// name still applies after the rename.
+    func testObjectAudioKeepsTheChoiceStoredAsTrueHDAtmos() throws {
+        let harness = try PlayerSettingsHarness()
+        let legacyKey = PlayerSettings.currentScopeIdentifier
+            .map { "player.serverDeviceSettings.\($0).player.trueHDAtmosEnabled" }
+            ?? "player.trueHDAtmosEnabled"
+        harness.defaults.set(false, forKey: legacyKey)
+
+        let relaunched = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: FakeSettingsTransport(), debounce: .milliseconds(10))
+        )
+
+        XCTAssertFalse(relaunched.objectAudioEnabled)
+    }
+
     func testRefreshAdoptsEverySyncedPlayerSetting() async throws {
         let harness = try PlayerSettingsHarness()
         var appearance = SubtitleAppearance.default

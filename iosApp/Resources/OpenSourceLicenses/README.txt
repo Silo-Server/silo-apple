@@ -6,15 +6,15 @@ texts are bundled beside this file and are available from Settings > About >
 Acknowledgements.
 
 AetherEngine
-  Revision: b0712217abb7399aeb21f875bcc7c26e7af92fd8 (upstream release
-  7.36.0, through upstream commit 74c81b3c, plus Silo patches for subtitle renditions,
+  Revision: 8557ad90c66d58bd0e7cca6127f62957cb09251a (upstream release
+  7.38.1, through upstream commit fc6b412e, plus Silo patches for subtitle renditions,
   source timing, primary ASS routing with normalized secondary/PiP text,
   refreshable authorization for native HLS, sidecar subtitles and fonts,
   dense subtitle catch-up, audio-switch tracking, playback recovery, and
   resuming forward-only sources)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/b0712217abb7399aeb21f875bcc7c26e7af92fd8
-  Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/74c81b3c5a0047e1b0229805c20562910367b0e5
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/8557ad90c66d58bd0e7cca6127f62957cb09251a
+  Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/fc6b412e7abdd19488fc439e225b83ab512b5d50
   Rebuild: the Package.swift and source tree at that revision
 
 FFmpegBuild and embedded media frameworks
@@ -48,10 +48,10 @@ FFmpegBuild and embedded media frameworks
   those tags ever move.
 
 LibTrueHD / truehd (formerly SiloObjectAudio)
-  Revision: 577de495184254e2c660ebfd6ce3f7d97f45899d (release 2.3.0)
+  Revision: 3eab2e7c10ff1b3c2078afbab138471f2511859b (release 2.3.1)
   License: MIT for the C API, framer, and build and verification scripts
   (LibTrueHD-MIT.txt)
-  Source and rebuild script: https://github.com/superuser404notfound/LibTrueHD/tree/577de495184254e2c660ebfd6ce3f7d97f45899d
+  Source and rebuild script: https://github.com/superuser404notfound/LibTrueHD/tree/3eab2e7c10ff1b3c2078afbab138471f2511859b
   Embeds the truehd crate from the truehdd project (Apache-2.0), built from
   https://github.com/superuser404notfound/truehdd at commit
   5c8b880405946e7ff1aee884cf9988415fe2c3a9 (upstream 02d29cd0 with harletty's
@@ -61,13 +61,19 @@ LibTrueHD / truehd (formerly SiloObjectAudio)
   The NOTICE and the Apache License 2.0 are in truehd-Apache-2.0.txt.
 
 LibDTSX / dca
-  Revision: 9906f8fe9b72eb4d79a85754adbba6fa52cfe7b2 (release 1.0.1)
-  License: Apache-2.0 (LibDTSX-Apache-2.0.txt, with its NOTICE)
-  Source and rebuild script: https://github.com/superuser404notfound/LibDTSX/tree/9906f8fe9b72eb4d79a85754adbba6fa52cfe7b2
+  Revision: 1f0dd2daaaeb899b694e8502a5bb6f570046f4f3 (release 2.0.0)
+  License: the built DTSX.framework is GNU LGPL version 3 or later
+  (LibDTSX-LGPL-3.0.txt, with its NOTICE and the Apache-2.0 license of the
+  LibDTSX source; GPL-3.0.txt). It ships as a separately embedded dynamic
+  framework so it can be replaced with a modified version.
+  Source and rebuild script: https://github.com/superuser404notfound/LibDTSX/tree/1f0dd2daaaeb899b694e8502a5bb6f570046f4f3
   Embeds, unmodified, the dca crate 0.8.0 from
-  https://github.com/harletty/harletty-bridge (Apache-2.0), commit
-  a717bae441b116485f0254603dc20a6ede65d8c6, and the Rust standard library and
-  crates listed in its NOTICE (MIT or Apache-2.0).
+  https://github.com/harletty/harletty-bridge, commit
+  a717bae441b116485f0254603dc20a6ede65d8c6. The crate is labelled Apache-2.0
+  but is a port of FFmpeg's dca decoder, so LibDTSX treats it as a work
+  based on FFmpeg under LGPL-2.1-or-later (FFmpegBuild-LGPL-2.1.txt). Also
+  embeds the Rust standard library and crates listed in its NOTICE (MIT or
+  Apache-2.0).
 
 LibDovi / libdovi
   Packaging revision: 0d7cce1d6836a30d13a3a2326e50a153af53f014

@@ -175,6 +175,19 @@ struct AetherLoadSpec {
         hdrEnabled && dolbyVisionEnabled ? .automatic : .baseLayerOnly
     }
 
+    /// Whether a Profile 7 FEL source asks for Aether's dual-layer route, from
+    /// the per-device Dolby Vision FEL setting. Aether only takes the route
+    /// under `.automatic` handling, so the setting applies while Dolby Vision
+    /// does. See `PlayerSettings.dolbyVisionFELEnabled`.
+    static func prefersDualLayerDolbyVision(
+        hdrEnabled: Bool,
+        dolbyVisionEnabled: Bool,
+        felEnabled: Bool
+    ) -> Bool {
+        dolbyVisionHandling(hdrEnabled: hdrEnabled, dolbyVisionEnabled: dolbyVisionEnabled) == .automatic
+            && felEnabled
+    }
+
     /// Resolve a download manifest's audio ordinal (`selected_audio_track_index`,
     /// a position among the delivered file's audio streams) to the stream id
     /// Aether selects by. Nil when the ordinal is outside the probed file, so
@@ -199,6 +212,7 @@ struct AetherLoadSpec {
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
+        preferDualLayerDolbyVision: Bool = false,
         panelIsInHDRMode: Bool? = nil
     ) throws {
         guard offlineURL.isFileURL else {
@@ -238,6 +252,7 @@ struct AetherLoadSpec {
         }
         options = LoadOptions(
             dolbyVisionHandling: dolbyVisionHandling,
+            preferDualLayerDolbyVision: preferDualLayerDolbyVision,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
             objectAudioRendering: objectAudioRendering,
@@ -271,6 +286,7 @@ struct AetherLoadSpec {
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
+        preferDualLayerDolbyVision: Bool = false,
         panelIsInHDRMode: Bool? = nil
     ) throws {
         guard ["http", "https", "file"].contains(directURL.scheme?.lowercased() ?? "") else {
@@ -321,6 +337,7 @@ struct AetherLoadSpec {
         options = LoadOptions(
             httpHeaders: headers,
             dolbyVisionHandling: dolbyVisionHandling,
+            preferDualLayerDolbyVision: preferDualLayerDolbyVision,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
             objectAudioRendering: objectAudioRendering,
@@ -358,6 +375,7 @@ struct AetherLoadSpec {
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
+        preferDualLayerDolbyVision: Bool = false,
         resumeSourcePosition: Double? = nil,
         panelIsInHDRMode: Bool? = nil
     ) throws {
@@ -506,6 +524,7 @@ struct AetherLoadSpec {
                 delivery: plan.delivery, hasVideo: plan.effectiveRecipe.videoCodec != nil
             ) ? requestAuthorization : nil,
             dolbyVisionHandling: dolbyVisionHandling,
+            preferDualLayerDolbyVision: preferDualLayerDolbyVision,
             matchContentEnabled: matchContentEnabled,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
@@ -588,14 +607,15 @@ struct AetherLoadSpec {
     }
 }
 
-/// How the TrueHD Atmos setting becomes Aether's `objectAudioRendering`.
+/// How the Object Audio setting becomes Aether's `objectAudioRendering`.
 enum AetherObjectAudioPolicy {
-    /// The bed Aether renders Atmos objects into. Nothing downstream plays it
-    /// speaker for speaker: an Atmos receiver or soundbar re-renders the Dolby
-    /// Atmos it receives onto its own speakers, and AirPods or the built-in
-    /// speakers render it as Spatial Audio. So one detailed bed serves every
-    /// system, and 7.1.4 keeps sides apart from rears and front heights apart
-    /// from rear heights for that renderer to fold down.
+    /// The bed Aether renders TrueHD Atmos objects and DTS:X heights and
+    /// objects into. Nothing downstream plays it speaker for speaker: an Atmos
+    /// receiver or soundbar re-renders the Dolby Atmos it receives onto its own
+    /// speakers, and AirPods or the built-in speakers render it as Spatial
+    /// Audio. So one detailed bed serves every system, and 7.1.4 keeps sides
+    /// apart from rears and front heights apart from rear heights for that
+    /// renderer to fold down.
     static let layout: SpatialSpeakerLayout = .l714
 
     /// What the device's audio output can do with Atmos, as far as it says.

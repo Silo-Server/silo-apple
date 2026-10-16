@@ -417,9 +417,10 @@ final class PlayerSettings {
         }
     }
 
-    /// Device-local: whether TrueHD Atmos tracks keep their heights. Maps to
-    /// `LoadOptions.objectAudioRendering` through ``AetherObjectAudioPolicy``:
-    /// Aether renders the Atmos objects and delivers Apple Positional Audio,
+    /// Device-local: whether TrueHD Atmos and DTS:X tracks keep their heights.
+    /// Maps to `LoadOptions.objectAudioRendering` through
+    /// ``AetherObjectAudioPolicy``: Aether renders the objects and heights into
+    /// a speaker bed and delivers Apple Positional Audio,
     /// which an Atmos receiver or soundbar gets as Dolby Atmos and AirPods or
     /// the built-in speakers render as Spatial Audio. The trade is a compressed
     /// stream in place of lossless 7.1, which is why Apple TV only uses it when
@@ -427,10 +428,30 @@ final class PlayerSettings {
     ///
     /// Never synced to the server: what this device plays into is a fact about
     /// the room or the headphones, not the profile. Default on.
-    private(set) var trueHDAtmosEnabled: Bool {
+    private(set) var objectAudioEnabled: Bool {
         didSet {
             guard !isLoadingCache else { return }
-            defaults.set(trueHDAtmosEnabled, forKey: Self.cacheKey(Keys.trueHDAtmosEnabled))
+            defaults.set(objectAudioEnabled, forKey: Self.cacheKey(Keys.objectAudioEnabled))
+        }
+    }
+
+    /// Device-local: whether a Dolby Vision Profile 7 FEL source plays with its
+    /// full enhancement layer. Maps to `LoadOptions.preferDualLayerDolbyVision`
+    /// through ``AetherLoadSpec/prefersDualLayerDolbyVision(hdrEnabled:dolbyVisionEnabled:felEnabled:)``,
+    /// so it only applies while Dolby Vision is on. Aether then decodes both
+    /// layers and composes them on the GPU instead of converting the source to
+    /// Profile 8.1 and dropping the enhancement layer. The route plays on
+    /// Aether's software host, so those titles lose Atmos and DTS:X heights and
+    /// send no picture over AirPlay; a MEL source, or one the device cannot decode
+    /// twice in real time, keeps the native route either way.
+    ///
+    /// Never synced to the server: whether this device keeps up with two
+    /// decodes is a fact about the hardware, not the profile. Default off,
+    /// which is Aether's own default.
+    private(set) var dolbyVisionFELEnabled: Bool {
+        didSet {
+            guard !isLoadingCache else { return }
+            defaults.set(dolbyVisionFELEnabled, forKey: Self.cacheKey(Keys.dolbyVisionFELEnabled))
         }
     }
 
@@ -643,10 +664,15 @@ final class PlayerSettings {
         bufferAhead = Self.cachedBufferAhead(defaults)
         deinterlaceMode = Self.cachedDeinterlaceMode(defaults)
         deinterlaceFieldRate = Self.cachedDeinterlaceFieldRate(defaults)
-        trueHDAtmosEnabled = Self.cachedBool(
+        objectAudioEnabled = Self.cachedBool(
             defaults,
-            key: Keys.trueHDAtmosEnabled,
+            key: Keys.objectAudioEnabled,
             defaultValue: true
+        )
+        dolbyVisionFELEnabled = Self.cachedBool(
+            defaults,
+            key: Keys.dolbyVisionFELEnabled,
+            defaultValue: false
         )
         deviceSubtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
         inheritedSubtitleAppearance = SubtitleAppearance.decode(
@@ -906,10 +932,16 @@ final class PlayerSettings {
         deinterlaceMode = mode
     }
 
-    /// Choose whether TrueHD Atmos keeps its heights. Purely local — there is
-    /// no contract key to enqueue.
-    func setTrueHDAtmosEnabled(_ enabled: Bool) {
-        trueHDAtmosEnabled = enabled
+    /// Choose whether TrueHD Atmos and DTS:X keep their heights. Purely local —
+    /// there is no contract key to enqueue.
+    func setObjectAudioEnabled(_ enabled: Bool) {
+        objectAudioEnabled = enabled
+    }
+
+    /// Choose whether Profile 7 FEL sources play with their enhancement layer.
+    /// Purely local — there is no contract key to enqueue.
+    func setDolbyVisionFELEnabled(_ enabled: Bool) {
+        dolbyVisionFELEnabled = enabled
     }
 
     /// Choose the hardware deinterlacer's output cadence. Purely local — there
@@ -1121,7 +1153,8 @@ final class PlayerSettings {
             bufferAhead != .automatic,
             deinterlaceMode != .automatic,
             deinterlaceFieldRate != .fullMotion,
-            !trueHDAtmosEnabled,
+            !objectAudioEnabled,
+            dolbyVisionFELEnabled,
         ].filter { $0 }.count
     }
 
@@ -1236,17 +1269,19 @@ final class PlayerSettings {
     /// Restore the preferences this device owns outright to their defaults.
     ///
     /// These are the ones deliberately kept off the contract — lossless
-    /// multichannel audio, background playback, the buffer-ahead window and the
-    /// two deinterlacing choices. "Use Profile Settings" is a promise about
-    /// the whole screen, not only the rows that happen to sync, so they are
-    /// restored to the same values a fresh install would show.
+    /// multichannel audio, background playback, the buffer-ahead window, the
+    /// two deinterlacing choices, object audio and Dolby Vision FEL. "Use
+    /// Profile Settings" is a promise about the whole screen, not only the rows
+    /// that happen to sync, so they are restored to the same values a fresh
+    /// install would show.
     private func resetDeviceLocalPreferences() {
         losslessAudioEnabled = true
         backgroundPlaybackEnabled = true
         bufferAhead = .automatic
         deinterlaceMode = .automatic
         deinterlaceFieldRate = .fullMotion
-        trueHDAtmosEnabled = true
+        objectAudioEnabled = true
+        dolbyVisionFELEnabled = false
     }
 
     /// Keep showing this device's own values for keys whose change has not
@@ -1599,10 +1634,15 @@ final class PlayerSettings {
         bufferAhead = Self.cachedBufferAhead(defaults)
         deinterlaceMode = Self.cachedDeinterlaceMode(defaults)
         deinterlaceFieldRate = Self.cachedDeinterlaceFieldRate(defaults)
-        trueHDAtmosEnabled = Self.cachedBool(
+        objectAudioEnabled = Self.cachedBool(
             defaults,
-            key: Keys.trueHDAtmosEnabled,
+            key: Keys.objectAudioEnabled,
             defaultValue: true
+        )
+        dolbyVisionFELEnabled = Self.cachedBool(
+            defaults,
+            key: Keys.dolbyVisionFELEnabled,
+            defaultValue: false
         )
         playbackSpeed = Self.clampPlaybackSpeed(
             Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
@@ -1941,7 +1981,10 @@ final class PlayerSettings {
         static let bufferAhead = "player.bufferAhead"
         static let deinterlaceMode = "player.deinterlaceMode"
         static let deinterlaceFieldRate = "player.deinterlaceFieldRate"
-        static let trueHDAtmosEnabled = "player.trueHDAtmosEnabled"
+        // Stored under the setting's first name, TrueHD Atmos, so a choice
+        // made before the rename carries over.
+        static let objectAudioEnabled = "player.trueHDAtmosEnabled"
+        static let dolbyVisionFELEnabled = "player.dolbyVisionFELEnabled"
         static let subtitleAppearance = "player.subtitleAppearance"
         static let inheritedSubtitleAppearance = "player.inheritedSubtitleAppearance"
         static let subtitleUsesDeviceAppearanceOverride = "player.subtitleUsesDeviceAppearanceOverride"
