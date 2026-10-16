@@ -754,7 +754,9 @@ final class ReceiverPairingCoordinator {
         await TokenStore.shared.setServerUrl(url)
         await TokenStore.shared.switchActiveServer(serverId: id)
         await TokenStore.shared.setProfileId(nil)
-        await TokenStore.shared.setProfileToken(nil)
+        if !(await TokenStore.shared.supportsSavedAccounts) {
+            await TokenStore.shared.setProfileToken(nil)
+        }
         // One rollback for both failure points below. The slot is restored
         // first (a failed install has still blocked the runtime session
         // and may have adopted the slot; a failed commit has the candidate's

@@ -29,14 +29,26 @@ struct TopShelfHTTPClient {
     let accountKeychain: SharedKeychain
     let profileKeychain: SharedKeychain
     let session: URLSession
-    /// Read once by `authenticated()` so each request skips the keychain.
+    private let sessions: AccountSessionPersistence
+    /// Captured by `authenticated()`; canonical identity is rechecked before
+    /// sending credentials and before publishing each response.
     private var credentials: Credentials?
 
     /// The account and profile a set of credentials was read for.
     private struct Scope: Equatable {
         let serverID: String
+        let origin: String
+        let accountID: String?
         let profileID: String?
         let accountEpoch: String?
+        let isLegacy: Bool
+    }
+
+    private struct ResolvedSession {
+        let scope: Scope
+        let accessToken: String
+        let refreshToken: String?
+        let profileToken: String?
     }
 
     private struct Credentials {
@@ -77,28 +89,33 @@ struct TopShelfHTTPClient {
 
     init(defaults: SharedDefaults = .shared,
          keychain: SharedKeychain = SharedKeychain(),
-         session: URLSession = .shared) {
+         session: URLSession = .shared,
+         sessions: AccountSessionPersistence? = nil) {
         self.defaults = defaults
-        self.accountKeychain = keychain.withAudience(.userIndependent)
-        self.profileKeychain = keychain.withAudience(.currentUser)
+        // A matching legacy service disables SharedKeychain's rename-on-read
+        // path. Only the app may migrate credentials or canonical storage.
+        let readOnlyKeychain = SharedKeychain(service: keychain.service, accessGroup: keychain.accessGroup,
+            audience: keychain.audience, usesUserIndependentKeychain: keychain.usesUserIndependentKeychain,
+            allowsAppLocalFallback: keychain.allowsAppLocalFallback, legacyService: keychain.service)
+        self.accountKeychain = readOnlyKeychain.withAudience(.userIndependent)
+        self.profileKeychain = readOnlyKeychain.withAudience(.currentUser)
         self.session = session
+        self.sessions = sessions ?? AccountSessionPersistence(keychain: readOnlyKeychain)
     }
 
     var isPersonalizedContentAllowed: Bool {
-        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else {
-            return false
-        }
+        guard let resolved = resolveSession() else { return false }
+        return allowsPersonalizedContent(resolved)
+    }
+
+    private func allowsPersonalizedContent(_ resolved: ResolvedSession) -> Bool {
         let state = ProfileLaunchState.load(from: defaults)
         return TopShelfProfilePolicy.allowsPersonalizedContent(
             state: state,
-            serverID: serverID,
-            activeProfileID: defaults.string(forKey: SharedStorage.profileIdKey),
-            accountEpoch: accountKeychain.get(
-                SharedStorage.accountEpochAccount(for: serverID)
-            ),
-            hasStoredProfileToken: profileKeychain.get(
-                SharedStorage.profileTokenAccount(for: serverID)
-            ) != nil
+            serverID: resolved.scope.serverID,
+            activeProfileID: resolved.scope.profileID,
+            accountEpoch: resolved.scope.accountEpoch,
+            hasStoredProfileToken: resolved.profileToken != nil
         )
     }
 
@@ -106,38 +123,94 @@ struct TopShelfHTTPClient {
     /// profile are still the ones this copy's credentials were read for, so
     /// a profile switch mid-request cannot publish the previous profile's shelf.
     var isCurrentScope: Bool {
-        guard let credentials, isPersonalizedContentAllowed else { return false }
-        return currentScope() == credentials.scope
+        guard let credentials, let resolved = resolveSession(),
+              allowsPersonalizedContent(resolved) else { return false }
+        return resolved.scope == credentials.scope && resolved.profileToken == credentials.profileToken
     }
 
-    private func currentScope() -> Scope? {
-        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else { return nil }
-        return Scope(
-            serverID: serverID,
-            profileID: defaults.string(forKey: SharedStorage.profileIdKey),
-            accountEpoch: accountKeychain.get(SharedStorage.accountEpochAccount(for: serverID))
-        )
+    /// Reading an adopted envelope never migrates it or consults raw mirrors.
+    /// The app owns adoption, account selection, and token persistence.
+    private func resolveSession() -> ResolvedSession? {
+        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey),
+              !serverID.isEmpty,
+              let savedURL = defaults.string(forKey: SharedStorage.serverUrlKey),
+              let origin = Self.normalizedOrigin(savedURL) else { return nil }
+        do {
+            let accountID: String?
+            let epoch: String?
+            let accessToken: String
+            let refreshToken: String?
+            let isLegacy: Bool
+            switch try sessions.load(serverID) {
+            case .signedOut:
+                return nil
+            case .session(let value):
+                guard let storedOrigin = value.origin,
+                      Self.normalizedOrigin(storedOrigin) == origin,
+                      let access = value.accessToken, !access.isEmpty,
+                      let accountEpoch = value.epoch else { return nil }
+                accountID = value.accountID
+                epoch = accountEpoch.uuidString
+                accessToken = access
+                refreshToken = value.refreshToken
+                isLegacy = false
+            case .legacy:
+                guard let access = try accountKeychain.getChecked(
+                    SharedStorage.accessTokenAccount(for: serverID)), !access.isEmpty else { return nil }
+                accountID = nil
+                epoch = try accountKeychain.getChecked(SharedStorage.accountEpochAccount(for: serverID))
+                accessToken = access
+                refreshToken = try accountKeychain.getChecked(SharedStorage.refreshTokenAccount(for: serverID))
+                // Adoption or a local selector appearing during the raw reads
+                // must close this legacy credential path immediately.
+                guard try sessions.load(serverID) == .legacy else { return nil }
+                isLegacy = true
+            }
+            #if os(tvOS)
+            let profileKey = SharedStorage.profileTokenAccount(for: serverID, accountID: accountID)
+            #else
+            let profileKey = SharedStorage.profileTokenAccount(for: serverID)
+            #endif
+            let proof = try profileKeychain.getChecked(profileKey)
+            return ResolvedSession(
+                scope: Scope(serverID: serverID, origin: origin, accountID: accountID,
+                    profileID: defaults.string(forKey: SharedStorage.profileIdKey),
+                    accountEpoch: epoch, isLegacy: isLegacy),
+                accessToken: accessToken, refreshToken: refreshToken,
+                profileToken: proof?.isEmpty == false ? proof : nil
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    /// Matches the app's saved URL normalization while refusing a non-HTTP
+    /// destination or credentials embedded in the server address.
+    private static func normalizedOrigin(_ value: String) -> String? {
+        var origin = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        while origin.hasSuffix("/") { origin.removeLast() }
+        guard let components = URLComponents(string: origin),
+              let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil else { return nil }
+        return origin
     }
 
     /// A copy carrying the active server's credentials, or nil without an
     /// access token. Check `isPersonalizedContentAllowed` first.
     func authenticated() -> TopShelfHTTPClient? {
-        guard let scope = currentScope(),
-              let serverURL = defaults.string(forKey: SharedStorage.serverUrlKey),
-              !serverURL.isEmpty,
-              let accessToken = accountKeychain.get(SharedStorage.accessTokenAccount(for: scope.serverID))
-        else { return nil }
-        let serverID = scope.serverID
+        guard let resolved = resolveSession() else { return nil }
         var client = self
         client.credentials = Credentials(
-            scope: scope,
-            serverURL: serverURL,
+            scope: resolved.scope,
+            serverURL: resolved.scope.origin,
             tokens: AccessTokenSlot(
-                accessToken: accessToken,
-                refreshToken: accountKeychain.get(SharedStorage.refreshTokenAccount(for: serverID))
+                accessToken: resolved.accessToken,
+                refreshToken: resolved.refreshToken
             ),
-            profileID: scope.profileID,
-            profileToken: profileKeychain.get(SharedStorage.profileTokenAccount(for: serverID))
+            profileID: resolved.scope.profileID,
+            profileToken: resolved.profileToken
         )
         return client
     }
@@ -196,6 +269,7 @@ struct TopShelfHTTPClient {
         }
 
         let token = await credentials.tokens.accessToken
+        guard isCurrentScope else { throw Error.notAuthenticated }
         var (data, http) = try await send(url, credentials: credentials, bearer: token)
         let serverURL = credentials.serverURL
         if http.statusCode == 401 {

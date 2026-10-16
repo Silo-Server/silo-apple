@@ -78,6 +78,17 @@ enum SharedStorage {
         keychainAccountPrefix + "\(serverID).profileToken"
     }
 
+    /// A TV user can choose different profiles under different saved accounts.
+    /// Length-prefix the verified id so it cannot collide with legacy names.
+    static func profileTokenAccount(for serverID: String, accountID: String?) -> String {
+        #if os(tvOS)
+        if let accountID {
+            return keychainAccountPrefix + "\(serverID).account.\(accountID.utf8.count):\(accountID).profileToken"
+        }
+        #endif
+        return profileTokenAccount(for: serverID)
+    }
+
     static func accountEpochAccount(for serverID: String) -> String {
         keychainAccountPrefix + "\(serverID).accountEpoch"
     }

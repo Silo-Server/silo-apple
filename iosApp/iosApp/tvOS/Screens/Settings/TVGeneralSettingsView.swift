@@ -18,6 +18,7 @@ struct TVGeneralSettingsPane: View {
     let activeProfile: UserProfile?
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let changePairedProfile: () -> Void
+    let changeAccount: () -> Void
     private let appleTVUserContext = AppleTVUserContext.current
     @Environment(\.scenePhase) private var scenePhase
 
@@ -33,6 +34,13 @@ struct TVGeneralSettingsPane: View {
             .focused(detailFocus, equals: .generalAppleTVUser)
 
             TVSettingsFooter(pairingDescription)
+
+            Button("Use Another Silo Account", action: changeAccount)
+                .buttonStyle(TVSettingsPaneRowStyle())
+                .focused(detailFocus, equals: .generalAppleTVAccount)
+                .accessibilityHint("Sign in to another account for this Apple TV user. Other users keep their saved accounts.")
+
+            TVSettingsFooter("Choose a different account for this Apple TV user. Other users keep their saved accounts.")
 
             TVSettingsSectionHeader("PROFILE AT LAUNCH")
 
