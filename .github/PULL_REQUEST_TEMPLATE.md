@@ -38,12 +38,14 @@ local paths, credentials, personal data, or private media details. -->
 | ------ | ----- |
 | | |
 
-Surface and build:
+Devices and build:
 <!-- Required when this change alters what a user sees: UI, or which items or what
 item details a screen shows, such as search results, home sections, recommendations,
 metadata, artwork, sorting, or filtering. See "Show visible changes" in
-CONTRIBUTING.md. Use before-and-after screenshots of the same screen and data for each
-affected surface, and a short recording when motion, timing, or focus matters. Crop or
+CONTRIBUTING.md. Use before-and-after screenshots of the same screen and data on each
+device the change can reach: iPhone, iPhone Duo (folded and open), iPad, Mac, and
+Apple TV. Say why for any device you skip. Add a short recording when motion, timing,
+or focus matters. Crop or
 blur private details in anything attached here. To keep captures private instead,
 publish them to evidence.siloserver.org, where only you and Silo maintainers can open
 them, and replace the table with

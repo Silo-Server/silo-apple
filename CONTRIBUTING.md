@@ -129,7 +129,15 @@ Provide evidence that fits the change:
 - **Changes to a screen:** before-and-after screenshots of the same screen with
   the same data, one pair per affected surface. Add a short recording when
   motion, timing, focus movement, or a multi-step flow matters.
-- Name the surface and the build or commit each capture came from.
+- **Every affected device:** iPhone, iPhone Duo, iPad, Mac, and Apple TV each
+  lay out screens differently, so capture each one the change can reach. Shared
+  code outside the `iOS`, `macOS`, and `tvOS` folders usually reaches all of
+  them. Capture the iPhone Duo both folded and open: the open display is
+  iPad-sized but reports as a phone, so it gets layouts no other device shows.
+  Simulator captures are fine. To skip a device, say why the change cannot
+  reach it.
+- Name the device, the build or commit, and for the iPhone Duo whether it was
+  folded or open, for each capture.
 
 Capture against a test library or public-domain media where you can, and keep
 passwords, tokens, and API keys out of every capture. Then put the evidence in
