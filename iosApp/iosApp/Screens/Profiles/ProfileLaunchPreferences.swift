@@ -231,6 +231,33 @@ final class ProfileLaunchPreferences {
         }
     }
 
+    /// Persist an exact-epoch gate before a synchronous identity commit. The
+    /// operation must not re-enter these preferences. Holding the same lock as
+    /// public selection changes prevents clearing a concurrent selection request.
+    /// A failed operation or gate removal leaves selection required on relaunch.
+    func withSelectionRequired(for serverID: String, accountEpoch: String,
+                               operation: (_ canRestoreProfile: Bool) -> Bool) -> Bool {
+        update { state in
+            let previousState = state
+            let wasRequired = state.requiresSelection(for: serverID, accountEpoch: accountEpoch)
+            let key = ProfileLaunchState.accountHistoryKey(serverID, accountEpoch)
+            let projectedEpoch = state.activeAccountEpochByServerID?[serverID]
+                ?? state.rememberedByServerID[serverID]?.accountEpoch
+            var pending = state.selectionRequiredByAccountEpoch ?? []
+            pending.insert(key)
+            state.selectionRequiredByAccountEpoch = pending
+            if projectedEpoch == accountEpoch { state.selectionRequiredServerIDs.insert(serverID) }
+            guard persist(state) else { state = previousState; return false }
+            let pendingState = state
+            guard operation(!wasRequired) else { return false }
+            guard !wasRequired else { return true }
+            state.selectionRequiredByAccountEpoch?.remove(key)
+            if projectedEpoch == accountEpoch { state.selectionRequiredServerIDs.remove(serverID) }
+            guard persist(state) else { state = pendingState; return false }
+            return true
+        }
+    }
+
     @discardableResult
     func clearRememberedProfile(for serverID: String, accountEpoch: String? = nil) -> Bool {
         update { state in

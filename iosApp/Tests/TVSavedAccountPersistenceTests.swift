@@ -275,6 +275,33 @@ final class TVSavedAccountPersistenceTests: XCTestCase {
         XCTAssertEqual(try memory.persistence("second").load(server), .session(otherOrigin))
     }
 
+    func testBindingPrerequisiteRunsOnlyForTheExactSelectedSession() throws {
+        let memory = TVSavedAccountMemory()
+        let original = session(nil)
+        try memory.seedLegacy(original, serverID: server)
+        let persistence = memory.persistence("first")
+        let verified = CanonicalAccountSession(version: 1, signedOut: false, origin: original.origin,
+            accountID: "A", epoch: original.epoch, accessToken: original.accessToken, refreshToken: original.refreshToken)
+        let before = memory.sharedValues
+        var prerequisiteRan = false
+
+        XCTAssertFalse(persistence.replaceSession(verified, replacing: original, serverID: server,
+            beforePublishing: { prerequisiteRan = true; return false }))
+
+        XCTAssertTrue(prerequisiteRan)
+        XCTAssertEqual(memory.sharedValues, before)
+        XCTAssertEqual(try persistence.load(server), .session(original))
+        let replacement = session("B")
+        try persistence.save(replacement, serverID: server)
+        prerequisiteRan = false
+
+        XCTAssertFalse(persistence.replaceSession(verified, replacing: original, serverID: server,
+            beforePublishing: { prerequisiteRan = true; return true }))
+
+        XCTAssertFalse(prerequisiteRan, "A stale epoch cannot retire the selected owner's proof")
+        XCTAssertEqual(try persistence.load(server), .session(replacement))
+    }
+
     func testRawLegacyMigrationRetainsUnknownAccountAndEpoch() throws {
         let memory = TVSavedAccountMemory()
         let epoch = UUID()

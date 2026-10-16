@@ -1,6 +1,13 @@
 import XCTest
 @testable import Silo
 
+private final class ProfileGateFailureSwitch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var enabled = false
+    var isEnabled: Bool { lock.withLock { enabled } }
+    func enable() { lock.withLock { enabled = true } }
+}
+
 final class TVAccountProfileLaunchHistoryTests: XCTestCase {
     func testRememberingBPreservesAsProfileAfterRelaunch() throws {
         let (preferences, defaults) = try harness()
@@ -54,6 +61,85 @@ final class TVAccountProfileLaunchHistoryTests: XCTestCase {
         preferences.clearSelectionRequired(for: "server")
         XCTAssertEqual(preferences.resolution(for: "server", accountEpoch: "epoch-A", hasStoredProfileToken: false),
             .restore(RememberedProfile(profileID: "profile-A", requiredPINAtSelection: false, accountEpoch: "epoch-A")))
+    }
+
+    func testProofBindingGatePreservesAnotherEpochsPendingProjection() throws {
+        let (preferences, defaults) = try harness()
+        preferences.behavior = .automatic
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: false,
+            accountEpoch: "epoch-A", for: "server"))
+        XCTAssertTrue(preferences.remember(profileID: "profile-B", requiresPIN: false,
+            accountEpoch: "epoch-B", for: "server"))
+        XCTAssertTrue(preferences.markSelectionRequired(for: "server"))
+
+        XCTAssertTrue(preferences.withSelectionRequired(for: "server", accountEpoch: "epoch-A") { canRestore in
+            XCTAssertTrue(canRestore)
+            let persisted = ProfileLaunchState.load(from: defaults)
+            XCTAssertTrue(persisted.requiresSelection(for: "server", accountEpoch: "epoch-A"))
+            XCTAssertTrue(persisted.requiresSelection(for: "server", accountEpoch: "epoch-B"))
+            XCTAssertEqual(persisted.rememberedByServerID["server"]?.profileID, "profile-B")
+            return true
+        })
+
+        XCTAssertFalse(preferences.state.requiresSelection(for: "server", accountEpoch: "epoch-A"))
+        XCTAssertTrue(preferences.state.requiresSelection(for: "server", accountEpoch: "epoch-B"))
+        XCTAssertEqual(preferences.rememberedProfile(for: "server")?.profileID, "profile-B")
+    }
+
+    func testProofBindingChecksBothPendingGateWrites() throws {
+        for failsBeforeOperation in [true, false] {
+            let (_, defaults) = try harness()
+            let failure = ProfileGateFailureSwitch()
+            let preferences = ProfileLaunchPreferences(defaults: defaults, persistenceOverride: { state in
+                guard failure.isEnabled else { return true }
+                let pending = state.requiresSelection(for: "server", accountEpoch: "epoch-A")
+                return failsBeforeOperation ? !pending : pending
+            }, preservesAccountHistory: true)
+            XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+                accountEpoch: "epoch-A", for: "server"))
+            failure.enable()
+            var operationRan = false
+
+            XCTAssertFalse(preferences.withSelectionRequired(for: "server", accountEpoch: "epoch-A") { _ in
+                operationRan = true
+                return true
+            })
+
+            XCTAssertEqual(operationRan, !failsBeforeOperation)
+            XCTAssertEqual(preferences.state.requiresSelection(for: "server", accountEpoch: "epoch-A"), !failsBeforeOperation)
+            XCTAssertEqual(ProfileLaunchState.load(from: defaults).requiresSelection(for: "server", accountEpoch: "epoch-A"),
+                !failsBeforeOperation)
+        }
+    }
+
+    func testConcurrentSelectionRequestIsNotClearedByProofBinding() throws {
+        let (preferences, _) = try harness()
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+            accountEpoch: "epoch-A", for: "server"))
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        let markReturned = DispatchSemaphore(value: 0)
+        let committed = expectation(description: "proof binding committed")
+        let marked = expectation(description: "concurrent selection retained")
+        DispatchQueue.global().async {
+            XCTAssertTrue(preferences.withSelectionRequired(for: "server", accountEpoch: "epoch-A") { _ in
+                entered.signal()
+                XCTAssertEqual(resume.wait(timeout: .now() + 5), .success)
+                return true
+            })
+            committed.fulfill()
+        }
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        DispatchQueue.global().async {
+            XCTAssertTrue(preferences.markSelectionRequired(for: "server"))
+            markReturned.signal()
+            marked.fulfill()
+        }
+        XCTAssertEqual(markReturned.wait(timeout: .now() + 0.1), .timedOut)
+        resume.signal()
+        wait(for: [committed, marked], timeout: 5)
+
+        XCTAssertTrue(preferences.state.requiresSelection(for: "server", accountEpoch: "epoch-A"))
     }
 
     func testClearingAnAccountPreservesOtherAccountsAndFullRemovalOnlyClearsItsServer() throws {

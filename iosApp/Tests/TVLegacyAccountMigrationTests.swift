@@ -168,6 +168,267 @@ final class TVLegacyAccountMigrationTests: XCTestCase {
         XCTAssertEqual(restored?.request.accessToken, "legacy-access-A")
     }
 
+    func testCurrentUserBindingKeepsTheAuthenticatedProfileProofWhenTheAccountHasAnotherProof() async throws {
+        for rawLegacy in [true, false] {
+            let h = try harness()
+            let epoch = UUID()
+            if rawLegacy {
+                try seedRaw(h, access: "legacy-access-A", refresh: "legacy-refresh-A", epoch: epoch)
+            } else {
+                try seedLegacyCanonical(CanonicalAccountSession(version: 1, signedOut: false, origin: origin,
+                    accountID: nil, epoch: epoch, accessToken: "legacy-access-A", refreshToken: "legacy-refresh-A"), in: h)
+            }
+            let sourceKey = TokenStore.profileTokenKey(for: serverID)
+            let destinationKey = SharedStorage.profileTokenAccount(for: serverID, accountID: "account-A")
+            XCTAssertTrue(h.profile.set("proof-A", for: sourceKey))
+            XCTAssertTrue(h.profile.set("proof-B", for: destinationKey))
+            let preferences = ProfileLaunchPreferences(defaults: h.defaults)
+            preferences.behavior = .automatic
+            XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+                accountEpoch: epoch.uuidString, for: serverID))
+            let store = await activeStore(h)
+            await store.setProfileId("profile-A")
+            let stub = APIv2TestStub()
+            stub.reply(path: "/api/v2/account/me", 200,
+                #"{"id":"account-A","username":"A","email":"a@example.test","role":"user","permissions":[],"download_allowed":true}"#)
+            stub.reply(path: "/api/v2/proof-check", 200, "{}")
+            let http = HTTPClient(session: stub.makeSession(), tokenStore: store)
+            let api = APIv2Client(http: http, tokenStore: store, isUpdateRequired: { false })
+
+            _ = try await api.currentUser()
+            let _: [String: String] = try await http.get("/api/v2/proof-check")
+
+            for request in stub.requests {
+                XCTAssertEqual(request.header("X-Profile-Id"), "profile-A")
+                XCTAssertEqual(request.header("X-Profile-Token"), "proof-A")
+            }
+            let bound = await store.captureDurableAccountAuth()
+            XCTAssertEqual(bound?.accountID, "account-A")
+            XCTAssertEqual(bound?.accountEpoch, epoch)
+            XCTAssertEqual(bound?.request.profileId, "profile-A")
+            XCTAssertEqual(bound?.request.profileToken, "proof-A")
+            XCTAssertEqual(try h.profile.getChecked(destinationKey), "proof-A")
+            XCTAssertNil(try h.profile.getChecked(sourceKey))
+            let restarted = await activeStore(h)
+            let restored = await restarted.captureOrdinaryRequestAuth()
+            XCTAssertEqual(restored?.profileId, "profile-A")
+            XCTAssertEqual(restored?.profileToken, "proof-A")
+            XCTAssertEqual(ProfileLaunchPreferences(defaults: h.defaults).resolution(for: serverID,
+                accountEpoch: epoch.uuidString, hasStoredProfileToken: restored?.profileToken != nil),
+                .restore(RememberedProfile(profileID: "profile-A", requiredPINAtSelection: true, accountEpoch: epoch.uuidString)))
+            let deleted = await restarted.deactivateProfile(expectedAccount: nil)
+            XCTAssertTrue(deleted)
+            let afterDeletion = await activeStore(h)
+            let proofAfterDeletion = await afterDeletion.getProfileToken()
+            XCTAssertNil(proofAfterDeletion)
+        }
+    }
+
+    func testStaleLegacyBindingCannotReplaceAnotherEpochsProfileProof() async throws {
+        let h = try harness()
+        let legacy = CanonicalAccountSession(version: 1, signedOut: false, origin: origin,
+            accountID: nil, epoch: UUID(), accessToken: "legacy-access-A", refreshToken: "legacy-refresh-A")
+        try seedLegacyCanonical(legacy, in: h)
+        let sourceKey = TokenStore.profileTokenKey(for: serverID)
+        let destinationKey = SharedStorage.profileTokenAccount(for: serverID, accountID: "account-A")
+        XCTAssertTrue(h.profile.set("proof-A", for: sourceKey))
+        XCTAssertTrue(h.profile.set("proof-B", for: destinationKey))
+        let store = await activeStore(h)
+        await store.setProfileId("profile-A")
+        let captured = await store.captureOrdinaryRequestAuth()
+        let replacement = canonical("account-A")
+        try h.sessions.save(replacement, serverID: serverID)
+
+        do {
+            try await store.bindVerifiedAccount("account-A", expected: XCTUnwrap(captured))
+            XCTFail("A binding from the replaced epoch succeeded")
+        } catch HTTPError.requestIdentityChanged {}
+
+        XCTAssertEqual(try h.sessions.load(serverID), .session(replacement))
+        XCTAssertEqual(try h.profile.getChecked(sourceKey), "proof-A")
+        XCTAssertEqual(try h.profile.getChecked(destinationKey), "proof-B")
+    }
+
+    func testStaleProfileCannotBindItsProofOverTheCurrentProfile() async throws {
+        let h = try harness()
+        try seedRaw(h, access: "legacy-access-A", refresh: "legacy-refresh-A", epoch: UUID())
+        let sourceKey = TokenStore.profileTokenKey(for: serverID)
+        let destinationKey = SharedStorage.profileTokenAccount(for: serverID, accountID: "account-A")
+        XCTAssertTrue(h.profile.set("proof-A", for: sourceKey))
+        XCTAssertTrue(h.profile.set("proof-B", for: destinationKey))
+        let store = await activeStore(h)
+        await store.setProfileId("profile-A")
+        let captured = await store.captureOrdinaryRequestAuth()
+        await store.setProfileId("profile-C")
+        let wroteProof = await store.setProfileToken("proof-C")
+        XCTAssertTrue(wroteProof)
+
+        do {
+            try await store.bindVerifiedAccount("account-A", expected: XCTUnwrap(captured))
+            XCTFail("A binding from the replaced profile succeeded")
+        } catch HTTPError.requestIdentityChanged {}
+
+        let current = await store.captureOrdinaryRequestAuth()
+        XCTAssertEqual(current?.profileId, "profile-C")
+        XCTAssertEqual(current?.profileToken, "proof-C")
+        XCTAssertEqual(try h.profile.getChecked(sourceKey), "proof-C")
+        XCTAssertEqual(try h.profile.getChecked(destinationKey), "proof-B")
+        XCTAssertEqual(try h.sessions.load(serverID), .legacy)
+    }
+
+    func testFailedBoundProofPublicationRequiresSelectionAndSendsNoProfileAfterRelaunch() async throws {
+        for (failsDestination, remembersProfile) in [(true, true), (false, true), (true, false), (false, false)] {
+            let h = try harness()
+            let epoch = UUID()
+            try seedRaw(h, access: "legacy-access-A", refresh: "legacy-refresh-A", epoch: epoch)
+            let sourceKey = TokenStore.profileTokenKey(for: serverID)
+            let destinationKey = SharedStorage.profileTokenAccount(for: serverID, accountID: "account-A")
+            XCTAssertTrue(h.profile.set("proof-A", for: sourceKey))
+            XCTAssertTrue(h.profile.set("proof-B", for: destinationKey))
+            let preferences = ProfileLaunchPreferences(defaults: h.defaults)
+            preferences.behavior = .automatic
+            if remembersProfile {
+                XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+                    accountEpoch: epoch.uuidString, for: serverID))
+            }
+            let store = await activeStore(h, launchPreferences: preferences, boundProfileProofPersistence: { proof, key in
+                if key == (failsDestination ? destinationKey : sourceKey) { return false }
+                if let proof { return h.profile.set(proof, for: key) }
+                return h.profile.delete(key)
+            })
+            await store.setProfileId("profile-A")
+            let captured = await store.captureOrdinaryRequestAuth()
+
+            do {
+                try await store.bindVerifiedAccount("account-A", expected: XCTUnwrap(captured))
+                XCTFail("A failed bound-proof publication succeeded")
+            } catch AccountSessionPersistenceError.unavailable {}
+
+            let blockedAccess = await store.getAccessToken()
+            let blockedProof = await store.getProfileToken()
+            XCTAssertNil(blockedAccess)
+            XCTAssertNil(blockedProof)
+            XCTAssertEqual(preferences.resolution(for: serverID, accountEpoch: epoch.uuidString,
+                hasStoredProfileToken: true), .needsSelection)
+            XCTAssertTrue(preferences.state.requiresSelection(for: serverID, accountEpoch: epoch.uuidString))
+            XCTAssertEqual(try h.profile.getChecked(sourceKey), failsDestination ? nil : "proof-A")
+            XCTAssertEqual(try h.profile.getChecked(destinationKey), "proof-B")
+            if failsDestination {
+                guard case .session(let bound) = try h.sessions.load(serverID) else {
+                    return XCTFail("The account publication should precede a destination-proof failure")
+                }
+                XCTAssertEqual(bound.accountID, "account-A")
+                XCTAssertEqual(bound.epoch, epoch)
+            } else {
+                XCTAssertEqual(try h.sessions.load(serverID), .legacy,
+                    "Failed source retirement must prevent verified-session publication")
+            }
+            let restarted = await activeStore(h)
+            let restored = await restarted.captureOrdinaryRequestAuth()
+            XCTAssertEqual(restored?.accessToken, "legacy-access-A")
+            XCTAssertNil(restored?.profileId)
+            XCTAssertNil(restored?.profileToken)
+            let coldPreferences = ProfileLaunchPreferences(defaults: h.defaults)
+            XCTAssertEqual(coldPreferences.resolution(for: serverID, accountEpoch: epoch.uuidString,
+                hasStoredProfileToken: true), .needsSelection)
+            let stub = APIv2TestStub()
+            let http = HTTPClient(session: stub.makeSession(), tokenStore: restarted)
+            let _: [String: String] = try await http.get("/api/v2/proof-check")
+            XCTAssertNil(stub.requests.first?.header("X-Profile-Id"))
+            XCTAssertNil(stub.requests.first?.header("X-Profile-Token"))
+            XCTAssertEqual(try h.profile.getChecked(sourceKey), failsDestination ? nil : "proof-A",
+                "Cold loading a pending binding must not migrate or consume its proof")
+            try await recoverProfileAndDeleteProof(h, store: restarted, epoch: epoch, preferences: coldPreferences)
+        }
+    }
+
+    func testMarkerFailureAfterProofRetirementStillRequiresFreshProfileSelection() async throws {
+        let h = try harness()
+        let epoch = UUID()
+        try seedRaw(h, access: "legacy-access-A", refresh: "legacy-refresh-A", epoch: epoch)
+        let sourceKey = TokenStore.profileTokenKey(for: serverID)
+        let destinationKey = SharedStorage.profileTokenAccount(for: serverID, accountID: "account-A")
+        XCTAssertTrue(h.profile.set("proof-A", for: sourceKey))
+        XCTAssertTrue(h.profile.set("proof-B", for: destinationKey))
+        let preferences = ProfileLaunchPreferences(defaults: h.defaults)
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+            accountEpoch: epoch.uuidString, for: serverID))
+        let sessions = AccountSessionPersistence(tvStorage: TVAccountSessionStorage(
+            sharedRead: { try h.account.getChecked($0) },
+            sharedWrite: { value, key in
+                key != TVAccountSessionStorage.markerKey(self.serverID) && h.account.set(value, for: key)
+            }, sharedRemove: { h.account.delete($0) },
+            selectionRead: { try h.profile.getChecked($0) },
+            selectionWrite: { h.profile.set($0, for: $1) }, selectionRemove: { h.profile.delete($0) }))
+        let store = await activeStore(h, sessions: sessions, launchPreferences: preferences)
+        await store.setProfileId("profile-A")
+        let captured = await store.captureOrdinaryRequestAuth()
+
+        do {
+            try await store.bindVerifiedAccount("account-A", expected: XCTUnwrap(captured))
+            XCTFail("A binding whose adoption marker failed succeeded")
+        } catch HTTPError.requestIdentityChanged {}
+
+        XCTAssertEqual(try h.sessions.load(serverID), .legacy)
+        XCTAssertNil(try h.profile.getChecked(sourceKey))
+        XCTAssertEqual(try h.profile.getChecked(destinationKey), "proof-B")
+        let restarted = await activeStore(h)
+        let restored = await restarted.captureOrdinaryRequestAuth()
+        XCTAssertNil(restored?.profileId)
+        XCTAssertNil(restored?.profileToken)
+        XCTAssertTrue(ProfileLaunchState.load(from: h.defaults).requiresSelection(for: serverID, accountEpoch: epoch.uuidString))
+        try await recoverProfileAndDeleteProof(h, store: restarted, epoch: epoch,
+            preferences: ProfileLaunchPreferences(defaults: h.defaults))
+    }
+
+    func testBindingWithoutAnAuthenticatedProofRemovesAnOlderSavedProof() async throws {
+        let h = try harness()
+        let epoch = UUID()
+        try seedRaw(h, access: "legacy-access-A", refresh: "legacy-refresh-A", epoch: epoch)
+        let destinationKey = SharedStorage.profileTokenAccount(for: serverID, accountID: "account-A")
+        XCTAssertTrue(h.profile.set("proof-B", for: destinationKey))
+        let preferences = ProfileLaunchPreferences(defaults: h.defaults)
+        preferences.behavior = .automatic
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+            accountEpoch: epoch.uuidString, for: serverID))
+        let store = await activeStore(h, launchPreferences: preferences)
+        await store.setProfileId("profile-A")
+        let captured = await store.captureOrdinaryRequestAuth()
+
+        try await store.bindVerifiedAccount("account-A", expected: XCTUnwrap(captured))
+
+        XCTAssertNil(try h.profile.getChecked(destinationKey))
+        let restarted = await activeStore(h)
+        let restored = await restarted.captureOrdinaryRequestAuth()
+        XCTAssertNil(restored?.profileToken)
+        XCTAssertEqual(ProfileLaunchPreferences(defaults: h.defaults).resolution(for: serverID,
+            accountEpoch: epoch.uuidString, hasStoredProfileToken: restored?.profileToken != nil), .needsSelection)
+    }
+
+    func testSuccessfulBindingPreservesAnExistingSelectionRequirement() async throws {
+        let h = try harness()
+        let epoch = UUID()
+        try seedRaw(h, access: "legacy-access-A", refresh: "legacy-refresh-A", epoch: epoch)
+        XCTAssertTrue(h.profile.set("proof-A", for: TokenStore.profileTokenKey(for: serverID)))
+        let preferences = ProfileLaunchPreferences(defaults: h.defaults)
+        preferences.behavior = .automatic
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+            accountEpoch: epoch.uuidString, for: serverID))
+        let store = await activeStore(h, launchPreferences: preferences)
+        await store.setProfileId("profile-A")
+        let captured = await store.captureOrdinaryRequestAuth()
+        XCTAssertTrue(preferences.markSelectionRequired(for: serverID))
+
+        try await store.bindVerifiedAccount("account-A", expected: XCTUnwrap(captured))
+
+        XCTAssertEqual(preferences.resolution(for: serverID, accountEpoch: epoch.uuidString,
+            hasStoredProfileToken: true), .needsSelection)
+        let current = await store.captureOrdinaryRequestAuth()
+        XCTAssertNil(current?.profileId)
+        XCTAssertNil(current?.profileToken)
+        XCTAssertEqual(try h.profile.getChecked(SharedStorage.profileTokenAccount(for: serverID, accountID: "account-A")), "proof-A")
+    }
+
     func testFailedSignOutAndServerRemovalPreserveRawLegacyAuthorityForRelaunch() async throws {
         for removesServer in [false, true] {
             let h = try harness()
@@ -275,6 +536,27 @@ final class TVLegacyAccountMigrationTests: XCTestCase {
         var sessions: AccountSessionPersistence { AccountSessionPersistence(keychain: keychain) }
     }
 
+    private func recoverProfileAndDeleteProof(_ h: Harness, store: TokenStore, epoch: UUID,
+                                              preferences: ProfileLaunchPreferences) async throws {
+        let identity = await store.refreshAccountIdentity()
+        let expected = try XCTUnwrap(identity)
+        let activated = await store.activateProfile(profileID: "profile-C", profileToken: "fresh-proof-C",
+            expectedAccount: expected)
+        XCTAssertTrue(activated)
+        XCTAssertTrue(preferences.remember(profileID: "profile-C", requiresPIN: true,
+            accountEpoch: epoch.uuidString, for: serverID))
+        let deactivated = await store.deactivateProfile(expectedAccount: nil)
+        XCTAssertTrue(deactivated)
+        let restarted = await activeStore(h)
+        let proof = await restarted.getProfileToken()
+        XCTAssertNil(proof, "Recovery and explicit deletion must not resurrect either legacy proof")
+        let captured = await restarted.captureOrdinaryRequestAuth()
+        try await restarted.bindVerifiedAccount("account-A", expected: XCTUnwrap(captured))
+        let afterBinding = await activeStore(h)
+        let reboundProof = await afterBinding.getProfileToken()
+        XCTAssertNil(reboundProof, "A subsequent verified bind must not revive the old destination proof")
+    }
+
     private func harness() throws -> Harness {
         let name = "TVLegacyAccountMigrationTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
@@ -301,9 +583,12 @@ final class TVLegacyAccountMigrationTests: XCTestCase {
         return Harness(keychain: keychain, defaults: defaults)
     }
 
-    private func activeStore(_ h: Harness, sessions: AccountSessionPersistence? = nil) async -> TokenStore {
+    private func activeStore(_ h: Harness, sessions: AccountSessionPersistence? = nil,
+                             launchPreferences: ProfileLaunchPreferences? = nil,
+                             boundProfileProofPersistence: (@Sendable (String?, String) -> Bool)? = nil) async -> TokenStore {
         h.defaults.set(origin, forKey: SharedStorage.serverUrlKey)
-        let store = TokenStore(keychain: h.keychain, defaults: h.defaults, sessionPersistence: sessions)
+        let store = TokenStore(keychain: h.keychain, defaults: h.defaults, sessionPersistence: sessions,
+            launchPreferences: launchPreferences, boundProfileProofPersistence: boundProfileProofPersistence)
         await store.switchActiveServer(serverId: serverID)
         return store
     }

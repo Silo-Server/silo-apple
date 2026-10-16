@@ -197,10 +197,14 @@ struct AccountSessionPersistence: Sendable {
     }
 
     func replaceSession(_ replacement: CanonicalAccountSession, replacing expected: CanonicalAccountSession,
-                        serverID: String) -> Bool {
-        if let tvStorage { return tvStorage.replaceSession(replacement, replacing: expected, serverID: serverID) }
+                        serverID: String, beforePublishing: () -> Bool = { true }) -> Bool {
+        if let tvStorage {
+            return tvStorage.replaceSession(replacement, replacing: expected, serverID: serverID,
+                beforePublishing: beforePublishing)
+        }
         return Self.legacyLock.withLock {
             guard (try? Self.loadLegacy(serverID, read: read)) == .session(expected) else { return false }
+            guard beforePublishing() else { return false }
             do { try saveLegacy(replacement, serverID: serverID); return true } catch { return false }
         }
     }
@@ -213,8 +217,12 @@ struct AccountSessionPersistence: Sendable {
         }
     }
 
-    func bindLegacySession(_ verified: CanonicalAccountSession, serverID: String) -> Bool {
-        if let tvStorage { return tvStorage.bindLegacySession(verified, serverID: serverID) }
+    func bindLegacySession(_ verified: CanonicalAccountSession, serverID: String,
+                           beforePublishing: () -> Bool = { true }) -> Bool {
+        if let tvStorage {
+            return tvStorage.bindLegacySession(verified, serverID: serverID, beforePublishing: beforePublishing)
+        }
+        guard beforePublishing() else { return false }
         do { try save(verified, serverID: serverID); return true } catch { return false }
     }
 }

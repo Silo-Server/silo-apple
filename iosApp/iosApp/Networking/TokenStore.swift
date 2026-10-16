@@ -144,7 +144,7 @@ enum TemporaryAuthScopeEndResult: Equatable, Sendable {
 /// mirrored to fixed Keychain accounts for the extensions. `HTTPClient`
 /// collapses concurrent 401s into one refresh per `RefreshAccountIdentity`.
 actor TokenStore {
-    static let shared = TokenStore()
+    static let shared = TokenStore(launchPreferences: .shared)
 
     static let accountCredentialAudience: KeychainAudience = .userIndependent
     static let profileCredentialAudience: KeychainAudience = .currentUser
@@ -153,6 +153,10 @@ actor TokenStore {
     private let profileKeychain: SharedKeychain
     private let defaults: SharedDefaults
     private let sessions: AccountSessionPersistence
+    private let launchPreferences: ProfileLaunchPreferences?
+    /// Synchronous proof persistence; source retirement runs while the profile
+    /// selection and account-session locks are held. It must not re-enter them.
+    private let persistBoundProfileProof: @Sendable (String?, String) -> Bool
     #if os(iOS)
     private let displayTargets: ApplePushDisplayTargetStore
     #endif
@@ -222,11 +226,19 @@ actor TokenStore {
 
     init(keychain: SharedKeychain = SharedKeychain(),
          defaults: SharedDefaults = .shared,
-         sessionPersistence: AccountSessionPersistence? = nil) {
+         sessionPersistence: AccountSessionPersistence? = nil,
+         launchPreferences: ProfileLaunchPreferences? = nil,
+         boundProfileProofPersistence: (@Sendable (String?, String) -> Bool)? = nil) {
         self.accountKeychain = keychain.withAudience(Self.accountCredentialAudience)
-        self.profileKeychain = keychain.withAudience(Self.profileCredentialAudience)
+        let profileKeychain = keychain.withAudience(Self.profileCredentialAudience)
+        self.profileKeychain = profileKeychain
         self.defaults = defaults
         self.sessions = sessionPersistence ?? AccountSessionPersistence(keychain: keychain)
+        self.launchPreferences = launchPreferences
+        self.persistBoundProfileProof = boundProfileProofPersistence ?? { proof, key in
+            if let proof { return profileKeychain.set(proof, for: key) }
+            return profileKeychain.delete(key)
+        }
         #if os(iOS)
         self.displayTargets = ApplePushDisplayTargetStore(keychain: keychain.withAudience(Self.profileCredentialAudience))
         #endif
@@ -1297,7 +1309,7 @@ actor TokenStore {
     func bindVerifiedAccount(_ accountID: String, expected: CapturedOrdinaryRequestAuth) throws {
         guard temporaryScope == nil else { return }
         ensureLoaded()
-        guard !accountID.isEmpty, refreshAccountIdentity() == expected.account,
+        guard !accountID.isEmpty, currentOrdinaryRequestAuth(matchingIdentityOf: expected) != nil,
               cachedAccessToken == expected.accessToken else { throw HTTPError.requestIdentityChanged }
         // Access-only legacy credentials can still read account metadata, but cannot
         // establish a refreshable durable login envelope or queue authority.
@@ -1309,32 +1321,68 @@ actor TokenStore {
             if canonicalSession.accountID == accountID { return }
         }
         let legacyEpoch = getOrCreateAccountEpoch().flatMap(UUID.init(uuidString:))
+        let epoch = canonicalSession?.epoch ?? legacyEpoch ?? UUID()
         let value = CanonicalAccountSession(version: 1, signedOut: false, origin: expected.account.serverURL,
-            accountID: accountID, epoch: canonicalSession?.epoch ?? legacyEpoch ?? UUID(), accessToken: access, refreshToken: refresh)
+            accountID: accountID, epoch: epoch, accessToken: access, refreshToken: refresh)
         let oldProfileKey = profileTokenKey
-        if let original = canonicalSession {
-            guard sessions.replaceSession(value, replacing: original, serverID: activeServerId) else {
-                throw HTTPError.requestIdentityChanged
+        let destinationKey = profileTokenStorageKey(for: activeServerId, accountID: accountID)
+        let proof = cachedProfileToken
+        let publishSession = { (beforePublishing: () -> Bool) in
+            if let original = self.canonicalSession {
+                guard self.sessions.replaceSession(value, replacing: original, serverID: self.activeServerId,
+                    beforePublishing: beforePublishing) else {
+                    throw HTTPError.requestIdentityChanged
+                }
+            } else if self.sessions.supportsAccountSelection {
+                // Promotion consumes the exact legacy authority, preserving its epoch.
+                guard self.sessions.bindLegacySession(value, serverID: self.activeServerId,
+                    beforePublishing: beforePublishing) else {
+                    throw HTTPError.requestIdentityChanged
+                }
+            } else {
+                do { try self.sessions.save(value, serverID: self.activeServerId) }
+                catch { self.blockRuntimeSession(); throw error }
             }
-        } else if sessions.supportsAccountSelection {
-            // Verification promotes the exact legacy authority. Ordinary
-            // installation would retain a second inherited copy of its tokens.
-            guard sessions.bindLegacySession(value, serverID: activeServerId) else {
-                throw HTTPError.requestIdentityChanged
-            }
-        } else {
-            do { try sessions.save(value, serverID: activeServerId) }
-            catch { blockRuntimeSession(); throw error }
+            self.canonicalSession = value
         }
-        canonicalSession = value
-        // The verified bind preserves the epoch and can move only the proof
-        // that this process already authenticated under the previous identity.
-        if oldProfileKey != profileTokenKey, cachedProfileToken != nil {
-            guard profileKeychain.moveValue(from: oldProfileKey, to: profileTokenKey) else {
-                blockRuntimeSession(); throw AccountSessionPersistenceError.unavailable
+        if oldProfileKey != destinationKey {
+            let preferences = launchPreferences ?? ProfileLaunchPreferences(defaults: defaults)
+            var bindingError: Error?
+            let committed = preferences.withSelectionRequired(for: activeServerId,
+                accountEpoch: epoch.uuidString) { canRestoreProfile in
+                defaults.removeObject(forKey: profileIdDefaultsKey)
+                cachedProfileToken = nil
+                do {
+                    var sourceRetirementFailed = false
+                    do {
+                        try publishSession {
+                            let retired = persistBoundProfileProof(nil, oldProfileKey)
+                            sourceRetirementFailed = !retired
+                            return retired
+                        }
+                    } catch {
+                        if sourceRetirementFailed { throw AccountSessionPersistenceError.unavailable }
+                        throw error
+                    }
+                    // This response authenticated the captured optional proof.
+                    // Its legacy source is already retired under the exact
+                    // session-owner lock, so later recovery cannot resurrect it.
+                    guard persistBoundProfileProof(proof, destinationKey) else {
+                        throw AccountSessionPersistenceError.unavailable
+                    }
+                    if canRestoreProfile {
+                        cachedProfileToken = proof
+                        defaults.set(expected.profileId, forKey: profileIdDefaultsKey)
+                    }
+                    return true
+                } catch { bindingError = error; return false }
             }
-            cachedProfileToken = profileKeychain.get(profileTokenKey)
-        }
+            guard committed else {
+                defaults.removeObject(forKey: profileIdDefaultsKey)
+                blockRuntimeSession()
+                throw bindingError ?? AccountSessionPersistenceError.unavailable
+            }
+        } else { try publishSession { true } }
         mirrorCanonicalSession(value)
     }
 
@@ -1696,24 +1744,28 @@ actor TokenStore {
                             canonicalSession = value
                             cachedAccessToken = value.accessToken
                             cachedRefreshToken = value.refreshToken
-                            cachedProfileToken = profileKeychain.get(profileTokenKey)
-                            if sessions.supportsAccountSelection,
-                               value.accountID != nil, let epoch = value.epoch?.uuidString,
-                               ProfileLaunchState.load(from: defaults).rememberedByServerID[activeServerId]?.accountEpoch == epoch {
-                                // Only an epoch-bound legacy profile may carry
-                                // its proof into this account. Consume the source
-                                // even when an account proof already exists so
-                                // later deletion cannot trigger migration again.
-                                guard profileKeychain.moveValue(from: Self.profileTokenKey(for: activeServerId),
-                                    to: profileTokenKey) else { throw AccountSessionPersistenceError.unavailable }
-                                cachedProfileToken = try profileKeychain.getChecked(profileTokenKey)
+                            if !suppressProfileAwaitingSelection(accountEpoch: value.epoch?.uuidString) {
+                                cachedProfileToken = profileKeychain.get(profileTokenKey)
+                                if sessions.supportsAccountSelection,
+                                   value.accountID != nil, let epoch = value.epoch?.uuidString,
+                                   ProfileLaunchState.load(from: defaults).rememberedByServerID[activeServerId]?.accountEpoch == epoch {
+                                    // Only an epoch-bound legacy profile may carry
+                                    // its proof into this account. Consume the source
+                                    // even when an account proof already exists so
+                                    // later deletion cannot trigger migration again.
+                                    guard profileKeychain.moveValue(from: Self.profileTokenKey(for: activeServerId),
+                                        to: profileTokenKey) else { throw AccountSessionPersistenceError.unavailable }
+                                    cachedProfileToken = try profileKeychain.getChecked(profileTokenKey)
+                                }
                             }
                         }
                     case .signedOut: break
                     case .legacy:
                         cachedAccessToken = accountKeychain.get(accessTokenKey)
                         cachedRefreshToken = accountKeychain.get(refreshTokenKey)
-                        cachedProfileToken = profileKeychain.get(profileTokenKey)
+                        if !suppressProfileAwaitingSelection(accountEpoch: accountKeychain.get(accountEpochKey)) {
+                            cachedProfileToken = profileKeychain.get(profileTokenKey)
+                        }
                     }
                 } catch {
                     // Fail closed: a record that cannot be read or decoded
@@ -1730,6 +1782,14 @@ actor TokenStore {
             }
         }
         loadedForServerId = activeServerId
+    }
+
+    private func suppressProfileAwaitingSelection(accountEpoch: String?) -> Bool {
+        guard sessions.supportsAccountSelection,
+              ProfileLaunchState.load(from: defaults).requiresSelection(for: activeServerId,
+                accountEpoch: accountEpoch) else { return false }
+        defaults.removeObject(forKey: profileIdDefaultsKey)
+        return true
     }
 
     /// Mirror the current active access + profile tokens to fixed-name

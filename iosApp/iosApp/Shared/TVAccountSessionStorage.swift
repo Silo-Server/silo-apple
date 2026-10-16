@@ -227,8 +227,10 @@ struct TVAccountSessionStorage: Sendable {
 
     /// Refresh and authenticated identity binding preserve the current selector.
     /// Binding a legacy default moves it to its verified slot with the same epoch.
+    /// The synchronous prerequisite runs only after exact-owner validation and
+    /// must not re-enter this storage. Failure leaves the previous authority.
     func replaceSession(_ replacement: CanonicalAccountSession, replacing expected: CanonicalAccountSession,
-                        serverID: String) -> Bool {
+                        serverID: String, beforePublishing: () -> Bool = { true }) -> Bool {
         Self.lock.withLock {
             do {
                 guard !serverID.isEmpty,
@@ -242,6 +244,7 @@ struct TVAccountSessionStorage: Sendable {
                 guard envelope.sessions[oldSlot] == expected,
                       oldSlot == newSlot || envelope.sessions[newSlot] == nil
                         || envelope.sessions[newSlot]?.origin == replacement.origin else { return false }
+                guard beforePublishing() else { return false }
                 // An authenticated legacy default may name an account another
                 // TV user already saved. Keep the exact authenticated epoch
                 // and credentials as that account's single shared authority.
@@ -257,7 +260,8 @@ struct TVAccountSessionStorage: Sendable {
     /// Promote the exact raw credentials authenticated by the caller. This is
     /// identity binding, so it moves the legacy default instead of installing a
     /// second session or selecting an account on behalf of this TV user.
-    func bindLegacySession(_ verified: CanonicalAccountSession, serverID: String) -> Bool {
+    func bindLegacySession(_ verified: CanonicalAccountSession, serverID: String,
+                           beforePublishing: () -> Bool = { true }) -> Bool {
         Self.lock.withLock {
             do {
                 try AccountSessionPersistence.validateSession(verified)
@@ -274,6 +278,7 @@ struct TVAccountSessionStorage: Sendable {
                       legacy.origin == verified.origin, legacy.epoch == verified.epoch,
                       legacy.accessToken == verified.accessToken, legacy.refreshToken == verified.refreshToken,
                       envelope.defaultSlotID == Self.legacySlotID, envelope.sessions[destination] == nil else { return false }
+                guard beforePublishing() else { return false }
                 envelope.sessions.removeValue(forKey: Self.legacySlotID)
                 envelope.sessions[destination] = verified
                 envelope.defaultSlotID = destination

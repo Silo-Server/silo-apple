@@ -107,7 +107,7 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
         if previousEpoch != accountEpoch { backgroundedAt = nil }
     }
 
-    private func requiresSelection(for serverID: String, accountEpoch: String?) -> Bool {
+    func requiresSelection(for serverID: String, accountEpoch: String?) -> Bool {
         guard let pending = selectionRequiredByAccountEpoch, let accountEpoch else {
             return selectionRequiredServerIDs.contains(serverID)
         }
