@@ -503,6 +503,23 @@ struct SharedKeychain {
         return false
     }
 
+    /// Moves a value within this audience without leaving a reusable source.
+    /// An existing destination wins; obsolete source names are retired too.
+    func moveValue(from sourceAccount: String, to destinationAccount: String) -> Bool {
+        guard sourceAccount != destinationAccount else { return true }
+        var sources = [(keychain: self, account: sourceAccount)]
+        if let legacy = legacyName(for: sourceAccount) { sources.append(legacy) }
+        for source in sources {
+            switch move(source, to: destinationAccount) {
+            case .moved, .vanished: continue
+            case .alreadyPresent:
+                guard source.keychain.deleteUnderCurrentName(source.account) else { return false }
+            case .failed: return false
+            }
+        }
+        return true
+    }
+
     // MARK: - Pre-rename names
 
     private enum MoveOutcome { case moved, alreadyPresent, vanished, failed }

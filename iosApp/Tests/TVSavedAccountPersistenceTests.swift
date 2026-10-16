@@ -232,6 +232,49 @@ final class TVSavedAccountPersistenceTests: XCTestCase {
         XCTAssertNil(memory.selectionValue("new", TVAccountSessionStorage.selectionKey(server)))
     }
 
+    func testAuthenticatedLegacyDefaultReconcilesAnExistingSameAccountSlot() throws {
+        let memory = TVSavedAccountMemory()
+        let legacy = session(nil)
+        let earlierLogin = session("A"), accountB = session("B")
+        try memory.seedLegacy(legacy, serverID: server)
+        try memory.persistence("second").save(earlierLogin, serverID: server)
+        try memory.persistence("third").save(accountB, serverID: server)
+        let persistence = memory.persistence("inheriting")
+        let verified = CanonicalAccountSession(version: 1, signedOut: false, origin: legacy.origin,
+            accountID: "A", epoch: legacy.epoch, accessToken: legacy.accessToken, refreshToken: legacy.refreshToken)
+
+        XCTAssertTrue(persistence.replaceSession(verified, replacing: legacy, serverID: server))
+
+        XCTAssertEqual(try persistence.load(server), .session(verified))
+        XCTAssertEqual(try memory.persistence("new").load(server), .session(verified))
+        XCTAssertEqual(try memory.persistence("second").load(server), .session(verified))
+        XCTAssertEqual(try memory.persistence("third").load(server), .session(accountB))
+        XCTAssertNil(memory.selectionValue("inheriting", TVAccountSessionStorage.selectionKey(server)))
+        XCTAssertEqual(try persistence.savedAccountIDs(for: server), ["A", "B"])
+        XCTAssertFalse(memory.persistence("second").replaceSession(earlierLogin, replacing: earlierLogin, serverID: server))
+        XCTAssertTrue(persistence.invalidateSession(verified, serverID: server))
+        XCTAssertEqual(try memory.persistence("new").load(server), .signedOut,
+            "Binding must remove the duplicate inherited legacy authority")
+        XCTAssertEqual(try memory.persistence("third").load(server), .session(accountB))
+    }
+
+    func testLegacyBindingCannotReplaceSameAccountAtAnotherOrigin() throws {
+        let memory = TVSavedAccountMemory()
+        let legacy = session(nil)
+        try memory.seedLegacy(legacy, serverID: server)
+        let otherOrigin = CanonicalAccountSession(version: 1, signedOut: false, origin: "https://other.example",
+            accountID: "A", epoch: UUID(), accessToken: "other-access", refreshToken: "other-refresh")
+        try memory.persistence("second").save(otherOrigin, serverID: server)
+        let before = memory.sharedValues
+        let verified = CanonicalAccountSession(version: 1, signedOut: false, origin: legacy.origin,
+            accountID: "A", epoch: legacy.epoch, accessToken: legacy.accessToken, refreshToken: legacy.refreshToken)
+
+        XCTAssertFalse(memory.persistence("inheriting").replaceSession(verified, replacing: legacy, serverID: server))
+
+        XCTAssertEqual(memory.sharedValues, before)
+        XCTAssertEqual(try memory.persistence("second").load(server), .session(otherOrigin))
+    }
+
     func testRawLegacyMigrationRetainsUnknownAccountAndEpoch() throws {
         let memory = TVSavedAccountMemory()
         let epoch = UUID()
@@ -379,6 +422,83 @@ final class TVSavedAccountPersistenceTests: XCTestCase {
         XCTAssertFalse(raw.contains("access-B"))
     }
 
+    func testFirstMarkerFailureRestoresSessionBeforeRefreshOrBindingReportsFailure() throws {
+        for accountID in [String?.none, "A"] {
+            let memory = TVSavedAccountMemory()
+            let original = session(nil)
+            try memory.seedLegacy(original, serverID: server)
+            let persistence = memory.persistence("first")
+            let before = try XCTUnwrap(persistence.accountSelectionSnapshot(for: server))
+            let replacement = CanonicalAccountSession(version: 1, signedOut: false, origin: original.origin,
+                accountID: accountID, epoch: original.epoch, accessToken: "rotated", refreshToken: "rotated-refresh")
+            memory.rejectSharedWrites(TVAccountSessionStorage.markerKey(server), true)
+
+            XCTAssertFalse(persistence.replaceSession(replacement, replacing: original, serverID: server))
+
+            XCTAssertNil(memory.sharedValue(TVAccountSessionStorage.recordKey(server)))
+            XCTAssertNil(memory.sharedValue(TVAccountSessionStorage.markerKey(server)))
+            XCTAssertTrue(persistence.matchesAccountSelection(before, serverID: server))
+            XCTAssertEqual(try persistence.load(server), .session(original))
+            XCTAssertEqual(try memory.persistence("new").load(server), .session(original))
+            memory.rejectSharedWrites(TVAccountSessionStorage.markerKey(server), false)
+            XCTAssertTrue(persistence.replaceSession(replacement, replacing: original, serverID: server))
+            XCTAssertEqual(try persistence.load(server), .session(replacement))
+        }
+    }
+
+    func testFirstMarkerFailureRestoresRawLegacyBindingInputAndAllowsRetry() throws {
+        let memory = TVSavedAccountMemory()
+        let verified = session("A")
+        memory.setShared(verified.accessToken, for: SharedStorage.accessTokenAccount(for: server))
+        memory.setShared(verified.refreshToken, for: SharedStorage.refreshTokenAccount(for: server))
+        memory.setShared(verified.epoch?.uuidString, for: SharedStorage.accountEpochAccount(for: server))
+        let persistence = memory.persistence("first")
+        let before = try XCTUnwrap(persistence.accountSelectionSnapshot(for: server))
+        memory.rejectSharedWrites(TVAccountSessionStorage.markerKey(server), true)
+
+        XCTAssertFalse(persistence.bindLegacySession(verified, serverID: server))
+
+        XCTAssertEqual(try persistence.load(server), .legacy)
+        XCTAssertTrue(persistence.matchesAccountSelection(before, serverID: server))
+        XCTAssertNil(memory.sharedValue(TVAccountSessionStorage.recordKey(server)))
+        XCTAssertNil(memory.sharedValue(TVAccountSessionStorage.markerKey(server)))
+        memory.rejectSharedWrites(TVAccountSessionStorage.markerKey(server), false)
+        XCTAssertTrue(persistence.bindLegacySession(verified, serverID: server))
+        XCTAssertEqual(try memory.persistence("new").load(server), .session(verified))
+    }
+
+    func testMarkerFailureRestoresAnExistingUnmarkedRecordByteForByte() throws {
+        let memory = TVSavedAccountMemory()
+        let original = session("A")
+        let persistence = memory.persistence("first")
+        try persistence.save(original, serverID: server)
+        memory.setShared(nil, for: TVAccountSessionStorage.markerKey(server))
+        let previousRecord = try XCTUnwrap(memory.sharedValue(TVAccountSessionStorage.recordKey(server)))
+        let replacement = session("A", access: "rotated", epoch: try XCTUnwrap(original.epoch))
+        memory.rejectSharedWrites(TVAccountSessionStorage.markerKey(server), true)
+
+        XCTAssertFalse(persistence.replaceSession(replacement, replacing: original, serverID: server))
+
+        XCTAssertEqual(memory.sharedValue(TVAccountSessionStorage.recordKey(server)), previousRecord)
+        XCTAssertEqual(try persistence.load(server), .session(original))
+    }
+
+    func testInvalidationRecordReadFailureDoesNotPublishASelector() throws {
+        let memory = TVSavedAccountMemory()
+        let original = session("A")
+        let persistence = memory.persistence("first")
+        try persistence.save(original, serverID: server)
+        let writesBefore = memory.writeCount
+        // Snapshot and mutable-envelope reads succeed; the commit's capture
+        // then fails before either the selector or shared record can change.
+        memory.rejectRead(TVAccountSessionStorage.recordKey(server), afterSuccessfulReads: 2)
+
+        XCTAssertFalse(persistence.invalidateSession(original, serverID: server))
+
+        XCTAssertEqual(memory.writeCount, writesBefore)
+        XCTAssertEqual(try persistence.load(server), .session(original))
+    }
+
     func testInvalidateAllAccountsClearsEverySlotAndBlocksLegacyResurrection() throws {
         let memory = TVSavedAccountMemory()
         try memory.seedLegacy(session("legacy"), serverID: server)
@@ -483,6 +603,7 @@ private final class TVSavedAccountMemory: @unchecked Sendable {
     private var rejectedSelectors: Set<String> = []
     private var rejectedWrites: Set<String> = []
     private var rejectedReads: Set<String> = []
+    private var readsUntilFailure: [String: Int] = [:]
     private var writes = 0
 
     var sharedValues: [String: String] { lock.withLock { shared } }
@@ -536,9 +657,16 @@ private final class TVSavedAccountMemory: @unchecked Sendable {
     func rejectRead(_ key: String, _ reject: Bool) {
         lock.withLock { if reject { rejectedReads.insert(key) } else { rejectedReads.remove(key) } }
     }
+    func rejectRead(_ key: String, afterSuccessfulReads count: Int) {
+        lock.withLock { readsUntilFailure[key] = count }
+    }
     private func readShared(_ key: String) throws -> String? {
         try lock.withLock {
             guard !rejectedReads.contains(key) else { throw AccountSessionPersistenceError.unavailable }
+            if let remaining = readsUntilFailure[key] {
+                readsUntilFailure[key] = remaining > 0 ? remaining - 1 : nil
+                guard remaining > 0 else { throw AccountSessionPersistenceError.unavailable }
+            }
             return shared[key]
         }
     }

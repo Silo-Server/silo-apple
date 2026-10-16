@@ -1329,8 +1329,11 @@ actor TokenStore {
         canonicalSession = value
         // The verified bind preserves the epoch and can move only the proof
         // that this process already authenticated under the previous identity.
-        if oldProfileKey != profileTokenKey, let proof = cachedProfileToken {
-            guard profileKeychain.set(proof, for: profileTokenKey) else { blockRuntimeSession(); throw AccountSessionPersistenceError.unavailable }
+        if oldProfileKey != profileTokenKey, cachedProfileToken != nil {
+            guard profileKeychain.moveValue(from: oldProfileKey, to: profileTokenKey) else {
+                blockRuntimeSession(); throw AccountSessionPersistenceError.unavailable
+            }
+            cachedProfileToken = profileKeychain.get(profileTokenKey)
         }
         mirrorCanonicalSession(value)
     }
@@ -1694,14 +1697,16 @@ actor TokenStore {
                             cachedAccessToken = value.accessToken
                             cachedRefreshToken = value.refreshToken
                             cachedProfileToken = profileKeychain.get(profileTokenKey)
-                            if sessions.supportsAccountSelection, cachedProfileToken == nil,
+                            if sessions.supportsAccountSelection,
                                value.accountID != nil, let epoch = value.epoch?.uuidString,
-                               ProfileLaunchState.load(from: defaults).rememberedByServerID[activeServerId]?.accountEpoch == epoch,
-                               let legacyProof = profileKeychain.get(Self.profileTokenKey(for: activeServerId)),
-                               profileKeychain.set(legacyProof, for: profileTokenKey) {
+                               ProfileLaunchState.load(from: defaults).rememberedByServerID[activeServerId]?.accountEpoch == epoch {
                                 // Only an epoch-bound legacy profile may carry
-                                // its PIN proof into the verified account slot.
-                                cachedProfileToken = legacyProof
+                                // its proof into this account. Consume the source
+                                // even when an account proof already exists so
+                                // later deletion cannot trigger migration again.
+                                guard profileKeychain.moveValue(from: Self.profileTokenKey(for: activeServerId),
+                                    to: profileTokenKey) else { throw AccountSessionPersistenceError.unavailable }
+                                cachedProfileToken = try profileKeychain.getChecked(profileTokenKey)
                             }
                         }
                     case .signedOut: break
@@ -1719,6 +1724,8 @@ actor TokenStore {
                         reason: Self.persistenceFailureReason(error)
                     )
                     runtimeBlockedServers.insert(activeServerId)
+                    canonicalSession = nil
+                    cachedAccessToken = nil; cachedRefreshToken = nil; cachedProfileToken = nil
                 }
             }
         }

@@ -240,11 +240,16 @@ struct TVAccountSessionStorage: Sendable {
                 let oldSlot = Self.slotID(expected)
                 let newSlot = Self.slotID(replacement)
                 guard envelope.sessions[oldSlot] == expected,
-                      oldSlot == newSlot || envelope.sessions[newSlot] == nil else { return false }
+                      oldSlot == newSlot || envelope.sessions[newSlot] == nil
+                        || envelope.sessions[newSlot]?.origin == replacement.origin else { return false }
+                // An authenticated legacy default may name an account another
+                // TV user already saved. Keep the exact authenticated epoch
+                // and credentials as that account's single shared authority.
                 envelope.sessions.removeValue(forKey: oldSlot)
                 envelope.sessions[newSlot] = replacement
                 if envelope.defaultSlotID == oldSlot { envelope.defaultSlotID = newSlot }
-                return persistEnvelopeUnlocked(envelope, serverID: serverID)
+                return commitEnvelopeUpdateUnlocked(envelope, serverID: serverID,
+                    previousRecord: try sharedRead(Self.recordKey(serverID)))
             } catch { return false }
         }
     }
@@ -272,7 +277,8 @@ struct TVAccountSessionStorage: Sendable {
                 envelope.sessions.removeValue(forKey: Self.legacySlotID)
                 envelope.sessions[destination] = verified
                 envelope.defaultSlotID = destination
-                return persistEnvelopeUnlocked(envelope, serverID: serverID)
+                return commitEnvelopeUpdateUnlocked(envelope, serverID: serverID,
+                    previousRecord: try sharedRead(Self.recordKey(serverID)))
             } catch { return false }
         }
     }
@@ -403,6 +409,22 @@ struct TVAccountSessionStorage: Sendable {
         } catch { return .failed }
     }
 
+    /// A failed adoption marker must leave the caller's cached owner usable.
+    /// Restore the previous bytes only while the unmarked publication is ours.
+    private func commitEnvelopeUpdateUnlocked(_ envelope: Envelope, serverID: String, previousRecord: String?) -> Bool {
+        do {
+            let publication = publishEnvelopeUnlocked(envelope, serverID: serverID)
+            if case .committed = publication { return true }
+            if case .unmarked(let installed) = publication,
+               try sharedRead(Self.markerKey(serverID)) == nil,
+               try sharedRead(Self.recordKey(serverID)) == installed {
+                if let previousRecord { _ = sharedWrite(previousRecord, Self.recordKey(serverID)) }
+                else { _ = sharedRemove(Self.recordKey(serverID)) }
+            }
+            return false
+        } catch { return false }
+    }
+
     private func persistSelectionUnlocked(_ selection: TVAccountSelection?, serverID: String) -> Bool {
         guard let selection else { return selectionRemove(Self.selectionKey(serverID)) }
         guard let data = try? JSONEncoder().encode(selection) else { return false }
@@ -451,16 +473,7 @@ struct TVAccountSessionStorage: Sendable {
             let previousSelection = try selectionRead(Self.selectionKey(serverID))
             let previousRecord = try sharedRead(Self.recordKey(serverID))
             guard persistSelectionUnlocked(.signedOut, serverID: serverID) else { return false }
-            let publication = publishEnvelopeUnlocked(envelope, serverID: serverID)
-            if case .committed = publication { return true }
-            if case .unmarked(let installed) = publication,
-               try sharedRead(Self.markerKey(serverID)) == nil,
-               try sharedRead(Self.recordKey(serverID)) == installed {
-                // The first record was published but adoption failed. This
-                // write still belongs to us under the process lock.
-                if let previousRecord { _ = sharedWrite(previousRecord, Self.recordKey(serverID)) }
-                else { _ = sharedRemove(Self.recordKey(serverID)) }
-            }
+            if commitEnvelopeUpdateUnlocked(envelope, serverID: serverID, previousRecord: previousRecord) { return true }
             if let previousSelection { _ = selectionWrite(previousSelection, Self.selectionKey(serverID)) }
             else { _ = selectionRemove(Self.selectionKey(serverID)) }
             return false

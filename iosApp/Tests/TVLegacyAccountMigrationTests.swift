@@ -59,6 +59,8 @@ final class TVLegacyAccountMigrationTests: XCTestCase {
             XCTAssertEqual(proof, matchesEpoch ? "legacy-PIN-proof" : nil)
             XCTAssertEqual(try h.profile.getChecked(SharedStorage.profileTokenAccount(for: serverID, accountID: "account-A")),
                 matchesEpoch ? "legacy-PIN-proof" : nil)
+            XCTAssertEqual(try h.profile.getChecked(TokenStore.profileTokenKey(for: serverID)),
+                matchesEpoch ? nil : "legacy-PIN-proof", "A different epoch must retain its own proof")
             XCTAssertNil(try h.account.getChecked(TVAccountSessionStorage.recordKey(serverID)),
                 "Restoration must not migrate the session schema while reading")
         }
@@ -81,6 +83,89 @@ final class TVLegacyAccountMigrationTests: XCTestCase {
 
         XCTAssertEqual(proof, "account-A-proof")
         XCTAssertEqual(try h.profile.getChecked(accountKey), "account-A-proof")
+    }
+
+    func testDeletingMigratedPINProofRemainsEffectiveAfterRelaunch() async throws {
+        for hasAccountProof in [false, true] {
+            let h = try harness()
+            let session = canonical("account-A")
+            try seedLegacyCanonical(session, in: h)
+            let legacyKey = TokenStore.profileTokenKey(for: serverID)
+            let accountKey = SharedStorage.profileTokenAccount(for: serverID, accountID: "account-A")
+            XCTAssertTrue(h.profile.set("legacy-proof", for: legacyKey))
+            if hasAccountProof { XCTAssertTrue(h.profile.set("account-proof", for: accountKey)) }
+            let remembered = RememberedProfile(profileID: "profile-A", requiredPINAtSelection: true,
+                accountEpoch: try XCTUnwrap(session.epoch).uuidString)
+            h.defaults.set(try JSONEncoder().encode(ProfileLaunchState(rememberedByServerID: [serverID: remembered])),
+                forKey: SharedStorage.profileLaunchStateKey)
+            let store = await activeStore(h)
+            let migrated = await store.getProfileToken()
+            XCTAssertEqual(migrated, hasAccountProof ? "account-proof" : "legacy-proof")
+
+            let deactivated = await store.deactivateProfile(expectedAccount: nil)
+
+            XCTAssertTrue(deactivated)
+            XCTAssertNil(try h.profile.getChecked(legacyKey))
+            XCTAssertNil(try h.profile.getChecked(accountKey))
+            let restarted = await activeStore(h)
+            let restored = await restarted.getProfileToken()
+            XCTAssertNil(restored)
+            XCTAssertNil(try h.profile.getChecked(accountKey))
+        }
+    }
+
+    func testVerifiedLegacyBindingConsumesPINProofBeforeAProfileCanDeleteIt() async throws {
+        let h = try harness()
+        let epoch = UUID()
+        try seedRaw(h, access: "legacy-access-A", refresh: "legacy-refresh-A", epoch: epoch)
+        let legacyKey = TokenStore.profileTokenKey(for: serverID)
+        XCTAssertTrue(h.profile.set("legacy-proof", for: legacyKey))
+        let remembered = RememberedProfile(profileID: "profile-A", requiredPINAtSelection: true,
+            accountEpoch: epoch.uuidString)
+        h.defaults.set(try JSONEncoder().encode(ProfileLaunchState(rememberedByServerID: [serverID: remembered])),
+            forKey: SharedStorage.profileLaunchStateKey)
+        let store = await activeStore(h)
+        let captured = await store.captureOrdinaryRequestAuth()
+
+        try await store.bindVerifiedAccount("account-A", expected: XCTUnwrap(captured))
+
+        let boundProof = await store.getProfileToken()
+        XCTAssertEqual(boundProof, "legacy-proof")
+        XCTAssertNil(try h.profile.getChecked(legacyKey))
+        let deactivated = await store.deactivateProfile(expectedAccount: nil)
+        XCTAssertTrue(deactivated)
+        let restarted = await activeStore(h)
+        let restored = await restarted.getProfileToken()
+        XCTAssertNil(restored)
+    }
+
+    func testCurrentUserBindsInheritedLegacyDefaultAfterSameAccountLogin() async throws {
+        let h = try harness()
+        let epoch = UUID()
+        let legacy = CanonicalAccountSession(version: 1, signedOut: false, origin: origin,
+            accountID: nil, epoch: epoch, accessToken: "legacy-access-A", refreshToken: "legacy-refresh-A")
+        try seedLegacyCanonical(legacy, in: h)
+        let verified = canonical("account-A")
+        try h.sessions.save(verified, serverID: serverID)
+        XCTAssertTrue(h.profile.delete(TVAccountSessionStorage.selectionKey(serverID)))
+        let store = await activeStore(h)
+        let stub = APIv2TestStub()
+        stub.reply(200, #"{"id":"account-A","username":"A","email":"a@example.test","role":"user","permissions":[],"download_allowed":true}"#)
+        let api = APIv2Client(http: HTTPClient(session: stub.makeSession(), tokenStore: store),
+            tokenStore: store, isUpdateRequired: { false })
+
+        let account = try await api.currentUser()
+
+        XCTAssertEqual(account.id, "account-A")
+        let bound = await store.captureDurableAccountAuth()
+        XCTAssertEqual(bound?.accountID, "account-A")
+        XCTAssertEqual(bound?.accountEpoch, epoch)
+        XCTAssertEqual(bound?.request.accessToken, "legacy-access-A")
+        XCTAssertEqual(try h.sessions.savedAccountIDs(for: serverID), ["account-A"])
+        let restarted = await activeStore(h)
+        let restored = await restarted.captureDurableAccountAuth()
+        XCTAssertEqual(restored?.accountEpoch, epoch)
+        XCTAssertEqual(restored?.request.accessToken, "legacy-access-A")
     }
 
     func testFailedSignOutAndServerRemovalPreserveRawLegacyAuthorityForRelaunch() async throws {
