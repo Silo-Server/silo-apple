@@ -1,5 +1,40 @@
 import Foundation
 
+/// Local identities survive a new player and sidecar registration order.
+enum OfflineSubtitleSelection: Codable, Hashable, Sendable {
+    case off
+    case embedded(streamIndex: Int)
+    case sidecar(filename: String)
+
+    static func capture(track: PlayerTrack?, subtitles: [SubtitleUrl]) -> Self? {
+        guard let track else { return .off }
+        guard !SubtitleTrackIdSpace.isAILive(track.trackId) else { return nil }
+        if track.isExternal {
+            guard let index = track.srcId,
+                  let subtitle = subtitles.first(where: { $0.index == index }),
+                  let url = URL(string: subtitle.url), url.isFileURL else { return nil }
+            return .sidecar(filename: url.lastPathComponent)
+        }
+        guard let index = track.ffIndex, index >= 0 else { return nil }
+        return .embedded(streamIndex: index)
+    }
+
+    func resolve(subtitles: [SubtitleUrl]) -> (embeddedIndex: Int?, sidecarId: Int64?) {
+        switch self {
+        case .off:
+            return (-1, nil)
+        case .embedded(let index):
+            return (index >= 0 ? index : nil, nil)
+        case .sidecar(let filename):
+            guard let subtitle = subtitles.first(where: {
+                guard let url = URL(string: $0.url), url.isFileURL else { return false }
+                return url.lastPathComponent == filename
+            }), subtitle.index >= 0 else { return (nil, nil) }
+            return (nil, SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: subtitle.index))
+        }
+    }
+}
+
 /// Failure modes for the local offline prepare. Terminal — there is no
 /// server to fall back to, so these surface through the player's standard
 /// error wall via `errorDescription`.
@@ -35,6 +70,8 @@ struct OfflinePreparedPlayback {
     /// The file is an MP4 the server remuxed or transcoded, not the source.
     /// Its container metadata needs `OfflinePreparedTrackInventory`.
     let isServerPreparedFile: Bool
+    let owner: DownloadManager.OfflinePlaybackOwner
+    let subtitleSelection: OfflineSubtitleSelection?
 }
 
 /// Synthesizes the same `PreparedPlayback` the online path produces, but
@@ -61,8 +98,14 @@ enum OfflinePlaybackBuilder {
         guard let record = manager.record(id: downloadId), record.isPlayableOffline else {
             throw OfflinePlaybackError.downloadNotFound
         }
+        guard let owner = manager.offlinePlaybackOwner(for: record) else {
+            throw OfflinePlaybackError.downloadNotFound
+        }
         guard let manifest = await manager.loadManifest(for: record) else {
             throw OfflinePlaybackError.manifestUnavailable
+        }
+        guard manager.isCurrentOfflinePlayback(owner) else {
+            throw OfflinePlaybackError.downloadNotFound
         }
         guard let mediaURL = manager.absoluteMediaURL(for: record),
               FileManager.default.fileExists(atPath: mediaURL.path) else {
@@ -88,7 +131,9 @@ enum OfflinePlaybackBuilder {
             downloadId: record.id,
             mediaItemId: leafId,
             posterFileURL: posterFileURL,
-            isServerPreparedFile: manifest.isServerPreparedFile
+            isServerPreparedFile: manifest.isServerPreparedFile,
+            owner: owner,
+            subtitleSelection: record.subtitleSelection
         )
     }
 

@@ -1006,6 +1006,7 @@ class PlayerViewModel {
     private struct OfflinePlaybackContext {
         let mediaItemId: String
         let isServerPreparedFile: Bool
+        let owner: DownloadManager.OfflinePlaybackOwner
     }
     private var offlinePlaybackContext: OfflinePlaybackContext?
     /// Mirrors the server's default watched threshold (90%) so an offline
@@ -4332,6 +4333,17 @@ class PlayerViewModel {
         }
     }
 
+    /// Restored local picks are explicit, so automatic device/profile
+    /// caption policy cannot replace them when the inventory arrives.
+    func restoreOfflineSubtitleSelection(_ selection: OfflineSubtitleSelection?, subtitles: [SubtitleUrl]) {
+        guard !hasExplicitSubtitleChoice, let selection else { return }
+        let restored = selection.resolve(subtitles: subtitles)
+        guard restored.embeddedIndex != nil || restored.sidecarId != nil else { return }
+        pendingSubtitleFfIndex = restored.embeddedIndex
+        pendingSidecarSubtitleTrackId = restored.sidecarId
+        hasExplicitSubtitleChoice = true
+    }
+
     private func reapplyAetherGain() {
         aetherPlaybackController.setVolume(userVolume)
         aetherPlaybackController.setMuted(userMuted)
@@ -5282,6 +5294,7 @@ class PlayerViewModel {
 
                 let prepared: PreparedPlayback
                 var preparedOfflineContext: OfflinePlaybackContext?
+                var preparedOfflineSubtitleSelection: OfflineSubtitleSelection?
                 var preparedOfflineArtworkURL: URL?
                 if let offlineDownloadId = request.offlineDownloadId {
                     // Fully local prepare from the stored record + manifest.
@@ -5295,8 +5308,10 @@ class PlayerViewModel {
                     )
                     preparedOfflineContext = OfflinePlaybackContext(
                         mediaItemId: offline.mediaItemId,
-                        isServerPreparedFile: offline.isServerPreparedFile
+                        isServerPreparedFile: offline.isServerPreparedFile,
+                        owner: offline.owner
                     )
+                    preparedOfflineSubtitleSelection = offline.subtitleSelection
                     preparedOfflineArtworkURL = offline.posterFileURL
                     prepared = offline.prepared
                 } else {
@@ -5327,6 +5342,9 @@ class PlayerViewModel {
                 )
                 if let preparedOfflineContext {
                     self.offlinePlaybackContext = preparedOfflineContext
+                    self.restoreOfflineSubtitleSelection(
+                        preparedOfflineSubtitleSelection, subtitles: prepared.session.subtitleUrls ?? []
+                    )
                 }
                 if let preparedOfflineArtworkURL {
                     self.nowPlaying.setArtworkURL(preparedOfflineArtworkURL)
@@ -7308,12 +7326,18 @@ class PlayerViewModel {
         TrackSelectionPersistence.saveAudio(prefKey: key, request: request)
     }
 
-    /// Best-effort write of an explicit subtitle pick (or explicit
-    /// "Off" when `track` is nil). Live AI translation tracks are
-    /// session-scoped and never persisted.
+    /// Remember an explicit subtitle pick (or Off): in the download's local
+    /// record for offline playback, otherwise in the server preference.
+    /// Live AI translation tracks are session-scoped and never persisted.
     private func persistSubtitleSelection(_ track: PlayerTrack?) {
-        guard let key = trackPrefPersistKey else { return }
         if let track, SubtitleTrackIdSpace.isAILive(track.trackId) { return }
+        if let offline = offlinePlaybackContext {
+            if let selection = OfflineSubtitleSelection.capture(track: track, subtitles: knownExternalSubtitles) {
+                DownloadManager.shared.saveOfflineSubtitleSelection(selection, owner: offline.owner)
+            }
+            return
+        }
+        guard let key = trackPrefPersistKey else { return }
         let showForced = currentWatchDetail?.effectiveShowForcedSubtitles
         let request: SubtitlePrefRequest
         if let track {
