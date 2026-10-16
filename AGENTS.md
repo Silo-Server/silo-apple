@@ -85,7 +85,9 @@ follow-up work.
   covers UI and UX changes and changes to which items appear or what they show,
   such as search results, home sections, recommendations, sorting, filtering,
   metadata, or artwork. Use before-and-after captures of the same screen with the
-  same data, and a short recording when motion, timing, or focus matters. Write
+  same data, and a short recording when motion, timing, or focus matters.
+  Capture each device the change can reach: iPhone, iPhone Duo (folded and
+  open), iPad, Mac, and Apple TV, or say why a device is unaffected. Write
   `Evidence: none, no user-visible change` only when that is true.
 - Attach evidence on GitHub under the PR body's Evidence heading, or publish it
   with `npx @silo-server/evidence publish <folder> --pr <number>` and put its

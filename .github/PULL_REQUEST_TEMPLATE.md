@@ -38,7 +38,7 @@ local paths, credentials, personal data, or private media details. -->
 | ------ | ----- |
 | | |
 
-Devices and build:
+Surface and build:
 <!-- Required when this change alters what a user sees: UI, or which items or what
 item details a screen shows, such as search results, home sections, recommendations,
 metadata, artwork, sorting, or filtering. See "Show visible changes" in
