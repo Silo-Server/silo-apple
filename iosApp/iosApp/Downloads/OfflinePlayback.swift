@@ -107,6 +107,8 @@ enum OfflinePlaybackBuilder {
         guard manager.isCurrentOfflinePlayback(owner) else {
             throw OfflinePlaybackError.downloadNotFound
         }
+        // A player may save a new choice while the manifest read suspends.
+        let subtitleSelection = manager.record(id: downloadId)?.subtitleSelection
         guard let mediaURL = manager.absoluteMediaURL(for: record),
               FileManager.default.fileExists(atPath: mediaURL.path) else {
             throw OfflinePlaybackError.mediaFileMissing
@@ -133,7 +135,7 @@ enum OfflinePlaybackBuilder {
             posterFileURL: posterFileURL,
             isServerPreparedFile: manifest.isServerPreparedFile,
             owner: owner,
-            subtitleSelection: record.subtitleSelection
+            subtitleSelection: subtitleSelection
         )
     }
 
