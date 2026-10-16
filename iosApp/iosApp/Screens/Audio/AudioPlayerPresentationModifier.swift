@@ -30,6 +30,10 @@ struct AudioPlayerPresentationModifier: ViewModifier {
             }
         )) {
             AudioFullPlayerView()
+                // The iPad app on a Mac doesn't pass the store into this
+                // sheet, even from a detail that has it, and the player
+                // traps reading it as it appears.
+                .environment(audioStore)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .presentationSizing(.page)

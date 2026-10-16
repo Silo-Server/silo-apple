@@ -2514,13 +2514,13 @@ struct MainTabView: View {
             item: itemDetailBinding(fillsWindow: false),
             onDismiss: { router.itemDetailPresentationDidDismiss() }
         ) { presentation in
-            ItemDetailSheet(presentation: presentation, router: router)
+            itemDetail(presentation)
         }
         .fullScreenCover(
             item: itemDetailBinding(fillsWindow: true),
             onDismiss: { router.itemDetailPresentationDidDismiss() }
         ) { presentation in
-            ItemDetailSheet(presentation: presentation, router: router)
+            itemDetail(presentation)
         }
         .onGeometryChange(for: Bool.self) { proxy in
             PhoneDetailHeroLayout.usesSplitLayout(pageSize: proxy.size, verticalSizeClass: vSize)
@@ -2602,6 +2602,14 @@ struct MainTabView: View {
             },
             set: { router.presentedItemDetail = $0 }
         )
+    }
+
+    /// Passes the audio store in explicitly. When the iPad app runs on a Mac,
+    /// presented content doesn't inherit it, and the detail's audio player
+    /// modifier traps reading it as the sheet appears.
+    private func itemDetail(_ presentation: AppRouter.ItemDetailPresentation) -> some View {
+        ItemDetailSheet(presentation: presentation, router: router)
+            .environment(audioStore)
     }
     #endif
 
