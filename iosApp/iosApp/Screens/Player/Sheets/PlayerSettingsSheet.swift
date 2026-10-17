@@ -118,6 +118,7 @@ struct PlayerSettingsSheet: View {
                         }
                         .contentShape(Rectangle())
                     }
+                    .disabled(viewModel.isQualitySwitching)
                 }
             } footer: {
                 if viewModel.isQualitySwitching {

@@ -370,13 +370,13 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                 let plan = makePlan(delivery: delivery, selectedAudioIndex: 1,
                     selectedSubtitleIndex: 0, subtitleMode: "render", subtitleInventory: inventory)
                 let adopted = retry.adoptingProtocolV3Intent(
-                    plan: plan, selectedVersion: version, activeQualityId: "720p"
+                    plan: plan, selectedVersion: version
                 )
                 retry = adopted.adoptingLocalProtocolV3SubtitleSelection(selection, plan: plan)
                 let pending = PlayerViewModel.protocolV3PendingTrackIntent(plan: plan, request: adopted)
                 XCTAssertEqual(pending.sidecarSubtitleTrackId, SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 0))
                 XCTAssertEqual(retry.preferredAudioTrackIndex, 1)
-                XCTAssertEqual(retry.preferredQualityOverride, "720p")
+                XCTAssertNil(retry.preferredQualityOverride, "an automatic quality is not adopted")
                 XCTAssertEqual(retry.preferredProtocolV3SubtitleIndex, selection == .off ? -1 : 3)
             }
             // Terminal cleanup no longer has a renderer override to consult.
@@ -424,7 +424,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             ]
         )
         let adopted = recovery.adoptingProtocolV3Intent(
-            plan: refreshedPlan, selectedVersion: version, activeQualityId: "1080p"
+            plan: refreshedPlan, selectedVersion: version
         )
         XCTAssertEqual(adopted.preferredSidecarSubtitleTrackId, localID)
         XCTAssertNil(adopted.preferredSubtitleTrackIndex)
@@ -496,7 +496,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         func retryStart(keepsExplicitOff: Bool) -> Int? {
             let retry = request.adoptingProtocolV3Intent(
-                plan: plan, selectedVersion: version, activeQualityId: "1080p",
+                plan: plan, selectedVersion: version,
                 keepsExplicitOff: keepsExplicitOff
             )
             return PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
@@ -518,7 +518,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
             preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
             startFromBeginning: false, preferredProtocolV3SubtitleIndex: 7
-        ).adoptingProtocolV3Intent(plan: plan, selectedVersion: version, activeQualityId: "1080p")
+        ).adoptingProtocolV3Intent(plan: plan, selectedVersion: version)
         let pending = PlayerViewModel.protocolV3PendingTrackIntent(plan: plan, request: original)
         XCTAssertEqual(pending.embeddedSubtitleIndex, -1)
         XCTAssertNil(pending.sidecarSubtitleTrackId)
@@ -566,8 +566,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         let adopted = request.adoptingProtocolV3Intent(
             plan: plan,
-            selectedVersion: makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac"),
-            activeQualityId: "1080p"
+            selectedVersion: makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
         )
         XCTAssertNil(adopted.preferredSidecarSubtitleTrackId)
         XCTAssertEqual(adopted.preferredSubtitleTrackIndex, 11)
@@ -1398,8 +1397,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
         let renewal = original.adoptingProtocolV3Intent(
             plan: plan,
-            selectedVersion: version,
-            activeQualityId: "720p"
+            selectedVersion: version
         )
 
         XCTAssertEqual(renewal.preferredFileId, 42)
@@ -1410,8 +1408,39 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             renewal.preferredSidecarSubtitleTrackId,
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2)
         )
-        XCTAssertEqual(renewal.preferredQualityOverride, "720p")
+        XCTAssertNil(renewal.preferredQualityOverride, "an automatic quality is not adopted")
         XCTAssertFalse(renewal.startFromBeginning)
+    }
+
+    /// A renewal keeps only the viewer's own pick. An automatic quality, such
+    /// as a cellular 1080p / 6 Mbps pair whose nearest local rung is larger,
+    /// is derived again from the pair, so recovery asks for the exact cap.
+    func testARenewalRecoversAnAutomaticPairWithItsExactCap() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
+        let pair = AppleQualityAxes(resolution: "1080p", bitrateKbps: 6_000)
+        let request = PlayerViewModel.LoadRequest(
+            contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false
+        )
+        // The connection-change replan sends the pair as stored.
+        XCTAssertEqual(ApplePlaybackQuality.protocolV3Selection(axes: pair).bandwidthCapKbps, 6_000)
+
+        let renewal = request.adoptingProtocolV3Intent(plan: makePlan(), selectedVersion: version)
+        XCTAssertNil(renewal.preferredQualityOverride)
+        let recovery = PlaybackSessionBridge.startQuality(
+            preferredQualityOverride: renewal.preferredQualityOverride,
+            settingsQuality: pair
+        )
+        XCTAssertEqual(recovery.bandwidthCapKbps, 6_000)
+
+        var picked = request
+        picked.preferredQualityOverride = "720p"
+        XCTAssertEqual(
+            picked.adoptingProtocolV3Intent(plan: makePlan(), selectedVersion: version).preferredQualityOverride,
+            "720p",
+            "the viewer's pick holds for reloads of the title"
+        )
     }
 
     func testAdoptedSubtitleOffPlanClearsDurableSubtitleIntent() {
@@ -1435,8 +1464,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
 
         let renewal = original.adoptingProtocolV3Intent(
             plan: makePlan(selectedAudioIndex: 3),
-            selectedVersion: version,
-            activeQualityId: "1080p"
+            selectedVersion: version
         )
 
         XCTAssertEqual(renewal.preferredFileId, 42)
@@ -1444,7 +1472,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(renewal.preferredSubtitleTrackIndex)
         XCTAssertNil(renewal.preferredProtocolV3SubtitleIndex)
         XCTAssertNil(renewal.preferredSidecarSubtitleTrackId)
-        XCTAssertEqual(renewal.preferredQualityOverride, "1080p")
+        XCTAssertNil(renewal.preferredQualityOverride, "an automatic quality is not adopted")
         XCTAssertFalse(renewal.startFromBeginning)
     }
 
@@ -2115,7 +2143,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let sidecar = model.armProtocolV3SubtitleIntentForSamePlanReload(
             plan: sidecarPlan,
             request: request.adoptingProtocolV3Intent(
-                plan: sidecarPlan, selectedVersion: version, activeQualityId: "1080p"
+                plan: sidecarPlan, selectedVersion: version
             )
         )
         XCTAssertEqual(sidecar?.sidecarSubtitleTrackId, SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 3))
@@ -2444,8 +2472,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         let adopted = original.adoptingProtocolV3Intent(
             plan: plan,
-            selectedVersion: version,
-            activeQualityId: "1080p"
+            selectedVersion: version
         )
         let intent = PlayerViewModel.protocolV3PendingTrackIntent(
             plan: plan,
@@ -2543,8 +2570,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
         let adopted = original.adoptingProtocolV3Intent(
             plan: makePlan(selectedAudioIndex: 1),
-            selectedVersion: version,
-            activeQualityId: "1080p"
+            selectedVersion: version
         )
 
         let intent = PlayerViewModel.protocolV3PendingTrackIntent(

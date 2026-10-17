@@ -422,6 +422,7 @@ struct MobilePlayerControls: View {
                         Text(option.labelWithBitrate)
                     }
                 }
+                .disabled(viewModel.isQualitySwitching)
             }
         } label: {
             HStack(spacing: 5) {

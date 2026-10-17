@@ -1211,10 +1211,14 @@ class PlayerViewModel {
         /// themselves. An off plan then stays an explicit Off (`-1`), so a
         /// retry or renewal starts fully off instead of letting the automatic
         /// policy pick a forced track for a server-side mode Off.
+        ///
+        /// The session's quality is not adopted. The request keeps only a
+        /// quality the viewer picked in the player; an automatic one is
+        /// derived again from the saved pair for the connection, with its
+        /// exact cap rather than the nearest local rung's.
         func adoptingProtocolV3Intent(
             plan: PlaybackV3Plan,
             selectedVersion: FileVersion,
-            activeQualityId: String,
             keepsExplicitOff: Bool = false
         ) -> LoadRequest {
             // Shared resolution order; see
@@ -1249,7 +1253,6 @@ class PlayerViewModel {
                 offlineDownloadId: offlineDownloadId
             )
             request.preferredProtocolV3SubtitleIndex = selectedSubtitleIndex
-            request.preferredQualityOverride = activeQualityId
             return request
         }
     }
@@ -1341,12 +1344,13 @@ class PlayerViewModel {
     private var foregroundExitObserverToken: NSObjectProtocol?
     /// Moves playback between the main and cellular quality pairs when the
     /// connection changes (iPhone and iPad). Set at the end of `init`.
-    @ObservationIgnored private var networkQuality: PlaybackNetworkQualityController?
+    /// Read by tests.
+    @ObservationIgnored private(set) var networkQuality: PlaybackNetworkQualityController?
     @ObservationIgnored private var networkPathObservation: PlaybackNetworkMonitor.ObserverToken?
     /// A fixed quality the viewer picked in the player, once it took effect,
     /// and the title it belongs to. Nil while playback follows the saved
     /// settings, which an Auto pick also means. See
-    /// ``recordViewerQualityPick(_:forContentId:)``.
+    /// ``recordViewerQualityPick(_:forContentId:onMeteredNetwork:)``.
     private var explicitQualityPick: (contentId: String?, qualityId: String)?
 
     /// Whether playback uses the cellular pair right now. A Watch Party keeps
@@ -1520,13 +1524,15 @@ class PlayerViewModel {
 
     /// The connection moved between metered and unmetered and the other
     /// quality pair applies. A Watch Party keeps the room's stream as it is.
-    private func replanForConnectionChange(
+    /// Internal for tests.
+    func replanForConnectionChange(
         _ axes: AppleQualityAxes
     ) -> PlaybackNetworkQualityController.ReplanOutcome {
-        guard !isDisposed, !isWatchPartyPlayback, activePreparedProtocolV3 != nil else {
-            return .unavailable
-        }
+        guard !isDisposed, !isWatchPartyPlayback else { return .unavailable }
+        // Checked before the session: a change that lands while the first
+        // load is still starting waits and is checked again, not dropped.
         guard protocolV3ReplanTask == nil, !isLoading, !isQualitySwitching else { return .busy }
+        guard activePreparedProtocolV3 != nil else { return .unavailable }
         let issued = attemptProtocolV3Replan(
             position: currentTime.isFinite ? max(0, currentTime) : 0,
             classification: "quality_changed",
@@ -2411,7 +2417,9 @@ class PlayerViewModel {
         qualityPreference: String? = nil,
         autoBandwidthCapKbps: Int? = nil,
         qualityAxes: AppleQualityAxes? = nil,
-        completesQualitySwitch: Bool = false,
+        // Set when this replan completes the viewer's quality switch: the
+        // side of the connection its request was built for.
+        qualitySwitchOnMeteredNetwork: Bool? = nil,
         requeueWhenBusy: Bool = false,
         trackTarget: QueuedProtocolV3TrackTarget? = nil,
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
@@ -2463,11 +2471,11 @@ class PlayerViewModel {
                 )
                 return true
             }
-            if completesQualitySwitch { isQualitySwitching = false }
+            if qualitySwitchOnMeteredNetwork != nil { isQualitySwitching = false }
             return false
         }
         guard let watchDetail = currentWatchDetail else {
-            if completesQualitySwitch { isQualitySwitching = false }
+            if qualitySwitchOnMeteredNetwork != nil { isQualitySwitching = false }
             return false
         }
         // This replan is about to read the current selection back. On the
@@ -2583,7 +2591,7 @@ class PlayerViewModel {
             defer {
                 self.protocolV3ReplanTask = nil
                 defer { self.publishWatchPartySnapshot() }
-                if completesQualitySwitch { self.isQualitySwitching = false }
+                if qualitySwitchOnMeteredNetwork != nil { self.isQualitySwitching = false }
                 // A handoff this replan began but never installed: the
                 // viewer's last seek still applies to whatever plays next.
                 if let seekTarget = self.reconnectCycle.finishHandoff() {
@@ -2736,11 +2744,12 @@ class PlayerViewModel {
                 }
                 self.markProtocolV3AetherLoadCommitted()
                 uncommittedPrepared = nil
-                if completesQualitySwitch {
+                if let onMeteredNetwork = qualitySwitchOnMeteredNetwork {
                     self.lastLoadRequest?.preferredQualityOverride = prepared.activeQualityId
                     self.recordViewerQualityPick(
                         prepared.activeQualityId,
-                        forContentId: self.lastLoadRequest?.contentId
+                        forContentId: self.lastLoadRequest?.contentId,
+                        onMeteredNetwork: onMeteredNetwork
                     )
                 }
                 if previousSessionId != prepared.session.sessionId {
@@ -3461,11 +3470,13 @@ class PlayerViewModel {
     /// for the rest of this title, reloads included, and never carries to the
     /// next episode. Auto is not such a pick: it follows the saved settings
     /// for the connection, so connection changes keep replanning.
-    /// Internal for tests.
-    func recordViewerQualityPick(_ qualityId: String, forContentId contentId: String?) {
+    /// `onMeteredNetwork` is the side of the connection the pick's request
+    /// was built for, not the live one: a change while it was in flight
+    /// must still read as a change. Internal for tests.
+    func recordViewerQualityPick(_ qualityId: String, forContentId contentId: String?, onMeteredNetwork: Bool) {
         if ApplePlaybackQuality.protocolV3QualityId(qualityId) == ApplePlaybackQuality.autoId {
             explicitQualityPick = nil
-            networkQuality?.viewerDidPickAuto(onMeteredNetwork: usesMeteredQuality)
+            networkQuality?.viewerDidPickAuto(onMeteredNetwork: onMeteredNetwork)
         } else {
             explicitQualityPick = (contentId, qualityId)
             networkQuality?.viewerDidPickQuality()
@@ -4042,8 +4053,7 @@ class PlayerViewModel {
            let v3 = prepared.protocolV3,
            let request = lastLoadRequest?.adoptingProtocolV3Intent(
                plan: v3.plan,
-               selectedVersion: prepared.selectedVersion,
-               activeQualityId: prepared.activeQualityId
+               selectedVersion: prepared.selectedVersion
            ) {
             armProtocolV3SubtitleIntentForSamePlanReload(plan: v3.plan, request: request)
         }
@@ -5124,7 +5134,6 @@ class PlayerViewModel {
         let adopted = lastLoadRequest.adoptingProtocolV3Intent(
             plan: protocolV3.plan,
             selectedVersion: prepared.selectedVersion,
-            activeQualityId: prepared.activeQualityId,
             keepsExplicitOff: hasExplicitSubtitleChoice
         )
         // A seek candidate still carries the server's frozen subtitle. Save
@@ -6241,6 +6250,9 @@ class PlayerViewModel {
     #endif
 
     func switchQuality(_ qualityId: String) {
+        // One switch at a time, from any surface or SiloRemote: a second
+        // request would race the first one's replan and clear its state.
+        guard !isQualitySwitching else { return }
         let resolvedQualityId = activePreparedProtocolV3 == nil
             ? ApplePlaybackQuality.normalizeStoredId(qualityId)
             : ApplePlaybackQuality.protocolV3QualityId(qualityId)
@@ -6249,6 +6261,9 @@ class PlayerViewModel {
         guard resolvedQualityId != highlightedQualityOptionId || qualitySwitchError != nil else { return }
 
         let target = currentTime.isFinite ? max(0, currentTime) : 0
+        // Read once: the request and the pick's record must agree on which
+        // side of the connection this switch was made for.
+        let onMeteredNetwork = usesMeteredQuality
         isQualitySwitching = true
         qualitySwitchError = nil
         showControls = true
@@ -6266,8 +6281,8 @@ class PlayerViewModel {
                 operation: PlaybackProtocolV3.ReplanOperation.qualityChange,
                 qualityPreference: resolvedQualityId,
                 // Auto keeps the saved cap for the connection.
-                autoBandwidthCapKbps: settings.playbackQualityAxes(onMeteredNetwork: usesMeteredQuality).bitrateKbps,
-                completesQualitySwitch: true
+                autoBandwidthCapKbps: settings.playbackQualityAxes(onMeteredNetwork: onMeteredNetwork).bitrateKbps,
+                qualitySwitchOnMeteredNetwork: onMeteredNetwork
             ) {
                 isQualitySwitching = false
                 qualitySwitchError = "Couldn't change quality right now. Try again."
@@ -6290,7 +6305,7 @@ class PlayerViewModel {
             serverSubtitlesDisabled: hasDisabledServerSubtitlesForResume
         )
         request.preferredQualityOverride = resolvedQualityId
-        recordViewerQualityPick(resolvedQualityId, forContentId: request.contentId)
+        recordViewerQualityPick(resolvedQualityId, forContentId: request.contentId, onMeteredNetwork: onMeteredNetwork)
         beginFreshLoad(
             request: request,
             progressPosition: target,
@@ -9675,6 +9690,7 @@ private enum SiloControlPlayerError: LocalizedError {
     case trackNotFound
     case invalidVideoGravity
     case invalidSubtitlePosition
+    case qualitySwitchInProgress
 
     var errorDescription: String? {
         switch self {
@@ -9698,6 +9714,8 @@ private enum SiloControlPlayerError: LocalizedError {
             return "Invalid aspect setting."
         case .invalidSubtitlePosition:
             return "Invalid subtitle position."
+        case .qualitySwitchInProgress:
+            return "A quality change is already in progress."
         }
     }
 }
@@ -9759,6 +9777,9 @@ extension PlayerViewModel {
         case .setQuality:
             guard let value = command.value else {
                 throw SiloControlPlayerError.missingValue
+            }
+            guard !isQualitySwitching else {
+                throw SiloControlPlayerError.qualitySwitchInProgress
             }
             switchQuality(value)
         case .setVideoGravity:

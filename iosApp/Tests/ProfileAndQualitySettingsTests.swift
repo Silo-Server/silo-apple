@@ -577,6 +577,42 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertTrue(harness.settings.hasDeviceOverride(.cellularQuality))
         XCTAssertEqual(harness.settings.deviceChangedSettingCount, 1, "the pair counts once")
     }
+
+    /// Discarding a held cellular change repaints the server's pair. While
+    /// the cellular read fails, the hold stays, as for any other key.
+    func testDiscardingAHeldCellularChangeRepaintsTheServersPair() async throws {
+        let harness = try PlayerSettingsHarness(retryPolicy: .init(maximumAutomaticRetries: 0))
+        let settings = harness.settings
+        let transport = harness.transport
+        transport.effective = Self.cellularRows(resolution: "480p", bitrateKbps: 1_500)
+        await settings.refreshFromServer()
+
+        transport.failNextWrites(100, with: .transport(description: "offline"))
+        settings.setCellularQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "1080p")))
+        await settings.flushPendingDeviceSettings()
+        try await waitUntil("the change is held") {
+            Set(settings.heldDeviceSettingKeys).isSuperset(of: SettingKey.playerCellularQualitySettings)
+        }
+        let edited = AppleQualityAxes(resolution: "1080p", bitrateKbps: 6_000)
+        XCTAssertEqual(settings.cellularQualityAxes, edited)
+
+        transport.onEffectiveValues = { [unowned transport] keys in
+            transport.effectiveError = keys == SettingKey.playerCellularQualitySettings
+                ? .transport(description: "offline")
+                : nil
+        }
+        let discardedOffline = await settings.discardHeldDeviceSettingChanges()
+        XCTAssertFalse(discardedOffline)
+        XCTAssertEqual(settings.cellularQualityAxes, edited)
+        XCTAssertFalse(settings.heldDeviceSettingKeys.isEmpty, "the change is still held, not silently dropped")
+
+        transport.onEffectiveValues = nil
+        transport.effectiveError = nil
+        let discardedOnline = await settings.discardHeldDeviceSettingChanges()
+        XCTAssertTrue(discardedOnline)
+        XCTAssertEqual(settings.cellularQualityAxes, AppleQualityAxes(resolution: "480p", bitrateKbps: 1_500))
+        try await waitUntil("the hold clears") { settings.heldDeviceSettingKeys.isEmpty }
+    }
     #endif
 
     // MARK: - Profile-scoped writes

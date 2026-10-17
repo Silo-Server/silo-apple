@@ -130,7 +130,7 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         let model = PlayerViewModel()
         defer { model.cleanup() }
 
-        model.recordViewerQualityPick("720p", forContentId: "episode-1")
+        model.recordViewerQualityPick("720p", forContentId: "episode-1", onMeteredNetwork: false)
         XCTAssertTrue(model.viewerQualityPickApplies(toContentId: "episode-1"), "a reload keeps it")
         XCTAssertFalse(model.viewerQualityPickApplies(toContentId: "episode-2"), "the next episode does not")
 
@@ -157,7 +157,7 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         XCTAssertEqual(start.preferredQuality, "720p")
         XCTAssertEqual(start.bandwidthCapKbps, 2_000)
 
-        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "episode-1")
+        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "episode-1", onMeteredNetwork: false)
         XCTAssertFalse(model.viewerQualityPickApplies(toContentId: "episode-1"), "Auto follows the saved settings")
         // A reload after an Auto pick keeps Auto with the saved cap.
         start = PlaybackSessionBridge.startQuality(
@@ -184,8 +184,20 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         model.activeQualityId = "720p"
         XCTAssertNil(model.highlightedQualityOptionId, "a saved 720p does not light the plan's 720p row")
 
-        model.recordViewerQualityPick("720p", forContentId: "episode-1")
+        model.recordViewerQualityPick("720p", forContentId: "episode-1", onMeteredNetwork: false)
         XCTAssertEqual(model.highlightedQualityOptionId, "720p", "the rung the viewer picked lights")
+    }
+
+    /// One quality switch at a time: a pick while one is in flight is ignored
+    /// rather than racing it and clearing its state. (Without the guard this
+    /// model, with no session, would end the switch with an error.)
+    func testAPickDuringAnInFlightSwitchIsIgnored() {
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        model.isQualitySwitching = true
+        model.switchQuality("720p")
+        XCTAssertTrue(model.isQualitySwitching, "the first switch still owns the state")
+        XCTAssertNil(model.qualitySwitchError)
     }
 
     // MARK: - Resume and hand-picked versions
@@ -327,6 +339,39 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
         controller.checkConnection()
         XCTAssertEqual(player.replans, [cellularPair])
+    }
+
+    /// An Auto pick records the side of the connection its request was built
+    /// for, not the live one, so a change while the request was out is still
+    /// corrected by the next check.
+    func testAnAutoPickRecordsTheConnectionItsRequestWasBuiltFor() throws {
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        let modelController = try XCTUnwrap(model.networkQuality)
+        modelController.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "movie", onMeteredNetwork: true)
+        XCTAssertEqual(modelController.sessionUsesMeteredPair, true)
+        model.recordViewerQualityPick(ApplePlaybackQuality.autoId, forContentId: "movie", onMeteredNetwork: false)
+        XCTAssertEqual(modelController.sessionUsesMeteredPair, false)
+
+        // Wi-Fi when the request was built, mobile data when it committed.
+        let (controller, player) = makeController()
+        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+        player.metered = true
+        controller.viewerDidPickAuto(onMeteredNetwork: false)
+        controller.checkConnection()
+        XCTAssertEqual(player.replans, [cellularPair])
+    }
+
+    /// A change that lands while the first load is still starting waits and
+    /// is checked again rather than being dropped.
+    func testAConnectionChangeDuringStartupWaits() {
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        model.isLoading = true
+        XCTAssertEqual(model.replanForConnectionChange(cellularPair), .busy)
+        model.isLoading = false
+        XCTAssertEqual(model.replanForConnectionChange(cellularPair), .unavailable, "no session to replan")
     }
 
     func testPickingAutoKeepsFollowingTheConnection() {

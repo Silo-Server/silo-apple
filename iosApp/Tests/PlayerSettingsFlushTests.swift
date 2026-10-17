@@ -1359,6 +1359,46 @@ final class PlayerSettingsFlushTests: XCTestCase {
     /// A refresh that fails for the scope whose revision is already known keeps
     /// that revision: going offline once must not hold every later subtitle
     /// appearance write until the next successful read.
+    /// A refresh whose scope changes while it awaits a read adopts nothing:
+    /// the answers belong to the scope the reads were sent for, and applying
+    /// them would cache them under the new one.
+    func testARefreshWhoseScopeChangesMidReadAdoptsNothing() async throws {
+        let suiteName = "settings-refresh-scope-switch-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let scope = LockedScopeValue("scope-a")
+        let transport = FakeSettingsTransport()
+        let settings = PlayerSettings(
+            defaults: defaults,
+            flusher: PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(10)),
+            scopeIdentifier: { scope.value }
+        )
+        let initialHDR = settings.hdrEnabled
+        transport.effective = [
+            .init(key: SettingKey.playerHdrEnabled.rawValue, value: .bool(!initialHDR), source: .scope(.profile)),
+        ]
+
+        var switchingBatches = [SettingKey.playerReadSettings]
+        #if os(iOS)
+        switchingBatches.append(SettingKey.playerCellularQualitySettings)
+        #endif
+        for batch in switchingBatches {
+            scope.value = "scope-a"
+            transport.onEffectiveValues = { keys in
+                if keys == batch { scope.value = "scope-b" }
+            }
+            let result = await settings.refreshFromServer()
+            XCTAssertEqual(result, .unavailable)
+            XCTAssertEqual(settings.hdrEnabled, initialHDR, "scope-a's answer is not painted over scope-b")
+        }
+
+        transport.onEffectiveValues = nil
+        scope.value = "scope-a"
+        let result = await settings.refreshFromServer()
+        XCTAssertEqual(result, .refreshed)
+        XCTAssertEqual(settings.hdrEnabled, !initialHDR)
+    }
+
     func testAFailedRefreshOfTheSameScopeKeepsTheKnownRevision() async throws {
         let harness = try PlayerSettingsHarness()
         await harness.settings.refreshFromServer()
@@ -2464,9 +2504,13 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         let scope: PlayerSettingWriteScope
     }
 
-    /// What the next `effectiveValues` call answers with.
+    /// What the next `effectiveValues` call answers with, filtered like the
+    /// server to the keys the call asked for.
     var effective: [EffectiveSettingValue] = []
     var effectiveError: SettingsAPIError?
+    /// Invoked as each `effectiveValues` call enters, before it answers: the
+    /// seam a test uses to change scope or fail one batch mid-refresh.
+    var onEffectiveValues: (([SettingKey]) -> Void)?
     /// The manifest revision `effectiveValues` reports. Defaults to this
     /// build's head so most tests simulate a fully current server; a test of
     /// revision-gated behavior overrides it to an older value.
@@ -2559,9 +2603,11 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     // MARK: PlayerSettingsTransport
 
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
+        onEffectiveValues?(keys)
         lock.lock()
         recordedEffectiveCalls.append(keys)
-        let settings = effective
+        let requested = Set(keys.map(\.rawValue))
+        let settings = effective.filter { requested.contains($0.key) }
         let error = effectiveError
         let reportedRevision = revision
         lock.unlock()

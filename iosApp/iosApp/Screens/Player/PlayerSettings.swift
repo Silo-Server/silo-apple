@@ -677,6 +677,10 @@ final class PlayerSettings {
     /// retry schedule and the held changes; see PlayerSettingsFlusher.swift.
     private let flusher: PlayerSettingsFlusher
 
+    /// The active settings scope, as ``currentScopeIdentifier`` reports it.
+    /// Injectable so tests can change scope while a read is in flight.
+    @ObservationIgnored private let scopeIdentifier: () -> String?
+
     /// Device settings whose latest change ran out of automatic retries. The
     /// change stays on this device and is not sent again until the user
     /// retries or discards it (owner decision D4).
@@ -692,10 +696,12 @@ final class PlayerSettings {
     /// network).
     init(
         defaults: UserDefaults = .standard,
-        flusher: PlayerSettingsFlusher = PlayerSettingsFlusher()
+        flusher: PlayerSettingsFlusher = PlayerSettingsFlusher(),
+        scopeIdentifier: @escaping () -> String? = { PlayerSettings.currentScopeIdentifier }
     ) {
         self.defaults = defaults
         self.flusher = flusher
+        self.scopeIdentifier = scopeIdentifier
         // No `register(defaults:)`: every read below supplies its own
         // fallback, and a registered value is indistinguishable from a stored
         // one. The legacy import must only see values this device stored.
@@ -825,7 +831,7 @@ final class PlayerSettings {
         // with a guess — including through the pending-writes flush below.
         // The same scope keeps its revision, so a refresh that fails offline
         // does not hold every later subtitle appearance write.
-        let refreshScopeID = Self.currentScopeIdentifier ?? ""
+        let refreshScopeID = scopeIdentifier() ?? ""
         if refreshScopeID != manifestRevisionScopeID {
             flusher.forgetManifestRevision()
             knownManifestRevision = nil
@@ -847,7 +853,7 @@ final class PlayerSettings {
         flusher.restorePendingWrites()
         await flushPendingDeviceSettings()
 
-        let scopeID = Self.currentScopeIdentifier
+        let scopeID = scopeIdentifier()
 
         do {
             let response = try await flusher.effectiveValues(keys: SettingKey.playerReadSettings)
@@ -855,13 +861,16 @@ final class PlayerSettings {
             // The read goes to whichever scope is active when it is sent. If the
             // scope changed while this refresh awaited, the revision belongs to
             // that other scope, so it is not kept for this one.
-            let scopeUnchanged = (Self.currentScopeIdentifier ?? "") == refreshScopeID
+            let scopeUnchanged = (scopeIdentifier() ?? "") == refreshScopeID
             manifestRevisionScopeID = knownManifestRevision != nil && scopeUnchanged ? refreshScopeID : nil
             var effectiveByKey = response.byKey
-            let cellular = await cellularQualityValues(atRevision: response.revision)
-            if (Self.currentScopeIdentifier ?? "") == refreshScopeID {
-                effectiveByKey.merge(cellular) { _, cellularValue in cellularValue }
-            }
+            // A failed cellular read keeps this device's values for the pair.
+            let cellular = (try? await cellularQualityValues(atRevision: response.revision)) ?? [:]
+            // Applying caches under the scope active now. If it changed while
+            // either read awaited, neither response belongs to it, so nothing
+            // is adopted; that scope's own refresh paints its values.
+            guard (scopeIdentifier() ?? "") == refreshScopeID else { return .unavailable }
+            effectiveByKey.merge(cellular) { _, cellularValue in cellularValue }
             applyEffectiveSettings(overlayingUnsettledValues(on: effectiveByKey))
 
             if let scopeID, !isMigrationComplete(for: scopeID) {
@@ -898,17 +907,17 @@ final class PlayerSettings {
     }
 
     /// The cellular pair's rows, or none when this platform does not offer the
-    /// pair, the server predates it, or the read fails. A missing row keeps
-    /// this device's own value (see ``applyEffectiveSettings(_:)``).
+    /// pair or the server predates it. A missing row keeps this device's own
+    /// value (see ``applyEffectiveSettings(_:)``). Read in its own batch, since
+    /// a server rejects a batch that names a key it does not know.
     @MainActor
-    private func cellularQualityValues(atRevision revision: Int) async -> [SettingKey: EffectiveSettingValue] {
+    private func cellularQualityValues(atRevision revision: Int) async throws -> [SettingKey: EffectiveSettingValue] {
         let keys = SettingKey.playerCellularQualitySettings
         guard Self.offersCellularQuality,
-              keys.allSatisfy({ $0.isServed(atRevision: revision) }),
-              let response = try? await flusher.effectiveValues(keys: keys) else {
+              keys.allSatisfy({ $0.isServed(atRevision: revision) }) else {
             return [:]
         }
-        return response.byKey.filter { keys.contains($0.key) }
+        return try await flusher.effectiveValues(keys: keys).byKey.filter { keys.contains($0.key) }
     }
 
     /// Set the quality from a shared preset; the settings screens set each
@@ -1142,7 +1151,7 @@ final class PlayerSettings {
         }
         // A first refresh for this scope must not import these keys straight
         // back as device values.
-        if let scopeID = Self.currentScopeIdentifier {
+        if let scopeID = scopeIdentifier() {
             retireMigration(of: cleared, for: scopeID)
         }
         enqueueDeviceClear(.subtitleAppearance)
@@ -1169,7 +1178,7 @@ final class PlayerSettings {
     private func clearLeftoverDeviceSubtitleOffsetIfNeeded(scopeID: String) async -> Bool {
         let doneKey = Self.leftoverSubtitleOffsetClearKey(for: scopeID)
         guard !defaults.bool(forKey: doneKey),
-              (Self.currentScopeIdentifier ?? "") == scopeID,
+              (scopeIdentifier() ?? "") == scopeID,
               manifestRevisionScopeID == scopeID,
               let knownManifestRevision,
               SettingKey.subtitleSyncMs.acceptsProfileScope(atRevision: knownManifestRevision) else {
@@ -1177,7 +1186,7 @@ final class PlayerSettings {
         }
         // The one-time import may still push this device's legacy values;
         // decide after it has run.
-        if let currentScope = Self.currentScopeIdentifier, !isMigrationComplete(for: currentScope) {
+        if let currentScope = scopeIdentifier(), !isMigrationComplete(for: currentScope) {
             return false
         }
         // A timing write still owed can be an older build's device offset
@@ -1264,7 +1273,7 @@ final class PlayerSettings {
         // one-time import would then push the cached value of the very key
         // just cleared straight back as a device override, so these keys are
         // retired from it. The rest of the scope's import stays pending.
-        if let scopeID = Self.currentScopeIdentifier {
+        if let scopeID = scopeIdentifier() {
             retireMigration(of: setting.keys, for: scopeID)
         }
         for key in setting.keys {
@@ -1304,7 +1313,7 @@ final class PlayerSettings {
         deviceOverriddenKeys.remove(key)
         // An unfinished one-time import must not later bring back this
         // device's older cached value as a device value over this edit.
-        if let scopeID = Self.currentScopeIdentifier {
+        if let scopeID = scopeIdentifier() {
             retireMigration(of: [key], for: scopeID)
         }
         flusher.enqueue(key, value: value, scope: .profile, clearingDeviceValue: true)
@@ -1339,7 +1348,7 @@ final class PlayerSettings {
 
     @MainActor
     func resetAllDeviceSettings() async {
-        let resetScopeID = Self.currentScopeIdentifier
+        let resetScopeID = scopeIdentifier()
         // The device-local preferences have no canonical row to delete, so the
         // DELETE loop below cannot reach them and the refresh that follows
         // re-adopts whatever this device still has cached. Restore them here
@@ -1371,7 +1380,7 @@ final class PlayerSettings {
             // not repaint a different profile's live state. An ordinary
             // offline failure keeps the cached values instead.
             cacheContractDefaults(for: resetScopeID)
-            if Self.currentScopeIdentifier == resetScopeID {
+            if scopeIdentifier() == resetScopeID {
                 applyCachedSettingsForCurrentScope()
             }
         }
@@ -1422,15 +1431,20 @@ final class PlayerSettings {
     /// a held key on this device is the discarded value itself, so dropping
     /// the hold would leave playback using that value with nothing saying it
     /// is unsaved. The hold stays until the server can be reached. Returns
-    /// false when the discard did not happen for that reason.
+    /// false when the discard did not happen for that reason. The cellular
+    /// pair is read too, where the server has it, so a discarded cellular
+    /// edit is repainted like any other.
     @discardableResult
     @MainActor
     func discardHeldDeviceSettingChanges() async -> Bool {
         do {
             let response = try await flusher.effectiveValues(keys: SettingKey.playerReadSettings)
             knownManifestRevision = flusher.knownManifestRevision
+            let cellular = try await cellularQualityValues(atRevision: response.revision)
             flusher.discardHeldChanges()
-            applyEffectiveSettings(overlayingUnsettledValues(on: response.byKey))
+            applyEffectiveSettings(overlayingUnsettledValues(
+                on: response.byKey.merging(cellular) { _, cellularValue in cellularValue }
+            ))
             return true
         } catch SettingsAPIError.serverUpgradeRequired {
             // The server stores no settings for this device at all, so the
