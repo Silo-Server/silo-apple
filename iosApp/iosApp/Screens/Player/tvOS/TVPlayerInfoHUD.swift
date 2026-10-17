@@ -494,8 +494,8 @@ private struct HUDSettingRow: View {
     let label: String
     let value: String
     /// Optional secondary line under the label. Used to explain a disabled
-    /// row ("Not set up on this server") — the trailing `value` slot is only
-    /// ~165pt wide at 22pt semibold, which truncates any real sentence.
+    /// row — the trailing `value` slot is only ~165pt wide at 22pt semibold,
+    /// which truncates any real sentence.
     var detail: String? = nil
     var colorHex: String? = nil
     var systemImage: String? = nil
@@ -1699,8 +1699,8 @@ private struct SubtitlesPane: View {
     }
 
     /// Restore focus to the "Search Subtitles…" row — unless the provider
-    /// probe answered "unavailable" while the menu was open, which swaps that
-    /// row for the disabled variant that carries no `.focused(...)` binding.
+    /// probe answered "unavailable" while the menu was open, which removes
+    /// that row.
     /// Returning focus to an unreachable target would leave the pane with
     /// nothing focused, so fall back to the Tracks column's "Off" row, which
     /// is always present (docs/tvos-focus.md).
@@ -1937,41 +1937,16 @@ private struct SubtitlesPane: View {
                 .focused($focusedOption, equals: .translate)
                 .id(Option.translate)
             }
-            if viewModel.subtitleSearchVisible {
-                // Two mutually-exclusive variants rather than one row with
-                // modifiers applied conditionally: a non-focusable row must
-                // not carry a `.focused(...)` binding (same idiom as
-                // `TVGeneralSettingsView.presetRow`), or the focus engine
-                // holds a binding for a target it can never reach.
-                //
-                // The disabled variant also needs the explicit `.opacity`:
-                // `HUDSettingRowLabel` derives every color from
-                // `@Environment(\.isFocused)`, so `.disabled(true)` alone
-                // would render pixel-identical to an enabled unfocused row.
-                // Same treatment `HUDTrackRow` uses for its disabled rows.
-                if let reason = viewModel.subtitleSearchUnavailableReason {
-                    HUDSettingRow(
-                        label: "Search Subtitles…",
-                        value: "",
-                        detail: reason,
-                        systemImage: "magnifyingglass",
-                        action: {}
-                    )
-                    .disabled(true)
-                    .opacity(0.35)
-                    .accessibilityHint(reason)
-                    .id(Option.search)
-                } else {
-                    HUDSettingRow(
-                        label: "Search Subtitles…",
-                        value: "",
-                        systemImage: "magnifyingglass"
-                    ) {
-                        showSubtitleSearchMenu = true
-                    }
-                    .focused($focusedOption, equals: .search)
-                    .id(Option.search)
+            if viewModel.subtitleSearchEnabled {
+                HUDSettingRow(
+                    label: "Search Subtitles…",
+                    value: "",
+                    systemImage: "magnifyingglass"
+                ) {
+                    showSubtitleSearchMenu = true
                 }
+                .focused($focusedOption, equals: .search)
+                .id(Option.search)
             }
             timingRows
             if viewModel.backendCapabilities.supportsSubtitleDelay {

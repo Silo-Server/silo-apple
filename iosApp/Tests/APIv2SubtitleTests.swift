@@ -917,6 +917,27 @@ final class APIv2SubtitleTests: XCTestCase {
         XCTAssertTrue(store.isAvailable)
     }
 
+    /// Overlapping probes (the subtitle panel closed and reopened while one
+    /// was pending): an older answer that lands last must not overwrite the
+    /// newer one.
+    @MainActor
+    func testProviderStoreKeepsTheNewestAnswerWhenProbesOverlap() async throws {
+        let (api, _) = try await client()
+        let store = SubtitleProvidersStore(api: SiloAI(v2: api))
+        stub.sequence([
+            .json(200, #"{"schema_version":1,"enabled":false,"providers":[],"revision":"r","state":"not_configured","allowed":true}"#),
+            .json(200, #"{"schema_version":1,"enabled":true,"providers":["subdl"],"revision":"s","state":"available","allowed":true}"#),
+        ])
+        stub.hold()
+        let older = Task { await store.refresh() }
+        await stub.waitUntilHeld()
+        await store.refresh()
+        XCTAssertTrue(store.isAvailable)
+        stub.release()
+        await older.value
+        XCTAssertTrue(store.isAvailable)
+    }
+
     // MARK: Search and download
 
     func testSearchPostsTheV2BodyOnce() async throws {

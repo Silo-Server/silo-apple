@@ -34,12 +34,15 @@ struct TrackSelectionSheet: View {
                     }
                 }
 
-                if aiSubtitlesAvailable || viewModel.subtitleSearchVisible {
+                if aiSubtitlesAvailable || viewModel.subtitleSearchEnabled {
                     subtitleToolsSection
                 }
             }
             .listStyle(.insetGrouped)
-            .onAppear { viewModel.refreshSubtitleSync() }
+            .onAppear {
+                viewModel.refreshSubtitleSync()
+                viewModel.refreshSubtitleProviders()
+            }
             .navigationTitle("Audio & Subtitles")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -208,20 +211,12 @@ struct TrackSelectionSheet: View {
                 }
             }
 
-            if viewModel.subtitleSearchVisible {
+            if viewModel.subtitleSearchEnabled {
                 Button {
                     showSubtitleSearchMenu = true
                 } label: {
-                    Label {
-                        Text("Search Subtitles…")
-                        if let reason = viewModel.subtitleSearchUnavailableReason {
-                            Text(reason)
-                        }
-                    } icon: {
-                        Image(systemName: "magnifyingglass")
-                    }
+                    Label("Search Subtitles…", systemImage: "magnifyingglass")
                 }
-                .disabled(!viewModel.subtitleSearchEnabled)
             }
         }
     }

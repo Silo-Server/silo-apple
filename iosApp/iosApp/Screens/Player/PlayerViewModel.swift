@@ -7542,40 +7542,31 @@ class PlayerViewModel {
 
     // MARK: - Subtitle provider search (synchronous, no job machinery)
 
-    /// **Visibility** predicate for the "Search Subtitles…" entry row: an
-    /// active playback session (the synthesized stream URL is session-scoped),
-    /// and a known media file.
-    /// False for offline/local playback, where the row is meaningless and is
-    /// hidden outright.
-    ///
-    /// This is the client-side half of the gate — it says nothing about
-    /// whether the *server* can actually service a search. See
+    /// Client-side half of the "Search Subtitles…" gate: an active playback
+    /// session (the synthesized stream URL is session-scoped) and a known
+    /// media file. False for offline/local playback. It says nothing about
+    /// whether the *server* can service a search; entry points use
     /// ``subtitleSearchEnabled``.
     var subtitleSearchVisible: Bool {
         activePlaybackSessionId != nil
             && currentSelectedVersion?.fileId != nil
     }
 
-    /// **Enablement** predicate: visible *and* the server actually has
-    /// external subtitle providers configured.
+    /// Whether "Search Subtitles…" is offered: visible *and* the server has
+    /// external subtitle providers configured. Every entry point shows the
+    /// row only when this is true, so a server without providers never shows
+    /// a search that cannot return anything.
     ///
-    /// The split exists because a server with no providers answers a search
-    /// with an empty result set — so without this the user picks a
-    /// language, waits out the 20–30s provider fan-out, and gets "No subtitles
-    /// found", which reads as a broken feature rather than an unconfigured
-    /// one. The row instead renders disabled with
-    /// ``subtitleSearchUnavailableReason``.
-    ///
-    /// ``SubtitleProvidersStore/isAvailable`` stays enabled until the
-    /// provider-status probe answers; a failed probe keeps the row enabled.
+    /// ``SubtitleProvidersStore/isAvailable`` stays true until the
+    /// provider-status probe answers; a failed probe keeps search offered for
+    /// servers that predate the probe.
     var subtitleSearchEnabled: Bool {
         subtitleSearchVisible && SubtitleProvidersStore.shared.isAvailable
     }
 
-    /// Why the visible "Search Subtitles…" row is disabled, or `nil` when it
-    /// is enabled (or not shown at all). Rendered in the row's value slot on
-    /// tvOS and as the menu-item subtitle on iOS, so the disabled state is
-    /// self-explaining rather than a mystery grey row.
+    /// Why search stopped being available, or `nil` while it is. An open
+    /// search menu shows it when the provider probe answers "unavailable"
+    /// after the menu opened.
     var subtitleSearchUnavailableReason: String? {
         guard subtitleSearchVisible, !subtitleSearchEnabled else { return nil }
         return "Not set up on this server"
@@ -7688,6 +7679,14 @@ class PlayerViewModel {
     /// Points the sync model at the playing file and re-reads its syncable
     /// subtitles. Called when a subtitle menu opens, so a job that finished
     /// meanwhile shows its result.
+    /// Re-reads whether the server has subtitle providers, so a provider an
+    /// administrator added or removed while the app was open shows or hides
+    /// "Search Subtitles…" the next time the subtitle controls open.
+    func refreshSubtitleProviders() {
+        guard offlinePlaybackContext == nil else { return }
+        Task { await SubtitleProvidersStore.shared.refresh() }
+    }
+
     func refreshSubtitleSync() {
         updateSubtitleSyncActiveTrack()
         guard offlinePlaybackContext == nil,
@@ -8180,6 +8179,7 @@ class PlayerViewModel {
         }
         pinControlsVisible()
         isHUDPresented = true
+        refreshSubtitleProviders()
     }
 
     #if os(tvOS)
