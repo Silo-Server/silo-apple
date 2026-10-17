@@ -510,7 +510,8 @@ struct TVSettingsView: View {
             TVGeneralSettingsPane(
                 activeProfile: viewModel.activeProfile,
                 detailFocus: $detailFocus,
-                changePairedProfile: router.switchProfile
+                // With two or more users this goes through Choose a User.
+                changePairedProfile: { Task { await router.users.changePairedProfile(router: router) } }
             )
         case .playback:
             TVPlaybackSettingsPane(

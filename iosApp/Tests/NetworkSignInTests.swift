@@ -195,7 +195,8 @@ final class NetworkSignInTests: XCTestCase {
         let sent = "/media" + Self.apiPath
         stub.reply(path: sent, 200, fixture("sign_in_with_network_identity_ok"))
 
-        try await auth.signInWithNetworkIdentity(Self.network(path: "/elsewhere/api/v2/auth/network/5/sign-in"))
+        try await auth.commitOutsideUserFlow(
+            auth.signInWithNetworkIdentity(Self.network(path: "/elsewhere/api/v2/auth/network/5/sign-in")))
 
         XCTAssertEqual(stub.requestedPaths, [sent], "one dispatch, on the saved base")
         let request = try XCTUnwrap(stub.requests.first)
@@ -229,7 +230,7 @@ final class NetworkSignInTests: XCTestCase {
             stub.reply(path: HTTPClient.refreshPath, 200, #"{"access_token":"new","refresh_token":"new-ref","expires_in":3600}"#)
             stub.reply(path: Self.apiPath, status, body)
             do {
-                try await auth.signInWithNetworkIdentity(Self.network())
+                _ = try await auth.signInWithNetworkIdentity(Self.network())
                 XCTFail("\(status): signed in")
             } catch APIv2Error.problem(let problem) {
                 XCTAssertEqual(problem.status, status)
@@ -244,7 +245,7 @@ final class NetworkSignInTests: XCTestCase {
         // A provider whose path has another shape sends nothing.
         stub.reset()
         do {
-            try await auth.signInWithNetworkIdentity(Self.network(path: "https://evil.example" + Self.apiPath))
+            _ = try await auth.signInWithNetworkIdentity(Self.network(path: "https://evil.example" + Self.apiPath))
             XCTFail("signed in through another origin")
         } catch HTTPError.invalidURL {}
         XCTAssertTrue(stub.requests.isEmpty)

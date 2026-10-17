@@ -70,6 +70,8 @@ enum StartupContentPrefetcher {
 
     static func fetchProfiles() async throws -> [UserProfile] {
         let generation = profilesGeneration
+        // The sign-in the list is read for, so user cards cache it there.
+        let signIn = await TokenStore.shared.currentSignInKey()
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("profiles", isOriginator: !profiles.isInFlight)
         #endif
@@ -82,6 +84,7 @@ enum StartupContentPrefetcher {
             probe.finish(error: nil)
             #endif
             ResponseCache.shared.set(result, for: CacheKey.profiles)
+            await AuthService.shared.updateSignInDisplayCache(result, for: signIn)
             await AuthService.shared.reconcileAvailableProfiles(result)
             prefetchProfileArtwork(for: result)
             return result
@@ -612,7 +615,8 @@ enum StartupContentPrefetcher {
             prefetchProfiles()
         case .needsProfile:
             prefetchProfiles()
-        case .loading, .needsServerSetup, .needsLogin, .serverRecovery:
+        case .loading, .needsServerSetup, .needsLogin, .serverRecovery,
+             .needsUser, .needsServer, .needsSignInTarget:
             break
         }
     }

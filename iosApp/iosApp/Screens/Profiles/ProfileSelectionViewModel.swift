@@ -48,12 +48,26 @@ class ProfileSelectionViewModel {
         }
     }
 
-    /// The signed-in account's username, shown under the title. Nil until
-    /// `loadAccount` finishes, or when the read fails.
+    /// The signed-in account's username, shown under the title before Silo
+    /// users exist. Nil until `loadAccount` finishes, or when the read fails.
     private(set) var accountName: String?
 
-    func loadAccount() async {
+    /// The profile remembered for this sign-in ("Last used").
+    private(set) var rememberedProfileID: String?
+
+    /// Reads the account, which also records its username on the saved
+    /// sign-in, then the users directory the account line names.
+    func loadAccount(users: SiloUserCoordinator) async {
+        async let remembered = auth.rememberedProfileForCurrentSelection()
         accountName = try? await SiloAPI.shared.currentUser().username
+        rememberedProfileID = await remembered?.profileID
+        await users.reloadDirectory()
+    }
+
+    /// "Signed in as alex", plus the server when the user has more than one
+    /// (spec §5.1).
+    func accountLine(users: SiloUserCoordinator) -> String? {
+        users.accountLine(fallbackUsername: accountName)
     }
 
     var primaryProfile: UserProfile? {

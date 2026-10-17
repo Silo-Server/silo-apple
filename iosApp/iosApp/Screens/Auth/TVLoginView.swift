@@ -22,10 +22,16 @@ struct TVLoginView: View {
     init(router: AppRouter) {
         self.router = router
         route = router.authState
+        _loginVM = State(initialValue: LoginViewModel(context: router.signInContext))
+        // An approval is placed in the running sign-in (`SiloUserCoordinator`);
+        // the screen moves on once "Signed in as …" has shown.
+        _qrVM = State(initialValue: QRLoginViewModel(completeSignIn: { pending in
+            _ = try await router.users.completeSignIn(pending, router: router, routesWhenOpened: false)
+        }))
     }
 
-    @State private var loginVM = LoginViewModel()
-    @State private var qrVM = QRLoginViewModel()
+    @State private var loginVM: LoginViewModel
+    @State private var qrVM: QRLoginViewModel
     @State private var server = SignInServerModel()
     @State private var advertiser = TVPairingAdvertiser()
     @State private var receiver = ReceiverPairingCoordinator()
@@ -49,6 +55,8 @@ struct TVLoginView: View {
         case usePassword
         case stateAction
         case changeServer
+        case switchUser
+        case cancelSignIn
         case username
         case password
         case togglePassword
@@ -217,8 +225,32 @@ struct TVLoginView: View {
             Button("Change server") { changeServer() }
                 .buttonStyle(.marquee(.plain, fullWidth: false))
                 .focused($focusedField, equals: .changeServer)
+
+            signInContextButtons
         }
         .focusSection()
+    }
+
+    /// Sign in again offers Switch User; a sign-in started from a user or
+    /// server chooser offers Cancel. Plain for now: WP4 lays them out.
+    @ViewBuilder
+    private var signInContextButtons: some View {
+        if case .signInAgain = router.signInContext {
+            Button("Switch User") {
+                qrVM.stop()
+                Task { await router.users.switchUserFromSignIn(router: router) }
+            }
+            .buttonStyle(.marquee(.plain, fullWidth: false))
+            .focused($focusedField, equals: .switchUser)
+        }
+        if router.signInReturnPoint != nil {
+            Button("Cancel") {
+                qrVM.stop()
+                Task { await router.users.cancelSignIn(router: router) }
+            }
+            .buttonStyle(.marquee(.plain, fullWidth: false))
+            .focused($focusedField, equals: .cancelSignIn)
+        }
     }
 
     /// Whether "Sign in with a password" is offered: not on a server whose
@@ -487,10 +519,14 @@ struct TVLoginView: View {
                 networkSignInButton(provider)
                     .padding(.top, 40)
             }
-            Button("Change server") { changeServer() }
-                .buttonStyle(.marquee(.plain, fullWidth: false))
-                .focused($focusedField, equals: .changeServer)
-                .padding(.top, 30)
+            HStack(spacing: 22) {
+                Button("Change server") { changeServer() }
+                    .buttonStyle(.marquee(.plain, fullWidth: false))
+                    .focused($focusedField, equals: .changeServer)
+                signInContextButtons
+            }
+            .focusSection()
+            .padding(.top, 30)
         } card: {
             MarqueeTVCard {
                 MarqueeTVCardSymbol(systemImage: "network")
@@ -576,7 +612,8 @@ struct TVLoginView: View {
     private func goToProfiles() {
         // "Change server" during the approval pause has already left this
         // screen; don't pull the app back to profiles.
-        guard !navigatedAfterApproval, router.authState == route else { return }
+        // A question the sign-in raised moves on by itself once answered.
+        guard !navigatedAfterApproval, router.authState == route, router.signInPrompt == nil else { return }
         navigatedAfterApproval = true
         router.skipsSingleProfilePicker = true
         router.showProfileSelection()
@@ -584,7 +621,7 @@ struct TVLoginView: View {
 
     private func changeServer() {
         qrVM.stop()
-        router.resetToServerSetup()
+        Task { await router.users.changeSignInServer(router: router) }
     }
 
     /// "Continue as …": the same single flight as a password sign-in, so a

@@ -3030,7 +3030,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             profileId: nil,
             lastUsedAt: Date()
         ))
-        await registry.switchTo(serverId: serverRegistryID)
+        await registry.switchTo(serverId: serverRegistryID, launchSelectionFrom: .shared)
         try await signInSharedStore(
             accessToken: "global-self-hosted-access-token",
             refreshToken: "global-self-hosted-refresh-token"
@@ -3040,7 +3040,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         func cleanUp() async {
             if let previousActiveServerID,
                registry.entry(with: previousActiveServerID) != nil {
-                await registry.switchTo(serverId: previousActiveServerID)
+                await registry.switchTo(serverId: previousActiveServerID, launchSelectionFrom: .shared)
             }
             await registry.remove(serverId: serverRegistryID)
         }

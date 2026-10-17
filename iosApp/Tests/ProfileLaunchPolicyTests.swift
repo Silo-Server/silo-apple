@@ -238,25 +238,27 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         XCTAssertTrue(preferences.markBackgrounded(
             at: Date(timeIntervalSinceReferenceDate: 1_000)
         ))
-        XCTAssertTrue(preferences.markSelectionRequired(for: serverID))
+        let signIn = SignInKey.make(serverID, "12")
+        XCTAssertTrue(preferences.markSelectionRequired(for: signIn))
         preferences.remember(
             profileID: "profile-a",
             requiresPIN: true,
             accountEpoch: accountEpoch,
-            for: serverID
+            for: signIn,
+            legacyOwnerAccountID: nil
         )
 
         let restored = ProfileLaunchPreferences(defaults: defaults)
         XCTAssertEqual(restored.behavior, .askEveryLaunch)
         XCTAssertEqual(
-            restored.rememberedProfile(for: serverID),
+            restored.rememberedProfile(for: signIn, accountEpoch: accountEpoch),
             RememberedProfile(
                 profileID: "profile-a",
                 requiredPINAtSelection: true,
                 accountEpoch: accountEpoch
             )
         )
-        XCTAssertFalse(restored.state.selectionRequiredServerIDs.contains(serverID))
+        XCTAssertFalse(restored.state.isSelectionRequired(for: signIn, legacyOwnerAccountID: nil))
         XCTAssertNil(restored.state.backgroundedAt)
     }
 
@@ -309,20 +311,21 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         let accountEpoch = accountEpoch
 
         DispatchQueue.concurrentPerform(iterations: serverCount * 16) { index in
-            let serverID = "server-\((index / 2) % serverCount)"
+            let signIn = SignInKey.make("server-\((index / 2) % serverCount)", "12")
             if index.isMultiple(of: 2) {
                 preferences.remember(
                     profileID: "profile-\(index)",
                     requiresPIN: false,
                     accountEpoch: accountEpoch,
-                    for: serverID
+                    for: signIn,
+                    legacyOwnerAccountID: nil
                 )
             } else {
-                _ = preferences.rememberedProfile(for: serverID)
+                _ = preferences.rememberedProfile(for: signIn, accountEpoch: accountEpoch)
             }
         }
 
-        XCTAssertEqual(preferences.state.rememberedByServerID.count, serverCount)
+        XCTAssertEqual(preferences.state.rememberedBySignIn?.count, serverCount)
         XCTAssertEqual(
             ProfileLaunchPreferences(defaults: defaults).state,
             preferences.state
@@ -760,7 +763,7 @@ final class ProfileLaunchMigrationTests: XCTestCase {
             launchPreferences: preferences
         )
 
-        let remembered = try XCTUnwrap(preferences.rememberedProfile(for: serverID))
+        let remembered = try XCTUnwrap(preferences.legacyRememberedProfile(forServer: serverID))
         XCTAssertEqual(remembered.profileID, "profile-a")
         XCTAssertTrue(remembered.requiredPINAtSelection)
         XCTAssertNil(registry.entry(with: serverID)?.legacyProfileId)
@@ -854,7 +857,7 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         XCTAssertFalse(preferences.migrateLegacyProfile(
             profileID: "profile-a", requiresPIN: false, accountEpoch: accountEpoch, for: serverID
         ))
-        XCTAssertNil(preferences.rememberedProfile(for: serverID))
+        XCTAssertNil(preferences.legacyRememberedProfile(forServer: serverID))
         XCTAssertEqual(preferences.behavior, .askEveryLaunch)
         XCTAssertTrue(preferences.isRememberOfferPending)
     }
@@ -878,7 +881,7 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         XCTAssertEqual(preferences.behavior, .automatic)
         XCTAssertFalse(preferences.isRememberOfferPending)
         XCTAssertEqual(
-            preferences.resolution(for: serverID, accountEpoch: accountEpoch, hasStoredProfileToken: false),
+            preferences.legacyResolution(forServer: serverID, accountEpoch: accountEpoch, hasStoredProfileToken: false),
             .restore(RememberedProfile(profileID: "profile-a", requiredPINAtSelection: false, accountEpoch: accountEpoch))
         )
     }

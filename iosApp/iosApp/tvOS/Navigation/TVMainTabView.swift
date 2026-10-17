@@ -1434,6 +1434,8 @@ struct TVMainTabView: View {
             // tree entirely. Successful `connect()` flips authState to
             // `.needsLogin` and replaces this view tree.
             TVServerSetupView(router: router)
+        case .chooseUser, .chooseServer, .signInTarget, .manageUsers:
+            UserFlowDestination(route: route, router: router)
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloBackground()

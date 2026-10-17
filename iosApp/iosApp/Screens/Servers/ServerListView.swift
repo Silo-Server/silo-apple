@@ -93,7 +93,7 @@ struct ServerListView: View {
                 TVSettingsSectionHeader("CONNECTIONS")
 
                 Button {
-                    router.navigate(to: .serverSetup)
+                    Task { await router.users.startAddServer(router: router) }
                 } label: {
                     HStack(spacing: 16) {
                         Image(systemName: "plus")
@@ -188,7 +188,7 @@ struct ServerListView: View {
 
             Section {
                 Button {
-                    router.resetToServerSetup()
+                    Task { await router.users.startAddServer(router: router) }
                 } label: {
                     Label("Add Server", systemImage: "plus")
                         .foregroundColor(.siloOnSurface)
@@ -204,35 +204,7 @@ struct ServerListView: View {
         Button {
             switchTo(entry)
         } label: {
-            HStack(spacing: 12) {
-                Image(systemName: entry.id == registry.activeServerId
-                      ? "checkmark.circle.fill"
-                      : "server.rack")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(.siloOnSurface)
-                    .frame(width: 28)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.displayName)
-                        .font(.siloSubheadline)
-                        .foregroundColor(.siloOnSurface)
-                        .lineLimit(1)
-                    Text(entry.url)
-                        .font(.siloCaption)
-                        .foregroundColor(.siloSecondaryText)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if entry.id == registry.activeServerId, LocalRouteController.shared.isOnLocalNetwork {
-                        LocalRouteStatusLine()
-                            .font(.siloCaption)
-                            .foregroundColor(.siloSecondaryText)
-                    }
-                }
-                .multilineTextAlignment(.leading)
-                Spacer()
-            }
-            .contentShape(Rectangle())
+            ServerRowLabel(entry: entry, isActive: entry.id == registry.activeServerId)
         }
         .buttonStyle(.plain)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -245,6 +217,8 @@ struct ServerListView: View {
     }
     #endif
 
+    /// A server the current user has opens; one it doesn't starts Add
+    /// Server for it (`SiloUserCoordinator.beginSignIn(forServer:)`).
     private func switchTo(_ entry: ServerEntry) {
         guard entry.id != registry.activeServerId else {
             refreshAuthState()
@@ -252,100 +226,31 @@ struct ServerListView: View {
         }
         isResolvingServer = true
         Task {
-            guard await registry.switchTo(
-                serverId: entry.id,
-                resolveDestinationProfile: true
-            ) else {
-                isResolvingServer = false
-                return
-            }
-            let state = await RestoredSessionAuthResolver.resolveValidated()
+            await router.users.beginSignIn(forServer: entry.id, router: router)
             isResolvingServer = false
-            router.resetAfterServerResolution(to: state)
         }
     }
 
+    /// Removes the server and everyone's sign-in on it, then follows the
+    /// launch rules when it was the one in use (spec §5.6, §6.2).
     private func remove(_ entry: ServerEntry) {
         guard !isResolvingServer else { return }
         isResolvingServer = true
-        let wasActive = entry.id == registry.activeServerId
         Task {
-            let removed = await registry.remove(serverId: entry.id, resolveFallbackProfile: wasActive)
+            await router.users.removeServer(entry.id, router: router)
             isResolvingServer = false
             removeTarget = nil
-            guard removed else {
-                router.accountActionError = "Silo couldn't remove the saved server. Please try again."
-                if wasActive { refreshAuthState() }
-                return
-            }
-            if wasActive { refreshAuthState() }
         }
     }
 
-    /// Recompute auth state for the (possibly new) active server and
-    /// drop any in-tab navigation that belonged to the previous server.
+    /// Recompute auth state for the active server and drop any in-tab
+    /// navigation that belonged to it.
     private func refreshAuthState() {
         router.popToRoot()
         isResolvingServer = true
         Task {
-            let state = await RestoredSessionAuthResolver.resolveValidated()
+            await router.users.reopenCurrent(router: router)
             isResolvingServer = false
-            router.resetAfterServerResolution(to: state)
         }
-    }
-}
-
-#if os(tvOS)
-private struct TVServerSummaryLabel: View {
-    let entry: ServerEntry
-    let isActive: Bool
-
-    var body: some View {
-        HStack(spacing: 18) {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "server.rack")
-                .font(.system(size: 24, weight: .medium))
-                .frame(width: 34)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(entry.displayName)
-                    .font(.system(size: 26, weight: .medium))
-                    .lineLimit(1)
-                Text(entry.url)
-                    .font(.system(size: 19))
-                    .opacity(0.62)
-                    .lineLimit(1)
-                if isActive, LocalRouteController.shared.isOnLocalNetwork {
-                    LocalRouteStatusLine()
-                        .font(.system(size: 19))
-                        .opacity(0.62)
-                }
-            }
-
-            Spacer(minLength: 16)
-
-            if isActive {
-                Text("Active")
-                    .font(.system(size: 19, weight: .semibold))
-                    .opacity(0.72)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityValue(isActive ? "Active" : "Saved")
-    }
-}
-#endif
-
-/// "Connected on your local network" under the active server while its
-/// requests use the local route; the icon sits inline so the text starts
-/// where the address above it does.
-private struct LocalRouteStatusLine: View {
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "house.fill")
-                .imageScale(.small)
-            Text(LocalRouteController.statusText)
-        }
-        .accessibilityElement(children: .combine)
     }
 }

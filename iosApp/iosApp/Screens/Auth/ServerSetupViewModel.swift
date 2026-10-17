@@ -46,11 +46,15 @@ class ServerSetupViewModel {
     /// Resolves a bare overlay machine name (`silo`) to its HTTPS origin.
     typealias BareNameResolver = @Sendable (String) async -> String?
 
+    /// Continues to sign-in on the server a connect just made active. False
+    /// when the sign-in screen could not open; the error is the router's.
+    typealias SignInStarter = @MainActor (AppRouter) async -> Bool
+
     private let checkServer: ServerCheck
     private let resolveBareName: BareNameResolver
-    /// Whether the now-active server already has a signed-in session, as when
-    /// a saved server is picked from Recent.
-    private let hasSession: @Sendable () -> Bool
+    /// Every server added continues to its sign-in, even one the user
+    /// already has: placement then refreshes it or asks (spec §5.4.1).
+    private let beginSignIn: SignInStarter
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ServerSetup"
@@ -58,7 +62,13 @@ class ServerSetupViewModel {
 
     init(
         checkServer: @escaping ServerCheck = { try await AuthService.shared.checkServer(url: $0) },
-        hasSession: @escaping @Sendable () -> Bool = { AuthService.shared.isLoggedIn },
+        beginSignIn: @escaping SignInStarter = { router in
+            await router.users.beginSignIn(
+                serverID: ServerRegistry.shared.activeServerId ?? "",
+                context: router.signInContext,
+                router: router
+            )
+        },
         // Typed, so it may wait as long as any address probe: a cold or
         // relayed tailnet path can take longer than background discovery's limit.
         resolveBareName: @escaping BareNameResolver = {
@@ -66,7 +76,7 @@ class ServerSetupViewModel {
         }
     ) {
         self.checkServer = checkServer
-        self.hasSession = hasSession
+        self.beginSignIn = beginSignIn
         self.resolveBareName = resolveBareName
     }
 
@@ -235,20 +245,11 @@ class ServerSetupViewModel {
             attempted.append(candidate)
             do {
                 let status = try await checkServer(candidate)
+                // This view is also pushed onto other stacks (the server
+                // step, the login stack); the sign-in screen replaces them.
+                // When it can't open, the address stays on screen.
+                guard await beginSignIn(router) else { return }
                 connected = true
-                // This view is also pushed onto the login stack (Change
-                // Server, then Add Server) while `authState` is already
-                // `needsLogin`. Setting the same state is a no-op there, so
-                // the stack must be reset explicitly or the setup screen
-                // stays put after a successful connect.
-                router.popToRoot()
-                // A saved server that is still signed in goes straight to its
-                // profiles; only a server without a session needs sign-in.
-                if !status.needsSetup, hasSession() {
-                    router.showProfileSelection()
-                    return
-                }
-                router.authState = .needsLogin
                 if status.needsSetup {
                     router.navigate(to: .serverNeedsSetup)
                 }

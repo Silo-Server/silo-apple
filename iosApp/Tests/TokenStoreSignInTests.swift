@@ -755,18 +755,33 @@ private extension SignInPlacement {
     }
 }
 
-/// The interim rules in `AuthService` that keep a single-user device
-/// behaving as it did before users existed (plan §2.5): signing in again
-/// refreshes, signing in as someone else on a server replaces its sign-in,
-/// and a new server joins the current user.
-final class InterimSignInPlacementTests: XCTestCase {
+/// `AuthService` saving a finished sign-in where its placement says (plan
+/// §2.5): a new user, a sign-in joining a user, a refresh that revokes the
+/// superseded session, a failed save that changes nothing, and before
+/// migration the server's own session replaced as it always was. Which
+/// placement a sign-in gets is `SiloUserCoordinatorTests`' subject.
+final class SignInCommitTests: XCTestCase {
     private typealias F = SignInStoreFixture
 
-    private func commit(_ f: F, _ accountID: String, access: String) async throws -> [RevocableCredential] {
+    private func pending(_ f: F, _ accountID: String, access: String) async throws -> PendingSignIn {
         let identity = await f.store.refreshAccountIdentity()
-        return try await AuthService(tokenStore: f.store).commitInterimSignIn(
-            accessToken: access, refreshToken: "\(access)-refresh",
-            account: SignInAccount(id: accountID, username: nil), expectedAccount: XCTUnwrap(identity))
+        return PendingSignIn(accessToken: access, refreshToken: "\(access)-refresh",
+                             account: SignInAccount(id: accountID, username: nil), expected: try XCTUnwrap(identity))
+    }
+
+    /// An `AuthService` on the fixture's store, preferences, and a stubbed
+    /// network, so revocations go nowhere.
+    private func auth(_ f: F) -> AuthService {
+        let stub = APIv2TestStub()
+        stub.reply(204, "")
+        return AuthService(launchPreferences: ProfileLaunchPreferences(defaults: f.defaults),
+                           httpClient: HTTPClient(session: stub.makeSession(), tokenStore: f.store),
+                           tokenStore: f.store)
+    }
+
+    private func commit(_ f: F, _ accountID: String, access: String,
+                        placement: SignInPlacement) async throws -> SignInInstallResult {
+        try await auth(f).commitSignIn(pending(f, accountID, access: access), placement: placement)
     }
 
     private func device() async throws -> F {
@@ -778,14 +793,14 @@ final class InterimSignInPlacementTests: XCTestCase {
 
     func testFirstSignInCreatesTheUserAndANewServerJoinsIt() async throws {
         let f = try await device()
-        let first = try await commit(f, "12", access: "home")
+        let first = try await commit(f, "12", access: "home", placement: .newUser)
         let user = try XCTUnwrap(try f.index()?.users.first)
 
         await f.activate(F.friend, url: F.friendURL)
-        let second = try await commit(f, "40", access: "friend")
+        let second = try await commit(f, "40", access: "friend", placement: .join(userID: user.id))
 
-        XCTAssertEqual(first, [])
-        XCTAssertEqual(second, [])
+        XCTAssertNil(first.superseded)
+        XCTAssertNil(second.superseded)
         let index = try XCTUnwrap(try f.index())
         XCTAssertEqual(index.users.count, 1)
         XCTAssertEqual(index.users.first?.signIns, [.make(F.home, "12"), .make(F.friend, "40")])
@@ -794,75 +809,28 @@ final class InterimSignInPlacementTests: XCTestCase {
 
     func testSigningInAgainRefreshesAndRevokesTheOldSession() async throws {
         let f = try await device()
-        _ = try await commit(f, "12", access: "first")
+        _ = try await commit(f, "12", access: "first", placement: .newUser)
 
-        let revoked = try await commit(f, "12", access: "second")
+        let refreshed = try await commit(f, "12", access: "second", placement: .refresh(.make(F.home, "12")))
 
-        XCTAssertEqual(revoked, [RevocableCredential(serverURL: F.homeURL, accessToken: "first",
-                                                     refreshToken: "first-refresh")])
+        XCTAssertEqual(refreshed.superseded, RevocableCredential(serverURL: F.homeURL, accessToken: "first",
+                                                                refreshToken: "first-refresh"))
         XCTAssertEqual(try f.index()?.users.first?.signIns, [.make(F.home, "12")])
         let access = await f.store.getAccessToken()
         XCTAssertEqual(access, "second")
     }
 
-    /// Signing in as someone else has always replaced a server's session:
-    /// the old sign-in goes (and is revoked), the new one takes its place in
-    /// the user, or founds a new user when that was the user's only server.
-    func testAnotherAccountReplacesTheServersSignIn() async throws {
+    /// A sign-in that can't be saved changes nothing: the selected sign-in
+    /// and its profile stay.
+    func testFailedSaveKeepsThePreviousSignIn() async throws {
         let f = try await device()
-        _ = try await commit(f, "12", access: "alex-home")
-        await f.activate(F.friend, url: F.friendURL)
-        _ = try await commit(f, "12", access: "alex-friend")
-        let userID = try XCTUnwrap(try f.index()?.users.first?.id)
-
-        let revoked = try await commit(f, "13", access: "sam-friend")
-
-        XCTAssertEqual(revoked.map(\.accessToken), ["alex-friend"])
-        let index = try XCTUnwrap(try f.index())
-        XCTAssertEqual(index.users.map(\.id), [userID])
-        XCTAssertEqual(index.users.first?.signIns, [.make(F.home, "12"), .make(F.friend, "13")])
-        XCTAssertNil(try f.signIn(.make(F.friend, "12")))
-
-        let single = try await device()
-        _ = try await commit(single, "12", access: "alex")
-        let alexUser = try XCTUnwrap(try single.index()?.users.first?.id)
-        let replaced = try await commit(single, "13", access: "sam")
-        let users = try XCTUnwrap(try single.index()?.users)
-        XCTAssertEqual(replaced.map(\.accessToken), ["alex"])
-        XCTAssertEqual(users.count, 1)
-        XCTAssertNotEqual(users.first?.id, alexUser)
-        XCTAssertEqual(users.first?.signIns, [.make(F.home, "13")])
-    }
-
-    func testSignInReplacesAPendingLegacySession() async throws {
-        let f = try F.make(self)
-        try f.seedLegacySession(F.home, url: F.homeURL, accountID: nil, access: "legacy", refresh: "legacy-refresh")
-        try f.seedLegacySession(F.friend, url: F.friendURL, accountID: "40", access: "friend", refresh: "r")
-        _ = await f.store.migrateLegacySessionsIfNeeded(
-            servers: [(F.home, F.homeURL), (F.friend, F.friendURL)], activeServerID: F.friend)
-        await f.activate(F.home, url: F.homeURL)
-        let userID = try XCTUnwrap(try f.index()?.users.first?.id)
-
-        let revoked = try await commit(f, "12", access: "fresh")
-
-        XCTAssertEqual(revoked.map(\.accessToken), ["legacy"])
-        let user = try XCTUnwrap(try f.index()?.users.first)
-        XCTAssertEqual(user.id, userID)
-        XCTAssertNil(user.pendingLegacyServerIDs)
-        XCTAssertEqual(user.signIns, [.make(F.friend, "40"), .make(F.home, "12")])
-        guard case .signedOut = try f.sessions.sessions.load(F.home) else { return XCTFail("legacy kept") }
-    }
-
-    /// A replacement that can't be saved puts the previous sign-in back.
-    func testFailedReplacementRestoresThePreviousSignIn() async throws {
-        let f = try await device()
-        _ = try await commit(f, "12", access: "alex")
+        _ = try await commit(f, "12", access: "alex", placement: .newUser)
         await f.store.setProfileId("default")
         let index = try f.index()
         f.signIns.failingWrites = [SharedStorage.signInAccount(.make(F.home, "13"))]
 
         do {
-            _ = try await commit(f, "13", access: "sam")
+            _ = try await commit(f, "13", access: "sam", placement: .newUser)
             XCTFail("reported success without saving")
         } catch AccountSessionPersistenceError.unavailable {}
 
@@ -881,9 +849,8 @@ final class InterimSignInPlacementTests: XCTestCase {
         try f.seedLegacySession(F.home, url: F.homeURL, accountID: "12", access: "old", refresh: "old-refresh")
         await f.activate(F.home, url: F.homeURL)
 
-        let revoked = try await commit(f, "13", access: "new")
+        try await auth(f).commitLegacySignIn(pending(f, "13", access: "new"))
 
-        XCTAssertEqual(revoked, [])
         XCTAssertNil(try f.index())
         guard case .session(let value) = try f.sessions.sessions.load(F.home) else { return XCTFail() }
         XCTAssertEqual(value.accountID, "13")

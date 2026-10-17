@@ -42,7 +42,18 @@ enum Route: Hashable {
     case collections
     case collectionDetail(collectionId: String)
     case settings
+    /// Every server saved on this device (Settings › Server › Manage Servers).
     case serverList
+
+    // Silo users (spec §5)
+    /// Choose a User, with focus on `focusUserID`.
+    case chooseUser(focusUserID: String? = nil)
+    /// Choose a Server: the servers in `userID`, with focus on `focusServerID`.
+    case chooseServer(userID: String, focusServerID: String? = nil)
+    /// "Sign in to…": the server step of a sign-in (spec §5.4).
+    case signInTarget(SignInContext)
+    /// Settings › Users.
+    case manageUsers
 
     /// The active party or the create/join hub.
     case watchParty

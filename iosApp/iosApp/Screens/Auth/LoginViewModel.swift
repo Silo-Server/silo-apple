@@ -19,12 +19,50 @@ final class LoginViewModel {
     var networkSignInError: FormError?
 
     private let auth: AuthService
+    /// Where a finished sign-in goes (`SiloUserCoordinator.completeSignIn`).
+    private let users: SiloUserCoordinator
 
-    init(auth: AuthService = .shared) {
+    /// Why this sign-in is running (`AppRouter.signInContext`): Add User
+    /// never offers network sign-in.
+    var context: SignInContext
+
+    init(auth: AuthService = .shared, users: SiloUserCoordinator? = nil, context: SignInContext = .firstRun) {
         self.auth = auth
+        self.users = users ?? (auth === AuthService.shared ? .shared : SiloUserCoordinator(auth: auth))
+        self.context = context
     }
 
-    var signInOptions: SignInOptions? { discovery.options }
+    /// What this server offers this sign-in: discovery's answer, without
+    /// network providers when the sign-in can't use them.
+    var signInOptions: SignInOptions? {
+        guard let options = discovery.options, !offersNetworkSignIn else { return discovery.options }
+        return SignInOptions(browserProviders: options.browserProviders, acceptsPasswords: options.acceptsPasswords,
+                             supportsSelectAccount: options.supportsSelectAccount,
+                             oauthProviders: options.oauthProviders, networkProviders: [])
+    }
+
+    /// Network sign-in ("Continue as …", "No code needed") signs in as
+    /// whoever owns the network, so Add User offers the other ways instead
+    /// (spec §5.5).
+    var offersNetworkSignIn: Bool { context != .addUser }
+
+    /// Add User on a server whose only way in here is network sign-in: the
+    /// screen says this server can't add a user from here and offers Change
+    /// server (plan G9). The TV also needs the server to offer no device
+    /// sign-in.
+    var onlyNetworkSignInAvailableForAddUser: Bool {
+        guard !offersNetworkSignIn, let options = discovery.options else { return false }
+        return !options.networkProviders.isEmpty && !options.acceptsPasswords && options.browserProviders.isEmpty
+    }
+
+    /// The route a sign-in started on, so one that finishes after the person
+    /// left the sign-in screen doesn't pull the app back.
+    private func finish(_ pending: PendingSignIn, router: AppRouter, route: AppRouter.AuthState) async throws {
+        let completion = try await users.completeSignIn(pending, router: router, routesWhenOpened: false)
+        guard router.authState == route, case .opened = completion else { return }
+        StartupContentPrefetcher.prefetchProfiles()
+        users.showSignedIn(router: router)
+    }
 
     /// Whether the username and password form is offered: not while
     /// discovery is loading (an OIDC-only server must not flash it), and
@@ -109,12 +147,11 @@ final class LoginViewModel {
         error = nil
         networkSignInError = nil
         defer { isLoading = false }
+        let route = router.authState
 
         do {
-            try await auth.login(username: username, password: password)
-            StartupContentPrefetcher.prefetchProfiles()
-            router.skipsSingleProfilePicker = true
-            router.showProfileSelection()
+            let pending = try await auth.login(username: username, password: password)
+            try await finish(pending, router: router, route: route)
             return true
         } catch let loginError {
             self.error = FormError(Self.message(for: loginError, browserProviders: browserProviders,
@@ -136,11 +173,8 @@ final class LoginViewModel {
         networkSignInError = nil
         defer { providerInFlight = nil }
         do {
-            try await auth.signInWithNetworkIdentity(provider)
-            guard router.authState == route else { return true }
-            StartupContentPrefetcher.prefetchProfiles()
-            router.skipsSingleProfilePicker = true
-            router.showProfileSelection()
+            let pending = try await auth.signInWithNetworkIdentity(provider)
+            try await finish(pending, router: router, route: route)
             return true
         } catch {
             networkSignInError = NetworkSignIn.signInMessage(for: error, provider: provider).map(FormError.init)
@@ -157,18 +191,24 @@ final class LoginViewModel {
         guard !isBusy else { return }
         let serverId = ServerRegistry.shared.activeServerId ?? ""
         let prompt = SelectAccountPrompt.shared
-        let selectAccount = Self.asksToSelectAccount(options: signInOptions, choosingAccount: choosingAccount,
+        // Add User is someone else: let the provider choose its account.
+        let selectAccount = Self.asksToSelectAccount(options: signInOptions,
+            choosingAccount: choosingAccount || context == .addUser,
             afterSignOut: prompt.isRequested(serverId: serverId))
         providerInFlight = provider.id
         error = nil
         networkSignInError = nil
         defer { providerInFlight = nil }
+        let route = router.authState
         do {
-            try await ExternalSignInService.live.signIn(with: provider, selectAccount: selectAccount)
+            try await ExternalSignInService.live(installSession: { [users] tokens, expectedAccount in
+                _ = try await users.completeSignIn(PendingSignIn(tokens: tokens, expected: expectedAccount),
+                                                   router: router, routesWhenOpened: false)
+            }).signIn(with: provider, selectAccount: selectAccount)
             prompt.clear(serverId: serverId)
+            guard router.authState == route, router.signInPrompt == nil else { return }
             StartupContentPrefetcher.prefetchProfiles()
-            router.skipsSingleProfilePicker = true
-            router.showProfileSelection()
+            users.showSignedIn(router: router)
         } catch {
             self.error = Self.browserSignInMessage(for: error).map(FormError.init)
         }

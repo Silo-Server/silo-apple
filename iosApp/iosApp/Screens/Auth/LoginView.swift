@@ -7,7 +7,12 @@ import SwiftUI
 /// `LoginViewModel` owns the sign-in rules; this view lays them out.
 struct LoginView: View {
     var router: AppRouter
-    @State private var viewModel = LoginViewModel()
+    @State private var viewModel: LoginViewModel
+
+    init(router: AppRouter) {
+        self.router = router
+        _viewModel = State(initialValue: LoginViewModel(context: router.signInContext))
+    }
     @State private var server = SignInServerModel()
     @State private var choosesProviderForAccountSwitch = false
     /// Several providers fold the password form behind a button until asked.
@@ -22,10 +27,10 @@ struct LoginView: View {
     var body: some View {
         // Leaving mid-sign-in would let the finished sign-in pull the app
         // back from server setup, so going back waits until it settles.
-        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { router.resetToServerSetup() }) {
+        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { changeServer() }) {
             MarqueeTopBar {
                 MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Change server") {
-                    router.resetToServerSetup()
+                    changeServer()
                 }
                 .disabled(viewModel.isBusy)
             } trailing: {
@@ -73,13 +78,33 @@ struct LoginView: View {
 
     static let noSignInText = "This server doesn't offer a sign-in this app can use. Sign in on the web, or ask the server's admin."
 
+    /// Back to the server step, or for Sign in again, the user's servers.
+    private func changeServer() {
+        Task { await router.users.changeSignInServer(router: router) }
+    }
+
     private var serverMenu: some View {
         Menu {
             Section(server.hostLabel) {
                 Button {
-                    router.resetToServerSetup()
+                    changeServer()
                 } label: {
                     Label("Use a different server", systemImage: "server.rack")
+                }
+                // Plain for now: WP5 lays these out.
+                if case .signInAgain = router.signInContext {
+                    Button {
+                        Task { await router.users.switchUserFromSignIn(router: router) }
+                    } label: {
+                        Label("Switch User", systemImage: "person.2")
+                    }
+                }
+                if router.signInReturnPoint != nil {
+                    Button(role: .cancel) {
+                        Task { await router.users.cancelSignIn(router: router) }
+                    } label: {
+                        Label("Cancel", systemImage: "xmark")
+                    }
                 }
             }
         } label: {

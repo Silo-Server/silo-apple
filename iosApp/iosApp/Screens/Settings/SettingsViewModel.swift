@@ -309,13 +309,63 @@ final class SettingsViewModel {
     }()
     #endif
 
+    // MARK: - Silo users (spec §5.7)
+
+    /// The profile remembered for the current sign-in, read by
+    /// `loadSettings`: Paired Silo Profile's value.
+    private(set) var rememberedProfileID: String?
+
+    /// The device's users, as Settings › Users and the rows below read them.
+    @MainActor var usersDirectory: SiloUserDirectory { SiloUserCoordinator.shared.directory }
+
+    /// Settings › General › Apple TV User › Paired Silo Profile: the
+    /// remembered profile, with its user ("alex › Jamie") when the device
+    /// has more than one. "Not paired" without one, and "Saved profile" when
+    /// another profile is open now.
+    @MainActor var pairedProfileValue: String {
+        Self.pairedProfileValue(rememberedProfileID: rememberedProfileID, activeProfile: activeProfile,
+                                directory: usersDirectory)
+    }
+
+    static func pairedProfileValue(
+        rememberedProfileID: String?,
+        activeProfile: UserProfile?,
+        directory: SiloUserDirectory
+    ) -> String {
+        guard let rememberedProfileID else { return "Not paired" }
+        let profile = activeProfile?.id == rememberedProfileID ? activeProfile?.name ?? "Saved profile" : "Saved profile"
+        guard directory.users.count >= 2, let user = directory.currentUser else { return profile }
+        return "\(user.name) › \(profile)"
+    }
+
+    /// Ask For shows only on a device with two or more users.
+    @MainActor var showsAskFor: Bool { usersDirectory.users.count >= 2 }
+
+    /// Ask For applies only when Silo asks who's watching: dimmed under
+    /// Automatic, with `ProfileLaunchAskFor.inactiveUnderAutomaticFooter`.
+    var isAskForActive: Bool { ProfileLaunchPreferences.shared.behavior != .automatic }
+
+    var askFor: ProfileLaunchAskFor {
+        get { ProfileLaunchPreferences.shared.askFor }
+        set { ProfileLaunchPreferences.shared.askFor = newValue }
+    }
+
+    /// Settings' Sign Out confirmation (spec §5.6).
+    @MainActor var signOutConfirmation: ConfirmationCopy {
+        SiloUserCoordinator.shared.confirmation(for: .currentSignIn)
+    }
+
     /// Main-actor isolated: it publishes into observable state the settings
     /// views are already rendering, and seeds the profile editor, which is
     /// itself main-actor bound.
     @MainActor
     func loadSettings() async {
         prefs.bindProfile(id: AuthService.shared.profileId)
+        async let remembered = AuthService.shared.rememberedProfileForCurrentSelection()
+        async let directory: Void = SiloUserCoordinator.shared.reloadDirectory()
         await PlayerSettings.shared.refreshFromServer()
+        rememberedProfileID = await remembered?.profileID
+        await directory
 
         async let user: UserInfo? = try? SiloAPI.shared.currentUser()
         async let profiles: [UserProfile] = (try? AuthService.shared.getProfiles()) ?? []

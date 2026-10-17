@@ -183,7 +183,7 @@ final class ServerSessionPersistenceTests: XCTestCase {
         allowsPersistence = false
         XCTAssertNil(registry.addOrUpdate(second))
         XCTAssertNil(registry.entry(with: second.id))
-        let switched = await registry.switchTo(serverId: first.id)
+        let switched = await registry.switchTo(serverId: first.id, launchSelectionFrom: .shared)
         XCTAssertFalse(switched)
         XCTAssertNil(registry.activeServerId)
         let removed = await registry.remove(serverId: first.id)
@@ -218,11 +218,11 @@ final class ServerSessionPersistenceTests: XCTestCase {
             fetchedName: "Home",
             lastUsedAt: Date()
         ))
-        launchPreferences.remember(
+        launchPreferences.rememberLegacy(
             profileID: "OLD-PROFILE",
             requiresPIN: false,
             accountEpoch: "old-account",
-            for: serverID
+            forServer: serverID
         )
 
         registry.addOrUpdate(ServerEntry(
@@ -233,7 +233,7 @@ final class ServerSessionPersistenceTests: XCTestCase {
             lastUsedAt: Date()
         ), preservingProfile: false)
 
-        XCTAssertNil(launchPreferences.rememberedProfile(for: serverID))
+        XCTAssertNil(launchPreferences.legacyRememberedProfile(forServer: serverID))
         XCTAssertEqual(registry.entry(with: serverID)?.fetchedName, "Home Renamed")
         XCTAssertEqual(registry.entry(with: serverID)?.displayName, "Home Renamed")
     }

@@ -833,7 +833,7 @@ final class ExternalSignInTests: XCTestCase {
         let lanId = ServerRegistry.serverId(for: lan)
         XCTAssertNotNil(registry.addOrUpdate(ServerEntry(id: lanId, url: lan, fetchedName: "Home",
             lastUsedAt: Date(), verifiedServerId: Self.serverId)))
-        let switched = await registry.switchTo(serverId: lanId)
+        let switched = await registry.switchTo(serverId: lanId, launchSelectionFrom: tokens)
         XCTAssertTrue(switched)
         let api = APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false })
         let auth = AuthService(serverIdentityResolver: ServerIdentityResolver(httpClient: http), serverRegistry: registry,

@@ -10,7 +10,9 @@ final class RestoredServerRecoveryCoordinator {
     typealias ResolveDestination = () async -> AppRouter.AuthState
 
     private let removeServer: RemoveServer
-    private let resolveDestination: ResolveDestination
+    /// Nil applies the launch rules after a removal (spec §6.2) through
+    /// `SiloUserCoordinator`.
+    private let resolveDestination: ResolveDestination?
     @ObservationIgnored private var forgetTask: Task<Void, Never>?
 
     private(set) var isForgetting = false
@@ -20,9 +22,7 @@ final class RestoredServerRecoveryCoordinator {
         removeServer: @escaping RemoveServer = { serverID in
             await ServerRegistry.shared.remove(serverId: serverID)
         },
-        resolveDestination: @escaping ResolveDestination = {
-            await RestoredSessionAuthResolver.resolveValidated()
-        }
+        resolveDestination: ResolveDestination? = nil
     ) {
         self.removeServer = removeServer
         self.resolveDestination = resolveDestination
@@ -39,8 +39,11 @@ final class RestoredServerRecoveryCoordinator {
         let task = Task { [self] in
             let removed = await removeServer(serverID)
             if removed {
-                let destination = await resolveDestination()
-                router.resetAfterServerResolution(to: destination)
+                if let resolveDestination {
+                    router.resetAfterServerResolution(to: await resolveDestination())
+                } else {
+                    await router.users.routeAfterRemoval(router: router)
+                }
             } else {
                 error = "Silo couldn't forget this server. Try again."
             }

@@ -230,6 +230,10 @@ enum RestoredSessionAuthResolver {
     struct LocalResolution: Equatable {
         let state: AppRouter.AuthState
         let restoredAccount: RefreshAccountIdentity?
+        /// The sign-in the route runs, when it shows a sign-in screen or the
+        /// server step.
+        var signInContext: SignInContext? = nil
+        var loginNotice: AppRouter.LoginNotice? = nil
     }
 
     static func localState(
@@ -243,10 +247,12 @@ enum RestoredSessionAuthResolver {
     }
 
     /// Runs the one-time sign-in migration first, before any credential is
-    /// selected, then selects the active server's credential with the interim
-    /// single-user rules (`TokenStore.interimSelection(forServer:)`): the
-    /// only or migrated user's sign-in or pending legacy server there, or
-    /// nothing, which shows sign-in.
+    /// selected and before anything reads local data under account keys
+    /// (migration publishes their legacy owners). Then the launch rules
+    /// (spec §6.2, §6.3) pick the user, server, and credential through
+    /// `SiloUserCoordinator`. Before migration, or while the user index
+    /// can't be read, the active server's own session is used, as before
+    /// users existed.
     static func resolveLocal() async -> LocalResolution {
         let auth = AuthService.shared
         let registry = ServerRegistry.shared
@@ -255,14 +261,33 @@ enum RestoredSessionAuthResolver {
             servers: registry.entries.map { (id: $0.id, url: $0.url) },
             activeServerID: registry.activeServerId
         )
+        let resolution: LocalResolution
+        if let launch = await SiloUserCoordinator.shared.resolveLaunch() {
+            resolution = launch
+        } else {
+            resolution = await resolveLegacy(auth: auth, registry: registry, tokenStore: tokenStore)
+        }
+        #if !os(tvOS)
+        // A background launch may have loaded the downloads of the server
+        // and profile it found; follow whoever the launch rules opened, so
+        // another user's downloads never show (plan WP2 note).
+        _ = await DownloadManager.shared.activateScopeIfNeeded()
+        #endif
+        return resolution
+    }
+
+    /// The active server's own session, as before users existed.
+    private static func resolveLegacy(
+        auth: AuthService,
+        registry: ServerRegistry,
+        tokenStore: TokenStore
+    ) async -> LocalResolution {
         guard auth.hasServer,
               let activeServerID = registry.activeServerId,
               !activeServerID.isEmpty else {
             return LocalResolution(state: .needsServerSetup, restoredAccount: nil)
         }
-
-        let selected = await tokenStore.interimSelection(forServer: activeServerID)
-        await tokenStore.select(serverID: activeServerID, credential: selected.credential, userID: selected.userID)
+        await tokenStore.select(serverID: activeServerID, credential: .legacy(serverID: activeServerID), userID: nil)
         guard await tokenStore.hasUsableCredential() else {
             return LocalResolution(state: .needsLogin, restoredAccount: nil)
         }

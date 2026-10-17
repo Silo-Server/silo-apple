@@ -13,6 +13,8 @@ struct TVGeneralSettingsPane: View {
     @State private var activePicker: PickerKind?
     @State private var showsMenuEditor = false
     @State private var registry = ServerRegistry.shared
+    /// The profile remembered for the current sign-in.
+    @State private var rememberedProfileID: String?
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
     let activeProfile: UserProfile?
@@ -168,6 +170,7 @@ struct TVGeneralSettingsPane: View {
             TVMenuCustomizationSheet(libraries: libraries)
         }
         .task {
+            rememberedProfileID = await AuthService.shared.rememberedProfileForCurrentSelection()?.profileID
             async let preferencesRefresh: Void = preferences.refresh()
             async let titleArtRefresh: Void = titleArt.refresh()
             async let advisoryRefresh: Void = advisoryAgePreference.refresh()
@@ -229,16 +232,11 @@ struct TVGeneralSettingsPane: View {
         ).count
     }
 
+    /// `SettingsViewModel.pairedProfileValue`: "alex › Jamie" with two or
+    /// more users. WP4 finishes the row.
     private var pairedProfileName: String {
-        guard let serverID = registry.activeServerId,
-              let remembered = launchPreferences.rememberedProfile(for: serverID) else {
-            return "Not paired"
-        }
-        guard let activeProfile,
-              activeProfile.id == remembered.profileID else {
-            return "Saved profile"
-        }
-        return activeProfile.name
+        SettingsViewModel.pairedProfileValue(rememberedProfileID: rememberedProfileID, activeProfile: activeProfile,
+                                             directory: SiloUserCoordinator.shared.directory)
     }
 
     private var pairingDescription: String {

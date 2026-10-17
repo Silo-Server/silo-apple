@@ -117,7 +117,7 @@ final class SignInRevocationTests: XCTestCase {
                                       tokenStore: f.store, httpClient: http, unregisterPush: { _ in })
         XCTAssertNotNil(registry.addOrUpdate(ServerEntry(id: F.home, url: F.homeURL, fetchedName: "Home",
                                                          lastUsedAt: Date())))
-        let switched = await registry.switchTo(serverId: F.home)
+        let switched = await registry.switchTo(serverId: F.home, launchSelectionFrom: f.store)
         XCTAssertTrue(switched)
         try await f.install("12", access: "alex-access", refresh: "alex-refresh", placement: .newUser)
         let auth = AuthService(serverRegistry: registry, launchPreferences: preferences, httpClient: http,
@@ -153,7 +153,7 @@ final class SignInRevocationTests: XCTestCase {
                                       tokenStore: f.store, httpClient: http, unregisterPush: { _ in })
         XCTAssertNotNil(registry.addOrUpdate(ServerEntry(id: F.home, url: F.homeURL, fetchedName: nil,
                                                          lastUsedAt: Date())))
-        let switched = await registry.switchTo(serverId: F.home)
+        let switched = await registry.switchTo(serverId: F.home, launchSelectionFrom: f.store)
         XCTAssertTrue(switched)
         try await f.install("12", access: "alex-access", refresh: "r", placement: .newUser)
         await f.store.select(serverID: F.home, credential: .none, userID: nil)
@@ -191,7 +191,7 @@ final class SignInRevocationTests: XCTestCase {
                                                          lastUsedAt: Date())))
         _ = await f.store.migrateLegacySessionsIfNeeded(
             servers: registry.entries.map { (id: $0.id, url: $0.url) }, activeServerID: F.home)
-        let switched = await registry.switchTo(serverId: F.home)
+        let switched = await registry.switchTo(serverId: F.home, launchSelectionFrom: f.store)
         XCTAssertTrue(switched)
         let selection = await f.store.currentSelection()
         XCTAssertEqual(selection, .legacy(serverID: F.home), "a pending server on its old per-server slot")
@@ -223,7 +223,7 @@ final class SignInRevocationTests: XCTestCase {
                                       tokenStore: f.store, httpClient: http, unregisterPush: { _ in })
         XCTAssertNotNil(registry.addOrUpdate(ServerEntry(id: F.home, url: F.homeURL, fetchedName: nil,
                                                          lastUsedAt: Date())))
-        let switched = await registry.switchTo(serverId: F.home)
+        let switched = await registry.switchTo(serverId: F.home, launchSelectionFrom: f.store)
         XCTAssertTrue(switched)
         try await f.install("12", access: "alex-access", refresh: "r", placement: .newUser)
         XCTAssertEqual(f.defaults.string(forKey: SharedStorage.activeAccountIdKey), "12")

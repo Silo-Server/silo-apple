@@ -38,7 +38,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
             launchPreferences: preferences, tokenStore: store, httpClient: http, unregisterPush: unregisterPush)
         XCTAssertNotNil(registry.addOrUpdate(ServerEntry(id: "server", url: "https://session.example",
             fetchedName: "Test Server", lastUsedAt: Date())))
-        let switched = await registry.switchTo(serverId: "server")
+        let switched = await registry.switchTo(serverId: "server", launchSelectionFrom: store)
         XCTAssertTrue(switched)
         let auth = AuthService(serverRegistry: registry, launchPreferences: preferences,
             httpClient: http, tokenStore: store, sessionPersistence: memory.persistence,
@@ -47,8 +47,8 @@ final class AccountSessionPersistenceTests: XCTestCase {
         await store.setProfileId("profile")
         _ = await store.setProfileToken("proof")
         let epoch = await store.getOrCreateAccountEpoch()
-        preferences.remember(profileID: "profile", requiresPIN: true,
-            accountEpoch: try XCTUnwrap(epoch), for: "server")
+        preferences.rememberLegacy(profileID: "profile", requiresPIN: true,
+            accountEpoch: try XCTUnwrap(epoch), forServer: "server")
         return (store, keys, defaults, memory, registry, auth, http, stub)
     }
 
@@ -154,7 +154,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertNotNil(h.registry.activeServer)
         XCTAssertFalse(h.auth.isLoggedIn)
         XCTAssertNil(h.defaults.string(forKey: SharedStorage.profileIdKey))
-        XCTAssertNil(ProfileLaunchPreferences(defaults: h.defaults).rememberedProfile(for: "server"))
+        XCTAssertNil(ProfileLaunchPreferences(defaults: h.defaults).legacyRememberedProfile(forServer: "server"))
         let restored = await restarted(h.keys, h.defaults, h.memory).getAccessToken()
         XCTAssertNil(restored)
         await h.stub.waitUntilHeld()
@@ -217,7 +217,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertNil(restored.activeServerId)
         XCTAssertNotNil(restored.addOrUpdate(ServerEntry(id: "server", url: "https://session.example",
             fetchedName: nil, lastUsedAt: Date())))
-        let switched = await restored.switchTo(serverId: "server")
+        let switched = await restored.switchTo(serverId: "server", launchSelectionFrom: h.store)
         XCTAssertTrue(switched)
         let access = await h.store.getAccessToken()
         XCTAssertNil(access)
@@ -582,7 +582,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         _ = await store.setProfileToken("proof")
         let epoch = await store.getOrCreateAccountEpoch()
         let preferences = ProfileLaunchPreferences(defaults: defaults)
-        preferences.remember(profileID: "profile", requiresPIN: true, accountEpoch: try XCTUnwrap(epoch), for: "server")
+        preferences.rememberLegacy(profileID: "profile", requiresPIN: true, accountEpoch: try XCTUnwrap(epoch), forServer: "server")
         let before = preferences.state
         let stub = APIv2TestStub()
         stub.reply(200, Self.tokenPair)
@@ -592,7 +592,9 @@ final class AccountSessionPersistenceTests: XCTestCase {
             httpClient: http, tokenStore: store)
         memory.failAccessToken = "replacement"
         do {
-            try await auth.login(username: "new", password: "password")
+            // The password sign-in answers a session; saving it is the step
+            // that fails.
+            try await auth.commitOutsideUserFlow(auth.login(username: "new", password: "password"))
             XCTFail("Failed persistence reported login success")
         } catch AccountSessionPersistenceError.unavailable { }
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/login"])
@@ -624,7 +626,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let auth = AuthService(launchPreferences: ProfileLaunchPreferences(defaults: defaults),
             apiV2Client: APIv2Client(http: http, tokenStore: store, isUpdateRequired: { false }),
             httpClient: http, tokenStore: store)
-        try await auth.login(username: "new", password: "password")
+        try await auth.commitOutsideUserFlow(auth.login(username: "new", password: "password"))
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/login"])
         XCTAssertEqual(stub.requests.first?.url?.host, "session.example")
         let access = await store.getAccessToken()
@@ -653,7 +655,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
             apiV2Client: APIv2Client(http: http, tokenStore: store, isUpdateRequired: { false }),
             httpClient: http, tokenStore: store)
         do {
-            try await auth.login(username: "new", password: "wrong")
+            _ = try await auth.login(username: "new", password: "wrong")
             XCTFail("A rejected login installed a session")
         } catch APIv2Error.problem(let problem) {
             XCTAssertEqual(problem.status, 401)

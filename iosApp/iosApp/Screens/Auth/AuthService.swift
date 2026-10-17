@@ -1,5 +1,60 @@
 import Foundation
 
+/// A finished sign-in that nothing has saved yet (plan §2.9): every sign-in
+/// path produces one, and `SiloUserCoordinator.completeSignIn` decides where
+/// it goes, or asks first. It holds secrets and is never logged.
+struct PendingSignIn: Equatable, Sendable {
+    let serverID: String
+    /// The normalized server URL the tokens were issued at.
+    let origin: String
+    let accessToken: String
+    let refreshToken: String
+    /// The account the server said the tokens authenticate. Pairing and
+    /// device-code sign-ins carry no username until `/api/v2/account/me`.
+    let account: SignInAccount
+    /// The identity captured before the request was sent. The sign-in is
+    /// saved only while it is still the active one.
+    let expected: RefreshAccountIdentity
+
+    init(accessToken: String, refreshToken: String, account: SignInAccount, expected: RefreshAccountIdentity) {
+        self.serverID = expected.serverId
+        self.origin = expected.serverURL
+        self.accessToken = accessToken
+        self.refreshToken = refreshToken
+        self.account = account
+        self.expected = expected
+    }
+
+    init(tokens: APIv2LoginTokens, expected: RefreshAccountIdentity) {
+        self.init(
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken,
+            account: SignInAccount(id: tokens.user.id, username: ServerIdentity.usable(tokens.user.username)),
+            expected: expected
+        )
+    }
+
+    /// The saved sign-in this would be. Nil for an account ID that can't
+    /// name one.
+    var key: SignInKey? { SignInKey(serverID: serverID, accountID: account.id) }
+
+    /// The session, for ending it when nobody keeps the sign-in.
+    var revocable: RevocableCredential {
+        RevocableCredential(serverURL: origin, accessToken: accessToken, refreshToken: refreshToken)
+    }
+}
+
+extension SignInPlacement {
+    /// The placement policy's answer, case for case.
+    init(_ placement: SignInPlacementPolicy.Placement) {
+        switch placement {
+        case .refresh(let key): self = .refresh(key)
+        case .join(let userID): self = .join(userID: userID)
+        case .newUser: self = .newUser
+        }
+    }
+}
+
 /// Thin service layer for auth / profile operations backed by the native
 /// Swift `HTTPClient`.
 ///
@@ -11,13 +66,13 @@ final class AuthService: @unchecked Sendable {
     static let shared = AuthService()
     private let defaults: SharedDefaults
     private let serverIdentityResolver: ServerIdentityResolver
-    private let serverRegistry: ServerRegistry
-    private let launchPreferences: ProfileLaunchPreferences
+    let serverRegistry: ServerRegistry
+    let launchPreferences: ProfileLaunchPreferences
     private let restoredSessionValidator: RestoredSessionValidator
     private let contractProbe: APIv2Probe
     private let apiV2Client: APIv2Client
-    private let httpClient: HTTPClient
-    private let tokenStore: TokenStore
+    let httpClient: HTTPClient
+    let tokenStore: TokenStore
     private let sessionPersistence: AccountSessionPersistence
     private let purgeDiagnostics: @Sendable (String) async -> Bool
     /// Turns the server's push registration off (`ApplePushRegistrationCoordinator.unregister`).
@@ -163,7 +218,9 @@ final class AuthService: @unchecked Sendable {
     /// Probe a candidate server: set it as the active server URL,
     /// identify it via native branding, register the entry, and
     /// return the setup status so the caller can decide between initial
-    /// setup and login.
+    /// setup and login. The candidate becomes active with no credential
+    /// selected: every server added continues to sign-in
+    /// (`SiloUserCoordinator.beginSignIn`).
     ///
     /// Candidate probes use their explicit URL and no active credentials.
     /// Global registry/default/token routing changes only after setup status
@@ -212,7 +269,7 @@ final class AuthService: @unchecked Sendable {
             throw ServerRegistryError.persistenceFailed
         }
         if serverRegistry.activeServerId != saved.id {
-            guard await serverRegistry.switchTo(serverId: saved.id) else {
+            guard await serverRegistry.switchTo(serverId: saved.id, credential: .none, userID: nil) else {
                 throw ServerRegistryError.persistenceFailed
             }
         }
@@ -299,11 +356,12 @@ final class AuthService: @unchecked Sendable {
     // MARK: - Authentication
 
     /// Password sign-in through `POST /api/v2/auth/login`. The token pair
-    /// names the account it authenticates, so the session is installed with
-    /// that verified account id. A v1-only server is refused before the
-    /// request leaves the device (`APIv2Error.serverUpdateRequired`).
-    func login(username: String, password: String) async throws {
-        try await signIn { [apiV2Client] expectedAccount in
+    /// names the account it authenticates. Nothing is saved: the caller
+    /// places the result (`SiloUserCoordinator.completeSignIn`). A v1-only
+    /// server is refused before the request leaves the device
+    /// (`APIv2Error.serverUpdateRequired`).
+    func login(username: String, password: String) async throws -> PendingSignIn {
+        try await requestSignIn { [apiV2Client] expectedAccount in
             try await apiV2Client.login(username: username, password: password, expectedAccount: expectedAccount)
         }
     }
@@ -312,190 +370,157 @@ final class AuthService: @unchecked Sendable {
     /// `provider`, a network provider discovery listed for the active server:
     /// `{}` posted to its sign-in path on the saved base URL, with no password
     /// and no bearer. The provider's network says who owns this device. The
-    /// token pair is installed exactly as a password sign-in's.
-    func signInWithNetworkIdentity(_ provider: APIv2AuthProvider) async throws {
+    /// token pair is placed exactly as a password sign-in's.
+    func signInWithNetworkIdentity(_ provider: APIv2AuthProvider) async throws -> PendingSignIn {
         guard let apiPath = NetworkSignIn.apiPath(of: provider) else {
             throw HTTPError.invalidURL(provider.networkSignInPath ?? "")
         }
-        try await signIn { [apiV2Client] expectedAccount in
+        return try await requestSignIn { [apiV2Client] expectedAccount in
             try await apiV2Client.signInWithNetworkIdentity(apiPath: apiPath, expectedAccount: expectedAccount)
         }
     }
 
-    /// A sign-in that answers a token pair for the active server, installed
-    /// under the account identity captured before the request was sent.
-    private func signIn(
+    /// A sign-in that answers a token pair for the active server, under the
+    /// account identity captured before the request was sent.
+    private func requestSignIn(
         _ request: (RefreshAccountIdentity) async throws -> APIv2LoginTokens
-    ) async throws {
+    ) async throws -> PendingSignIn {
         guard let expectedAccount = await tokenStore.refreshAccountIdentity() else {
             throw HTTPError.serverUrlNotConfigured
         }
         let tokens = try await request(expectedAccount)
-        try await installSession(
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken,
-            account: SignInAccount(id: tokens.user.id, username: tokens.user.username),
-            expectedAccount: expectedAccount
-        )
+        return PendingSignIn(tokens: tokens, expected: expectedAccount)
     }
 
-    /// A new login clears the prior profile. Failed installation restores the
-    /// previous session before releasing the identity transition.
+    /// Saves a sign-in outside any user flow, as a first sign-in would be
+    /// placed: the same account refreshes its saved sign-in, a new one
+    /// founds a user, and before migration the server's own session is
+    /// replaced. Tests and debug sign-in use this; the app's screens go
+    /// through `SiloUserCoordinator.completeSignIn`.
     ///
     /// `accountID` is the account the server said the tokens authenticate
-    /// (v2 `TokenPair.user.id`); it binds the session so durable account work
-    /// can capture it.
+    /// (v2 `TokenPair.user.id`).
     func installSession(
         accessToken: String,
         refreshToken: String,
         accountID: String,
         expectedAccount: RefreshAccountIdentity
     ) async throws {
-        try await installSession(
+        try await commitOutsideUserFlow(PendingSignIn(
             accessToken: accessToken,
             refreshToken: refreshToken,
             account: SignInAccount(id: accountID, username: nil),
-            expectedAccount: expectedAccount
-        )
+            expected: expectedAccount
+        ))
     }
 
-    private func installSession(
-        accessToken: String,
-        refreshToken: String,
-        account: SignInAccount,
-        expectedAccount: RefreshAccountIdentity
-    ) async throws {
-        guard let transitionLease = await httpClient.beginIdentityTransition() else {
-            throw CancellationError()
-        }
-        let revocations: [RevocableCredential]
-        do {
-            try Task.checkCancellation()
-            await httpClient.cancelInFlightRequests()
-            try Task.checkCancellation()
-            guard await tokenStore.refreshAccountIdentity() == expectedAccount else {
-                try Task.checkCancellation()
-                throw HTTPError.requestIdentityChanged
-            }
-            revocations = try await commitInterimSignIn(
-                accessToken: accessToken,
-                refreshToken: refreshToken,
-                account: account,
-                expectedAccount: expectedAccount
-            )
-            launchPreferences.clearRememberedProfile(for: expectedAccount.serverId)
-            await clearAllCaches()
-        } catch {
-            await httpClient.endIdentityTransition(transitionLease)
-            throw error
-        }
-        await httpClient.endIdentityTransition(transitionLease)
-        revoke(revocations)
-    }
-
-    /// Saves a new session for the active server with the interim rules
-    /// that keep a single-user device behaving as before (plan §2.5), while
-    /// the caller holds the identity transition:
-    ///
-    /// - the same account already saved: refresh it;
-    /// - the current user already has another account (or a pending legacy
-    ///   session) on this server: remove that one, then add this one, as
-    ///   signing in has always replaced a server's session;
-    /// - otherwise: join the current user, or create the first user.
-    ///
-    /// Before sign-in migration, the server's own session is replaced as it
-    /// always was. A failure puts back what was there. Returns the sessions
-    /// to revoke once the caller has released the transition. WP3's
-    /// placement policy and prompts replace this.
-    func commitInterimSignIn(
-        accessToken: String,
-        refreshToken: String,
-        account: SignInAccount,
-        expectedAccount: RefreshAccountIdentity
-    ) async throws -> [RevocableCredential] {
-        let serverID = expectedAccount.serverId
+    /// `installSession` for a sign-in already in hand.
+    func commitOutsideUserFlow(_ pending: PendingSignIn) async throws {
         let directory: SiloUserDirectorySnapshot
         do {
             directory = try await tokenStore.directory()
         } catch SavedSignInAccessError.notMigrated {
-            try await replaceServerSession(
-                accessToken: accessToken,
-                refreshToken: refreshToken,
-                accountID: account.id,
-                serverID: serverID
-            )
-            return []
+            try await commitLegacySignIn(pending)
+            return
         } catch {
             throw AccountSessionPersistenceError.unavailable
         }
-        guard let key = SignInKey(serverID: serverID, accountID: account.id) else {
+        switch SignInPlacementPolicy.decide(context: .firstRun, serverID: pending.serverID,
+                                            accountID: pending.account.id, username: pending.account.username,
+                                            directory: directory) {
+        case .place(let placement)?:
+            _ = try await commitSignIn(pending, placement: SignInPlacement(placement))
+        case .switchToExisting(let key, _)?:
+            _ = try await commitSignIn(pending, placement: .refresh(key))
+        case .ask?, nil:
+            discardSignIn(pending)
             throw AccountSessionPersistenceError.invalidIdentity
         }
+    }
 
-        if directory.user(owning: key) != nil {
-            let result = try await tokenStore.installSignIn(
-                accessToken: accessToken, refreshToken: refreshToken, account: account,
-                origin: expectedAccount.serverURL, placement: .refresh(key), expected: expectedAccount
+    /// Saves `pending` where `placement` says (plan §2.5): the identity
+    /// captured before the request must still be active, the sign-in becomes
+    /// the selected credential, and this Apple TV user's remembered profile
+    /// and pending Switch Profile for it go, because the session is new. A
+    /// refreshed sign-in's previous session is revoked afterwards.
+    ///
+    /// Pass `lease` when the caller already holds the identity transition
+    /// (phone pairing); otherwise this takes it and cancels requests first.
+    func commitSignIn(
+        _ pending: PendingSignIn,
+        placement: SignInPlacement,
+        holding lease: HTTPIdentityTransitionLease? = nil
+    ) async throws -> SignInInstallResult {
+        let result = try await withSignInTransition(holding: lease) { [tokenStore] in
+            try await tokenStore.installSignIn(
+                accessToken: pending.accessToken,
+                refreshToken: pending.refreshToken,
+                account: pending.account,
+                origin: pending.origin,
+                placement: placement,
+                expected: pending.expected
             )
-            return result.superseded.map { [$0] } ?? []
         }
+        launchPreferences.forgetSignIn(
+            result.key,
+            legacyOwnerAccountID: await tokenStore.legacyDataOwner(forServer: result.key.serverID)
+        )
+        revoke(result.superseded.map { [$0] } ?? [])
+        return result
+    }
 
-        let currentUserID = await tokenStore.currentUserID()
-        let user = currentUserID.flatMap(directory.user(withID:))
-        let replaced = user?.signIns.first { $0.serverID == serverID }
-        let replacesPending = user?.pendingLegacyServerIDs?.contains(serverID) == true
-        guard let user, replaced != nil || replacesPending else {
-            let result = try await tokenStore.installSignIn(
-                accessToken: accessToken, refreshToken: refreshToken, account: account,
-                origin: expectedAccount.serverURL,
-                placement: user.map { .join(userID: $0.id) } ?? .newUser,
-                expected: expectedAccount
+    /// Before sign-in migration: replace the server's own session, as
+    /// signing in always has, restoring it if the install fails.
+    func commitLegacySignIn(_ pending: PendingSignIn, holding lease: HTTPIdentityTransitionLease? = nil) async throws {
+        try await withSignInTransition(holding: lease) { [self] in
+            try await replaceServerSession(
+                accessToken: pending.accessToken,
+                refreshToken: pending.refreshToken,
+                accountID: pending.account.id,
+                serverID: pending.serverID
             )
-            return result.superseded.map { [$0] } ?? []
         }
+        launchPreferences.forgetLegacyProfile(forServer: pending.serverID)
+    }
 
-        // Replace: one snapshot covers every sign-in on the server, its own
-        // session, and the selection, so a failed install puts it all back.
-        let snapshot = await tokenStore.signInSnapshot(for: replaced, serverID: serverID)
-        guard snapshot.isReadable else { throw AccountSessionPersistenceError.unavailable }
-        let previousProfileID = await tokenStore.getProfileId()
-        let removal: SignInRemoval
-        if let replaced {
-            removal = await tokenStore.removeSignIn(replaced)
+    /// A sign-in nobody kept (a prompt answered Cancel): end its session on
+    /// the server.
+    func discardSignIn(_ pending: PendingSignIn) {
+        revoke([pending.revocable])
+    }
+
+    /// Runs `install` under the identity transition, after checking the
+    /// session's captured identity is still active, then clears every cache.
+    private func withSignInTransition<T>(
+        holding held: HTTPIdentityTransitionLease?,
+        _ install: () async throws -> T
+    ) async throws -> T {
+        let lease: HTTPIdentityTransitionLease
+        if let held {
+            guard await httpClient.isIdentityTransitionActive(held) else { throw CancellationError() }
+            lease = held
         } else {
-            removal = await tokenStore.removeLegacyServer(serverID)
+            guard let acquired = await httpClient.beginIdentityTransition() else { throw CancellationError() }
+            lease = acquired
         }
-        func rollBack() async {
-            // TokenStore blocks the selection if restoration also fails.
-            _ = await tokenStore.restore(snapshot)
-            await tokenStore.setProfileId(previousProfileID)
+        func release() async {
+            if held == nil { await httpClient.endIdentityTransition(lease) }
         }
-        guard removal.durable else {
-            await rollBack()
-            throw AccountSessionPersistenceError.unavailable
-        }
-        // Removing the server's last sign-in removed the user; this sign-in
-        // founds its replacement.
-        let placement: SignInPlacement = removal.removedUserID == user.id ? .newUser : .join(userID: user.id)
-        // The removal minted a new credential generation; the caller already
-        // checked the account captured before the request.
-        guard let current = await tokenStore.refreshAccountIdentity(),
-              current.serverId == expectedAccount.serverId,
-              current.serverURL == expectedAccount.serverURL else {
-            await rollBack()
-            throw HTTPError.requestIdentityChanged
-        }
-        let result: SignInInstallResult
+        let value: T
         do {
-            result = try await tokenStore.installSignIn(
-                accessToken: accessToken, refreshToken: refreshToken, account: account,
-                origin: expectedAccount.serverURL, placement: placement, expected: current
-            )
+            if held == nil {
+                try Task.checkCancellation()
+                await httpClient.cancelInFlightRequests()
+                try Task.checkCancellation()
+            }
+            value = try await install()
+            await clearAllCaches()
         } catch {
-            await rollBack()
+            await release()
             throw error
         }
-        return [removal.credential, result.superseded].compactMap { $0 }
+        await release()
+        return value
     }
 
     /// Before sign-in migration: replace the server's own session, restoring
@@ -546,10 +571,10 @@ final class AuthService: @unchecked Sendable {
         requiresPIN: Bool = false,
         rememberSelection: Bool = true
     ) async throws {
-        guard let expectedAccount = await TokenStore.shared.refreshAccountIdentity() else {
+        guard let expectedAccount = await tokenStore.refreshAccountIdentity() else {
             throw ProfileTransitionError.noActiveAccount
         }
-        guard !(await TokenStore.shared.hasTemporaryScope()) else {
+        guard !(await tokenStore.hasTemporaryScope()) else {
             throw ProfileTransitionError.temporaryIdentityActive
         }
 
@@ -584,19 +609,48 @@ final class AuthService: @unchecked Sendable {
         }
     }
 
-    /// Resolve the active server's launch policy. Returns `true` only when a
-    /// complete remembered identity was restored; callers otherwise present
-    /// Who's Watching while retaining the account session.
+    /// Which launch-state entries the selected credential reads and writes:
+    /// a saved sign-in's, or a server's own session's (before migration, or
+    /// a pending legacy server).
+    enum LaunchStateScope: Equatable, Sendable {
+        /// `legacyOwnerAccountID` is the account that took over the server's
+        /// state recorded before sign-ins existed.
+        case signIn(SignInKey, legacyOwnerAccountID: String?)
+        case legacy(serverID: String)
+    }
+
+    /// The selected credential's launch-state scope; nil with nothing
+    /// selected.
+    func currentLaunchStateScope() async -> LaunchStateScope? {
+        switch await tokenStore.currentSelection() {
+        case .none:
+            return nil
+        case .legacy(let serverID):
+            return .legacy(serverID: serverID)
+        case .signIn(let key):
+            return .signIn(key, legacyOwnerAccountID: await tokenStore.legacyDataOwner(forServer: key.serverID))
+        }
+    }
+
+    /// The profile remembered for the selected credential (Who's Watching's
+    /// "Last used"), whatever Profile Selection says.
+    func rememberedProfileForCurrentSelection() async -> RememberedProfile? {
+        rememberedProfile(in: await currentLaunchStateScope(), accountEpoch: await tokenStore.getOrCreateAccountEpoch())
+    }
+
+    /// Resolve the selected sign-in's launch policy. Returns `true` only when
+    /// a complete remembered identity was restored; callers otherwise
+    /// present Who's Watching while retaining the account session.
     func resolveActiveProfileForSession() async -> Bool {
-        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+        guard let transitionLease = await httpClient.beginIdentityTransition() else {
             return false
         }
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
-        await HTTPClient.shared.cancelInFlightRequests()
+        await httpClient.cancelInFlightRequests()
         let resolved = await resolveActiveProfileForSession(holding: transitionLease)
-        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        await httpClient.endIdentityTransition(transitionLease)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
@@ -609,36 +663,55 @@ final class AuthService: @unchecked Sendable {
     func resolveActiveProfileForSession(
         holding transitionLease: HTTPIdentityTransitionLease
     ) async -> Bool {
-        guard await HTTPClient.shared.isIdentityTransitionActive(transitionLease) else {
+        guard await httpClient.isIdentityTransitionActive(transitionLease) else {
             return false
         }
-        guard let serverID = serverRegistry.activeServerId,
-              let expectedAccount = await TokenStore.shared.refreshAccountIdentity(),
-              let accountEpoch = await TokenStore.shared.getOrCreateAccountEpoch() else {
+        guard let scope = await currentLaunchStateScope(),
+              let expectedAccount = await tokenStore.refreshAccountIdentity(),
+              let accountEpoch = await tokenStore.getOrCreateAccountEpoch() else {
             return false
         }
-        let profileToken = await TokenStore.shared.getProfileToken()
+        let profileToken = await tokenStore.getProfileToken()
         let knownProfileIDs: Set<String>? = await MainActor.run {
             ResponseCache.shared
                 .get(CacheKey.profiles, as: [UserProfile].self)
                 .map { Set($0.map(\.id)) }
         }
-        let resolution = launchPreferences.resolution(
-            for: serverID,
-            accountEpoch: accountEpoch,
-            hasStoredProfileToken: profileToken != nil,
-            knownProfileIDs: knownProfileIDs
-        )
+        let resolution: ProfileLaunchResolution
+        let remembered: RememberedProfile?
+        switch scope {
+        case .signIn(let key, let legacyOwner):
+            // The server-keyed state from before sign-ins existed moves onto
+            // its owner the first time that sign-in resolves here.
+            launchPreferences.adoptLegacyEntries(for: key, accountEpoch: accountEpoch,
+                                                 legacyOwnerAccountID: legacyOwner)
+            resolution = launchPreferences.resolution(
+                for: key,
+                accountEpoch: accountEpoch,
+                hasStoredProfileToken: profileToken != nil,
+                knownProfileIDs: knownProfileIDs,
+                legacyOwnerAccountID: legacyOwner
+            )
+            remembered = launchPreferences.rememberedProfile(for: key, accountEpoch: accountEpoch)
+        case .legacy(let serverID):
+            resolution = launchPreferences.legacyResolution(
+                forServer: serverID,
+                accountEpoch: accountEpoch,
+                hasStoredProfileToken: profileToken != nil,
+                knownProfileIDs: knownProfileIDs
+            )
+            remembered = launchPreferences.legacyRememberedProfile(forServer: serverID)
+        }
 
         if case .needsSelection = resolution,
-           let remembered = launchPreferences.rememberedProfile(for: serverID),
+           let remembered,
            knownProfileIDs?.contains(remembered.profileID) == false {
-            launchPreferences.clearRememberedProfile(for: serverID)
+            forgetRememberedProfile(in: scope)
         }
 
         switch resolution {
         case .needsSelection:
-            let committed = await TokenStore.shared.deactivateProfile(
+            let committed = await tokenStore.deactivateProfile(
                 expectedAccount: expectedAccount
             )
             if committed {
@@ -650,14 +723,14 @@ final class AuthService: @unchecked Sendable {
             return false
 
         case .restore(let remembered):
-            let committed = await TokenStore.shared.activateProfile(
+            let committed = await tokenStore.activateProfile(
                 profileID: remembered.profileID,
                 profileToken: remembered.requiredPINAtSelection ? profileToken : nil,
                 expectedAccount: expectedAccount
             )
             if committed {
                 guard launchPreferences.clearBackgroundedAt() else {
-                    _ = await TokenStore.shared.deactivateProfile(
+                    _ = await tokenStore.deactivateProfile(
                         expectedAccount: expectedAccount,
                         expectedProfileID: remembered.profileID
                     )
@@ -669,7 +742,7 @@ final class AuthService: @unchecked Sendable {
                 await clearPerProfileCaches(preservingTrailerReturn: true, preservingWatchPartyRecent: true)
                 return true
             } else {
-                _ = await TokenStore.shared.deactivateProfile(
+                _ = await tokenStore.deactivateProfile(
                     expectedAccount: expectedAccount
                 )
                 return false
@@ -696,47 +769,48 @@ final class AuthService: @unchecked Sendable {
         markSelectionRequired: Bool = false,
         expectedProfileID: String? = nil
     ) async -> Bool {
-        guard !(await TokenStore.shared.hasTemporaryScope()) else { return false }
+        guard !(await tokenStore.hasTemporaryScope()) else { return false }
         if let expectedProfileID, profileId != expectedProfileID { return false }
-        let serverID = serverRegistry.activeServerId
-        let expectedAccount = await TokenStore.shared.refreshAccountIdentity()
+        let scope = await currentLaunchStateScope()
+        let expectedAccount = await tokenStore.refreshAccountIdentity()
+        let epoch = await tokenStore.getOrCreateAccountEpoch()
         let removedRememberedProfile = preserveRememberedProfile
             ? nil
-            : launchPreferences.rememberedProfile(for: serverID)
+            : rememberedProfile(in: scope, accountEpoch: epoch)
 
-        if markSelectionRequired, let serverID {
-            guard launchPreferences.markSelectionRequired(for: serverID) else {
+        if markSelectionRequired, let scope {
+            guard markSelectionRequiredFor(scope) else {
                 return false
             }
         }
-        if !preserveRememberedProfile, let serverID {
-            launchPreferences.clearRememberedProfile(for: serverID)
+        if !preserveRememberedProfile, let scope {
+            forgetRememberedProfile(in: scope)
         }
 
-        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
-            if markSelectionRequired, let serverID {
-                launchPreferences.clearSelectionRequired(for: serverID)
+        guard let transitionLease = await httpClient.beginIdentityTransition() else {
+            if markSelectionRequired, let scope {
+                clearSelectionRequiredFor(scope)
             }
-            restoreRememberedProfile(removedRememberedProfile, for: serverID)
+            restoreRememberedProfile(removedRememberedProfile, in: scope)
             return false
         }
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
-        await HTTPClient.shared.cancelInFlightRequests()
-        let committed = await TokenStore.shared.deactivateProfile(
+        await httpClient.cancelInFlightRequests()
+        let committed = await tokenStore.deactivateProfile(
             expectedAccount: expectedAccount,
             expectedProfileID: expectedProfileID
         )
         if committed {
             await clearPerProfileCaches()
-        } else if markSelectionRequired, let serverID {
-            launchPreferences.clearSelectionRequired(for: serverID)
+        } else if markSelectionRequired, let scope {
+            clearSelectionRequiredFor(scope)
         }
         if !committed {
-            restoreRememberedProfile(removedRememberedProfile, for: serverID)
+            restoreRememberedProfile(removedRememberedProfile, in: scope)
         }
-        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        await httpClient.endIdentityTransition(transitionLease)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
@@ -750,26 +824,26 @@ final class AuthService: @unchecked Sendable {
         rememberSelection: Bool,
         expectedAccount: RefreshAccountIdentity
     ) async throws {
-        guard let serverID = serverRegistry.activeServerId else {
+        guard serverRegistry.activeServerId != nil, let scope = await currentLaunchStateScope() else {
             throw ProfileTransitionError.noActiveServer
         }
-        guard let accountEpoch = await TokenStore.shared.getOrCreateAccountEpoch() else {
+        guard let accountEpoch = await tokenStore.getOrCreateAccountEpoch() else {
             throw ProfileTransitionError.accountEpochUnavailable
         }
-        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
+        guard let transitionLease = await httpClient.beginIdentityTransition() else {
             throw CancellationError()
         }
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
-        await HTTPClient.shared.cancelInFlightRequests()
+        await httpClient.cancelInFlightRequests()
         guard !Task.isCancelled,
-              await TokenStore.shared.activateProfile(
+              await tokenStore.activateProfile(
                 profileID: profileID,
                 profileToken: profileToken,
                 expectedAccount: expectedAccount
               ) else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            await httpClient.endIdentityTransition(transitionLease)
             #if os(iOS) || os(tvOS)
             DiagnosticsCoordinator.activeProfileDidChange()
             #endif
@@ -777,17 +851,12 @@ final class AuthService: @unchecked Sendable {
             throw ProfileTransitionError.identityChanged
         }
         if rememberSelection {
-            guard launchPreferences.remember(
-                profileID: profileID,
-                requiresPIN: requiresPIN,
-                accountEpoch: accountEpoch,
-                for: serverID
-            ) else {
-                _ = await TokenStore.shared.deactivateProfile(
+            guard remember(profileID: profileID, requiresPIN: requiresPIN, accountEpoch: accountEpoch, in: scope) else {
+                _ = await tokenStore.deactivateProfile(
                     expectedAccount: expectedAccount,
                     expectedProfileID: profileID
                 )
-                await HTTPClient.shared.endIdentityTransition(transitionLease)
+                await httpClient.endIdentityTransition(transitionLease)
                 #if os(iOS) || os(tvOS)
                 DiagnosticsCoordinator.activeProfileDidChange()
                 #endif
@@ -798,23 +867,71 @@ final class AuthService: @unchecked Sendable {
         // their owner checks accept only the same account and profile.
         // Explicit profile switches already clear them during deactivation.
         await clearPerProfileCaches(preservingTrailerReturn: true, preservingWatchPartyRecent: true)
-        await HTTPClient.shared.endIdentityTransition(transitionLease)
+        await httpClient.endIdentityTransition(transitionLease)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
     }
 
+    // MARK: Launch state by scope
+
+    private func rememberedProfile(in scope: LaunchStateScope?, accountEpoch: String?) -> RememberedProfile? {
+        switch scope {
+        case .signIn(let key, _)?:
+            return launchPreferences.rememberedProfile(for: key, accountEpoch: accountEpoch)
+        case .legacy(let serverID)?:
+            return launchPreferences.legacyRememberedProfile(forServer: serverID)
+        case nil:
+            return nil
+        }
+    }
+
+    @discardableResult
+    private func remember(profileID: String, requiresPIN: Bool, accountEpoch: String, in scope: LaunchStateScope) -> Bool {
+        switch scope {
+        case .signIn(let key, let legacyOwner):
+            return launchPreferences.remember(profileID: profileID, requiresPIN: requiresPIN,
+                                              accountEpoch: accountEpoch, for: key, legacyOwnerAccountID: legacyOwner)
+        case .legacy(let serverID):
+            return launchPreferences.rememberLegacy(profileID: profileID, requiresPIN: requiresPIN,
+                                                    accountEpoch: accountEpoch, forServer: serverID)
+        }
+    }
+
+    private func forgetRememberedProfile(in scope: LaunchStateScope) {
+        switch scope {
+        case .signIn(let key, let legacyOwner):
+            launchPreferences.forgetSignIn(key, legacyOwnerAccountID: legacyOwner)
+        case .legacy(let serverID):
+            launchPreferences.forgetLegacyProfile(forServer: serverID)
+        }
+    }
+
+    private func markSelectionRequiredFor(_ scope: LaunchStateScope) -> Bool {
+        switch scope {
+        case .signIn(let key, _):
+            return launchPreferences.markSelectionRequired(for: key)
+        case .legacy(let serverID):
+            return launchPreferences.markLegacySelectionRequired(forServer: serverID)
+        }
+    }
+
+    private func clearSelectionRequiredFor(_ scope: LaunchStateScope) {
+        switch scope {
+        case .signIn(let key, let legacyOwner):
+            launchPreferences.clearSelectionRequired(for: key, legacyOwnerAccountID: legacyOwner)
+        case .legacy(let serverID):
+            launchPreferences.clearLegacySelectionRequired(forServer: serverID)
+        }
+    }
+
     private func restoreRememberedProfile(
         _ remembered: RememberedProfile?,
-        for serverID: String?
+        in scope: LaunchStateScope?
     ) {
-        guard let remembered, let serverID else { return }
-        launchPreferences.remember(
-            profileID: remembered.profileID,
-            requiresPIN: remembered.requiredPINAtSelection,
-            accountEpoch: remembered.accountEpoch,
-            for: serverID
-        )
+        guard let remembered, let scope else { return }
+        remember(profileID: remembered.profileID, requiresPIN: remembered.requiredPINAtSelection,
+                 accountEpoch: remembered.accountEpoch, in: scope)
     }
 
     /// Reconcile a fresh account-level profile list with the current request
@@ -853,7 +970,7 @@ final class AuthService: @unchecked Sendable {
         expectedProfileSelection: UUID? = nil
     ) async {
         guard profileId == expectedProfileID else { return }
-        let serverID = serverRegistry.activeServerId
+        let scope = await currentLaunchStateScope()
         let expectedAccount = await tokenStore.refreshAccountIdentity()
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
             return
@@ -881,8 +998,8 @@ final class AuthService: @unchecked Sendable {
             expectedProfileSelection: expectedProfileSelection
         )
         if committed {
-            if let serverID {
-                launchPreferences.clearRememberedProfile(for: serverID)
+            if let scope {
+                forgetRememberedProfile(in: scope)
             }
             await clearPerProfileCaches()
         }
@@ -897,6 +1014,15 @@ final class AuthService: @unchecked Sendable {
                 object: expectedProfileID
             )
         }
+    }
+
+    /// Saves the profiles a sign-in's account has, so user cards can draw
+    /// them without the server (`SavedSignIn.profiles`). `key` is the
+    /// sign-in the list was read for; a list read for another sign-in, or
+    /// before migration, changes nothing.
+    func updateSignInDisplayCache(_ profiles: [UserProfile], for key: SignInKey?) async {
+        guard let key, await tokenStore.currentSignInKey() == key else { return }
+        await tokenStore.updateSignInDisplay(key, username: nil, profiles: profiles.map(SavedSignInProfile.init))
     }
 
     /// Drop every cached response that's profile-scoped. Called while
@@ -1004,52 +1130,131 @@ final class AuthService: @unchecked Sendable {
 
     // MARK: - Sign Out
 
-    /// Sign the current user out of the active server under the identity
-    /// gate: the selected saved sign-in is removed (and its user, when it was
-    /// the last one), or before migration the server's own session. Remote
-    /// revocation uses only the outgoing credential, refreshing it first if
-    /// it expired, and cannot delay logout or alter a new login. Diagnostics
-    /// for the server are purged only when no sign-in remains on it.
+    /// What a sign-out or removal acts on (spec §5.6).
+    enum SignInRemovalTarget: Equatable, Sendable {
+        /// The selected credential: its saved sign-in, its pending legacy
+        /// server, or before migration the server's own session.
+        case current
+        /// One saved sign-in, current or not (Sign Out of {server}).
+        case signIn(SignInKey)
+        /// Every sign-in in a user, which removes the user (Remove from This
+        /// Apple TV).
+        case user(String)
+    }
+
+    /// Sign the current user out of the active server: the selected saved
+    /// sign-in is removed (and its user, when it was the last one), or
+    /// before migration the server's own session.
     func signOutWithOutcome() async -> SignOutOutcome {
+        await removeSignIns(.current)
+    }
+
+    /// Signs out of or removes `target` under the identity gate (plan §2.6).
+    /// The sessions are captured, then the sign-ins and this Apple TV user's
+    /// proofs, remembered profiles, pending switches, links, and last
+    /// servers for them are removed, and each session is revoked afterwards
+    /// (refreshing first if it expired) without waiting. Diagnostics for a
+    /// server are purged only when no sign-in remains on it. When the
+    /// selected credential is affected, push is turned off for its server
+    /// first and every cache is cleared; a temporary playback scope refuses.
+    func removeSignIns(_ target: SignInRemovalTarget) async -> SignOutOutcome {
         let serverID = serverRegistry.activeServerId
-        let capturedAuth = await tokenStore.captureOrdinaryRequestAuth()
-        guard case .allowed(let account) = Self.signOutAuthorization(
-            activeServerId: serverID, capturedAuth: capturedAuth
-        ) else { return .refused }
-        // Only a device that can still authenticate can tell the server to
-        // stop pushing, so this runs before the credentials are cleared. A
-        // refused sign-out keeps the server signed in, so its pushes are
-        // turned back on.
-        if let serverID { await unregisterPush(serverID) }
+        let selection = await tokenStore.currentSelection()
+        let currentUserID = await tokenStore.currentUserID()
+        let directory = try? await tokenStore.directory()
+        let affectsCurrent: Bool
+        switch target {
+        case .current:
+            affectsCurrent = true
+        case .signIn(let key):
+            affectsCurrent = selection == .signIn(key)
+        case .user(let userID):
+            affectsCurrent = currentUserID == userID && selection != .none
+        }
+        var account: RefreshAccountIdentity?
+        if affectsCurrent {
+            let capturedAuth = await tokenStore.captureOrdinaryRequestAuth()
+            guard case .allowed(let allowed) = Self.signOutAuthorization(
+                activeServerId: serverID, capturedAuth: capturedAuth
+            ) else { return .refused }
+            account = allowed
+            // Only a device that can still authenticate can tell the server
+            // to stop pushing, so this runs before the credentials are
+            // cleared. A refused sign-out keeps the server signed in, so its
+            // pushes are turned back on.
+            if let serverID { await unregisterPush(serverID) }
+        } else if await tokenStore.hasTemporaryScope() {
+            return .refused
+        }
         guard let lease = await httpClient.beginIdentityTransition() else {
-            if let serverID { await restorePush(serverID) }
+            if affectsCurrent, let serverID { await restorePush(serverID) }
             return .refused
         }
-        await httpClient.cancelInFlightRequests()
-        guard !Task.isCancelled,
-              serverRegistry.activeServerId == serverID,
-              await tokenStore.refreshAccountIdentity() == account else {
-            await httpClient.endIdentityTransition(lease)
-            if let serverID { await restorePush(serverID) }
-            return .refused
+        if affectsCurrent {
+            await httpClient.cancelInFlightRequests()
+            guard !Task.isCancelled,
+                  serverRegistry.activeServerId == serverID,
+                  await tokenStore.refreshAccountIdentity() == account else {
+                await httpClient.endIdentityTransition(lease)
+                if let serverID { await restorePush(serverID) }
+                return .refused
+            }
+            #if os(iOS) || os(tvOS)
+            DiagnosticsCoordinator.activeProfileWillChange()
+            #endif
         }
-        #if os(iOS) || os(tvOS)
-        DiagnosticsCoordinator.activeProfileWillChange()
-        #endif
-        let removal = await tokenStore.removeCurrentCredential()
+
+        var removedKeys: [SignInKey] = []
+        var removedLegacyServers: [String] = []
+        let removals: [SignInRemoval]
+        switch target {
+        case .current:
+            switch selection {
+            case .signIn(let key): removedKeys = [key]
+            case .legacy(let legacyServerID): removedLegacyServers = [legacyServerID]
+            case .none: break
+            }
+            removals = [await tokenStore.removeCurrentCredential()]
+        case .signIn(let key):
+            removedKeys = [key]
+            removals = [await tokenStore.removeSignIn(key)]
+        case .user(let userID):
+            let user = directory?.user(withID: userID)
+            removedKeys = user?.signIns ?? []
+            removedLegacyServers = user?.pendingLegacyServerIDs ?? []
+            removals = await tokenStore.removeUser(userID)
+        }
+
+        for key in removedKeys {
+            launchPreferences.forgetSignIn(
+                key,
+                legacyOwnerAccountID: await tokenStore.legacyDataOwner(forServer: key.serverID)
+            )
+        }
+        for legacyServerID in removedLegacyServers {
+            launchPreferences.forgetLegacyProfile(forServer: legacyServerID)
+        }
+        for userID in Set(removals.compactMap(\.removedUserID)) {
+            launchPreferences.forgetUser(userID)
+        }
+        if case .user(let userID) = target {
+            launchPreferences.forgetUser(userID)
+        }
+
+        // Reports and consent are server-wide; another user still signed in
+        // there keeps theirs.
         var diagnosticsRemoved = true
-        if let serverID {
-            launchPreferences.clearRememberedProfile(for: serverID)
-            // Reports and consent are server-wide; another user still signed
-            // in there keeps theirs.
-            if await !tokenStore.hasSavedSignIn(onServer: serverID) {
-                diagnosticsRemoved = await purgeDiagnostics(serverID)
+        for affectedServerID in Set(removedKeys.map(\.serverID) + removedLegacyServers) {
+            if await !tokenStore.hasSavedSignIn(onServer: affectedServerID) {
+                diagnosticsRemoved = await purgeDiagnostics(affectedServerID) && diagnosticsRemoved
             }
         }
-        await clearAllCaches()
+        if affectsCurrent {
+            await clearAllCaches()
+        }
         await httpClient.endIdentityTransition(lease)
-        revoke(removal.credential.map { [$0] } ?? [])
-        guard removal.durable else { return .localOnly }
+        revoke(removals.compactMap(\.credential))
+        guard removals.allSatisfy(\.durable) else { return .localOnly }
         return diagnosticsRemoved ? .completed : .diagnosticsCleanupFailed
     }
 

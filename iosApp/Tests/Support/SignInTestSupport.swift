@@ -123,12 +123,12 @@ struct SignInStoreFixture {
     }
 
     /// Point `store` at a server the way the registry does: URL mirror,
-    /// active-server mirror, then the interim credential choice.
+    /// active-server mirror, then the launch rules' credential there.
     func activate(_ serverID: String, url: String, in store: TokenStore? = nil) async {
         let store = store ?? self.store
         defaults.set(serverID, forKey: SharedStorage.activeServerIdKey)
         await store.setServerUrl(url)
-        let selected = await store.interimSelection(forServer: serverID)
+        let selected = await store.launchSelection(forServer: serverID)
         await store.select(serverID: serverID, credential: selected.credential, userID: selected.userID)
     }
 
@@ -176,5 +176,23 @@ struct SignInStoreFixture {
 extension SignInKey {
     static func make(_ serverID: String, _ accountID: String) -> SignInKey {
         SignInKey(serverID: serverID, accountID: accountID)!
+    }
+}
+
+extension ServerRegistry {
+    /// Switches to `serverId` with the credential the launch rules give it
+    /// outside a chooser (`TokenStore.launchSelection(forServer:)`), read
+    /// from `tokenStore`, the registry's own store. The app names the
+    /// credential of every switch; tests that only need "this server, as it
+    /// would open" use this.
+    @discardableResult
+    func switchTo(
+        serverId: String,
+        launchSelectionFrom tokenStore: TokenStore,
+        resolveDestinationProfile: Bool = false
+    ) async -> Bool {
+        let selected = await tokenStore.launchSelection(forServer: serverId)
+        return await switchTo(serverId: serverId, credential: selected.credential, userID: selected.userID,
+                              resolveDestinationProfile: resolveDestinationProfile)
     }
 }

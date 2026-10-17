@@ -461,13 +461,15 @@ actor TokenStore {
 
     func currentUserID() -> String? { activeUserID }
 
-    /// The credential the interim single-user rules (plan §2.5, §4.2) select
-    /// on `serverID`: before migration, the server's own slot; afterwards,
-    /// the current user's sign-in or pending legacy server there, where the
-    /// current user is the selected one, else the only user, else the
-    /// migrated user, else a user with that server. WP3's launch resolver
-    /// replaces this.
-    func interimSelection(forServer serverID: String) -> (credential: CredentialSelection, userID: String?) {
+    /// The credential the launch rules (spec §6.2) give `serverID` when no
+    /// chooser is involved: before migration, the server's own slot;
+    /// afterwards the user's sign-in or pending legacy server there. The user
+    /// is the selected one, else the one this Apple TV user (or device) is
+    /// linked to, else the user migration created when this Apple TV user
+    /// used Silo before users existed, else the only user. Background
+    /// launches (push, download refresh) use this; foreground launches go
+    /// through `SiloUserCoordinator`, which selects explicitly.
+    func launchSelection(forServer serverID: String) -> (credential: CredentialSelection, userID: String?) {
         guard !serverID.isEmpty else { return (.none, nil) }
         let index: SiloUserIndex?
         do { index = try loadIndex() } catch {
@@ -477,30 +479,35 @@ actor TokenStore {
             return (.legacy(serverID: serverID), nil)
         }
         guard let index else { return (.legacy(serverID: serverID), nil) }
-        let user = index.users.first(where: { $0.id == activeUserID })
+        let launch = ProfileLaunchState.load(from: defaults)
+        let hasLegacyHistory = (launch.lastServerByUserID ?? [:]).isEmpty
+            && (!launch.rememberedByServerID.isEmpty
+                || defaults.string(forKey: SharedStorage.activeServerIdKey) != nil)
+        func user(_ id: String?) -> SiloUser? { id.flatMap { id in index.users.first { $0.id == id } } }
+        let chosen = user(activeUserID)
+            ?? user(launch.linkedUserID)
+            ?? (hasLegacyHistory ? user(index.migratedUserID) : nil)
             ?? (index.users.count == 1 ? index.users.first : nil)
-            ?? index.users.first(where: { $0.id == index.migratedUserID })
-            ?? index.users.first(where: { Self.user($0, has: serverID) })
-        guard let user else { return (.none, nil) }
-        return (Self.credential(of: user, onServer: serverID), user.id)
+        guard let chosen else { return (.none, nil) }
+        return (Self.credential(of: chosen, onServer: serverID), chosen.id)
     }
 
-    /// Point the store at `serverId` with the interim credential choice
-    /// (`interimSelection(forServer:)`), loading it and refreshing the Top
+    /// Point the store at `serverId` with the launch rules' credential there
+    /// (`launchSelection(forServer:)`), loading it and refreshing the Top
     /// Shelf mirrors. A no-op when `serverId` is already active, so a choice
     /// made through `select` stands.
     func switchActiveServer(serverId: String) {
         guard serverId != activeServerId else { return }
-        let resolved = interimSelection(forServer: serverId)
+        let resolved = launchSelection(forServer: serverId)
         select(serverID: serverId, credential: resolved.credential, userID: resolved.userID)
     }
 
     /// The same choice as `switchActiveServer`, without loading credentials
-    /// or touching the Top Shelf mirrors. Used during cold and background
-    /// launches before routing settles.
+    /// or touching the Top Shelf mirrors. Used during background launches
+    /// before routing settles.
     func retargetActiveServer(serverId: String) {
         guard serverId != activeServerId else { return }
-        let resolved = interimSelection(forServer: serverId)
+        let resolved = launchSelection(forServer: serverId)
         applySelection(serverID: serverId, credential: resolved.credential, userID: resolved.userID)
     }
 
@@ -637,6 +644,17 @@ actor TokenStore {
             }
         }
         return SiloUserDirectorySnapshot(index: index, signIns: summaries)
+    }
+
+    /// The account that took over `serverID`'s state from before sign-ins
+    /// existed (`SiloUserIndex.legacyDataOwnerByServerID`). Nil before
+    /// migration and for servers no migrated sign-in owns.
+    func legacyDataOwner(forServer serverID: String) -> String? {
+        if legacyDataOwners[serverID] == nil {
+            // This process may not have read the index yet.
+            _ = try? loadIndex()
+        }
+        return legacyDataOwners[serverID]
     }
 
     /// Whether any user has a sign-in, or a pending legacy server, on
@@ -785,7 +803,7 @@ actor TokenStore {
     private func reselectRetiredLegacySelection(_ index: SiloUserIndex) {
         guard case .legacy(let serverID) = selection,
               !index.users.contains(where: { $0.pendingLegacyServerIDs?.contains(serverID) == true }) else { return }
-        let resolved = interimSelection(forServer: activeServerId)
+        let resolved = launchSelection(forServer: activeServerId)
         select(serverID: activeServerId, credential: resolved.credential, userID: resolved.userID)
     }
 
@@ -2315,11 +2333,12 @@ actor TokenStore {
 
     // MARK: - User and display data
 
-    /// Rename a user on this device. Names are trimmed and capped at 40
-    /// characters; an empty name restores the default.
+    /// Rename a user on this device (`SiloUserNaming.normalizedDisplayName`):
+    /// trimmed and capped at 40 characters; an empty name restores the
+    /// default.
     @discardableResult
     func renameUser(_ userID: String, to name: String?) -> Bool {
-        let normalized = Self.normalizedUserName(name)
+        let normalized = SiloUserNaming.normalizedDisplayName(name)
         guard let index = try? loadIndex(), let member = index.users.firstIndex(where: { $0.id == userID }) else {
             return false
         }
@@ -2328,16 +2347,6 @@ actor TokenStore {
         updated.users[member].displayName = normalized
         do { try saveIndex(updated) } catch { return false }
         return true
-    }
-
-    /// The same rule as `SiloUserNaming.normalizedDisplayName`, which takes
-    /// over once WP3 lands: trim, keep the first 40 characters, trim again,
-    /// and treat empty as no name.
-    private static func normalizedUserName(_ name: String?) -> String? {
-        guard let name else { return nil }
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let capped = String(trimmed.prefix(40)).trimmingCharacters(in: .whitespacesAndNewlines)
-        return capped.isEmpty ? nil : capped
     }
 
     /// Update a sign-in's display cache (username, profiles for user cards).
@@ -2491,6 +2500,13 @@ actor TokenStore {
         }
         let emptied = updated.users.filter { $0.signIns.isEmpty && ($0.pendingLegacyServerIDs ?? []).isEmpty }.map(\.id)
         updated.users.removeAll { emptied.contains($0.id) }
+        // The server's old local data belonged to this same account, so the
+        // saved sign-in takes it over unless another account already has.
+        var owners = updated.legacyDataOwnerByServerID ?? [:]
+        if owners[serverID] == nil {
+            owners[serverID] = existing.accountID
+            updated.legacyDataOwnerByServerID = owners
+        }
         do { try saveIndex(updated) } catch {
             recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "writeFailed")
             return .unchanged
