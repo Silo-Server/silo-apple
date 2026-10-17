@@ -136,15 +136,15 @@ enum APIv2AvatarSource: APIv2StringEnum {
 
 enum APIv2QualityPreference: APIv2StringEnum {
     case auto
-    case original
     case unknown(String)
 
-    static let known: [String: Self] = ["auto": .auto, "original": .original]
+    /// The deprecated "original" reads as Auto, which already plays the
+    /// original file whenever the device can, so it is never sent back.
+    static let known: [String: Self] = ["auto": .auto, "original": .auto]
 
     var wireValue: String {
         switch self {
         case .auto: return "auto"
-        case .original: return "original"
         case .unknown(let value): return value
         }
     }

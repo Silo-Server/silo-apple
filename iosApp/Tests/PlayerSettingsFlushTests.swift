@@ -1027,21 +1027,21 @@ final class PlayerSettingsFlushTests: XCTestCase {
             key: SettingKey.playbackPreferredQuality.rawValue,
             value: .string("720p"),
             source: .contractDefault,
-            storedValue: .string("original"),
+            storedValue: .string("2160p"),
             constrained: true,
             constraintKind: .ceiling
         )
 
         let imported = await harness.settings.importLegacySettingsIfNeeded(
             scopeID: "constrained-import-overlay-test",
-            legacySnapshot: [.playbackPreferredQuality: .string("original")],
+            legacySnapshot: [.playbackPreferredQuality: .string("2160p")],
             effectiveByKey: [.playbackPreferredQuality: constrained]
         )
 
         XCTAssertTrue(imported)
         XCTAssertEqual(
             harness.transport.writesByKey()[.playbackPreferredQuality]?.value,
-            .string("original")
+            .string("2160p")
         )
         XCTAssertEqual(
             harness.settings.preferredQualityResolution,
@@ -1566,20 +1566,38 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(harness.settings.introSkipMode, .always, "the profile's value applies again")
     }
 
-    func testUsingTheProfileQualityClearsBothAxesTogether() async throws {
+    /// The two quality pickers are separate settings, as on the web: going
+    /// back to the profile's bitrate cap keeps this device's resolution.
+    func testUsingTheProfileSettingForOneQualityPickerClearsOnlyItsKey() async throws {
         let harness = try PlayerSettingsHarness()
         harness.settings.setQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "720p")))
         await harness.settings.flushPendingDeviceSettings()
         harness.transport.reset()
+        // What the server holds once the cap's device row is gone: this
+        // device's resolution and the profile's (default) cap.
+        harness.transport.effective = [
+            .init(
+                key: SettingKey.playbackPreferredQuality.rawValue,
+                value: .string("720p"),
+                source: .scope(.profileDevice),
+                scope: .profileDevice
+            ),
+            .init(key: SettingKey.playbackMaxBitrateKbps.rawValue, value: .null, source: .contractDefault),
+        ]
 
-        await harness.settings.useProfileSetting(.quality)
+        await harness.settings.useProfileSetting(.maxBitrate)
 
-        XCTAssertEqual(
-            Set(harness.transport.deletes()),
-            [.playbackPreferredQuality, .playbackMaxBitrateKbps],
-            "clearing one axis alone would pair the profile's cap with this device's resolution"
-        )
-        XCTAssertFalse(harness.settings.hasDeviceOverride(.quality))
+        XCTAssertEqual(harness.transport.deletes(), [.playbackMaxBitrateKbps])
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.maxBitrate))
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.resolution))
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
+        XCTAssertNil(harness.settings.maxBitrateKbps)
+
+        harness.transport.reset()
+        harness.transport.effective = []
+        await harness.settings.useProfileSetting(.resolution)
+        XCTAssertEqual(harness.transport.deletes(), [.playbackPreferredQuality])
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.resolution))
     }
 
     /// Offline, the clear waits in the (server, profile, device) partition it
@@ -1668,7 +1686,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
     func testUsingTheProfileSettingRetiresOnlyThoseKeysFromThePendingImport() async throws {
         let harness = try PlayerSettingsHarness()
         let scopeID = "server-a|profile-1|device"
-        harness.settings.retireMigration(of: ProfileBackedPlaybackSetting.quality.keys, for: scopeID)
+        harness.settings.retireMigration(
+            of: ProfileBackedPlaybackSetting.resolution.keys + ProfileBackedPlaybackSetting.maxBitrate.keys,
+            for: scopeID
+        )
 
         let imported = await harness.settings.importLegacySettingsIfNeeded(
             scopeID: scopeID,
@@ -1893,9 +1914,18 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         await harness.settings.refreshFromServer()
 
+        // One batch for the player's keys. iPhone and iPad read the cellular
+        // pair in a second one, since a server that predates the pair would
+        // refuse the whole first batch over it.
         let calls = harness.transport.effectiveCalls()
-        XCTAssertEqual(calls.count, 1, "a refresh must be one round trip, not one per key")
+        XCTAssertEqual(
+            calls.count, PlayerSettings.offersCellularQuality ? 2 : 1,
+            "a refresh must be batched, not one call per key"
+        )
         XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerReadSettings))
+        if PlayerSettings.offersCellularQuality {
+            XCTAssertEqual(calls[1], SettingKey.playerCellularQualitySettings)
+        }
     }
 
     /// Apple has no player setting for recaps: the player follows the
@@ -2062,7 +2092,9 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         await harness.settings.resetAllDeviceSettings()
 
-        XCTAssertEqual(Set(harness.transport.deletes()), Set(SettingKey.playerReadSettings))
+        // iPhone and iPad also clear the cellular pair this device can hold.
+        let cellular = PlayerSettings.offersCellularQuality ? SettingKey.playerCellularQualitySettings : []
+        XCTAssertEqual(Set(harness.transport.deletes()), Set(SettingKey.playerReadSettings + cellular))
     }
 
     func testAnOldServerResetAppliesContractDefaultsAndDoesNotQueueDeletes() async throws {
@@ -2128,9 +2160,9 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         XCTAssertEqual(result, .refreshed)
         XCTAssertEqual(harness.settings.introSkipMode, .never)
-        XCTAssertEqual(harness.transport.effectiveCalls().count, 1)
-        XCTAssertTrue(harness.transport.effectiveCalls()[0].contains(.playbackIntroSkipMode))
-        XCTAssertFalse(harness.transport.effectiveCalls()[0].contains(.playbackAutoSkipIntro))
+        let calls = harness.transport.effectiveCalls()
+        XCTAssertTrue(calls[0].contains(.playbackIntroSkipMode))
+        XCTAssertFalse(calls.contains { $0.contains(.playbackAutoSkipIntro) })
     }
 
     func testSettingTheModeNeverWritesTheDeprecatedBoolean() async throws {
@@ -2258,19 +2290,14 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(AppleQualityAxes.join(resolution: "480p", bitrateKbps: 300), "328p")
     }
 
-    func testInitialOriginalSelectionIgnoresARememberedLowerResolutionSource() throws {
+    func testAStoredOriginalQualityKeepsTheRememberedVersionLikeAuto() throws {
         let sevenTwenty = Self.version(fileId: 1, resolution: "720p", bitrateKbps: 4_000)
         let fourK = Self.version(fileId: 2, resolution: "2160p", bitrateKbps: 30_000)
         let versions = [sevenTwenty, fourK]
 
-        XCTAssertEqual(
-            PlaybackSessionBridge.selectVersion(
-                from: versions,
-                lastFileId: sevenTwenty.fileId,
-                preferredQuality: "original"
-            ).fileId,
-            fourK.fileId
-        )
+        // The bridge passes the stored quality through normalizeStoredId,
+        // which reads "original" as Auto, the nil preference.
+        XCTAssertEqual(ApplePlaybackQuality.normalizeStoredId("original"), ApplePlaybackQuality.autoId)
         XCTAssertEqual(
             PlaybackSessionBridge.selectVersion(
                 from: versions,
@@ -2279,6 +2306,23 @@ final class PlayerSettingsFlushTests: XCTestCase {
             ).fileId,
             sevenTwenty.fileId,
             "Auto must retain the remembered-version fallback"
+        )
+        XCTAssertEqual(
+            PlaybackSessionBridge.selectVersion(
+                from: versions,
+                lastFileId: sevenTwenty.fileId,
+                preferredQuality: "original"
+            ).fileId,
+            sevenTwenty.fileId,
+            "original no longer outranks the remembered version"
+        )
+        XCTAssertEqual(
+            DetailVersionSelection.displayVersion(
+                versions: versions, selectedFileId: nil, lastFileId: nil, preferredQualityId: "original"
+            )?.fileId,
+            DetailVersionSelection.displayVersion(
+                versions: versions, selectedFileId: nil, lastFileId: nil, preferredQualityId: "auto"
+            )?.fileId
         )
     }
 
@@ -2302,7 +2346,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         )
     }
 
-    func testAnInPlayerQualityChoiceReplacesBothStoredAxes() throws {
+    func testAFixedInPlayerRungReplacesTheSavedCapAndAutoKeepsIt() throws {
         XCTAssertEqual(
             AppleQualityAxes.resolvedBitrateCap(
                 qualityOverride: nil,
@@ -2311,19 +2355,20 @@ final class PlayerSettingsFlushTests: XCTestCase {
             6_000,
             "a foreign stored cap must survive exactly when there is no session override"
         )
-        XCTAssertNil(
+        XCTAssertEqual(
             AppleQualityAxes.resolvedBitrateCap(
                 qualityOverride: "auto",
                 fallbackBitrateKbps: 3_000
             ),
-            "explicit Auto must clear a persisted cap"
+            3_000,
+            "Auto picked in the player keeps the saved cap"
         )
         XCTAssertNil(
             AppleQualityAxes.resolvedBitrateCap(
-                qualityOverride: "original",
-                fallbackBitrateKbps: 3_000
+                qualityOverride: "auto",
+                fallbackBitrateKbps: nil
             ),
-            "explicit Original must clear a persisted cap"
+            "Auto with a saved \"No limit\" sends no cap"
         )
         XCTAssertEqual(
             AppleQualityAxes.resolvedBitrateCap(
@@ -2341,12 +2386,12 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(AppleQualityAxes.join(resolution: "1440p", bitrateKbps: nil), "auto")
     }
 
-    func testOriginalRemainsDistinctFromAuto() throws {
-        XCTAssertEqual(ApplePlaybackQuality.normalizeStoredId("original"), "original")
-        XCTAssertEqual(AppleQualityAxes.join(resolution: "original", bitrateKbps: nil), "original")
-        XCTAssertEqual(AppleQualityAxes.join(resolution: "original", bitrateKbps: 6_000), "original")
-        XCTAssertEqual(AppleQualityAxes.join(resolution: "auto", bitrateKbps: 6_000), "auto")
-        XCTAssertEqual(AppleQualityAxes.split("original"), .init(resolution: "original", bitrateKbps: nil))
+    func testAStoredOriginalQualityMapsToAuto() throws {
+        XCTAssertEqual(ApplePlaybackQuality.normalizeStoredId("original"), "auto")
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "original", bitrateKbps: nil), "auto")
+        XCTAssertEqual(AppleQualityAxes.join(resolution: "original", bitrateKbps: 6_000), "auto")
+        XCTAssertEqual(AppleQualityAxes.split("original"), .auto)
+        XCTAssertFalse(ApplePlaybackQuality.settingsOptions.contains { $0.id == "original" })
     }
 
     func testRecoveryLoadRequestsKeepTheSessionQualityOverride() throws {

@@ -650,6 +650,7 @@ enum TVSettingsDetailFocus: Hashable {
     case generalAdvisoryAge
     case generalCardPreset
     case generalTopMenu
+    case playbackMaxBitrate
     case playbackAudioLanguage
     case playbackBufferAhead
     case playbackDeinterlaceMode

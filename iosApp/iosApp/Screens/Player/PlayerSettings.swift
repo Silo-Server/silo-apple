@@ -162,15 +162,30 @@ extension SettingKey {
 
     /// What a player refresh reads: the synced keys plus the followed ones.
     static let playerReadSettings: [SettingKey] = playerDeviceSettings + playerFollowedSettings
+
+    /// The cellular quality pair (iPhone and iPad), resolution first like the
+    /// main pair. Kept out of ``playerReadSettings``: the pair arrived in
+    /// manifest revision 20, and a batch fails as a whole on a key the server
+    /// does not define, so it is read in a batch of its own once the server
+    /// reports that revision. Written at the same scope as the main pair.
+    static let playerCellularQualitySettings: [SettingKey] = [
+        .playbackCellularPreferredQuality,
+        .playbackCellularMaxBitrateKbps,
+    ]
 }
 
 /// A Playback setting the profile can hold as well as this device, so the
-/// device can either keep its own value or go back to the profile's. Quality
-/// is one setting stored as two keys, and the two are only ever cleared
-/// together: clearing one axis would mix the profile's cap with this device's
-/// resolution, a pair nobody chose.
+/// device can either keep its own value or go back to the profile's.
+///
+/// The main quality is two settings, one per picker, as on the web: a device
+/// can keep its own resolution and still follow the profile's bitrate cap.
+/// The cellular quality is one preset stored as two keys, written and cleared
+/// together.
 enum ProfileBackedPlaybackSetting: CaseIterable {
-    case quality
+    case resolution
+    case maxBitrate
+    /// iPhone and iPad only; see ``PlayerSettings/offersCellularQuality``.
+    case cellularQuality
     case audioLanguage
     case introSkipMode
     case autoSkipCredits
@@ -179,7 +194,9 @@ enum ProfileBackedPlaybackSetting: CaseIterable {
 
     var keys: [SettingKey] {
         switch self {
-        case .quality: return [.playbackPreferredQuality, .playbackMaxBitrateKbps]
+        case .resolution: return [.playbackPreferredQuality]
+        case .maxBitrate: return [.playbackMaxBitrateKbps]
+        case .cellularQuality: return SettingKey.playerCellularQualitySettings
         case .audioLanguage: return [.playbackAudioLanguage]
         case .introSkipMode: return [.playbackIntroSkipMode]
         case .autoSkipCredits: return [.playbackAutoSkipCredits]
@@ -197,6 +214,8 @@ private extension SettingKey {
     // contract fails to compile here.
     static var preferredQuality: SettingKey { .playbackPreferredQuality }
     static var maxBitrateKbps: SettingKey { .playbackMaxBitrateKbps }
+    static var cellularPreferredQuality: SettingKey { .playbackCellularPreferredQuality }
+    static var cellularMaxBitrateKbps: SettingKey { .playbackCellularMaxBitrateKbps }
     static var audioLanguage: SettingKey { .playbackAudioLanguage }
     static var introSkipMode: SettingKey { .playbackIntroSkipMode }
     static var autoSkipCredits: SettingKey { .playbackAutoSkipCredits }
@@ -283,12 +302,76 @@ final class PlayerSettings {
         )
     }
 
-    /// A user-facing label for the stored pair, preset or not.
+    /// A user-facing label for the stored pair, in the terms of the two
+    /// pickers that set it ("1080p at 10 Mbps") rather than a preset name.
     var preferredQualityLabel: String {
-        SiloQualityPresets.describe(
+        SiloQualityPresets.describeAxes(
             resolution: preferredQualityResolution,
             bitrateKbps: maxBitrateKbps
         )
+    }
+
+    /// Whether this platform offers the cellular quality pair. iPhone and
+    /// iPad only: an Apple TV or a Mac is not on mobile data, and the
+    /// contract lists only the phone platforms for the two keys.
+    static var offersCellularQuality: Bool {
+        #if os(iOS)
+        true
+        #else
+        false
+        #endif
+    }
+
+    /// The contract default for the cellular pair: the 720p preset.
+    /// `SettingsConformanceTests` pins it to the vendored manifest.
+    static let defaultCellularQuality = AppleQualityAxes(resolution: "720p", bitrateKbps: 2_000)
+
+    /// The resolution half of the cellular pair, a member of
+    /// `playback.cellular_preferred_quality`.
+    ///
+    /// Playback uses this pair instead of the main one on mobile data, a
+    /// hotspot, or in Low Data Mode. On a server older than manifest revision
+    /// 20 the pair is kept on this device only, and still applied.
+    private(set) var cellularQualityResolution: String {
+        didSet {
+            guard !isLoadingCache else { return }
+            defaults.set(cellularQualityResolution, forKey: Self.cacheKey(Keys.cellularPreferredQuality))
+        }
+    }
+
+    /// The bandwidth half of the cellular pair; nil is uncapped.
+    private(set) var cellularMaxBitrateKbps: Int? {
+        didSet {
+            guard !isLoadingCache else { return }
+            // Unlike the main cap, an absent value is the contract default
+            // (2000 kbps), so uncapped is stored as 0.
+            defaults.set(cellularMaxBitrateKbps ?? 0, forKey: Self.cacheKey(Keys.cellularMaxBitrateKbps))
+        }
+    }
+
+    var cellularQualityAxes: AppleQualityAxes {
+        AppleQualityAxes(resolution: cellularQualityResolution, bitrateKbps: cellularMaxBitrateKbps)
+    }
+
+    /// The shared preset the cellular pair corresponds to, or nil for a pair
+    /// no preset covers (set through the API or by another client).
+    var currentCellularQualityPreset: SiloQualityPreset? {
+        SiloQualityPresets.preset(resolution: cellularQualityResolution, bitrateKbps: cellularMaxBitrateKbps)
+    }
+
+    /// A user-facing label for the cellular pair, preset or not.
+    var cellularQualityLabel: String {
+        SiloQualityPresets.describe(resolution: cellularQualityResolution, bitrateKbps: cellularMaxBitrateKbps)
+    }
+
+    /// The pair playback asks for on the current connection: the cellular
+    /// pair on a metered one (see ``PlaybackNetworkPath``), the main pair
+    /// otherwise.
+    func playbackQualityAxes(onMeteredNetwork: Bool) -> AppleQualityAxes {
+        guard onMeteredNetwork, Self.offersCellularQuality else {
+            return AppleQualityAxes(resolution: preferredQualityResolution, bitrateKbps: maxBitrateKbps)
+        }
+        return cellularQualityAxes
     }
 
     private(set) var audioLanguage: String {
@@ -619,6 +702,9 @@ final class PlayerSettings {
 
         preferredQualityResolution = Self.cachedQualityResolution(defaults)
         maxBitrateKbps = Self.cachedMaxBitrateKbps(defaults)
+        let cellular = Self.cachedCellularQuality(defaults)
+        cellularQualityResolution = cellular.resolution
+        cellularMaxBitrateKbps = cellular.bitrateKbps
         audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
         introSkipMode = Self.cachedIntroSkipMode(defaults)
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
@@ -771,7 +857,11 @@ final class PlayerSettings {
             // that other scope, so it is not kept for this one.
             let scopeUnchanged = (Self.currentScopeIdentifier ?? "") == refreshScopeID
             manifestRevisionScopeID = knownManifestRevision != nil && scopeUnchanged ? refreshScopeID : nil
-            let effectiveByKey = response.byKey
+            var effectiveByKey = response.byKey
+            let cellular = await cellularQualityValues(atRevision: response.revision)
+            if (Self.currentScopeIdentifier ?? "") == refreshScopeID {
+                effectiveByKey.merge(cellular) { _, cellularValue in cellularValue }
+            }
             applyEffectiveSettings(overlayingUnsettledValues(on: effectiveByKey))
 
             if let scopeID, !isMigrationComplete(for: scopeID) {
@@ -807,23 +897,56 @@ final class PlayerSettings {
         }
     }
 
-    /// Set the quality from a shared preset — the settings screens' entry
-    /// point, on every platform and in the web and Android clients.
-    func setQualityPreset(_ preset: SiloQualityPreset) {
-        setQualityAxes(resolution: preset.resolution, bitrateKbps: preset.bitrateKbps)
+    /// The cellular pair's rows, or none when this platform does not offer the
+    /// pair, the server predates it, or the read fails. A missing row keeps
+    /// this device's own value (see ``applyEffectiveSettings(_:)``).
+    @MainActor
+    private func cellularQualityValues(atRevision revision: Int) async -> [SettingKey: EffectiveSettingValue] {
+        let keys = SettingKey.playerCellularQualitySettings
+        guard Self.offersCellularQuality,
+              keys.allSatisfy({ $0.isServed(atRevision: revision) }),
+              let response = try? await flusher.effectiveValues(keys: keys) else {
+            return [:]
+        }
+        return response.byKey.filter { keys.contains($0.key) }
     }
 
-    /// Store one (resolution, bitrate) pair as the contract's two keys.
-    ///
-    /// Both axes are always written, never just the one that changed: the two
-    /// resolve independently, so leaving a stale cap behind would keep
-    /// throttling a tier the user just widened. Uncapped is an explicit JSON
-    /// null rather than an omitted write for the same reason.
-    private func setQualityAxes(resolution: String, bitrateKbps: Int?) {
+    /// Set the quality from a shared preset; the settings screens set each
+    /// axis on its own. A preset names both axes, so both are written:
+    /// leaving a stale cap behind would keep throttling a tier the user just
+    /// widened, which is also why uncapped is an explicit JSON null.
+    func setQualityPreset(_ preset: SiloQualityPreset) {
+        setQualityResolution(preset.resolution)
+        setMaxBitrateKbps(preset.bitrateKbps)
+    }
+
+    /// The Resolution picker: writes only `playback.preferred_quality`, so the
+    /// bitrate cap keeps following wherever it comes from (this device's own
+    /// value or the profile's), as on the web.
+    func setQualityResolution(_ resolution: String) {
         preferredQualityResolution = SiloQualityPresets.normalizeResolution(resolution)
-        maxBitrateKbps = bitrateKbps.flatMap { $0 > 0 ? $0 : nil }
         enqueueDeviceValue(.preferredQuality, value: .string(preferredQualityResolution))
+    }
+
+    /// The Maximum Bitrate picker: writes only `playback.max_bitrate_kbps`.
+    /// "No limit" (nil) is an explicit JSON null, so it holds over a cap the
+    /// profile sets; "Use Profile Setting" is the way back to that cap.
+    func setMaxBitrateKbps(_ bitrateKbps: Int?) {
+        maxBitrateKbps = bitrateKbps.flatMap { $0 > 0 ? $0 : nil }
         enqueueDeviceValue(.maxBitrateKbps, value: maxBitrateKbps.map { .int($0) } ?? .null)
+    }
+
+    /// Set the cellular pair from a shared preset. Saved at the same scope as
+    /// the main pair; against a server older than revision 20 the flusher
+    /// keeps it on this device until the server serves the keys.
+    func setCellularQualityPreset(_ preset: SiloQualityPreset) {
+        cellularQualityResolution = SiloQualityPresets.normalizeResolution(preset.resolution)
+        cellularMaxBitrateKbps = preset.bitrateKbps.flatMap { $0 > 0 ? $0 : nil }
+        enqueueDeviceValue(.cellularPreferredQuality, value: .string(cellularQualityResolution))
+        enqueueDeviceValue(
+            .cellularMaxBitrateKbps,
+            value: cellularMaxBitrateKbps.map { .int($0) } ?? .null
+        )
     }
 
     /// The empty string is "no preference", which is not a value this device
@@ -1096,10 +1219,12 @@ final class PlayerSettings {
     }
 
     /// How many settings "Use Profile Settings" would change: each setting
-    /// this device holds its own value for (quality's two keys count once),
-    /// plus each device-only preference away from its default.
+    /// this device holds its own value for (the cellular pair's two keys
+    /// count once), plus each device-only preference away from its default.
     var deviceChangedSettingCount: Int {
-        let overridden = Set(deviceOverriddenKeys.map { $0 == .maxBitrateKbps ? .preferredQuality : $0 })
+        let overridden = Set(deviceOverriddenKeys.map {
+            $0 == .cellularMaxBitrateKbps ? .cellularPreferredQuality : $0
+        })
         return overridden.count + changedDeviceLocalPreferenceCount
     }
 
@@ -1145,8 +1270,21 @@ final class PlayerSettings {
         for key in setting.keys {
             enqueueDeviceClear(key)
         }
+        if setting == .cellularQuality {
+            resetCellularQualityWhereNotServed()
+        }
         await flushPendingDeviceSettings()
         await refreshFromServer()
+    }
+
+    /// A server older than revision 20 has no profile value for the cellular
+    /// pair to read back, so clearing this device's value leaves the contract
+    /// default. A newer server's refresh paints the profile's value instead.
+    private func resetCellularQualityWhereNotServed() {
+        guard let knownManifestRevision,
+              knownManifestRevision < SettingKey.cellularQualityRevision else { return }
+        cellularQualityResolution = Self.defaultCellularQuality.resolution
+        cellularMaxBitrateKbps = Self.defaultCellularQuality.bitrateKbps
     }
 
     /// Queue this device's own value for `key`.
@@ -1218,6 +1356,12 @@ final class PlayerSettings {
         }
         for key in SettingKey.playerReadSettings {
             enqueueDeviceClear(key)
+        }
+        if Self.offersCellularQuality {
+            for key in SettingKey.playerCellularQualitySettings {
+                enqueueDeviceClear(key)
+            }
+            resetCellularQualityWhereNotServed()
         }
         await flushPendingDeviceSettings()
         if await refreshFromServer() == .serverUpgradeRequired {
@@ -1361,6 +1505,16 @@ final class PlayerSettings {
         maxBitrateKbps = effectiveByKey[.maxBitrateKbps]?.value.intValue.flatMap {
             $0 > 0 ? $0 : nil
         }
+        // The cellular pair has rows only when its own read ran (see
+        // ``cellularQualityValues(atRevision:)``) or a change is still owed.
+        // Without one this device keeps its value, which is the only copy on
+        // a server older than revision 20.
+        if let entry = effectiveByKey[.cellularPreferredQuality] {
+            cellularQualityResolution = SiloQualityPresets.normalizeResolution(entry.value.stringValue)
+        }
+        if let entry = effectiveByKey[.cellularMaxBitrateKbps] {
+            cellularMaxBitrateKbps = entry.value.intValue.flatMap { $0 > 0 ? $0 : nil }
+        }
         // A nullable language tag: JSON null is "no preference", which this
         // client spells as the empty string.
         audioLanguage = effectiveByKey[.audioLanguage]?.value.stringValue ?? ""
@@ -1394,11 +1548,14 @@ final class PlayerSettings {
         // A clear still on its way has not reached the server, whose answer
         // therefore still shows the device value being removed.
         let clearing = flusher.unsettledClears
+        // A cellular key with no row keeps what this device last knew, like
+        // its value above.
+        let unreadCellular = Set(SettingKey.playerCellularQualitySettings).subtracting(effectiveByKey.keys)
         deviceOverriddenKeys = Set(
             effectiveByKey.compactMap { key, entry in
                 entry.scope == .profileDevice && !clearing.contains(key) ? key : nil
             }
-        )
+        ).union(deviceOverriddenKeys.intersection(unreadCellular))
     }
 
     /// Split the resolved appearance between the device override and the
@@ -1566,6 +1723,9 @@ final class PlayerSettings {
         defer { isLoadingCache = false }
         preferredQualityResolution = Self.cachedQualityResolution(defaults)
         maxBitrateKbps = Self.cachedMaxBitrateKbps(defaults)
+        let cellular = Self.cachedCellularQuality(defaults)
+        cellularQualityResolution = cellular.resolution
+        cellularMaxBitrateKbps = cellular.bitrateKbps
         audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
         introSkipMode = Self.cachedIntroSkipMode(defaults)
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
@@ -1756,6 +1916,9 @@ final class PlayerSettings {
 
         defaults.set("auto", forKey: key(Keys.preferredQuality))
         defaults.removeObject(forKey: key(Keys.maxBitrateKbps))
+        // Absent is the cellular pair's contract default.
+        defaults.removeObject(forKey: key(Keys.cellularPreferredQuality))
+        defaults.removeObject(forKey: key(Keys.cellularMaxBitrateKbps))
         defaults.set("", forKey: key(Keys.audioLanguage))
         defaults.set(false, forKey: key(Keys.autoSkipIntro))
         defaults.set(IntroSkipMode.default.wireValue, forKey: key(Keys.introSkipMode))
@@ -1834,6 +1997,19 @@ final class PlayerSettings {
         guard defaults.object(forKey: cacheKey(Keys.maxBitrateKbps)) != nil else { return nil }
         let stored = defaults.integer(forKey: cacheKey(Keys.maxBitrateKbps))
         return stored > 0 ? stored : nil
+    }
+
+    /// The cached cellular pair, or the contract default for a half never
+    /// stored. A stored bitrate of 0 is uncapped (see ``cellularMaxBitrateKbps``).
+    private static func cachedCellularQuality(_ defaults: UserDefaults) -> AppleQualityAxes {
+        let resolution = defaults.string(forKey: cacheKey(Keys.cellularPreferredQuality))
+            .map { SiloQualityPresets.normalizeResolution($0) }
+            ?? defaultCellularQuality.resolution
+        let bitrateKey = cacheKey(Keys.cellularMaxBitrateKbps)
+        let bitrate = defaults.object(forKey: bitrateKey) == nil
+            ? defaultCellularQuality.bitrateKbps
+            : defaults.integer(forKey: bitrateKey)
+        return AppleQualityAxes(resolution: resolution, bitrateKbps: bitrate.flatMap { $0 > 0 ? $0 : nil })
     }
 
     /// The cached mode, or — on a device that has only ever cached the
@@ -1928,6 +2104,8 @@ final class PlayerSettings {
     private enum Keys {
         static let preferredQuality = "preferredQuality"
         static let maxBitrateKbps = "playback.maxBitrateKbps"
+        static let cellularPreferredQuality = "playback.cellularPreferredQuality"
+        static let cellularMaxBitrateKbps = "playback.cellularMaxBitrateKbps"
         static let audioLanguage = "preferredAudioLanguage"
         static let autoSkipIntro = "skipIntros"
         static let introSkipMode = "player.introSkipMode"

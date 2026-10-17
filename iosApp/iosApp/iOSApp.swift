@@ -33,6 +33,9 @@ struct SiloApp: App {
 
         #if os(iOS)
         MetricKitCapture.shared.start()
+        // Started at launch so the first playback already knows whether it
+        // is on mobile data (the cellular quality pair).
+        PlaybackNetworkMonitor.shared.start()
         #endif
     }
 

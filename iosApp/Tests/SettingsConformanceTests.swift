@@ -378,6 +378,33 @@ final class SettingsConformanceTests: XCTestCase {
         }
     }
 
+    /// On a server older than revision 20 the local default is the only
+    /// cellular pair there is, so it must be the contract's.
+    func testTheCellularQualityDefaultMatchesTheVendoredManifest() throws {
+        let definitions = try rawDefinitions()
+        let resolution = try XCTUnwrap(
+            definitions[SettingKey.playbackCellularPreferredQuality.rawValue]?["default_value"] as? String
+        )
+        let bitrate = try XCTUnwrap(
+            definitions[SettingKey.playbackCellularMaxBitrateKbps.rawValue]?["default_value"] as? Int
+        )
+        XCTAssertEqual(PlayerSettings.defaultCellularQuality, AppleQualityAxes(resolution: resolution, bitrateKbps: bitrate))
+        XCTAssertEqual(SettingKey.cellularQualityRevision, SettingKey.playbackCellularPreferredQuality.introducedIn)
+    }
+
+    /// Every Maximum Bitrate choice is a cap the contract accepts.
+    func testMaximumBitrateChoicesAreInsideTheContractRange() throws {
+        let definitions = try rawDefinitions()
+        let schema = try XCTUnwrap(
+            definitions[SettingKey.playbackMaxBitrateKbps.rawValue]?["value_schema"] as? [String: Any]
+        )
+        let minimum = try XCTUnwrap(schema["minimum"] as? Int)
+        let maximum = try XCTUnwrap(schema["maximum"] as? Int)
+        for kbps in SiloQualityPresets.bitrateChoicesKbps {
+            XCTAssertTrue((minimum...maximum).contains(kbps), "\(kbps)")
+        }
+    }
+
     /// Object members added after their key are gated by a hand-kept revision
     /// too. The manifest records that revision only in the definition's notes
     /// ("Revision N adds the optional <member> property"), so the sentence is

@@ -132,7 +132,7 @@ struct MacPlayerOptionsPanel: View {
                         title: option.label,
                         detail: nil,
                         trailing: option.bitrateText,
-                        selected: option.id == viewModel.activeQualityId
+                        selected: option.id == viewModel.highlightedQualityOptionId
                     ) {
                         viewModel.switchQuality(option.id)
                     }

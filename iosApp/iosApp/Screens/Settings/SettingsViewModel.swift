@@ -35,13 +35,42 @@ final class SettingsViewModel {
     // reads and writes ``PlayerSettings`` directly. It is observable, so the
     // screens follow a reset, a refresh or an in-player change without a copy.
 
-    /// The selected shared preset's id, or nil when the stored pair is a
-    /// combination no preset covers. The picker shows ``preferredQualityLabel``
-    /// in that case rather than snapping to a nearby preset, which would show
-    /// the user a choice they did not make.
-    var preferredQualityPresetId: String? { PlayerSettings.shared.currentQualityPreset?.id }
-    /// A label for whatever pair is stored, preset or not.
+    /// A summary of the quality pair, for the Playback row on the overview.
     var preferredQualityLabel: String { PlayerSettings.shared.preferredQualityLabel }
+
+    /// The Resolution picker's value.
+    var qualityResolutionLabel: String {
+        SiloQualityPresets.resolutionLabel(PlayerSettings.shared.preferredQualityResolution)
+    }
+
+    /// The Maximum Bitrate picker's value.
+    var maxBitrateLabel: String {
+        SiloQualityPresets.bitrateLabel(PlayerSettings.shared.maxBitrateKbps)
+    }
+
+    /// The Maximum Bitrate picker's caps, including a stored cap no choice
+    /// covers so it stays visible and selected.
+    var maxBitrateChoicesKbps: [Int] {
+        SiloQualityPresets.bitrateChoices(including: PlayerSettings.shared.maxBitrateKbps)
+    }
+
+    /// What the two quality pickers mean for playback.
+    var qualityFooterText: String {
+        let resolution = PlayerSettings.shared.preferredQualityResolution
+        var text = resolution == SiloQualityPresets.resolutionAuto
+            ? "Plays the original file whenever your device and connection can handle it."
+            : "Plays the original file up to \(SiloQualityPresets.resolutionLabel(resolution)). Larger files are converted."
+        if PlayerSettings.shared.maxBitrateKbps != nil {
+            text += " Files above this bitrate are converted to fit."
+        }
+        return text
+    }
+
+    /// The selected cellular preset's id, or nil for a stored pair no preset
+    /// covers; the picker then lists ``cellularQualityLabel`` on its own.
+    var cellularQualityPresetId: String? { PlayerSettings.shared.currentCellularQualityPreset?.id }
+    var cellularQualityLabel: String { PlayerSettings.shared.cellularQualityLabel }
+    static let cellularQualityFooterText = "Used on mobile data and metered networks, such as a phone hotspot."
 
     var preferredAudioLanguage: String {
         get { PlayerSettings.shared.audioLanguage }
@@ -309,10 +338,10 @@ final class SettingsViewModel {
         await prefs.load()
     }
 
-    /// Apply a shared quality preset, which stores the contract's two axes.
-    func setQualityPreset(_ presetId: String) {
+    /// Apply a shared preset to the cellular pair.
+    func setCellularQualityPreset(_ presetId: String) {
         guard let preset = SiloQualityPresets.preset(id: presetId) else { return }
-        PlayerSettings.shared.setQualityPreset(preset)
+        PlayerSettings.shared.setCellularQualityPreset(preset)
     }
 
     // MARK: Held and refused playback changes
@@ -372,9 +401,11 @@ final class SettingsViewModel {
     /// no value of its own for the row, and choosing it clears that value.
     static let useProfileSettingTag = "__profile__"
     static let useProfileSettingLabel = "Use Profile Setting"
-    /// Tag for a stored quality pair no preset covers. Not a preset id, so
+    /// Tag for a stored cellular pair no preset covers. Not a preset id, so
     /// selecting it is a no-op rather than a write.
     static let customQualityTag = "__custom__"
+    /// The Maximum Bitrate picker's "No limit".
+    static let noBitrateLimitTag = "none"
     static let onTag = "on"
     static let offTag = "off"
 
@@ -383,11 +414,15 @@ final class SettingsViewModel {
         !PlayerSettings.shared.hasDeviceOverride(setting)
     }
 
-    /// The selected picker tag for a profile-backed Playback row.
+    /// The selected picker tag for a profile-backed Playback row. Resolution
+    /// tags are the contract's members; Maximum Bitrate tags are the cap in
+    /// kbps or ``noBitrateLimitTag``.
     func playbackSelectionTag(_ setting: ProfileBackedPlaybackSetting) -> String {
         guard !usesProfileSetting(setting) else { return Self.useProfileSettingTag }
         switch setting {
-        case .quality: return preferredQualityPresetId ?? Self.customQualityTag
+        case .resolution: return PlayerSettings.shared.preferredQualityResolution
+        case .maxBitrate: return PlayerSettings.shared.maxBitrateKbps.map(String.init) ?? Self.noBitrateLimitTag
+        case .cellularQuality: return cellularQualityPresetId ?? Self.customQualityTag
         case .audioLanguage: return preferredAudioLanguage
         case .introSkipMode: return introSkipMode.wireValue
         case .autoSkipCredits: return skipCredits ? Self.onTag : Self.offTag
@@ -408,9 +443,18 @@ final class SettingsViewModel {
             return
         }
         switch setting {
-        case .quality:
+        case .resolution:
+            guard SiloQualityPresets.resolutionChoices.contains(tag) else { return }
+            PlayerSettings.shared.setQualityResolution(tag)
+        case .maxBitrate:
+            if tag == Self.noBitrateLimitTag {
+                PlayerSettings.shared.setMaxBitrateKbps(nil)
+            } else if let kbps = Int(tag), kbps > 0 {
+                PlayerSettings.shared.setMaxBitrateKbps(kbps)
+            }
+        case .cellularQuality:
             guard tag != Self.customQualityTag else { return }
-            setQualityPreset(tag)
+            setCellularQualityPreset(tag)
         case .audioLanguage:
             preferredAudioLanguage = tag
         case .introSkipMode:

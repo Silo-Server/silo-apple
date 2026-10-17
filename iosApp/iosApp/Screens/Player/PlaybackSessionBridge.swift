@@ -789,6 +789,7 @@ actor PlaybackSessionBridge {
         allowNearEndResume: Bool = false,
         prefersLastUsedVersion: Bool = false,
         preferredQualityOverride: String? = nil,
+        onMeteredNetwork: Bool = false,
         allowAlternateVersions: Bool? = nil,
         startsAtFirstPart: Bool = false
     ) async throws -> PreparedPlayback {
@@ -807,19 +808,10 @@ actor PlaybackSessionBridge {
             )
         }
 
-        // A mid-stream quality-change replan passes an explicit override
-        // (e.g. back to Auto) that must win over the persisted setting.
-        let playerSettings = PlayerSettings.shared
-        let lastUsedQuality = prefersLastUsedVersion
-            ? normalizedQualityPreference(watchDetail.userData?.lastResolution)
-            : nil
-        let preferredQuality = preferredQualityOverride.map {
-            ApplePlaybackQuality.protocolV3QualityId($0)
-        } ?? lastUsedQuality
-            ?? normalizedQualityPreference(playerSettings.preferredQuality)
-        let bandwidthCapKbps = AppleQualityAxes.resolvedBitrateCap(
-            qualityOverride: preferredQualityOverride,
-            fallbackBitrateKbps: playerSettings.maxBitrateKbps
+        let (preferredQuality, bandwidthCapKbps) = Self.startQuality(
+            preferredQualityOverride: preferredQualityOverride,
+            lastUsedResolution: prefersLastUsedVersion ? watchDetail.userData?.lastResolution : nil,
+            settingsQuality: PlayerSettings.shared.playbackQualityAxes(onMeteredNetwork: onMeteredNetwork)
         )
         let normalizedResumePosition: Double? = {
             guard let resumePosition, resumePosition.isFinite, resumePosition >= 0 else {
@@ -1137,7 +1129,7 @@ actor PlaybackSessionBridge {
                 fileId: selectedVersion.fileId,
                 profileId: profileId,
                 playbackAttemptId: playbackAttemptId,
-                qualityPreference: protocolV3QualityPreference(qualityPreference),
+                qualityPreference: Self.protocolV3QualityPreference(qualityPreference),
                 subtitleFidelityPreference: "preserve",
                 progressPersistence: nil,
                 startPosition: startPosition,
@@ -1324,10 +1316,10 @@ actor PlaybackSessionBridge {
             watchDetail: watchDetail,
             selectedVersion: staged.selectedVersion,
             session: staged.session,
-            activeQualityId: ApplePlaybackQuality.activeProtocolV3QualityId(
-                requestedQualityId: staged.clientQualityId,
-                availableQualities: staged.plan.availableQualities
-            ),
+            // The session's preference, whether or not this plan lists a rung
+            // for it: a fixed saved resolution must not read as Auto. Which
+            // menu row lights is the player's call.
+            activeQualityId: ApplePlaybackQuality.protocolV3QualityId(staged.clientQualityId),
             protocolV3: preparedV3
         )
     }
@@ -1480,6 +1472,8 @@ actor PlaybackSessionBridge {
         message: String,
         operation: String? = nil,
         qualityPreference: String? = nil,
+        autoBandwidthCapKbps: Int? = nil,
+        qualityAxes: AppleQualityAxes? = nil,
         audioTrackIndex: Int? = nil,
         subtitleTrackIndex: Int? = nil,
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
@@ -1538,12 +1532,16 @@ actor PlaybackSessionBridge {
         )
         let selectedTracks = PlaybackV3SelectedTracks(audio: selectedAudio, subtitle: selectedSubtitle)
         let normalizedPosition = position.isFinite ? max(0, position) : 0
-        let qualitySelection = qualityPreference.map {
-            ApplePlaybackQuality.protocolV3Selection(
-                requestedQualityId: $0,
-                availableQualities: active.plan.availableQualities
-            )
-        }
+        // A settings pair (the connection changed) is sent exactly; a quality
+        // id (the viewer's pick) is resolved against this plan's rungs.
+        let qualitySelection = qualityAxes.map(ApplePlaybackQuality.protocolV3Selection(axes:))
+            ?? qualityPreference.map {
+                ApplePlaybackQuality.protocolV3Selection(
+                    requestedQualityId: $0,
+                    availableQualities: active.plan.availableQualities,
+                    autoBandwidthCapKbps: autoBandwidthCapKbps
+                )
+            }
         let requestedClientQualityId = qualitySelection?.clientQualityId
             ?? active.clientQualityId
         let requestedUsesServerQualityPreference = qualitySelection?.isServerOwned
@@ -1551,7 +1549,7 @@ actor PlaybackSessionBridge {
         let requestedQualityPreference = qualitySelection?.serverPreference
             ?? (requestedUsesServerQualityPreference
                 ? requestedClientQualityId
-                : protocolV3QualityPreference(requestedClientQualityId))
+                : Self.protocolV3QualityPreference(requestedClientQualityId))
         let requestedBandwidthCapKbps: Int?
         if let qualitySelection {
             requestedBandwidthCapKbps = qualitySelection.bandwidthCapKbps
@@ -1778,10 +1776,7 @@ actor PlaybackSessionBridge {
                 watchDetail: watchDetail,
                 selectedVersion: selectedVersion,
                 session: nextSession,
-                activeQualityId: ApplePlaybackQuality.activeProtocolV3QualityId(
-                    requestedQualityId: requestedClientQualityId,
-                    availableQualities: nextPlan.availableQualities
-                ),
+                activeQualityId: ApplePlaybackQuality.protocolV3QualityId(requestedClientQualityId),
                 protocolV3: preparedV3
             )
         }
@@ -2163,12 +2158,40 @@ actor PlaybackSessionBridge {
         return problem.status == 404 || PlaybackV3CapabilityGate.isInstallationChanged(error)
     }
 
-    private func normalizedQualityPreference(_ quality: String?) -> String? {
+    private static func normalizedQualityPreference(_ quality: String?) -> String? {
         let normalized = ApplePlaybackQuality.normalizeStoredId(quality)
         return normalized == ApplePlaybackQuality.autoId ? nil : normalized
     }
 
-    private func protocolV3QualityPreference(_ quality: String?) -> String {
+    /// The quality a start asks for, as the client quality id (nil for Auto)
+    /// and the bandwidth cap.
+    ///
+    /// An explicit override wins: the viewer's in-player pick, carried to a
+    /// renewal or the next episode. Continue Watching's last-used resolution
+    /// comes next, then the saved pair for the connection (`settingsQuality`,
+    /// the cellular pair on a metered one). Auto, as an override or as the
+    /// saved resolution, keeps the saved cap.
+    static func startQuality(
+        preferredQualityOverride: String?,
+        lastUsedResolution: String?,
+        settingsQuality: AppleQualityAxes
+    ) -> (preferredQuality: String?, bandwidthCapKbps: Int?) {
+        let preferredQuality = preferredQualityOverride.map {
+            ApplePlaybackQuality.protocolV3QualityId($0)
+        } ?? normalizedQualityPreference(lastUsedResolution)
+            ?? normalizedQualityPreference(
+                AppleQualityAxes.join(resolution: settingsQuality.resolution, bitrateKbps: settingsQuality.bitrateKbps)
+            )
+        let bandwidthCapKbps = AppleQualityAxes.resolvedBitrateCap(
+            qualityOverride: preferredQualityOverride,
+            fallbackBitrateKbps: settingsQuality.bitrateKbps
+        )
+        return (preferredQuality, bandwidthCapKbps)
+    }
+
+    /// The `quality_preference` a V3 request sends. Settings ids reduce to
+    /// their contract resolution; the legacy "original" is sent as "auto".
+    static func protocolV3QualityPreference(_ quality: String?) -> String {
         let serverId = ApplePlaybackQuality.protocolV3QualityId(quality)
         if ApplePlaybackQuality.settingsOptions.contains(where: { $0.id == serverId }) {
             return AppleQualityAxes.split(serverId).resolution
@@ -2213,9 +2236,7 @@ actor PlaybackSessionBridge {
         var score = resolutionRank(version.resolution) * 10
 
         if let preferredQuality {
-            if preferredQuality == "original" {
-                score += 5
-            } else if qualityMatches(version.resolution, preferredQuality: preferredQuality) {
+            if qualityMatches(version.resolution, preferredQuality: preferredQuality) {
                 score += 100
             } else if resolutionRank(version.resolution) > resolutionRank(preferredQuality) {
                 score -= 50
@@ -2234,14 +2255,11 @@ actor PlaybackSessionBridge {
             return preferredQuality
         }
 
-        return selectedVersion.resolution ?? preferredQuality ?? "original"
+        return selectedVersion.resolution ?? preferredQuality ?? ApplePlaybackQuality.autoId
     }
 
     private static func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {
         let versionRank = resolutionRank(resolution)
-        if preferredQuality == ApplePlaybackQuality.originalId {
-            return versionRank > 0
-        }
         let requestedRank = resolutionRank(preferredQuality)
         return versionRank > 0 && versionRank <= requestedRank
     }

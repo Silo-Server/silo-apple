@@ -813,7 +813,9 @@ private struct VideoPane: View {
                                     HUDPickerPresentation(
                                         title: "Quality",
                                         options: qualityOptions,
-                                        selection: viewModel.activeQualityId,
+                                        // No row is checked while a fixed saved
+                                        // resolution sets the quality.
+                                        selection: viewModel.highlightedQualityOptionId ?? "",
                                         onSelect: { viewModel.switchQuality($0) }
                                     )
                                 )

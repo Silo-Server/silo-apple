@@ -21,6 +21,10 @@ struct PlaybackSettingsView: View {
             if viewModel.playbackChangeWasRejected {
                 rejectedChangeSection
             }
+            qualitySection
+            #if os(iOS)
+            cellularQualitySection
+            #endif
             streamingSection
             behaviorSection
             // Hidden entirely on servers that do not serve the two keys.
@@ -48,12 +52,49 @@ struct PlaybackSettingsView: View {
         }
     }
 
+    // MARK: - Quality
+
+    /// Resolution and bitrate are two pickers: someone may want only 1080p on
+    /// a fast connection, and a 1080p file can carry a higher bitrate than a
+    /// 4K one. Each writes and clears only its own setting, as on the web.
+    private var qualitySection: some View {
+        Section {
+            choiceRow("Resolution", .resolution, value: viewModel.qualityResolutionLabel, options: resolutionChoices)
+
+            choiceRow("Maximum Bitrate", .maxBitrate, value: viewModel.maxBitrateLabel, options: maxBitrateChoices)
+        } header: {
+            Text("Quality")
+                .foregroundStyle(Color.siloSecondaryText)
+        } footer: {
+            Text(viewModel.qualityFooterText)
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .listRowBackground(Color.siloGroupedCell)
+    }
+
+    #if os(iOS)
+    /// iPhone and iPad only. One preset list, since bitrate is what matters
+    /// on a data plan.
+    private var cellularQualitySection: some View {
+        Section {
+            choiceRow(
+                "Cellular Quality",
+                .cellularQuality,
+                value: viewModel.cellularQualityLabel,
+                options: cellularQualityChoices
+            )
+        } footer: {
+            Text(SettingsViewModel.cellularQualityFooterText)
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .listRowBackground(Color.siloGroupedCell)
+    }
+    #endif
+
     // MARK: - Streaming
 
     private var streamingSection: some View {
         Section {
-            choiceRow("Quality", .quality, value: viewModel.preferredQualityLabel, options: qualityChoices)
-
             choiceRow("Audio Language", .audioLanguage, value: audioLanguageLabel, options: audioLanguageChoices)
 
             Toggle("HDR", isOn: $viewModel.hdrEnabled)
@@ -120,13 +161,7 @@ struct PlaybackSettingsView: View {
     }
 
     private var streamingFooterText: String {
-        // Leads with what the chosen quality actually means, since the preset
-        // labels ("1080p High") name a tier without stating its bitrate.
-        var text = "\(viewModel.preferredQualityLabel)."
-        if let preset = SiloQualityPresets.preset(id: viewModel.preferredQualityPresetId) {
-            text = preset.description
-        }
-        text += " " + SettingsViewModel.hdrFooterText
+        var text = SettingsViewModel.hdrFooterText
         text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
         text += " TrueHD Atmos adds height channels but plays those tracks as compressed audio."
         return text
@@ -219,12 +254,7 @@ struct PlaybackSettingsView: View {
         SettingsChoiceRow(
             title: title,
             value: value,
-            options: [
-                SettingsChoice(
-                    id: SettingsViewModel.useProfileSettingTag,
-                    label: SettingsViewModel.useProfileSettingLabel
-                ),
-            ] + options,
+            options: [useProfileSettingChoice] + options,
             selection: Binding(
                 get: { viewModel.playbackSelectionTag(setting) },
                 set: { viewModel.selectPlayback($0, for: setting) }
@@ -232,20 +262,39 @@ struct PlaybackSettingsView: View {
         )
     }
 
-    private var qualityChoices: [SettingsChoice] {
+    private var useProfileSettingChoice: SettingsChoice {
+        SettingsChoice(id: SettingsViewModel.useProfileSettingTag, label: SettingsViewModel.useProfileSettingLabel)
+    }
+
+    private var resolutionChoices: [SettingsChoice] {
+        SiloQualityPresets.resolutionChoices.map {
+            SettingsChoice(id: $0, label: SiloQualityPresets.resolutionLabel($0))
+        }
+    }
+
+    private var maxBitrateChoices: [SettingsChoice] {
+        [SettingsChoice(id: SettingsViewModel.noBitrateLimitTag, label: SiloQualityPresets.noBitrateLimitLabel)]
+            + viewModel.maxBitrateChoicesKbps.map {
+                SettingsChoice(id: String($0), label: SiloQualityPresets.bitrateLabel($0))
+            }
+    }
+
+    #if os(iOS)
+    private var cellularQualityChoices: [SettingsChoice] {
         // A pair no preset covers — set through the API, or written by a
         // client whose ladder has a rung this table does not — gets its own
         // entry describing what is actually stored, rather than the list
         // checking a preset the user never chose.
         var choices: [SettingsChoice] = []
-        if !viewModel.usesProfileSetting(.quality), viewModel.preferredQualityPresetId == nil {
+        if !viewModel.usesProfileSetting(.cellularQuality), viewModel.cellularQualityPresetId == nil {
             choices.append(SettingsChoice(
                 id: SettingsViewModel.customQualityTag,
-                label: viewModel.preferredQualityLabel
+                label: viewModel.cellularQualityLabel
             ))
         }
         return choices + SiloQualityPresets.all.map { SettingsChoice(id: $0.id, label: $0.label) }
     }
+    #endif
 
     private var noAudioLanguageLabel: String {
         SettingPresentationMetadata.definitions[.playbackAudioLanguage]?.unsetLabel ?? "No preference"

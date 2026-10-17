@@ -57,6 +57,8 @@ extension SettingKey {
             return 17
         case .uiNextUpNewReleasesFirst:
             return 18
+        case .playbackCellularPreferredQuality, .playbackCellularMaxBitrateKbps:
+            return Self.cellularQualityRevision
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,
              .downloadsWifiOnly, .navShowAudiobooks, .playbackAudioLanguage,
              .playbackAutoPlayNext, .playbackAutoPlayNextPreview, .playbackAutoSkipCredits,
@@ -89,6 +91,19 @@ extension SettingKey {
     /// The manifest revision that let `player.subtitle_sync_ms` be stored at
     /// `profile` scope. Older servers only accept `profile_device` for it.
     static let subtitleSyncProfileScopeRevision = 19
+
+    /// The manifest revision that added the cellular quality pair
+    /// (`playback.cellular_preferred_quality` and
+    /// `playback.cellular_max_bitrate_kbps`).
+    static let cellularQualityRevision = 20
+
+    /// Whether sending this key depends on the server's manifest revision
+    /// because the key is newer than ``minimumServerRevision``: an older
+    /// server answers `unknown_setting` for it. The player's settings queue
+    /// keeps such a write on this device until the server serves the key.
+    var isNewerThanMinimumServer: Bool {
+        introducedIn > Self.minimumServerRevision
+    }
 
     /// The manifest revision from which the server accepts this key at
     /// `profile` scope, for a key that gained that scope after it was

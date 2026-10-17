@@ -691,6 +691,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
 
     /// Whether sending `write` depends on the server's manifest revision.
     private static func waitsForManifestRevision(_ key: SettingKey, _ write: PendingSettingWrite) -> Bool {
+        if key.isNewerThanMinimumServer {
+            return true
+        }
         if write.owedProfileValue != nil, !key.revisionGatedMembers.isEmpty || key.profileScopeRevision != nil {
             return true
         }
@@ -1158,7 +1161,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     private static func orderedKeys(
         in writes: [SettingKey: PendingSettingWrite]
     ) -> [SettingKey] {
-        let preferred = SettingKey.playerDeviceSettings.filter { writes[$0] != nil }
+        let preferred = (SettingKey.playerDeviceSettings + SettingKey.playerCellularQualitySettings)
+            .filter { writes[$0] != nil }
         let preferredSet = Set(preferred)
         let remaining = writes.keys
             .filter { !preferredSet.contains($0) }
@@ -1351,6 +1355,22 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 kept: true
             )
             return .leftInOriginalJournal
+        }
+        if key.isNewerThanMinimumServer {
+            // An older server answers `unknown_setting` for a key it does not
+            // define, which would drop the edit as refused.
+            guard let revision = knownManifestRevision else {
+                log(key, "server manifest revision not known yet", kept: true)
+                return .retryOnNextTrigger
+            }
+            guard key.isServed(atRevision: revision) else {
+                // Nothing can be stored for the key there, so a clear is
+                // already true. A value stays owed on this device, which keeps
+                // using it, and goes once the server serves the key.
+                if case .delete = write.operation { return .settled }
+                log(key, "server predates this key; kept on this device", kept: true)
+                return .retryOnNextTrigger
+            }
         }
         do {
             if let owed = write.owedProfileValue {

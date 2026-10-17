@@ -5,15 +5,11 @@ struct ApplePlaybackQualityOption: Identifiable, Hashable {
     let label: String
     let resolution: String
     let bitrateKbps: Int
-    let isOriginal: Bool
     let isAuto: Bool
 
     var subtitle: String? {
-        if isOriginal {
-            return nil
-        }
         if isAuto {
-            return "Best available, direct-play first"
+            return "Original file when possible"
         }
         guard bitrateKbps > 0 else { return nil }
         return "Maximum bitrate: \(bitrateLabel)"
@@ -23,10 +19,10 @@ struct ApplePlaybackQualityOption: Identifiable, Hashable {
         ApplePlaybackQuality.formatBitrate(kbps: bitrateKbps)
     }
 
-    /// Bitrate shown beside a capped rung; nil for Auto, Original, and
-    /// rungs without a bitrate cap.
+    /// Bitrate shown beside a capped rung; nil for Auto and rungs without a
+    /// bitrate cap.
     var bitrateText: String? {
-        guard !isOriginal, !isAuto, bitrateKbps > 0 else { return nil }
+        guard !isAuto, bitrateKbps > 0 else { return nil }
         return bitrateLabel
     }
 
@@ -44,25 +40,18 @@ struct ApplePlaybackV3QualitySelection: Equatable {
 
 enum ApplePlaybackQuality {
     static let autoId = "auto"
-    static let originalId = "original"
     /// Contract-supported resolution with no fabricated local bitrate rung.
     static let ultraHDId = "2160p"
-
-    static let original = ApplePlaybackQualityOption(
-        id: originalId,
-        label: "Original",
-        resolution: "",
-        bitrateKbps: 0,
-        isOriginal: true,
-        isAuto: false
-    )
+    /// Spellings of the removed Original choice, read as Auto: Auto with no
+    /// cap already plays the original file whenever the device can. Older
+    /// servers still store them and list an "original" plan entry.
+    static let legacySourceIds: Set<String> = ["original", "source", "max"]
 
     static let auto = ApplePlaybackQualityOption(
         id: autoId,
         label: "Auto",
         resolution: "",
         bitrateKbps: 0,
-        isOriginal: false,
         isAuto: true
     )
 
@@ -73,35 +62,35 @@ enum ApplePlaybackQuality {
         label: "4K",
         resolution: ultraHDId,
         bitrateKbps: 0,
-        isOriginal: false,
         isAuto: false
     )
 
     static let tiers: [ApplePlaybackQualityOption] = [
-        .init(id: "1080p-high", label: "Up to 1080p HD (High)", resolution: "1080p", bitrateKbps: 20_000, isOriginal: false, isAuto: false),
-        .init(id: "1080p-medium", label: "Up to 1080p HD (Medium)", resolution: "1080p", bitrateKbps: 12_000, isOriginal: false, isAuto: false),
-        .init(id: "1080p", label: "Up to 1080p HD", resolution: "1080p", bitrateKbps: 10_000, isOriginal: false, isAuto: false),
-        .init(id: "1080p-8", label: "Up to 1080p HD", resolution: "1080p", bitrateKbps: 8_000, isOriginal: false, isAuto: false),
-        .init(id: "720p-high", label: "Up to 720p HD (High)", resolution: "720p", bitrateKbps: 4_000, isOriginal: false, isAuto: false),
-        .init(id: "720p-medium", label: "Up to 720p HD (Medium)", resolution: "720p", bitrateKbps: 3_000, isOriginal: false, isAuto: false),
-        .init(id: "720p", label: "Up to 720p HD", resolution: "720p", bitrateKbps: 2_000, isOriginal: false, isAuto: false),
-        .init(id: "480p", label: "Up to 480p", resolution: "480p", bitrateKbps: 1_500, isOriginal: false, isAuto: false),
-        .init(id: "328p", label: "Up to 328p", resolution: "328p", bitrateKbps: 700, isOriginal: false, isAuto: false),
+        .init(id: "1080p-high", label: "Up to 1080p HD (High)", resolution: "1080p", bitrateKbps: 20_000, isAuto: false),
+        .init(id: "1080p-medium", label: "Up to 1080p HD (Medium)", resolution: "1080p", bitrateKbps: 12_000, isAuto: false),
+        .init(id: "1080p", label: "Up to 1080p HD", resolution: "1080p", bitrateKbps: 10_000, isAuto: false),
+        .init(id: "1080p-8", label: "Up to 1080p HD", resolution: "1080p", bitrateKbps: 8_000, isAuto: false),
+        .init(id: "720p-high", label: "Up to 720p HD (High)", resolution: "720p", bitrateKbps: 4_000, isAuto: false),
+        .init(id: "720p-medium", label: "Up to 720p HD (Medium)", resolution: "720p", bitrateKbps: 3_000, isAuto: false),
+        .init(id: "720p", label: "Up to 720p HD", resolution: "720p", bitrateKbps: 2_000, isAuto: false),
+        .init(id: "480p", label: "Up to 480p", resolution: "480p", bitrateKbps: 1_500, isAuto: false),
+        .init(id: "328p", label: "Up to 328p", resolution: "328p", bitrateKbps: 700, isAuto: false),
     ]
 
-    static let settingsOptions: [ApplePlaybackQualityOption] = [auto, original, ultraHD] + tiers
+    static let settingsOptions: [ApplePlaybackQualityOption] = [auto, ultraHD] + tiers
 
     static func normalizeStoredId(_ raw: String?) -> String {
         let value = raw?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
+        if value.isEmpty || legacySourceIds.contains(value) {
+            return autoId
+        }
         switch value {
-        case "", autoId:
+        case autoId:
             return autoId
         case ultraHDId, "4k", "uhd":
             return ultraHDId
-        case originalId:
-            return originalId
         case "420p":
             return "328p"
         default:
@@ -127,7 +116,8 @@ enum ApplePlaybackQuality {
     /// Build the in-player menu from the server's V3 plan. The server owns
     /// which rungs are executable for this source; showing the wider Settings
     /// catalog here would let the user request qualities the active plan never
-    /// offered.
+    /// offered. An "original" entry from an older server is dropped: Auto is
+    /// the way back to the source.
     static func playbackOptions(
         serverQualities: [PlaybackV3AvailableQuality]
     ) -> [ApplePlaybackQualityOption] {
@@ -138,39 +128,37 @@ enum ApplePlaybackQuality {
         let planned = serverQualities.compactMap { quality -> ApplePlaybackQualityOption? in
             let id = protocolV3QualityId(quality.label)
             guard id != autoId, seen.insert(id).inserted else { return nil }
-            let isOriginal = quality.preservesSource || id == originalId
             let height = quality.height ?? 0
             return ApplePlaybackQualityOption(
                 id: id,
                 label: playbackLabel(
                     serverDisplayName: quality.displayName,
                     id: id,
-                    height: height,
-                    isOriginal: isOriginal
+                    height: height
                 ),
-                resolution: isOriginal || height <= 0 ? "" : "\(height)p",
+                resolution: height <= 0 ? "" : "\(height)p",
                 bitrateKbps: max(0, quality.bitrateKbps),
-                isOriginal: isOriginal,
                 isAuto: false
             )
         }
         return [auto] + planned
     }
 
-    /// Whether the plan offers more than one quality. Auto is added by the
-    /// client, so it does not count: Auto beside a lone Original is no choice.
+    /// Whether the plan offers a fixed quality to pick. Auto is added by the
+    /// client, so a menu holding only Auto is no choice.
     static func hasChoice(among options: [ApplePlaybackQualityOption]) -> Bool {
-        options.filter { !$0.isAuto }.count > 1
+        options.contains { !$0.isAuto }
     }
 
     /// Quality labels in an active V3 plan are server-owned identifiers. Keep
     /// unknown additive rungs instead of coercing them to Auto; only Settings
-    /// persistence uses the closed local catalog in `normalizeStoredId`.
+    /// persistence uses the closed local catalog in `normalizeStoredId`. The
+    /// legacy source spellings are the exception, so "original" is never sent.
     static func protocolV3QualityId(_ raw: String?) -> String {
         let value = raw?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
-        guard !value.isEmpty else { return autoId }
+        guard !value.isEmpty, !legacySourceIds.contains(value) else { return autoId }
         switch value {
         case "4k", "uhd":
             return ultraHDId
@@ -185,27 +173,31 @@ enum ApplePlaybackQuality {
     /// with a same-named Settings preset. Compound rung labels are exact plan
     /// identities, and their bitrate comes from that plan rather than Apple's
     /// independently maintained Settings ladder.
+    ///
+    /// Auto keeps `autoBandwidthCapKbps`, the saved cap for the connection
+    /// playback is on (nil for "No limit"): picking Auto hands the choice back
+    /// to the server without lifting a cap the viewer saved.
     static func protocolV3Selection(
         requestedQualityId: String,
-        availableQualities: [PlaybackV3AvailableQuality]
+        availableQualities: [PlaybackV3AvailableQuality],
+        autoBandwidthCapKbps: Int?
     ) -> ApplePlaybackV3QualitySelection {
         let clientQualityId = protocolV3QualityId(requestedQualityId)
         if clientQualityId == autoId {
             return ApplePlaybackV3QualitySelection(
                 clientQualityId: autoId,
                 serverPreference: autoId,
-                bandwidthCapKbps: nil,
+                bandwidthCapKbps: autoBandwidthCapKbps.flatMap(positiveBitrate),
                 isServerOwned: true
             )
         }
         if let offered = availableQualities.first(where: {
             protocolV3QualityId($0.label) == clientQualityId
         }) {
-            let preservesSource = offered.preservesSource || clientQualityId == originalId
             return ApplePlaybackV3QualitySelection(
                 clientQualityId: clientQualityId,
                 serverPreference: clientQualityId,
-                bandwidthCapKbps: preservesSource ? nil : positiveBitrate(offered.bitrateKbps),
+                bandwidthCapKbps: offered.preservesSource ? nil : positiveBitrate(offered.bitrateKbps),
                 isServerOwned: true
             )
         }
@@ -222,6 +214,20 @@ enum ApplePlaybackQuality {
         )
     }
 
+    /// A stored settings pair, sent as stored: its resolution is the
+    /// preference and its cap the bandwidth cap. Used when the connection
+    /// changes and playback moves to the other pair.
+    static func protocolV3Selection(axes: AppleQualityAxes) -> ApplePlaybackV3QualitySelection {
+        let resolution = SiloQualityPresets.normalizeResolution(axes.resolution)
+        let bitrateKbps = axes.bitrateKbps.flatMap(positiveBitrate)
+        return ApplePlaybackV3QualitySelection(
+            clientQualityId: AppleQualityAxes.join(resolution: resolution, bitrateKbps: bitrateKbps),
+            serverPreference: resolution,
+            bandwidthCapKbps: bitrateKbps,
+            isServerOwned: false
+        )
+    }
+
     private static func positiveBitrate(_ bitrateKbps: Int) -> Int? {
         bitrateKbps > 0 ? bitrateKbps : nil
     }
@@ -229,10 +235,8 @@ enum ApplePlaybackQuality {
     private static func playbackLabel(
         serverDisplayName: String?,
         id: String,
-        height: Int,
-        isOriginal: Bool
+        height: Int
     ) -> String {
-        if isOriginal { return "Original" }
         if let serverDisplayName {
             let normalized = serverDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
             if !normalized.isEmpty { return normalized }
@@ -246,24 +250,6 @@ enum ApplePlaybackQuality {
             return settingsOptions.first(where: { $0.id == id })?.label
                 ?? (height > 0 ? "Up to \(height)p" : id)
         }
-    }
-
-    static func activeProtocolV3QualityId(
-        requestedQualityId: String?,
-        availableQualities: [PlaybackV3AvailableQuality]
-    ) -> String {
-        let requested = protocolV3QualityId(requestedQualityId)
-        guard requested != autoId else { return autoId }
-        let requestedResolution = settingsOptions.contains(where: { $0.id == requested })
-            ? AppleQualityAxes.split(requested).resolution
-            : nil
-        return availableQualities.contains(where: { quality in
-            let offered = protocolV3QualityId(quality.label)
-            return offered == requested
-                || requestedResolution.map {
-                    AppleQualityAxes.split(offered).resolution == $0
-                } == true
-        }) ? requested : autoId
     }
 
     static func formatBitrate(kbps: Int) -> String {

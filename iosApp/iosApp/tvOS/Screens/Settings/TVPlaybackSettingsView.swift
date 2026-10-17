@@ -14,6 +14,7 @@ struct TVPlaybackSettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            qualitySection
             streamingSection
             episodesSection
             // Hidden entirely on servers that do not serve the two keys.
@@ -51,15 +52,31 @@ struct TVPlaybackSettingsPane: View {
 
     // MARK: - Sections
 
+    /// Resolution and bitrate are two pickers: someone may want only 1080p on
+    /// a fast connection, and a 1080p file can carry a higher bitrate than a
+    /// 4K one. Each writes and clears only its own setting, as on the web.
+    @ViewBuilder
+    private var qualitySection: some View {
+        TVSettingsSectionHeader("QUALITY")
+
+        TVSettingsPickerRow(
+            title: "Resolution",
+            value: viewModel.qualityResolutionLabel
+        ) { showPicker(.resolution) }
+        .focused(detailFocus, equals: .top)
+
+        TVSettingsPickerRow(
+            title: "Maximum Bitrate",
+            value: viewModel.maxBitrateLabel
+        ) { showPicker(.maxBitrate) }
+        .focused(detailFocus, equals: .playbackMaxBitrate)
+
+        TVSettingsFooter(viewModel.qualityFooterText)
+    }
+
     @ViewBuilder
     private var streamingSection: some View {
         TVSettingsSectionHeader("STREAMING")
-
-        TVSettingsPickerRow(
-            title: "Quality",
-            value: viewModel.preferredQualityLabel
-        ) { showPicker(.quality) }
-        .focused(detailFocus, equals: .top)
 
         TVSettingsPickerRow(
             title: "Audio Language",
@@ -135,13 +152,7 @@ struct TVPlaybackSettingsPane: View {
     }
 
     private var streamingFooterText: String {
-        // Leads with what the chosen quality actually means, since the preset
-        // labels ("1080p High") name a tier without stating its bitrate.
-        var text = "\(viewModel.preferredQualityLabel)."
-        if let preset = SiloQualityPresets.preset(id: viewModel.preferredQualityPresetId) {
-            text = preset.description
-        }
-        text += " " + SettingsViewModel.hdrFooterText
+        var text = SettingsViewModel.hdrFooterText
         text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
         text += " TrueHD Atmos adds height channels but plays those tracks as compressed audio."
         return text
@@ -313,20 +324,22 @@ struct TVPlaybackSettingsPane: View {
 
     private func pickerRequest(for kind: PickerKind) -> TVSettingsPickerRequest {
         switch kind {
-        case .quality:
+        case .resolution:
             TVSettingsPickerRequest(
-                title: "Quality",
-                options: [TVSettingsOptions.useProfileSetting] + TVSettingsOptions.quality(
-                    // A stored pair no preset covers gets its own entry
-                    // describing what is actually stored, so the sheet never
-                    // highlights a preset the user did not choose.
-                    including: !viewModel.usesProfileSetting(.quality)
-                        && viewModel.preferredQualityPresetId == nil
-                        ? viewModel.preferredQualityLabel
-                        : nil
-                ),
-                selection: selection(.quality),
+                title: "Resolution",
+                options: [TVSettingsOptions.useProfileSetting] + TVSettingsOptions.resolution,
+                selection: selection(.resolution),
                 returnFocus: .top
+            )
+        case .maxBitrate:
+            TVSettingsPickerRequest(
+                title: "Maximum Bitrate",
+                // A stored cap no choice covers is listed in its place, so
+                // the sheet highlights what is actually stored.
+                options: [TVSettingsOptions.useProfileSetting]
+                    + TVSettingsOptions.maxBitrate(viewModel.maxBitrateChoicesKbps),
+                selection: selection(.maxBitrate),
+                returnFocus: .playbackMaxBitrate
             )
         case .audioLanguage:
             TVSettingsPickerRequest(
@@ -433,7 +446,8 @@ struct TVPlaybackSettingsPane: View {
     }
 
     enum PickerKind {
-        case quality
+        case resolution
+        case maxBitrate
         case audioLanguage
         case autoPlayNext
         case skipCredits

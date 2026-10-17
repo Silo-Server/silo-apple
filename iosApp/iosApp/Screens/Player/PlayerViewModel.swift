@@ -1339,6 +1339,21 @@ class PlayerViewModel {
     /// progress. Deliberately does not stop the session — PiP and background
     /// audio keep playing after this fires.
     private var foregroundExitObserverToken: NSObjectProtocol?
+    /// Moves playback between the main and cellular quality pairs when the
+    /// connection changes (iPhone and iPad). Set at the end of `init`.
+    @ObservationIgnored private var networkQuality: PlaybackNetworkQualityController?
+    @ObservationIgnored private var networkPathObservation: PlaybackNetworkMonitor.ObserverToken?
+    /// A fixed quality the viewer picked in the player, once it took effect,
+    /// and the title it belongs to. Nil while playback follows the saved
+    /// settings, which an Auto pick also means. See
+    /// ``recordViewerQualityPick(_:forContentId:)``.
+    private var explicitQualityPick: (contentId: String?, qualityId: String)?
+
+    /// Whether playback uses the cellular pair right now. A Watch Party keeps
+    /// the main pair.
+    private var usesMeteredQuality: Bool {
+        !isWatchPartyPlayback && PlaybackNetworkMonitor.shared.isMetered
+    }
 
     init(libraryId: Int? = nil) {
         self.initialLibraryId = libraryId
@@ -1492,6 +1507,34 @@ class PlayerViewModel {
         seekIntervalRefreshTask = Task { [seekIntervalPreferences] in
             await seekIntervalPreferences.refresh()
         }
+        let networkQuality = PlaybackNetworkQualityController(
+            isMetered: { PlaybackNetworkMonitor.shared.isMetered },
+            pair: { [settings] metered in settings.playbackQualityAxes(onMeteredNetwork: metered) },
+            replan: { [weak self] axes in self?.replanForConnectionChange(axes) ?? .unavailable }
+        )
+        self.networkQuality = networkQuality
+        networkPathObservation = PlaybackNetworkMonitor.shared.observe { [weak networkQuality] in
+            Task { @MainActor in networkQuality?.connectionDidChange() }
+        }
+    }
+
+    /// The connection moved between metered and unmetered and the other
+    /// quality pair applies. A Watch Party keeps the room's stream as it is.
+    private func replanForConnectionChange(
+        _ axes: AppleQualityAxes
+    ) -> PlaybackNetworkQualityController.ReplanOutcome {
+        guard !isDisposed, !isWatchPartyPlayback, activePreparedProtocolV3 != nil else {
+            return .unavailable
+        }
+        guard protocolV3ReplanTask == nil, !isLoading, !isQualitySwitching else { return .busy }
+        let issued = attemptProtocolV3Replan(
+            position: currentTime.isFinite ? max(0, currentTime) : 0,
+            classification: "quality_changed",
+            message: "The connection changed between mobile data and Wi-Fi.",
+            operation: PlaybackProtocolV3.ReplanOperation.qualityChange,
+            qualityAxes: axes
+        )
+        return issued ? .issued : .busy
     }
 
     /// Best-effort, non-blocking write of the current resume point, outside
@@ -2366,6 +2409,8 @@ class PlayerViewModel {
         message: String,
         operation: String? = nil,
         qualityPreference: String? = nil,
+        autoBandwidthCapKbps: Int? = nil,
+        qualityAxes: AppleQualityAxes? = nil,
         completesQualitySwitch: Bool = false,
         requeueWhenBusy: Bool = false,
         trackTarget: QueuedProtocolV3TrackTarget? = nil,
@@ -2583,6 +2628,8 @@ class PlayerViewModel {
                     message: message,
                     operation: operation,
                     qualityPreference: qualityPreference,
+                    autoBandwidthCapKbps: autoBandwidthCapKbps,
+                    qualityAxes: qualityAxes,
                     audioTrackIndex: requestedAudioTrackIndex,
                     subtitleTrackIndex: requestedSubtitleTrackIndex,
                     outputRouteSnapshot: outputRouteSnapshot
@@ -2691,6 +2738,10 @@ class PlayerViewModel {
                 uncommittedPrepared = nil
                 if completesQualitySwitch {
                     self.lastLoadRequest?.preferredQualityOverride = prepared.activeQualityId
+                    self.recordViewerQualityPick(
+                        prepared.activeQualityId,
+                        forContentId: self.lastLoadRequest?.contentId
+                    )
                 }
                 if previousSessionId != prepared.session.sessionId {
                     await self.realtimeClient.unbind()
@@ -3390,11 +3441,12 @@ class PlayerViewModel {
             preferredSidecarSubtitleTrackId: nil,
             startFromBeginning: false
         )
-        // An On Deck pick is another title, often in another library; it
-        // starts like a tap on its card.
+        // No quality override: the next title starts on the saved settings
+        // for the connection, since an in-player pick applies only to the
+        // title it was made on. An On Deck pick is another title, often in
+        // another library; it starts like a tap on its card.
         if nextUpEpisode?.isFromOnDeck != true {
             request.libraryId = libraryId
-            request.preferredQualityOverride = nextEpisodeQualityOverride
         }
         beginFreshLoad(
             request: request,
@@ -3404,20 +3456,38 @@ class PlayerViewModel {
         )
     }
 
-    /// File ids do not carry across episodes, but their effective quality can.
-    /// Preserve an explicit in-player rung; when playback is on Auto, carry
-    /// the source resolution Auto actually selected. The normal ranked
-    /// fallback remains in force if the next episode has no compatible match.
-    private var nextEpisodeQualityOverride: String? {
+    /// A quality the viewer picked in the player (or SiloRemote picked for
+    /// them) took effect. A fixed rung holds over the connection's saved pair
+    /// for the rest of this title, reloads included, and never carries to the
+    /// next episode. Auto is not such a pick: it follows the saved settings
+    /// for the connection, so connection changes keep replanning.
+    /// Internal for tests.
+    func recordViewerQualityPick(_ qualityId: String, forContentId contentId: String?) {
+        if ApplePlaybackQuality.protocolV3QualityId(qualityId) == ApplePlaybackQuality.autoId {
+            explicitQualityPick = nil
+            networkQuality?.viewerDidPickAuto(onMeteredNetwork: usesMeteredQuality)
+        } else {
+            explicitQualityPick = (contentId, qualityId)
+            networkQuality?.viewerDidPickQuality()
+        }
+    }
+
+    /// Whether the viewer's fixed pick applies to a start of `contentId`:
+    /// a reload of the title it was made on. Internal for tests.
+    func viewerQualityPickApplies(toContentId contentId: String) -> Bool {
+        explicitQualityPick.map { $0.contentId == contentId } ?? false
+    }
+
+    /// The in-player menu row to light. Auto only while the session's
+    /// preference is auto; a fixed rung only when the viewer picked it for
+    /// this title. A fixed saved resolution (1080p, say) lights nothing, even
+    /// when a rung shares its name, so Auto stays a choice the viewer can make.
+    var highlightedQualityOptionId: String? {
         let active = ApplePlaybackQuality.protocolV3QualityId(activeQualityId)
-        if active != ApplePlaybackQuality.autoId {
-            return active
-        }
-        guard let resolution = currentSelectedVersion?.resolution,
-              !resolution.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-        return ApplePlaybackQuality.protocolV3QualityId(resolution)
+        if active == ApplePlaybackQuality.autoId { return ApplePlaybackQuality.autoId }
+        guard let pick = explicitQualityPick,
+              ApplePlaybackQuality.protocolV3QualityId(pick.qualityId) == active else { return nil }
+        return active
     }
 
     func playOnDeckItemNow(_ item: PlayerOnDeckItem) {
@@ -5537,6 +5607,20 @@ class PlayerViewModel {
                 trackSignature: preferences.trackSignature
             )
         }()
+        // Read once, so the start and the path-change check agree on which
+        // pair this session asked for. A Watch Party keeps the main pair.
+        let onMeteredNetwork = usesMeteredQuality
+        // A fixed in-player pick lasts for its title: reloads keep it, any
+        // other title drops it.
+        let keepsViewerPick = viewerQualityPickApplies(toContentId: request.contentId)
+        if !keepsViewerPick {
+            explicitQualityPick = nil
+        }
+        if isWatchPartyPlayback {
+            networkQuality?.stop()
+        } else {
+            networkQuality?.sessionStarted(onMeteredNetwork: onMeteredNetwork, keepsViewerPick: keepsViewerPick)
+        }
         let startSession = { [sessionBridge] () async throws -> PreparedPlayback in
             try await sessionBridge.startSession(
                 contentId: request.contentId,
@@ -5551,6 +5635,7 @@ class PlayerViewModel {
                 allowNearEndResume: allowNearEndResume,
                 prefersLastUsedVersion: request.prefersLastUsedVersion,
                 preferredQualityOverride: request.preferredQualityOverride,
+                onMeteredNetwork: onMeteredNetwork,
                 allowAlternateVersions: request.allowAlternateVersions,
                 startsAtFirstPart: request.startsAtFirstPart
             )
@@ -6159,7 +6244,9 @@ class PlayerViewModel {
         let resolvedQualityId = activePreparedProtocolV3 == nil
             ? ApplePlaybackQuality.normalizeStoredId(qualityId)
             : ApplePlaybackQuality.protocolV3QualityId(qualityId)
-        guard resolvedQualityId != activeQualityId || qualitySwitchError != nil else { return }
+        // Compared with the lit row, not the session preference: a fixed
+        // saved resolution lights nothing, so its rung stays a real pick.
+        guard resolvedQualityId != highlightedQualityOptionId || qualitySwitchError != nil else { return }
 
         let target = currentTime.isFinite ? max(0, currentTime) : 0
         isQualitySwitching = true
@@ -6170,13 +6257,16 @@ class PlayerViewModel {
         if activePreparedProtocolV3 != nil {
             // A rejected replan already cleared `isQualitySwitching`, but
             // without a message the sheet just silently snapped back to the
-            // old quality with no explanation.
+            // old quality with no explanation. The pick is recorded once the
+            // replan commits.
             if !attemptProtocolV3Replan(
                 position: target,
                 classification: "quality_changed",
                 message: "User selected playback quality \(resolvedQualityId).",
                 operation: PlaybackProtocolV3.ReplanOperation.qualityChange,
                 qualityPreference: resolvedQualityId,
+                // Auto keeps the saved cap for the connection.
+                autoBandwidthCapKbps: settings.playbackQualityAxes(onMeteredNetwork: usesMeteredQuality).bitrateKbps,
                 completesQualitySwitch: true
             ) {
                 isQualitySwitching = false
@@ -6200,6 +6290,7 @@ class PlayerViewModel {
             serverSubtitlesDisabled: hasDisabledServerSubtitlesForResume
         )
         request.preferredQualityOverride = resolvedQualityId
+        recordViewerQualityPick(resolvedQualityId, forContentId: request.contentId)
         beginFreshLoad(
             request: request,
             progressPosition: target,
@@ -8157,6 +8248,9 @@ class PlayerViewModel {
         protocolV3ReplanTask = nil
         seekReplanTask?.cancel()
         seekReplanTask = nil
+        networkQuality?.stop()
+        networkPathObservation?.cancel()
+        networkPathObservation = nil
         if let outputRouteObserverToken {
             NotificationCenter.default.removeObserver(outputRouteObserverToken)
             self.outputRouteObserverToken = nil

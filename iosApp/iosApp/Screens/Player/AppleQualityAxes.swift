@@ -6,7 +6,8 @@
 //  two orthogonal values the settings contract stores.
 //
 //  The contract has no compound quality. `playback.preferred_quality` is an
-//  enum of bare resolutions (auto, 480p, 720p, 1080p, 2160p, original) and
+//  enum of bare resolutions (auto, 480p, 720p, 1080p, 2160p, and the
+//  deprecated original, which this client reads as auto) and
 //  `playback.max_bitrate_kbps` is a separate nullable bandwidth cap. Apple's
 //  ladder — "1080p-high", "720p-medium", "328p" — was never a third axis, only
 //  a bitrate written into the resolution string, and the legacy string-only
@@ -41,8 +42,8 @@ struct AppleQualityAxes: Equatable {
 
     static let auto = AppleQualityAxes(resolution: "auto", bitrateKbps: nil)
 
-    /// Contract enum members, most to least constrained.
-    static let resolutionMembers = ["auto", "480p", "720p", "1080p", "2160p", "original"]
+    /// Contract enum members this client writes, most to least constrained.
+    static let resolutionMembers = ["auto", "480p", "720p", "1080p", "2160p"]
 
     /// Split one of this client's stored quality ids into the two axes.
     ///
@@ -58,9 +59,6 @@ struct AppleQualityAxes: Equatable {
         guard let option = ApplePlaybackQuality.settingsOptions.first(where: { $0.id == normalized }),
               !option.isAuto else {
             return .auto
-        }
-        if option.isOriginal {
-            return AppleQualityAxes(resolution: "original", bitrateKbps: nil)
         }
         let resolution = resolutionMembers.contains(option.resolution) ? option.resolution : "480p"
         return AppleQualityAxes(resolution: resolution, bitrateKbps: option.bitrateKbps)
@@ -81,17 +79,14 @@ struct AppleQualityAxes: Equatable {
     /// authored resolution.
     ///
     /// V3 sends the stored bandwidth cap independently of the local rung.
-    /// `original` preserves source-resolution intent. The contract's 2160p
+    /// The deprecated `original` joins as `auto`. The contract's 2160p
     /// member remains a resolution-only id without a fabricated 4K bitrate
     /// rung. Unknown resolution members fall back to `auto`.
     static func join(resolution: String?, bitrateKbps: Int?) -> String {
         let resolution = (resolution?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()).flatMap {
             $0.isEmpty ? nil : $0
         } ?? "auto"
-        if resolution == "original" {
-            return ApplePlaybackQuality.originalId
-        }
-        if resolution == "auto" {
+        if resolution == "auto" || ApplePlaybackQuality.legacySourceIds.contains(resolution) {
             // A bandwidth cap with no resolution cap has no tier to name: this
             // client's picker is keyed on the resolution axis. The cap remains
             // independent and is sent to V3 or enforced by the legacy planner.
@@ -130,16 +125,19 @@ struct AppleQualityAxes: Equatable {
 
     /// Resolve the bandwidth half of the active playback intent.
     ///
-    /// An in-player selection is a complete temporary override, so its local
-    /// tier replaces the fallback cap (including Auto/Original clearing it).
-    /// With no override, the exact fallback survives untouched. That distinction
-    /// matters for pairs authored by another client: Apple's local 1080p rung is
-    /// 8 Mbps, so splitting a stored 1080p/6 Mbps pair would silently widen it.
+    /// A fixed in-player rung is a complete temporary override, so its local
+    /// tier replaces the fallback cap. Auto, picked in the player or not,
+    /// keeps the fallback: the saved cap for the connection, nil for "No
+    /// limit". With no override the exact fallback survives untouched. That
+    /// distinction matters for pairs authored by another client: Apple's
+    /// local 1080p rung is 8 Mbps, so splitting a stored 1080p/6 Mbps pair
+    /// would silently widen it.
     static func resolvedBitrateCap(
         qualityOverride: String?,
         fallbackBitrateKbps: Int?
     ) -> Int? {
-        if let qualityOverride {
+        if let qualityOverride,
+           ApplePlaybackQuality.protocolV3QualityId(qualityOverride) != ApplePlaybackQuality.autoId {
             return split(qualityOverride).bitrateKbps
         }
         return fallbackBitrateKbps.flatMap { $0 > 0 ? $0 : nil }

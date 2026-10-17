@@ -109,7 +109,6 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     func testPresetTableMatchesTheOtherClients() {
         let expected: [(id: String, label: String, resolution: String, bitrate: Int?)] = [
             ("auto", "Auto", "auto", nil),
-            ("original", "Original", "original", nil),
             ("2160p", "4K", "2160p", nil),
             ("1080p-high", "1080p High", "1080p", 10_000),
             ("1080p", "1080p", "1080p", 6_000),
@@ -292,7 +291,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         harness.transport.effective = [
             .init(
                 key: SettingKey.playbackPreferredQuality.rawValue,
-                value: .string("original"),
+                value: .string("2160p"),
                 source: .scope(.profile),
                 scope: .profile
             ),
@@ -305,8 +304,280 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await harness.settings.refreshFromServer()
 
         XCTAssertNil(harness.settings.maxBitrateKbps)
-        XCTAssertEqual(harness.settings.currentQualityPreset?.id, "original")
+        XCTAssertEqual(harness.settings.currentQualityPreset?.id, "2160p")
     }
+
+    /// "original" is deprecated but older servers may still store it. It reads
+    /// as Auto, with or without a cap, and never as a custom "Original" pair.
+    func testAStoredOriginalQualityReadsAsAuto() async throws {
+        for (bitrate, label) in [(nil, "Auto"), (6_000, "Auto at 6 Mbps")] as [(Int?, String)] {
+            let harness = try PlayerSettingsHarness()
+            harness.transport.effective = [
+                .init(
+                    key: SettingKey.playbackPreferredQuality.rawValue,
+                    value: .string("original"),
+                    source: .scope(.profile),
+                    scope: .profile
+                ),
+                .init(
+                    key: SettingKey.playbackMaxBitrateKbps.rawValue,
+                    value: bitrate.map { .int($0) } ?? .null,
+                    source: .scope(.profile),
+                    scope: .profile
+                ),
+            ]
+            await harness.settings.refreshFromServer()
+
+            XCTAssertEqual(harness.settings.preferredQualityResolution, "auto")
+            XCTAssertEqual(harness.settings.preferredQuality, ApplePlaybackQuality.autoId)
+            XCTAssertEqual(harness.settings.preferredQualityLabel, label)
+            XCTAssertEqual(harness.settings.currentQualityPreset?.id, bitrate == nil ? "auto" : nil)
+        }
+        XCTAssertNil(SiloQualityPresets.preset(id: "original"))
+        XCTAssertEqual(SiloQualityPresets.describe(resolution: "original", bitrateKbps: 6_000),
+                       SiloQualityPresets.describe(resolution: "auto", bitrateKbps: 6_000))
+        XCTAssertEqual(APIv2QualityPreference(wireValue: "original"), .auto)
+        XCTAssertEqual(APIv2QualityPreference(wireValue: "original").wireValue, "auto")
+    }
+
+    // MARK: - Resolution and Maximum Bitrate pickers
+
+    private static func qualityRows(
+        resolution: String,
+        bitrateKbps: Int?,
+        scope: SettingScope = .profile
+    ) -> [EffectiveSettingValue] {
+        [
+            .init(
+                key: SettingKey.playbackPreferredQuality.rawValue,
+                value: .string(resolution),
+                source: .scope(scope),
+                scope: scope
+            ),
+            .init(
+                key: SettingKey.playbackMaxBitrateKbps.rawValue,
+                value: bitrateKbps.map { .int($0) } ?? .null,
+                source: .scope(scope),
+                scope: scope
+            ),
+        ]
+    }
+
+    /// Each picker writes only its own key, as on the web, so the other one
+    /// keeps following the profile. That includes a cap from another client
+    /// that no Maximum Bitrate choice covers.
+    func testEachQualityPickerWritesOnlyItsOwnKey() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = Self.qualityRows(resolution: "1080p", bitrateKbps: 3_000)
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+
+        harness.settings.setQualityResolution("720p")
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(harness.transport.writes().map(\.key), [.playbackPreferredQuality])
+        XCTAssertEqual(harness.transport.writesByKey()[.playbackPreferredQuality]?.value, .string("720p"))
+        XCTAssertEqual(harness.transport.writesByKey()[.playbackPreferredQuality]?.scope, .profileDevice)
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.resolution))
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.maxBitrate), "the profile's 3 Mbps cap still applies")
+        XCTAssertEqual(harness.settings.maxBitrateKbps, 3_000)
+
+        harness.transport.reset()
+        harness.settings.setMaxBitrateKbps(20_000)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(harness.transport.writes().map(\.key), [.playbackMaxBitrateKbps])
+        XCTAssertEqual(harness.transport.writesByKey()[.playbackMaxBitrateKbps]?.value, .int(20_000))
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.maxBitrate))
+
+        // "No limit" is an explicit null on this device, so the profile's cap
+        // does not come back underneath it.
+        harness.transport.reset()
+        harness.settings.setMaxBitrateKbps(nil)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(harness.transport.writes().map(\.key), [.playbackMaxBitrateKbps])
+        XCTAssertEqual(harness.transport.writesByKey()[.playbackMaxBitrateKbps]?.value, .null)
+        XCTAssertNil(harness.settings.maxBitrateKbps)
+        XCTAssertEqual(harness.settings.preferredQualityResolution, "720p")
+    }
+
+    /// A stored cap no choice covers reads back as itself and is listed in
+    /// its place, so the picker can show it selected.
+    func testAStoredCapNoChoiceCoversStaysListedAndSelected() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = Self.qualityRows(resolution: "2160p", bitrateKbps: 3_000)
+        await harness.settings.refreshFromServer()
+
+        XCTAssertEqual(SiloQualityPresets.resolutionLabel(harness.settings.preferredQualityResolution), "4K")
+        XCTAssertEqual(SiloQualityPresets.bitrateLabel(harness.settings.maxBitrateKbps), "3 Mbps")
+        let choices = SiloQualityPresets.bitrateChoices(including: harness.settings.maxBitrateKbps)
+        XCTAssertEqual(
+            choices,
+            [200_000, 100_000, 60_000, 40_000, 20_000, 15_000, 10_000, 6_000, 4_000, 3_000, 2_000, 1_500]
+        )
+        XCTAssertEqual(harness.settings.preferredQualityLabel, "4K at 3 Mbps")
+
+        // A cap a choice already covers is not listed twice.
+        XCTAssertEqual(SiloQualityPresets.bitrateChoices(including: 6_000), SiloQualityPresets.bitrateChoicesKbps)
+        XCTAssertEqual(SiloQualityPresets.bitrateChoices(including: nil), SiloQualityPresets.bitrateChoicesKbps)
+        XCTAssertEqual(SiloQualityPresets.bitrateLabel(nil), "No limit")
+    }
+
+    func testEveryResolutionChoiceIsAContractMemberThatRoundTrips() {
+        for resolution in SiloQualityPresets.resolutionChoices {
+            XCTAssertTrue(Self.contractResolutions.contains(resolution), resolution)
+            XCTAssertEqual(SiloQualityPresets.normalizeResolution(resolution), resolution)
+        }
+        XCTAssertFalse(SiloQualityPresets.resolutionChoices.contains("original"))
+    }
+
+    // MARK: - Cellular quality
+
+    private static func cellularRows(
+        resolution: String,
+        bitrateKbps: Int?,
+        scope: SettingScope = .profile
+    ) -> [EffectiveSettingValue] {
+        [
+            .init(
+                key: SettingKey.playbackCellularPreferredQuality.rawValue,
+                value: .string(resolution),
+                source: .scope(scope),
+                scope: scope
+            ),
+            .init(
+                key: SettingKey.playbackCellularMaxBitrateKbps.rawValue,
+                value: bitrateKbps.map { .int($0) } ?? .null,
+                source: .scope(scope),
+                scope: scope
+            ),
+        ]
+    }
+
+    func testTheCellularPairDefaultsToThe720pPresetAndSavesAPresetAsBothKeys() async throws {
+        let harness = try PlayerSettingsHarness()
+        XCTAssertEqual(harness.settings.cellularQualityAxes, PlayerSettings.defaultCellularQuality)
+        XCTAssertEqual(harness.settings.currentCellularQualityPreset?.id, "720p")
+
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+        harness.settings.setCellularQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "auto")))
+        await harness.settings.flushPendingDeviceSettings()
+
+        let byKey = harness.transport.writesByKey()
+        XCTAssertEqual(byKey[.playbackCellularPreferredQuality]?.value, .string("auto"))
+        XCTAssertEqual(byKey[.playbackCellularMaxBitrateKbps]?.value, .null)
+        // The same scope as the main pair.
+        XCTAssertEqual(byKey[.playbackCellularPreferredQuality]?.scope, .profileDevice)
+        XCTAssertEqual(byKey[.playbackCellularMaxBitrateKbps]?.scope, .profileDevice)
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.cellularQuality))
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.resolution), "the main pair is untouched")
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.maxBitrate), "the main pair is untouched")
+
+        // Uncapped survives a relaunch rather than reading back as the 2 Mbps
+        // default an absent value means.
+        let relaunched = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: harness.transport)
+        )
+        XCTAssertEqual(relaunched.cellularQualityAxes, .auto)
+    }
+
+    /// A server older than revision 20 does not define the keys: the pair is
+    /// not read, and a change stays on this device, still applied, until the
+    /// server serves the keys.
+    func testOnAnOlderServerTheCellularPairStaysOnThisDeviceUntilAnUpgrade() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.cellularQualityRevision - 1
+        await harness.settings.refreshFromServer()
+        XCTAssertEqual(harness.transport.effectiveCalls().count, 1)
+        XCTAssertFalse(harness.transport.effectiveCalls()[0].contains(.playbackCellularPreferredQuality))
+
+        let preset = try XCTUnwrap(SiloQualityPresets.preset(id: "1080p"))
+        harness.settings.setCellularQualityPreset(preset)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(harness.transport.writes().isEmpty, "nothing an older server would refuse is sent")
+        XCTAssertFalse(harness.settings.rejectedDeviceSettingChange)
+        XCTAssertTrue(harness.settings.heldDeviceSettingKeys.isEmpty)
+
+        await harness.settings.refreshFromServer()
+        let stored = AppleQualityAxes(resolution: "1080p", bitrateKbps: 6_000)
+        XCTAssertEqual(harness.settings.cellularQualityAxes, stored)
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.cellularQuality))
+        #if os(iOS)
+        XCTAssertEqual(harness.settings.playbackQualityAxes(onMeteredNetwork: true), stored)
+        #endif
+
+        // After the upgrade the owed change goes.
+        harness.transport.revision = SettingKey.cellularQualityRevision
+        await harness.settings.refreshFromServer()
+        let byKey = harness.transport.writesByKey()
+        XCTAssertEqual(byKey[.playbackCellularPreferredQuality]?.value, .string("1080p"))
+        XCTAssertEqual(byKey[.playbackCellularMaxBitrateKbps]?.value, .int(6_000))
+    }
+
+    /// Before any read says which revision the server runs (an offline
+    /// launch), a change waits rather than risking a refusal.
+    func testACellularChangeWaitsForTheServersRevision() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.settings.setCellularQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "480p")))
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+
+        await harness.settings.refreshFromServer()
+        let byKey = harness.transport.writesByKey()
+        XCTAssertEqual(byKey[.playbackCellularPreferredQuality]?.value, .string("480p"))
+        XCTAssertEqual(byKey[.playbackCellularMaxBitrateKbps]?.value, .int(1_500))
+    }
+
+    /// An older server has no profile value to go back to, so "Use Profile
+    /// Setting" leaves the contract default and sends nothing.
+    func testUsingTheProfileCellularQualityOnAnOlderServerRestoresTheDefault() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.cellularQualityRevision - 1
+        await harness.settings.refreshFromServer()
+        harness.settings.setCellularQualityPreset(try XCTUnwrap(SiloQualityPresets.preset(id: "480p")))
+        await harness.settings.flushPendingDeviceSettings()
+
+        await harness.settings.useProfileSetting(.cellularQuality)
+
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+        XCTAssertEqual(harness.settings.cellularQualityAxes, PlayerSettings.defaultCellularQuality)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.cellularQuality))
+    }
+
+    #if os(iOS)
+    /// A current server's cellular pair comes from a batch of its own, so the
+    /// player batch stays readable on servers that predate the pair.
+    func testACurrentServersCellularPairIsReadInItsOwnBatch() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = Self.cellularRows(resolution: "480p", bitrateKbps: 1_500)
+        await harness.settings.refreshFromServer()
+
+        let calls = harness.transport.effectiveCalls()
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertFalse(calls[0].contains(.playbackCellularPreferredQuality))
+        XCTAssertEqual(calls[1], SettingKey.playerCellularQualitySettings)
+        XCTAssertEqual(harness.settings.cellularQualityAxes, AppleQualityAxes(resolution: "480p", bitrateKbps: 1_500))
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.cellularQuality), "the profile's value")
+    }
+
+    /// When the cellular read fails, this device keeps its pair and whether
+    /// that pair is its own.
+    func testAMissingCellularAnswerKeepsThisDevicesPair() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = Self.cellularRows(resolution: "1080p", bitrateKbps: 3_000, scope: .profileDevice)
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.cellularQuality))
+
+        harness.transport.revision = SettingKey.cellularQualityRevision - 1
+        harness.transport.effective = []
+        await harness.settings.refreshFromServer()
+
+        XCTAssertEqual(harness.settings.cellularQualityAxes, AppleQualityAxes(resolution: "1080p", bitrateKbps: 3_000))
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.cellularQuality))
+        XCTAssertEqual(harness.settings.deviceChangedSettingCount, 1, "the pair counts once")
+    }
+    #endif
 
     // MARK: - Profile-scoped writes
 
