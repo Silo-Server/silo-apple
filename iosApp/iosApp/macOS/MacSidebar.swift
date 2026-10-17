@@ -57,7 +57,7 @@ struct MacSidebar: View {
                 profile: profileStore.profile,
                 showsName: true,
                 onOpenSettings: { router.navigate(to: .settings) },
-                onOpenRequests: { router.navigate(to: .requestsHub) },
+                onOpenRequests: { onSelect(.app(.requests)) },
                 onSwitchProfile: { router.switchProfile() },
                 onSwitchServer: { router.navigate(to: .serverList) },
                 onSignOut: { router.signOutAndReset() }
