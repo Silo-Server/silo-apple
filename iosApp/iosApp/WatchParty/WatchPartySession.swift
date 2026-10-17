@@ -705,7 +705,17 @@ final class WatchPartySession {
                                                            seekBand: seekBand) {
                 case .roomSeek: _ = try await adapter.apply(.seek(target), origin: .room)
                 case .correct: _ = try await adapter.correct(to: target, seekBand: seekBand)
-                case .realign: _ = try await adapter.apply(.seek(target), origin: .realign)
+                case .realign:
+                    let seekStarted = Date()
+                    let landed = try await adapter.apply(.seek(target), origin: .realign)
+                    // The room played on during that seek; land on it before playing.
+                    if let ahead = WatchPartyCommandState.realignFollowUp(
+                        command, serverNow: Date().addingTimeInterval(self.serverOffset),
+                        sourceTime: landed.sourceTime, seekTook: Date().timeIntervalSince(seekStarted)
+                    ), adapter.canReachInPlace(ahead) {
+                        try Task.checkCancellation()
+                        _ = try await adapter.apply(.seek(ahead), origin: .realign)
+                    }
                 case .none: break
                 }
                 try Task.checkCancellation()

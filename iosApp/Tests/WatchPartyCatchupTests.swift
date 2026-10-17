@@ -442,4 +442,27 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertNil(catchup.step(drift: 1.5, local: 20, at: at(0.5)))
         XCTAssertEqual(catchup.step(drift: 1.5, local: 20, at: at(1)), 21.5)
     }
+
+    func testAStoppedMemberJoiningAPlayingRoomLandsWhereTheRoomIsWhenItPlays() {
+        func command(_ state: WatchPartyPlaybackState) -> WatchPartyTransportCommand {
+            WatchPartyTransportCommand(commandId: "c", selectionRevision: 1, action: .play, positionSeconds: 100,
+                                       executeAt: at(10), issuedAt: at(9.5), playbackState: state)
+        }
+        // The first seek took 1.5 s; the room moved to 102.5 meanwhile, so
+        // the next aims that far past it.
+        XCTAssertEqual(WatchPartyCommandState.realignFollowUp(command(.playing), serverNow: at(12.5),
+                                                              sourceTime: 101, seekTook: 1.5), 104)
+        // Landed within the deadband: no second seek.
+        XCTAssertNil(WatchPartyCommandState.realignFollowUp(command(.playing), serverNow: at(12.5),
+                                                            sourceTime: 102.25, seekTook: 0.25))
+        // A slow seek never aims further ahead than the lead cap.
+        XCTAssertEqual(WatchPartyCommandState.realignFollowUp(command(.playing), serverNow: at(20),
+                                                              sourceTime: 100, seekTook: 9),
+                       110 + WatchPartyInPlaceCatchup.maxLead)
+        // A room that is not playing does not move while the member seeks.
+        XCTAssertNil(WatchPartyCommandState.realignFollowUp(command(.paused), serverNow: at(20),
+                                                            sourceTime: 90, seekTook: 2))
+        XCTAssertNil(WatchPartyCommandState.realignFollowUp(command(.playing), serverNow: at(20),
+                                                            sourceTime: .nan, seekTook: 2))
+    }
 }
