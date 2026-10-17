@@ -19,6 +19,9 @@ struct DiagnosticsStatusResponse: Codable, Equatable {
     /// servers that predate chunked uploads; those can only take the
     /// single-shot multipart upload.
     let uploadChunkBytes: Int?
+    /// The `crash.source` values the server's validator accepts. Absent
+    /// (nil) on servers that predate the list.
+    var acceptedCrashSources: [String]? = nil
 
     var serverInstanceID: String {
         serverInstanceId
