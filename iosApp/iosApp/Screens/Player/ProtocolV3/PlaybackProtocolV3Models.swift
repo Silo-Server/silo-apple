@@ -39,6 +39,11 @@ enum PlaybackProtocolV3 {
     /// Scoped to `original_http`: after probing the complete source, Aether
     /// maps the plan's selected audio ordinal to its concrete stream id.
     static let embeddedSubtitlesFeature = "embedded_subtitles_v1"
+    /// A `server_transcode_hls` plan may carry its embedded text subtitle as
+    /// a WebVTT SUBTITLES rendition of the stream itself
+    /// (`subtitle.hls_rendition`). AVPlayer then plays it from the
+    /// multivariant playlist, so no whole-file sidecar is fetched.
+    static let hlsSubtitleRenditionsFeature = "hls_subtitle_renditions_v1"
     static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
 
     /// Delivery classes are the unit a client negotiates in
@@ -478,11 +483,22 @@ struct PlaybackV3EmbeddedSubtitle: Codable, Equatable {
     let streamIndex: Int
 }
 
+/// The selected subtitle is carried by the plan's HLS stream: one WebVTT
+/// rendition in the multivariant playlist's SUBTITLES group `groupId`.
+struct PlaybackV3HLSSubtitleRendition: Codable, Equatable {
+    let groupId: String
+    let name: String
+    let format: String
+    let mimeType: String
+}
+
 struct PlaybackV3SubtitleDecision: Codable, Equatable {
     let mode: String
     let trackId: String?
     let artifact: PlaybackV3SubtitleArtifact?
     var embedded: PlaybackV3EmbeddedSubtitle? = nil
+    /// Mutually exclusive with `artifact` and `embedded`.
+    var hlsRendition: PlaybackV3HLSSubtitleRendition? = nil
     /// Authoritative list of every subtitle track for this plan. Select a track
     /// by echoing an entry's `trackId` or `combinedIndex` — never by counting
     /// tracks, summing arrays, or taking max(index) + 1.

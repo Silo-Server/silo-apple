@@ -47,7 +47,8 @@ enum ApplePlaybackV3Capabilities {
         PlaybackProtocolV3.directStreamResumeFeature,
         PlaybackProtocolV3.headerAuthenticatedMediaFeature,
         PlaybackProtocolV3.softwareVideoDecodeFeature,
-        PlaybackProtocolV3.embeddedSubtitlesFeature
+        PlaybackProtocolV3.embeddedSubtitlesFeature,
+        PlaybackProtocolV3.hlsSubtitleRenditionsFeature
     ]
 
     /// Audiobooks currently restart sessions at part boundaries and do not
@@ -58,6 +59,7 @@ enum ApplePlaybackV3Capabilities {
         $0 != PlaybackProtocolV3.seekReanchorFeature
             && $0 != PlaybackProtocolV3.softwareVideoDecodeFeature
             && $0 != PlaybackProtocolV3.embeddedSubtitlesFeature
+            && $0 != PlaybackProtocolV3.hlsSubtitleRenditionsFeature
     }
 
     /// `authorized_media_origins_v1` is negotiated per attempt rather than

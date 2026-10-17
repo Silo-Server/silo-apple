@@ -51,10 +51,14 @@ enum PlaybackMediaAuthorization {
         func allows(_ url: URL) -> Bool {
             guard StreamRequest.hasSameOrigin(url, sourceURL),
                   let components = Self.checkedComponents(url),
-                  Self.hasAllowedQuery(components),
                   let path = Self.pathComponents(components.percentEncodedPath) else {
                 return false
             }
+            // A transcode carrying its subtitle in the stream answers master.m3u8
+            // with a multivariant playlist whose variant and subtitle playlists
+            // are the same route under `silo_rendition`.
+            if hlsPrefix != nil, path == sourcePath, Self.hasRenditionQuery(components) { return true }
+            guard Self.hasAllowedQuery(components) else { return false }
             if path == sourcePath { return true }
             guard let hlsPrefix,
                   path.count == hlsPrefix.count + 2,
@@ -102,6 +106,12 @@ enum PlaybackMediaAuthorization {
                 (65...90).contains(byte) || (97...122).contains(byte) || (48...57).contains(byte)
                     || byte == 45 || byte == 46 || byte == 95 || byte == 126
             }
+        }
+
+        private static func hasRenditionQuery(_ components: URLComponents) -> Bool {
+            guard let items = components.queryItems, items.count == 1,
+                  items[0].name == "silo_rendition" else { return false }
+            return ["video", "subtitles"].contains(items[0].value)
         }
 
         private static func hasAllowedQuery(_ components: URLComponents) -> Bool {

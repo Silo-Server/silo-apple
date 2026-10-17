@@ -20,6 +20,7 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
     case invalidClientTransformation(String)
     case unsupportedRuntimeCorrection(String)
     case invalidEmbeddedSubtitle(String)
+    case invalidHLSSubtitleRendition(String)
 
     var errorDescription: String? {
         switch self {
@@ -33,6 +34,8 @@ enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
             return "The V3 client transformation cannot be executed as planned: \(value)."
         case .invalidEmbeddedSubtitle(let value):
             return "The embedded subtitle selection is invalid: \(value)."
+        case .invalidHLSSubtitleRendition(let value):
+            return "The in-stream subtitle selection is invalid: \(value)."
         case .unsupportedRuntimeCorrection(let value):
             return "The V3 plan requires an unsupported runtime correction: \(value)."
         }
@@ -103,6 +106,21 @@ enum ApplePlaybackV3PlanAdapter {
                     containers: [container]
                   ).contains(where: { $0.codecs.contains(ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec)) }) else {
                 throw ApplePlaybackV3PlanError.invalidEmbeddedSubtitle("unsupported source, codec, or stream identity")
+            }
+        }
+        if let rendition = plan.subtitle.hlsRendition {
+            guard plan.delivery == PlanDelivery.transcodeHLS,
+                  plan.stream.protocol == "hls",
+                  PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
+                  plan.subtitle.artifact == nil,
+                  plan.subtitle.embedded == nil,
+                  rendition.format == "vtt",
+                  !rendition.groupId.isEmpty,
+                  let selected = plan.selectedSubtitleInventoryItem,
+                  selected.trackId == plan.subtitle.trackId,
+                  selected.trackId == plan.selectedTracks.subtitle?.id,
+                  selected.source == "embedded" else {
+                throw ApplePlaybackV3PlanError.invalidHLSSubtitleRendition("unsupported delivery, mode, or track identity")
             }
         }
         if let correction = plan.runtimeCorrections.first {

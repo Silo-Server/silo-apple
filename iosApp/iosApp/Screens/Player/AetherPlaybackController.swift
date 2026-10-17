@@ -148,6 +148,9 @@ final class AetherPlaybackController {
     /// again to fetch its file anew (see `reloadExternalSubtitleTrack`).
     private var externalSubtitleSources: [Int64: ExternalSubtitleSource] = [:]
     private var isRegisteringExternalSubtitle = false
+    /// The rendition was picked before AVPlayer published its legible group.
+    /// Applied when the option appears; any later pick replaces it.
+    private var pendingHLSSubtitleRenditionSelection = false
     private var externalPlaybackObservation: NSKeyValueObservation?
     private var observedExternalPlaybackPlayer: AVPlayer?
     private var externalPlaybackPolicyTask: Task<Void, Never>?
@@ -266,6 +269,7 @@ final class AetherPlaybackController {
             activeSpec = nil
             replacementExternalPlaybackPolicy = nil
             aetherSubtitleIDByAppID = [:]
+            pendingHLSSubtitleRenditionSelection = false
             appSubtitleIDByAetherID = [:]
             externalSubtitleSources = [:]
             configureExternalPlaybackPolicy()
@@ -279,6 +283,7 @@ final class AetherPlaybackController {
             activeSpec = nil
             replacementExternalPlaybackPolicy = nil
             aetherSubtitleIDByAppID = [:]
+            pendingHLSSubtitleRenditionSelection = false
             appSubtitleIDByAetherID = [:]
             externalSubtitleSources = [:]
             configureExternalPlaybackPolicy()
@@ -454,6 +459,14 @@ final class AetherPlaybackController {
 
     func selectSubtitleTrack(id: Int64?) {
         cueHold.release(.primary)
+        pendingHLSSubtitleRenditionSelection = false
+        if let id, isHLSSubtitleRendition(appTrackID: id), hlsSubtitleRenditionEngineID == nil {
+            // The legible group surfaces with the item, sometimes only after
+            // readiness. Clearing here would deselect the rendition AVPlayer
+            // may already show; select it once the option is published.
+            pendingHLSSubtitleRenditionSelection = true
+            return
+        }
         if let id, refetchStaleExternalSubtitleTrack(appTrackID: id, primary: true) { return }
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
             engine.selectSubtitleTrack(index: aetherID)
@@ -464,6 +477,12 @@ final class AetherPlaybackController {
 
     func selectSecondarySubtitleTrack(id: Int64?) {
         cueHold.release(.secondary)
+        if let id, isHLSSubtitleRendition(appTrackID: id) {
+            // AVPlayer renders a single legible option; it cannot also be the
+            // overlay's secondary track.
+            engine.clearSecondarySubtitle()
+            return
+        }
         if let id, refetchStaleExternalSubtitleTrack(appTrackID: id, primary: false) { return }
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
             engine.selectSecondarySubtitleTrack(index: aetherID)
@@ -473,7 +492,42 @@ final class AetherPlaybackController {
     }
 
     func appSubtitleID(forAetherID id: Int) -> Int64 {
-        appSubtitleIDByAetherID[id] ?? Int64(id)
+        if let appID = activeSpec?.hlsSubtitleRenditionAppTrackID, id == hlsSubtitleRenditionEngineID {
+            return appID
+        }
+        return appSubtitleIDByAetherID[id] ?? Int64(id)
+    }
+
+    /// Whether a rendition pick waits for AVPlayer to publish its option.
+    /// Off still has to reach `selectSubtitleTrack` then, even though the
+    /// engine already reports no subtitle, or the option would be selected
+    /// when it appears.
+    var hasPendingHLSSubtitleRenditionSelection: Bool {
+        pendingHLSSubtitleRenditionSelection
+    }
+
+    /// Whether a picker row is the active plan's in-stream subtitle rendition.
+    func isHLSSubtitleRendition(appTrackID: Int64) -> Bool {
+        activeSpec?.hlsSubtitleRenditionAppTrackID == appTrackID
+    }
+
+    /// Aether's id for the plan's rendition: the stream's own legible option,
+    /// published as a natively rendered, non-external track. The playlist
+    /// declares exactly one; sidecars the engine injects are external.
+    private var hlsSubtitleRenditionEngineID: Int? {
+        hlsSubtitleRenditionEngineID(in: engine.subtitleTracks)
+    }
+
+    private func hlsSubtitleRenditionEngineID(in tracks: [TrackInfo]) -> Int? {
+        guard activeSpec?.hlsSubtitleRenditionAppTrackID != nil else { return nil }
+        return tracks.first { $0.isNativelyRenderedSubtitle && !$0.isExternal }?.id
+    }
+
+    /// Applies a rendition pick that arrived before its legible option.
+    private func applyPendingHLSSubtitleRenditionSelection(in tracks: [TrackInfo]) {
+        guard pendingHLSSubtitleRenditionSelection, let engineID = hlsSubtitleRenditionEngineID(in: tracks) else { return }
+        pendingHLSSubtitleRenditionSelection = false
+        engine.selectSubtitleTrack(index: engineID)
     }
 
     func subtitleUsesMovieTimeline(appTrackID: Int64?, slot: SubtitleSlot) -> Bool {
@@ -488,7 +542,11 @@ final class AetherPlaybackController {
     }
 
     func containsSubtitle(appTrackID: Int64) -> Bool {
-        aetherSubtitleIDByAppID[appTrackID] != nil
+        // The rendition belongs to the mounted stream even before AVPlayer
+        // publishes it. Reporting it absent would make the view model mount
+        // the inventory sidecar for the same track: the whole-file extraction
+        // the rendition exists to avoid.
+        aetherSubtitleIDByAppID[appTrackID] != nil || isHLSSubtitleRendition(appTrackID: appTrackID)
     }
 
     func containsEmbeddedSubtitleTrack(streamIndex: Int, codec: String) -> Bool {
@@ -665,6 +723,7 @@ final class AetherPlaybackController {
         activeSpec = nil
         configureExternalPlaybackPolicy()
         aetherSubtitleIDByAppID = [:]
+        pendingHLSSubtitleRenditionSelection = false
         appSubtitleIDByAetherID = [:]
         externalSubtitleSources = [:]
         didPublishFirstFrame = false
@@ -686,6 +745,7 @@ final class AetherPlaybackController {
         declaredTrackCount: Int
     ) {
         aetherSubtitleIDByAppID = [:]
+        pendingHLSSubtitleRenditionSelection = false
         appSubtitleIDByAetherID = [:]
         guard appIDs.count == declaredTrackCount else {
             assertionFailure(
@@ -707,6 +767,9 @@ final class AetherPlaybackController {
     func aetherSubtitleID(forAppID id: Int64) -> Int? {
         if let translated = aetherSubtitleIDByAppID[id] {
             return translated
+        }
+        if isHLSSubtitleRendition(appTrackID: id) {
+            return hlsSubtitleRenditionEngineID
         }
         // A Silo sidecar id is not an Aether id. Passing an unaliased value
         // through reaches Aether as an unknown external id and is silently
@@ -853,6 +916,12 @@ final class AetherPlaybackController {
             publish(.inventoryChanged)
         }
         .store(in: &subscriptions)
+
+        // `@Published` emits before the property changes, so the pending pick
+        // resolves against the emitted list rather than `engine.subtitleTracks`.
+        engine.$subtitleTracks
+            .sink { [weak self] tracks in self?.applyPendingHLSSubtitleRenditionSelection(in: tracks) }
+            .store(in: &subscriptions)
 
         // The audio pipeline the engine built, once it settles: TrueHD Atmos
         // rendered for its heights reads "… Atmos → APAC 7.1.4", the channel

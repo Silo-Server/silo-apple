@@ -9155,7 +9155,11 @@ class PlayerViewModel {
             registerProtocolV3EmbeddedSubtitleIfAvailable($0, plan: plan)
                 || aetherPlaybackController.containsSubtitle(appTrackID: $0.trackId)
         } ?? false
-        guard selection.canApplyLocally(to: plan, isMounted: isMounted) else { return false }
+        let serverCarriesSubtitleRenditions = activePreparedProtocolV3?.serverFeatures
+            .contains(PlaybackProtocolV3.hlsSubtitleRenditionsFeature) == true
+        guard selection.canApplyLocally(
+            to: plan, isMounted: isMounted, serverCarriesSubtitleRenditions: serverCarriesSubtitleRenditions
+        ) else { return false }
         let priorSelection = localProtocolV3SubtitleSelection
         localProtocolV3SubtitleSelection = selection
         selectedSubtitleId = track?.trackId
@@ -9170,7 +9174,8 @@ class PlayerViewModel {
             }
         }
         let engineID = track.flatMap { aetherPlaybackController.aetherSubtitleID(forAppID: $0.trackId) }
-        if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID {
+        if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID
+            || aetherPlaybackController.hasPendingHLSSubtitleRenditionSelection {
             applySubtitleTrackSelection(track?.trackId, reason: reason)
         }
         lastLoadRequest = lastLoadRequest?.adoptingLocalProtocolV3SubtitleSelection(selection, plan: plan)
@@ -9206,8 +9211,14 @@ class PlayerViewModel {
             registerProtocolV3SubtitleWithAetherIfNeeded(track)
         }
         let engineID = trackID.flatMap { aetherPlaybackController.aetherSubtitleID(forAppID: $0) }
-        if !isBurnedIn, trackID == nil || engineID != nil {
-            if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID {
+        // The plan's in-stream rendition has no engine id until AVPlayer
+        // publishes its legible option; the controller applies the pick then.
+        let isPendingRendition = trackID.map { aetherPlaybackController.isHLSSubtitleRendition(appTrackID: $0) } == true
+        if !isBurnedIn, trackID == nil || engineID != nil || isPendingRendition {
+            // An unpublished rendition still has to reach the controller, which
+            // holds the pick until AVPlayer offers the option.
+            if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID || isPendingRendition && engineID == nil
+                || aetherPlaybackController.hasPendingHLSSubtitleRenditionSelection {
                 applySubtitleTrackSelection(trackID, reason: "restored_local_selection")
             }
         } else if committedProtocolV3LoadEpoch != nil {
@@ -9246,6 +9257,9 @@ class PlayerViewModel {
     private func canRenderAsSecondarySubtitle(_ track: PlayerTrack) -> Bool {
         guard let plan = activePreparedProtocolV3?.plan else { return true }
         if SubtitleTrackIdSpace.isAILive(track.trackId) { return false }
+        // AVPlayer draws the stream's rendition itself; the overlay that
+        // renders secondary subtitles never receives its cues.
+        if aetherPlaybackController.isHLSSubtitleRendition(appTrackID: track.trackId) { return false }
         if let selection = ProtocolV3SubtitleSelection(track: track, plan: plan),
            let streamIndex = selection.embeddedStreamIndex(for: track, in: plan),
            let codec = track.codec,

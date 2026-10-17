@@ -146,6 +146,10 @@ struct AetherLoadSpec {
     /// The selected native row uses the same picker ID space as sidecars,
     /// but resolves directly to its container stream, without an external slot.
     let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
+    /// The selected picker row of an `hls_rendition` plan. The track is a
+    /// legible option of the stream's own playlist, so it has no declared
+    /// external slot and no Aether id until AVPlayer publishes the option.
+    let hlsSubtitleRenditionAppTrackID: Int64?
 
     /// The bridge for codecs Aether cannot stream-copy, when a caller does not
     /// name one. Lossless rather than Aether's `.surroundCompat` default;
@@ -233,6 +237,7 @@ struct AetherLoadSpec {
             return (SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index), URLRequest(url: url))
         })
         embeddedSubtitleAlias = nil
+        hlsSubtitleRenditionAppTrackID = nil
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -315,6 +320,7 @@ struct AetherLoadSpec {
             return (SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index), request)
         })
         embeddedSubtitleAlias = nil
+        hlsSubtitleRenditionAppTrackID = nil
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -495,6 +501,13 @@ struct AetherLoadSpec {
             )
         } else {
             embeddedSubtitleAlias = nil
+        }
+        if plan.subtitle.hlsRendition != nil,
+           PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
+           let combinedIndex = plan.selectedSubtitleCombinedIndex {
+            hlsSubtitleRenditionAppTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: combinedIndex)
+        } else {
+            hlsSubtitleRenditionAppTrackID = nil
         }
         let isServerHLS = [
             PlaybackProtocolV3.PlanDelivery.remuxHLS,

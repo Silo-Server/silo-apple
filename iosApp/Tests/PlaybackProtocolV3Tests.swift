@@ -86,6 +86,125 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         ))
     }
 
+    private static let hlsRendition = PlaybackV3HLSSubtitleRendition(
+        groupId: "subs", name: "Subtitles", format: "vtt", mimeType: "text/vtt"
+    )
+
+    private func makeHLSRenditionPlan(
+        delivery: String = "server_transcode_hls",
+        source: String = "embedded",
+        embeddedSubtitle: PlaybackV3EmbeddedSubtitle? = nil
+    ) -> PlaybackV3Plan {
+        makePlan(
+            delivery: delivery, streamProtocol: "hls", container: "hls", selectedSubtitleIndex: 7,
+            subtitleMode: "render",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: source),
+                                makeInventoryItem(combinedIndex: 8, source: "embedded")],
+            embeddedSubtitle: embeddedSubtitle,
+            hlsRendition: Self.hlsRendition
+        )
+    }
+
+    func testHLSSubtitleRenditionFeatureIsAdvertisedForVideoOnly() {
+        XCTAssertTrue(ApplePlaybackV3Capabilities.features.contains(PlaybackProtocolV3.hlsSubtitleRenditionsFeature))
+        XCTAssertFalse(ApplePlaybackV3Capabilities.audiobookFeatures.contains(PlaybackProtocolV3.hlsSubtitleRenditionsFeature))
+    }
+
+    func testServerDecisionDecodesHLSSubtitleRendition() throws {
+        let object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
+        var plan = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        var subtitle = try XCTUnwrap(plan["subtitle"] as? [String: Any])
+        subtitle["hls_rendition"] = ["group_id": "subs", "name": "Subtitles", "format": "vtt", "mime_type": "text/vtt"]
+        plan["subtitle"] = subtitle
+        let decoded = try PlaybackV3FixtureTestSupport.v2Plan(plan)
+        XCTAssertEqual(decoded.subtitle.hlsRendition, Self.hlsRendition)
+        XCTAssertNil(try PlaybackV3FixtureTestSupport.v2Plan(
+            try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        ).subtitle.hlsRendition, "plans without a rendition keep decoding as before")
+    }
+
+    /// The selected row is an inventory sidecar, but the stream carries it:
+    /// nothing may mount its URL, and the row resolves to the stream's
+    /// legible option instead of being cleared.
+    func testHLSSubtitleRenditionPlanMountsNoSidecarAndKeepsTheRowSelectable() throws {
+        let plan = makeHLSRenditionPlan()
+        XCTAssertNoThrow(try ApplePlaybackV3PlanAdapter.validate(plan))
+        let spec = try AetherLoadSpec(
+            validating: plan, sessionID: "session-v3", matchContentEnabled: false,
+            sourceURLOverride: URL(string: "https://example.test/master.m3u8")
+        )
+        let rowID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)
+        XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
+        XCTAssertTrue(spec.externalSubtitleAppTrackIDs.isEmpty)
+        XCTAssertEqual(spec.hlsSubtitleRenditionAppTrackID, rowID)
+        XCTAssertTrue(spec.options.nativeRemoteHLS)
+
+        let request = PlayerViewModel.LoadRequest(contentId: "movie", preferredFileId: nil, preferredAudioTrackIndex: nil,
+                                                  preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: rowID,
+                                                  startFromBeginning: false)
+        XCTAssertEqual(PlayerViewModel.protocolV3PendingTrackIntent(plan: plan, request: request).sidecarSubtitleTrackId, rowID)
+
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        controller.beginLoad(spec)
+        XCTAssertTrue(controller.containsSubtitle(appTrackID: rowID),
+                      "an absent row would make the view model mount the inventory sidecar")
+        XCTAssertTrue(controller.isHLSSubtitleRendition(appTrackID: rowID))
+        XCTAssertFalse(controller.isHLSSubtitleRendition(appTrackID: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 8)))
+        // AVPlayer has not published the legible group yet.
+        XCTAssertNil(controller.aetherSubtitleID(forAppID: rowID))
+        controller.selectSubtitleTrack(id: rowID)
+        XCTAssertNil(controller.engine.activeSubtitleTrackIndex)
+        XCTAssertTrue(controller.hasPendingHLSSubtitleRenditionSelection)
+        // Off while the pick waits cancels it, so the option is not selected
+        // when AVPlayer publishes it.
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertFalse(controller.hasPendingHLSSubtitleRenditionSelection)
+    }
+
+    func testHLSSubtitleRenditionRejectsContradictoryPlans() {
+        for plan in [
+            makeHLSRenditionPlan(delivery: "server_remux_hls"),
+            makeHLSRenditionPlan(source: "external"),
+        ] {
+            XCTAssertThrowsError(try ApplePlaybackV3PlanAdapter.validate(plan)) { error in
+                guard case ApplePlaybackV3PlanError.invalidHLSSubtitleRendition = error else {
+                    return XCTFail("Expected invalidHLSSubtitleRendition, got \(error)")
+                }
+            }
+        }
+        // A plan naming both routes is refused by whichever check runs first.
+        XCTAssertThrowsError(try ApplePlaybackV3PlanAdapter.validate(
+            makeHLSRenditionPlan(embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 3))
+        ))
+    }
+
+    /// Another embedded text track on a transcode goes to the server, which
+    /// carries it in the stream; mounting its sidecar would extract the whole
+    /// source file first.
+    func testEmbeddedTextPickOnTranscodeReplansInsteadOfMountingItsSidecar() {
+        let transcode = makeHLSRenditionPlan()
+        let other = ProtocolV3SubtitleSelection.track("file:42:subtitle:8")
+        XCTAssertFalse(other.canApplyLocally(to: transcode, isMounted: false, serverCarriesSubtitleRenditions: true))
+        XCTAssertTrue(other.canApplyLocally(to: transcode, isMounted: true, serverCarriesSubtitleRenditions: true))
+        XCTAssertTrue(ProtocolV3SubtitleSelection.off.canApplyLocally(to: transcode, isMounted: false, serverCarriesSubtitleRenditions: true))
+        // A server that never carries renditions answers a replan with the
+        // same sidecar, so the client keeps mounting it locally.
+        XCTAssertTrue(other.canApplyLocally(to: transcode, isMounted: false))
+
+        let external = makePlan(
+            delivery: "server_transcode_hls", streamProtocol: "hls", container: "hls", subtitleMode: "off",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 0, source: "external")]
+        )
+        XCTAssertTrue(ProtocolV3SubtitleSelection.track("file:42:subtitle:0").canApplyLocally(to: external, isMounted: false))
+
+        let original = makePlan(
+            container: "mkv", subtitleMode: "off",
+            subtitleInventory: [makeInventoryItem(combinedIndex: 8, source: "embedded")]
+        )
+        XCTAssertTrue(other.canApplyLocally(to: original, isMounted: false))
+    }
+
     func testNativePickerIdentityRemainsResolvableForSecondaryAfterPrimaryClears() throws {
         let nativePlan = makePlan(
             container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
@@ -2963,6 +3082,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         subtitleMode: String = "off",
         subtitleInventory: [PlaybackV3SubtitleInventoryItem] = [],
         embeddedSubtitle: PlaybackV3EmbeddedSubtitle? = nil,
+        hlsRendition: PlaybackV3HLSSubtitleRendition? = nil,
         transformations: [PlaybackV3Transformation] = [],
         appliedQuirks: [PlaybackV3AppliedQuirk] = [],
         runtimeCorrections: [String] = [],
@@ -3047,6 +3167,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                     ?? selectedSubtitleIndex.map { "file:42:subtitle:\($0)" },
                 artifact: nil,
                 embedded: embeddedSubtitle,
+                hlsRendition: hlsRendition,
                 inventory: subtitleInventory
             ),
             transformations: transformations,

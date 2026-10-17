@@ -103,6 +103,33 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
         XCTAssertFalse(scope.allows(url("https://api.example:8080/base/api/v2/playback/transcode/session-one/master.m3u8")))
     }
 
+    /// The multivariant playlist of an in-stream subtitle names its variant
+    /// and subtitle playlists as the master route under `silo_rendition`.
+    func testHLSMasterAuthorizesItsRenditionPlaylistsOnly() throws {
+        for master in [
+            "https://api.example/silo/api/v2/playback/transcode/session-one/master.m3u8",
+            "https://proxy.example/stream/v3/session-one/master.m3u8",
+        ] {
+            let scope = try PlaybackMediaAuthorization.Scope(
+                sourceURL: url(master), serverURL: "https://api.example/silo", sessionID: "session-one"
+            )
+            XCTAssertTrue(scope.allows(url(master + "?silo_rendition=video")), master)
+            XCTAssertTrue(scope.allows(url(master + "?silo_rendition=subtitles")), master)
+            let segments = String(master.dropLast("master.m3u8".count)) + "segment/"
+            XCTAssertTrue(scope.allows(url(segments + "sub_00012.vtt")), master)
+            for suffix in ["?silo_rendition=other", "?silo_rendition=", "?silo_rendition=video&st=secret",
+                           "?silo_rendition=video&silo_rendition=subtitles"] {
+                XCTAssertFalse(scope.allows(url(master + suffix)), master + suffix)
+            }
+            XCTAssertFalse(scope.allows(url(segments + "seg_00001.ts?silo_rendition=video")), master)
+        }
+        let progressive = try PlaybackMediaAuthorization.Scope(
+            sourceURL: url("https://api.example/silo/api/v2/stream/session-one"),
+            serverURL: "https://api.example/silo", sessionID: "session-one"
+        )
+        XCTAssertFalse(progressive.allows(url("https://api.example/silo/api/v2/stream/session-one?silo_rendition=video")))
+    }
+
     func testUnexpectedQueriesAndURLCredentialsAreDenied() throws {
         let master = "https://api.example/api/v2/playback/transcode/session-one/master.m3u8"
         let scope = try PlaybackMediaAuthorization.Scope(
