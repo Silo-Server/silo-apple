@@ -2444,6 +2444,14 @@ struct MainTabView: View {
                 visibleDestinations: visibleDestinations
             )
         }
+        #if os(macOS)
+        .onChange(of: RequestsFeatureStore.shared.isEnabled) { _, _ in
+            selectedDestinationID = resolvedVisibleMainTabDestination(
+                selectedDestinationID,
+                visibleDestinations: visibleDestinations
+            )
+        }
+        #endif
         .onChange(of: librarySnapshot) { _, _ in
             #if os(macOS)
             // The fallback Libraries row gives way to the real library rows
