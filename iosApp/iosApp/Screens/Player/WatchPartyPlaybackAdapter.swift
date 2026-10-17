@@ -96,7 +96,8 @@ enum WatchPartyCorrection {
     private static let rateStep: Double = 0.005
 
     /// The seek band for a room command this member runs. The drift loop
-    /// between commands never seeks, so it has no band.
+    /// between commands seeks only where `correctsByRate` is off, and then
+    /// only in place, so it has no band.
     static func seekBand(isHost: Bool) -> Double { isHost ? hostSeek : hardSeek }
 
     /// Whether a playing member seeks for `drift` instead of converging by
@@ -146,23 +147,26 @@ enum WatchPartyCorrection {
 /// so the next one aims ahead by the shortfall the previous left, and seeks
 /// that keep missing back off.
 struct WatchPartyInPlaceCatchup: Equatable {
-    static let maxLead: Double = 3
+    /// No further than the host band: a host report further ahead than
+    /// `WatchPartyCorrection.hostSeek` moves the whole room to it.
+    static let maxLead: Double = WatchPartyCorrection.hostSeek
     static let minInterval: TimeInterval = 1
     static let maxInterval: TimeInterval = 16
 
     /// How far ahead of the room the next seek aims.
     private(set) var lead: Double = 0
-    /// How long after a seek lands the next may run.
-    private(set) var interval: TimeInterval = minInterval
-    /// When the last seek landed, and whether the drift it left is still to
+    /// How long after a seek finishes the next may run.
+    private(set) var interval: TimeInterval = WatchPartyInPlaceCatchup.minInterval
+    /// When the last seek finished, and whether the drift it left is still to
     /// be folded into `lead`.
     private(set) var landedAt: Date?
     private(set) var measuring = false
 
     /// One correction step for a playing member: `drift` is the room position
     /// minus `local`. A seek's shortfall is measured on the first step at
-    /// least `minInterval` after it landed. Returns where to seek, or nil to
-    /// leave the drift: within `inPlaceSeek`, or too soon after the last seek.
+    /// least `minInterval` after it finished. Returns where to seek, aimed
+    /// ahead by `lead`, or nil to leave the drift: within `inPlaceSeek`, or
+    /// too soon after the last seek.
     mutating func step(drift: Double, local: Double, at now: Date) -> Double? {
         guard drift.isFinite, local.isFinite else { return nil }
         if let landedAt {
@@ -180,11 +184,16 @@ struct WatchPartyInPlaceCatchup: Equatable {
         return max(0, local + drift + lead)
     }
 
-    /// The seek `step` asked for finished at `now`.
-    mutating func seekLanded(at now: Date) {
+    /// A correction seek finished at `now`, or failed. The next step measures
+    /// what it left, and the next seek waits `interval` from here.
+    mutating func seekFinished(at now: Date) {
         landedAt = now
         measuring = true
     }
+
+    /// The room's own seek replaced the correction seek, so what playback
+    /// shows next is not that seek's shortfall.
+    mutating func forgetLanding() { measuring = false }
 }
 
 /// Why a party member seeks, which decides what the seek does to a correction

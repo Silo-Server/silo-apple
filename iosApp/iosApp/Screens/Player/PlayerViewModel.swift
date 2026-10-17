@@ -9877,6 +9877,7 @@ extension PlayerViewModel {
     }
 
     func watchPartyRoomCommandStarts(seekingTo position: Double?) {
+        if position != nil { watchPartyInPlaceCatchup.forgetLanding() }
         guard watchPartyHeldSeek?.isReleased(byCommandSeekingTo: position) == true else { return }
         releaseWatchPartyHeldSeek()
     }
@@ -9925,7 +9926,15 @@ extension PlayerViewModel {
             return watchPartyPlaybackSnapshot
         }
         if watchPartyTargetReachableInPlace(position) {
-            return try await applyWatchPartyTransport(.seek(position), context: context, origin: .realign)
+            guard !WatchPartyCorrection.correctsByRate else {
+                return try await applyWatchPartyTransport(.seek(position), context: context, origin: .realign)
+            }
+            // Aimed and spaced like the in-place catch-up, so this seek's own
+            // shortfall does not draw a second one from the drift loop.
+            let led = position + watchPartyInPlaceCatchup.lead
+            let target = watchPartyTargetReachableInPlace(led) ? led : position
+            defer { watchPartyInPlaceCatchup.seekFinished(at: Date()) }
+            return try await applyWatchPartyTransport(.seek(target), context: context, origin: .realign)
         }
         return try await loadWatchPartyCorrection(to: position, context: context)
     }
@@ -9959,8 +9968,8 @@ extension PlayerViewModel {
 
     /// Closes a playing member's drift with one in-place seek when it does
     /// not correct by rate, aimed by `WatchPartyInPlaceCatchup`. Drift within
-    /// `WatchPartyCorrection.inPlaceSeek` stays, and a target outside the
-    /// buffer is left to the server's corrections, as a nudge would leave it.
+    /// `WatchPartyCorrection.inPlaceSeek` stays, and a room position outside
+    /// the buffer is left to the server's corrections.
     private func seekWatchPartyInPlace(
         drift: Double, context: WatchPartyPlaybackContext
     ) async throws -> WatchPartyPlaybackSnapshot {
@@ -9968,12 +9977,24 @@ extension PlayerViewModel {
         // A held skip is the room's to move; a correction load lands first.
         guard watchPartyHeldSeek == nil, !watchPartyReloadBudget.inFlight(at: Date()),
               snapshot.isPlaying, snapshot.isReady, !snapshot.isBuffering else { return snapshot }
-        if abs(drift) <= WatchPartyCorrection.inPlaceSeek { watchPartyReloadBudget.settle() }
-        guard let aim = watchPartyInPlaceCatchup.step(drift: drift, local: snapshot.sourceTime, at: Date()),
-              watchPartyTargetReachableInPlace(aim) else { return snapshot }
-        let landed = try await applyWatchPartyTransport(.seek(aim), context: context, origin: .realign)
-        watchPartyInPlaceCatchup.seekLanded(at: Date())
-        return landed
+        if abs(drift) <= WatchPartyCorrection.deadband { watchPartyReloadBudget.settle() }
+        guard let led = watchPartyInPlaceCatchup.step(drift: drift, local: snapshot.sourceTime, at: Date())
+        else { return snapshot }
+        // A led target outside the buffer would rebuild the stream; the room
+        // position itself may still be in it.
+        let room = max(0, snapshot.sourceTime + drift)
+        let target: Double
+        if watchPartyTargetReachableInPlace(led) {
+            target = led
+        } else if watchPartyTargetReachableInPlace(room) {
+            target = room
+        } else {
+            return snapshot
+        }
+        // A failed seek is spaced like a landed one, so it cannot repeat on
+        // every loop tick.
+        defer { watchPartyInPlaceCatchup.seekFinished(at: Date()) }
+        return try await applyWatchPartyTransport(.seek(target), context: context, origin: .realign)
     }
 
     /// Whether a seek to `position` lands in media this member already has.
