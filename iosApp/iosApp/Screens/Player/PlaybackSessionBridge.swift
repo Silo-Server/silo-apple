@@ -808,11 +808,22 @@ actor PlaybackSessionBridge {
             )
         }
 
-        let (preferredQuality, bandwidthCapKbps) = Self.startQuality(
+        let start = Self.startSelection(
+            versions: watchDetail.versions,
+            requestedFileId: preferredFileId,
+            lastFileId: watchDetail.userData?.lastFileId,
+            lastResolution: watchDetail.userData?.lastResolution,
+            prefersLastUsedVersion: prefersLastUsedVersion,
+            startsAtFirstPart: startsAtFirstPart,
             preferredQualityOverride: preferredQualityOverride,
-            lastUsedResolution: prefersLastUsedVersion ? watchDetail.userData?.lastResolution : nil,
             settingsQuality: PlayerSettings.shared.playbackQualityAxes(onMeteredNetwork: onMeteredNetwork)
         )
+        let selectedVersion = start.version
+        if let preferredFileId, start.source != .requested {
+            logger.warning(
+                "Requested fileId=\(preferredFileId, privacy: .public) is unavailable; falling back to automatic selection"
+            )
+        }
         let normalizedResumePosition: Double? = {
             guard let resumePosition, resumePosition.isFinite, resumePosition >= 0 else {
                 return nil
@@ -828,42 +839,6 @@ actor PlaybackSessionBridge {
             return storedResumePosition
         }()
 
-        var selectedVersion: FileVersion
-        if let preferredFileId,
-           let requestedVersion = watchDetail.versions.first(where: { $0.fileId == preferredFileId }) {
-            selectedVersion = requestedVersion
-            logger.info(
-                "Using manually selected version fileId=\(requestedVersion.fileId, privacy: .public)"
-            )
-        } else if prefersLastUsedVersion,
-                  let lastFileId = watchDetail.userData?.lastFileId,
-                  let lastUsedVersion = watchDetail.versions.first(where: {
-                      $0.fileId == lastFileId
-                  }) {
-            selectedVersion = lastUsedVersion
-            logger.info(
-                "Resuming last-used version fileId=\(lastUsedVersion.fileId, privacy: .public)"
-            )
-        } else {
-            if let preferredFileId {
-                logger.warning(
-                    "Requested fileId=\(preferredFileId, privacy: .public) is unavailable; falling back to automatic selection"
-                )
-            }
-
-            selectedVersion = Self.selectVersion(
-                from: watchDetail.versions,
-                lastFileId: watchDetail.userData?.lastFileId,
-                preferredQuality: preferredQuality
-            )
-        }
-        // A multi-part item that must play through starts at its first part,
-        // whichever part the quality ranking happened to prefer.
-        if startsAtFirstPart,
-           preferredFileId == nil,
-           let firstPart = PlayerMultipartPolicy.firstPart(for: selectedVersion, in: watchDetail.versions) {
-            selectedVersion = firstPart
-        }
         let resolvedAudioTrackIndex = preferredAudioTrackIndex
             ?? selectedVersion.effectiveAudioTrackIndex
         let selectedAudioLanguage = Self.startAudioLanguage(
@@ -900,21 +875,8 @@ actor PlaybackSessionBridge {
             allowNearEndResume: allowNearEndResume
         )
         logger.info(
-            "Selected version fileId=\(selectedVersion.fileId, privacy: .public) resolution=\(selectedVersion.resolution ?? "unknown", privacy: .public) codec=\(selectedVersion.codecVideo ?? "unknown", privacy: .public) bitrate=\(selectedVersion.bitrate ?? 0)"
+            "Selected version fileId=\(selectedVersion.fileId, privacy: .public) source=\(String(describing: start.source), privacy: .public) resolution=\(selectedVersion.resolution ?? "unknown", privacy: .public) codec=\(selectedVersion.codecVideo ?? "unknown", privacy: .public) bitrate=\(selectedVersion.bitrate ?? 0)"
         )
-
-        // Quality preference is a server-owned planning input. An explicit
-        // override is the user's in-player choice, so preserve it verbatim
-        // instead of deriving a different rung from the selected file.
-        let resolvedQualityPreference = preferredQualityOverride != nil || allowAlternateVersions == false
-            ? preferredQuality
-            : requestedQualityPreference(
-                preferredQuality: preferredQuality,
-                selectedVersion: selectedVersion,
-                hasManualSelection: preferredFileId != nil
-                    || (prefersLastUsedVersion
-                        && selectedVersion.fileId == watchDetail.userData?.lastFileId)
-            )
         let profileId = await TokenStore.shared.getProfileId()
         guard let profileId,
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -931,8 +893,8 @@ actor PlaybackSessionBridge {
             watchDetail: watchDetail,
             selectedVersion: selectedVersion,
             profileId: profileId,
-            qualityPreference: resolvedQualityPreference,
-            bandwidthCapKbps: bandwidthCapKbps,
+            qualityPreference: start.qualityPreference,
+            bandwidthCapKbps: start.bandwidthCapKbps,
             startPosition: effectiveStartPosition,
             // Without an explicit pick, send the server's own detail-resolved
             // effective audio index so a movie's remembered track survives.
@@ -2167,26 +2129,99 @@ actor PlaybackSessionBridge {
     /// and the bandwidth cap.
     ///
     /// An explicit override wins: the viewer's in-player pick, carried to a
-    /// renewal or the next episode. Continue Watching's last-used resolution
-    /// comes next, then the saved pair for the connection (`settingsQuality`,
-    /// the cellular pair on a metered one). Auto, as an override or as the
-    /// saved resolution, keeps the saved cap.
+    /// reload of the same title. Otherwise it is the saved pair for the
+    /// connection (`settingsQuality`, the cellular pair on a metered one).
+    /// Auto, as an override or as the saved resolution, keeps the saved cap.
     static func startQuality(
         preferredQualityOverride: String?,
-        lastUsedResolution: String?,
         settingsQuality: AppleQualityAxes
     ) -> (preferredQuality: String?, bandwidthCapKbps: Int?) {
         let preferredQuality = preferredQualityOverride.map {
             ApplePlaybackQuality.protocolV3QualityId($0)
-        } ?? normalizedQualityPreference(lastUsedResolution)
-            ?? normalizedQualityPreference(
-                AppleQualityAxes.join(resolution: settingsQuality.resolution, bitrateKbps: settingsQuality.bitrateKbps)
-            )
+        } ?? normalizedQualityPreference(
+            AppleQualityAxes.join(resolution: settingsQuality.resolution, bitrateKbps: settingsQuality.bitrateKbps)
+        )
         let bandwidthCapKbps = AppleQualityAxes.resolvedBitrateCap(
             qualityOverride: preferredQualityOverride,
             fallbackBitrateKbps: settingsQuality.bitrateKbps
         )
         return (preferredQuality, bandwidthCapKbps)
+    }
+
+    /// The version a start plays and the quality it asks for.
+    struct StartSelection {
+        enum Source {
+            /// The file the caller asked for, such as a version picked by hand.
+            case requested
+            /// Continue Watching's last-played file.
+            case lastUsed
+            /// Ranked from the versions by resolution.
+            case ranked
+        }
+
+        let version: FileVersion
+        let source: Source
+        /// The client quality id, nil for Auto.
+        let qualityPreference: String?
+        let bandwidthCapKbps: Int?
+    }
+
+    /// Picks the start version: the requested file, else on a resume the
+    /// last-played one, else the best ranked match, where a resume ranks by
+    /// the resolution it last played.
+    ///
+    /// The quality never comes from the version. `file_id` already pins the
+    /// file and `allow_alternate_versions` governs fallback, so sending the
+    /// file's resolution would only turn Auto into a fixed resolution that
+    /// ignores the connection. It comes from `startQuality`: the override,
+    /// else the saved pair for the connection.
+    static func startSelection(
+        versions: [FileVersion],
+        requestedFileId: Int?,
+        lastFileId: Int?,
+        lastResolution: String?,
+        prefersLastUsedVersion: Bool,
+        startsAtFirstPart: Bool,
+        preferredQualityOverride: String?,
+        settingsQuality: AppleQualityAxes
+    ) -> StartSelection {
+        let quality = startQuality(
+            preferredQualityOverride: preferredQualityOverride,
+            settingsQuality: settingsQuality
+        )
+        var version: FileVersion
+        let source: StartSelection.Source
+        if let requestedFileId, let requested = versions.first(where: { $0.fileId == requestedFileId }) {
+            version = requested
+            source = .requested
+        } else if prefersLastUsedVersion,
+                  let lastFileId,
+                  let lastUsed = versions.first(where: { $0.fileId == lastFileId }) {
+            version = lastUsed
+            source = .lastUsed
+        } else {
+            var rankingQuality = quality.preferredQuality
+            if prefersLastUsedVersion,
+               preferredQualityOverride == nil,
+               let lastPlayed = normalizedQualityPreference(lastResolution) {
+                rankingQuality = lastPlayed
+            }
+            version = selectVersion(from: versions, lastFileId: lastFileId, preferredQuality: rankingQuality)
+            source = .ranked
+        }
+        // A multi-part item that must play through starts at its first part,
+        // whichever part the quality ranking happened to prefer.
+        if startsAtFirstPart,
+           requestedFileId == nil,
+           let firstPart = PlayerMultipartPolicy.firstPart(for: version, in: versions) {
+            version = firstPart
+        }
+        return StartSelection(
+            version: version,
+            source: source,
+            qualityPreference: quality.preferredQuality,
+            bandwidthCapKbps: quality.bandwidthCapKbps
+        )
     }
 
     /// The `quality_preference` a V3 request sends. Settings ids reduce to
@@ -2244,18 +2279,6 @@ actor PlaybackSessionBridge {
         }
 
         return score
-    }
-
-    private func requestedQualityPreference(
-        preferredQuality: String?,
-        selectedVersion: FileVersion,
-        hasManualSelection: Bool
-    ) -> String? {
-        guard hasManualSelection else {
-            return preferredQuality
-        }
-
-        return selectedVersion.resolution ?? preferredQuality ?? ApplePlaybackQuality.autoId
     }
 
     private static func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {

@@ -138,14 +138,12 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         // stored: no cap fabricated from the played source.
         var start = PlaybackSessionBridge.startQuality(
             preferredQualityOverride: nil,
-            lastUsedResolution: nil,
             settingsQuality: .auto
         )
         XCTAssertNil(start.preferredQuality, "Auto")
         XCTAssertNil(start.bandwidthCapKbps)
         start = PlaybackSessionBridge.startQuality(
             preferredQualityOverride: nil,
-            lastUsedResolution: nil,
             settingsQuality: cellularPair
         )
         XCTAssertEqual(start.preferredQuality, "720p")
@@ -154,7 +152,6 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         // A reload of the picked title keeps the rung and its own cap.
         start = PlaybackSessionBridge.startQuality(
             preferredQualityOverride: "720p",
-            lastUsedResolution: nil,
             settingsQuality: .auto
         )
         XCTAssertEqual(start.preferredQuality, "720p")
@@ -165,7 +162,6 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         // A reload after an Auto pick keeps Auto with the saved cap.
         start = PlaybackSessionBridge.startQuality(
             preferredQualityOverride: ApplePlaybackQuality.autoId,
-            lastUsedResolution: nil,
             settingsQuality: AppleQualityAxes(resolution: "1080p", bitrateKbps: 20_000)
         )
         XCTAssertEqual(start.preferredQuality, ApplePlaybackQuality.autoId)
@@ -192,7 +188,104 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         XCTAssertEqual(model.highlightedQualityOptionId, "720p", "the rung the viewer picked lights")
     }
 
-    // MARK: - Replanning on a connection change    // MARK: - Replanning on a connection change
+    // MARK: - Resume and hand-picked versions
+
+    private static let versions = [version(1, "2160p"), version(2, "1080p")]
+
+    private static func version(_ fileId: Int, _ resolution: String) -> FileVersion {
+        FileVersion(
+            fileId: fileId,
+            fileName: "version-\(fileId).mkv",
+            resolution: resolution,
+            codecVideo: "h264",
+            codecAudio: "aac",
+            hdr: false,
+            container: "mkv",
+            fileSize: 1_000,
+            duration: 120,
+            bitrate: 8_000_000,
+            videoTracks: nil,
+            audioTracks: nil,
+            subtitleTracks: nil,
+            chapters: nil,
+            effectiveAudioTrackIndex: nil,
+            effectiveAudioLanguage: nil
+        )
+    }
+
+    private func start(
+        requestedFileId: Int? = nil,
+        lastFileId: Int? = 2,
+        resuming: Bool,
+        override: String? = nil,
+        settings: AppleQualityAxes
+    ) -> PlaybackSessionBridge.StartSelection {
+        PlaybackSessionBridge.startSelection(
+            versions: Self.versions,
+            requestedFileId: requestedFileId,
+            lastFileId: lastFileId,
+            lastResolution: "1080p",
+            prefersLastUsedVersion: resuming,
+            startsAtFirstPart: false,
+            preferredQualityOverride: override,
+            settingsQuality: settings
+        )
+    }
+
+    /// Resuming from Continue Watching plays the last-played file but asks
+    /// for the saved quality, not that file's resolution, so Auto still
+    /// follows the connection and the menu lights Auto.
+    func testAResumePlaysTheLastFileAtTheSavedQuality() {
+        var resumed = start(resuming: true, settings: .auto)
+        XCTAssertEqual(resumed.version.fileId, 2)
+        XCTAssertEqual(resumed.source, .lastUsed)
+        XCTAssertNil(resumed.qualityPreference, "Auto, not the file's 1080p")
+        XCTAssertNil(resumed.bandwidthCapKbps)
+
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        model.activeQualityId = ApplePlaybackQuality.protocolV3QualityId(resumed.qualityPreference)
+        XCTAssertEqual(model.highlightedQualityOptionId, ApplePlaybackQuality.autoId)
+
+        // On mobile data the resume asks for the cellular pair.
+        resumed = start(resuming: true, settings: cellularPair)
+        XCTAssertEqual(resumed.version.fileId, 2)
+        XCTAssertEqual(resumed.qualityPreference, "720p")
+        XCTAssertEqual(resumed.bandwidthCapKbps, 2_000)
+    }
+
+    /// A version picked by hand plays that file; the saved quality still
+    /// caps it, and an in-player pick carried to a reload still wins.
+    func testAHandPickedVersionPlaysAtTheSavedQuality() {
+        var picked = start(requestedFileId: 1, resuming: false, settings: .auto)
+        XCTAssertEqual(picked.version.fileId, 1)
+        XCTAssertEqual(picked.source, .requested)
+        XCTAssertNil(picked.qualityPreference, "Auto, not the file's 2160p")
+
+        picked = start(requestedFileId: 1, resuming: false, settings: cellularPair)
+        XCTAssertEqual(picked.version.fileId, 1)
+        XCTAssertEqual(picked.qualityPreference, "720p")
+        XCTAssertEqual(picked.bandwidthCapKbps, 2_000)
+
+        picked = start(requestedFileId: 1, resuming: true, override: "1080p", settings: .auto)
+        XCTAssertEqual(picked.version.fileId, 1, "the requested file wins over the last-played one")
+        XCTAssertEqual(picked.qualityPreference, "1080p")
+    }
+
+    /// When the last-played file is gone, a resume ranks the remaining
+    /// versions by the resolution it last played, and still asks for the
+    /// saved quality.
+    func testAResumeWhoseFileIsGoneRanksByTheLastResolution() {
+        let resumed = start(lastFileId: 99, resuming: true, settings: .auto)
+        XCTAssertEqual(resumed.version.fileId, 2)
+        XCTAssertEqual(resumed.source, .ranked)
+        XCTAssertNil(resumed.qualityPreference)
+
+        let fresh = start(lastFileId: 99, resuming: false, settings: .auto)
+        XCTAssertEqual(fresh.version.fileId, 1, "a fresh start ranks by resolution alone")
+    }
+
+    // MARK: - Replanning on a connection change
 
     func testMovingOntoAndOffMobileDataReplansWithThatSidesPair() {
         let (controller, player) = makeController()
