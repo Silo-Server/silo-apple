@@ -161,6 +161,9 @@ struct WatchPartyInPlaceCatchup: Equatable {
     /// be folded into `lead`.
     private(set) var landedAt: Date?
     private(set) var measuring = false
+    /// Advanced by a room seek, so a correction seek that finishes after one
+    /// does not record a landing for it.
+    private(set) var generation: UInt64 = 0
 
     /// One correction step for a playing member: `drift` is the room position
     /// minus `local`. A seek's shortfall is measured on the first step at
@@ -184,16 +187,21 @@ struct WatchPartyInPlaceCatchup: Equatable {
         return max(0, local + drift + lead)
     }
 
-    /// A correction seek finished at `now`, or failed. The next step measures
-    /// what it left, and the next seek waits `interval` from here.
-    mutating func seekFinished(at now: Date) {
+    /// A correction seek that started at `generation` finished at `now`, or
+    /// failed. The next step measures what it left, and the next seek waits
+    /// `interval` from here. One a room seek overtook records nothing.
+    mutating func seekFinished(at now: Date, generation: UInt64) {
+        guard generation == self.generation else { return }
         landedAt = now
         measuring = true
     }
 
     /// The room's own seek replaced the correction seek, so what playback
     /// shows next is not that seek's shortfall.
-    mutating func forgetLanding() { measuring = false }
+    mutating func forgetLanding() {
+        measuring = false
+        generation &+= 1
+    }
 }
 
 /// Why a party member seeks, which decides what the seek does to a correction

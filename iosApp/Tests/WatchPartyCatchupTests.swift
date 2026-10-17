@@ -391,7 +391,7 @@ final class WatchPartyCatchupTests: XCTestCase {
     func testInPlaceCatchupAimsTheNextSeekAheadByTheShortfallTheLastLeft() {
         var catchup = WatchPartyInPlaceCatchup()
         XCTAssertEqual(catchup.step(drift: 2, local: 10, at: at(0)), 12)
-        catchup.seekFinished(at: at(0.5))
+        catchup.seekFinished(at: at(0.5), generation: catchup.generation)
         // Playback has not run long enough after the landing to measure it.
         XCTAssertNil(catchup.step(drift: 0.5, local: 12.5, at: at(1)))
         // It landed half a second behind; that converged, so no seek follows.
@@ -401,7 +401,7 @@ final class WatchPartyCatchupTests: XCTestCase {
         // The next drift is aimed ahead by that lead.
         XCTAssertEqual(catchup.step(drift: 1.5, local: 20, at: at(10)), 22)
         // A seek that overshot lowers the lead, never below zero.
-        catchup.seekFinished(at: at(10))
+        catchup.seekFinished(at: at(10), generation: catchup.generation)
         XCTAssertNil(catchup.step(drift: -4, local: 23, at: at(11)))
         XCTAssertEqual(catchup.lead, 0)
     }
@@ -409,13 +409,13 @@ final class WatchPartyCatchupTests: XCTestCase {
     func testInPlaceSeeksThatKeepMissingBackOffAndTheLeadIsBounded() {
         var catchup = WatchPartyInPlaceCatchup()
         XCTAssertNotNil(catchup.step(drift: 3, local: 0, at: at(0)))
-        catchup.seekFinished(at: at(0))
+        catchup.seekFinished(at: at(0), generation: catchup.generation)
         // Still 1.5 seconds behind: the lead grows and the next seek waits 2 s.
         XCTAssertNil(catchup.step(drift: 1.5, local: 3, at: at(1)))
         XCTAssertEqual(catchup.lead, 1.5)
         XCTAssertEqual(catchup.interval, 2)
         XCTAssertEqual(catchup.step(drift: 1.5, local: 4, at: at(2)), 7)
-        catchup.seekFinished(at: at(2))
+        catchup.seekFinished(at: at(2), generation: catchup.generation)
         // The lead stops at the host band, so a host never lands far enough
         // ahead to move the room.
         XCTAssertNil(catchup.step(drift: 2, local: 9, at: at(3)))
@@ -425,7 +425,7 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertNil(catchup.step(drift: 2, local: 12, at: at(5.5)))
         XCTAssertNotNil(catchup.step(drift: 2, local: 13, at: at(6)))
         for landing in 0..<8 {
-            catchup.seekFinished(at: at(100 * Double(landing + 1)))
+            catchup.seekFinished(at: at(100 * Double(landing + 1), generation: catchup.generation))
             _ = catchup.step(drift: 2, local: 0, at: at(100 * Double(landing + 1) + 1))
         }
         XCTAssertEqual(catchup.interval, WatchPartyInPlaceCatchup.maxInterval)
@@ -434,8 +434,14 @@ final class WatchPartyCatchupTests: XCTestCase {
     func testARoomSeekIsNotMeasuredAsTheCorrectionSeeksShortfall() {
         var catchup = WatchPartyInPlaceCatchup()
         XCTAssertEqual(catchup.step(drift: 2, local: 10, at: at(0)), 12)
-        catchup.seekFinished(at: at(0))
+        catchup.seekFinished(at: at(0), generation: catchup.generation)
         catchup.forgetLanding()
+        // A correction seek that started before the room's seek and finishes
+        // after it records nothing.
+        let overtaken = catchup.generation &- 1
+        catchup.seekFinished(at: at(0.5), generation: overtaken)
+        XCTAssertFalse(catchup.measuring)
+        XCTAssertEqual(catchup.landedAt, at(0))
         XCTAssertNil(catchup.step(drift: 0.5, local: 20, at: at(1)))
         XCTAssertEqual(catchup.lead, 0)
         // The finished seek still spaces the next one.
