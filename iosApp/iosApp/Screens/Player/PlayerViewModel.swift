@@ -9933,7 +9933,7 @@ extension PlayerViewModel {
             // shortfall does not draw a second one from the drift loop.
             let led = position + watchPartyInPlaceCatchup.lead
             let target = watchPartyTargetReachableInPlace(led) ? led : position
-            defer { watchPartyInPlaceCatchup.seekFinished(at: Date()) }
+            defer { noteWatchPartyInPlaceSeekFinished(context: context) }
             return try await applyWatchPartyTransport(.seek(target), context: context, origin: .realign)
         }
         return try await loadWatchPartyCorrection(to: position, context: context)
@@ -9993,8 +9993,15 @@ extension PlayerViewModel {
         }
         // A failed seek is spaced like a landed one, so it cannot repeat on
         // every loop tick.
-        defer { watchPartyInPlaceCatchup.seekFinished(at: Date()) }
+        defer { noteWatchPartyInPlaceSeekFinished(context: context) }
         return try await applyWatchPartyTransport(.seek(target), context: context, origin: .realign)
+    }
+
+    /// Records the end of a correction seek, landed or failed, unless a new
+    /// selection replaced the catch-up state while it ran.
+    private func noteWatchPartyInPlaceSeekFinished(context: WatchPartyPlaybackContext) {
+        guard watchPartyAdapter?.context == context else { return }
+        watchPartyInPlaceCatchup.seekFinished(at: Date())
     }
 
     /// Whether a seek to `position` lands in media this member already has.
