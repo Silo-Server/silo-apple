@@ -32,10 +32,12 @@ struct MacSidebarSection: Identifiable, Equatable {
 /// order, whatever the synced Primary Menu pins. The Primary Menu still decides
 /// whether For You and Calendar show and in which order. Media-type roots and
 /// pinned libraries from the menu are dropped: the Libraries group covers them.
+/// Requests follows For You, as on the web, while the server has it enabled.
 func macSidebarSections(
     destinations: [MainTabDestination],
     libraries: [Library],
-    showAudiobooks: Bool
+    showAudiobooks: Bool,
+    requestsEnabled: Bool = false
 ) -> [MacSidebarSection] {
     let libraryItems = libraries
         .filter { showAudiobooks || !$0.isAudiobookLibrary }
@@ -53,8 +55,13 @@ func macSidebarSections(
     // itself and reports back, which is the only way the sidebar recovers
     // without a relaunch.
     let libraryRows = libraryItems.isEmpty ? [MainTabDestination.app(.libraries)] : libraryItems
-    let discoverItems = [.app(.search)] + destinations.filter {
+    var discoverItems = [.app(.search)] + destinations.filter {
         $0.id == .app(.recommendations) || $0.id == .app(.calendar)
+    }
+    if requestsEnabled {
+        let afterForYou = discoverItems.firstIndex { $0.id == .app(.recommendations) }
+            .map { $0 + 1 } ?? 1
+        discoverItems.insert(.app(.requests), at: afterForYou)
     }
     let yourStuffItems = destinations.filter { $0.id == .app(.downloads) }
 
@@ -83,8 +90,8 @@ func macSidebarIcon(for library: Library) -> (icon: String, selectedIcon: String
 
 /// The sidebar row to highlight for the page in view.
 ///
-/// Pages opened from the profile menu belong to no row. A pushed Search page
-/// lights the Search row. Anything else pushed (a detail page, a person)
+/// Settings and the server list belong to no row. Pushed Search and Requests
+/// pages light their rows. Anything else pushed (a detail page, a person)
 /// keeps the row it was opened from.
 func macSidebarHighlight(
     selected: MainTabDestinationID,
@@ -92,9 +99,10 @@ func macSidebarHighlight(
 ) -> MainTabDestinationID? {
     for route in pushedRoutes.reversed() {
         switch route {
-        case .settings, .serverList, .requestsHub, .myRequests,
-             .requestDetail:
+        case .settings, .serverList:
             return nil
+        case .requestsHub, .myRequests, .requestDetail:
+            return .app(.requests)
         case .search:
             return .app(.search)
         default:

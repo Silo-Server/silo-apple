@@ -16,7 +16,8 @@ final class MacSidebarSectionsTests: XCTestCase {
         menu: PrimaryMenuPreference?,
         libraries: [Library],
         showAudiobooks: Bool = true,
-        downloads: Bool = false
+        downloads: Bool = false,
+        requests: Bool = false
     ) -> [MacSidebarSection] {
         var destinations = projectedMainTabDestinations(
             primaryMenu: menu,
@@ -27,7 +28,8 @@ final class MacSidebarSectionsTests: XCTestCase {
         return macSidebarSections(
             destinations: destinations,
             libraries: libraries,
-            showAudiobooks: showAudiobooks
+            showAudiobooks: showAudiobooks,
+            requestsEnabled: requests
         )
     }
 
@@ -99,6 +101,22 @@ final class MacSidebarSectionsTests: XCTestCase {
         XCTAssertNil(built.first?.title)
     }
 
+    func testRequestsFollowsForYouOnlyWhileEnabled() {
+        XCTAssertFalse(
+            sections(menu: nil, libraries: allLibraries).flatMap(\.items)
+                .contains { $0.id == .app(.requests) }
+        )
+        XCTAssertEqual(
+            ids(.discover, in: sections(menu: nil, libraries: allLibraries, requests: true)),
+            [.app(.search), .app(.recommendations), .app(.requests), .app(.calendar)]
+        )
+        let noForYou = PrimaryMenuPreference(items: [.builtin(.home), .builtin(.calendar)])
+        XCTAssertEqual(
+            ids(.discover, in: sections(menu: noForYou, libraries: allLibraries, requests: true)),
+            [.app(.search), .app(.requests), .app(.calendar)]
+        )
+    }
+
     func testLibraryRowsUseMediaTypeIcons() {
         XCTAssertEqual(macSidebarIcon(for: movies).icon, PrimaryMenuBuiltin.movies.navigationIcon)
         XCTAssertEqual(macSidebarIcon(for: series).icon, PrimaryMenuBuiltin.series.navigationIcon)
@@ -117,7 +135,17 @@ final class MacSidebarSectionsTests: XCTestCase {
         )
         XCTAssertNil(macSidebarHighlight(selected: library, pushedRoutes: [.settings]))
         XCTAssertNil(macSidebarHighlight(selected: library, pushedRoutes: [.serverList]))
-        XCTAssertNil(macSidebarHighlight(selected: library, pushedRoutes: [.requestsHub]))
+        XCTAssertEqual(
+            macSidebarHighlight(selected: library, pushedRoutes: [.requestsHub]),
+            .app(.requests)
+        )
+        XCTAssertEqual(
+            macSidebarHighlight(
+                selected: library,
+                pushedRoutes: [.search, .requestDetail(mediaType: .movie, tmdbId: 1)]
+            ),
+            .app(.requests)
+        )
         XCTAssertEqual(
             macSidebarHighlight(selected: library, pushedRoutes: [.search]),
             .app(.search)

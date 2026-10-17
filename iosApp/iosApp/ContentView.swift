@@ -2600,7 +2600,8 @@ struct MainTabView: View {
         macSidebarSections(
             destinations: projectedDestinations,
             libraries: librarySnapshot.availableLibraries(for: currentLibraryAuthority),
-            showAudiobooks: navPrefs.showAudiobooks
+            showAudiobooks: navPrefs.showAudiobooks,
+            requestsEnabled: RequestsFeatureStore.shared.isEnabled
         )
     }
     #endif
@@ -2849,8 +2850,10 @@ struct MainTabView: View {
                 // title on root pages would repeat them.
                 .toolbar(removing: .title)
                 .modifier(MacRootPageTopInset(
-                    // Search keeps the toolbar strip: its field lives there.
+                    // Search and Requests keep the toolbar strip: their
+                    // fields live there.
                     reclaimsToolbarStrip: selectedDestination.id != .app(.search)
+                        && selectedDestination.id != .app(.requests)
                 ))
                 #endif
                 #if os(iOS)
@@ -3047,6 +3050,9 @@ struct MainTabView: View {
 
         case .downloads:
             DownloadsView()
+
+        case .requests:
+            RequestsHubView()
 
         case .settings:
             SettingsView()
