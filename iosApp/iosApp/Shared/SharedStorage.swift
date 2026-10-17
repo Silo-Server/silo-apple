@@ -82,11 +82,31 @@ enum SharedStorage {
         keychainAccountPrefix + "\(serverID).accountEpoch"
     }
 
+    /// The device's Silo users and which sign-ins belong to each
+    /// (`SiloUserIndex`), in the user-independent audience. The keychain
+    /// can't list items, so this index is how sign-ins are found.
+    static let usersIndexAccount = keychainAccountPrefix + "users.v1"
+    /// The same index as of its last successful write, read only when
+    /// `usersIndexAccount` holds something that can't be decoded.
+    static let usersIndexBackupAccount = keychainAccountPrefix + "users.v1.previous"
+    /// One `SavedSignIn` per server and account, in the user-independent
+    /// audience. `SharedStorage.signInAccount(_:)` appends the key.
+    static let signInAccountPrefix = keychainAccountPrefix + "signIn.v1."
+    /// One `SignInProfileProof` per sign-in, in the current-user audience.
+    /// The name differs from the sign-in's because on iOS and macOS both
+    /// audiences address the same item. `SharedStorage.signInProofAccount(_:)`
+    /// appends the key.
+    static let signInProofAccountPrefix = keychainAccountPrefix + "signInProof.v1."
+
     /// UserDefaults keys shared between the app and the Top Shelf
     /// extension. Centralised here so the extension, `AuthService`,
     /// `TokenStore`, and `ServerRegistry` can't drift.
     static let serverUrlKey = "serverUrl"
     static let activeServerIdKey = "activeServerId"
+    /// Account of the current sign-in on the active server, mirrored for
+    /// synchronous readers and Top Shelf. Unset while no saved sign-in is
+    /// selected.
+    static let activeAccountIdKey = "activeAccountId"
     static let profileIdKey = "profileId"
     static let profileLaunchStateKey = "profileLaunchState.v1"
 
