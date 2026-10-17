@@ -37,6 +37,7 @@ struct TVSettingsView: View {
     @Namespace private var railFocusScope
     @Namespace private var detailFocusScope
     @Environment(AppRouter.self) private var router
+    @Environment(AudioPlaybackStore.self) private var audioStore
 
     var body: some View {
         ZStack {
@@ -510,7 +511,13 @@ struct TVSettingsView: View {
             TVGeneralSettingsPane(
                 activeProfile: viewModel.activeProfile,
                 detailFocus: $detailFocus,
-                changePairedProfile: router.switchProfile
+                changePairedProfile: router.switchProfile,
+                changeAccount: {
+                    router.useAnotherSiloAccount {
+                        audioStore.dismissFullPlayer()
+                        await audioStore.player.close()
+                    }
+                }
             )
         case .playback:
             TVPlaybackSettingsPane(
@@ -646,6 +653,7 @@ struct TVSettingsView: View {
 enum TVSettingsDetailFocus: Hashable {
     case top
     case generalAppleTVUser
+    case generalAppleTVAccount
     case generalProfileLaunch
     case generalAdvisoryAge
     case generalCardPreset

@@ -825,6 +825,32 @@ final class AppRouter {
         setAuthState(state, reason: "serverResolution")
     }
 
+    #if os(tvOS)
+    func useAnotherSiloAccount(beforeChanging: @escaping @MainActor () async -> Void) {
+        guard !isSigningOut else { return }
+        isSigningOut = true
+        accountActionError = nil
+        Task {
+            defer { isSigningOut = false }
+            if await TokenStore.shared.hasTemporaryScope() {
+                guard await RemotePlaybackIdentityManager.shared.end() else {
+                    accountActionError = "Couldn't end remote playback. Try again."
+                    return
+                }
+            }
+            guard let expectedAccount = await TokenStore.shared.refreshAccountIdentity() else { return }
+            // Finish the old player's work while its credentials still own
+            // requests. The service rechecks that owner under the HTTP gate.
+            await beforeChanging()
+            guard await AuthService.shared.beginAnotherAccount(expectedAccount: expectedAccount) else {
+                accountActionError = "Couldn't change accounts. Try again."
+                return
+            }
+            resetAfterServerResolution(to: .needsLogin)
+        }
+    }
+    #endif
+
     func signOutAndReset() {
         requestSignOut(removingServer: false)
     }

@@ -12,6 +12,12 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
     /// the one to open automatically. Optional so state saved by earlier
     /// builds still decodes; nil means no offer is due.
     var rememberOfferPending: Bool? = nil
+    /// TV history belongs to the current Apple TV user, with a distinct entry
+    /// for each authenticated account epoch. The server map remains the active
+    /// projection for existing UI callers. Optional fields decode older state.
+    var rememberedByAccountEpoch: [String: RememberedProfile]? = nil
+    var selectionRequiredByAccountEpoch: Set<String>? = nil
+    var activeAccountEpochByServerID: [String: String]? = nil
 
     /// The state of a device with nothing saved yet. A TV asks who's watching
     /// until someone chooses to remember a profile; phones, tablets and Macs
@@ -37,8 +43,8 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
         now: Date = .now
     ) -> ProfileLaunchResolution {
         guard !requiresSelectionAtLaunch(at: now),
-              !selectionRequiredServerIDs.contains(serverID),
-              let remembered = rememberedByServerID[serverID],
+              !requiresSelection(for: serverID, accountEpoch: accountEpoch),
+              let remembered = rememberedProfile(for: serverID, accountEpoch: accountEpoch),
               let accountEpoch,
               remembered.accountEpoch == accountEpoch,
               !remembered.profileID.isEmpty,
@@ -47,6 +53,67 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
             return .needsSelection
         }
         return .restore(remembered)
+    }
+
+    func rememberedProfile(for serverID: String, accountEpoch: String?) -> RememberedProfile? {
+        guard let accountEpoch else { return nil }
+        if let remembered = rememberedByAccountEpoch?[Self.accountHistoryKey(serverID, accountEpoch)] {
+            return remembered.accountEpoch == accountEpoch ? remembered : nil
+        }
+        guard let remembered = rememberedByServerID[serverID], remembered.accountEpoch == accountEpoch else {
+            return nil
+        }
+        return remembered
+    }
+
+    static func accountHistoryPrefix(_ serverID: String) -> String {
+        "\(serverID.utf8.count):\(serverID)"
+    }
+
+    static func accountHistoryKey(_ serverID: String, _ accountEpoch: String) -> String {
+        accountHistoryPrefix(serverID) + "\(accountEpoch.utf8.count):\(accountEpoch)"
+    }
+
+    /// Capture the outgoing legacy projection before replacing it. A different
+    /// account never receives its profile or its pending selection requirement.
+    mutating func activateAccountHistory(for serverID: String, accountEpoch: String?) {
+        var history = rememberedByAccountEpoch ?? [:]
+        var pending = selectionRequiredByAccountEpoch ?? []
+        var active = activeAccountEpochByServerID ?? [:]
+        let projected = rememberedByServerID[serverID]
+        let previousEpoch = active[serverID] ?? projected?.accountEpoch
+        if let projected {
+            history[Self.accountHistoryKey(serverID, projected.accountEpoch)] = projected
+        }
+        if let previousEpoch {
+            let previousKey = Self.accountHistoryKey(serverID, previousEpoch)
+            if selectionRequiredServerIDs.contains(serverID) { pending.insert(previousKey) }
+            else { pending.remove(previousKey) }
+        }
+        if let accountEpoch {
+            let key = Self.accountHistoryKey(serverID, accountEpoch)
+            rememberedByServerID[serverID] = history[key]
+            active[serverID] = accountEpoch
+            if pending.contains(key) { selectionRequiredServerIDs.insert(serverID) }
+            else { selectionRequiredServerIDs.remove(serverID) }
+        } else {
+            rememberedByServerID[serverID] = nil
+            active[serverID] = nil
+            selectionRequiredServerIDs.remove(serverID)
+        }
+        rememberedByAccountEpoch = history
+        selectionRequiredByAccountEpoch = pending
+        activeAccountEpochByServerID = active
+        if previousEpoch != accountEpoch { backgroundedAt = nil }
+    }
+
+    func requiresSelection(for serverID: String, accountEpoch: String?) -> Bool {
+        guard let pending = selectionRequiredByAccountEpoch, let accountEpoch else {
+            return selectionRequiredServerIDs.contains(serverID)
+        }
+        if pending.contains(Self.accountHistoryKey(serverID, accountEpoch)) { return true }
+        let projectedEpoch = activeAccountEpochByServerID?[serverID] ?? rememberedByServerID[serverID]?.accountEpoch
+        return projectedEpoch == accountEpoch && selectionRequiredServerIDs.contains(serverID)
     }
 
     /// Cold starts preserve the original Every Time contract even when the

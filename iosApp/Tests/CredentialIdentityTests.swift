@@ -178,8 +178,8 @@ final class CredentialIdentityTests: XCTestCase {
             _ = try await store.withOwnerFence(owner) {
                 let cleared = await store.clearTokens()
                 XCTAssertTrue(cleared)
-                let saved = await store.saveTokens(accessToken: "access-again", refreshToken: "refresh-again")
-                XCTAssertTrue(saved)
+                // Actual v2 re-login installs a verified account identity.
+                try await store.installAccountSession(accessToken: "access-again", refreshToken: "refresh-again", accountID: "account-a")
                 await store.setProfileId("profile-a")
                 _ = await store.setProfileToken("proof-a")
                 return "must not be applied"

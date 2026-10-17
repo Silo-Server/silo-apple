@@ -298,9 +298,11 @@ final class ServerRegistry {
             outcome: "succeeded",
             reason: isExistingEntry ? "updatedExisting" : "addedNew"
         )
+        #if !os(tvOS)
         if !preservingProfile {
             launchPreferences.clearRememberedProfile(for: merged.id)
         }
+        #endif
         return merged
     }
 
@@ -727,7 +729,7 @@ final class ServerRegistry {
         if removesActiveServer {
             await tokenStore.switchActiveServer(serverId: activeServerId ?? "")
         }
-        launchPreferences.clearRememberedProfile(for: serverId)
+        launchPreferences.clearAllRememberedProfiles(for: serverId)
         // Branding is cached by address; another saved entry for the same
         // address still uses it.
         if let removedURL = previousEntries.first(where: { $0.id == serverId })?.url,
@@ -997,7 +999,34 @@ final class ServerRegistry {
             let accessKey = TokenStore.accessTokenKey(for: serverID)
             let epochKey = TokenStore.accountEpochKey(for: serverID)
 
-            guard accountKeychain.get(accessKey) != nil else {
+            #if os(tvOS)
+            // The old shared registry profile cannot name one of several
+            // accounts. Once saved accounts are adopted, ask this TV user to
+            // choose rather than relabel that profile using last-active mirrors.
+            do {
+                if try accountKeychain.getChecked(TVAccountSessionStorage.recordKey(serverID)) != nil
+                    || accountKeychain.getChecked(TVAccountSessionStorage.markerKey(serverID)) != nil {
+                    entries[index].legacyProfileId = nil
+                    if !persist() { entries[index].legacyProfileId = profileID }
+                    continue
+                }
+            } catch { continue }
+            #endif
+            let canonical: CanonicalAccountSession?
+            do {
+                switch try AccountSessionPersistence(keychain: keychain).load(serverID) {
+                case .session(let session):
+                    guard session.origin == Self.normalize(url: entries[index].url) else { continue }
+                    canonical = session
+                case .signedOut:
+                    entries[index].legacyProfileId = nil
+                    if !persist() { entries[index].legacyProfileId = profileID }
+                    continue
+                case .legacy: canonical = nil
+                }
+            } catch { continue }
+
+            guard canonical?.accessToken != nil || accountKeychain.get(accessKey) != nil else {
                 // A signed-out legacy entry has no account to which the old
                 // profile could safely be bound.
                 let legacyProfileID = entries[index].legacyProfileId
@@ -1009,7 +1038,9 @@ final class ServerRegistry {
             }
 
             let accountEpoch: String
-            if let existing = accountKeychain.get(epochKey), !existing.isEmpty {
+            if let epoch = canonical?.epoch {
+                accountEpoch = epoch.uuidString
+            } else if let existing = accountKeychain.get(epochKey), !existing.isEmpty {
                 accountEpoch = existing
             } else {
                 let generated = UUID().uuidString

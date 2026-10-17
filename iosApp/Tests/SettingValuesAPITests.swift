@@ -933,7 +933,7 @@ final class SettingValuesAPITests: XCTestCase {
 
     func testOrdinaryUnauthorizedResponseCannotRefreshSameServerSessionInstalledAfterLogout() async throws {
         let release = routeHeldOrdinaryUnauthorized()
-        let harness = try await makeRefreshHarness(testName: "UnauthorizedSameServerRelogin")
+        let harness = try await makeRefreshHarness(testName: "UnauthorizedSameServerRelogin", verifiedAccountID: "account-a")
 
         let requestTask = Task {
             try await harness.http.requestData(
@@ -952,9 +952,11 @@ final class SettingValuesAPITests: XCTestCase {
         }
 
         await harness.tokenStore.clearTokens()
-        await harness.tokenStore.saveTokens(
+        try await harness.tokenStore.installAccountSession(
             accessToken: "placeholder",
-            refreshToken: "redacted"
+            refreshToken: "redacted",
+            accountID: "account-a",
+            clearProfile: false
         )
         await harness.tokenStore.setProfileId(harness.identity.profileId)
         await release.open()
@@ -975,7 +977,7 @@ final class SettingValuesAPITests: XCTestCase {
 
     func testScopedUnauthorizedResponseCannotRefreshSameServerSessionInstalledAfterLogout() async throws {
         let release = routeHeldOrdinaryUnauthorized()
-        let harness = try await makeRefreshHarness(testName: "ScopedUnauthorizedSameServerRelogin")
+        let harness = try await makeRefreshHarness(testName: "ScopedUnauthorizedSameServerRelogin", verifiedAccountID: "account-a")
 
         let requestTask = Task {
             try await harness.http.requestData(
@@ -995,9 +997,11 @@ final class SettingValuesAPITests: XCTestCase {
         }
 
         await harness.tokenStore.clearTokens()
-        await harness.tokenStore.saveTokens(
+        try await harness.tokenStore.installAccountSession(
             accessToken: "placeholder",
-            refreshToken: "redacted"
+            refreshToken: "redacted",
+            accountID: "account-a",
+            clearProfile: false
         )
         await harness.tokenStore.setProfileId(harness.identity.profileId)
         await release.open()
@@ -1311,7 +1315,7 @@ final class SettingValuesAPITests: XCTestCase {
 
     func testPersistentExpiryEventIsRejectedAfterSameServerSessionReplacement() async throws {
         routeSettingsServer()
-        let harness = try await makeRefreshHarness(testName: "PersistentExpiryEpoch")
+        let harness = try await makeRefreshHarness(testName: "PersistentExpiryEpoch", verifiedAccountID: "account-a")
         let accountValue = await harness.tokenStore.refreshAccountIdentity()
         let account = try XCTUnwrap(accountValue)
         let capturedValue = await harness.tokenStore.captureRefreshCredential(expected: account)
@@ -1324,9 +1328,11 @@ final class SettingValuesAPITests: XCTestCase {
         let consumableBeforeReplacement = await harness.tokenStore.shouldConsumeSessionExpiryEvent(event)
         XCTAssertTrue(consumableBeforeReplacement)
 
-        await harness.tokenStore.saveTokens(
+        try await harness.tokenStore.installAccountSession(
             accessToken: "placeholder",
-            refreshToken: "redacted"
+            refreshToken: "redacted",
+            accountID: "account-a",
+            clearProfile: false
         )
         await harness.tokenStore.setProfileId(harness.identity.profileId)
 
@@ -1576,7 +1582,7 @@ final class SettingValuesAPITests: XCTestCase {
 
     func testScopedRefreshCannotRetryAsSameServerReplacementInstalledAfterRefresh() async throws {
         routeMixedRefreshFlight(refresh: .json(SettingsWire.rotatedTokens))
-        let harness = try await makeRefreshHarness(testName: "ScopedPostRefreshReplacement")
+        let harness = try await makeRefreshHarness(testName: "ScopedPostRefreshReplacement", verifiedAccountID: "account-a")
         let barrier = SerializedCancellationPassBarrier()
         let http = HTTPClient(
             session: stub.makeSession(),
@@ -1596,9 +1602,11 @@ final class SettingValuesAPITests: XCTestCase {
             return XCTFail("scoped request did not reach its post-refresh retry boundary")
         }
         await harness.tokenStore.clearTokens()
-        await harness.tokenStore.saveTokens(
+        try await harness.tokenStore.installAccountSession(
             accessToken: "placeholder",
-            refreshToken: "redacted"
+            refreshToken: "redacted",
+            accountID: "account-a",
+            clearProfile: false
         )
         await harness.tokenStore.setProfileId(harness.identity.profileId)
         await barrier.release(pass: 1)
@@ -2069,7 +2077,7 @@ final class SettingValuesAPITests: XCTestCase {
 
     func testOrdinaryRejectedRefreshCannotClearNewerCredentials() async throws {
         let held = routeHeldOrdinaryRefresh()
-        let harness = try await makeRefreshHarness(testName: "RefreshNewerToken")
+        let harness = try await makeRefreshHarness(testName: "RefreshNewerToken", verifiedAccountID: "account-a")
         let sessionExpiredCount = LockedCounter()
         let observer = NotificationCenter.default.addObserver(
             forName: .siloSessionExpired,
@@ -2096,9 +2104,11 @@ final class SettingValuesAPITests: XCTestCase {
             return XCTFail("ordinary refresh did not reach the delayed response")
         }
 
-        await harness.tokenStore.saveTokens(
+        try await harness.tokenStore.installAccountSession(
             accessToken: "placeholder",
-            refreshToken: "redacted"
+            refreshToken: "redacted",
+            accountID: "account-a",
+            clearProfile: false
         )
         await held.release(status: 403)
 
@@ -2468,7 +2478,7 @@ final class SettingValuesAPITests: XCTestCase {
         return SiloAPI(http: http, tokenStore: tokenStore)
     }
 
-    private func makeRefreshHarness(testName: String) async throws -> (
+    private func makeRefreshHarness(testName: String, verifiedAccountID: String? = nil) async throws -> (
         tokenStore: TokenStore,
         identity: HTTPRequestIdentity,
         http: HTTPClient
@@ -2494,7 +2504,10 @@ final class SettingValuesAPITests: XCTestCase {
         await tokenStore.switchActiveServer(serverId: identity.serverId)
         await tokenStore.setServerUrl(identity.serverURL)
         await tokenStore.setProfileId(identity.profileId)
-        await tokenStore.saveTokens(accessToken: "fake", refreshToken: "dummy")
+        try await tokenStore.installAccountSession(
+            accessToken: "fake", refreshToken: "dummy",
+            accountID: verifiedAccountID, clearProfile: false
+        )
 
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokenStore)
         return (tokenStore, identity, http)
