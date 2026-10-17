@@ -205,8 +205,27 @@ struct APIv2Profile: Decodable, Hashable, Sendable {
     let subtitleMode: String
     let showForcedSubtitles: Bool
     let allowedLibraryIds: [String]?
+    /// False only when a household manager blocked this profile from
+    /// requests and request discovery. Absent on a server that predates the
+    /// switch, which means allowed.
+    let requestsAllowed: Bool?
     let createdAt: Date?
     let updatedAt: Date
+}
+
+/// `GET /api/v2/profiles` response. Besides the rows, the envelope reports
+/// which optional profile members this server accepts; the profile writes
+/// reject unknown members, so a client sends one only when it is reported.
+struct APIv2ProfileCollection: Decodable {
+    let items: [APIv2Profile]
+    let page: APIv2Page?
+    /// The server accepts and enforces `requests_allowed`. Absent on a server
+    /// that predates the per-profile requests switch.
+    let requestsAllowedSupported: Bool?
+
+    func completeItems() throws -> [APIv2Profile] {
+        try APIv2CatalogReadCollection(items: items, page: page).completeItems()
+    }
 }
 
 /// A PATCH member that distinguishes "leave unchanged" (omitted) from
@@ -336,6 +355,9 @@ struct APIv2ProfileCreate: Encodable {
     let maxContentRating: String?
     let libraryRestrictionsEnabled: Bool
     let allowedLibraryIds: [String]
+    /// Sent only to a server that reports `requests_allowed_supported`;
+    /// omitted means allowed.
+    let requestsAllowed: Bool?
 }
 
 extension APIv2Profile {

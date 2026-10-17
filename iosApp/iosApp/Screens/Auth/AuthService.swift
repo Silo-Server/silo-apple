@@ -794,7 +794,8 @@ final class AuthService: @unchecked Sendable {
         isChild: Bool,
         maxContentRating: String? = nil,
         libraryRestrictionsEnabled: Bool = false,
-        allowedLibraryIds: [Int] = []
+        allowedLibraryIds: [Int] = [],
+        requestsAllowed: Bool? = nil
     ) async throws -> UserProfile {
         try await SiloAPI.shared.createProfile(
             name: name,
@@ -803,7 +804,8 @@ final class AuthService: @unchecked Sendable {
             isChild: isChild,
             maxContentRating: maxContentRating,
             libraryRestrictionsEnabled: libraryRestrictionsEnabled,
-            allowedLibraryIds: allowedLibraryIds
+            allowedLibraryIds: allowedLibraryIds,
+            requestsAllowed: requestsAllowed
         )
     }
 

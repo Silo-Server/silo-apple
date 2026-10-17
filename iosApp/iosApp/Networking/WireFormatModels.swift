@@ -38,6 +38,17 @@ struct CreateProfileRequestBody {
     let maxContentRating: String?
     let libraryRestrictionsEnabled: Bool
     let allowedLibraryIds: [Int]
+    /// nil omits the member, which the server reads as allowed. Set it only
+    /// when `HouseholdProfileList.requestsAllowedSupported` is true: the
+    /// server rejects members it does not know.
+    var requestsAllowed: Bool? = nil
+}
+
+/// `GET /api/v2/profiles` rows plus the optional members the server accepts.
+struct HouseholdProfileList {
+    let profiles: [UserProfile]
+    /// The server accepts `requests_allowed` on profile create and update.
+    let requestsAllowedSupported: Bool
 }
 
 // MARK: - Library collections

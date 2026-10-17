@@ -21,6 +21,14 @@ struct CreateProfileView: View {
     @State private var maxContentRating: String = "PG"
     @State private var libraryRestrictionsEnabled: Bool = false
     @State private var allowedLibraryIds: Set<Int> = []
+    /// The server accepts `requests_allowed`; until it says so the switch is
+    /// hidden and the member is never sent. Nil until the household list has
+    /// been read.
+    @State private var requestsAllowedSupported: Bool?
+    @State private var requestsAllowed: Bool = true
+    /// The manager changed the requests switch by hand, so the Child Profile
+    /// preset leaves it alone.
+    @State private var requestsTouched: Bool = false
     @State private var libraries: [Library] = []
     @State private var libraryLoad: LibraryLoad = .loading
     /// A retry after a failed read runs with the failed state still shown,
@@ -36,6 +44,10 @@ struct CreateProfileView: View {
 
     /// Shown under the PIN field while it holds a partial PIN, which also
     /// keeps Create Profile disabled.
+    private static let requestsAllowedTitle = "Allow requests"
+    private static let requestsAllowedHelp =
+        "Lets this profile browse titles that are not in the library and request them. The content rating limits those titles by their US rating only, and the advisory-age limit does not apply to them."
+
     private static let incompletePINHint =
         "Enter all \(ProfilePIN.length) digits, or clear the field for no PIN."
 
@@ -105,14 +117,22 @@ struct CreateProfileView: View {
         .task {
             await loadLibraries()
         }
+        .task {
+            await loadRequestsSupport()
+        }
         .onChange(of: isChild) { _, child in
+            // Matches the web Kids preset: request discovery browses titles
+            // outside the library, which parental controls only partly reach.
             if child {
                 if maxContentRating.isEmpty { maxContentRating = "PG" }
                 libraryRestrictionsEnabled = true
+                if !requestsTouched { requestsAllowed = false }
             } else {
                 maxContentRating = ""
                 libraryRestrictionsEnabled = false
                 allowedLibraryIds.removeAll()
+                requestsAllowed = true
+                requestsTouched = false
             }
         }
     }
@@ -270,10 +290,22 @@ struct CreateProfileView: View {
                 }
             }
 
-            ChildProfileRow(isOn: $isChild)
+            ProfileSwitchRow(
+                title: "Child Profile",
+                subtitle: "Restricts content to kid-friendly ratings",
+                isOn: $isChild
+            )
 
             if isChild {
                 childAccessControls
+            }
+
+            if requestsAllowedSupported == true {
+                ProfileSwitchRow(
+                    title: Self.requestsAllowedTitle,
+                    subtitle: Self.requestsAllowedHelp,
+                    isOn: requestsAllowedBinding
+                )
             }
 
             Button("Create Profile") {
@@ -387,6 +419,21 @@ struct CreateProfileView: View {
 
                         if isChild {
                             childAccessControls
+                        }
+
+                        if requestsAllowedSupported == true {
+                            Toggle(isOn: requestsAllowedBinding) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(Self.requestsAllowedTitle)
+                                        .font(.siloBody)
+                                        .foregroundColor(.siloOnSurface)
+                                    Text(Self.requestsAllowedHelp)
+                                        .font(.siloCaption)
+                                        .foregroundColor(.siloSecondaryText)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .tint(.siloSwitchOn)
                         }
 
                         Button("Create Profile") {
@@ -541,6 +588,17 @@ struct CreateProfileView: View {
         .background(Color.siloSurfaceElevated, in: RoundedRectangle(cornerRadius: 12))
     }
 
+    /// Records a hand-made change so the Child Profile preset keeps it.
+    private var requestsAllowedBinding: Binding<Bool> {
+        Binding(
+            get: { requestsAllowed },
+            set: { allowed in
+                requestsTouched = true
+                requestsAllowed = allowed
+            }
+        )
+    }
+
     /// Drive the preview tile from a synthetic `UserProfile`. The avatar
     /// carries the DiceBear preset ref (same wire format the server stores),
     /// so `ProfileTile` renders it via the shared `ProfileAvatarResolver`
@@ -632,9 +690,35 @@ struct CreateProfileView: View {
         }
     }
 
+    /// A failed read leaves the switch hidden and the support unknown, so
+    /// submit reads it again before creating the profile.
+    private func loadRequestsSupport() async {
+        if let list = try? await SiloAPI.shared.householdProfileList() {
+            requestsAllowedSupported = list.requestsAllowedSupported
+        }
+    }
+
     // MARK: - Submit
 
     private func createProfile() async {
+        isLoading = true
+        formError = nil
+        defer { isLoading = false }
+
+        // Without the support answer a Kids profile would be created with
+        // requests allowed, the server's default. The form stays editable
+        // during this read, so the checks below run after it, on the values
+        // that are sent.
+        if requestsAllowedSupported == nil {
+            await loadRequestsSupport()
+        }
+        guard let requestsAllowedSupported else {
+            formError = CreateProfileFailure(
+                message: "Couldn't reach the server to check this profile's request settings. Try again."
+            )
+            return
+        }
+
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
             formError = CreateProfileFailure(title: "Name Required", message: "Please enter a name.")
             return
@@ -654,10 +738,6 @@ struct CreateProfileView: View {
             return
         }
 
-        isLoading = true
-        formError = nil
-        defer { isLoading = false }
-
         do {
             _ = try await AuthService.shared.createProfile(
                 name: name,
@@ -668,7 +748,9 @@ struct CreateProfileView: View {
                 libraryRestrictionsEnabled: isChild && libraryRestrictionsEnabled,
                 allowedLibraryIds: isChild && libraryRestrictionsEnabled
                     ? allowedLibraryIds.sorted()
-                    : []
+                    : [],
+                // Omitted means allowed, so only a blocked profile sends it.
+                requestsAllowed: requestsAllowedSupported && !requestsAllowed ? false : nil
             )
             onCreated()
         } catch {
@@ -854,16 +936,19 @@ private struct PresetCell: View {
     }
 }
 
-// MARK: - Child profile row
+// MARK: - Switch row
 
 #if os(tvOS)
-/// Replaces SwiftUI's `Toggle` because on tvOS the default toggle inverts
+/// A labelled on/off row (Child Profile, Allow requests). Replaces SwiftUI's
+/// `Toggle` because on tvOS the default toggle inverts
 /// its entire surface to white on focus — which buries the label text on
 /// our dark background and looks nothing like the rest of the form's
 /// focus treatment (subtle background + white outline). This version
 /// keeps the row readable at all times, with focus signalled by a soft
 /// highlight + a prominent switch puck.
-private struct ChildProfileRow: View {
+private struct ProfileSwitchRow: View {
+    let title: String
+    let subtitle: String
     @Binding var isOn: Bool
 
     @FocusState private var isFocused: Bool
@@ -877,12 +962,13 @@ private struct ChildProfileRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Child Profile")
+                Text(title)
                     .font(.system(size: titleSize, weight: .medium))
                     .foregroundStyle(.white)
-                Text("Restricts content to kid-friendly ratings")
+                Text(subtitle)
                     .font(.system(size: subtitleSize))
                     .foregroundStyle(.white.opacity(0.55))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 16)
             switchView
@@ -909,7 +995,8 @@ private struct ChildProfileRow: View {
         .animation(.spring(response: 0.28, dampingFraction: 0.75), value: isOn)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("Child profile")
+        .accessibilityLabel(title)
+        .accessibilityHint(subtitle)
         .accessibilityValue(isOn ? "On" : "Off")
     }
 

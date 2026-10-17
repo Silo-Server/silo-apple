@@ -550,6 +550,12 @@ actor SiloAPI {
         try await apiV2Client.householdProfiles()
     }
 
+    /// The profile list with the optional members this server accepts; the
+    /// new-profile form reads `requestsAllowedSupported` from it.
+    func householdProfileList() async throws -> HouseholdProfileList {
+        try await apiV2Client.householdProfileList()
+    }
+
     /// Verifies a protected profile without mutating process-wide identity.
     /// `AuthService` uses this to finish the network round trip first, then
     /// commit profile ID and proof together behind HTTPClient's transition
@@ -578,7 +584,8 @@ actor SiloAPI {
         isChild: Bool,
         maxContentRating: String? = nil,
         libraryRestrictionsEnabled: Bool = false,
-        allowedLibraryIds: [Int] = []
+        allowedLibraryIds: [Int] = [],
+        requestsAllowed: Bool? = nil
     ) async throws -> UserProfile {
         try await apiV2Client.createHouseholdProfile(
             CreateProfileRequestBody(
@@ -588,7 +595,8 @@ actor SiloAPI {
                 isChild: isChild,
                 maxContentRating: maxContentRating,
                 libraryRestrictionsEnabled: libraryRestrictionsEnabled,
-                allowedLibraryIds: allowedLibraryIds
+                allowedLibraryIds: allowedLibraryIds,
+                requestsAllowed: requestsAllowed
             )
         )
     }

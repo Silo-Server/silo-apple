@@ -324,10 +324,17 @@ struct APIv2Client: Sendable {
     }
 
     func householdProfiles() async throws -> [UserProfile] {
-        let collection: APIv2CatalogReadCollection<APIv2Profile> = try await householdRequest("GET", path: "/api/v2/profiles", status: 200)
+        try await householdProfileList().profiles
+    }
+
+    /// The household's profiles together with the optional profile members
+    /// this server accepts on create and update.
+    func householdProfileList() async throws -> HouseholdProfileList {
+        let collection: APIv2ProfileCollection = try await householdRequest("GET", path: "/api/v2/profiles", status: 200)
         let rows = try collection.completeItems()
         guard Set(rows.map(\.id)).count == rows.count else { throw APIv2Error.incompleteCollection }
-        return rows.map(\.asUserProfile)
+        return HouseholdProfileList(profiles: rows.map(\.asUserProfile),
+            requestsAllowedSupported: collection.requestsAllowedSupported == true)
     }
 
     func createHouseholdProfile(_ body: CreateProfileRequestBody) async throws -> UserProfile {
@@ -336,7 +343,8 @@ struct APIv2Client: Sendable {
         encoder.keyEncodingStrategy = .convertToSnakeCase
         let wire = APIv2ProfileCreate(name: body.name, avatar: body.avatar, pin: body.pin,
             isChild: body.isChild, maxContentRating: body.maxContentRating,
-            libraryRestrictionsEnabled: body.libraryRestrictionsEnabled, allowedLibraryIds: body.allowedLibraryIds.map(String.init))
+            libraryRestrictionsEnabled: body.libraryRestrictionsEnabled, allowedLibraryIds: body.allowedLibraryIds.map(String.init),
+            requestsAllowed: body.requestsAllowed)
         let row: APIv2Profile = try await householdRequest("POST", path: "/api/v2/profiles", body: encoder.encode(wire), status: 201)
         return row.asUserProfile
     }

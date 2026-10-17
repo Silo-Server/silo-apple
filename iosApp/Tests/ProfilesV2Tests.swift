@@ -101,6 +101,31 @@ final class ProfilesV2Tests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/profiles"])
     }
 
+    func testProfileListReportsWhetherTheServerAcceptsRequestsAllowed() async throws {
+        let api = try await api()
+        stub.reply(200, #"{"items":[\#(try profileJSON())],"requests_allowed_supported":true}"#)
+        let supported = try await api.householdProfileList()
+        XCTAssertEqual(supported.profiles.map(\.id), ["p-owner"])
+        XCTAssertTrue(supported.requestsAllowedSupported)
+
+        // A server that predates the switch omits the member.
+        stub.reply(200, #"{"items":[\#(try profileJSON())]}"#)
+        let unsupported = try await api.householdProfileList()
+        XCTAssertFalse(unsupported.requestsAllowedSupported)
+    }
+
+    func testProfileRequestsAllowedDecodesAndIsAbsentOnAnOlderServer() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let blocked = try APIv2FixtureTestSupport.mutatedBody(named: "update_profile_ok", bundleClass: Self.self) {
+            $0["requests_allowed"] = false
+        }
+        XCTAssertEqual(try decoder.decode(APIv2Profile.self, from: blocked).requestsAllowed, false)
+        let older = try APIv2FixtureTestSupport.mutatedBody(named: "update_profile_ok", bundleClass: Self.self) {
+            $0.removeValue(forKey: "requests_allowed")
+        }
+        XCTAssertNil(try decoder.decode(APIv2Profile.self, from: older).requestsAllowed)
+    }
+
     func testVerifyPINPostsToTheV2RouteAndReturnsTheProof() async throws {
         let api = try await api()
         stub.reply(200, #"{"valid":true,"profile_token":"pvt_one","expires_at":null}"#)
@@ -170,6 +195,17 @@ final class ProfilesV2Tests: XCTestCase {
         XCTAssertEqual(sent["max_content_rating"] as? String, "PG")
         XCTAssertEqual(sent["library_restrictions_enabled"] as? Bool, true)
         XCTAssertNil(sent["pin"], "an unset PIN is omitted; create does not accept null")
+        XCTAssertNil(sent["requests_allowed"], "an older server rejects the unknown member")
+    }
+
+    func testCreateProfileSendsABlockedRequestsSwitch() async throws {
+        let api = try await api(profileId: "p-owner")
+        stub.reply(201, try profileJSON(id: "p-new"), headers: ["Location": "/api/v2/profiles/p-new"])
+
+        _ = try await api.createProfile(name: "Kid", avatarEmoji: nil, pin: nil, isChild: true,
+            maxContentRating: "PG", requestsAllowed: false)
+
+        XCTAssertEqual(try body(XCTUnwrap(stub.requests.first))["requests_allowed"] as? Bool, false)
     }
 
     func testCreateProfileRejectsASuccessStatusOtherThan201() async throws {
