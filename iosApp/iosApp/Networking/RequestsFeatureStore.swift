@@ -83,14 +83,18 @@ final class RequestsFeatureStore {
         isResolved = false
     }
 
-    /// A requests call failed because the server reports the requests
-    /// capability off (turned off, not configured, or unsupported). Callers
-    /// re-probe on this so entry points hide and open Requests screens close;
-    /// the probe's answer, not the failed call, decides.
-    nonisolated static func isCapabilityOff(_ error: Error) -> Bool {
+    /// A requests call failed in a way that may mean the cached flag is
+    /// stale: the server reports the requests capability off (turned off,
+    /// not configured, or unsupported), or refuses the account
+    /// (`permission_denied`, which is what an account blocked from requesting
+    /// mid-session gets). Callers re-probe on this so entry points hide and
+    /// open Requests screens close; the probe's answer, not the failed call,
+    /// decides, so a refusal for another reason leaves the flag as it is.
+    nonisolated static func shouldReprobe(after error: Error) -> Bool {
         guard case APIv2Error.problem(let problem) = error else { return false }
         switch problem.identifier {
-        case "capability_disabled", "capability_not_configured", "capability_unsupported":
+        case "capability_disabled", "capability_not_configured", "capability_unsupported",
+             "permission_denied":
             return true
         default:
             return false

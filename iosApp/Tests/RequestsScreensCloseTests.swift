@@ -104,16 +104,16 @@ final class RequestsScreensCloseTests: XCTestCase {
         XCTAssertTrue(store.isKnownUnavailable, "the older answer is the newest one there is")
     }
 
-    func testOnlyCapabilityOffProblemsTriggerAReprobe() throws {
+    func testOnlyCapabilityOffAndRefusedProblemsTriggerAReprobe() throws {
         func problem(_ id: String) throws -> Error {
             let body = #"{"type":"https://siloserver.org/docs/api/v2/problems/\#(id)","title":"T","status":409,"detail":"d"}"#
             return APIv2Error.problem(try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: Data(body.utf8)))
         }
-        for id in ["capability_disabled", "capability_not_configured", "capability_unsupported"] {
-            XCTAssertTrue(RequestsFeatureStore.isCapabilityOff(try problem(id)), id)
+        for id in ["capability_disabled", "capability_not_configured", "capability_unsupported", "permission_denied"] {
+            XCTAssertTrue(RequestsFeatureStore.shouldReprobe(after: try problem(id)), id)
         }
-        XCTAssertFalse(RequestsFeatureStore.isCapabilityOff(try problem("conflict")))
-        XCTAssertFalse(RequestsFeatureStore.isCapabilityOff(ProbeFailed()))
+        XCTAssertFalse(RequestsFeatureStore.shouldReprobe(after: try problem("conflict")))
+        XCTAssertFalse(RequestsFeatureStore.shouldReprobe(after: ProbeFailed()))
     }
 
     // MARK: Router

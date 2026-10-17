@@ -59,14 +59,15 @@ extension SiloAPI {
         }
     }
 
-    /// A requests call refused because the capability is off means the
-    /// cached flag is stale: re-probe so entry points hide and an open
-    /// Requests screen closes (see `RequestsFeatureStore.isKnownUnavailable`).
+    /// A requests call refused because the capability is off or the account
+    /// is blocked means the cached flag may be stale: re-probe so entry
+    /// points hide and an open Requests screen closes (see
+    /// `RequestsFeatureStore.shouldReprobe(after:)` and `isKnownUnavailable`).
     private func reprobingWhenRequestsAreOff<T>(_ call: () async throws -> T) async throws -> T {
         do {
             return try await call()
         } catch {
-            if RequestsFeatureStore.isCapabilityOff(error) {
+            if RequestsFeatureStore.shouldReprobe(after: error) {
                 Task { @MainActor in await RequestsFeatureStore.shared.refresh() }
             }
             throw error
