@@ -102,18 +102,26 @@ final class MacSidebarSectionsTests: XCTestCase {
     }
 
     func testRequestsFollowsForYouOnlyWhileEnabled() {
-        XCTAssertFalse(
-            sections(menu: nil, libraries: allLibraries).flatMap(\.items)
-                .contains { $0.id == .app(.requests) }
-        )
+        // Compared with the list Requests is off for, since the default menu
+        // differs per platform (tvOS has no Calendar).
+        let menus: [PrimaryMenuPreference?] = [
+            nil,
+            PrimaryMenuPreference(items: [.builtin(.home), .builtin(.calendar)]),
+        ]
+        for menu in menus {
+            let off = ids(.discover, in: sections(menu: menu, libraries: allLibraries)) ?? []
+            XCTAssertFalse(off.contains(.app(.requests)))
+            var expected = off
+            let afterForYou = expected.firstIndex(of: .app(.recommendations)).map { $0 + 1 } ?? 1
+            expected.insert(.app(.requests), at: afterForYou)
+            XCTAssertEqual(
+                ids(.discover, in: sections(menu: menu, libraries: allLibraries, requests: true)),
+                expected
+            )
+        }
         XCTAssertEqual(
-            ids(.discover, in: sections(menu: nil, libraries: allLibraries, requests: true)),
-            [.app(.search), .app(.recommendations), .app(.requests), .app(.calendar)]
-        )
-        let noForYou = PrimaryMenuPreference(items: [.builtin(.home), .builtin(.calendar)])
-        XCTAssertEqual(
-            ids(.discover, in: sections(menu: noForYou, libraries: allLibraries, requests: true)),
-            [.app(.search), .app(.requests), .app(.calendar)]
+            ids(.discover, in: sections(menu: nil, libraries: allLibraries, requests: true))?.prefix(3),
+            [.app(.search), .app(.recommendations), .app(.requests)]
         )
     }
 
