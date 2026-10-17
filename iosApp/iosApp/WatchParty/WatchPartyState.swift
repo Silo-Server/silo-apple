@@ -65,7 +65,8 @@ struct WatchPartyCommandState {
         case reset
         /// A command just ran; the rate stays until playback settles.
         case wait
-        /// Close this drift (room position minus local position) by rate.
+        /// Close this drift (room position minus local position) by rate, or
+        /// by an in-place seek where `WatchPartyCorrection.correctsByRate` is off.
         case nudge(Double)
     }
 

@@ -823,8 +823,8 @@ final class WatchPartySession {
     /// Keeps a playing member on the room between commands. The last command
     /// this member ran is the room's position at its execute time, advancing
     /// at 1x while the room plays, so drift is measured locally every tick and
-    /// closed by rate; the server only steps in for drift the nudge has not
-    /// fixed.
+    /// closed by rate, or on Apple TV by an in-place seek; the server only
+    /// steps in for drift the nudge has not fixed.
     private func nudgeTowardRoom(_ room: WatchPartyRoom, snapshot: WatchPartyPlaybackSnapshot,
                                  adapter: WatchPartyPlaybackAdapter) {
         // Sampled after the report's sends, alongside the player position.

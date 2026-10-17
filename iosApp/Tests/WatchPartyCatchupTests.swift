@@ -369,4 +369,62 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertNil(budget.target)
         XCTAssertFalse(budget.allowed(at: at(200)))
     }
+
+    func testAppleTVClosesPlayingDriftBySeekingInsteadOfByRate() {
+        #if os(tvOS)
+        XCTAssertFalse(WatchPartyCorrection.correctsByRate)
+        #else
+        XCTAssertTrue(WatchPartyCorrection.correctsByRate)
+        #endif
+    }
+
+    func testInPlaceCatchupLeavesDriftTheServerToleratesAndAimsAtTheRoom() {
+        var catchup = WatchPartyInPlaceCatchup()
+        XCTAssertNil(catchup.step(drift: 1, local: 100, at: at(0)))
+        XCTAssertNil(catchup.step(drift: -1, local: 100, at: at(0)))
+        XCTAssertNil(catchup.step(drift: .nan, local: 100, at: at(0)))
+        XCTAssertEqual(catchup.step(drift: 1.5, local: 100, at: at(0)), 101.5)
+        XCTAssertEqual(catchup.step(drift: -2, local: 100, at: at(0)), 98)
+        XCTAssertEqual(catchup.step(drift: -2, local: 1, at: at(0)), 0)
+    }
+
+    func testInPlaceCatchupAimsTheNextSeekAheadByTheShortfallTheLastLeft() {
+        var catchup = WatchPartyInPlaceCatchup()
+        XCTAssertEqual(catchup.step(drift: 2, local: 10, at: at(0)), 12)
+        catchup.seekLanded(at: at(0.5))
+        // Playback has not run long enough after the landing to measure it.
+        XCTAssertNil(catchup.step(drift: 0.5, local: 12.5, at: at(1)))
+        // It landed half a second behind; that converged, so no seek follows.
+        XCTAssertNil(catchup.step(drift: 0.5, local: 13, at: at(1.5)))
+        XCTAssertEqual(catchup.lead, 0.5)
+        XCTAssertEqual(catchup.interval, WatchPartyInPlaceCatchup.minInterval)
+        // The next drift is aimed ahead by that lead.
+        XCTAssertEqual(catchup.step(drift: 1.5, local: 20, at: at(10)), 22)
+        // A seek that overshot lowers the lead, never below zero.
+        catchup.seekLanded(at: at(10))
+        XCTAssertNil(catchup.step(drift: -4, local: 23, at: at(11)))
+        XCTAssertEqual(catchup.lead, 0)
+    }
+
+    func testInPlaceSeeksThatKeepMissingBackOffAndTheLeadIsBounded() {
+        var catchup = WatchPartyInPlaceCatchup()
+        XCTAssertNotNil(catchup.step(drift: 3, local: 0, at: at(0)))
+        catchup.seekLanded(at: at(0))
+        // Still 2.5 seconds behind: the lead grows and the next seek waits 2 s.
+        XCTAssertNil(catchup.step(drift: 2.5, local: 3, at: at(1)))
+        XCTAssertEqual(catchup.lead, 2.5)
+        XCTAssertEqual(catchup.interval, 2)
+        XCTAssertEqual(catchup.step(drift: 2.5, local: 4, at: at(2)), 9)
+        catchup.seekLanded(at: at(2))
+        XCTAssertNil(catchup.step(drift: 2, local: 9, at: at(3)))
+        XCTAssertEqual(catchup.lead, WatchPartyInPlaceCatchup.maxLead)
+        XCTAssertEqual(catchup.interval, 4)
+        XCTAssertNil(catchup.step(drift: 2, local: 12, at: at(5.5)))
+        XCTAssertNotNil(catchup.step(drift: 2, local: 13, at: at(6)))
+        for landing in 0..<8 {
+            catchup.seekLanded(at: at(100 * Double(landing + 1)))
+            _ = catchup.step(drift: 2, local: 0, at: at(100 * Double(landing + 1) + 1))
+        }
+        XCTAssertEqual(catchup.interval, WatchPartyInPlaceCatchup.maxInterval)
+    }
 }

@@ -1100,6 +1100,10 @@ class PlayerViewModel {
     /// plays; a paused member picks the rate up when it next plays.
     private var watchPartyAppliedRate: Double?
     private var watchPartyReloadBudget = WatchPartyReloadBudget()
+    /// Where a member that does not correct by rate aims its next in-place
+    /// seek, and the drift loop's seek while it runs.
+    private var watchPartyInPlaceCatchup = WatchPartyInPlaceCatchup()
+    private var watchPartyInPlaceSeekTask: Task<Void, Never>?
     var isWatchPartyPlayback: Bool { watchPartyAdapter?.context != nil }
     var canRequestPlayPause: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canPlayPause == true }
     var canRequestSeek: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canSeek == true }
@@ -9780,6 +9784,9 @@ extension PlayerViewModel {
         cancelWatchPartyCorrection()
         watchPartyAppliedRate = nil
         watchPartyReloadBudget = WatchPartyReloadBudget()
+        watchPartyInPlaceSeekTask?.cancel()
+        watchPartyInPlaceSeekTask = nil
+        watchPartyInPlaceCatchup = WatchPartyInPlaceCatchup()
         aetherPlaybackController.requiresExplicitTransportResume = true
         aetherPlaybackController.permitsExternalPlayback = false
         #if os(iOS)
@@ -9901,7 +9908,8 @@ extension PlayerViewModel {
     /// Applies a room command to a playing member: drift up to `seekBand`
     /// converges by rate, larger drift seeks to media already buffered or
     /// takes a budgeted load for media that is not. Returns without waiting
-    /// for a rate nudge, so the member keeps reporting meanwhile.
+    /// for a rate nudge, so the member keeps reporting meanwhile. A member
+    /// that does not correct by rate seeks in place instead of nudging.
     func correctWatchPartyPlayback(
         to position: Double, seekBand: Double, context: WatchPartyPlaybackContext
     ) async throws -> WatchPartyPlaybackSnapshot {
@@ -9909,6 +9917,10 @@ extension PlayerViewModel {
               watchPartyAdapter?.context == context else { throw WatchPartyPlaybackError.invalidated }
         let local = watchPartyPlaybackSnapshot.sourceTime
         guard WatchPartyCorrection.seeks(drift: position - local, band: seekBand) else {
+            guard WatchPartyCorrection.correctsByRate else {
+                guard watchPartyInPlaceSeekTask == nil else { return watchPartyPlaybackSnapshot }
+                return try await seekWatchPartyInPlace(drift: position - local, context: context)
+            }
             nudgeWatchPartyPlayback(drift: position - local)
             return watchPartyPlaybackSnapshot
         }
@@ -9920,8 +9932,21 @@ extension PlayerViewModel {
 
     /// Converges a playing member on the room by playback rate, with the
     /// hysteresis in `WatchPartyCorrection.nudge`. It never seeks, and it
-    /// leaves a correction load in flight to land first.
+    /// leaves a correction load in flight to land first. A member that does
+    /// not correct by rate takes an in-place seek instead, without holding
+    /// up the drift loop that calls this.
     func nudgeWatchPartyPlayback(drift: Double) {
+        guard WatchPartyCorrection.correctsByRate else {
+            guard isWatchPartyPlayback, !isDisposed, watchPartyInPlaceSeekTask == nil,
+                  let context = watchPartyAdapter?.context else { return }
+            watchPartyInPlaceSeekTask = Task { [weak self] in
+                guard let self else { return }
+                _ = try? await self.seekWatchPartyInPlace(drift: drift, context: context)
+                guard !Task.isCancelled else { return }
+                self.watchPartyInPlaceSeekTask = nil
+            }
+            return
+        }
         let snapshot = watchPartyPlaybackSnapshot
         guard isWatchPartyPlayback, !isDisposed, !watchPartyReloadBudget.inFlight(at: Date()),
               snapshot.isPlaying, snapshot.isReady, !snapshot.isBuffering else { return }
@@ -9930,6 +9955,25 @@ extension PlayerViewModel {
         guard rate != watchPartyCorrectionRate else { return }
         watchPartyCorrectionRate = rate
         syncWatchPartyRate()
+    }
+
+    /// Closes a playing member's drift with one in-place seek when it does
+    /// not correct by rate, aimed by `WatchPartyInPlaceCatchup`. Drift within
+    /// `WatchPartyCorrection.inPlaceSeek` stays, and a target outside the
+    /// buffer is left to the server's corrections, as a nudge would leave it.
+    private func seekWatchPartyInPlace(
+        drift: Double, context: WatchPartyPlaybackContext
+    ) async throws -> WatchPartyPlaybackSnapshot {
+        let snapshot = watchPartyPlaybackSnapshot
+        // A held skip is the room's to move; a correction load lands first.
+        guard watchPartyHeldSeek == nil, !watchPartyReloadBudget.inFlight(at: Date()),
+              snapshot.isPlaying, snapshot.isReady, !snapshot.isBuffering else { return snapshot }
+        if abs(drift) <= WatchPartyCorrection.inPlaceSeek { watchPartyReloadBudget.settle() }
+        guard let aim = watchPartyInPlaceCatchup.step(drift: drift, local: snapshot.sourceTime, at: Date()),
+              watchPartyTargetReachableInPlace(aim) else { return snapshot }
+        let landed = try await applyWatchPartyTransport(.seek(aim), context: context, origin: .realign)
+        watchPartyInPlaceCatchup.seekLanded(at: Date())
+        return landed
     }
 
     /// Whether a seek to `position` lands in media this member already has.

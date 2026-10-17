@@ -57,8 +57,24 @@ enum WatchPartyPlaybackError: Error {
 /// How a member converges on the room. Every client (web, Apple, Android)
 /// uses these bands and rates, so a mixed room behaves the same everywhere.
 /// Drift up to `hardSeek` converges by a pitch-preserved playback rate of at
-/// most 4 percent, too small for viewers to notice; only larger drift seeks.
+/// most 4 percent; only larger drift seeks. Apple TV is the exception, see
+/// `correctsByRate`.
 enum WatchPartyCorrection {
+    /// Whether a playing member closes drift by playback rate. Apple TV does
+    /// not: with Match Frame Rate on, even 1 percent off 1x drops or repeats
+    /// frames visibly for the whole nudge, and some routes (Dolby Vision with
+    /// Atmos) ignore the rate and never converge (#825). It corrects the way
+    /// Android does for a player that cannot change rate: drift up to
+    /// `inPlaceSeek` stays, larger drift takes one in-place seek; see
+    /// `WatchPartyInPlaceCatchup`.
+    #if os(tvOS)
+    static let correctsByRate = false
+    #else
+    static let correctsByRate = true
+    #endif
+    /// Where a member that does not correct by rate starts seeking in place.
+    /// The server leaves a member within 1 second of the room alone.
+    static let inPlaceSeek: Double = 1
     /// No correction starts below this drift.
     static let deadband: Double = 0.4
     /// A rate nudge in progress ends once playback is this close.
@@ -122,6 +138,52 @@ enum WatchPartyCorrection {
         guard locallySeekable else { return false }
         guard target > local, let forwardBuffer, forwardBuffer.isFinite else { return true }
         return target <= local + max(0, forwardBuffer)
+    }
+}
+
+/// In-place catch-up for a member that does not correct by rate, as on
+/// Android: a seek lands late by its own duration while the room plays on,
+/// so the next one aims ahead by the shortfall the previous left, and seeks
+/// that keep missing back off.
+struct WatchPartyInPlaceCatchup: Equatable {
+    static let maxLead: Double = 3
+    static let minInterval: TimeInterval = 1
+    static let maxInterval: TimeInterval = 16
+
+    /// How far ahead of the room the next seek aims.
+    private(set) var lead: Double = 0
+    /// How long after a seek lands the next may run.
+    private(set) var interval: TimeInterval = minInterval
+    /// When the last seek landed, and whether the drift it left is still to
+    /// be folded into `lead`.
+    private(set) var landedAt: Date?
+    private(set) var measuring = false
+
+    /// One correction step for a playing member: `drift` is the room position
+    /// minus `local`. A seek's shortfall is measured on the first step at
+    /// least `minInterval` after it landed. Returns where to seek, or nil to
+    /// leave the drift: within `inPlaceSeek`, or too soon after the last seek.
+    mutating func step(drift: Double, local: Double, at now: Date) -> Double? {
+        guard drift.isFinite, local.isFinite else { return nil }
+        if let landedAt {
+            let since = now.timeIntervalSince(landedAt)
+            guard since >= Self.minInterval else { return nil }
+            if measuring {
+                measuring = false
+                lead = min(Self.maxLead, max(0, lead + drift))
+                interval = abs(drift) <= WatchPartyCorrection.inPlaceSeek
+                    ? Self.minInterval : min(Self.maxInterval, interval * 2)
+            }
+            guard since >= interval else { return nil }
+        }
+        guard abs(drift) > WatchPartyCorrection.inPlaceSeek else { return nil }
+        return max(0, local + drift + lead)
+    }
+
+    /// The seek `step` asked for finished at `now`.
+    mutating func seekLanded(at now: Date) {
+        landedAt = now
+        measuring = true
     }
 }
 
@@ -379,7 +441,8 @@ final class WatchPartyPlaybackAdapter {
     /// connection ended or its commands were dropped.
     func releaseHeldSeek() { player?.releaseWatchPartyHeldSeek() }
 
-    /// Converges a playing member on the room by playback rate; never seeks.
+    /// Converges a playing member on the room by playback rate; never seeks,
+    /// except on a member that does not correct by rate (Apple TV).
     func nudge(drift: Double) { player?.nudgeWatchPartyPlayback(drift: drift) }
 
     /// Whether `position` can be reached without rebuilding the stream.
