@@ -1323,7 +1323,7 @@ private struct TVMarqueeBlock: View {
         if TitleArtPreferences.shared.showsTitleArt,
            let logoUrl = content.logoUrl, !logoUrl.isEmpty,
            let url = URL(string: logoUrl),
-           let cached = ImagePipeline.shared.cache[ImageRequest(artwork: url)] {
+           let cached = ImagePipeline.shared.cache[PosterImageCache.titleLogoRequest(for: url)] {
             _logoImage = State(initialValue: cached.image)
         }
     }
@@ -1575,7 +1575,7 @@ private struct TVMarqueeBlock: View {
               let url = URL(string: logoUrl) else {
             return
         }
-        let request = ImageRequest(artwork: url, priority: .normal)
+        let request = PosterImageCache.titleLogoRequest(for: url)
         if let image = try? await ImagePipeline.shared.image(for: request) {
             logoImage = image
         }

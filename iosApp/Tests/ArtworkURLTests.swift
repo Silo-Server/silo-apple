@@ -86,7 +86,7 @@ final class ArtworkURLTests: XCTestCase {
 
         stub.reply(200, #"{"sections":[{"id":"cw","section_type":"continue_watching","title":"Continue Watching","items":[\#(item)]}]}"#)
         let authValue = await tokens.captureOrdinaryRequestAuth()
-        let home = try await api.homeSections(imageSize: nil, auth: XCTUnwrap(authValue))
+        let home = try await api.homeSections(artwork: [:], auth: XCTUnwrap(authValue))
         XCTAssertEqual(home.response.sections.first?.items.first?.posterUrl, secondURL)
 
         stub.reply(200, #"{"events":[{"date":"2026-09-16","items":[\#(item)]}]}"#)
@@ -192,7 +192,8 @@ final class ArtworkURLTests: XCTestCase {
         XCTAssertEqual(stub.requests.last?.path, "/api/v2/images/capabilities")
         XCTAssertEqual(probe.capability?.storageBackend, "local")
         XCTAssertEqual(probe.capability?.delivery, "server")
-        XCTAssertTrue(probe.requestQuery.isEmpty)
+        // A server without per-slot widths: iOS keeps the server's sizes.
+        XCTAssertTrue(probe.requestQuery(for: .detail).isEmpty)
         XCTAssertEqual(ImageSizeSelection.queryEntries(capability: probe.capability, prefersLargeImages: true), ["image_size": "large"])
         probe.reset()
         XCTAssertNil(probe.capability)

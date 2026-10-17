@@ -11,7 +11,7 @@ import UIKit
 ///   Revisioned artwork is keyed without its signature (`ArtworkCacheKey`),
 ///   so a re-signed URL reuses both caches.
 /// - Artwork is decoded by ImageIO straight to a size on a fixed ladder just
-///   above the size it is drawn at, so a w780 poster is never decoded at full
+///   above the size it is drawn at, so a w1000 poster is never decoded at full
 ///   resolution for a 176 pt card, and cards a few points apart share a decode.
 /// - Any decode of a URL already in memory that is large enough is painted
 ///   immediately (see `cachedVariant`), so artwork seen once never shows its
@@ -153,12 +153,19 @@ enum PosterImageCache {
         }
     }
 
-    /// Warm full-size artwork with no decode size, under its artwork cache
-    /// identity. Only for art whose consumers read the unprocessed decode
-    /// synchronously (marquee logos).
-    static func prefetchOriginalArtwork(_ urls: [URL]) {
-        guard !urls.isEmpty else { return }
-        prefetcher.startPrefetching(with: artworkRequests(urls))
+    /// Longest decoded edge, in pixels, of Now Playing artwork: the lock
+    /// screen's full-width player on the largest iPhone (about 430 pt at
+    /// 3×). An original can be 3840 px wide; this keeps its decode near 4 MB
+    /// instead of 30 MB during playback.
+    static let nowPlayingArtworkMaxPixelSize: Float = 1280
+
+    /// Now Playing artwork, decoded no larger than the system draws it and
+    /// kept out of the memory cache: playback keeps decoded-image memory low,
+    /// and the published artwork already holds the image.
+    static func nowPlayingArtworkRequest(for url: URL) -> ImageRequest {
+        var request = ImageRequest(artwork: url, options: [.disableMemoryCacheWrites])
+        request.thumbnail = ImageRequest.ThumbnailOptions(maxPixelSize: nowPlayingArtworkMaxPixelSize)
+        return request
     }
 
     /// Warm artwork bytes into the disk cache only, for art further from the
@@ -294,7 +301,7 @@ enum PosterImageCache {
     // MARK: - tvOS hero backdrops
 
     /// Root-hero backdrop warmer for the cards beside a rested marquee
-    /// selection. Data-only: a w1920 backdrop decodes to about 8 MB, and
+    /// selection. Data-only: a hero backdrop decodes to about 18 MB at 4K, and
     /// decoding the neighbours would evict dozens of posters on 3 GB Apple
     /// TVs. The bytes remove the network round trip, the dominant cost of a
     /// rested swap; the one decode happens when the backdrop is requested.
@@ -323,6 +330,38 @@ enum PosterImageCache {
         warmedNeighborBackdropURLs = seen
         if !stale.isEmpty { neighborBackdropPrefetcher.stopPrefetching(with: artworkRequests(stale)) }
         if !fresh.isEmpty { neighborBackdropPrefetcher.startPrefetching(with: artworkRequests(fresh)) }
+    }
+
+    /// The box every title logo fits inside: the Home marquee's, the largest
+    /// place one is drawn (the library marquee, detail hero and its loading
+    /// state draw inside it). One decode serves them all, so the logo a
+    /// marquee showed is already in memory when its detail opens.
+    static let titleLogoPointBox = CGSize(
+        width: SiloTheme.Skyline.marqueeLogoMaxWidth,
+        height: SiloTheme.Skyline.marqueeLogoMaxHeightHome
+    )
+
+    /// The request every title logo view issues: an aspect-fit decode to
+    /// `titleLogoPointBox` on this display. An original logo can be 3840 px
+    /// wide; its unprocessed decode would hold tens of megabytes.
+    @MainActor
+    static func titleLogoRequest(for url: URL, priority: ImageRequest.Priority = .normal) -> ImageRequest {
+        let scale = displayScale
+        var request = ImageRequest(artwork: url, priority: priority)
+        request.thumbnail = ImageRequest.ThumbnailOptions(
+            size: CGSize(width: titleLogoPointBox.width * scale, height: titleLogoPointBox.height * scale),
+            unit: .pixels,
+            contentMode: .aspectFit
+        )
+        return request
+    }
+
+    /// Warm title logos into memory at the size their views decode them, so
+    /// a marquee paints its logo on the first frame.
+    @MainActor
+    static func prefetchTitleLogos(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        prefetcher.startPrefetching(with: urls.map { titleLogoRequest(for: $0) })
     }
 
     @MainActor

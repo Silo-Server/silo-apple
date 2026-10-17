@@ -5,7 +5,8 @@
 //  Decoding + query-injection tests for image-size selection. The payload
 //  is the vendored server fixture for `GET /api/v2/images/capabilities`,
 //  decoded with the production decoder, and the gating matrix covers the
-//  query entries the networking layer merges into image-bearing requests.
+//  query entries the networking layer merges into image-bearing requests:
+//  per-slot widths on servers that take them, one size on older servers.
 //
 //  The `platformPrefersLargeImages` flag is passed explicitly rather
 //  than read from `#if os(tvOS)`: the test target is hosted by the iOS
@@ -27,9 +28,31 @@ final class ImageSizeCapabilityTests: XCTestCase {
     private func capability(
         state: String = "available",
         param: String = "image_size",
-        sizes: [String] = ["small", "medium", "large", "original"]
+        sizes: [String] = ["small", "medium", "large", "original"],
+        slotWidthParams: [String: String]? = nil
     ) -> ImageSizeCapabilityResponse {
-        ImageSizeCapabilityResponse(param: param, sizes: sizes, widths: [:], originalMaxWidthPx: 1920, state: state)
+        ImageSizeCapabilityResponse(
+            param: param, sizes: sizes, widths: [:], originalMaxWidthPx: 3840, state: state,
+            slotWidthParams: slotWidthParams
+        )
+    }
+
+    /// The Apple TV home row: medium cards under a full-screen hero.
+    private let shelves = ArtworkSlotWidths(imageSize: "medium", backdrop: 1344, logo: 880)
+
+    /// The still width an episode rail asks for at 2×: 360 pt cards on
+    /// tvOS, 240 pt elsewhere.
+    #if os(tvOS)
+    private let episodeStillWidth = "720"
+    #else
+    private let episodeStillWidth = "480"
+    #endif
+
+    /// The pre-slot server: same document without `slot_width_params`.
+    private func legacyCapability() throws -> ImageSizeCapabilityResponse {
+        var capability = try decodedCapability()
+        capability.slotWidthParams = nil
+        return capability
     }
 
     // MARK: - Decoding
@@ -39,12 +62,25 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertEqual(capability.state, "available")
         XCTAssertEqual(capability.param, "image_size")
         XCTAssertEqual(capability.sizes, ["small", "medium", "large", "original"])
-        XCTAssertEqual(capability.originalMaxWidthPx, 1920)
-        XCTAssertEqual(capability.widths["poster"]?["large"], 780)
+        XCTAssertEqual(capability.originalMaxWidthPx, 3840)
+        XCTAssertEqual(capability.widths["poster"]?["large"], 1000)
         XCTAssertEqual(capability.widths["logo"]?["large"], 1280)
-        XCTAssertEqual(capability.widths["backdrop"]?["large"], 1920)
+        XCTAssertEqual(capability.widths["backdrop"]?["large"], 2560)
         XCTAssertEqual(capability.storageBackend, "local")
         XCTAssertEqual(capability.delivery, "server")
+        XCTAssertEqual(capability.slotWidthParams, [
+            "poster": "poster_width", "backdrop": "backdrop_width", "logo": "logo_width",
+            "still": "still_width", "photo": "photo_width",
+        ])
+    }
+
+    /// A server that predates per-slot widths sends no `slot_width_params`.
+    func testCapabilityWithoutSlotWidthParamsDecodes() throws {
+        let body = try APIv2FixtureTestSupport.mutatedBody(named: Self.fixture, bundleClass: Self.self) { object in
+            object["slot_width_params"] = nil
+        }
+        let capability = try APIv2FixtureTestSupport.decoder.decode(ImageSizeCapabilityResponse.self, from: body)
+        XCTAssertNil(capability.slotWidthParams)
     }
 
     /// Roles the client doesn't know about must not fail the decode —
@@ -129,6 +165,94 @@ final class ImageSizeCapabilityTests: XCTestCase {
         )
     }
 
+    // MARK: - Per-slot widths
+
+    /// Apple TV 4K (2×): the hero widths of the issue's table, in pixels.
+    func testSlotWidthsAreDevicePixelsOnAppleTV4K() throws {
+        let entries = ImageSizeSelection.queryEntries(
+            capability: try decodedCapability(), slots: shelves, displayScale: 2, prefersLargeImages: true
+        )
+        XCTAssertEqual(entries, ["image_size": "medium", "backdrop_width": "2688", "logo_width": "1760"])
+    }
+
+    func testSlotWidthsFollowTheDisplayScale() throws {
+        let capability = try decodedCapability()
+        let episodes = ArtworkSlotWidths(still: 360)
+        XCTAssertEqual(
+            ImageSizeSelection.queryEntries(capability: capability, slots: episodes, displayScale: 1, prefersLargeImages: true),
+            ["still_width": "360"]
+        )
+        XCTAssertEqual(
+            ImageSizeSelection.queryEntries(capability: capability, slots: episodes, displayScale: 3, prefersLargeImages: false),
+            ["still_width": "1080"]
+        )
+    }
+
+    /// Fractional point widths round up so the rung is never too narrow, and
+    /// nothing exceeds the server's 7680 limit.
+    func testSlotWidthsRoundUpAndStayInRange() {
+        XCTAssertEqual(ImageSizeSelection.pixelWidth(points: 240.2, displayScale: 3), 721)
+        XCTAssertEqual(ImageSizeSelection.pixelWidth(points: 5000, displayScale: 2), 7680)
+        XCTAssertNil(ImageSizeSelection.pixelWidth(points: 0, displayScale: 2))
+        XCTAssertNil(ImageSizeSelection.pixelWidth(points: .infinity, displayScale: 2))
+    }
+
+    /// Parameter names come from the payload; a slot it does not name is
+    /// left to `image_size`, and an unadvertised size is never sent.
+    func testSlotWidthsUseServerSuppliedNamesOnly() {
+        let entries = ImageSizeSelection.queryEntries(
+            capability: capability(sizes: ["small", "large"], slotWidthParams: ["backdrop": "bd_w"]),
+            slots: shelves, displayScale: 2, prefersLargeImages: true
+        )
+        XCTAssertEqual(entries, ["bd_w": "2688"])
+    }
+
+    /// A pre-slot server keeps today's requests: `large` from tvOS, nothing
+    /// from iOS and macOS.
+    func testServerWithoutSlotWidthsKeepsOneSizePerResponse() throws {
+        let legacy = try legacyCapability()
+        XCTAssertEqual(
+            ImageSizeSelection.queryEntries(capability: legacy, slots: shelves, displayScale: 2, prefersLargeImages: true),
+            ["image_size": "large"]
+        )
+        XCTAssertTrue(
+            ImageSizeSelection.queryEntries(capability: legacy, slots: shelves, displayScale: 2, prefersLargeImages: false).isEmpty
+        )
+    }
+
+    /// Reads that sent no size before per-slot widths, among them the
+    /// recommendation reads that such a server rejects with `422` when given
+    /// any size, send nothing to it; the rest keep `image_size=large` on tvOS.
+    func testSlotWidthsOnlyReadsSendNothingToServersWithoutSlotWidths() async throws {
+        let legacy = try legacyCapability()
+        let capability = ImageSizeCapability(platformPrefersLargeImages: true) { legacy }
+        await capability.refresh()
+
+        XCTAssertEqual(capability.requestQuery(for: .home), ["image_size": "large"])
+        XCTAssertTrue(capability.requestQuery(for: .shelves, slotWidthsOnly: true).isEmpty)
+        XCTAssertTrue(capability.requestQuery(for: .similar, slotWidthsOnly: true).isEmpty)
+    }
+
+    func testSlotWidthsOnlyReadsGetWidthsWhenTheServerTakesThem() async throws {
+        let response = try decodedCapability()
+        let capability = ImageSizeCapability(platformPrefersLargeImages: true) { response }
+        await capability.refresh()
+
+        XCTAssertEqual(capability.requestQuery(for: .episodes, slotWidthsOnly: true), ["still_width": episodeStillWidth])
+    }
+
+    func testSlotWidthsNeedAnAvailableCapability() {
+        XCTAssertTrue(
+            ImageSizeSelection.queryEntries(capability: nil, slots: shelves, displayScale: 2, prefersLargeImages: true).isEmpty
+        )
+        XCTAssertTrue(
+            ImageSizeSelection.queryEntries(
+                capability: capability(state: "disabled", slotWidthParams: ["backdrop": "backdrop_width"]),
+                slots: shelves, displayScale: 2, prefersLargeImages: true
+            ).isEmpty
+        )
+    }
+
     // MARK: - Lifecycle
 
     /// `reset()` drops the probe so a later profile/server never inherits
@@ -138,18 +262,22 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertNil(capability.capability)
         capability.reset()
         XCTAssertNil(capability.capability)
-        XCTAssertTrue(capability.requestQuery.isEmpty)
+        XCTAssertTrue(capability.requestQuery(for: .episodes).isEmpty)
     }
 
-    func testImageRequestsOffTVNeverWaitForTheProbe() async throws {
+    /// iOS and macOS size their artwork too, so their first image request
+    /// on an unknown server waits for the probe like tvOS's.
+    func testImageRequestsOffTVProbeAndSendSlotWidths() async throws {
         let stub = ImageSizeCapabilityFetchStub(response: try decodedCapability())
-        let capability = ImageSizeCapability(platformPrefersLargeImages: false) { try await stub.fetch() }
+        let capability = ImageSizeCapability(platformPrefersLargeImages: false) {
+            try await stub.fetch()
+        }
 
-        let query = await capability.requestQueryForImageRequest()
+        let query = await capability.requestQueryForImageRequest(.episodes)
 
-        XCTAssertTrue(query.isEmpty)
+        XCTAssertEqual(query, ["still_width": episodeStillWidth])
         let callCount = await stub.callCount
-        XCTAssertEqual(callCount, 0)
+        XCTAssertEqual(callCount, 1)
     }
 
     func testRememberedCapabilityServesImageRequestsWithoutProbing() async throws {
@@ -164,9 +292,9 @@ final class ImageSizeCapabilityTests: XCTestCase {
             try await stub.fetch()
         }
 
-        let query = await capability.requestQueryForImageRequest()
+        let query = await capability.requestQueryForImageRequest(.episodes)
 
-        XCTAssertEqual(query, ["image_size": "large"])
+        XCTAssertEqual(query, ["still_width": episodeStillWidth])
         let callCount = await stub.callCount
         XCTAssertEqual(callCount, 0)
     }
@@ -200,7 +328,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
 
         let callCount = await stub.callCount
         XCTAssertEqual(callCount, 1)
-        XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
+        XCTAssertEqual(capability.requestQuery(for: .episodes), ["still_width": episodeStillWidth])
     }
 
     func testFailedRefreshRetriesAndThenCachesSuccess() async throws {
@@ -214,14 +342,14 @@ final class ImageSizeCapabilityTests: XCTestCase {
         }
 
         await capability.refresh()
-        XCTAssertTrue(capability.requestQuery.isEmpty)
+        XCTAssertTrue(capability.requestQuery(for: .episodes).isEmpty)
 
         await capability.refresh()
         await capability.refresh()
 
         let callCount = await stub.callCount
         XCTAssertEqual(callCount, 2)
-        XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
+        XCTAssertEqual(capability.requestQuery(for: .episodes)["still_width"], episodeStillWidth)
     }
 
     func testRequestProbesCacheFailuresUntilLifecycleRefreshOrReset() async throws {
@@ -241,7 +369,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
         count = await stub.callCount
         XCTAssertEqual(count, 3)
         XCTAssertNotNil(capability.capability)
-        XCTAssertTrue(capability.requestQuery.isEmpty)
+        XCTAssertEqual(capability.requestQuery(for: .episodes)["still_width"], episodeStillWidth)
     }
 
     func testResetRequiresCapabilityProbeForNewIdentity() async throws {
@@ -257,7 +385,7 @@ final class ImageSizeCapabilityTests: XCTestCase {
 
         let callCount = await stub.callCount
         XCTAssertEqual(callCount, 2)
-        XCTAssertEqual(capability.requestQuery, ["image_size": "large"])
+        XCTAssertEqual(capability.requestQuery(for: .episodes)["still_width"], episodeStillWidth)
     }
 }
 

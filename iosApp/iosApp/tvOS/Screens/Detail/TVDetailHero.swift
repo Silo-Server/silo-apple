@@ -536,7 +536,7 @@ struct TVDecodedLogoTitle<Fallback: View>: View {
     var body: some View {
         Group {
             if let normalizedLogoURL {
-                let request = ImageRequest(artwork: normalizedLogoURL)
+                let request = PosterImageCache.titleLogoRequest(for: normalizedLogoURL)
                 let cachedImage = ImagePipeline.shared.cache[request]?.image
                 LazyImage(
                     request: request,

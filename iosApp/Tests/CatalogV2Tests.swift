@@ -234,18 +234,18 @@ final class CatalogV2Tests: XCTestCase {
         let authValue = await tokens.captureOrdinaryRequestAuth()
         let auth = try XCTUnwrap(authValue)
         stub.reply(200, #"{"items":[]}"#)
-        _ = try await api.catalogSeasons(seriesId: "series", imageSize: nil, auth: auth)
-        _ = try await api.catalogEpisodes(seriesId: "series", seasonNumber: 1, imageSize: nil, auth: auth)
+        _ = try await api.catalogSeasons(seriesId: "series", artwork: [:], auth: auth)
+        _ = try await api.catalogEpisodes(seriesId: "series", seasonNumber: 1, artwork: [:], auth: auth)
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/catalog/series/series/seasons",
                                              "/api/v2/catalog/series/series/seasons/1/episodes"])
 
         await tokens.setProfileToken("replacement")
         do {
-            _ = try await api.catalogSeasons(seriesId: "series", imageSize: nil, auth: auth)
+            _ = try await api.catalogSeasons(seriesId: "series", artwork: [:], auth: auth)
             XCTFail("a replaced owner cannot issue the read")
         } catch HTTPError.requestIdentityChanged { }
         do {
-            _ = try await api.catalogEpisodes(seriesId: "series", seasonNumber: 1, imageSize: nil, auth: auth)
+            _ = try await api.catalogEpisodes(seriesId: "series", seasonNumber: 1, artwork: [:], auth: auth)
             XCTFail("a replaced owner cannot issue the read")
         } catch HTTPError.requestIdentityChanged { }
         XCTAssertEqual(stub.requests.count, 2, "nothing left the device after the owner changed")
@@ -504,10 +504,11 @@ final class CatalogV2Tests: XCTestCase {
     func testCatalogReadPathsScopesAndFiniteEnvelopes() async throws {
         let (api, _) = try await client()
         stub.reply(200, detailJSON)
-        _ = try await api.catalogItem(id: "movie:one/two", libraryId: "library", fileId: "file", imageSize: "small")
+        let artwork = ["image_size": "small", "still_width": "720"]
+        _ = try await api.catalogItem(id: "movie:one/two", libraryId: "library", fileId: "file", artwork: artwork)
         stub.reply(200, #"{"items":[]}"#)
-        _ = try await api.catalogSeasons(seriesId: "series", libraryId: "library", imageSize: "small")
-        _ = try await api.catalogEpisodes(seriesId: "series", seasonNumber: 0, libraryId: "library", imageSize: "small")
+        _ = try await api.catalogSeasons(seriesId: "series", libraryId: "library", artwork: artwork)
+        _ = try await api.catalogEpisodes(seriesId: "series", seasonNumber: 0, libraryId: "library", artwork: artwork)
         let calls = stub.requests
         XCTAssertEqual(calls.count, 3)
         XCTAssertTrue(try XCTUnwrap(calls[0].url).absoluteString.contains("movie:one%2Ftwo"))
@@ -520,6 +521,7 @@ final class CatalogV2Tests: XCTestCase {
             XCTAssertNil(call.query["offset"])
             XCTAssertEqual(call.query["library_id"], "library")
             XCTAssertEqual(call.query["image_size"], "small")
+            XCTAssertEqual(call.query["still_width"], "720")
             if index == 0 { XCTAssertEqual(call.query["file_id"], "file") }
         }
     }
@@ -750,7 +752,7 @@ final class CatalogV2Tests: XCTestCase {
         var query = APIv2CatalogQuery()
         query.sort = "year"
         query.order = "desc"
-        query.imageSize = "small"
+        query.artwork = ["image_size": "small", "poster_width": "352"]
         query.groups = [.init(match: "all", rules: [.init(field: "watched", op: "is", value: .bool(true))])]
         let first = try await api.catalogPage(query: query, operation: .query)
         stub.reply(200, terminal)
@@ -762,10 +764,13 @@ final class CatalogV2Tests: XCTestCase {
             XCTAssertEqual(call.path, "/api/v2/catalog/query")
             XCTAssertEqual(call.header("x-profile-id"), "profile-one")
             XCTAssertEqual(call.query["image_size"], "small")
+            XCTAssertEqual(call.query["poster_width"], "352")
             let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(call.body)) as? [String: Any])
             XCTAssertEqual(body["sort"] as? String, "year")
             XCTAssertEqual(body["order"] as? String, "desc")
             XCTAssertNil(body["image_size"])
+            XCTAssertNil(body["poster_width"])
+            XCTAssertNil(body["artwork"])
         }
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(calls[1].body)) as? [String: Any])
         XCTAssertEqual(body["cursor"] as? String, "opaque")

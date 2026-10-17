@@ -633,7 +633,7 @@ struct WatchPartyMediaPicker: View {
             if !reset, let continuation {
                 result = try await SiloAPI.shared.apiV2Client.nextCatalogPage(continuation)
             } else {
-                result = try await SiloAPI.shared.apiV2Client.catalogPage(query: Self.recentQuery(type: "movie"), auth: auth)
+                result = try await SiloAPI.shared.apiV2Client.catalogPage(query: await Self.recentQuery(type: "movie"), auth: auth)
             }
             guard !Task.isCancelled, roomId == session.room?.roomId, loadID == requestID else { return }
             if reset { items = result.value.items }
@@ -648,19 +648,21 @@ struct WatchPartyMediaPicker: View {
         }
     }
 
-    private static func recentQuery(type: String) -> APIv2CatalogQuery {
+    /// The picker draws these as shelves, beneath the hero on tvOS.
+    private static func recentQuery(type: String) async -> APIv2CatalogQuery {
         var query = APIv2CatalogQuery()
         query.type = type
         query.limit = 24
         query.sort = CatalogSortKey.addedAt.field
         query.order = "desc"
+        query.artwork = await SiloAPI.shared.artworkQuery(.shelves, slotWidthsOnly: true)
         return query
     }
 
     private func loadRecentSeries(roomId: String?) async {
         do {
             let auth = try await session.catalogAuth()
-            let result = try await SiloAPI.shared.apiV2Client.catalogPage(query: Self.recentQuery(type: "series"), auth: auth)
+            let result = try await SiloAPI.shared.apiV2Client.catalogPage(query: await Self.recentQuery(type: "series"), auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId else { return }
             recentSeries = result.value.items
         } catch {
@@ -703,6 +705,7 @@ struct WatchPartyMediaPicker: View {
             catalogQuery.type = "video"
             catalogQuery.limit = 40
             catalogQuery.source = "watchlist"
+            catalogQuery.artwork = await SiloAPI.shared.artworkQuery(.shelves, slotWidthsOnly: true)
             let result = try await SiloAPI.shared.apiV2Client.catalogPage(query: catalogQuery, auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId else { return }
             watchlistItems = result.value.items
@@ -1033,7 +1036,8 @@ private struct WatchPartyEpisodePicker: View {
         errorMessage = nil
         do {
             let auth = try await session.catalogAuth()
-            let values = try await SiloAPI.shared.apiV2Client.catalogSeasons(seriesId: series.contentId, imageSize: nil, auth: auth)
+            let values = try await SiloAPI.shared.apiV2Client.catalogSeasons(
+                seriesId: series.contentId, artwork: await SiloAPI.shared.artworkQuery(.seasons, slotWidthsOnly: true), auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId else { return }
             seasons = try values.map { try Season(catalog: $0) }.sortedForDisplay()
             // A retry keeps the season being viewed; the first load opens on
@@ -1061,7 +1065,7 @@ private struct WatchPartyEpisodePicker: View {
         do {
             let auth = try await session.catalogAuth()
             let values = try await SiloAPI.shared.apiV2Client.catalogEpisodes(seriesId: series.contentId,
-                seasonNumber: seasonNumber, imageSize: nil, auth: auth)
+                seasonNumber: seasonNumber, artwork: await SiloAPI.shared.artworkQuery(.episodes, slotWidthsOnly: true), auth: auth)
             guard !Task.isCancelled, roomId == session.room?.roomId, self.seasonNumber == seasonNumber else { return }
             // In episode order, as on the series page, so the resume episode is
             // the earliest unwatched one.

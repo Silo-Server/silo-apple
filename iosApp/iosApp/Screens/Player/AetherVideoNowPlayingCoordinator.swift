@@ -323,10 +323,8 @@ final class AetherVideoNowPlayingCoordinator {
     private func fetchArtwork(from url: URL) async {
         #if canImport(UIKit)
         do {
-            // No memory-cache write: playback keeps decoded-image memory low,
-            // and the published artwork already holds this image.
             let image = try await ImagePipeline.shared.image(
-                for: ImageRequest(artwork: url, options: [.disableMemoryCacheWrites])
+                for: PosterImageCache.nowPlayingArtworkRequest(for: url)
             )
             try Task.checkCancellation()
             guard artworkURL == url, handlers != nil else { return }

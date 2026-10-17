@@ -19,16 +19,21 @@ actor SiloAPI {
     /// finishes and before its owner is rechecked, so a test can switch the
     /// profile after the round trip. Production leaves it `nil`.
     private let ownerRecheckBarrier: (@Sendable () async -> Void)?
+    /// Test seam for artwork sizing; production reads
+    /// `ImageSizeCapability.shared`, which itself probes through `SiloAPI.shared`.
+    private let imageSizeCapability: ImageSizeCapability?
 
     init(
         http: HTTPClient = .shared,
         tokenStore: TokenStore = .shared,
-        ownerRecheckBarrier: (@Sendable () async -> Void)? = nil
+        ownerRecheckBarrier: (@Sendable () async -> Void)? = nil,
+        imageSizeCapability: ImageSizeCapability? = nil
     ) {
         self.http = http
         self.tokenStore = tokenStore
         self.apiV2Client = APIv2Client(http: http, tokenStore: tokenStore)
         self.ownerRecheckBarrier = ownerRecheckBarrier
+        self.imageSizeCapability = imageSizeCapability
     }
 
     // MARK: - Session state accessors
@@ -48,16 +53,19 @@ actor SiloAPI {
 
     // MARK: - Image size selection
 
-    /// Extra query entries asking the server to bake a larger image
-    /// variant into every image URL in the response.
+    /// Query entries asking the server for each artwork slot at the width
+    /// `surface` draws it, which the server bakes into the image URLs it
+    /// returns.
     ///
     /// One place decides this for every image-bearing endpoint; call sites
-    /// pass `imageSizeQuery["image_size"]` to the `APIv2Client` method.
-    /// Always empty off tvOS.
-    private var imageSizeQuery: [String: String] {
-        get async {
-            await ImageSizeCapability.shared.requestQueryForImageRequest()
-        }
+    /// pass it as the `APIv2Client` method's `artwork`. Empty while the
+    /// server offers no sizing. A server without per-slot widths gets
+    /// `image_size=large` from tvOS and nothing from iOS and macOS, except
+    /// for `slotWidthsOnly` reads, which keep sending nothing there: reads
+    /// that never sent a size, including the recommendation reads, which such
+    /// a server rejects with `422` when given any size.
+    func artworkQuery(_ surface: ArtworkSurface, slotWidthsOnly: Bool = false) async -> [String: String] {
+        await (imageSizeCapability ?? .shared).requestQueryForImageRequest(surface, slotWidthsOnly: slotWidthsOnly)
     }
 
     /// `GET /api/v2/images/capabilities`. Throws `HTTPError.http(404, _)`
@@ -88,7 +96,7 @@ actor SiloAPI {
     /// fetched for so a caller can refuse to apply it after a switch.
     func homeSections() async throws -> APIv2HomeSectionsRead {
         let auth = try await detailReadAuth()
-        return try await apiV2Client.homeSections(imageSize: await imageSizeQuery["image_size"], auth: auth)
+        return try await apiV2Client.homeSections(artwork: await artworkQuery(.home), auth: auth)
     }
 
     /// True while `auth` still names the active server, account and profile.
@@ -120,7 +128,7 @@ actor SiloAPI {
     func librarySections(libraryId: Int) async throws -> APIv2LibrarySectionsRead {
         let auth = try await detailReadAuth()
         return try await apiV2Client.librarySections(
-            id: libraryId, imageSize: await imageSizeQuery["image_size"], auth: auth
+            id: libraryId, artwork: await artworkQuery(.shelves), auth: auth
         )
     }
 
@@ -128,14 +136,16 @@ actor SiloAPI {
     /// in ranked order. Owner-scoped; see ``requireCurrentOwner(_:)``.
     func recommendationsSimilar(contentId: String, limit: Int = 12) async throws -> [BrowseItem] {
         let auth = try await detailReadAuth()
-        let cards = try await apiV2Client.similarCards(id: contentId, limit: limit, auth: auth)
+        let cards = try await apiV2Client.similarCards(
+            id: contentId, limit: limit, artwork: await artworkQuery(.similar, slotWidthsOnly: true), auth: auth
+        )
         try await requireCurrentOwner(auth)
         return cards
     }
 
     func recommendationsDiscover() async throws -> SectionsResponse {
         let auth = try await detailReadAuth()
-        let rows = try await apiV2Client.discover(auth: auth)
+        let rows = try await apiV2Client.discover(artwork: await artworkQuery(.shelves, slotWidthsOnly: true), auth: auth)
         let resolved = rows.enumerated().map { index, row -> ResolvedSection in
             ResolvedSection(
                 id: "discover_\(index)_\(row.type)",
@@ -185,7 +195,7 @@ actor SiloAPI {
     /// the server would refuse.
     func catalogPage(_ query: APIv2CatalogQuery) async throws -> CatalogListPage {
         var query = query
-        if query.imageSize == nil { query.imageSize = await imageSizeQuery["image_size"] }
+        if query.artwork.isEmpty { query.artwork = await artworkQuery(.cards) }
         let auth = try await detailReadAuth()
         let page = CatalogListPage(try await apiV2Client.catalogPage(
             query: query, operation: query.preferredOperation, auth: auth
@@ -216,7 +226,7 @@ actor SiloAPI {
         let auth = try await detailReadAuth()
         let item = try await apiV2Client.catalogItem(
             id: contentId, libraryId: libraryId.map(String.init),
-            imageSize: await imageSizeQuery["image_size"], auth: auth
+            artwork: await artworkQuery(.detail), auth: auth
         )
         let detail = try ItemDetail(catalog: item)
         try await requireCurrentOwner(auth)
@@ -269,7 +279,7 @@ actor SiloAPI {
         #endif
         let seasons = try await apiV2Client.catalogSeasons(
             seriesId: seriesId, libraryId: libraryId.map(String.init),
-            imageSize: await imageSizeQuery["image_size"], includeArtwork: includeArtwork, auth: auth
+            artwork: await artworkQuery(.seasons), includeArtwork: includeArtwork, auth: auth
         )
         let response = SeasonsResponse(seasons: try seasons.map { try Season(catalog: $0) })
         try await requireCurrentOwner(auth)
@@ -280,7 +290,7 @@ actor SiloAPI {
         let auth = try await detailReadAuth()
         let episodes = try await apiV2Client.catalogEpisodes(
             seriesId: seriesId, seasonNumber: seasonNumber, libraryId: libraryId.map(String.init),
-            imageSize: await imageSizeQuery["image_size"], auth: auth
+            artwork: await artworkQuery(.episodes), auth: auth
         )
         let response = EpisodesResponse(episodes: try episodes.map { try EpisodeListItem(catalog: $0) })
         try await requireCurrentOwner(auth)
@@ -291,7 +301,7 @@ actor SiloAPI {
         let auth = try await detailReadAuth()
         let detail = try await apiV2Client.watchDetail(
             id: contentId, libraryId: libraryId.map(String.init),
-            imageSize: await imageSizeQuery["image_size"], auth: auth
+            artwork: await artworkQuery(.watch), auth: auth
         )
         try await requireCurrentOwner(auth)
         return detail
@@ -389,7 +399,7 @@ actor SiloAPI {
     func favorites() async throws -> CatalogResponse {
         let auth = try await detailReadAuth()
         let list = try await apiV2Client.personalListItems(
-            kind: .favorites, imageSize: await imageSizeQuery["image_size"], auth: auth
+            kind: .favorites, artwork: await artworkQuery(.lists), auth: auth
         )
         try await requireCurrentOwner(auth)
         return list
@@ -399,7 +409,7 @@ actor SiloAPI {
     func watchlist() async throws -> CatalogResponse {
         let auth = try await detailReadAuth()
         let list = try await apiV2Client.personalListItems(
-            kind: .watchlist, imageSize: await imageSizeQuery["image_size"], auth: auth
+            kind: .watchlist, artwork: await artworkQuery(.lists), auth: auth
         )
         try await requireCurrentOwner(auth)
         return list
@@ -429,7 +439,7 @@ actor SiloAPI {
     func collectionItems(collectionId: String) async throws -> CatalogResponse {
         let auth = try await detailReadAuth()
         let cards = try await apiV2Client.personalCollectionCards(
-            id: collectionId, imageSize: await imageSizeQuery["image_size"], auth: auth
+            id: collectionId, artwork: await artworkQuery(.cards), auth: auth
         )
         try await requireCurrentOwner(auth)
         return cards
@@ -475,7 +485,7 @@ actor SiloAPI {
     func createShuffle(scope: ShuffleScopeRequest) async throws -> APIv2Shuffle {
         let auth = try await mutationAuth()
         let shuffle = try await apiV2Client.createShuffle(
-            scope: scope, imageSize: await imageSizeQuery["image_size"], auth: auth
+            scope: scope, artwork: await artworkQuery(.shuffle), auth: auth
         )
         try await requireCurrentOwner(auth)
         return shuffle
@@ -483,7 +493,7 @@ actor SiloAPI {
 
     func shuffle(id: String) async throws -> APIv2Shuffle {
         let auth = try await detailReadAuth()
-        let shuffle = try await apiV2Client.shuffle(id: id, imageSize: await imageSizeQuery["image_size"], auth: auth)
+        let shuffle = try await apiV2Client.shuffle(id: id, artwork: await artworkQuery(.shuffle), auth: auth)
         try await requireCurrentOwner(auth)
         return shuffle
     }
@@ -492,7 +502,7 @@ actor SiloAPI {
         let auth = try await mutationAuth()
         let shuffle = try await apiV2Client.advanceShuffle(
             id: id, fromContentId: fromContentId,
-            imageSize: await imageSizeQuery["image_size"], auth: auth
+            artwork: await artworkQuery(.shuffle), auth: auth
         )
         try await requireCurrentOwner(auth)
         return shuffle
@@ -502,7 +512,7 @@ actor SiloAPI {
         let auth = try await mutationAuth()
         let shuffle = try await apiV2Client.skipShuffleItem(
             id: id, nextContentId: nextContentId,
-            imageSize: await imageSizeQuery["image_size"], auth: auth
+            artwork: await artworkQuery(.shuffle), auth: auth
         )
         try await requireCurrentOwner(auth)
         return shuffle

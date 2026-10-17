@@ -76,12 +76,12 @@ extension APIv2Client {
     /// The display cards of a personal collection, read as catalog pages
     /// (`source=user_collection`). All pages keep the first page's owner and
     /// query; a partial list is never published as a complete collection.
-    func personalCollectionCards(id: String, imageSize: String? = nil,
+    func personalCollectionCards(id: String, artwork: [String: String] = [:],
                                  auth: CapturedOrdinaryRequestAuth) async throws -> CatalogResponse {
         var query = APIv2CatalogQuery()
         query.source = "user_collection"
         query.collectionId = id
-        query.imageSize = imageSize
+        query.artwork = artwork
         var result = try await catalogPage(query: query, auth: auth)
         var items = result.value.items
         for pageNumber in 1...100 {

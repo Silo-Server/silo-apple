@@ -15,29 +15,29 @@ extension APIv2Client {
 
     /// `201` with the new shuffle; `404` when the scope isn't visible and
     /// `409` when nothing in it can play.
-    func createShuffle(scope: ShuffleScopeRequest, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Shuffle {
+    func createShuffle(scope: ShuffleScopeRequest, artwork: [String: String], auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Shuffle {
         let body = try Self.shuffleEncoder.encode(CreateShuffleBody(scope: scope))
-        return try await shuffleCall("POST", path: "/api/v2/shuffles", body: body, status: 201, imageSize: imageSize, auth: auth)
+        return try await shuffleCall("POST", path: "/api/v2/shuffles", body: body, status: 201, artwork: artwork, auth: auth)
     }
 
     /// Re-checks the shuffle; the server may replace a `next` that can no
     /// longer play. `409` means nothing in the scope can play any more.
-    func shuffle(id: String, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Shuffle {
-        try await shuffleCall("GET", path: try shufflePath(id), status: 200, imageSize: imageSize, auth: auth)
+    func shuffle(id: String, artwork: [String: String], auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Shuffle {
+        try await shuffleCall("GET", path: try shufflePath(id), status: 200, artwork: artwork, auth: auth)
     }
 
     /// Moves past `fromContentId`: `next` becomes `current`.
-    func advanceShuffle(id: String, fromContentId: String, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Shuffle {
+    func advanceShuffle(id: String, fromContentId: String, artwork: [String: String], auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Shuffle {
         let body = try Self.shuffleEncoder.encode(AdvanceShuffleBody(fromContentId: fromContentId))
         return try await shuffleCall("POST", path: try shufflePath(id) + "/advance", body: body, status: 200,
-                                     imageSize: imageSize, auth: auth)
+                                     artwork: artwork, auth: auth)
     }
 
     /// Pick Another: replaces `nextContentId` with another pick.
-    func skipShuffleItem(id: String, nextContentId: String, imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Shuffle {
+    func skipShuffleItem(id: String, nextContentId: String, artwork: [String: String], auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Shuffle {
         let body = try Self.shuffleEncoder.encode(SkipShuffleBody(nextContentId: nextContentId))
         return try await shuffleCall("POST", path: try shufflePath(id) + "/skip", body: body, status: 200,
-                                     imageSize: imageSize, auth: auth)
+                                     artwork: artwork, auth: auth)
     }
 
     /// Stop shuffling. A shuffle that is already gone also answers `204`.
@@ -46,8 +46,8 @@ extension APIv2Client {
     }
 
     private func shuffleCall(_ method: String, path: String, body: Data? = nil, status: Int,
-                             imageSize: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Shuffle {
-        let raw = try await collectionRequest(method, path: path, query: imageSize.map { ["image_size": $0] } ?? [:],
+                             artwork: [String: String], auth: CapturedOrdinaryRequestAuth) async throws -> APIv2Shuffle {
+        let raw = try await collectionRequest(method, path: path, query: artwork,
                                               body: body, status: status, auth: auth)
         return try HTTPClient.makeJSONDecoder(artworkServerURL: raw.url).decode(APIv2Shuffle.self, from: raw.data)
     }

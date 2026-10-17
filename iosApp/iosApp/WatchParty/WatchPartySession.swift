@@ -1106,7 +1106,9 @@ final class WatchPartySession {
         selectedItemTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let detail = try await self.api.catalogItem(id: contentId, libraryId: room.selectedLibraryId, imageSize: nil, auth: auth)
+                // The room draws its backdrop across the whole window, like a detail hero.
+                let detail = try await self.api.catalogItem(id: contentId, libraryId: room.selectedLibraryId,
+                                                            artwork: await SiloAPI.shared.artworkQuery(.detail, slotWidthsOnly: true), auth: auth)
                 var item = WatchPartySelectedItem(detail)
                 if detail.type == "episode", let seriesId = detail.seriesId, !seriesId.isEmpty,
                    let poster = await self.showPoster(seriesId: seriesId, seasonNumber: detail.seasonNumber,
@@ -1138,13 +1140,15 @@ final class WatchPartySession {
     private func showPoster(seriesId: String, seasonNumber: Int64?, libraryId: String?,
                             auth: CapturedOrdinaryRequestAuth) async -> (url: String, thumbhash: String?)? {
         if let seasonNumber,
-           let seasons = try? await api.catalogSeasons(seriesId: seriesId, libraryId: libraryId, imageSize: nil, auth: auth),
+           let seasons = try? await api.catalogSeasons(seriesId: seriesId, libraryId: libraryId,
+                                                        artwork: await SiloAPI.shared.artworkQuery(.seasons, slotWidthsOnly: true), auth: auth),
            let season = seasons.first(where: { $0.seasonNumber == seasonNumber }),
            let url = season.posterUrl, !url.isEmpty {
             return (url, season.posterThumbhash)
         }
         guard !Task.isCancelled,
-              let series = try? await api.catalogItem(id: seriesId, libraryId: libraryId, imageSize: nil, auth: auth),
+              let series = try? await api.catalogItem(id: seriesId, libraryId: libraryId,
+                                                      artwork: await SiloAPI.shared.artworkQuery(.cards, slotWidthsOnly: true), auth: auth),
               let url = series.posterUrl, !url.isEmpty else { return nil }
         return (url, series.posterThumbhash)
     }

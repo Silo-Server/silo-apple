@@ -4,13 +4,13 @@ extension APIv2Client {
     /// Every item on the acting profile's favorites or watchlist, newest
     /// first. All pages keep the first page's owner; a list longer than the
     /// page budget throws rather than showing a truncated list as complete.
-    func personalListItems(kind: APIv2PersonalListKind, imageSize: String?,
+    func personalListItems(kind: APIv2PersonalListKind, artwork: [String: String],
                            auth: CapturedOrdinaryRequestAuth) async throws -> CatalogResponse {
         var items: [BrowseItem] = []
         var cursor: String?
         var seen = Set<String>()
         for _ in 1...100 {
-            let page = try await personalListPage(kind: kind, imageSize: imageSize, cursor: cursor, auth: auth)
+            let page = try await personalListPage(kind: kind, artwork: artwork, cursor: cursor, auth: auth)
             items.append(contentsOf: page.items)
             guard page.page.hasMore else {
                 guard page.page.nextCursor?.isEmpty != false else { throw APIv2Error.invalidPersonalListContinuation }
@@ -25,7 +25,7 @@ extension APIv2Client {
         throw APIv2Error.incompletePersonalList
     }
 
-    private func personalListPage(kind: APIv2PersonalListKind, imageSize: String?, cursor: String?,
+    private func personalListPage(kind: APIv2PersonalListKind, artwork: [String: String], cursor: String?,
                                   auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PersonalListPage {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
@@ -34,8 +34,8 @@ extension APIv2Client {
         }
         try Task.checkCancellation()
         let identity = Self.requestIdentity(auth, profile: profile)
-        var query = ["limit": "200"]
-        if let imageSize { query["image_size"] = imageSize }
+        var query = artwork
+        query["limit"] = "200"
         if let cursor { query["cursor"] = cursor }
         let path = "/api/v2/\(kind.rawValue)"
         let requestQuery = query

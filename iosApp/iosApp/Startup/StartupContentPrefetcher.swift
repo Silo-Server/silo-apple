@@ -676,7 +676,7 @@ enum StartupContentPrefetcher {
         // A profile that turned title art off never shows the logo.
         if TitleArtPreferences.shared.showsTitleArt,
            let logo = normalizedURL(from: sections.first?.items.first?.logoUrl) {
-            PosterImageCache.prefetchOriginalArtwork([logo])
+            PosterImageCache.prefetchTitleLogos([logo])
         }
         #endif
     }
@@ -742,7 +742,7 @@ enum StartupContentPrefetcher {
         let forYou = nonEmpty.filter { $0.title.lowercased() == "for you" }
         let others = nonEmpty.filter { $0.title.lowercased() != "for you" }
         let logos = (forYou + others).prefix(2).flatMap { $0.items.prefix(8).map(\.logoUrl) }
-        PosterImageCache.prefetchOriginalArtwork(uniqueURLs(logos, limit: maxRecommendationLogoURLs))
+        PosterImageCache.prefetchTitleLogos(uniqueURLs(logos, limit: maxRecommendationLogoURLs))
     }
     #endif
 

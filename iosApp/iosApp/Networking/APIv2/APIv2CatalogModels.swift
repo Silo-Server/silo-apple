@@ -118,7 +118,9 @@ struct APIv2CatalogQuery: Encodable, Hashable {
     var group: String?
     var limit = 50
     var skipTotal = false
-    var imageSize: String?
+    /// `image_size` and the per-slot widths, sent as query parameters on both
+    /// operations and never in a POST body.
+    var artwork: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
         case source, scope, sectionId, collectionId, personId, libraryId, q, type
@@ -135,10 +137,11 @@ struct APIv2CatalogQuery: Encodable, Hashable {
         for (key, value) in [
             ("scope", scope), ("section_id", sectionId), ("collection_id", collectionId),
             ("person_id", personId), ("library_id", libraryId), ("q", q), ("type", type),
-            ("name_prefix", namePrefix), ("group", group), ("image_size", imageSize),
+            ("name_prefix", namePrefix), ("group", group),
         ] {
             if let value { query[key] = value }
         }
+        query.merge(artwork) { current, _ in current }
         if let sort { query["sort"] = (order == "desc" ? "-" : "") + sort }
         if skipTotal { query["skip_total"] = "true" }
         if !groups.isEmpty {

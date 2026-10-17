@@ -27,13 +27,43 @@ final class ArtworkCacheKeyTests: XCTestCase {
     func testForeignArtworkKeepsItsFullURL() throws {
         for value in [
             "https://image.tmdb.org/t/p/w500/abc.r1.jpg?sig=abc",
-            "https://cdn.test/silo/api/v2/artwork/items/42/poster/w500.r1.webp?exp=1&sig=abc",
+            "https://plugin.test/art/poster/cover.r1.jpg?variant=card",
+            "https://bucket.test/items/42/poster/w500.webp?X-Amz-Signature=abc",
+            "https://bucket.test/items/42/covers/w500.r1.webp?X-Amz-Signature=abc",
             "file:///api/v2/artwork/items/42/poster/w500.r1.webp",
         ] {
             let foreign = try url(value)
             XCTAssertNil(ArtworkCacheKey.stableImageID(for: foreign), value)
             XCTAssertEqual(ImageRequest(artwork: foreign).imageID, foreign.absoluteString, value)
         }
+    }
+
+    /// S3 presigned and Cloudflare token URLs are re-issued as they age;
+    /// the path names the bytes and the query only authorizes.
+    func testObjectStorageArtworkIsKeyedByPath() throws {
+        let key = "https://bucket.test/silo/items/42/backdrop/original.3f9a1c.webp"
+        for (first, second) in [
+            ("?X-Amz-Date=20261016T000000Z&X-Amz-Signature=abc", "?X-Amz-Date=20261017T000000Z&X-Amz-Signature=def"),
+            ("?verify=1800000000-abc%3D", "?verify=1800002700-def%3D"),
+            ("", "?verify=1800002700-def%3D"),
+        ] {
+            let today = try url(key + first)
+            let tomorrow = try url(key + second)
+            XCTAssertEqual(ArtworkCacheKey.stableImageID(for: today), key, first)
+            XCTAssertEqual(ImageRequest(artwork: today).imageID, ImageRequest(artwork: tomorrow).imageID, first)
+        }
+        let subpath = "https://cdn.test/silo/api/v2/artwork/items/42/poster/w500.r1.webp"
+        XCTAssertEqual(ArtworkCacheKey.stableImageID(for: try url(subpath + "?exp=1&sig=abc")), subpath)
+    }
+
+    func testLadderVariantRuleMatchesTheServerKeyLayout() {
+        XCTAssertTrue(ArtworkCacheKey.isRevisionedLadderVariant(path: "/items/1/poster/w1000.r1.webp"))
+        XCTAssertTrue(ArtworkCacheKey.isRevisionedLadderVariant(path: "/items/1/logo/original.r1.webp"))
+        XCTAssertFalse(ArtworkCacheKey.isRevisionedLadderVariant(path: "/items/1/logo/original.webp"))
+        XCTAssertFalse(ArtworkCacheKey.isRevisionedLadderVariant(path: "/items/1/logo/large.r1.webp"))
+        XCTAssertFalse(ArtworkCacheKey.isRevisionedLadderVariant(path: "/items/1/logo/w.r1.webp"))
+        XCTAssertFalse(ArtworkCacheKey.isRevisionedLadderVariant(path: "/items/1/w500/w500.r1.webp"))
+        XCTAssertFalse(ArtworkCacheKey.isRevisionedLadderVariant(path: "w500.r1.webp"))
     }
 
     func testOtherQueryItemsAreKeptInAStableOrder() throws {

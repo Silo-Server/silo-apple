@@ -17,6 +17,9 @@ struct SiloApp: App {
         // runs so poster/backdrop-heavy screens reuse the same pipeline on
         // both iOS and tvOS.
         PosterImageCache.install()
+        // Artwork reads ask for widths in device pixels; keep the display
+        // they are sized for readable off the main actor.
+        ArtworkDisplay.install()
 
         #if os(iOS) || os(tvOS)
         // Aether's optional host stream enters Silo diagnostics only through a

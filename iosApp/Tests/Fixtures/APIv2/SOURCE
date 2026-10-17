@@ -7,6 +7,11 @@ with git show <commit>:<path> from the server repository, never from a
 working tree. Do not hand-edit the vendored files; re-run the script at a
 new server commit instead, then cd iosApp && xcodegen generate.
 
+Pre-merge override: get_image_capabilities_ok.json is copied from the
+uncommitted silo-server change on feat/episode-image-original-quality (per-slot
+widths, `slot_width_params`, 3840px originals). Re-run the script at the
+server commit that merges it, which replaces this file and this note.
+
 Vendored from the server, 64 files: the SELECTED bodies in the script,
 index.json filtered to those entries, and fixtures.schema.json.
   fixtures.schema.json

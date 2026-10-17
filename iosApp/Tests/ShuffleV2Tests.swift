@@ -50,7 +50,8 @@ final class ShuffleV2Tests: XCTestCase {
         let (api, auth) = try await client()
 
         let created = try await api.createShuffle(
-            scope: ShuffleScopeRequest(kind: .libraryCollection, id: "col-9"), imageSize: "large", auth: auth
+            scope: ShuffleScopeRequest(kind: .libraryCollection, id: "col-9"),
+            artwork: ["image_size": "large", "backdrop_width": "2688"], auth: auth
         )
 
         let sent = try XCTUnwrap(stub.requests.last)
@@ -58,6 +59,7 @@ final class ShuffleV2Tests: XCTestCase {
         XCTAssertEqual(sent.method, "POST")
         XCTAssertEqual(sent.path, "/api/v2/shuffles")
         XCTAssertEqual(sent.query["image_size"], "large")
+        XCTAssertEqual(sent.query["backdrop_width"], "2688")
         XCTAssertEqual(sent.header("x-profile-id"), "profile-one")
         let scope = try XCTUnwrap(try jsonBody(sent)["scope"] as? [String: String])
         XCTAssertEqual(scope, ["kind": "library_collection", "id": "col-9"])
@@ -77,7 +79,7 @@ final class ShuffleV2Tests: XCTestCase {
                                                (409, "conflict", ShuffleError.nothingToPlay)] {
             stub.reply(status, problem(status, identifier))
             do {
-                _ = try await api.createShuffle(scope: ShuffleScopeRequest(kind: .library, id: "1"), imageSize: nil, auth: auth)
+                _ = try await api.createShuffle(scope: ShuffleScopeRequest(kind: .library, id: "1"), artwork: [:], auth: auth)
                 XCTFail("\(status) must fail")
             } catch {
                 XCTAssertEqual(ShuffleError.classify(error), expected)
@@ -131,7 +133,7 @@ final class ShuffleV2Tests: XCTestCase {
         stub.reply(200, shuffle(current: episode, next: movie))
         let (api, auth) = try await client()
 
-        let advanced = try await api.advanceShuffle(id: "s1", fromContentId: "movie-1", imageSize: nil, auth: auth)
+        let advanced = try await api.advanceShuffle(id: "s1", fromContentId: "movie-1", artwork: [:], auth: auth)
 
         let sent = try XCTUnwrap(stub.requests.last)
         XCTAssertEqual(sent.method, "POST")
@@ -144,7 +146,7 @@ final class ShuffleV2Tests: XCTestCase {
         stub.reply(200, shuffle(current: movie, next: episode))
         let (api, auth) = try await client()
 
-        _ = try await api.skipShuffleItem(id: "s1", nextContentId: "ep-9", imageSize: nil, auth: auth)
+        _ = try await api.skipShuffleItem(id: "s1", nextContentId: "ep-9", artwork: [:], auth: auth)
 
         let sent = try XCTUnwrap(stub.requests.last)
         XCTAssertEqual(sent.path, "/api/v2/shuffles/s1/skip")
@@ -155,7 +157,7 @@ final class ShuffleV2Tests: XCTestCase {
         stub.reply(409, problem(409, "conflict"))
         let (api, auth) = try await client()
         do {
-            _ = try await api.shuffle(id: "s1", imageSize: nil, auth: auth)
+            _ = try await api.shuffle(id: "s1", artwork: [:], auth: auth)
             XCTFail("409 must fail")
         } catch {
             XCTAssertEqual(ShuffleError.classify(error), .nothingToPlay)

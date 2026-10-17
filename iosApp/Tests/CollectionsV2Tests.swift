@@ -283,7 +283,7 @@ final class CollectionsV2Tests: XCTestCase {
             .json(200, page("", hasMore: false)),
         ])
         let (api, _, auth) = try await client()
-        let result = try await api.personalCollectionCards(id: "c1", imageSize: "w342", auth: auth)
+        let result = try await api.personalCollectionCards(id: "c1", artwork: ["image_size": "medium", "poster_width": "352"], auth: auth)
         XCTAssertEqual(result.items.map(\.contentId), ["film1"])
         XCTAssertEqual(result.hasMore, false)
         XCTAssertEqual(result.total, 1)
@@ -294,7 +294,8 @@ final class CollectionsV2Tests: XCTestCase {
             XCTAssertEqual(request.query["source"], "user_collection")
             XCTAssertEqual(request.query["collection_id"], "c1")
             XCTAssertEqual(request.query["limit"], "50")
-            XCTAssertEqual(request.query["image_size"], "w342")
+            XCTAssertEqual(request.query["image_size"], "medium")
+            XCTAssertEqual(request.query["poster_width"], "352")
             XCTAssertNil(request.query["offset"])
             XCTAssertNil(request.query["sort"])
         }

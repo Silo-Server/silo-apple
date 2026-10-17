@@ -2,9 +2,10 @@ import Foundation
 import Synchronization
 
 /// The server's image-size capability (`GET /api/v2/images/capabilities`),
-/// which tells tvOS whether image-bearing requests may ask for a larger
-/// artwork variant. Image URLs stay opaque: the server bakes the chosen
-/// variant into the URLs it returns.
+/// which says how image-bearing requests may size their artwork: per slot in
+/// device pixels (`slot_width_params`), or one size for the whole response on
+/// older servers. Image URLs stay opaque: the server bakes the chosen variant
+/// into the URLs it returns.
 ///
 /// The probe runs once per session and is reset on sign-out and on server or
 /// profile switches. A generation counter makes a probe still in flight across
@@ -18,8 +19,8 @@ import Synchronization
 final class ImageSizeCapability: Sendable {
     static let shared = ImageSizeCapability()
 
-    /// tvOS renders full-screen shelves and detail art on a 4K panel; iOS and
-    /// macOS keep the server's default sizes and never send the parameter.
+    /// On a server without per-slot widths, tvOS asks for `large` artwork
+    /// for its 4K panel; iOS and macOS keep the server's default sizes.
     static var platformPrefersLargeImages: Bool {
         #if os(tvOS)
         true
@@ -47,8 +48,10 @@ final class ImageSizeCapability: Sendable {
             }
         )
 
+        /// v1 answers were saved by a model without `slot_width_params`, so
+        /// they would keep a server that takes per-slot widths on one size.
         private static func key(_ serverID: String) -> String {
-            "imageSizeCapability.v1.\(serverID)"
+            "imageSizeCapability.v2.\(serverID)"
         }
     }
 
@@ -71,6 +74,7 @@ final class ImageSizeCapability: Sendable {
 
     private let fetchCapability: @Sendable () async throws -> ImageSizeCapabilityResponse
     private let prefersLargeImages: Bool
+    private let display: @Sendable () -> ArtworkDisplay
     private let memory: Memory?
     private let state = Mutex(State())
 
@@ -80,16 +84,19 @@ final class ImageSizeCapability: Sendable {
         memory: Memory? = .userDefaults
     ) {
         self.prefersLargeImages = platformPrefersLargeImages
+        self.display = { ArtworkDisplay.current }
         self.memory = memory
         self.fetchCapability = { try await api.imageSizeCapability() }
     }
 
     init(
         platformPrefersLargeImages: Bool,
+        display: @escaping @Sendable () -> ArtworkDisplay = { .assumed },
         memory: Memory? = nil,
         fetchCapability: @escaping @Sendable () async throws -> ImageSizeCapabilityResponse
     ) {
         self.prefersLargeImages = platformPrefersLargeImages
+        self.display = display
         self.memory = memory
         self.fetchCapability = fetchCapability
     }
@@ -101,19 +108,25 @@ final class ImageSizeCapability: Sendable {
         }
     }
 
-    var requestQuery: [String: String] {
-        ImageSizeSelection.queryEntries(capability: capability, prefersLargeImages: prefersLargeImages)
+    /// Entries for a read drawn on `surface`, from what is known now.
+    /// `slotWidthsOnly` reads get nothing from a server without per-slot
+    /// widths, rather than the one-size fallback.
+    func requestQuery(for surface: ArtworkSurface, slotWidthsOnly: Bool = false) -> [String: String] {
+        let display = display()
+        return ImageSizeSelection.queryEntries(
+            capability: capability, slots: surface.slots(on: display),
+            displayScale: display.scale, prefersLargeImages: prefersLargeImages && !slotWidthsOnly
+        )
     }
 
-    /// Entries for an image-bearing request. Waits for the probe only when
-    /// this platform asks for larger images and nothing is known for the
-    /// active server yet; a failed probe is not retried here.
-    func requestQueryForImageRequest() async -> [String: String] {
-        guard prefersLargeImages else { return [:] }
+    /// Entries for an image-bearing read drawn on `surface`. Waits for the
+    /// probe when nothing is known for the active server yet; a failed probe
+    /// is not retried here.
+    func requestQueryForImageRequest(_ surface: ArtworkSurface, slotWidthsOnly: Bool = false) async -> [String: String] {
         if capability == nil {
             await refresh(retryFailed: false)
         }
-        return requestQuery
+        return requestQuery(for: surface, slotWidthsOnly: slotWidthsOnly)
     }
 
     /// Probe the server once per session. Image-bearing requests pass
