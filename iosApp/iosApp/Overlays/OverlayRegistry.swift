@@ -221,7 +221,7 @@ private extension OverlayRegistry {
     static let ratings: [OverlayDef] = [
         OverlayDef(
             id: .ratingImdb,
-            defaultPosition: .topRight,
+            defaultPosition: .bottomRight,
             defaultEnabled: false,
             defaultAccent: "#f5c518",
             iconCapable: false,
@@ -229,7 +229,7 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .ratingTmdb,
-            defaultPosition: .topRight,
+            defaultPosition: .bottomRight,
             defaultEnabled: false,
             defaultAccent: "#01b4e4",
             iconCapable: false,
@@ -237,7 +237,7 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .ratingRt,
-            defaultPosition: .topRight,
+            defaultPosition: .bottomRight,
             defaultEnabled: false,
             defaultAccent: "#fa320a",
             iconCapable: false,
@@ -245,7 +245,7 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .ratingRtAudience,
-            defaultPosition: .topRight,
+            defaultPosition: .bottomRight,
             defaultEnabled: false,
             defaultAccent: "#fa6400",
             iconCapable: false,
@@ -365,7 +365,7 @@ private extension OverlayRegistry {
     static let ribbons: [OverlayDef] = [
         OverlayDef(
             id: .showStatus,
-            defaultPosition: .topRight,
+            defaultPosition: .topLeft,
             defaultEnabled: false,
             iconId: .tv,
             iconCapable: true,
@@ -373,7 +373,7 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .imdbTop250,
-            defaultPosition: .topRight,
+            defaultPosition: .topLeft,
             defaultEnabled: false,
             iconId: .ribbon,
             defaultAccent: "#f5c518",
@@ -385,7 +385,7 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .rtCertifiedFresh,
-            defaultPosition: .topRight,
+            defaultPosition: .topLeft,
             defaultEnabled: false,
             defaultAccent: "#fa320a",
             // Same rule as the rating badges: the source's text mark, no artwork.
