@@ -2806,6 +2806,15 @@ class PlayerViewModel {
                         if await self.sessionBridge.promotePendingProtocolV3TransitionForRecovery(
                             uncommittedPrepared
                         ) {
+                            // Another load may have started while the bridge
+                            // promoted this one. This replan is then stale: its
+                            // pick and its recovery belong to a title that is
+                            // no longer playing.
+                            guard !Task.isCancelled,
+                                  !self.isDisposed,
+                                  currentStreamLoadGeneration == self.streamLoadGeneration else {
+                                return
+                            }
                             // The new quality now owns the session, so a
                             // viewer's switch counts as their pick.
                             if let onMeteredNetwork = qualitySwitchOnMeteredNetwork {
