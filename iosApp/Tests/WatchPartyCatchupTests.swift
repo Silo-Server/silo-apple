@@ -425,7 +425,7 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertNil(catchup.step(drift: 2, local: 12, at: at(5.5)))
         XCTAssertNotNil(catchup.step(drift: 2, local: 13, at: at(6)))
         for landing in 0..<8 {
-            catchup.seekFinished(at: at(100 * Double(landing + 1), generation: catchup.generation))
+            catchup.seekFinished(at: at(100 * Double(landing + 1)), generation: catchup.generation)
             _ = catchup.step(drift: 2, local: 0, at: at(100 * Double(landing + 1) + 1))
         }
         XCTAssertEqual(catchup.interval, WatchPartyInPlaceCatchup.maxInterval)
