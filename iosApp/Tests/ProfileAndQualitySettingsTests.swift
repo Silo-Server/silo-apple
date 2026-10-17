@@ -606,6 +606,18 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(settings.cellularQualityAxes, edited)
         XCTAssertFalse(settings.heldDeviceSettingKeys.isEmpty, "the change is still held, not silently dropped")
 
+        // Any failure of the cellular read keeps the holds, including one
+        // that would mean "no settings at all" if the player batch said it.
+        transport.onEffectiveValues = { [unowned transport] keys in
+            transport.effectiveError = keys == SettingKey.playerCellularQualitySettings
+                ? .serverUpgradeRequired
+                : nil
+        }
+        let discardedOnUpgradeAnswer = await settings.discardHeldDeviceSettingChanges()
+        XCTAssertFalse(discardedOnUpgradeAnswer)
+        XCTAssertEqual(settings.cellularQualityAxes, edited)
+        XCTAssertFalse(settings.heldDeviceSettingKeys.isEmpty)
+
         transport.onEffectiveValues = nil
         transport.effectiveError = nil
         let discardedOnline = await settings.discardHeldDeviceSettingChanges()

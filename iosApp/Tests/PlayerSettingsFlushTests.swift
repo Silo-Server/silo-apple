@@ -1399,6 +1399,54 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(settings.hdrEnabled, !initialHDR)
     }
 
+    /// Discarding held changes when the scope changes while a read awaits
+    /// does nothing: no hold is dropped and no answer is painted, since both
+    /// belong to the scope the read was sent for.
+    func testADiscardWhoseScopeChangesMidReadDoesNothing() async throws {
+        let suiteName = "settings-discard-scope-switch-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let scope = LockedScopeValue("scope-a")
+        let transport = FakeSettingsTransport()
+        let settings = PlayerSettings(
+            defaults: defaults,
+            flusher: PlayerSettingsFlusher(
+                transport: transport,
+                debounce: .milliseconds(10),
+                retryPolicy: .init(maximumAutomaticRetries: 0)
+            ),
+            scopeIdentifier: { scope.value }
+        )
+        transport.effective = [
+            .init(key: SettingKey.playerHdrEnabled.rawValue, value: .bool(true), source: .contractDefault),
+        ]
+        transport.failNextWrites(100, with: .transport(description: "offline"))
+        settings.setHDREnabled(false)
+        await settings.flushPendingDeviceSettings()
+        try await waitUntil("the change is held") { settings.heldDeviceSettingKeys == [.playerHdrEnabled] }
+
+        var switchingBatches = [SettingKey.playerReadSettings]
+        #if os(iOS)
+        switchingBatches.append(SettingKey.playerCellularQualitySettings)
+        #endif
+        for batch in switchingBatches {
+            scope.value = "scope-a"
+            transport.onEffectiveValues = { keys in
+                if keys == batch { scope.value = "scope-b" }
+            }
+            let discarded = await settings.discardHeldDeviceSettingChanges()
+            XCTAssertFalse(discarded)
+            XCTAssertFalse(settings.hdrEnabled, "scope-a's answer is not painted over scope-b")
+            XCTAssertEqual(settings.heldDeviceSettingKeys, [.playerHdrEnabled], "no hold is dropped")
+        }
+
+        transport.onEffectiveValues = nil
+        scope.value = "scope-a"
+        let discarded = await settings.discardHeldDeviceSettingChanges()
+        XCTAssertTrue(discarded)
+        XCTAssertTrue(settings.hdrEnabled)
+    }
+
     func testAFailedRefreshOfTheSameScopeKeepsTheKnownRevision() async throws {
         let harness = try PlayerSettingsHarness()
         await harness.settings.refreshFromServer()

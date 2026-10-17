@@ -1433,20 +1433,21 @@ final class PlayerSettings {
     /// is unsaved. The hold stays until the server can be reached. Returns
     /// false when the discard did not happen for that reason. The cellular
     /// pair is read too, where the server has it, so a discarded cellular
-    /// edit is repainted like any other.
+    /// edit is repainted like any other; if only that read fails, the holds
+    /// stay too.
+    ///
+    /// Each read answers for the scope (server and profile) active when it is
+    /// sent, so a scope change while either awaits also returns false:
+    /// nothing is discarded or applied under the new scope.
     @discardableResult
     @MainActor
     func discardHeldDeviceSettingChanges() async -> Bool {
+        let discardScopeID = scopeIdentifier()
+        let response: EffectiveSettingValuesResponse
         do {
-            let response = try await flusher.effectiveValues(keys: SettingKey.playerReadSettings)
-            knownManifestRevision = flusher.knownManifestRevision
-            let cellular = try await cellularQualityValues(atRevision: response.revision)
-            flusher.discardHeldChanges()
-            applyEffectiveSettings(overlayingUnsettledValues(
-                on: response.byKey.merging(cellular) { _, cellularValue in cellularValue }
-            ))
-            return true
+            response = try await flusher.effectiveValues(keys: SettingKey.playerReadSettings)
         } catch SettingsAPIError.serverUpgradeRequired {
+            guard scopeIdentifier() == discardScopeID else { return false }
             // The server stores no settings for this device at all, so the
             // local value is the only one there is.
             flusher.discardHeldChanges()
@@ -1454,6 +1455,17 @@ final class PlayerSettings {
         } catch {
             return false
         }
+        guard scopeIdentifier() == discardScopeID else { return false }
+        knownManifestRevision = flusher.knownManifestRevision
+        guard let cellular = try? await cellularQualityValues(atRevision: response.revision),
+              scopeIdentifier() == discardScopeID else {
+            return false
+        }
+        flusher.discardHeldChanges()
+        applyEffectiveSettings(overlayingUnsettledValues(
+            on: response.byKey.merging(cellular) { _, cellularValue in cellularValue }
+        ))
+        return true
     }
 
     /// Send the held device setting changes again with a fresh retry budget.

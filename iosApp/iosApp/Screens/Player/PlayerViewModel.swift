@@ -1215,11 +1215,14 @@ class PlayerViewModel {
         /// The session's quality is not adopted. The request keeps only a
         /// quality the viewer picked in the player; an automatic one is
         /// derived again from the saved pair for the connection, with its
-        /// exact cap rather than the nearest local rung's.
+        /// exact cap rather than the nearest local rung's. `viewerQualityId`
+        /// is the quality a viewer's switch asked for, carried into the
+        /// candidate's recovery intent before it loads.
         func adoptingProtocolV3Intent(
             plan: PlaybackV3Plan,
             selectedVersion: FileVersion,
-            keepsExplicitOff: Bool = false
+            keepsExplicitOff: Bool = false,
+            viewerQualityId: String? = nil
         ) -> LoadRequest {
             // Shared resolution order; see
             // `PlaybackV3Plan.selectedSubtitleInventoryItem`. An `off` plan
@@ -1253,6 +1256,9 @@ class PlayerViewModel {
                 offlineDownloadId: offlineDownloadId
             )
             request.preferredProtocolV3SubtitleIndex = selectedSubtitleIndex
+            if let viewerQualityId {
+                request.preferredQualityOverride = viewerQualityId
+            }
             return request
         }
     }
@@ -2683,7 +2689,14 @@ class PlayerViewModel {
                     // remaps the requested track onto that edition's inventory.
                     self.localProtocolV3SubtitleSelection = nil
                 }
-                self.adoptProtocolV3RenewalIntent(from: prepared)
+                // A viewer's switch is part of the candidate's recovery intent
+                // before it loads: a failed load promoted to recovery keeps
+                // the new quality, so a later renewal or retry asks for it
+                // too. A rejected candidate restores the prior request.
+                self.adoptProtocolV3RenewalIntent(
+                    from: prepared,
+                    viewerQualityId: qualitySwitchOnMeteredNetwork == nil ? nil : prepared.activeQualityId
+                )
                 if classification == "audio_track_changed" {
                     self.reopenAutoSubtitlePolicyForAudioChange()
                 }
@@ -2745,7 +2758,6 @@ class PlayerViewModel {
                 self.markProtocolV3AetherLoadCommitted()
                 uncommittedPrepared = nil
                 if let onMeteredNetwork = qualitySwitchOnMeteredNetwork {
-                    self.lastLoadRequest?.preferredQualityOverride = prepared.activeQualityId
                     self.recordViewerQualityPick(
                         prepared.activeQualityId,
                         forContentId: self.lastLoadRequest?.contentId,
@@ -2794,6 +2806,15 @@ class PlayerViewModel {
                         if await self.sessionBridge.promotePendingProtocolV3TransitionForRecovery(
                             uncommittedPrepared
                         ) {
+                            // The new quality now owns the session, so a
+                            // viewer's switch counts as their pick.
+                            if let onMeteredNetwork = qualitySwitchOnMeteredNetwork {
+                                self.recordViewerQualityPick(
+                                    uncommittedPrepared.activeQualityId,
+                                    forContentId: self.lastLoadRequest?.contentId,
+                                    onMeteredNetwork: onMeteredNetwork
+                                )
+                            }
                             chainedLoadFailureRecovery = (
                                 position,
                                 loadFailure.classification,
@@ -5125,7 +5146,7 @@ class PlayerViewModel {
         return lastLoadRequest?.preferredSidecarSubtitleTrackId
     }
 
-    private func adoptProtocolV3RenewalIntent(from prepared: PreparedPlayback) {
+    private func adoptProtocolV3RenewalIntent(from prepared: PreparedPlayback, viewerQualityId: String? = nil) {
         guard let protocolV3 = prepared.protocolV3,
               let lastLoadRequest,
               lastLoadRequest.offlineDownloadId == nil else {
@@ -5134,7 +5155,8 @@ class PlayerViewModel {
         let adopted = lastLoadRequest.adoptingProtocolV3Intent(
             plan: protocolV3.plan,
             selectedVersion: prepared.selectedVersion,
-            keepsExplicitOff: hasExplicitSubtitleChoice
+            keepsExplicitOff: hasExplicitSubtitleChoice,
+            viewerQualityId: viewerQualityId
         )
         // A seek candidate still carries the server's frozen subtitle. Save
         // the user's newer choice before loading: a failed candidate can be

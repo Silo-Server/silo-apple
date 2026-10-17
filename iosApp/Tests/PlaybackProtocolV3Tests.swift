@@ -1443,6 +1443,31 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
+    /// A viewer's switch is written into the candidate's recovery intent when
+    /// it is adopted, before it loads, so a failed load promoted to recovery
+    /// and any later renewal keep the new quality rather than the old one.
+    func testAViewerSwitchIsPartOfTheCandidatesRecoveryIntent() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac")
+        let request = PlayerViewModel.LoadRequest(
+            contentId: "movie", preferredFileId: 42, preferredAudioTrackIndex: nil,
+            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
+            startFromBeginning: false, preferredQualityOverride: "1080p"
+        )
+
+        let candidate = request.adoptingProtocolV3Intent(
+            plan: makePlan(), selectedVersion: version, viewerQualityId: "720p"
+        )
+        XCTAssertEqual(candidate.preferredQualityOverride, "720p")
+        XCTAssertEqual(
+            candidate.adoptingProtocolV3Intent(plan: makePlan(), selectedVersion: version).preferredQualityOverride,
+            "720p",
+            "a later renewal keeps it"
+        )
+
+        let automatic = request.adoptingProtocolV3Intent(plan: makePlan(), selectedVersion: version)
+        XCTAssertEqual(automatic.preferredQualityOverride, "1080p", "an automatic replan leaves the viewer's quality alone")
+    }
+
     func testAdoptedSubtitleOffPlanClearsDurableSubtitleIntent() {
         let version = makeVersion(
             container: "mkv",
