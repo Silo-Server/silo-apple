@@ -3,8 +3,8 @@ import Observation
 
 /// Local, per-profile navigation/content preferences.
 ///
-/// The preference is device-local and scoped by platform, server, and profile:
-/// hiding audiobooks on Apple TV should not hide them on iPhone. tvOS keeps
+/// The preference is device-local and scoped by platform, server, account,
+/// and profile: hiding audiobooks on Apple TV should not hide them on iPhone. tvOS keeps
 /// its original storage key for compatibility with existing installs.
 @Observable
 final class AppNavPreferences {
@@ -55,8 +55,33 @@ final class AppNavPreferences {
         guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else {
             return nil
         }
-        let serverId = ServerRegistry.shared.activeServerId ?? "default"
-        return "\(storagePrefix).\(serverId).\(profileId)"
+        guard let serverId = ServerRegistry.shared.activeServerId else {
+            return "\(storagePrefix).default.\(profileId)"
+        }
+        return showAudiobooksKey(
+            serverID: serverId,
+            accountID: AccountScopeReader.currentAccountID(),
+            profileID: profileId,
+            defaults: .shared
+        )
+    }
+
+    /// The choice's key for one account's profile on one server
+    /// (`AccountScopedKeyAdoption`), after the account that owns the
+    /// server's choices from before accounts takes over its old one.
+    static func showAudiobooksKey(
+        serverID: String,
+        accountID: String?,
+        profileID: String,
+        defaults: SharedDefaults
+    ) -> String {
+        AccountScopedKeyAdoption.adoptedKey(
+            storagePrefix,
+            serverID: serverID,
+            accountID: accountID,
+            profileID: profileID,
+            defaults: defaults
+        )
     }
 
     /// Contract default for `nav.show_audiobooks`: this is an opt-in surface

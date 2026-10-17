@@ -758,18 +758,24 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-/// The owner of one background transfer: the scope (server and profile)
-/// whose store holds its record, and the download id. Every profile and
-/// server shares one background session, so each task carries this in its
-/// `taskDescription`, and its events reach that scope whichever one is
-/// loaded when they arrive.
+/// The owner of one background transfer: the scope (server, account, and
+/// profile) whose store holds its record, and the download id. Every
+/// account, profile, and server shares one background session, so each task
+/// carries this in its `taskDescription`, and its events reach that scope
+/// whichever one is loaded when they arrive.
 struct DownloadTaskTag: Hashable, Sendable {
     let serverId: String
+    /// The account whose store holds the record. Nil for a server's own
+    /// session from before saved sign-ins, and in a tag an earlier build
+    /// wrote until `attributedToLegacyOwner()` names the account that owns
+    /// that server's older downloads.
+    let accountId: String?
     let profileId: String
     let downloadId: String
 
-    init(serverId: String, profileId: String, downloadId: String) {
+    init(serverId: String, accountId: String?, profileId: String, downloadId: String) {
         self.serverId = serverId
+        self.accountId = accountId
         self.profileId = profileId
         self.downloadId = downloadId
     }
@@ -779,38 +785,71 @@ struct DownloadTaskTag: Hashable, Sendable {
     private struct Payload: Codable {
         let v: Int
         let server: String
+        /// Absent in version 1.
+        let account: String?
         let profile: String
         let download: String
     }
 
-    private static let payloadVersion = 1
+    /// Version 1 names no account. This build still writes it for a scope
+    /// whose account is unknown, so those tags stay as they were.
+    private static let accountlessPayloadVersion = 1
+    private static let payloadVersion = 2
 
-    /// JSON `{"v":1,"server":…,"profile":…,"download":…}`.
+    /// JSON `{"account":…,"download":…,"profile":…,"server":…,"v":2}`, or the
+    /// version 1 form without `account` when the account is unknown.
     var taskDescription: String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        let payload = Payload(v: Self.payloadVersion, server: serverId, profile: profileId, download: downloadId)
+        let payload = Payload(
+            v: accountId == nil ? Self.accountlessPayloadVersion : Self.payloadVersion,
+            server: serverId,
+            account: accountId,
+            profile: profileId,
+            download: downloadId
+        )
         guard let data = try? encoder.encode(payload) else { return "" }
         return String(decoding: data, as: UTF8.self)
     }
 
-    /// Nil for nil, non-JSON, other versions, or empty fields.
+    /// Nil for nil, non-JSON, unknown versions, or empty fields. A version 1
+    /// tag has no account; see `attributedToLegacyOwner()`.
     init?(taskDescription: String?) {
         guard let data = taskDescription?.data(using: .utf8),
               let payload = try? JSONDecoder().decode(Payload.self, from: data),
-              payload.v == Self.payloadVersion,
               !payload.server.isEmpty, !payload.profile.isEmpty, !payload.download.isEmpty else { return nil }
-        self.init(serverId: payload.server, profileId: payload.profile, downloadId: payload.download)
+        switch payload.v {
+        case Self.accountlessPayloadVersion:
+            self.init(serverId: payload.server, accountId: nil, profileId: payload.profile, downloadId: payload.download)
+        case Self.payloadVersion:
+            guard let account = payload.account, !account.isEmpty else { return nil }
+            self.init(serverId: payload.server, accountId: account, profileId: payload.profile, downloadId: payload.download)
+        default:
+            return nil
+        }
+    }
+
+    /// A tag without an account belongs to the account that owns its
+    /// server's downloads from before accounts, once one does: their store
+    /// moved to that account's directory (`DownloadStore.load`). Without an
+    /// owner it stays as it is and keeps naming the old directory.
+    func attributedToLegacyOwner(
+        _ legacyOwner: AccountScopedKeyAdoption.LegacyOwner = LegacyLocalDataOwner.accountID(forServerID:)
+    ) -> DownloadTaskTag {
+        guard accountId == nil, let owner = legacyOwner(serverId) else { return self }
+        return DownloadTaskTag(serverId: serverId, accountId: owner, profileId: profileId, downloadId: downloadId)
     }
 
     /// Attribution for a task an earlier build started without a tag: the
     /// download id from its v2 file URL, the profile from its `X-Profile-Id`
     /// header, and the first server whose file URL for that id has the same
-    /// origin and path. Nil when any of them is missing.
+    /// origin and path. Nil when any of them is missing. Such a build saved
+    /// no account, so the task goes to the server's legacy owner.
     static func attributing(
         requestURL: URL?,
         profileId: String?,
-        servers: [(id: String, url: String)]
+        servers: [(id: String, url: String)],
+        legacyOwner: AccountScopedKeyAdoption.LegacyOwner = LegacyLocalDataOwner.accountID(forServerID:)
     ) -> DownloadTaskTag? {
         guard let downloadId = APIv2Client.downloadFileID(requestURL),
               let profileId, !profileId.isEmpty,
@@ -820,11 +859,12 @@ struct DownloadTaskTag: Hashable, Sendable {
                       APIv2Client.downloadFileURL(id: downloadId, serverURL: $0.url)
                   ) == key
               }) else { return nil }
-        return DownloadTaskTag(serverId: server.id, profileId: profileId, downloadId: downloadId)
+        return DownloadTaskTag(serverId: server.id, accountId: nil, profileId: profileId, downloadId: downloadId)
+            .attributedToLegacyOwner(legacyOwner)
     }
 
-    func isOwned(byServerId serverId: String, profileId: String) -> Bool {
-        self.serverId == serverId && self.profileId == profileId
+    func isOwned(byServerId serverId: String, accountId: String?, profileId: String) -> Bool {
+        self.serverId == serverId && self.accountId == accountId && self.profileId == profileId
     }
 }
 

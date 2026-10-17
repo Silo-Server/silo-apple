@@ -3,16 +3,27 @@ import Foundation
 /// Per-library, per-profile persistence of browse sort + filters, gated by a
 /// user-facing "Preserve sort & filters" toggle (default on). Mirrors the
 /// `AppNavPreferences` / `TVLibraryScopeStore` pattern: `SharedDefaults`
-/// keyed by platform + server + profile + library, so a phone's filters
-/// never leak to the TV or to another profile, and an anonymous (no-profile)
-/// state is never persisted.
+/// keyed by platform + server + account + profile + library, so a phone's
+/// filters never leak to the TV, to another profile, or to another account's
+/// profile with the same ID, and an anonymous (no-profile) state is never
+/// persisted.
 struct BrowsePrefsStore {
+    /// The server, account, and profile keys belong to. The account is nil
+    /// for a server's own session from before saved sign-ins.
+    struct Scope: Equatable, Sendable {
+        let serverID: String
+        let accountID: String?
+        let profileID: String
+    }
+
     static let shared = BrowsePrefsStore()
 
     private let defaults: SharedDefaults
+    private let scope: @Sendable () -> Scope?
 
-    init(defaults: SharedDefaults = .shared) {
+    init(defaults: SharedDefaults = .shared, scope: @escaping @Sendable () -> Scope? = BrowsePrefsStore.activeScope) {
         self.defaults = defaults
+        self.scope = scope
     }
 
     /// Whether sort + filters are remembered for this library. Default true.
@@ -58,19 +69,37 @@ struct BrowsePrefsStore {
 
     // MARK: - Keys
 
-    private func base(libraryId: Int?, mediaScope: String? = nil) -> String? {
+    static func activeScope() -> Scope? {
         guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else { return nil }
-        let serverId = ServerRegistry.shared.activeServerId ?? "default"
+        guard let serverId = ServerRegistry.shared.activeServerId else {
+            return Scope(serverID: "default", accountID: nil, profileID: profileId)
+        }
+        return Scope(serverID: serverId, accountID: AccountScopeReader.currentAccountID(), profileID: profileId)
+    }
+
+    /// `<platform>.v2.<server>.<account>.<profile>.<library>[.type-<scope>].<field>`,
+    /// or the key from before accounts while the account is unknown, after
+    /// the legacy owner takes over the value saved before accounts.
+    private func key(_ field: String, libraryId: Int?, mediaScope: String?) -> String? {
+        guard let scope = scope() else { return nil }
         let lib = libraryId.map(String.init) ?? "all"
-        return "\(Self.platformPrefix).\(serverId).\(profileId).\(lib)" + (mediaScope.map { ".type-\($0)" } ?? "")
+        let suffix = lib + (mediaScope.map { ".type-\($0)" } ?? "") + ".\(field)"
+        return AccountScopedKeyAdoption.adoptedKey(
+            Self.platformPrefix,
+            serverID: scope.serverID,
+            accountID: scope.accountID,
+            profileID: scope.profileID,
+            suffix: suffix,
+            defaults: defaults
+        )
     }
 
     private func stateKey(libraryId: Int?, mediaScope: String? = nil) -> String? {
-        base(libraryId: libraryId, mediaScope: mediaScope).map { "\($0).state" }
+        key("state", libraryId: libraryId, mediaScope: mediaScope)
     }
 
     private func preserveKey(libraryId: Int?, mediaScope: String? = nil) -> String? {
-        base(libraryId: libraryId, mediaScope: mediaScope).map { "\($0).preserve" }
+        key("preserve", libraryId: libraryId, mediaScope: mediaScope)
     }
 
     private static var platformPrefix: String {

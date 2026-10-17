@@ -13,23 +13,35 @@ import Foundation
 /// Single-library types need no entry here — their scope is trivially the
 /// only library, resolved without touching persistence.
 ///
-/// Keying: `skyline.libraryScope.<serverId>.<profileId>.<type>`. Server +
-/// profile scoping keeps two profiles (or two servers) from clobbering each
-/// other's choices when they share the same library type. Reads/writes go
-/// through `SharedDefaults` so the value survives the same way other Skyline
-/// preferences do.
+/// Keying: `skyline.libraryScope.v2.<serverId>.<accountId>.<profileId>.<type>`
+/// (`AccountScopedKeyAdoption`; the key from before accounts while the
+/// account is unknown). Server + account + profile scoping keeps two
+/// profiles, two servers, or two accounts whose profiles share an ID from
+/// clobbering each other's choices when they share the same library type.
+/// Reads/writes go through `SharedDefaults` so the value survives the same
+/// way other Skyline preferences do.
 @MainActor
 final class TVLibraryScopeStore {
+    /// The server, account, and profile keys belong to. The account is nil
+    /// for a server's own session from before saved sign-ins.
+    struct Scope: Equatable {
+        let serverID: String
+        let accountID: String?
+        let profileID: String
+    }
+
     static let shared = TVLibraryScopeStore()
 
     private let defaults: SharedDefaults
+    private let scope: () -> Scope?
     /// Choices already read or written this session, by defaults key. The
     /// top menu resolves every type's scope on each body pass, and this store
     /// is the only writer of these keys.
     private var cache: [String: Int?] = [:]
 
-    init(defaults: SharedDefaults = .shared) {
+    init(defaults: SharedDefaults = .shared, scope: @escaping () -> Scope? = TVLibraryScopeStore.activeScope) {
         self.defaults = defaults
+        self.scope = scope
     }
 
     /// The persisted library id for `type` under the active profile, or
@@ -71,13 +83,28 @@ final class TVLibraryScopeStore {
     // MARK: - Keying
 
     private func key(for type: TVLibraryTabType) -> String? {
+        guard let scope = scope() else { return nil }
+        let key = AccountScopedKeyAdoption.key(Self.prefix, serverID: scope.serverID, accountID: scope.accountID,
+                                               profileID: scope.profileID, suffix: type.rawValue)
+        // Read or written this session: already adopted.
+        guard cache[key] == nil else { return key }
+        return AccountScopedKeyAdoption.adoptedKey(Self.prefix, serverID: scope.serverID, accountID: scope.accountID,
+                                                   profileID: scope.profileID, suffix: type.rawValue,
+                                                   defaults: defaults)
+    }
+
+    private static let prefix = "skyline.libraryScope"
+
+    static func activeScope() -> Scope? {
         // No profile → nothing to scope. Persisting under an anonymous key
         // would leak one user's choice into the next signed-in profile.
         guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else {
             return nil
         }
-        let serverId = ServerRegistry.shared.activeServerId ?? "default"
-        return "skyline.libraryScope.\(serverId).\(profileId).\(type.rawValue)"
+        guard let serverId = ServerRegistry.shared.activeServerId else {
+            return Scope(serverID: "default", accountID: nil, profileID: profileId)
+        }
+        return Scope(serverID: serverId, accountID: AccountScopeReader.currentAccountID(), profileID: profileId)
     }
 }
 

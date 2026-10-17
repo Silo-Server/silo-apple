@@ -213,7 +213,9 @@ struct APIv2Client: Sendable {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         if profileRequired && auth.profileId == nil { throw SettingsAPIError.profileRequired }
         if let profileID, profileID != auth.profileId { throw HTTPError.requestIdentityChanged }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
+        let identity = auth.profileId.map {
+            Self.requestIdentity(auth, profile: $0, accountID: expectedIdentity?.accountID)
+        }
         try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
         let response = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
@@ -238,7 +240,7 @@ struct APIv2Client: Sendable {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         guard let profile = auth.profileId else { throw SettingsAPIError.profileRequired }
         guard profile == profileID else { throw HTTPError.requestIdentityChanged }
-        let identity = Self.requestIdentity(auth, profile: profile)
+        let identity = Self.requestIdentity(auth, profile: profile, accountID: expectedIdentity?.accountID)
         try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
         return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
@@ -252,7 +254,9 @@ struct APIv2Client: Sendable {
     /// Refuses a settings request whose caller pinned an identity that is no
     /// longer the captured one. The captured account URL is normalized; a
     /// caller's identity may carry the registry spelling, which HTTPClient
-    /// normalizes the same way.
+    /// normalizes the same way. The caller's account rides on the identity
+    /// sent, so `TokenStore.captureRequestAuth` refuses it under another
+    /// sign-in whose profile has the same ID.
     private static func requireSettingsIdentity(_ expected: HTTPRequestIdentity?,
                                                 matches identity: HTTPRequestIdentity?) throws {
         guard let expected else { return }
@@ -260,7 +264,8 @@ struct APIv2Client: Sendable {
             serverId: expected.serverId,
             serverURL: ServerRegistry.normalize(url: expected.serverURL),
             profileId: expected.profileId,
-            clientFamily: expected.clientFamily
+            clientFamily: expected.clientFamily,
+            accountID: expected.accountID
         )
         if normalizedExpected != identity { throw HTTPError.requestIdentityChanged }
     }
@@ -1382,9 +1387,13 @@ struct APIv2Client: Sendable {
         return await tokenStore.captureOrdinaryRequestAuth()
     }
 
-    static func requestIdentity(_ auth: CapturedOrdinaryRequestAuth, profile: String) -> HTTPRequestIdentity {
+    /// The identity of a request under `auth`. `accountID` is the account a
+    /// caller queued the work for, if any; without one, the owner fence on
+    /// `auth`'s credential generation already pins the sign-in.
+    static func requestIdentity(_ auth: CapturedOrdinaryRequestAuth, profile: String,
+                                accountID: String? = nil) -> HTTPRequestIdentity {
         HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
-            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily, accountID: accountID)
     }
 
     /// A strong entity tag: quoted, non-empty, single line. Anything else is

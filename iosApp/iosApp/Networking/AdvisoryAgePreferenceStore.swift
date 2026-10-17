@@ -216,7 +216,8 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
             serverId: server.id,
             serverURL: server.url,
             profileId: profileId,
-            clientFamily: AppleDeviceIdentity.current.clientFamily
+            clientFamily: AppleDeviceIdentity.current.clientFamily,
+            accountID: AccountScopeReader.currentAccountID()
         )
     }
 }

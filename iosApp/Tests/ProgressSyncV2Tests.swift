@@ -270,19 +270,19 @@ final class ProgressSyncV2Tests: XCTestCase {
         OfflineProgressQueue.claim(&file.progressQueue, ids: Set(batch.map(\.id)))
         // "c" was claimed and sent by an earlier flush; its outcome is unknown.
         OfflineProgressQueue.claim(&file.progressQueue, ids: [file.progressQueue[2].id])
-        await store.save(file, serverId: "server", profileId: "old-profile")
+        await store.save(file, serverId: "server", accountId: nil, profileId: "old-profile")
 
         let refused = ProgressSyncOutcome.notSent(HTTPError.requestIdentityChanged)
         XCTAssertTrue(OfflineProgressQueue.releasesClaims(refused))
         XCTAssertFalse(OfflineProgressQueue.releasesClaims(.uncertain(HTTPError.requestIdentityChanged)))
-        await store.releaseProgressClaims(Set(batch.map(\.id)), serverId: "server", profileId: "old-profile")
+        await store.releaseProgressClaims(Set(batch.map(\.id)), serverId: "server", accountId: nil, profileId: "old-profile")
 
-        let reloaded = await store.load(serverId: "server", profileId: "old-profile")
+        let reloaded = await store.load(serverId: "server", accountId: nil, profileId: "old-profile")
         XCTAssertEqual(OfflineProgressQueue.nextBatch(reloaded.progressQueue).map(\.mediaItemId), ["a", "b"])
         XCTAssertEqual(OfflineProgressQueue.held(reloaded.progressQueue, inFlight: []).map(\.mediaItemId), ["c"])
 
         // A scope without a store is left alone.
-        await store.releaseProgressClaims(Set(batch.map(\.id)), serverId: "server", profileId: "never-used")
+        await store.releaseProgressClaims(Set(batch.map(\.id)), serverId: "server", accountId: nil, profileId: "never-used")
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("server/never-used/store.json").path))
     }
 

@@ -53,7 +53,9 @@ enum ApplePushDeepLinkCoordinator {
         profileInUse: Bool,
         activeServer: ServerEntry?,
         activeProfileID: String?,
-        targets: ApplePushDisplayTargetStore = ApplePushDisplayTargetStore()
+        activeAccountID: String? = AccountScopeReader.currentAccountID(),
+        targets: ApplePushDisplayTargetStore = ApplePushDisplayTargetStore(),
+        legacyOwner: AccountScopedKeyAdoption.LegacyOwner = LegacyLocalDataOwner.accountID(forServerID:)
     ) -> Admission {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         guard items.contains(where: { $0.name == serverIDQueryItem || $0.name == profileIDQueryItem }) else {
@@ -61,7 +63,8 @@ enum ApplePushDeepLinkCoordinator {
         }
         guard profileInUse else { return .wait }
         return opensUnderActiveIdentity(url, activeServer: activeServer, activeProfileID: activeProfileID,
-                                        targets: targets) ? .open : .drop
+                                        activeAccountID: activeAccountID, targets: targets,
+                                        legacyOwner: legacyOwner) ? .open : .drop
     }
 
     /// Whether `url` may open under the active server and profile. A link
@@ -69,13 +72,19 @@ enum ApplePushDeepLinkCoordinator {
     /// exactly those, so a tap never shows one server's or profile's item in
     /// another; the app opens without navigating instead. When a saved
     /// server holds the target the push was displayed with, that saved
-    /// server must be the active one; a server's reported identity counts
-    /// only when no saved server holds one. Other links open as before.
+    /// server must be the active one, and once the active account is known
+    /// (`activeAccountID`, nil for a server's own session from before saved
+    /// sign-ins), it must be the account the target was registered for:
+    /// profile IDs repeat across accounts on one server. A server's
+    /// reported identity counts only when no saved server holds one. Other
+    /// links open as before.
     static func opensUnderActiveIdentity(
         _ url: URL,
         activeServer: ServerEntry?,
         activeProfileID: String?,
-        targets: ApplePushDisplayTargetStore = ApplePushDisplayTargetStore()
+        activeAccountID: String? = AccountScopeReader.currentAccountID(),
+        targets: ApplePushDisplayTargetStore = ApplePushDisplayTargetStore(),
+        legacyOwner: AccountScopedKeyAdoption.LegacyOwner = LegacyLocalDataOwner.accountID(forServerID:)
     ) -> Bool {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         let serverIDs = items.filter { $0.name == serverIDQueryItem }.map(\.value)
@@ -87,7 +96,10 @@ enum ApplePushDeepLinkCoordinator {
         let claims = targets.targets(serverID: serverID, profileID: profileID)
         switch claims.count {
         case 0: return ServerIdentity.usable(activeServer.verifiedServerId) == serverID
-        case 1: return claims[0].registryServerID == activeServer.id
+        case 1:
+            guard claims[0].registryServerID == activeServer.id else { return false }
+            guard let activeAccountID else { return true }
+            return claims[0].attributedAccountID(legacyOwner: legacyOwner) == activeAccountID
         default: return false
         }
     }

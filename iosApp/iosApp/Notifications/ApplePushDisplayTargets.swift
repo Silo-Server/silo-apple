@@ -20,6 +20,22 @@ struct ApplePushDisplayTarget: Codable, Equatable, Sendable {
     /// RFC 3339 expiry of `displayToken`. Nil renews the token at the next
     /// registration pass.
     let expiresAt: String?
+    /// The account that registered on `registryServerID`. Profile IDs repeat
+    /// across accounts on one server, so a push opens only under this
+    /// account. Nil in targets saved before accounts were recorded; those
+    /// belong to the account that owns the saved server's older data.
+    let accountID: String?
+
+    init(serverID: String?, profileID: String, registryServerID: String, serverURL: String,
+         displayToken: String, expiresAt: String?, accountID: String? = nil) {
+        self.serverID = serverID
+        self.profileID = profileID
+        self.registryServerID = registryServerID
+        self.serverURL = serverURL
+        self.displayToken = displayToken
+        self.expiresAt = expiresAt
+        self.accountID = accountID
+    }
 }
 
 /// The display targets, kept as one shared Keychain item: the extension can

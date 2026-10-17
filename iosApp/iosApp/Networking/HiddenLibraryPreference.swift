@@ -30,7 +30,7 @@ enum HiddenLibraryPreference {
         }
     ) async -> Set<Int> {
         let identity = requestIdentity()
-        let cacheKey = identity.map(Self.cacheKey(for:))
+        let cacheKey = identity.map { Self.adoptedCacheKey(for: $0, defaults: defaults) }
         do {
             let response = try await read(identity)
             let ids = libraryIds(from: response.value(for: .uiDisabledLibraryIds)?.value ?? .null)
@@ -77,7 +77,20 @@ enum HiddenLibraryPreference {
             .map(Set.init)
     }
 
-    private static func cacheKey(for identity: HTTPRequestIdentity) -> String {
-        "silo.hiddenLibraryIds.\(identity.serverId).\(identity.profileId)"
+    private static let cachePrefix = "silo.hiddenLibraryIds"
+
+    /// `silo.hiddenLibraryIds.v2.<server>.<account>.<profile>`, or the key
+    /// from before accounts while the account is unknown.
+    static func cacheKey(for identity: HTTPRequestIdentity) -> String {
+        AccountScopedKeyAdoption.key(cachePrefix, serverID: identity.serverId,
+                                     accountID: identity.accountID, profileID: identity.profileId)
+    }
+
+    /// `cacheKey(for:)`, after the legacy owner takes over the answer saved
+    /// before accounts.
+    private static func adoptedCacheKey(for identity: HTTPRequestIdentity, defaults: SharedDefaults) -> String {
+        AccountScopedKeyAdoption.adoptedKey(cachePrefix, serverID: identity.serverId,
+                                            accountID: identity.accountID, profileID: identity.profileId,
+                                            defaults: defaults)
     }
 }

@@ -46,7 +46,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         XCTAssertEqual(try contents(of: root), [LegacyDownloadStorage.markerFileName, "server"])
         XCTAssertEqual(try contents(of: scope), [DownloadFilePaths.storeFileName], "only a fresh store is left")
         XCTAssertEqual(try contents(of: sandbox), ["SiloDownloads"], "the moved-aside tree is deleted")
-        let carried = await store.load(serverId: "server", profileId: "profile")
+        let carried = await store.load(serverId: "server", accountId: nil, profileId: "profile")
         XCTAssertTrue(carried.records.isEmpty)
         XCTAssertEqual(carried.legacyRowsPending, true, "the scope's first registry read deletes the old rows")
         XCTAssertEqual(carried.legacyMonitorsPending, true, "the scope's first monitor list sets the old monitors aside")
@@ -57,10 +57,10 @@ final class LegacyDownloadStorageTests: XCTestCase {
         let fresh = makeStore()
         var file = DownloadStoreFile.empty
         file.pendingServerDeletes = ["after-upgrade"]
-        await fresh.save(file, serverId: "server", profileId: "profile")
+        await fresh.save(file, serverId: "server", accountId: nil, profileId: "profile")
         let stateOnRelaunch = await fresh.legacyStorageState()
         XCTAssertEqual(stateOnRelaunch, .removed(noticePending: true))
-        let reloaded = await fresh.load(serverId: "server", profileId: "profile")
+        let reloaded = await fresh.load(serverId: "server", accountId: nil, profileId: "profile")
         XCTAssertEqual(reloaded.pendingServerDeletes, ["after-upgrade"])
     }
 
@@ -93,7 +93,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         let removal = await store.removeLegacyStorage()
         XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: false, completed: true))
         XCTAssertEqual(try contents(of: root), [LegacyDownloadStorage.markerFileName])
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", accountId: nil, profileId: "profile")
         XCTAssertNil(loaded.legacyRowsPending)
     }
 
@@ -118,7 +118,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         let removal = await store.removeLegacyStorage()
         XCTAssertTrue(removal.completed)
 
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", accountId: nil, profileId: "profile")
         XCTAssertTrue(loaded.records.isEmpty)
         let queue = loaded.progressQueue.sorted { $0.mediaItemId < $1.mediaItemId }
         XCTAssertEqual(queue.map(\.mediaItemId), ["episode-1", "movie-9"], "newest entry per item; the unreadable one is dropped")
@@ -140,7 +140,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: false, completed: true))
         let state = await store.legacyStorageState()
         XCTAssertEqual(state, .removed(noticePending: false))
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", accountId: nil, profileId: "profile")
         XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-1"])
     }
 
@@ -154,7 +154,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         """)
         let store = makeStore()
         _ = await store.removeLegacyStorage()
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", accountId: nil, profileId: "profile")
         XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-2"])
     }
 
@@ -173,7 +173,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
 
         XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: true, completed: false))
         XCTAssertEqual(try contents(of: sandbox), ["SiloDownloads"], "the moved-aside tree is deleted anyway")
-        let loaded = await store.load(serverId: LegacyDownloadStorage.markerFileName, profileId: "profile")
+        let loaded = await store.load(serverId: LegacyDownloadStorage.markerFileName, accountId: nil, profileId: "profile")
         XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-3"], "the queue survives in the new root")
     }
 
@@ -256,7 +256,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         try garbage.write(to: storeURL)
         let store = makeStore()
 
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", accountId: nil, profileId: "profile")
         XCTAssertTrue(loaded.records.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: storeURL.path))
         let quarantined = try contents(of: scope).filter { $0.hasPrefix("store.json.corrupt-") }
@@ -267,8 +267,8 @@ final class LegacyDownloadStorageTests: XCTestCase {
         // The empty registry now saves normally and leaves the original alone.
         var file = DownloadStoreFile.empty
         file.pendingServerDeletes = ["new"]
-        await store.save(file, serverId: "server", profileId: "profile")
-        let pending = await store.load(serverId: "server", profileId: "profile").pendingServerDeletes
+        await store.save(file, serverId: "server", accountId: nil, profileId: "profile")
+        let pending = await store.load(serverId: "server", accountId: nil, profileId: "profile").pendingServerDeletes
         XCTAssertEqual(pending, ["new"])
         XCTAssertEqual(try Data(contentsOf: quarantinedURL), garbage)
     }
@@ -282,11 +282,11 @@ final class LegacyDownloadStorageTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: scope.path)
         let store = makeStore()
 
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", accountId: nil, profileId: "profile")
         XCTAssertTrue(loaded.records.isEmpty)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scope.path)
 
-        await store.save(.empty, serverId: "server", profileId: "profile")
+        await store.save(.empty, serverId: "server", accountId: nil, profileId: "profile")
         XCTAssertEqual(try Data(contentsOf: storeURL), garbage)
     }
 

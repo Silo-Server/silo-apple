@@ -173,10 +173,12 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             defaults: defaults)
     }
 
+    /// A target registered by the harness's account, `12`.
     private static func target(profileID: String = "profile-a", token: String = "display-1",
-                               serverID: String? = "deployment-a") -> ApplePushDisplayTarget {
+                               serverID: String? = "deployment-a",
+                               accountID: String? = "12") -> ApplePushDisplayTarget {
         ApplePushDisplayTarget(serverID: serverID, profileID: profileID, registryServerID: Self.serverID,
-            serverURL: Self.serverURL, displayToken: token, expiresAt: Self.tokenExpiry)
+            serverURL: Self.serverURL, displayToken: token, expiresAt: Self.tokenExpiry, accountID: accountID)
     }
 
     private static func body(token: String = tokenA) -> APIv2ApplePushRegistrationBody {
@@ -234,6 +236,22 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
 
         XCTAssertEqual(result, .unchanged)
         XCTAssertEqual(h.server.handler.requests.count, count)
+    }
+
+    /// Profile IDs repeat across accounts on one server, so a current token
+    /// held for another account's profile with the same ID is renewed for
+    /// this one.
+    func testCurrentDisplayTokenOfAnotherAccountIsRenewed() async throws {
+        let h = try await makeHarness()
+        let owner = try await h.owner()
+        _ = await h.registrar().register(Self.body(), owner: owner)
+        XCTAssertTrue(h.targets.save(Self.target(accountID: "34")))
+        h.server.enqueue(.receipt(displayToken: "display-2"))
+
+        let result = await h.registrar().register(Self.body(), owner: owner)
+
+        XCTAssertEqual(result, Self.accepted)
+        XCTAssertEqual(h.targets.targets(), [Self.target(token: "display-2")])
     }
 
     // MARK: - Allocation and exact replay
@@ -695,7 +713,9 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
 
         store.migrateLegacyToken(defaults: defaults) { $0 == server.id ? server : nil }
 
-        XCTAssertEqual(store.targets(), [Self.target()])
+        // That build recorded no account; the target belongs to the server's
+        // legacy owner.
+        XCTAssertEqual(store.targets(), [Self.target(accountID: nil)])
         XCTAssertNil(keychain.get(SharedStorage.applePushDisplayTokenAccount))
         XCTAssertNil(defaults.string(forKey: SharedStorage.applePushDisplayTokenServerIdKey))
     }

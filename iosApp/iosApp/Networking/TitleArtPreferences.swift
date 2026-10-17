@@ -253,7 +253,7 @@ final class TitleArtPreferences {
         self.defaults = defaults
         self.transport = transport
         self.requestIdentity = requestIdentity
-        loadCache(for: requestIdentity().map(Self.cacheKey(for:)))
+        loadCache(for: requestIdentity().map(adoptedCacheKey(for:)))
     }
 
     /// The answer for the active identity. After a profile or server switch,
@@ -264,7 +264,7 @@ final class TitleArtPreferences {
         // the cached-answer path is still invalidated when a refresh adopts the
         // new identity and replaces `setting`.
         let loaded = setting
-        let key = requestIdentity().map(Self.cacheKey(for:))
+        let key = requestIdentity().map(adoptedCacheKey(for:))
         guard key != loadedCacheKey else { return loaded }
         return key.flatMap(cachedSetting(for:))
     }
@@ -286,7 +286,7 @@ final class TitleArtPreferences {
             syncState = .unavailable
             return
         }
-        let context = OperationContext(cacheKey: Self.cacheKey(for: identity), requestIdentity: identity)
+        let context = OperationContext(cacheKey: adoptedCacheKey(for: identity), requestIdentity: identity)
         loadCache(for: context.cacheKey)
         refreshSequence += 1
         let sequence = refreshSequence
@@ -396,7 +396,7 @@ final class TitleArtPreferences {
         guard !steps.isEmpty,
               allowsEditing,
               let identity = requestIdentity() else { return }
-        let context = OperationContext(cacheKey: Self.cacheKey(for: identity), requestIdentity: identity)
+        let context = OperationContext(cacheKey: adoptedCacheKey(for: identity), requestIdentity: identity)
         guard context.cacheKey == loadedCacheKey else { return }
 
         let epoch = failureEpochs[context.cacheKey, default: 0]
@@ -578,8 +578,21 @@ final class TitleArtPreferences {
         }
     }
 
+    private static let cachePrefix = "silo.titleArt"
+
+    /// `silo.titleArt.v2.<server>.<account>.<profile>`, or the key from
+    /// before accounts while the account is unknown.
     static func cacheKey(for identity: HTTPRequestIdentity) -> String {
-        "silo.titleArt.\(identity.serverId).\(identity.profileId)"
+        AccountScopedKeyAdoption.key(cachePrefix, serverID: identity.serverId,
+                                     accountID: identity.accountID, profileID: identity.profileId)
+    }
+
+    /// `cacheKey(for:)`, after the legacy owner takes over the cache saved
+    /// before accounts.
+    private func adoptedCacheKey(for identity: HTTPRequestIdentity) -> String {
+        AccountScopedKeyAdoption.adoptedKey(Self.cachePrefix, serverID: identity.serverId,
+                                            accountID: identity.accountID, profileID: identity.profileId,
+                                            defaults: defaults)
     }
 
     static func activeRequestIdentity() -> HTTPRequestIdentity? {
@@ -591,7 +604,8 @@ final class TitleArtPreferences {
             serverId: server.id,
             serverURL: server.url,
             profileId: profileId,
-            clientFamily: AppleDeviceIdentity.current.clientFamily
+            clientFamily: AppleDeviceIdentity.current.clientFamily,
+            accountID: AccountScopeReader.currentAccountID()
         )
     }
 }
