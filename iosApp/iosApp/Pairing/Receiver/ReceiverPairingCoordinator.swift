@@ -711,14 +711,18 @@ final class ReceiverPairingCoordinator {
             lastUsedAt: Date(),
             verifiedServerId: pairing.verifiedServerId
         )
-        // Re-pairing an already saved server replaces its credential slot in
-        // the session install below (and adopts the slot even when the write fails
-        // part way), before the registry commit can still fail. Keep what
-        // the slot and its server-scoped profile proof held, so either
-        // failure puts it back instead of leaving the new credentials, an
-        // adoption marker, or a tombstone behind a reported failure.
-        let previousSession = await TokenStore.shared.accountSessionSnapshot(for: id)
-        guard previousSession != .unreadable else {
+        // The install below adds or refreshes this account's sign-in, or
+        // replaces the server's current one (`AuthService.commitInterimSignIn`),
+        // before the registry commit can still fail. Keep what every sign-in
+        // on the server, the server's own session, and their profile proofs
+        // held, so either failure puts it back instead of leaving the new
+        // credentials or a removal behind a reported failure.
+        guard let pairedKey = SignInKey(serverID: id, accountID: pairing.accountID) else {
+            await HTTPClient.shared.endIdentityTransition(transitionLease)
+            return false
+        }
+        let previousCredentials = await TokenStore.shared.signInSnapshot(for: pairedKey, serverID: id)
+        guard previousCredentials.isReadable else {
             // A slot that cannot be read cannot be restored either; refuse
             // before anything is mutated rather than fail half way.
             await HTTPClient.shared.endIdentityTransition(transitionLease)
@@ -755,46 +759,55 @@ final class ReceiverPairingCoordinator {
         await TokenStore.shared.switchActiveServer(serverId: id)
         await TokenStore.shared.setProfileId(nil)
         await TokenStore.shared.setProfileToken(nil)
-        // One rollback for both failure points below. The slot is restored
-        // first (a failed install has still blocked the runtime session
-        // and may have adopted the slot; a failed commit has the candidate's
-        // tokens persisted in it), then the URL and profile, so the previous
-        // server reads exactly as it did before pairing started. When the
-        // slot itself cannot be restored the token store keeps that server
-        // blocked (fail closed) and pairing still reports failure; the
-        // registry entry stays either way so the user can retry.
+        // One rollback for both failure points below. The URL comes back
+        // first, then the server's credentials and the previous selection
+        // (a failed install has already put back its own changes; a failed
+        // commit has the candidate's sign-in saved), then the profile, so the
+        // previous server reads exactly as it did before pairing started.
+        // When the credentials cannot be restored the token store keeps that
+        // server's credentials blocked (fail closed) and pairing still reports
+        // failure; the registry entry stays either way so the user can retry.
         func rollBack() async {
-            let restored = await TokenStore.shared.restoreAccountSession(previousSession, for: id)
+            await TokenStore.shared.setServerUrl(previousServerURL)
+            let restored = await TokenStore.shared.restore(previousCredentials)
             if !restored {
                 Self.logger.error("pairing rollback could not restore the previous session; the server stays blocked until relaunch")
             }
-            await TokenStore.shared.setServerUrl(previousServerURL)
             await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
             await TokenStore.shared.setProfileId(previousProfileID)
             _ = await TokenStore.shared.setProfileToken(previousProfileToken)
             restoreRememberedProfile()
             await HTTPClient.shared.endIdentityTransition(transitionLease)
         }
+        let revocations: [RevocableCredential]
         do {
-            try await TokenStore.shared.installAccountSession(
+            guard let expected = await TokenStore.shared.refreshAccountIdentity() else {
+                throw HTTPError.requestIdentityChanged
+            }
+            revocations = try await AuthService.shared.commitInterimSignIn(
                 accessToken: access,
                 refreshToken: refresh,
-                accountID: pairing.accountID,
-                clearProfile: false
+                account: SignInAccount(id: pairing.accountID, username: nil),
+                expectedAccount: expected
             )
         } catch {
             Self.logger.error("pairing session install failed: \(String(describing: error), privacy: .private)")
             await rollBack()
             return false
         }
+        let selection = await TokenStore.shared.currentSelection()
+        let userID = await TokenStore.shared.currentUserID()
         guard await ServerRegistry.shared.commitSwitchTo(
             serverId: id,
+            credential: selection,
+            userID: userID,
             holding: transitionLease
         ) else {
             await rollBack()
             return false
         }
         await HTTPClient.shared.endIdentityTransition(transitionLease)
+        AuthService.shared.revoke(revocations)
         await ServerRegistry.shared.refreshFeaturesAfterGatedServerSwitch()
         return true
     }

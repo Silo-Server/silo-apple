@@ -2996,6 +2996,26 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         )
     }
 
+    /// Signs the shared store in to its active server. The test host is the
+    /// app, and its launch writes the simulator's user index, after which a
+    /// session is a saved sign-in in the current user rather than the
+    /// server's own slot. Removing the server afterwards removes it again.
+    private func signInSharedStore(accessToken: String, refreshToken: String) async throws {
+        let store = TokenStore.shared
+        guard let directory = try? await store.directory() else {
+            await store.saveTokens(accessToken: accessToken, refreshToken: refreshToken)
+            return
+        }
+        let identity = await store.refreshAccountIdentity()
+        let expected = try XCTUnwrap(identity)
+        let currentUserID = await store.currentUserID()
+        let placement: SignInPlacement = currentUserID.flatMap(directory.user(withID:))
+            .map { .join(userID: $0.id) } ?? .newUser
+        try await store.installSignIn(accessToken: accessToken, refreshToken: refreshToken,
+            account: SignInAccount(id: "self-hosted-diagnostics", username: nil),
+            origin: expected.serverURL, placement: placement, expected: expected)
+    }
+
     private func withTemporaryActiveSelfHostedServer<T>(
         _ operation: (String) async throws -> T
     ) async throws -> T {
@@ -3011,7 +3031,7 @@ final class HostedDiagnosticsAPITests: XCTestCase {
             lastUsedAt: Date()
         ))
         await registry.switchTo(serverId: serverRegistryID)
-        await TokenStore.shared.saveTokens(
+        try await signInSharedStore(
             accessToken: "global-self-hosted-access-token",
             refreshToken: "global-self-hosted-refresh-token"
         )

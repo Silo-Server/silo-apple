@@ -101,7 +101,8 @@ struct RestoredSessionValidator: Sendable {
                 await tokenStore.refreshAccountIdentity()
             },
             accessTokenReader: { serverID in
-                await tokenStore.hasAccessTokenForActiveServer(serverId: serverID)
+                guard await tokenStore.getActiveServerId() == serverID else { return false }
+                return await tokenStore.hasUsableCredential()
             },
             isServerUpdateRequired: isServerUpdateRequired,
             contractRecheck: contractRecheck
@@ -241,20 +242,33 @@ enum RestoredSessionAuthResolver {
         return hasProfile ? .authenticated : .needsProfile
     }
 
+    /// Runs the one-time sign-in migration first, before any credential is
+    /// selected, then selects the active server's credential with the interim
+    /// single-user rules (`TokenStore.interimSelection(forServer:)`): the
+    /// only or migrated user's sign-in or pending legacy server there, or
+    /// nothing, which shows sign-in.
     static func resolveLocal() async -> LocalResolution {
         let auth = AuthService.shared
+        let registry = ServerRegistry.shared
+        let tokenStore = TokenStore.shared
+        _ = await tokenStore.migrateLegacySessionsIfNeeded(
+            servers: registry.entries.map { (id: $0.id, url: $0.url) },
+            activeServerID: registry.activeServerId
+        )
         guard auth.hasServer,
-              let activeServerID = ServerRegistry.shared.activeServerId,
+              let activeServerID = registry.activeServerId,
               !activeServerID.isEmpty else {
             return LocalResolution(state: .needsServerSetup, restoredAccount: nil)
         }
 
-        guard await TokenStore.shared.hasAccessTokenForActiveServer(serverId: activeServerID) else {
+        let selected = await tokenStore.interimSelection(forServer: activeServerID)
+        await tokenStore.select(serverID: activeServerID, credential: selected.credential, userID: selected.userID)
+        guard await tokenStore.hasUsableCredential() else {
             return LocalResolution(state: .needsLogin, restoredAccount: nil)
         }
 
         let hasProfile = await auth.resolveActiveProfileForSession()
-        let account = await TokenStore.shared.refreshAccountIdentity()
+        let account = await tokenStore.refreshAccountIdentity()
         return LocalResolution(
             state: localState(
                 hasServer: true,

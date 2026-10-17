@@ -133,15 +133,15 @@ enum ServerRegistryError: LocalizedError {
 /// - **UserDefaults** (`siloServerRegistry.v1`): the server list and
 ///   active ID on iOS/macOS. tvOS stores the shared list in the
 ///   user-independent Keychain and the active ID in current-user defaults.
-/// - **Keychain** (`SharedKeychain` service `org.siloserver.silo`, account
-///   `org.siloserver.silo.<id>.{accessToken,refreshToken,profileToken}`): per-
-///   server tokens, activated by `TokenStore.switchActiveServer`.
+/// - **Keychain**: saved sign-ins and per-server sessions, owned by
+///   `TokenStore`.
 ///
 /// The registry is the single source of truth for URL + name.
-/// TokenStore is the single source of truth for tokens. They coordinate
-/// through `switchActiveServer` — the registry writes the active ID and
-/// the active URL to UserDefaults, then tells TokenStore to
-/// retarget its Keychain slot.
+/// TokenStore is the single source of truth for tokens. A server can be
+/// saved without a sign-in, and several users can sign in to one server.
+/// They coordinate through `switchTo` — the registry writes the active ID
+/// and the active URL to UserDefaults, then tells TokenStore which
+/// credential on that server to select.
 @Observable
 final class ServerRegistry {
     static let shared = ServerRegistry()
@@ -155,13 +155,13 @@ final class ServerRegistry {
         shared.activeServerSnapshot.withLock { $0 }
     }
 
-    static let defaultsKey = "siloServerRegistry.v1"
+    static let defaultsKey = SharedStorage.serverRegistryDefaultsKey
     static let migratedKey = "siloServerRegistry.migrated.v1"
     /// Pre-rename names of the two keys above; `adoptLegacyDefaultsKeys`
     /// moves them once.
     private static let legacyDefaultsKey = "continuumServerRegistry.v1"
     private static let legacyMigratedKey = "continuumServerRegistry.migrated.v1"
-    private static let sharedTVRegistryAccount = SharedStorage.keychainAccountPrefix + "serverRegistry.v2"
+    private static let sharedTVRegistryAccount = SharedStorage.serverRegistryAccount
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "ServerRegistry"
@@ -359,14 +359,39 @@ final class ServerRegistry {
 
     // MARK: - Server switching
 
-    /// Activate a server: write the URL/active-ID mirrors and clear the
-    /// profile id, then publish `activeServerId` and retarget TokenStore.
-    /// Mirrors are written first so views reacting to the change read
-    /// consistent defaults.
+    /// Activate a server with the credential the interim single-user rules
+    /// pick there (`TokenStore.interimSelection(forServer:)`): the current
+    /// user's sign-in, or before migration the server's own session.
     @discardableResult
     func switchTo(
         serverId: String,
         resolveDestinationProfile: Bool = false
+    ) async -> Bool {
+        await performSwitch(serverId: serverId, credential: nil, userID: nil,
+                            resolveDestinationProfile: resolveDestinationProfile)
+    }
+
+    /// Activate a server and select `credential` on it for `userID`: write
+    /// the URL/active-ID mirrors and clear the profile id, then publish
+    /// `activeServerId` and select the credential in TokenStore. Mirrors are
+    /// written first so views reacting to the change read consistent
+    /// defaults.
+    @discardableResult
+    func switchTo(
+        serverId: String,
+        credential: CredentialSelection,
+        userID: String?,
+        resolveDestinationProfile: Bool = false
+    ) async -> Bool {
+        await performSwitch(serverId: serverId, credential: credential, userID: userID,
+                            resolveDestinationProfile: resolveDestinationProfile)
+    }
+
+    private func performSwitch(
+        serverId: String,
+        credential: CredentialSelection?,
+        userID: String?,
+        resolveDestinationProfile: Bool
     ) async -> Bool {
         guard entries.contains(where: { $0.id == serverId }) else {
             Self.logger.error("switchTo called with unknown server id")
@@ -399,7 +424,8 @@ final class ServerRegistry {
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
-        let committed = await commitSwitchTo(serverId: serverId, abortIfCancelled: true)
+        let committed = await commitSwitchTo(serverId: serverId, credential: credential, userID: userID,
+                                             abortIfCancelled: true)
         guard committed else {
             #if os(iOS) || os(tvOS)
             DiagnosticsCoordinator.activeProfileDidChange()
@@ -426,6 +452,8 @@ final class ServerRegistry {
     @discardableResult
     func commitSwitchTo(
         serverId: String,
+        credential: CredentialSelection,
+        userID: String?,
         holding transitionLease: HTTPIdentityTransitionLease
     ) async -> Bool {
         guard entries.contains(where: { $0.id == serverId }),
@@ -444,7 +472,8 @@ final class ServerRegistry {
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
-        let committed = await commitSwitchTo(serverId: serverId, abortIfCancelled: false)
+        let committed = await commitSwitchTo(serverId: serverId, credential: credential, userID: userID,
+                                             abortIfCancelled: false)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
         #endif
@@ -459,10 +488,13 @@ final class ServerRegistry {
     /// callers already called `activeProfileWillChange()`, which closes the
     /// capture gate and purges the outgoing journal, and anything written
     /// after `activeProfileDidChange()` lands in the destination account's
-    /// journal. Failures here go to OSLog only.
+    /// journal. Failures here go to OSLog only. A nil `credential` selects
+    /// the interim choice on the destination.
     @discardableResult
     private func commitSwitchTo(
         serverId: String,
+        credential: CredentialSelection?,
+        userID: String?,
         abortIfCancelled: Bool
     ) async -> Bool {
         guard let entry = entries.first(where: { $0.id == serverId }) else {
@@ -479,10 +511,14 @@ final class ServerRegistry {
         let previousServerURL = defaults.string(forKey: SharedStorage.serverUrlKey)
         let previousMirroredServerID = defaults.string(forKey: SharedStorage.activeServerIdKey)
         let previousProfileID = defaults.string(forKey: SharedStorage.profileIdKey)
+        let previousAccountID = defaults.string(forKey: SharedStorage.activeAccountIdKey)
 
         defaults.set(entry.url, forKey: SharedStorage.serverUrlKey)
         defaults.set(serverId, forKey: SharedStorage.activeServerIdKey)
         defaults.removeObject(forKey: SharedStorage.profileIdKey)
+        // TokenStore rewrites the account mirror when it selects below; until
+        // then no reader may pair the new server with the old account.
+        defaults.removeObject(forKey: SharedStorage.activeAccountIdKey)
         activeServerId = serverId
         if let index = entries.firstIndex(where: { $0.id == serverId }) {
             entries[index].lastUsedAt = Date()
@@ -494,10 +530,17 @@ final class ServerRegistry {
             defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
             defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
             defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
+            defaults.set(previousAccountID, forKey: SharedStorage.activeAccountIdKey)
             Self.logger.error("switchTo failed to persist the destination server")
             return false
         }
-        await tokenStore.switchActiveServer(serverId: serverId)
+        let selected: (credential: CredentialSelection, userID: String?)
+        if let credential {
+            selected = (credential, userID)
+        } else {
+            selected = await tokenStore.interimSelection(forServer: serverId)
+        }
+        await tokenStore.select(serverID: serverId, credential: selected.credential, userID: selected.userID)
         return true
     }
 
@@ -539,8 +582,9 @@ final class ServerRegistry {
         }
     }
 
-    /// Forget the entry and its credentials. Removing the active server
-    /// selects the most recently used remaining server, or clears setup.
+    /// Forget the entry and every user's sign-in on it, revoking each session
+    /// once it is gone locally. Removing the active server selects the most
+    /// recently used remaining server, or clears setup.
     @discardableResult
     func remove(
         serverId: String,
@@ -656,12 +700,12 @@ final class ServerRegistry {
             if let fallback {
                 defaults.set(fallback.url, forKey: SharedStorage.serverUrlKey)
                 defaults.set(fallback.id, forKey: SharedStorage.activeServerIdKey)
-                defaults.removeObject(forKey: SharedStorage.profileIdKey)
             } else {
                 defaults.removeObject(forKey: SharedStorage.serverUrlKey)
                 defaults.removeObject(forKey: SharedStorage.activeServerIdKey)
-                defaults.removeObject(forKey: SharedStorage.profileIdKey)
             }
+            defaults.removeObject(forKey: SharedStorage.profileIdKey)
+            defaults.removeObject(forKey: SharedStorage.activeAccountIdKey)
             activeServerId = fallback?.id
         }
         // Two durable writes happen here: the registry without this entry,
@@ -686,6 +730,10 @@ final class ServerRegistry {
             defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
             defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
             defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
+            // TokenStore owns the account mirror, and a failed removal may
+            // already have dropped the selected sign-in, so it comes from
+            // the selection rather than from before the removal.
+            defaults.set(await tokenStore.currentSignInKey()?.accountID, forKey: SharedStorage.activeAccountIdKey)
             #if os(iOS) || os(tvOS)
             if removesActiveServer {
                 DiagnosticsCoordinator.activeProfileDidChange()
@@ -705,12 +753,15 @@ final class ServerRegistry {
             await rollBackRemoval(reason: "persistFailed")
             return false
         }
-        // A canonical record that cannot be tombstoned would outlive the
-        // entry and restore the session when the same server is added again,
-        // so the entry comes back instead. Process-local credentials for the
-        // server are already cleared and its runtime is blocked; the record
-        // itself is intact, which is the state the restored entry describes.
-        guard await tokenStore.deleteTokens(for: serverId) else {
+        // A sign-in that cannot be removed would outlive the entry and
+        // restore the session when the same server is added again, so the
+        // entry comes back instead. Process-local credentials for the server
+        // are already cleared and its runtime is blocked. Each session that
+        // is gone for good is revoked, after the local deletion and without
+        // waiting: removing a server never waits on the network.
+        let removals = await tokenStore.removeServer(serverId)
+        revoke(removals)
+        guard removals.allSatisfy(\.durable) else {
             await rollBackRemoval(reason: "sessionInvalidationFailed")
             return false
         }
@@ -725,7 +776,9 @@ final class ServerRegistry {
             )
         }
         if removesActiveServer {
-            await tokenStore.switchActiveServer(serverId: activeServerId ?? "")
+            let fallbackID = activeServerId ?? ""
+            let fallback = await tokenStore.interimSelection(forServer: fallbackID)
+            await tokenStore.select(serverID: fallbackID, credential: fallback.credential, userID: fallback.userID)
         }
         launchPreferences.clearRememberedProfile(for: serverId)
         // Branding is cached by address; another saved entry for the same
@@ -755,6 +808,14 @@ final class ServerRegistry {
             await refreshFeaturesAfterServerSwitch()
         }
         return true
+    }
+
+    private func revoke(_ removals: [SignInRemoval]) {
+        var sent: Set<String> = []
+        for credential in removals.filter(\.durable).compactMap(\.credential)
+        where sent.insert(credential.accessToken).inserted {
+            Task { [httpClient] in await httpClient.revoke(credential) }
+        }
     }
 
     // MARK: - ID derivation
@@ -987,6 +1048,8 @@ final class ServerRegistry {
     /// Move the old registry-owned profile ID into the current user's launch
     /// store. The legacy field remains encoded until the destination mapping
     /// and account epoch can be read back, making interruption retry-safe.
+    /// After sign-in migration the server's raw slots are gone, and the
+    /// sign-in that took over its data supplies the epoch.
     private func migrateLegacyProfileMappingsIfNeeded() {
         let accountKeychain = keychain.withAudience(.userIndependent)
         let profileKeychain = keychain.withAudience(.currentUser)
@@ -997,19 +1060,20 @@ final class ServerRegistry {
             let accessKey = TokenStore.accessTokenKey(for: serverID)
             let epochKey = TokenStore.accountEpochKey(for: serverID)
 
-            guard accountKeychain.get(accessKey) != nil else {
-                // A signed-out legacy entry has no account to which the old
-                // profile could safely be bound.
-                let legacyProfileID = entries[index].legacyProfileId
-                entries[index].legacyProfileId = nil
-                if !persist() {
-                    entries[index].legacyProfileId = legacyProfileID
-                }
-                continue
-            }
-
             let accountEpoch: String
-            if let existing = accountKeychain.get(epochKey), !existing.isEmpty {
+            if accountKeychain.get(accessKey) == nil {
+                guard let epoch = migratedSignInEpoch(forServerID: serverID) else {
+                    // A signed-out legacy entry has no account to which the old
+                    // profile could safely be bound.
+                    let legacyProfileID = entries[index].legacyProfileId
+                    entries[index].legacyProfileId = nil
+                    if !persist() {
+                        entries[index].legacyProfileId = legacyProfileID
+                    }
+                    continue
+                }
+                accountEpoch = epoch
+            } else if let existing = accountKeychain.get(epochKey), !existing.isEmpty {
                 accountEpoch = existing
             } else {
                 let generated = UUID().uuidString
@@ -1035,6 +1099,17 @@ final class ServerRegistry {
                 entries[index].legacyProfileId = profileID
             }
         }
+    }
+
+    /// The epoch of the signed-in saved sign-in that took over a server's
+    /// data from before sign-ins existed, if any.
+    private func migratedSignInEpoch(forServerID serverID: String) -> String? {
+        let store = SavedSignInStore(keychain: keychain)
+        guard let index = try? store.loadIndex(),
+              let accountID = index.legacyDataOwnerByServerID?[serverID],
+              let key = SignInKey(serverID: serverID, accountID: accountID),
+              let signIn = try? store.loadSignIn(key), signIn.isSignedIn else { return nil }
+        return signIn.epoch?.uuidString
     }
 
     // MARK: - Migration from the continuum → silo rename

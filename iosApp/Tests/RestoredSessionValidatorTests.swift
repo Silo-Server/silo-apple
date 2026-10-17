@@ -291,7 +291,7 @@ final class RestoredSessionValidatorTests: XCTestCase {
             let restored = try XCTUnwrap(identity, c.name)
 
             let result = await validator.validate(expected: restored)
-            let hasAccessToken = await tokens.hasAccessTokenForActiveServer(serverId: restored.serverId)
+            let hasAccessToken = await tokens.hasUsableCredential()
 
             XCTAssertEqual(result, c.expected, c.name)
             XCTAssertEqual(hasAccessToken, c.keepsToken, c.name)
@@ -325,7 +325,7 @@ final class RestoredSessionValidatorTests: XCTestCase {
             let restored = try XCTUnwrap(identity)
 
             let result = await validator.validate(expected: restored)
-            let hasAccessToken = await tokens.hasAccessTokenForActiveServer(serverId: restored.serverId)
+            let hasAccessToken = await tokens.hasUsableCredential()
 
             let name = recheckAnswersV2 ? "re-probe answers v2" : "re-probe still v1-only"
             XCTAssertEqual(result, recheckAnswersV2 ? .valid : .serverRecovery(.serverUpdateRequired), name)

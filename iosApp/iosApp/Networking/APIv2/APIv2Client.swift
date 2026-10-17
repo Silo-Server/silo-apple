@@ -1,5 +1,12 @@
 import Foundation
 
+extension Notification.Name {
+    /// Posted (object: `BindOutcome`) when an account read turned a pending
+    /// legacy server into a saved sign-in, or found its account already
+    /// saved and dropped it (plan §3.3).
+    static let siloSignInMigrated = Notification.Name("siloSignInMigrated")
+}
+
 /// A v2 request was refused because its owner changed before the request
 /// reached the URL session. Nothing was sent.
 struct APIv2OwnerChangedBeforeDispatch: LocalizedError, Sendable {
@@ -136,7 +143,15 @@ struct APIv2Client: Sendable {
         guard let current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: captured) else {
             throw HTTPError.authorityChanged
         }
-        try await tokenStore.bindVerifiedAccount(value.id, expected: current)
+        let outcome = try await tokenStore.bindVerifiedAccount(value, expected: current)
+        switch outcome {
+        case .legacyMigrated, .legacyDuplicate:
+            await MainActor.run {
+                NotificationCenter.default.post(name: .siloSignInMigrated, object: outcome)
+            }
+        case .unchanged, .usernameUpdated:
+            break
+        }
         return value
     }
 

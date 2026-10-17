@@ -236,7 +236,7 @@ final class CredentialIdentityTests: XCTestCase {
         let ownerValue = await store.captureOrdinaryRequestAuth()
         let owner = try XCTUnwrap(ownerValue)
         // A durable authority only exists for a verified account binding.
-        try await store.bindVerifiedAccount("12", expected: owner)
+        try await store.bindVerifiedAccount(.stub(id: "12"), expected: owner)
         let durableValue = await store.captureDurableAccountAuth()
         let durable = try XCTUnwrap(durableValue)
         let rotated = await store.saveRefreshedTokens(
@@ -260,7 +260,7 @@ final class CredentialIdentityTests: XCTestCase {
         let (store, _) = try await makeStore()
         let ownerValue = await store.captureOrdinaryRequestAuth()
         let owner = try XCTUnwrap(ownerValue)
-        try await store.bindVerifiedAccount("12", expected: owner)
+        try await store.bindVerifiedAccount(.stub(id: "12"), expected: owner)
         let durableValue = await store.captureDurableAccountAuth()
         let durable = try XCTUnwrap(durableValue)
         await store.setProfileId("profile-b")

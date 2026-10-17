@@ -17,6 +17,10 @@ import Foundation
 /// 401 that survives the refresh means the session is gone; the caller
 /// returns no content and the system shows the static top-shelf image.
 ///
+/// Which credentials it reads comes from `TopShelfCredentialResolver`: the
+/// active server's per-server slots before sign-ins existed, and afterwards
+/// this Apple TV user's saved sign-in.
+///
 /// Lives in Shared so the test bundles can reach it.
 struct TopShelfHTTPClient {
     enum Error: Swift.Error {
@@ -29,12 +33,16 @@ struct TopShelfHTTPClient {
     let accountKeychain: SharedKeychain
     let profileKeychain: SharedKeychain
     let session: URLSession
+    private let savedSignIns: SavedSignInStore
+    private let signInProofs: SignInProofStore
     /// Read once by `authenticated()` so each request skips the keychain.
     private var credentials: Credentials?
 
-    /// The account and profile a set of credentials was read for.
+    /// The account and profile a set of credentials was read for. The
+    /// account is nil for a server's own session.
     private struct Scope: Equatable {
         let serverID: String
+        let accountID: String?
         let profileID: String?
         let accountEpoch: String?
     }
@@ -82,23 +90,65 @@ struct TopShelfHTTPClient {
         self.accountKeychain = keychain.withAudience(.userIndependent)
         self.profileKeychain = keychain.withAudience(.currentUser)
         self.session = session
+        self.savedSignIns = SavedSignInStore(keychain: keychain)
+        self.signInProofs = SignInProofStore(keychain: keychain)
     }
 
     var isPersonalizedContentAllowed: Bool {
-        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else {
-            return false
-        }
         let state = ProfileLaunchState.load(from: defaults)
-        return TopShelfProfilePolicy.allowsPersonalizedContent(
-            state: state,
-            serverID: serverID,
+        let activeProfileID = defaults.string(forKey: SharedStorage.profileIdKey)
+        switch resolveCredential(state: state) {
+        case .unavailable:
+            return false
+        case .legacy(let serverID):
+            return TopShelfProfilePolicy.allowsPersonalizedContent(
+                state: state,
+                serverID: serverID,
+                activeProfileID: activeProfileID,
+                accountEpoch: accountKeychain.get(
+                    SharedStorage.accountEpochAccount(for: serverID)
+                ),
+                hasStoredProfileToken: profileKeychain.get(
+                    SharedStorage.profileTokenAccount(for: serverID)
+                ) != nil
+            )
+        case .signIn(let credential):
+            return TopShelfProfilePolicy.allowsPersonalizedContent(
+                state: state,
+                key: credential.key,
+                legacyOwnerAccountID: credential.legacyOwnerAccountID,
+                activeProfileID: activeProfileID,
+                accountEpoch: credential.accountEpoch,
+                hasStoredProfileToken: credential.profileToken != nil
+            )
+        }
+    }
+
+    /// This Apple TV user's credential, read fresh. An index that can't be
+    /// read shows nothing; Top Shelf never writes.
+    private func resolveCredential(
+        state: ProfileLaunchState? = nil
+    ) -> TopShelfCredentialResolver.Resolution {
+        let index: SiloUserIndex?
+        do { index = try savedSignIns.loadIndex() } catch { return .unavailable }
+        var savedServers: Set<String> = []
+        if index != nil {
+            guard let ids = SharedStorage.storedServerIDs(keychain: accountKeychain, defaults: defaults) else {
+                return .unavailable
+            }
+            savedServers = ids
+        }
+        return TopShelfCredentialResolver.resolve(
+            index: index,
+            savedServerIDs: savedServers,
+            state: state ?? ProfileLaunchState.load(from: defaults),
+            activeServerID: defaults.string(forKey: SharedStorage.activeServerIdKey),
+            activeAccountID: AccountScopeReader.currentAccountID(defaults: defaults),
             activeProfileID: defaults.string(forKey: SharedStorage.profileIdKey),
-            accountEpoch: accountKeychain.get(
-                SharedStorage.accountEpochAccount(for: serverID)
-            ),
-            hasStoredProfileToken: profileKeychain.get(
-                SharedStorage.profileTokenAccount(for: serverID)
-            ) != nil
+            serverURL: defaults.string(forKey: SharedStorage.serverUrlKey),
+            signIn: { try? savedSignIns.loadSignIn($0) },
+            proof: { try? signInProofs.load($0) },
+            legacyProof: { signInProofs.loadLegacy(serverID: $0) }
         )
     }
 
@@ -111,34 +161,69 @@ struct TopShelfHTTPClient {
     }
 
     private func currentScope() -> Scope? {
-        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else { return nil }
-        return Scope(
-            serverID: serverID,
-            profileID: defaults.string(forKey: SharedStorage.profileIdKey),
-            accountEpoch: accountKeychain.get(SharedStorage.accountEpochAccount(for: serverID))
-        )
+        let profileID = defaults.string(forKey: SharedStorage.profileIdKey)
+        switch resolveCredential() {
+        case .unavailable:
+            return nil
+        case .legacy(let serverID):
+            return Scope(
+                serverID: serverID,
+                accountID: nil,
+                profileID: profileID,
+                accountEpoch: accountKeychain.get(SharedStorage.accountEpochAccount(for: serverID))
+            )
+        case .signIn(let credential):
+            return Scope(
+                serverID: credential.key.serverID,
+                accountID: credential.key.accountID,
+                profileID: profileID,
+                accountEpoch: credential.accountEpoch
+            )
+        }
     }
 
-    /// A copy carrying the active server's credentials, or nil without an
+    /// A copy carrying this Apple TV user's credentials, or nil without an
     /// access token. Check `isPersonalizedContentAllowed` first.
     func authenticated() -> TopShelfHTTPClient? {
-        guard let scope = currentScope(),
-              let serverURL = defaults.string(forKey: SharedStorage.serverUrlKey),
-              !serverURL.isEmpty,
-              let accessToken = accountKeychain.get(SharedStorage.accessTokenAccount(for: scope.serverID))
-        else { return nil }
-        let serverID = scope.serverID
+        let profileID = defaults.string(forKey: SharedStorage.profileIdKey)
         var client = self
-        client.credentials = Credentials(
-            scope: scope,
-            serverURL: serverURL,
-            tokens: AccessTokenSlot(
-                accessToken: accessToken,
-                refreshToken: accountKeychain.get(SharedStorage.refreshTokenAccount(for: serverID))
-            ),
-            profileID: scope.profileID,
-            profileToken: profileKeychain.get(SharedStorage.profileTokenAccount(for: serverID))
-        )
+        switch resolveCredential() {
+        case .unavailable:
+            return nil
+        case .legacy(let serverID):
+            guard let serverURL = defaults.string(forKey: SharedStorage.serverUrlKey),
+                  !serverURL.isEmpty,
+                  let accessToken = accountKeychain.get(SharedStorage.accessTokenAccount(for: serverID))
+            else { return nil }
+            client.credentials = Credentials(
+                scope: Scope(
+                    serverID: serverID,
+                    accountID: nil,
+                    profileID: profileID,
+                    accountEpoch: accountKeychain.get(SharedStorage.accountEpochAccount(for: serverID))
+                ),
+                serverURL: serverURL,
+                tokens: AccessTokenSlot(
+                    accessToken: accessToken,
+                    refreshToken: accountKeychain.get(SharedStorage.refreshTokenAccount(for: serverID))
+                ),
+                profileID: profileID,
+                profileToken: profileKeychain.get(SharedStorage.profileTokenAccount(for: serverID))
+            )
+        case .signIn(let credential):
+            client.credentials = Credentials(
+                scope: Scope(
+                    serverID: credential.key.serverID,
+                    accountID: credential.key.accountID,
+                    profileID: profileID,
+                    accountEpoch: credential.accountEpoch
+                ),
+                serverURL: credential.origin,
+                tokens: AccessTokenSlot(accessToken: credential.accessToken, refreshToken: credential.refreshToken),
+                profileID: profileID,
+                profileToken: credential.profileToken
+            )
+        }
         return client
     }
 

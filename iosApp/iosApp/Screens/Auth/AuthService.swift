@@ -121,21 +121,39 @@ final class AuthService: @unchecked Sendable {
 
     var hasServer: Bool { serverRegistry.hasActiveServer }
 
-    /// The verified account signed in to the active server, read from the
-    /// same canonical record as `isLoggedIn`. Nil when signed out or for a
-    /// legacy session that never recorded its account.
+    /// The verified account of the credential selected on the active
+    /// server: the selected saved sign-in's (the `activeAccountId` mirror),
+    /// else the account recorded in the server's own session. Nil when
+    /// signed out or for a legacy session that never recorded its account.
     var accountID: String? {
-        guard let server = serverRegistry.activeServer,
+        guard let server = serverRegistry.activeServer else { return nil }
+        if let accountID = tokenStore.mirroredAccountID { return accountID }
+        guard legacySessionCounts(for: server.id),
               case .session(let session)? = try? sessionPersistence.load(server.id),
               session.origin == ServerRegistry.normalize(url: server.url) else { return nil }
         return session.accountID
     }
 
-    /// Use the same canonical record as TokenStore. Legacy mirrors cannot
-    /// revive a session after its sign-out tombstone has been written.
+    /// Whether the active server's selected credential is signed in, read
+    /// from the same records TokenStore loads. Legacy mirrors cannot revive a
+    /// session after its sign-out tombstone has been written.
     var isLoggedIn: Bool {
         guard let server = serverRegistry.activeServer else { return false }
-        return sessionPersistence.hasSession(serverID: server.id, origin: ServerRegistry.normalize(url: server.url))
+        let origin = ServerRegistry.normalize(url: server.url)
+        if let accountID = tokenStore.mirroredAccountID {
+            guard let key = SignInKey(serverID: server.id, accountID: accountID),
+                  let signIn = try? tokenStore.savedSignIns.loadSignIn(key) else { return false }
+            return signIn.isSignedIn && ServerRegistry.normalize(url: signIn.origin) == origin
+        }
+        guard legacySessionCounts(for: server.id) else { return false }
+        return sessionPersistence.hasSession(serverID: server.id, origin: origin)
+    }
+
+    /// A server's own session is read before sign-in migration, and after it
+    /// only while the server is a pending legacy server.
+    private func legacySessionCounts(for serverID: String) -> Bool {
+        guard let index = try? tokenStore.savedSignIns.loadIndex() else { return true }
+        return index.users.contains { $0.pendingLegacyServerIDs?.contains(serverID) == true }
     }
 
     var hasProfile: Bool { profileId != nil }
@@ -316,7 +334,7 @@ final class AuthService: @unchecked Sendable {
         try await installSession(
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
-            accountID: tokens.user.id,
+            account: SignInAccount(id: tokens.user.id, username: tokens.user.username),
             expectedAccount: expectedAccount
         )
     }
@@ -333,9 +351,24 @@ final class AuthService: @unchecked Sendable {
         accountID: String,
         expectedAccount: RefreshAccountIdentity
     ) async throws {
+        try await installSession(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            account: SignInAccount(id: accountID, username: nil),
+            expectedAccount: expectedAccount
+        )
+    }
+
+    private func installSession(
+        accessToken: String,
+        refreshToken: String,
+        account: SignInAccount,
+        expectedAccount: RefreshAccountIdentity
+    ) async throws {
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
             throw CancellationError()
         }
+        let revocations: [RevocableCredential]
         do {
             try Task.checkCancellation()
             await httpClient.cancelInFlightRequests()
@@ -344,24 +377,12 @@ final class AuthService: @unchecked Sendable {
                 try Task.checkCancellation()
                 throw HTTPError.requestIdentityChanged
             }
-            let previousSession = await tokenStore.accountSessionSnapshot(for: expectedAccount.serverId)
-            guard previousSession != .unreadable else {
-                throw AccountSessionPersistenceError.unavailable
-            }
-            let previousProfileID = await tokenStore.getProfileId()
-            await tokenStore.clearTokens()
-            do {
-                try await tokenStore.installAccountSession(
-                    accessToken: accessToken,
-                    refreshToken: refreshToken,
-                    accountID: accountID
-                )
-            } catch {
-                // TokenStore blocks the session if restoration also fails.
-                _ = await tokenStore.restoreAccountSession(previousSession, for: expectedAccount.serverId)
-                await tokenStore.setProfileId(previousProfileID)
-                throw error
-            }
+            revocations = try await commitInterimSignIn(
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                account: account,
+                expectedAccount: expectedAccount
+            )
             launchPreferences.clearRememberedProfile(for: expectedAccount.serverId)
             await clearAllCaches()
         } catch {
@@ -369,6 +390,148 @@ final class AuthService: @unchecked Sendable {
             throw error
         }
         await httpClient.endIdentityTransition(transitionLease)
+        revoke(revocations)
+    }
+
+    /// Saves a new session for the active server with the interim rules
+    /// that keep a single-user device behaving as before (plan §2.5), while
+    /// the caller holds the identity transition:
+    ///
+    /// - the same account already saved: refresh it;
+    /// - the current user already has another account (or a pending legacy
+    ///   session) on this server: remove that one, then add this one, as
+    ///   signing in has always replaced a server's session;
+    /// - otherwise: join the current user, or create the first user.
+    ///
+    /// Before sign-in migration, the server's own session is replaced as it
+    /// always was. A failure puts back what was there. Returns the sessions
+    /// to revoke once the caller has released the transition. WP3's
+    /// placement policy and prompts replace this.
+    func commitInterimSignIn(
+        accessToken: String,
+        refreshToken: String,
+        account: SignInAccount,
+        expectedAccount: RefreshAccountIdentity
+    ) async throws -> [RevocableCredential] {
+        let serverID = expectedAccount.serverId
+        let directory: SiloUserDirectorySnapshot
+        do {
+            directory = try await tokenStore.directory()
+        } catch SavedSignInAccessError.notMigrated {
+            try await replaceServerSession(
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                accountID: account.id,
+                serverID: serverID
+            )
+            return []
+        } catch {
+            throw AccountSessionPersistenceError.unavailable
+        }
+        guard let key = SignInKey(serverID: serverID, accountID: account.id) else {
+            throw AccountSessionPersistenceError.invalidIdentity
+        }
+
+        if directory.user(owning: key) != nil {
+            let result = try await tokenStore.installSignIn(
+                accessToken: accessToken, refreshToken: refreshToken, account: account,
+                origin: expectedAccount.serverURL, placement: .refresh(key), expected: expectedAccount
+            )
+            return result.superseded.map { [$0] } ?? []
+        }
+
+        let currentUserID = await tokenStore.currentUserID()
+        let user = currentUserID.flatMap(directory.user(withID:))
+        let replaced = user?.signIns.first { $0.serverID == serverID }
+        let replacesPending = user?.pendingLegacyServerIDs?.contains(serverID) == true
+        guard let user, replaced != nil || replacesPending else {
+            let result = try await tokenStore.installSignIn(
+                accessToken: accessToken, refreshToken: refreshToken, account: account,
+                origin: expectedAccount.serverURL,
+                placement: user.map { .join(userID: $0.id) } ?? .newUser,
+                expected: expectedAccount
+            )
+            return result.superseded.map { [$0] } ?? []
+        }
+
+        // Replace: one snapshot covers every sign-in on the server, its own
+        // session, and the selection, so a failed install puts it all back.
+        let snapshot = await tokenStore.signInSnapshot(for: replaced, serverID: serverID)
+        guard snapshot.isReadable else { throw AccountSessionPersistenceError.unavailable }
+        let previousProfileID = await tokenStore.getProfileId()
+        let removal: SignInRemoval
+        if let replaced {
+            removal = await tokenStore.removeSignIn(replaced)
+        } else {
+            removal = await tokenStore.removeLegacyServer(serverID)
+        }
+        func rollBack() async {
+            // TokenStore blocks the selection if restoration also fails.
+            _ = await tokenStore.restore(snapshot)
+            await tokenStore.setProfileId(previousProfileID)
+        }
+        guard removal.durable else {
+            await rollBack()
+            throw AccountSessionPersistenceError.unavailable
+        }
+        // Removing the server's last sign-in removed the user; this sign-in
+        // founds its replacement.
+        let placement: SignInPlacement = removal.removedUserID == user.id ? .newUser : .join(userID: user.id)
+        // The removal minted a new credential generation; the caller already
+        // checked the account captured before the request.
+        guard let current = await tokenStore.refreshAccountIdentity(),
+              current.serverId == expectedAccount.serverId,
+              current.serverURL == expectedAccount.serverURL else {
+            await rollBack()
+            throw HTTPError.requestIdentityChanged
+        }
+        let result: SignInInstallResult
+        do {
+            result = try await tokenStore.installSignIn(
+                accessToken: accessToken, refreshToken: refreshToken, account: account,
+                origin: expectedAccount.serverURL, placement: placement, expected: current
+            )
+        } catch {
+            await rollBack()
+            throw error
+        }
+        return [removal.credential, result.superseded].compactMap { $0 }
+    }
+
+    /// Before sign-in migration: replace the server's own session, restoring
+    /// it if the install fails.
+    private func replaceServerSession(
+        accessToken: String,
+        refreshToken: String,
+        accountID: String,
+        serverID: String
+    ) async throws {
+        let previousSession = await tokenStore.accountSessionSnapshot(for: serverID)
+        guard previousSession != .unreadable else {
+            throw AccountSessionPersistenceError.unavailable
+        }
+        let previousProfileID = await tokenStore.getProfileId()
+        await tokenStore.clearTokens()
+        do {
+            try await tokenStore.installAccountSession(
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                accountID: accountID
+            )
+        } catch {
+            // TokenStore blocks the session if restoration also fails.
+            _ = await tokenStore.restoreAccountSession(previousSession, for: serverID)
+            await tokenStore.setProfileId(previousProfileID)
+            throw error
+        }
+    }
+
+    /// Ends sessions this device no longer keeps, after local state is
+    /// already gone, without waiting.
+    func revoke(_ credentials: [RevocableCredential]) {
+        for credential in credentials {
+            Task { [httpClient] in await httpClient.revoke(credential) }
+        }
     }
 
     // MARK: - Profiles
@@ -841,8 +1004,12 @@ final class AuthService: @unchecked Sendable {
 
     // MARK: - Sign Out
 
-    /// Clear local credentials under the identity gate. Remote revocation uses
-    /// only the outgoing credential and cannot delay logout or alter a new login.
+    /// Sign the current user out of the active server under the identity
+    /// gate: the selected saved sign-in is removed (and its user, when it was
+    /// the last one), or before migration the server's own session. Remote
+    /// revocation uses only the outgoing credential, refreshing it first if
+    /// it expired, and cannot delay logout or alter a new login. Diagnostics
+    /// for the server are purged only when no sign-in remains on it.
     func signOutWithOutcome() async -> SignOutOutcome {
         let serverID = serverRegistry.activeServerId
         let capturedAuth = await tokenStore.captureOrdinaryRequestAuth()
@@ -869,18 +1036,20 @@ final class AuthService: @unchecked Sendable {
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
-        let durable = await tokenStore.clearTokens()
+        let removal = await tokenStore.removeCurrentCredential()
         var diagnosticsRemoved = true
         if let serverID {
             launchPreferences.clearRememberedProfile(for: serverID)
-            diagnosticsRemoved = await purgeDiagnostics(serverID)
+            // Reports and consent are server-wide; another user still signed
+            // in there keeps theirs.
+            if await !tokenStore.hasSavedSignIn(onServer: serverID) {
+                diagnosticsRemoved = await purgeDiagnostics(serverID)
+            }
         }
         await clearAllCaches()
         await httpClient.endIdentityTransition(lease)
-        if let capturedAuth {
-            Task { await httpClient.revokeSession(capturedAuth) }
-        }
-        guard durable else { return .localOnly }
+        revoke(removal.credential.map { [$0] } ?? [])
+        guard removal.durable else { return .localOnly }
         return diagnosticsRemoved ? .completed : .diagnosticsCleanupFailed
     }
 

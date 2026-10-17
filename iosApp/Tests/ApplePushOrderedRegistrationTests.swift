@@ -113,7 +113,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             XCTAssertTrue(saved)
             await tokens.setProfileId("other-profile")
             let captured = await tokens.captureOrdinaryRequestAuth()
-            try await tokens.bindVerifiedAccount("34", expected: XCTUnwrap(captured))
+            try await tokens.bindVerifiedAccount(.stub(id: "34"), expected: XCTUnwrap(captured))
         }
 
         func owner() async throws -> CapturedDurableAccountAuth {
@@ -163,7 +163,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertTrue(proofStored)
         let captured = await tokens.captureOrdinaryRequestAuth()
         let requestOwner = try XCTUnwrap(captured)
-        try await tokens.bindVerifiedAccount("12", expected: requestOwner)
+        try await tokens.bindVerifiedAccount(.stub(id: "12"), expected: requestOwner)
 
         let server = PushServer()
         let http = HTTPClient(session: server.handler.makeSession(), tokenStore: tokens)
@@ -666,7 +666,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertTrue(activated)
         XCTAssertEqual(h.targets.targets(), [Self.target(), other])
 
-        await h.tokens.deleteTokens(for: Self.otherServerID)
+        await h.tokens.removeServer(Self.otherServerID)
         XCTAssertEqual(h.targets.targets(), [Self.target()])
         await h.tokens.clearTokens()
         XCTAssertEqual(h.targets.targets(), [])

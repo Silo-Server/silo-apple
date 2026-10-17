@@ -11,6 +11,18 @@ struct HTTPRequestIdentity: Equatable, Sendable {
     let serverURL: String
     let profileId: String
     let clientFamily: String
+    /// The account the work was queued for. Profile IDs repeat across
+    /// accounts on one server, so when set, `TokenStore.captureRequestAuth`
+    /// also requires the selected sign-in to be this account.
+    let accountID: String?
+
+    init(serverId: String, serverURL: String, profileId: String, clientFamily: String, accountID: String? = nil) {
+        self.serverId = serverId
+        self.serverURL = serverURL
+        self.profileId = profileId
+        self.clientFamily = clientFamily
+        self.accountID = accountID
+    }
 }
 
 enum CapturedHTTPRequestCredentialOwner: Equatable, Sendable {
@@ -404,25 +416,45 @@ actor HTTPClient {
         }
     }
 
-    /// Best-effort revocation after local sign-out (`POST /api/v2/auth/logout`).
-    /// The captured bearer belongs to the outgoing session; never refresh it or
-    /// read the replacement account. The request carries only that bearer: v2
-    /// logout does not accept the profile header.
-    func revokeSession(_ auth: CapturedOrdinaryRequestAuth) async {
-        guard let token = auth.accessToken, !token.isEmpty else { return }
-        do {
-            var request = try buildRequest(serverUrl: auth.account.serverURL,
-                method: "POST", path: "/api/v2/auth/logout", query: [:])
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.timeoutInterval = 5
-            // Removing the server or signing in again cancels ordinary traffic.
-            // Let this one captured revocation finish independently.
-            let revocationSession = URLSession(configuration: session.configuration)
-            defer { revocationSession.invalidateAndCancel() }
-            _ = try await revocationSession.data(for: request)
-        } catch {
-            // Local sign-out is complete even when the server is unavailable.
-        }
+    /// Best-effort revocation of a session already removed from this device
+    /// (`POST /api/v2/auth/logout`). Callers start it detached, after the
+    /// local deletion, so signing out never waits on the network.
+    ///
+    /// The server needs a valid access token to end a session, so a logout
+    /// answered 401 refreshes once (`POST /api/v2/auth/refresh`, no bearer)
+    /// and retries with the new access token. The refreshed pair is kept in
+    /// memory only and never reaches `TokenStore`: the session is being
+    /// ended, and a replacement sign-in must not be touched. Requests carry
+    /// only the bearer (v2 logout does not accept the profile header), run on
+    /// their own session with a 5 s timeout, and every error is ignored.
+    func revoke(_ credential: RevocableCredential) async {
+        guard !credential.accessToken.isEmpty else { return }
+        // Removing the server or signing in again cancels ordinary traffic.
+        // Let this one revocation finish independently.
+        let revocationSession = URLSession(configuration: session.configuration)
+        defer { revocationSession.invalidateAndCancel() }
+        let status = await sendLogout(serverURL: credential.serverURL, bearer: credential.accessToken,
+                                      session: revocationSession)
+        guard status == 401,
+              let refreshToken = credential.refreshToken, !refreshToken.isEmpty,
+              var refresh = Self.makeRefreshRequest(serverURL: credential.serverURL,
+                                                    refreshToken: refreshToken, encoder: encoder) else { return }
+        refresh.timeoutInterval = 5
+        guard let (data, response) = try? await revocationSession.data(for: refresh),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let tokens = try? decoder.decode(RefreshResponse.self, from: data),
+              !tokens.accessToken.isEmpty else { return }
+        _ = await sendLogout(serverURL: credential.serverURL, bearer: tokens.accessToken, session: revocationSession)
+    }
+
+    /// One logout request; the HTTP status, or nil when none arrived.
+    private func sendLogout(serverURL: String, bearer: String, session: URLSession) async -> Int? {
+        guard var request = try? buildRequest(serverUrl: serverURL, method: "POST",
+                                              path: "/api/v2/auth/logout", query: [:]) else { return nil }
+        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 5
+        guard let (_, response) = try? await session.data(for: request) else { return nil }
+        return (response as? HTTPURLResponse)?.statusCode
     }
 
     /// Send a request with a caller-supplied body and extra headers, doing no
@@ -1401,7 +1433,7 @@ actor HTTPClient {
     /// has a parallel chokepoint in
     /// ``performRefreshTransport(request:session:)``. Those two functions are
     /// the only places in this file that may call `session.data(for:)`, apart
-    /// from the best-effort, unclassified `revokeSession`; adding another
+    /// from the best-effort, unclassified `revoke(_:)`; adding another
     /// would reintroduce an unclassified path.
     ///
     /// `routesLocally` lets an ordinary active-server request take the local

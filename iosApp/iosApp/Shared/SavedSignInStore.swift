@@ -23,12 +23,15 @@ struct SavedSignInStore: Sendable {
         category: "SavedSignInStore"
     )
 
+    /// Shared by every Apple TV user: the household signs in once.
+    static let audience: KeychainAudience = .userIndependent
+
     private let readItem: @Sendable (String) throws -> String?
     private let writeItem: @Sendable (String, String) -> Bool
     private let removeItem: @Sendable (String) -> Bool
 
     init(keychain: SharedKeychain) {
-        let shared = keychain.withAudience(.userIndependent)
+        let shared = keychain.withAudience(Self.audience)
         readItem = { try shared.getChecked($0) }
         writeItem = { shared.set($0, for: $1) }
         removeItem = { shared.delete($0) }
@@ -136,6 +139,10 @@ struct SavedSignInStore: Sendable {
 /// Reads and writes this Apple TV user's PIN proofs in the current-user
 /// keychain: one slot per sign-in.
 struct SignInProofStore: Sendable {
+    /// Each Apple TV user's own: a PIN entered by one never opens a profile
+    /// for another.
+    static let audience: KeychainAudience = .currentUser
+
     private let readItem: @Sendable (String) throws -> String?
     /// The lenient read today's code uses for `<serverID>.profileToken`.
     private let readLegacyItem: @Sendable (String) -> String?
@@ -143,7 +150,7 @@ struct SignInProofStore: Sendable {
     private let removeItem: @Sendable (String) -> Bool
 
     init(keychain: SharedKeychain) {
-        let proofs = keychain.withAudience(.currentUser)
+        let proofs = keychain.withAudience(Self.audience)
         readItem = { try proofs.getChecked($0) }
         readLegacyItem = { proofs.get($0) }
         writeItem = { proofs.set($0, for: $1) }

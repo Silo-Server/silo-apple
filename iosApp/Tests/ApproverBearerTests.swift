@@ -3,10 +3,10 @@ import XCTest
 @testable import Silo
 
 /// `HTTPClient.freshAccessToken(serverId:)` for a saved server that is not
-/// the active one: the bearer a phone approves a TV with. The slot renews
-/// itself once, writes the rotated pair only when the slot still holds the
-/// session the refresh was sent with, and never hands out an expired or
-/// rejected bearer.
+/// the active one: the bearer a phone approves a TV with, from the current
+/// user's sign-in there. The sign-in renews itself once, writes the rotated
+/// pair only when it still holds the session the refresh was sent with, and
+/// never hands out an expired or rejected bearer.
 final class ApproverBearerTests: XCTestCase {
     private var stub = APIv2TestStub()
     private static let refreshPath = "/api/v2/auth/refresh"
@@ -16,22 +16,46 @@ final class ApproverBearerTests: XCTestCase {
         stub = APIv2TestStub()
     }
 
+    /// One user signed in to the active server and, with `access`, to the
+    /// other one.
     private func harness(access: String) async throws -> (HTTPClient, TokenStore) {
         let name = "ApproverBearerTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
-        let tokens = TokenStore(keychain: SharedKeychain(service: name, accessGroup: nil),
-            defaults: SharedDefaults(suite: suite, standard: suite))
+        let keys = SharedKeychain(service: name, accessGroup: nil)
+        try SavedSignInStore(keychain: keys).saveIndex(SiloUserIndex())
+        let tokens = TokenStore(keychain: keys, defaults: SharedDefaults(suite: suite, standard: suite))
         await tokens.switchActiveServer(serverId: Self.active)
         await tokens.setServerUrl("https://active.example")
+        try await signIn(account: "1", access: Self.token("active", expiresIn: 3600), refresh: "r",
+                         origin: "https://active.example", in: tokens)
         try await install(access: access, refresh: "refresh-1", in: tokens)
         return (HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokens)
     }
 
-    private func install(access: String, refresh: String, in tokens: TokenStore) async throws {
-        let expected = await tokens.captureAccountInstallationExpectation()
-        try await tokens.installAccountSessionForServer(serverID: Self.other, origin: "https://other.example",
-            accessToken: access, refreshToken: refresh, accountID: "7", expected: expected)
+    /// Signs the current user in to the other server, or refreshes that
+    /// sign-in, the way Add Server does, then returns to the active server.
+    private func install(access: String, refresh: String, in tokens: TokenStore,
+                         origin: String = "https://other.example") async throws {
+        await tokens.setServerUrl(origin)
+        await tokens.switchActiveServer(serverId: Self.other)
+        try await signIn(account: "7", access: access, refresh: refresh, origin: origin, in: tokens)
+        await tokens.setServerUrl("https://active.example")
+        await tokens.switchActiveServer(serverId: Self.active)
+    }
+
+    private func signIn(account: String, access: String, refresh: String, origin: String,
+                        in tokens: TokenStore) async throws {
+        let identity = await tokens.refreshAccountIdentity()
+        let expected = try XCTUnwrap(identity)
+        let key = try XCTUnwrap(SignInKey(serverID: expected.serverId, accountID: account))
+        let directory = try await tokens.directory()
+        let userID = await tokens.currentUserID()
+        let placement: SignInPlacement = directory.user(owning: key) != nil
+            ? .refresh(key) : userID.map { .join(userID: $0) } ?? .newUser
+        try await tokens.installSignIn(accessToken: access, refreshToken: refresh,
+            account: SignInAccount(id: account, username: nil), origin: origin,
+            placement: placement, expected: expected)
     }
 
     /// A JWT-shaped token whose `exp` is `expiresIn` seconds from now,
@@ -241,9 +265,8 @@ final class ApproverBearerTests: XCTestCase {
     /// inactive slot, and not from the active one.
     func testASessionBoundElsewhereIsNeverReleased() async throws {
         let (http, tokens) = try await harness(access: Self.token("fresh", expiresIn: 3600))
-        let expected = await tokens.captureAccountInstallationExpectation()
-        try await tokens.installAccountSessionForServer(serverID: Self.other, origin: "https://elsewhere.example",
-            accessToken: Self.token("elsewhere", expiresIn: 3600), refreshToken: "r", accountID: "7", expected: expected)
+        try await install(access: Self.token("elsewhere", expiresIn: 3600), refresh: "r", in: tokens,
+                          origin: "https://elsewhere.example")
         var bearer = await http.freshAccessToken(serverId: Self.other)
         XCTAssertEqual(bearer, .rejected)
         let otherAccess = await tokens.getAccessToken(for: Self.other)
@@ -251,11 +274,11 @@ final class ApproverBearerTests: XCTestCase {
         let otherSession = await tokens.inactiveServerSession(for: Self.other)
         XCTAssertNil(otherSession)
 
-        // The active slot: its session is bound to the active URL, which is
-        // not the address its id names.
+        // The active sign-in: its session is bound to the active URL, which
+        // is not the address its id names.
         await tokens.setServerUrl("https://elsewhere.example")
-        try await tokens.installAccountSession(accessToken: Self.token("active", expiresIn: 3600), refreshToken: "r",
-            accountID: "1")
+        try await signIn(account: "1", access: Self.token("active", expiresIn: 3600), refresh: "r",
+                         origin: "https://elsewhere.example", in: tokens)
         bearer = await http.freshAccessToken(serverId: Self.active)
         XCTAssertEqual(bearer, .rejected)
         let activeAccess = await tokens.getAccessToken(for: Self.active)
