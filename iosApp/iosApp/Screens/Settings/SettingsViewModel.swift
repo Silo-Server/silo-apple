@@ -98,6 +98,23 @@ final class SettingsViewModel {
             + original
     }
 
+    /// Object Audio covers every object format Aether renders, so the footer
+    /// names both rather than the setting's first name, TrueHD Atmos.
+    static let objectAudioFooterText =
+        "Object Audio keeps the height channels of TrueHD Atmos and DTS:X tracks but plays them as compressed audio."
+
+    /// The FEL route plays on Aether's software host: FFmpeg decodes the audio,
+    /// so no Atmos or DTS:X heights, and where the device sends AirPlay, the
+    /// receiver gets no picture.
+    static var dolbyVisionFELFooterText: String {
+        #if os(tvOS)
+        let costs = "but plays their Atmos and DTS:X audio without height channels."
+        #else
+        let costs = "but plays their Atmos and DTS:X audio without height channels and sends no picture over AirPlay."
+        #endif
+        return "Dolby Vision FEL shows the full enhancement layer of Profile 7 FEL videos, " + costs
+    }
+
     /// Dolby Vision is only offered while HDR is on, so its row reads Off and
     /// cannot be changed while HDR is off. The stored choice is kept.
     var dolbyVisionEnabled: Bool {
@@ -143,9 +160,17 @@ final class SettingsViewModel {
     }
 
     /// Local — what this device plays into is a fact about its room.
-    var trueHDAtmosEnabled: Bool {
-        get { PlayerSettings.shared.trueHDAtmosEnabled }
-        set { PlayerSettings.shared.setTrueHDAtmosEnabled(newValue) }
+    var objectAudioEnabled: Bool {
+        get { PlayerSettings.shared.objectAudioEnabled }
+        set { PlayerSettings.shared.setObjectAudioEnabled(newValue) }
+    }
+
+    /// Local — whether this device can decode both layers is a fact about its
+    /// hardware. Only offered while Dolby Vision is, so its row reads Off and
+    /// cannot be changed while Dolby Vision is off. The stored choice is kept.
+    var dolbyVisionFELEnabled: Bool {
+        get { dolbyVisionEnabled && playerSettings.dolbyVisionFELEnabled }
+        set { playerSettings.setDolbyVisionFELEnabled(newValue) }
     }
 
     // Subtitle styling (local — applies to renderer overrides, not the

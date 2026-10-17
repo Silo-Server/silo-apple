@@ -108,16 +108,19 @@ only be claimed when the source is already Apple-compatible E-AC-3/JOC and that
 track is preserved end to end, or when the TrueHD Atmos object path (3.3) is
 engaged and validated.
 
-### 3.3 TrueHD Atmos object path
+### 3.3 Object audio path (TrueHD Atmos and DTS:X)
 
-The Playback setting "TrueHD Atmos" (device-local, default On) selects Aether's
+The Playback setting "Object Audio" (device-local, default On; called "TrueHD
+Atmos" before it covered DTS:X, and still stored under that key) selects Aether's
 `LoadOptions.objectAudioRendering = .apac(.l714)` when the Apple TV's output
 reports Dolby Atmos (`AVAudioSession.renderingMode == .dolbyAtmos`) or does not
 report a mode. An output reporting stereo, multichannel PCM or Dolby Digital
 keeps the lossless channel path, since there the heights would only be folded
-back into channels. For a TrueHD track FFmpeg marks as Atmos, Aether then:
+back into channels. For a TrueHD track FFmpeg marks as Atmos, or a DTS-HD MA
+track LibDTSX confirms as DTS:X, Aether then:
 
-- decodes the TrueHD object presentation (beds, objects, object positions)
+- decodes the object presentation (TrueHD: beds, objects, object positions;
+  DTS:X: the bed with its folds removed, the fixed heights and the objects)
 - renders it into a 7.1.4 bed; the receiver or soundbar re-renders the Dolby
   Atmos it receives onto its own speakers, so one bed serves every system
 - encodes the bed as Apple Positional Audio (APAC), `CODECS="apac.31.LL"`
@@ -129,6 +132,24 @@ once in the app into 7.1.4 before the receiver maps it onto its speakers. The
 receiver should show Dolby Atmos (MAT or PCM + Atmos), never TrueHD. A TrueHD
 track without Atmos, an older OS, or a start-up failure keeps the lossless
 channel path above.
+
+### 3.4 Dolby Vision FEL
+
+The Playback setting "Dolby Vision FEL" (device-local, default Off, offered
+only while Dolby Vision is on) sets Aether's
+`LoadOptions.preferDualLayerDolbyVision`. For a seekable Profile 7 source whose
+first RPU names a full enhancement layer, and that the device can decode twice
+in real time, Aether then decodes both layers in VideoToolbox, composes them in
+Metal, and attaches the RPU converted to Profile 8.1 to each frame. Every other
+Profile 7 source, MEL included, keeps the 8.1 conversion above.
+
+That route plays on Aether's software host, not AVPlayer. Its trade-offs, from
+AetherEngine's `docs/dolby-vision-fel.md`: FFmpeg decodes the audio, so E-AC-3
+Atmos plays as its channel bed and TrueHD Atmos and DTS:X play as channels
+without the object path (3.3), and AirPlay from iOS carries sound only. Silo draws subtitles on its own
+overlay either way. The server still sees the `client_dv7_to_dv81` claim
+`enhancement_layer_discarded`; with the setting on, that claim holds only when
+Aether declines the route.
 
 ## 4. Product contract
 
