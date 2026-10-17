@@ -59,6 +59,8 @@ extension SettingKey {
             return 18
         case .playbackCellularPreferredQuality, .playbackCellularMaxBitrateKbps:
             return Self.cellularQualityRevision
+        case .playbackBufferingQualityMode:
+            return Self.bufferingQualityRevision
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,
              .downloadsWifiOnly, .navShowAudiobooks, .playbackAudioLanguage,
              .playbackAutoPlayNext, .playbackAutoPlayNextPreview, .playbackAutoSkipCredits,
@@ -96,6 +98,9 @@ extension SettingKey {
     /// (`playback.cellular_preferred_quality` and
     /// `playback.cellular_max_bitrate_kbps`).
     static let cellularQualityRevision = 20
+
+    /// The manifest revision that added `playback.buffering_quality_mode`.
+    static let bufferingQualityRevision = 21
 
     /// Whether sending this key depends on the server's manifest revision
     /// because the key is newer than ``minimumServerRevision``: an older

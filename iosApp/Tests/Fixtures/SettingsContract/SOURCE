@@ -1,6 +1,6 @@
 repository=https://github.com/Silo-Server/silo-server
 path=contracts/settings/v1
-manifest_revision=20
+manifest_revision=21
 fixture_version=1
 
 Both files are byte-identical copies of the server's canonical settings
@@ -15,9 +15,14 @@ agreeing, which is the whole point of carrying the pair rather than the
 fixture alone.
 
 conformance.json commit=5db5d4678b8d44c07089c89463e88e0bb242821d
-manifest.json    commit=5db5d4678b8d44c07089c89463e88e0bb242821d
-copied from      commit=5db5d4678b8d44c07089c89463e88e0bb242821d
-generated with   commit=5db5d4678b8d44c07089c89463e88e0bb242821d (cmd/settingsgen -lang swift)
+manifest.json    commit=857655f4f5786235dba6cc9f24c844e65ea33cb1
+copied from      commit=857655f4f5786235dba6cc9f24c844e65ea33cb1
+generated with   commit=857655f4f5786235dba6cc9f24c844e65ea33cb1 (cmd/settingsgen -lang swift)
+
+Pending: the server's conformance.json at 857655f4f still targets manifest
+revision 20, so testTheFixtureTargetsThisBuildsManifestRevision fails until
+the server bumps it. Re-vendor conformance.json from that fix and record its
+commit above; never edit the copy here.
 
 manifest.json is vendored whole, including the maintainer `notes` the server
 strips before serving /api/v1/settings/contract. Keeping it byte-identical is
@@ -32,4 +37,4 @@ contract rather than by a hand-copied table.
 
 Android vendors the same pair at
 shared/src/commonTest/resources/settings/v1/ in silo-android; the two SOURCE
-notes are meant to stay in step. This copy is revision 20.
+notes are meant to stay in step. This copy is revision 21.
