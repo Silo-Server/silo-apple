@@ -14,36 +14,42 @@ import Nuke
 /// identity.
 ///
 /// Object storage (S3 presigned, Cloudflare token or public URLs) serves the
-/// same keys from its own host, authorized by its own query items. There the
-/// path alone is the identity of a revisioned ladder variant
-/// (`…/<image type>/<variant>.<revision>.<ext>`).
+/// same keys from its own host, authorized by its own query items, for a
+/// revisioned ladder variant (`…/<image type>/<variant>.<revision>.<ext>`).
+///
+/// Only query items that authorize a request are dropped; any other item may
+/// choose the bytes (a plugin's `?variant=card`), so it stays in the identity.
 enum ArtworkCacheKey {
     private static let artworkRoute = "/api/v2/artwork/"
-    private static let signatureItems: Set<String> = ["exp", "sig"]
+    /// The Silo route's signature and the Cloudflare token's default name.
+    /// S3 presigning adds `X-Amz-*` items, matched by prefix.
+    private static let authorizationItems: Set<String> = ["exp", "sig", "verify"]
     /// The directory a cached artwork key names its image type with.
     private static let imageTypes: Set<String> = [
         "poster", "backdrop", "still", "logo", "profile", "banner", "thumb", "clearart", "disc",
     ]
 
     /// The URL without its authorization for revisioned Silo artwork, with
-    /// any other `/api/v2/artwork/` query items sorted. Nil for every other URL.
+    /// any other query items sorted. Nil for every other URL.
     static func stableImageID(for url: URL) -> String? {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               ["http", "https"].contains(components.scheme?.lowercased() ?? "") else {
             return nil
         }
+        let isRevisionedArtwork = components.percentEncodedPath.hasPrefix(artworkRoute)
+            ? isRevisioned(key: String(components.path.dropFirst(artworkRoute.count)))
+            : isRevisionedLadderVariant(path: components.path)
+        guard isRevisionedArtwork else { return nil }
+        let kept = (components.percentEncodedQueryItems ?? [])
+            .filter { !isAuthorization($0.name) }
+            .sorted { ($0.name, $0.value ?? "") < ($1.name, $1.value ?? "") }
+        components.percentEncodedQueryItems = kept.isEmpty ? nil : kept
         components.fragment = nil
-        if components.percentEncodedPath.hasPrefix(artworkRoute) {
-            guard isRevisioned(key: String(components.path.dropFirst(artworkRoute.count))) else { return nil }
-            let kept = (components.percentEncodedQueryItems ?? [])
-                .filter { !signatureItems.contains($0.name) }
-                .sorted { ($0.name, $0.value ?? "") < ($1.name, $1.value ?? "") }
-            components.percentEncodedQueryItems = kept.isEmpty ? nil : kept
-            return components.string
-        }
-        guard isRevisionedLadderVariant(path: components.path) else { return nil }
-        components.percentEncodedQuery = nil
         return components.string
+    }
+
+    private static func isAuthorization(_ name: String) -> Bool {
+        authorizationItems.contains(name) || name.lowercased().hasPrefix("x-amz-")
     }
 
     /// The identity Nuke caches `url` under.

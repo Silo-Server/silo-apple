@@ -123,6 +123,13 @@ final class ImageSizeCapability: Sendable {
     /// probe when nothing is known for the active server yet; a failed probe
     /// is not retried here.
     func requestQueryForImageRequest(_ surface: ArtworkSurface, slotWidthsOnly: Bool = false) async -> [String: String] {
+        // A read that asks for no artwork, on a platform without the one-size
+        // fallback, sends nothing to any server, so it never waits for the
+        // probe: watch detail when playback starts on iOS and macOS.
+        let sendsOneSize = prefersLargeImages && !slotWidthsOnly
+        if surface.slots(on: display()) == ArtworkSlotWidths(), !sendsOneSize {
+            return [:]
+        }
         if capability == nil {
             await refresh(retryFailed: false)
         }

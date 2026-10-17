@@ -54,6 +54,21 @@ final class ArtworkCacheKeyTests: XCTestCase {
         }
         let subpath = "https://cdn.test/silo/api/v2/artwork/items/42/poster/w500.r1.webp"
         XCTAssertEqual(ArtworkCacheKey.stableImageID(for: try url(subpath + "?exp=1&sig=abc")), subpath)
+        // A constant item the presigner adds stays; only the signature drops.
+        XCTAssertEqual(
+            ArtworkCacheKey.stableImageID(for: try url(key + "?X-Amz-Signature=abc&x-id=GetObject")),
+            key + "?x-id=GetObject"
+        )
+    }
+
+    /// A query item that may choose the bytes keeps two URLs apart, even on a
+    /// ladder-shaped path outside Silo's own storage.
+    func testRepresentationQueryStaysInTheIdentity() throws {
+        let card = try url("https://plugin.test/art/poster/w500.r1.jpg?variant=card")
+        let hero = try url("https://plugin.test/art/poster/w500.r1.jpg?variant=hero&verify=1-abc")
+        XCTAssertEqual(ArtworkCacheKey.stableImageID(for: card), card.absoluteString)
+        XCTAssertEqual(ArtworkCacheKey.stableImageID(for: hero), "https://plugin.test/art/poster/w500.r1.jpg?variant=hero")
+        XCTAssertNotEqual(ImageRequest(artwork: card).imageID, ImageRequest(artwork: hero).imageID)
     }
 
     func testLadderVariantRuleMatchesTheServerKeyLayout() {

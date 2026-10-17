@@ -280,6 +280,24 @@ final class ImageSizeCapabilityTests: XCTestCase {
         XCTAssertEqual(callCount, 1)
     }
 
+    /// Watch detail draws no artwork, so on iOS and macOS playback never
+    /// waits for the probe. tvOS still probes: an older server gets `large`.
+    func testArtworkFreeReadsSkipTheProbeOffTV() async throws {
+        let stub = ImageSizeCapabilityFetchStub(response: try legacyCapability())
+        let offTV = ImageSizeCapability(platformPrefersLargeImages: false) { try await stub.fetch() }
+
+        let query = await offTV.requestQueryForImageRequest(.watch)
+
+        XCTAssertTrue(query.isEmpty)
+        let callCount = await stub.callCount
+        XCTAssertEqual(callCount, 0)
+
+        let tvStub = ImageSizeCapabilityFetchStub(response: try legacyCapability())
+        let tv = ImageSizeCapability(platformPrefersLargeImages: true) { try await tvStub.fetch() }
+        let tvQuery = await tv.requestQueryForImageRequest(.watch)
+        XCTAssertEqual(tvQuery, ["image_size": "large"])
+    }
+
     func testRememberedCapabilityServesImageRequestsWithoutProbing() async throws {
         let stored = try decodedCapability()
         let memory = ImageSizeCapability.Memory(
