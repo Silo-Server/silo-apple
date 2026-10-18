@@ -75,16 +75,14 @@ struct PlaybackSettingsView: View {
                 options: BufferingQualityMode.allCases.map { SettingsChoice(id: $0.wireValue, label: $0.label) }
             )
 
+            // The sentence wraps, so Reset takes its own row rather than
+            // sitting under it inside the same cell.
             if let limit = viewModel.learnedConnectionLimitText {
-                LabeledContent {
-                    Button("Reset") {
-                        Task { await viewModel.resetLearnedConnectionLimit() }
-                    }
-                    .buttonStyle(.borderless)
-                } label: {
-                    Text(limit)
+                Text(limit)
+                    .foregroundStyle(Color.siloOnSurface)
+                Button("Reset") {
+                    Task { await viewModel.resetLearnedConnectionLimit() }
                 }
-                .foregroundStyle(Color.siloOnSurface)
             }
         } header: {
             Text("Quality")

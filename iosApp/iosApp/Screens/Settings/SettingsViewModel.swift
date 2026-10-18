@@ -465,6 +465,8 @@ final class SettingsViewModel {
             }
             try await SiloAPI.shared.apiV2Client.resetPlaybackLearnedLimit(auth: auth)
             learnedConnectionLimit = nil
+            // The server's Auto budget counted the limit.
+            if showsConnectionGroup { await loadPlaybackConnection() }
         } catch {
             learnedLimitResetError = Self.learnedLimitResetFailedMessage
         }
