@@ -29,6 +29,27 @@ final class SignInTargetListTests: XCTestCase {
         XCTAssertEqual(step(.addUser), .list(serverIDs: saved))
     }
 
+    func testAddUserSignsInToTheCurrentServer() {
+        let current = SignInTargetList.step(for: .addUser, in: saved, directory: directory, currentServerID: "friend")
+        XCTAssertEqual(current, .signIn(serverID: "friend"))
+    }
+
+    func testAddUserListsServersWhenTheCurrentOneIsntSaved() {
+        let removed = SignInTargetList.step(for: .addUser, in: saved, directory: directory, currentServerID: "gone")
+        XCTAssertEqual(removed, .list(serverIDs: saved))
+    }
+
+    func testOnlyAddUserSkipsTheListForTheCurrentServer() {
+        XCTAssertEqual(
+            SignInTargetList.step(for: .firstRun, in: saved, directory: directory, currentServerID: "home"),
+            .list(serverIDs: saved)
+        )
+        XCTAssertEqual(
+            SignInTargetList.step(for: .addServer(userID: "alex"), in: saved, directory: directory, currentServerID: "home"),
+            .list(serverIDs: ["cabin"])
+        )
+    }
+
     func testNoSavedServersGoStraightToServerSetup() {
         XCTAssertEqual(step(.firstRun, saved: []), .serverSetup)
         XCTAssertEqual(step(.addUser, saved: []), .serverSetup)

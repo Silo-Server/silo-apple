@@ -473,6 +473,27 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertNil(d.router.signInReturnPoint)
     }
 
+    /// Add User opens the sign-in for the server on screen; Change server
+    /// there lists every saved server, and Cancel goes back.
+    func testAddUserSignsInToTheCurrentServer() async throws {
+        let d = try Device(self)
+        try await d.signIn("12", "alex", on: F.home, context: .firstRun)
+        d.router.showProfileSelection()
+
+        await d.users.startAddUser(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsLogin)
+        XCTAssertEqual(d.router.signInContext, .addUser)
+        XCTAssertEqual(d.registry.activeServerId, F.home)
+
+        await d.users.changeSignInServer(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsSignInTarget(.addUser))
+
+        await d.users.cancelSignIn(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsProfile)
+        let selection = await d.selection
+        XCTAssertEqual(selection, .signIn(.make(F.home, "12")))
+    }
+
     /// Cancel on a sign-in started from Who's Watching restores the user,
     /// server, and screens that were showing.
     func testCancellingSignInReturnsToThePreviousUserAndServer() async throws {

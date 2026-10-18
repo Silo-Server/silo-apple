@@ -36,15 +36,21 @@ enum SignInTargetList {
         }
     }
 
+    /// Add User skips the list for `currentServerID`, the server on screen,
+    /// when it's saved; Change server on its sign-in passes nil to list them.
     static func step(
         for context: SignInContext,
         in savedServerIDs: [String],
-        directory: SiloUserDirectorySnapshot
+        directory: SiloUserDirectorySnapshot,
+        currentServerID: String? = nil
     ) -> SignInServerStep {
         if case .signInAgain(_, let key) = context {
             return .signIn(serverID: key.serverID)
         }
         let servers = servers(for: context, in: savedServerIDs, directory: directory)
+        if context == .addUser, let currentServerID, servers.contains(currentServerID) {
+            return .signIn(serverID: currentServerID)
+        }
         return servers.isEmpty ? .serverSetup : .list(serverIDs: servers)
     }
 

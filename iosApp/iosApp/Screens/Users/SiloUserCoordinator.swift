@@ -568,7 +568,8 @@ final class SiloUserCoordinator {
         router.signInContext = context
         let step: SignInServerStep
         if let snapshot = try? await tokenStore.directory() {
-            step = SignInTargetList.step(for: context, in: registry.sortedEntries.map(\.id), directory: snapshot)
+            step = SignInTargetList.step(for: context, in: registry.sortedEntries.map(\.id), directory: snapshot,
+                                         currentServerID: registry.activeServerId)
         } else {
             step = .serverSetup
         }
