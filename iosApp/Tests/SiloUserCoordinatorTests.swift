@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUI
 import XCTest
 @testable import Silo
 
@@ -523,6 +524,41 @@ final class SiloUserCoordinatorTests: XCTestCase {
         await d.users.cancelSignIn(router: d.router)
         XCTAssertEqual(d.router.authState, .needsProfile, "time away asks again")
         XCTAssertNil(d.auth.profileId)
+    }
+
+    /// Settings › Server, a saved server alex has no sign-in on, then Cancel
+    /// (found live as an assertion in `ContentView.destinationView`): back on
+    /// the profile and Settings › Server, with Settings' routes only on the
+    /// main screens' stack. The sign-in stack, which can stay on screen for a
+    /// moment while it is swapped out, sees none of them and can't write over
+    /// them.
+    func testCancellingASignInFromSettingsKeepsSettingsOffTheSignInStack() async throws {
+        let d = try Device(self)
+        try await d.signIn("12", "alex", on: F.home, context: .firstRun)
+        let alex = try XCTUnwrap(try d.user(named: "alex"))
+        let identity = await d.f.store.refreshAccountIdentity()
+        let opened = await d.f.store.activateProfile(profileID: "jamie", profileToken: "jamie-proof",
+                                                     expectedAccount: try XCTUnwrap(identity))
+        XCTAssertTrue(opened)
+        d.router.resetToHome()
+        d.router.navigate(to: .serverList)
+        let settings = d.router.path
+
+        await d.users.beginSignIn(forServer: F.friend, router: d.router)
+        XCTAssertEqual(d.router.authState, .needsLogin)
+        XCTAssertEqual(d.router.signInContext, .addServer(userID: alex.id))
+        let signInStack = d.router.path(for: .needsLogin)
+        XCTAssertTrue(signInStack.wrappedValue.isEmpty)
+
+        await d.users.cancelSignIn(router: d.router)
+
+        XCTAssertEqual(d.router.authState, .authenticated)
+        XCTAssertEqual(d.auth.profileId, "jamie")
+        XCTAssertEqual(d.router.path, settings, "Settings › Server again")
+        XCTAssertEqual(d.router.path(for: .authenticated).wrappedValue, settings)
+        XCTAssertTrue(signInStack.wrappedValue.isEmpty, "none of Settings' routes reach the sign-in stack")
+        signInStack.wrappedValue = NavigationPath()
+        XCTAssertEqual(d.router.path, settings, "the swapped-out sign-in stack writes nothing")
     }
 
     #if os(iOS)
@@ -1446,6 +1482,35 @@ final class SiloUserCoordinatorTests: XCTestCase {
         let remove = d.users.confirmation(for: .user(homeAlex.id))
         XCTAssertEqual(remove.title, "Remove alex from this Apple TV?")
         XCTAssertEqual(remove.message, "alex will be signed out of Home Silo for everyone on this Apple TV. "
+                       + "Profiles and watch history stay on the server.")
+    }
+
+    /// Two of a user's servers both named Silo are named with their hosts,
+    /// so a sentence never reads "Silo and Silo" or leaves which Silo open.
+    /// A user with one of them needs no host.
+    func testSignOutCopyTellsSameNamedServersApart() async throws {
+        let d = try Device(self)
+        XCTAssertNotNil(d.registry.addOrUpdate(ServerEntry(id: F.home, url: F.homeURL, fetchedName: "Silo",
+                                                           lastUsedAt: Date(timeIntervalSinceReferenceDate: 2))))
+        XCTAssertNotNil(d.registry.addOrUpdate(ServerEntry(id: F.friend, url: F.friendURL, fetchedName: "Silo",
+                                                           lastUsedAt: Date(timeIntervalSinceReferenceDate: 1))))
+        let (alex, sam) = try await d.twoUsers()
+        await d.users.openServer(F.friend, userID: alex.id, router: d.router)
+        await d.users.reloadDirectory()
+
+        let current = d.users.confirmation(for: .currentSignIn)
+        XCTAssertEqual(current.title, "Sign out of Silo (friend.example)?")
+        XCTAssertEqual(current.message,
+                       "Everyone on this Apple TV will need to sign in again to use alex on Silo (friend.example).")
+        let home = d.users.confirmation(for: .signIn(.make(F.home, "12")))
+        XCTAssertEqual(home.title, "Sign out of Silo (home.example)?")
+        XCTAssertEqual(home.message, "Everyone on this Apple TV will need to sign in again to use alex on "
+                       + "Silo (home.example). Sign Out & Remove Server also signs out sam.")
+        let remove = d.users.confirmation(for: .user(alex.id))
+        XCTAssertEqual(remove.message, "alex will be signed out of Silo (home.example) and Silo (friend.example) "
+                       + "for everyone on this Apple TV. Profiles and watch history stay on the servers.")
+        let removeSam = d.users.confirmation(for: .user(sam.id))
+        XCTAssertEqual(removeSam.message, "sam will be signed out of Silo for everyone on this Apple TV. "
                        + "Profiles and watch history stay on the server.")
     }
 

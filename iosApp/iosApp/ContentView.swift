@@ -836,8 +836,11 @@ struct ContentView: View {
             ServerSetupView(router: router)
             #endif
 
+        // Each stack sees `router.path` only while its auth state shows, so
+        // a path restored with an auth-state change never reaches the stack
+        // being swapped out (`AppRouter.path(for:)`).
         case .needsLogin:
-            NavigationStack(path: $router.path) {
+            NavigationStack(path: router.path(for: .needsLogin)) {
                 loginRoot
                     .navigationDestination(for: Route.self) { route in
                         destinationView(for: route)
@@ -845,7 +848,7 @@ struct ContentView: View {
             }
 
         case .serverRecovery(let reason):
-            NavigationStack(path: $router.path) {
+            NavigationStack(path: router.path(for: .serverRecovery(reason))) {
                 RestoredServerRecoveryView(
                     router: router,
                     reason: reason,
@@ -858,7 +861,7 @@ struct ContentView: View {
             .environment(router)
 
         case .needsProfile:
-            NavigationStack(path: $router.path) {
+            NavigationStack(path: router.path(for: .needsProfile)) {
                 ProfileSelectionView(router: router)
                     .navigationDestination(for: Route.self) { route in
                         profileFlowDestination(for: route)
@@ -876,7 +879,7 @@ struct ContentView: View {
             #endif
 
         case .needsUser, .needsServer, .needsSignInTarget:
-            NavigationStack(path: $router.path) {
+            NavigationStack(path: router.path(for: router.authState)) {
                 UserFlowRoot(router: router)
                     .navigationDestination(for: Route.self) { route in
                         profileFlowDestination(for: route)
@@ -1507,9 +1510,9 @@ struct ContentView: View {
         case .chooseUser, .chooseServer, .signInTarget, .manageUsers:
             UserFlowDestination(route: route, router: router)
         default:
-            // Signed-out screens push only the routes above, and every
-            // auth-state change clears `router.path` first, so reaching this
-            // is a bug.
+            // Signed-out screens push only the routes above, and this stack
+            // sees `router.path` only while signed out (`AppRouter.path(for:)`),
+            // so reaching this is a bug. Release builds show the page below.
             let _ = assertionFailure("No signed-out destination for \(route)")
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloPageBackground()

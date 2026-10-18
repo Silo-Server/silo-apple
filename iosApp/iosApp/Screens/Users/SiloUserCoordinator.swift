@@ -1058,10 +1058,14 @@ final class SiloUserCoordinator {
 
     /// The confirmation for `target` (spec §5.6 copy). Every sentence names
     /// its servers, so user names leave out a server added to tell users
-    /// apart when the sentence names it already.
+    /// apart when the sentence names it already. A server that shares its
+    /// name with another of the user's servers is named with its host.
     func confirmation(for target: RemovalRequest.Target) -> ConfirmationCopy {
         func serverName(_ serverID: String?) -> String {
             serverID.flatMap { registry.entry(with: $0)?.displayName } ?? "this server"
+        }
+        func copyName(_ serverID: String?, in user: SiloUserDirectory.User?) -> String {
+            serverID.flatMap { Self.copyNames(user?.servers ?? [])[$0] } ?? serverName(serverID)
         }
         switch target {
         case .currentSignIn:
@@ -1069,7 +1073,7 @@ final class SiloUserCoordinator {
             let server = serverName(serverID)
             return namingOthersOnServer(SignOutConfirmationCopy.signOut(
                 userName: directory.currentUser?.name(besides: [server]) ?? "your account",
-                serverName: server,
+                serverName: copyName(serverID, in: directory.currentUser),
                 device: device
             ), serverID: serverID, serverName: server, besides: directory.currentUserID)
         case .signIn(let key):
@@ -1077,15 +1081,16 @@ final class SiloUserCoordinator {
             let server = serverName(key.serverID)
             return namingOthersOnServer(SignOutConfirmationCopy.signOut(
                 userName: owner?.name(besides: [server]) ?? "your account",
-                serverName: server,
+                serverName: copyName(key.serverID, in: owner),
                 device: device
             ), serverID: key.serverID, serverName: server, besides: owner?.id)
         case .user(let userID):
             let user = directory.user(userID)
-            let servers = user?.servers.map(\.name) ?? []
+            let servers = user?.servers ?? []
+            let names = Self.copyNames(servers)
             return SignOutConfirmationCopy.removeUser(
-                userName: user?.name(besides: servers) ?? SiloUserNaming.fallbackName,
-                serverNames: servers,
+                userName: user?.name(besides: servers.map(\.name)) ?? SiloUserNaming.fallbackName,
+                serverNames: servers.map { names[$0.id] ?? $0.name },
                 device: device
             )
         case .server(let serverID):
@@ -1096,6 +1101,18 @@ final class SiloUserCoordinator {
                 device: device
             )
         }
+    }
+
+    /// Each of `servers`' names as a sentence names it, keyed by server ID:
+    /// with its host when another of them shares the name, so "Silo and
+    /// Silo" reads "Silo (silo.alex.example) and Silo (media.sam.example)".
+    private static func copyNames(_ servers: [SiloUserDirectory.Server]) -> [String: String] {
+        let hosts = SiloUserNaming.hostsTellingApart(servers.map { (id: $0.id, name: $0.name, address: $0.address) })
+        var names: [String: String] = [:]
+        for server in servers {
+            names[server.id] = hosts[server.id].map { "\(server.name) (\($0))" } ?? server.name
+        }
+        return names
     }
 
     /// Sign Out & Remove Server signs every user out of the server, so the

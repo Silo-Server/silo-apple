@@ -93,6 +93,20 @@ final class AppRouter {
             case .loading, .authenticated: false
             }
         }
+
+        /// Whether `ContentView` draws `other` with the same root screen as
+        /// `self`: the same case, whatever it carries (a focus, a reason).
+        func showsSameScreens(as other: AuthState) -> Bool {
+            switch (self, other) {
+            case (.loading, .loading), (.needsServerSetup, .needsServerSetup), (.needsLogin, .needsLogin),
+                 (.serverRecovery, .serverRecovery), (.needsProfile, .needsProfile),
+                 (.authenticated, .authenticated), (.needsUser, .needsUser), (.needsServer, .needsServer),
+                 (.needsSignInTarget, .needsSignInTarget):
+                return true
+            default:
+                return false
+            }
+        }
     }
 
     /// Every auth-state transition funnels through this one property, whether
@@ -152,6 +166,20 @@ final class AppRouter {
 
     /// Navigation path for push/pop within the current flow.
     var path = NavigationPath()
+
+    /// `path` as the stack of the screens `state` shows sees it: empty, and
+    /// closed to writes, once another auth state shows. Every root's stack
+    /// binds to this one `path`, and the stack an auth-state change swaps
+    /// out can stay in the hierarchy for a moment (a removal transition)
+    /// and keep reading it. Cancel on a sign-in started in Settings › Server
+    /// restores Settings' routes, which the sign-in stack then tried to
+    /// push, with no destinations for them.
+    func path(for state: AuthState) -> Binding<NavigationPath> {
+        Binding(
+            get: { self.authState.showsSameScreens(as: state) ? self.path : NavigationPath() },
+            set: { if self.authState.showsSameScreens(as: state) { self.path = $0 } }
+        )
+    }
 
     #if os(macOS)
     /// Routes pushed through the router, mirrored because `NavigationPath` is
