@@ -18,9 +18,10 @@ enum TVDetailLayout {
     static let pageBottomPadding: CGFloat = 140
 }
 
-/// Fully opaque page surface sampled from the title artwork. It paints the
-/// same tint wash and grain as the root landings, so opening a title keeps
-/// Home's colors. Artwork itself lives inside the scrolling hero and
+/// Fully opaque page surface sampled from the title artwork. The base tint is
+/// composited over black, so the art's fade blends into the same dim tint as
+/// before; the accent and shadow washes from the root landings carry Home's
+/// colors around it. Artwork itself lives inside the scrolling hero and
 /// therefore leaves the screen naturally as the viewer moves down.
 struct TVDetailPageSurface<Content: View>: View {
     let backdropURL: String?
@@ -34,10 +35,9 @@ struct TVDetailPageSurface<Content: View>: View {
 
     var body: some View {
         ZStack {
-            Color.siloBackground
-            TVBackdropTintWash(tints: sampledTints)
-            // Dithers the large dark ramps, which band on TVs.
-            MarqueeGrain()
+            Color.black
+            sampledTints.base.opacity(0.42)
+            TVBackdropTintWash(tints: sampledTints, includesBase: false)
             content()
         }
         .ignoresSafeArea()

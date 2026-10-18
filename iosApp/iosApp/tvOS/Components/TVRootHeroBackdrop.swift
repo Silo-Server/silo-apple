@@ -65,18 +65,23 @@ struct TVBackdropArtworkFadeMask: View {
 struct TVBackdropTintWash: View {
     let tints: HeroBackdropPalette.Tints
     var isVisible: Bool = true
+    /// The base gradient sits behind the art and shows through its fade.
+    /// Item details turn it off to keep their own dimmer tint behind the art.
+    var includesBase: Bool = true
 
     var body: some View {
         ZStack {
-            LinearGradient(
-                stops: [
-                    .init(color: tints.base, location: 0.0),
-                    .init(color: tints.base.opacity(isVisible ? 0.5 : 0.0), location: 0.45),
-                    .init(color: tints.base.opacity(isVisible ? 0.18 : 0.0), location: 1.0),
-                ],
-                startPoint: .topTrailing,
-                endPoint: .bottomLeading
-            )
+            if includesBase {
+                LinearGradient(
+                    stops: [
+                        .init(color: tints.base, location: 0.0),
+                        .init(color: tints.base.opacity(isVisible ? 0.5 : 0.0), location: 0.45),
+                        .init(color: tints.base.opacity(isVisible ? 0.18 : 0.0), location: 1.0),
+                    ],
+                    startPoint: .topTrailing,
+                    endPoint: .bottomLeading
+                )
+            }
 
             EllipticalGradient(
                 colors: [tints.accent.opacity(isVisible ? 0.3 : 0.0), tints.accent.opacity(0)],
@@ -131,9 +136,6 @@ struct TVRootHeroBackdrop: View {
             tintBackground
 
             if isVisible {
-                // Dithers the wash's large dark ramps, which band on TVs. It
-                // sits under the art so the artwork itself stays untouched.
-                MarqueeGrain()
                 backdropImage
                 topChromeScrim
             }
