@@ -5496,6 +5496,8 @@ class PlayerViewModel {
                 let prepared: PreparedPlayback
                 var preparedOfflineContext: OfflinePlaybackContext?
                 var preparedOfflineArtworkURL: URL?
+                // The estimate the start sends, for the plan's summary.
+                var probeEstimateKbps: Int?
                 if let offlineDownloadId = request.offlineDownloadId {
                     // Fully local prepare from the stored record + manifest.
                     // Must keep working in airplane mode, so nothing on this
@@ -5519,13 +5521,15 @@ class PlayerViewModel {
                     // annoying but doesn't wedge the UI; a hung autoplay does
                     // (the user is stuck on a half-cross-faded Next Up screen
                     // with no obvious way out).
-                    // A running bandwidth probe stops so it cannot slow the
-                    // start.
+                    // The start carries a fresh bandwidth probe result, and a
+                    // running probe stops so it cannot slow the start.
+                    probeEstimateKbps = BandwidthProbeScheduler.shared.freshEstimateKbps()
                     BandwidthProbeScheduler.shared.playbackStarting()
                     prepared = try await self.runStartSession(
                         request: request,
                         resumePosition: resumePositionOverride,
                         allowNearEndResume: allowNearEndResume,
+                        probeEstimateKbps: probeEstimateKbps,
                         timeout: origin == .userInitiated ? nil : Self.autoplayStartSessionTimeout
                     )
                 }
@@ -5644,7 +5648,11 @@ class PlayerViewModel {
                     }
                     self.markProtocolV3AetherLoadCommitted()
                     uncommittedPrepared = nil
-                    self.adoptBufferingPlan(prepared, requestedEstimateKbps: nil, controllerInitiated: false)
+                    self.adoptBufferingPlan(
+                        prepared,
+                        requestedEstimateKbps: probeEstimateKbps,
+                        controllerInitiated: false
+                    )
                     // The realtime channel is a server websocket keyed by the
                     // committed session. Binding before Aether accepts the
                     // candidate can leave commands attached to a rolled-back
@@ -5726,6 +5734,7 @@ class PlayerViewModel {
         request: LoadRequest,
         resumePosition: Double?,
         allowNearEndResume: Bool,
+        probeEstimateKbps: Int?,
         timeout: TimeInterval?
     ) async throws -> PreparedPlayback {
         let initialSubtitlePreferences: PlaybackSessionBridge.InitialProtocolV3SubtitlePreferences? = {
@@ -5775,6 +5784,7 @@ class PlayerViewModel {
                 preferredQualityOverride: request.preferredQualityOverride,
                 onMeteredNetwork: onMeteredNetwork,
                 bufferingQualityMode: bufferingQualityMode,
+                probeEstimateKbps: probeEstimateKbps,
                 allowAlternateVersions: request.allowAlternateVersions,
                 startsAtFirstPart: request.startsAtFirstPart
             )

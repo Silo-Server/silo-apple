@@ -110,6 +110,20 @@ final class BufferingQualityContractTests: XCTestCase {
         }
     }
 
+    /// A start sends a fresh probe result as its estimate, sourced `probe`
+    /// only where the server takes sources.
+    func testAStartCarriesTheProbeEstimate() throws {
+        for advertised in [true, false] {
+            let buffering = PlaybackV3BufferingQualityRequest(
+                baseFeatures: ApplePlaybackV3Capabilities.features, serverAdvertisesFeature: advertised, mode: .always,
+                bandwidthEstimateKbps: 48_000, bandwidthEstimateSource: PlaybackProtocolV3.BandwidthEstimateSource.probe)
+            let body = try wireObject(APIv2PlaybackStartBody(startRequest(buffering), installationID: installation))
+            XCTAssertEqual(body["bandwidth_estimate_kbps"] as? Int, 48_000)
+            XCTAssertEqual(body["bandwidth_estimate_source"] as? String, advertised ? "probe" : nil)
+            XCTAssertNil(serverRefusal(body))
+        }
+    }
+
     func testNeverModeIgnoresTheLearnedLimitUnlessTheCallerChose() {
         let never = PlaybackV3BufferingQualityRequest(
             baseFeatures: ApplePlaybackV3Capabilities.features, serverAdvertisesFeature: true, mode: .never)

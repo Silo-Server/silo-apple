@@ -810,6 +810,8 @@ actor PlaybackSessionBridge {
         preferredQualityOverride: String? = nil,
         onMeteredNetwork: Bool = false,
         bufferingQualityMode: BufferingQualityMode,
+        // A fresh bandwidth probe result, sent with source `probe`.
+        probeEstimateKbps: Int? = nil,
         allowAlternateVersions: Bool? = nil,
         startsAtFirstPart: Bool = false
     ) async throws -> PreparedPlayback {
@@ -922,6 +924,7 @@ actor PlaybackSessionBridge {
             subtitleTrackIndex: subtitleIntent.ffmpegStreamIndex,
             subtitleCombinedIndex: subtitleIntent.combinedIndex,
             bufferingQualityMode: bufferingQualityMode,
+            probeEstimateKbps: probeEstimateKbps,
             allowAlternateVersions: allowAlternateVersions
         )
     }
@@ -1044,6 +1047,7 @@ actor PlaybackSessionBridge {
         subtitleTrackIndex: Int?,
         subtitleCombinedIndex: Int? = nil,
         bufferingQualityMode: BufferingQualityMode,
+        probeEstimateKbps: Int? = nil,
         allowAlternateVersions: Bool? = nil
     ) async throws -> PreparedPlayback {
         let resolvedSubtitleCombinedIndex = subtitleCombinedIndex ?? subtitleTrackIndex.flatMap {
@@ -1062,6 +1066,7 @@ actor PlaybackSessionBridge {
             audioTrackIndex: audioTrackIndex,
             subtitleCombinedIndex: resolvedSubtitleCombinedIndex,
             bufferingQualityMode: bufferingQualityMode,
+            probeEstimateKbps: probeEstimateKbps,
             allowAlternateVersions: allowAlternateVersions
         )
         return adoptProtocolV3Start(staged, watchDetail: watchDetail)
@@ -1091,6 +1096,7 @@ actor PlaybackSessionBridge {
         audioTrackIndex: Int?,
         subtitleCombinedIndex: Int?,
         bufferingQualityMode: BufferingQualityMode,
+        probeEstimateKbps: Int?,
         allowAlternateVersions: Bool?
     ) async throws -> StagedProtocolV3Start {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
@@ -1108,14 +1114,18 @@ actor PlaybackSessionBridge {
             let authority = PlaybackV2SessionAuthority(owner: owner, installationID: capability.installationID)
             let playbackAttemptId = "apple:\(UUID().uuidString.lowercased())"
             // Opts into buffering quality only where the server advertises it.
-            // A start sends no estimate; in `never` it carries learned_limit
-            // "ignore".
+            // A fresh probe result goes out as the estimate, with source
+            // `probe` where the server takes sources; in `never` the start
+            // carries learned_limit "ignore".
             let buffering = PlaybackV3BufferingQualityRequest(
                 baseFeatures: ApplePlaybackV3Capabilities.startFeatures(
                     authorizedMediaOrigins: capability.authorizedMediaOrigins
                 ),
                 serverAdvertisesFeature: capability.bufferingQuality,
-                mode: bufferingQualityMode
+                mode: bufferingQualityMode,
+                bandwidthEstimateKbps: probeEstimateKbps,
+                bandwidthEstimateSource: probeEstimateKbps == nil
+                    ? nil : PlaybackProtocolV3.BandwidthEstimateSource.probe
             )
             let request = PlaybackV3StartRequest(
                 protocolVersion: PlaybackProtocolV3.version,
