@@ -31,24 +31,27 @@ struct TVIntroSkipPill: View {
                     .lineLimit(1)
                     .fixedSize()
             }
-            .buttonStyle(TVIntroSkipPillButtonStyle(pill: pill, isSelectTarget: isSelectTarget))
+            .buttonStyle(TVPlayerPillButtonStyle(pill: pill, isSelectTarget: isSelectTarget))
             .accessibilityLabel(pill.kind.accessibilityLabel)
         }
     }
 }
 
-private struct TVIntroSkipPillButtonStyle: ButtonStyle {
-    let pill: IntroSkipPrompt.Pill
-    let isSelectTarget: Bool
+/// The player pills' capsule, shared by the intro-skip and buffering-quality
+/// pills. `pill` draws its countdown; a button without one, such as **Keep
+/// quality**, gets the same capsule with no fill.
+struct TVPlayerPillButtonStyle: ButtonStyle {
+    let pill: (any PlayerTimedPill)?
+    var isSelectTarget = false
 
     func makeBody(configuration: Configuration) -> some View {
-        TVIntroSkipPillBody(configuration: configuration, pill: pill, isSelectTarget: isSelectTarget)
+        TVPlayerPillBody(configuration: configuration, pill: pill, isSelectTarget: isSelectTarget)
     }
 }
 
-private struct TVIntroSkipPillBody: View {
+private struct TVPlayerPillBody: View {
     let configuration: ButtonStyleConfiguration
-    let pill: IntroSkipPrompt.Pill
+    let pill: (any PlayerTimedPill)?
     let isSelectTarget: Bool
 
     @Environment(\.isFocused) private var hasFocus
@@ -64,7 +67,9 @@ private struct TVIntroSkipPillBody: View {
             .background {
                 ZStack {
                     Capsule().fill(Color.black.opacity(0.65))
-                    IntroSkipPillProgress(pill: pill, color: fillColor)
+                    if let pill {
+                        IntroSkipPillProgress(pill: pill, color: fillColor)
+                    }
                 }
                 .clipShape(Capsule())
             }

@@ -591,7 +591,7 @@ struct MobilePlayerControls: View {
                     .padding(.horizontal, 16)
                     .frame(height: SiloTheme.topBarIconHitSize)
                 }
-                .buttonStyle(MobileIntroSkipPillButtonStyle(pill: pill))
+                .buttonStyle(MobilePlayerPillButtonStyle(pill: pill))
                 .accessibilityLabel(pill.kind.accessibilityLabel)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -909,10 +909,12 @@ private struct MobileChapterMenuItems: View {
     }
 }
 
-/// The intro pill's capsule: a dark scrim with the timer's fill creeping
-/// behind the label, brighter while pressed.
-private struct MobileIntroSkipPillButtonStyle: ButtonStyle {
-    let pill: IntroSkipPrompt.Pill
+/// The player pills' capsule, shared by the intro-skip and buffering-quality
+/// pills: a dark scrim with the timer's fill creeping behind the label,
+/// brighter while pressed. A button without a timer, such as **Keep quality**,
+/// gets the same capsule with no fill.
+struct MobilePlayerPillButtonStyle: ButtonStyle {
+    let pill: (any PlayerTimedPill)?
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -920,10 +922,14 @@ private struct MobileIntroSkipPillButtonStyle: ButtonStyle {
             .background {
                 ZStack {
                     Capsule().fill(Color.black.opacity(0.65))
-                    IntroSkipPillProgress(
-                        pill: pill,
-                        color: .white.opacity(configuration.isPressed ? 0.4 : 0.22)
-                    )
+                    if let pill {
+                        IntroSkipPillProgress(
+                            pill: pill,
+                            color: .white.opacity(configuration.isPressed ? 0.4 : 0.22)
+                        )
+                    } else if configuration.isPressed {
+                        Capsule().fill(Color.white.opacity(0.22))
+                    }
                 }
                 .clipShape(Capsule())
             }

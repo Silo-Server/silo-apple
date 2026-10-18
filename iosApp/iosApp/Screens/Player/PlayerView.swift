@@ -54,6 +54,12 @@ struct PlayerView: View {
     @State private var timelineSelectionRequest: UUID?
     @State private var timelinePreviewHideTask: Task<Void, Never>?
     @State private var timelinePreviewContactCanToggle = false
+    /// The buffering pill's buttons. Owned here because the pill is drawn at
+    /// the notice position; `TVPlayerControls` applies its focus rules.
+    @FocusState private var focusedBufferingAction: TVBufferingQualityPill.Action?
+    /// `TVPlayerControls`' explicit timeline scrub, which takes the buffering
+    /// pill out of the focus graph.
+    @State private var isTimelineScrubbing = false
     #endif
 
     init(
@@ -156,10 +162,10 @@ struct PlayerView: View {
                         //     the signed ladder, Tap Select = commit + exit,
                         //     Menu = cancel + exit (handled in onExitCommand).
                         //     Taps against Up/Down are ignored; holds are no-ops.
-                        // While the intro-skip pill is up the sink stays mounted
-                        // and Select acts on the pill (the spec's root-level
-                        // Select), so every other press keeps its playback
-                        // meaning and the pill's timer runs on regardless.
+                        // While a buffering or intro-skip pill is up the sink
+                        // stays mounted and Select acts on the pill (the spec's
+                        // root-level Select), so every other press keeps its
+                        // playback meaning and the pill's timer runs on regardless.
                         // Never while the HUD is presented: the sink and the HUD's
                         // focus graph would be two owners for the same presses
                         // (docs/tvos-focus.md), and the sink's Down handler
@@ -209,6 +215,10 @@ struct PlayerView: View {
                                 onSelect: {
                                     if viewModel.isHoldSeeking {
                                         viewModel.commitHoldSeek()
+                                    } else if viewModel.showBufferingPill {
+                                        // Never up together with the intro
+                                        // pill: the controller holds one back.
+                                        viewModel.selectBufferingPrimary()
                                     } else if viewModel.showIntroSkip {
                                         viewModel.selectIntroSkipPrompt()
                                     } else if viewModel.isPlaying {
@@ -221,6 +231,18 @@ struct PlayerView: View {
                                     }
                                 }
                             )
+                            .ignoresSafeArea()
+                        }
+
+                        // A buffering pill shows during a stall, often while a
+                        // load is in flight and nothing above is mounted. Give it
+                        // a sink of its own that answers Select and leaves every
+                        // other press inert, as during any load; Menu reaches
+                        // `onExitCommand` through it.
+                        if capturesSelectForBufferingPillWhileLoading {
+                            TVPressCaptureView(onSelect: {
+                                viewModel.selectBufferingPrimary()
+                            })
                             .ignoresSafeArea()
                         }
 
@@ -237,11 +259,13 @@ struct PlayerView: View {
                                 showsTimelinePreview: isTimelinePreviewVisible,
                                 timeDisplayMode: timelineTimeDisplayMode,
                                 timelineSelectionRequest: timelineSelectionRequest,
+                                bufferingPillFocus: $focusedBufferingAction,
                                 onToggleTimeDisplayMode: {
                                     withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                                         timelineTimeDisplayMode.toggle()
                                     }
                                 },
+                                onTimelineScrubbingChange: { isTimelineScrubbing = $0 },
                                 onDismiss: { dismissPlayer() }
                             )
                         }
@@ -288,17 +312,43 @@ struct PlayerView: View {
 
                     // Outside the playback-only branch, so an end that stopped
                     // short explains itself on the end-of-playback screen too,
-                    // above that screen's video preview.
+                    // above that screen's video preview. The buffering pill
+                    // shares the notice position, below any notice.
                     #if os(tvOS)
-                    if let identity = remoteIdentityNotice {
-                        RemotePlaybackIdentityNotice(identity: identity)
-                            .transition(.opacity)
-                    } else if let notice = viewModel.presentedNotice {
-                        PlayerNoticeOverlay(notice: notice)
+                    // Below the player menu's panel while it is open, so the
+                    // pill never covers its tabs.
+                    PlayerNoticeStack(pillMinY: viewModel.isHUDPresented ? 560 : SiloTheme.safePadding) {
+                        if let identity = remoteIdentityNotice {
+                            RemotePlaybackIdentityNotice(identity: identity)
+                                .transition(.opacity)
+                        } else if let notice = viewModel.presentedNotice {
+                            PlayerNoticeOverlay(notice: notice)
+                        }
+                        tvBufferingPill
                     }
+                    // Slides in, and out when its timer runs out; an answer
+                    // takes it down at once (see `selectBufferingPrimary`).
+                    .animation(.easeOut(duration: 0.2), value: viewModel.showBufferingPill)
+                    .animation(.easeOut(duration: SiloTheme.fastDuration), value: viewModel.isHUDPresented)
                     #else
-                    if let notice = viewModel.presentedNotice {
-                        PlayerNoticeOverlay(notice: notice)
+                    // Below the top bar while it shows (two rows in portrait,
+                    // one in landscape), so the pill never covers its buttons.
+                    GeometryReader { proxy in
+                        let portrait = proxy.size.width < proxy.size.height
+                        PlayerNoticeStack(
+                            pillMinY: viewModel.shouldShowMobilePlayerChrome
+                                ? (portrait ? 112 : 64)
+                                : SiloTheme.safePadding
+                        ) {
+                            if let notice = viewModel.presentedNotice {
+                                PlayerNoticeOverlay(notice: notice)
+                            }
+                            mobileBufferingPill
+                        }
+                        // Slides in, and out when its timer runs out; a tap
+                        // takes it down at once (see `selectBufferingPrimary`).
+                        .animation(.easeOut(duration: 0.2), value: viewModel.showBufferingPill)
+                        .animation(.easeOut(duration: 0.2), value: viewModel.shouldShowMobilePlayerChrome)
                     }
                     #endif
                     #if os(iOS)
@@ -313,7 +363,10 @@ struct PlayerView: View {
                         PlayerBufferingCapsule()
                     }
                     #else
-                    if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
+                    // The pill, which already says playback is buffering, would
+                    // sit under this corner capsule on a phone.
+                    if (viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting) &&
+                        !showsBufferingPill {
                         PlayerBufferingCapsule()
                     }
                     #endif
@@ -355,8 +408,8 @@ struct PlayerView: View {
                 viewModel.togglePlayPause()
             }
         }
-        // Menu button: step seek-session → HUD → (loading: dismiss) → intro pill →
-        // overlay → dismiss.
+        // Menu button: step seek-session → HUD → buffering pill → (loading:
+        // dismiss) → intro pill → overlay → dismiss.
         // Matches the Infuse / Apple TV pattern. Runs at the shell level
         // so it fires even if focus has drifted — the HUD's own
         // `onExitCommand` handles the common case where focus is inside
@@ -375,6 +428,11 @@ struct PlayerView: View {
                 // A genuinely stalled load is still escapable — the first
                 // Menu closes the HUD, the next one lands below.
                 viewModel.closeHUD()
+            } else if viewModel.dismissBufferingPill() {
+                // Before the `isLoading` escape too: the pill shows during a
+                // stall, often while a load is in flight, and Menu answers it
+                // instead of exiting. The press ends there; the next Menu
+                // behaves normally.
             } else if viewModel.isLoading {
                 dismissPlayer()
             } else if viewModel.dismissIntroSkipPrompt() {
@@ -691,6 +749,77 @@ struct PlayerView: View {
             return "Syncing with the party…"
         }
         return nil
+    }
+    #endif
+
+    // MARK: - Buffering pill
+
+    /// The buffering prompt or undo pill is drawn. Over playback only: the Next
+    /// Up screen's own controls own the input there.
+    private var showsBufferingPill: Bool {
+        viewModel.showBufferingPill && !viewModel.showNextUpScreen
+    }
+
+    #if os(tvOS)
+    /// A load in flight mounts neither the press capture nor the controls, so
+    /// a buffering pill gets a Select-only sink of its own then.
+    private var capturesSelectForBufferingPillWhileLoading: Bool {
+        viewModel.isLoading && showsBufferingPill && !viewModel.isHUDPresented
+    }
+
+    /// Root Select acts on the pill: a press capture is mounted and no seek
+    /// session claims Select first.
+    private var bufferingPillIsSelectTarget: Bool {
+        if capturesSelectForBufferingPillWhileLoading { return true }
+        return !viewModel.isLoading && !viewModel.isHUDPresented && !viewModel.showControls &&
+            !viewModel.showSegmentSkip && !viewModel.isHoldSeeking
+    }
+
+    /// One focus owner at a time (docs/tvos-focus.md), as for the intro pill.
+    /// With the controls hidden, or a load in flight, a press capture owns the
+    /// remote and routes Select to the pill, so the pill is not focusable. With
+    /// the transport up it is ordinary buttons in the native focus graph, and
+    /// Down moves on to the scrubber while its timer runs. It also leaves the
+    /// graph during a timeline scrub, so a drag that drifts upward cannot land
+    /// here and cancel the scrub, and while the player menu, whose focus graph
+    /// owns the top of the screen, is open.
+    private var bufferingPillTakesFocus: Bool {
+        viewModel.showControls && !viewModel.isLoading && !viewModel.isHUDPresented &&
+            !viewModel.isHoldSeeking && !isTimelineScrubbing
+    }
+
+    @ViewBuilder
+    private var tvBufferingPill: some View {
+        if showsBufferingPill, let pill = viewModel.bufferingPill {
+            TVBufferingQualityPill(
+                pill: pill,
+                isSelectTarget: bufferingPillIsSelectTarget,
+                focus: $focusedBufferingAction,
+                onPrimary: { viewModel.selectBufferingPrimary() },
+                onSecondary: { viewModel.selectBufferingKeep() }
+            )
+            .disabled(!bufferingPillTakesFocus)
+            // Its own focus region, sized to the card: Left and Right move
+            // between its buttons, and Down leaves it for the transport.
+            .focusSection()
+            .padding(.horizontal, SiloTheme.safePadding)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .playerNoticeStackPill()
+        }
+    }
+    #else
+    @ViewBuilder
+    private var mobileBufferingPill: some View {
+        if showsBufferingPill, let pill = viewModel.bufferingPill {
+            MobileBufferingQualityPill(
+                pill: pill,
+                onPrimary: { viewModel.selectBufferingPrimary() },
+                onSecondary: { viewModel.selectBufferingKeep() }
+            )
+            .padding(.horizontal, SiloTheme.safePadding)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .playerNoticeStackPill()
+        }
     }
     #endif
 

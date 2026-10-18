@@ -26,6 +26,19 @@ extension IntroSkipPrompt.Kind {
     }
 }
 
+/// A pill with a timer the countdown fill can draw: the intro-skip pill and
+/// the buffering-quality pills.
+protocol PlayerTimedPill {
+    /// When the timer runs out; nil while a pause holds it.
+    var deadline: Date? { get }
+    /// How far the fill has crept, 0 when the pill appears and 1 when the
+    /// timer runs out.
+    func progress(at now: Date) -> Double
+}
+
+extension IntroSkipPrompt.Pill: PlayerTimedPill {}
+extension BufferingQualityController.Pill: PlayerTimedPill {}
+
 /// The fill that creeps left to right behind the pill's label and lands full
 /// exactly when the pill's timer runs out.
 ///
@@ -34,7 +47,7 @@ extension IntroSkipPrompt.Kind {
 /// bar disagree with when the action fires. While a pause holds the timer the
 /// timeline pauses too and the bar sits at the frozen fraction.
 struct IntroSkipPillProgress: View {
-    let pill: IntroSkipPrompt.Pill
+    let pill: any PlayerTimedPill
     let color: Color
 
     var body: some View {

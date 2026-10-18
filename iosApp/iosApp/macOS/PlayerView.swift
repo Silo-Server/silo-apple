@@ -122,6 +122,19 @@ private struct MacPlayerScreen: View {
                         .padding(.top, 72)
                 }
 
+                if let pill = viewModel.bufferingPill {
+                    MacBufferingQualityPill(
+                        pill: pill,
+                        onPrimary: { viewModel.selectBufferingPrimary() },
+                        onSecondary: { viewModel.selectBufferingKeep() }
+                    )
+                    .padding(.horizontal, SiloTheme.safePadding)
+                    // Below the window's title bar, like the notice's inset.
+                    .padding(.top, 72 + SiloTheme.safePadding)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                }
+
                 if let notice = viewModel.subtitleSync.notice {
                     SubtitleSyncIndicator(notice: notice) {
                         viewModel.subtitleSync.dismissNotice()
@@ -175,6 +188,7 @@ private struct MacPlayerScreen: View {
         .animation(.easeOut(duration: 0.16), value: shouldShowControls)
         .animation(.easeOut(duration: 0.16), value: isOptionsPresented)
         .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
+        .animation(.easeOut(duration: 0.2), value: viewModel.showBufferingPill)
     }
 
     private var shouldShowControls: Bool {
@@ -221,6 +235,9 @@ private struct MacPlayerScreen: View {
         case .escape:
             if isOptionsPresented {
                 isOptionsPresented = false
+            } else if viewModel.dismissBufferingPill() {
+                // Back on the buffering pill, before the window takes Escape;
+                // the next Escape closes the player as usual.
             } else if viewModel.dismissIntroSkipPrompt() {
                 // The intro pill takes Escape before the window does; the next
                 // Escape closes the player as usual.
@@ -228,8 +245,13 @@ private struct MacPlayerScreen: View {
                 dismiss()
             }
         case .confirm:
-            // Return acts on the intro pill; with none showing it does nothing.
-            viewModel.selectIntroSkipPrompt()
+            // Return acts on the pill that is up; with none showing it does
+            // nothing. The controller never shows the two pills together.
+            if viewModel.showBufferingPill {
+                viewModel.selectBufferingPrimary()
+            } else {
+                viewModel.selectIntroSkipPrompt()
+            }
         case .speedDown:
             viewModel.setPlaybackSpeed(nextSpeed(offset: -1))
         case .speedUp:
