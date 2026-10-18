@@ -479,6 +479,10 @@ class PlayerViewModel {
     /// The intro-skip pill — `ask`'s "Skip Intro" offer or `always`'s undo.
     /// See IntroSkipPrompt.swift and the server's intro-skip-mode spec.
     let introSkipPrompt = IntroSkipPrompt()
+    /// Lowers quality when playback keeps buffering, with its prompt and undo
+    /// pills. See BufferingQualityController.swift and the server's
+    /// buffering-quality spec.
+    let bufferingQuality = BufferingQualityController()
     var selectedAudioId: Int64?
     var selectedSubtitleId: Int64? {
         didSet {
@@ -592,6 +596,15 @@ class PlayerViewModel {
     /// intro.
     var showIntroSkip: Bool {
         introSkipPrompt.isVisible
+    }
+
+    /// The buffering prompt or undo pill while it is on screen.
+    var bufferingPill: BufferingQualityController.Pill? {
+        bufferingQuality.pill
+    }
+
+    var showBufferingPill: Bool {
+        bufferingQuality.pill != nil
     }
 
     private var markerPlaybackHasStarted: Bool {
@@ -6532,6 +6545,24 @@ class PlayerViewModel {
         guard withoutAnimation({ introSkipPrompt.dismiss() }) else { return false }
         Self.logger.info("[CMP-MARKERS] intro prompt dismissed")
         return true
+    }
+
+    /// Select at the player root while a buffering pill is up: **Lower
+    /// quality** on the prompt, **Restore quality** on the undo pill.
+    func selectBufferingPrimary() {
+        withoutAnimation { bufferingQuality.selectPrimary() }
+    }
+
+    /// **Keep quality** on the buffering prompt.
+    func selectBufferingKeep() {
+        withoutAnimation { bufferingQuality.selectKeep() }
+    }
+
+    /// Back / Menu / Escape while a buffering pill is up. Returns true when it
+    /// took the pill down, so the caller consumes the press only then.
+    @discardableResult
+    func dismissBufferingPill() -> Bool {
+        withoutAnimation { bufferingQuality.back() }
     }
 
     /// The pill fades when its timer runs out but goes at once when the viewer
