@@ -88,6 +88,10 @@ struct ContentView: View {
         case .needsSignInTarget: return "signInTarget"
         case .needsProfile, .authenticated:
             return serverRegistry.activeServerId.map { "\($0)#\(router.signInRevision)" }
+        case .needsLogin:
+            // Stays put while the sign-in it finished opens; starts over
+            // after its question is answered Cancel.
+            return serverRegistry.activeServerId.map { "\($0)#signIn\(router.signInScreenGeneration)" }
         default:
             // The sign-in screen stays put while the sign-in it finished opens.
             return serverRegistry.activeServerId
@@ -685,9 +689,10 @@ struct ContentView: View {
         return false
     }
 
+    /// Who's Watching counts too: with no profile open the interval retires
+    /// nothing, but Ask For reads it on return (spec §6.3).
     private func markProfileAwayStartIfNeeded(at date: Date = .now) {
-        guard router.authState == .authenticated,
-              AuthService.shared.profileId != nil else { return }
+        guard isAwayClockRunning else { return }
         if keepsProfileActiveInBackground {
             launchPreferences.clearBackgroundedAt()
         } else {
@@ -699,9 +704,17 @@ struct ContentView: View {
     /// Termination always ends active playback, so it starts an away interval
     /// even when media was still playing at the time of the notification.
     private func markProfileAwayStartForTermination(at date: Date = .now) {
-        guard AuthService.shared.isLoggedIn,
-              AuthService.shared.profileId != nil else { return }
+        guard AuthService.shared.isLoggedIn, isAwayClockRunning else { return }
         launchPreferences.markBackgrounded(at: date)
+    }
+
+    /// A profile is open, or Who's Watching shows.
+    private var isAwayClockRunning: Bool {
+        switch router.authState {
+        case .authenticated: return AuthService.shared.profileId != nil
+        case .needsProfile: return true
+        default: return false
+        }
     }
 
     /// If background playback starts, stop the away clock. If it later stops
@@ -1167,10 +1180,14 @@ struct ContentView: View {
                 restoredAccount: local.restoredAccount
             )
         }
+        // Another sign-in opened by the re-resolution re-scopes the screen
+        // even when the route is the same (`signInRevision`).
+        let changedSignIn = validated.restoredAccount != local.restoredAccount
         guard !Task.isCancelled,
               router.authState == local.state,
-              validated.state != local.state else { return }
+              validated.state != local.state || changedSignIn else { return }
         commitInitialState(validated)
+        if changedSignIn { router.noteSignInChanged() }
 
         #if DEBUG
         Task.detached(priority: .background) { await Self.logTopShelfDiagnostics() }
@@ -1205,6 +1222,9 @@ struct ContentView: View {
         sceneBackgroundedAt = nil
         #endif
         guard router.authState == .authenticated else {
+            if router.authState == .needsProfile {
+                Task { await router.users.applyAskForOnReturnToProfileSelection(router: router) }
+            }
             maintainPushRegistrationsWithoutProfile()
             return
         }

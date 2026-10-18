@@ -212,7 +212,8 @@ final class ServerRegistry {
         }
     }
     /// Per-user defaults: the active-server mirror names a fallback.
-    private static let activeServerFallbackKey = "activeServerIdIsFallback"
+    /// `TokenStore.launchSelection` reads it too.
+    static let activeServerFallbackKey = "activeServerIdIsFallback"
 
     /// The server this Apple TV user (or device) last opened, as the
     /// per-user `activeServerId` mirror recorded it. Nil when nobody chose

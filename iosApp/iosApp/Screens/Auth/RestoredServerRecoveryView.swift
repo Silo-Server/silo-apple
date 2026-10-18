@@ -258,7 +258,9 @@ struct RestoredServerRecoveryView: View {
         let expectedServerID = registry.activeServerId
 
         retryTask = Task {
-            let local = await RestoredSessionAuthResolver.resolveLocal()
+            // The same user and server again: Try again never asks who's
+            // watching or opens another user, as a cold launch might.
+            let local = await RestoredSessionAuthResolver.resolveCurrent()
             let validation: RestoredSessionValidationResult
             if let expected = local.restoredAccount {
                 validation = await AuthService.shared.validateRestoredSession(expected: expected)
@@ -266,16 +268,23 @@ struct RestoredServerRecoveryView: View {
                 validation = .identityChanged
             }
 
-            let destination: AppRouter.AuthState?
+            let destination: RestoredSessionAuthResolver.LocalResolution?
             switch validation {
             case .valid:
-                destination = local.state
+                destination = local
             case .needsLogin:
-                destination = .needsLogin
+                destination = RestoredSessionAuthResolver.LocalResolution(
+                    state: .needsLogin, restoredAccount: nil, loginNotice: .sessionExpired)
             case .serverRecovery(let newReason):
-                destination = newReason == reason ? nil : .serverRecovery(newReason)
+                destination = newReason == reason
+                    ? nil
+                    : RestoredSessionAuthResolver.LocalResolution(state: .serverRecovery(newReason), restoredAccount: nil)
             case .identityChanged:
-                destination = await RestoredSessionAuthResolver.resolveValidated()
+                // Nothing to validate (a sign-in screen, which keeps its
+                // sign-in) or another account meanwhile.
+                destination = local.restoredAccount == nil
+                    ? local
+                    : await RestoredSessionAuthResolver.resolveCurrentValidated()
             case .indeterminate:
                 destination = nil
             }
@@ -283,6 +292,9 @@ struct RestoredServerRecoveryView: View {
             isChecking = false
             guard !Task.isCancelled,
                   registry.activeServerId == expectedServerID else { return }
+            // A rejected saved sign-in keeps its own sign-in screen, with
+            // Change server and Switch User.
+            if validation == .needsLogin, await router.users.signInAgainForCurrentSession(router: router) { return }
             if let destination {
                 router.resetAfterServerResolution(to: destination)
             } else {

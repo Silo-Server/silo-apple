@@ -58,13 +58,16 @@ enum PlayerSettingWriteScope: String, Codable, Sendable {
 /// debounce and retry behaviour can be exercised without a network.
 protocol PlayerSettingsTransport: AnyObject, Sendable {
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse
+    /// `profileId` and `accountID` are the identity the write was queued
+    /// under; the request is refused under any other (`settingsWrite`).
     func putValue(
         key: SettingKey,
         scope: PlayerSettingWriteScope,
         value: SettingJSONValue,
-        profileId: String?
+        profileId: String?,
+        accountID: String?
     ) async throws
-    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?) async throws
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?, accountID: String?) async throws
 }
 
 /// The production transport: the canonical endpoints on ``SiloAPI``.
@@ -83,13 +86,15 @@ final class SiloPlayerSettingsTransport: PlayerSettingsTransport {
         key: SettingKey,
         scope: PlayerSettingWriteScope,
         value: SettingJSONValue,
-        profileId: String?
+        profileId: String?,
+        accountID: String?
     ) async throws {
-        try await api.putValue(key: key, scope: scope.identity, value: value, profileId: profileId)
+        try await api.putValue(key: key, scope: scope.identity, value: value, profileId: profileId,
+                               accountID: accountID)
     }
 
-    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?) async throws {
-        try await api.deleteValue(key: key, scope: scope.identity, profileId: profileId)
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?, accountID: String?) async throws {
+        try await api.deleteValue(key: key, scope: scope.identity, profileId: profileId, accountID: accountID)
     }
 }
 
@@ -151,6 +156,13 @@ struct PendingSettingWrite: Equatable, Codable {
     /// X-Profile-Id from a newer session after the user switches profiles.
     let profileId: String?
 
+    /// The account captured with the profile. Profile IDs repeat across
+    /// accounts on one server, so the transport passes it too and a write
+    /// still in flight when another account is opened is refused instead of
+    /// stored on that account's profile with the same ID. Nil before sign-in
+    /// migration, where the server's own session is the only account.
+    let accountID: String?
+
     /// Sends of this value that failed in a way a retry could fix. Past the
     /// retry policy's bound the write is held.
     var failedAttempts: Int
@@ -170,6 +182,7 @@ struct PendingSettingWrite: Equatable, Codable {
         storedProfileValue: SettingJSONValue? = nil,
         scopeIdentifier: String? = nil,
         profileId: String? = nil,
+        accountID: String? = nil,
         failedAttempts: Int = 0,
         isHeld: Bool = false
     ) {
@@ -182,13 +195,14 @@ struct PendingSettingWrite: Equatable, Codable {
         self.storedProfileValue = scope == .profileDevice && operation == .delete ? storedProfileValue : nil
         self.scopeIdentifier = scopeIdentifier
         self.profileId = profileId
+        self.accountID = accountID
         self.failedAttempts = failedAttempts
         self.isHeld = isHeld
     }
 
     private enum CodingKeys: String, CodingKey {
         case operation, scope, clearsDeviceValue, onlyWhereProfileScoped, fallbackDeviceValue, owedProfileValue, storedProfileValue
-        case scopeIdentifier, profileId, failedAttempts, isHeld
+        case scopeIdentifier, profileId, accountID, failedAttempts, isHeld
     }
 
     init(from decoder: Decoder) throws {
@@ -202,6 +216,7 @@ struct PendingSettingWrite: Equatable, Codable {
         storedProfileValue = try container.decodeIfPresent(SettingJSONValue.self, forKey: .storedProfileValue)
         scopeIdentifier = try container.decodeIfPresent(String.self, forKey: .scopeIdentifier)
         profileId = try container.decodeIfPresent(String.self, forKey: .profileId)
+        accountID = try container.decodeIfPresent(String.self, forKey: .accountID)
         failedAttempts = try container.decodeIfPresent(Int.self, forKey: .failedAttempts) ?? 0
         isHeld = try container.decodeIfPresent(Bool.self, forKey: .isHeld) ?? false
     }
@@ -226,6 +241,7 @@ struct PendingSettingWrite: Equatable, Codable {
             storedProfileValue: storedProfileValue,
             scopeIdentifier: scopeIdentifier,
             profileId: profileId,
+            accountID: accountID,
             failedAttempts: failedAttempts,
             isHeld: isHeld
         )
@@ -240,13 +256,16 @@ struct PendingSettingWrite: Equatable, Codable {
             storedProfileValue: profileValue,
             scopeIdentifier: scopeIdentifier,
             profileId: profileId,
+            accountID: accountID,
             failedAttempts: failedAttempts,
             isHeld: isHeld
         )
     }
 
-    func bound(to scopeIdentifier: String?, profileId: String?) -> PendingSettingWrite {
-        guard self.scopeIdentifier == nil || self.profileId == nil else { return self }
+    /// Fills the identity an entry journaled by an earlier build lacks with
+    /// the partition's it was loaded from.
+    func bound(to scopeIdentifier: String?, profileId: String?, accountID: String? = nil) -> PendingSettingWrite {
+        guard self.scopeIdentifier == nil || self.profileId == nil || self.accountID == nil else { return self }
         return PendingSettingWrite(
             operation: operation,
             scope: scope,
@@ -257,6 +276,7 @@ struct PendingSettingWrite: Equatable, Codable {
             storedProfileValue: storedProfileValue,
             scopeIdentifier: self.scopeIdentifier ?? scopeIdentifier,
             profileId: self.profileId ?? profileId,
+            accountID: self.accountID ?? accountID,
             failedAttempts: failedAttempts,
             isHeld: isHeld
         )
@@ -281,6 +301,8 @@ protocol PlayerSettingsWriteJournal: AnyObject, Sendable {
     /// Profile addressed by the current partition. Older test journals have
     /// no profile identity and use the default nil value.
     var profileId: String? { get }
+    /// Account addressed by the current partition; nil like `profileId`.
+    var accountID: String? { get }
     func load() -> [SettingKey: PendingSettingWrite]
     func save(_ pending: [SettingKey: PendingSettingWrite])
     /// Remove one acknowledged operation from the partition it was captured
@@ -303,6 +325,7 @@ protocol PlayerSettingsWriteJournal: AnyObject, Sendable {
 extension PlayerSettingsWriteJournal {
     var scopeIdentifier: String? { nil }
     var profileId: String? { nil }
+    var accountID: String? { nil }
 }
 
 /// The production journal: `UserDefaults`, partitioned by settings scope.
@@ -319,6 +342,7 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
 
     private let defaults: UserDefaults
     private let profileProvider: @Sendable () -> String?
+    private let accountProvider: @Sendable () -> String?
     private let scopeProvider: @Sendable () -> String?
 
     init(
@@ -326,10 +350,12 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
         profileProvider: @escaping @Sendable () -> String? = {
             AuthService.shared.profileId?.trimmingCharacters(in: .whitespacesAndNewlines)
         },
+        accountProvider: @escaping @Sendable () -> String? = { AccountScopeReader.currentAccountID() },
         scopeProvider: @escaping @Sendable () -> String? = { PlayerSettings.currentScopeIdentifier }
     ) {
         self.defaults = defaults
         self.profileProvider = profileProvider
+        self.accountProvider = accountProvider
         self.scopeProvider = scopeProvider
     }
 
@@ -339,6 +365,7 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
 
     var scopeIdentifier: String? { scopeProvider() }
     var profileId: String? { profileProvider() }
+    var accountID: String? { accountProvider() }
 
     func load() -> [SettingKey: PendingSettingWrite] {
         let scopeIdentifier = scopeProvider()
@@ -353,9 +380,10 @@ final class UserDefaultsSettingsWriteJournal: PlayerSettingsWriteJournal, @unche
             // the whole restore: the contract is additive, and one stale entry
             // must not strand every other queued edit.
             let profileId = profileProvider()
+            let accountID = accountProvider()
             return stored.reduce(into: [:]) { result, entry in
                 if let key = SettingKey(rawValue: entry.key) {
-                    result[key] = entry.value.bound(to: scopeIdentifier, profileId: profileId)
+                    result[key] = entry.value.bound(to: scopeIdentifier, profileId: profileId, accountID: accountID)
                 }
             }
         } catch {
@@ -946,7 +974,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         scope: PlayerSettingWriteScope = .profileDevice,
         clearingDeviceValue: Bool = false
     ) {
-        schedule(key) { existing, draining, scopeIdentifier, profileId in
+        schedule(key) { existing, draining, partition in
             // A clear of this device's value, queued or being sent, is owed
             // too: a profile edit right after turning the device override off
             // must not replace the clear, or settle while a failed clear is
@@ -960,8 +988,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 scope: scope,
                 clearsDeviceValue: clearingDeviceValue || owedClear,
                 owedProfileValue: Self.owedProfileValue(existing ?? draining),
-                scopeIdentifier: scopeIdentifier,
-                profileId: profileId
+                scopeIdentifier: partition.scopeIdentifier,
+                profileId: partition.profileId,
+                accountID: partition.accountID
             )
             // The identical value already queued is the same desired state, so
             // the pending op (and its retry count) stands. A held one does
@@ -980,7 +1009,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// stores `key` per profile, which may not be known yet; see
     /// ``PendingSettingWrite/onlyWhereProfileScoped``.
     func enqueueDelete(_ key: SettingKey, onlyWhereProfileScoped: Bool = false) {
-        schedule(key) { existing, draining, scopeIdentifier, profileId in
+        schedule(key) { existing, draining, partition in
             // A device edit this clear replaces is kept for a server where
             // the clear does not apply, or it would be lost there.
             let replaced = existing ?? draining
@@ -994,8 +1023,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 onlyWhereProfileScoped: onlyWhereProfileScoped,
                 fallbackDeviceValue: fallback,
                 owedProfileValue: Self.owedProfileValue(existing ?? draining),
-                scopeIdentifier: scopeIdentifier,
-                profileId: profileId
+                scopeIdentifier: partition.scopeIdentifier,
+                profileId: partition.profileId,
+                accountID: partition.accountID
             )
             if let existing, !existing.isHeld, existing.hasSameDesiredState(as: next) {
                 return existing
@@ -1014,12 +1044,19 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         return replaced.owedProfileValue
     }
 
+    /// The journal partition an op is queued for, with its profile and account.
+    private struct Partition {
+        let scopeIdentifier: String?
+        let profileId: String?
+        let accountID: String?
+    }
+
     /// `next` receives the op queued for `key`, the op for `key` a drain is
     /// sending (or has failed and will retry) for this partition right now,
-    /// the partition and its profile.
+    /// and the partition.
     private func schedule(
         _ key: SettingKey,
-        _ next: (PendingSettingWrite?, PendingSettingWrite?, String?, String?) -> PendingSettingWrite?
+        _ next: (PendingSettingWrite?, PendingSettingWrite?, Partition) -> PendingSettingWrite?
     ) {
         lock.lock()
         let scopeIdentifier = journal?.scopeIdentifier
@@ -1029,7 +1066,11 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         let draining = [inFlight[key], failedInDrain[key]].lazy
             .compactMap { $0 }
             .first { $0.scopeIdentifier == scopeIdentifier }
-        pending[key] = next(pending[key], draining, scopeIdentifier, journal?.profileId)
+        pending[key] = next(pending[key], draining, Partition(
+            scopeIdentifier: scopeIdentifier,
+            profileId: journal?.profileId,
+            accountID: journal?.accountID
+        ))
         persistLocked()
         // The debounced drain below sends every queued op, so a pending retry
         // timer would only duplicate it.
@@ -1388,7 +1429,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 }
                 if let profileValue {
                     do {
-                        try await transport.putValue(key: key, scope: .profile, value: profileValue, profileId: write.profileId)
+                        try await transport.putValue(key: key, scope: .profile, value: profileValue,
+                                                     profileId: write.profileId, accountID: write.accountID)
                     } catch let error as SettingsAPIError {
                         guard case .release = error.writeFailure else { throw error }
                         // Refused for the profile, and sending it again would
@@ -1434,7 +1476,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                     key: key,
                     scope: scope,
                     value: wireValue,
-                    profileId: write.profileId
+                    profileId: write.profileId,
+                    accountID: write.accountID
                 )
                 if scope == .profile {
                     // With a clear to follow, from here the clear is the only
@@ -1454,7 +1497,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                         try await transport.deleteValue(
                             key: key,
                             scope: .profileDevice,
-                            profileId: write.profileId
+                            profileId: write.profileId,
+                            accountID: write.accountID
                         )
                     } catch SettingsAPIError.noValueAtScope {
                         // No device value, so the profile value already shows.
@@ -1474,13 +1518,15 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                                 key: key,
                                 scope: .profileDevice,
                                 value: key.wireValue(fallback, forServerRevision: revision),
-                                profileId: write.profileId
+                                profileId: write.profileId,
+                                accountID: write.accountID
                             )
                         }
                         return .settled
                     }
                 }
-                try await transport.deleteValue(key: key, scope: write.scope, profileId: write.profileId)
+                try await transport.deleteValue(key: key, scope: write.scope, profileId: write.profileId,
+                                                accountID: write.accountID)
             }
             return .settled
         } catch let error as SettingsAPIError {

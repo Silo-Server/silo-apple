@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 struct RefreshAccountIdentity: Hashable, Sendable {
     let serverId: String
@@ -307,12 +308,19 @@ actor TokenStore {
     /// "no active server": reads return nil and saves no-op.
     private var activeServerId: String = ""
     /// Which credential on `activeServerId` requests use.
-    private var selection: CredentialSelection = .none
+    private var selection: CredentialSelection = .none {
+        didSet { selectionSnapshot.withLock { $0 = selection } }
+    }
+    /// `selection` for synchronous readers (`mirroredSelection`).
+    private nonisolated let selectionSnapshot = Mutex<CredentialSelection>(.none)
     /// The Silo user the selection belongs to. Nil before migration and
     /// while no user is chosen.
     private var activeUserID: String?
     /// `SiloUserIndex.legacyDataOwnerByServerID` as last read or written.
     private var legacyDataOwners: [String: String] = [:]
+    /// Whether `legacyDataOwners` came from an index read or write in this
+    /// process.
+    private var hasReadLegacyDataOwners = false
 
     private var cachedAccessToken: String?
     private var cachedRefreshToken: String?
@@ -363,6 +371,12 @@ actor TokenStore {
     /// sign-in's account, or nil.
     nonisolated var mirroredAccountID: String? {
         AccountScopeReader.currentAccountID(defaults: defaults)
+    }
+
+    /// The selected credential, for synchronous readers such as
+    /// `AuthService.isLoggedIn`. `.none` until this process selects one.
+    nonisolated var mirroredSelection: CredentialSelection {
+        selectionSnapshot.withLock { $0 }
     }
 
     // MARK: - Diagnostics
@@ -480,9 +494,13 @@ actor TokenStore {
         }
         guard let index else { return (.legacy(serverID: serverID), nil) }
         let launch = ProfileLaunchState.load(from: defaults)
+        // As in `SiloLaunchResolver`: an active server the registry fell
+        // back to (a new Apple TV user's first launch, the survivor of a
+        // removal) is not history, so it never opens the migrated user.
+        let openedServerBefore = defaults.string(forKey: SharedStorage.activeServerIdKey) != nil
+            && !defaults.bool(forKey: ServerRegistry.activeServerFallbackKey)
         let hasLegacyHistory = (launch.lastServerByUserID ?? [:]).isEmpty
-            && (!launch.rememberedByServerID.isEmpty
-                || defaults.string(forKey: SharedStorage.activeServerIdKey) != nil)
+            && (!launch.rememberedByServerID.isEmpty || openedServerBefore)
         func user(_ id: String?) -> SiloUser? { id.flatMap { id in index.users.first { $0.id == id } } }
         let chosen = user(activeUserID)
             ?? user(launch.linkedUserID)
@@ -626,6 +644,7 @@ actor TokenStore {
 
     private func publishLegacyOwners(_ index: SiloUserIndex) {
         let owners = index.legacyDataOwnerByServerID ?? [:]
+        hasReadLegacyDataOwners = true
         legacyDataOwners = owners
         LegacyLocalDataOwner.publish(owners)
     }
@@ -650,17 +669,22 @@ actor TokenStore {
     /// existed (`SiloUserIndex.legacyDataOwnerByServerID`). Nil before
     /// migration and for servers no migrated sign-in owns.
     func legacyDataOwner(forServer serverID: String) -> String? {
-        if legacyDataOwners[serverID] == nil {
-            // This process may not have read the index yet.
+        if !hasReadLegacyDataOwners {
+            // This process may not have read the index yet. Every later
+            // read or write of the index republishes the owners.
             _ = try? loadIndex()
         }
         return legacyDataOwners[serverID]
     }
 
     /// Whether any user has a sign-in, or a pending legacy server, on
-    /// `serverID`. False before migration and when the index can't be read.
+    /// `serverID`. False before migration. True when the index can't be
+    /// read: callers keep server-wide state (diagnostics) that another
+    /// user may still need.
     func hasSavedSignIn(onServer serverID: String) -> Bool {
-        guard let index = try? loadIndex() else { return false }
+        let index: SiloUserIndex?
+        do { index = try loadIndex() } catch { return true }
+        guard let index else { return false }
         return index.users.contains { Self.user($0, has: serverID) }
     }
 
@@ -2718,12 +2742,7 @@ actor TokenStore {
             recordSessionEvent(phase: "sessionLoad", outcome: "failed", reason: "invalidProfileProof")
             return nil
         }
-        if legacyDataOwners[key.serverID] == nil {
-            // Refreshes `legacyDataOwners` when this process hasn't read the
-            // index yet.
-            _ = try? loadIndex()
-        }
-        guard legacyDataOwners[key.serverID] == key.accountID,
+        guard legacyDataOwner(forServer: key.serverID) == key.accountID,
               let legacy = proofs.loadLegacy(serverID: key.serverID) else { return nil }
         if proofs.save(SignInProfileProof(profileID: nil, token: legacy), for: key) {
             proofs.removeLegacy(serverID: key.serverID)

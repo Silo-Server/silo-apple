@@ -191,17 +191,23 @@ final class AuthService: @unchecked Sendable {
 
     /// Whether the active server's selected credential is signed in, read
     /// from the same records TokenStore loads. Legacy mirrors cannot revive a
-    /// session after its sign-out tombstone has been written.
+    /// session after its sign-out tombstone has been written. Nothing
+    /// selected (a chooser, the server step, or a sign-in screen) is signed
+    /// out, even on a server whose own session is still saved.
     var isLoggedIn: Bool {
         guard let server = serverRegistry.activeServer else { return false }
         let origin = ServerRegistry.normalize(url: server.url)
-        if let accountID = tokenStore.mirroredAccountID {
-            guard let key = SignInKey(serverID: server.id, accountID: accountID),
+        switch tokenStore.mirroredSelection {
+        case .signIn(let key):
+            guard key.serverID == server.id,
                   let signIn = try? tokenStore.savedSignIns.loadSignIn(key) else { return false }
             return signIn.isSignedIn && ServerRegistry.normalize(url: signIn.origin) == origin
+        case .legacy(let serverID):
+            guard serverID == server.id, legacySessionCounts(for: server.id) else { return false }
+            return sessionPersistence.hasSession(serverID: server.id, origin: origin)
+        case .none:
+            return false
         }
-        guard legacySessionCounts(for: server.id) else { return false }
-        return sessionPersistence.hasSession(serverID: server.id, origin: origin)
     }
 
     /// A server's own session is read before sign-in migration, and after it
@@ -638,6 +644,27 @@ final class AuthService: @unchecked Sendable {
         rememberedProfile(in: await currentLaunchStateScope(), accountEpoch: await tokenStore.getOrCreateAccountEpoch())
     }
 
+    /// The same read without waiting, from the selection mirror, for a
+    /// screen's first frame: tvOS puts initial focus on the "Last used"
+    /// profile, and a value that arrives a moment later no longer moves it.
+    /// Only an entry recorded before sign-ins existed needs the saved
+    /// sign-in's epoch, so only that one reads the keychain.
+    var rememberedProfileIDForCurrentSelection: String? {
+        switch tokenStore.mirroredSelection {
+        case .signIn(let key):
+            if let remembered = launchPreferences.rememberedProfile(for: key, accountEpoch: nil) {
+                return remembered.profileID
+            }
+            guard launchPreferences.legacyRememberedProfile(forServer: key.serverID) != nil else { return nil }
+            let epoch = (try? tokenStore.savedSignIns.loadSignIn(key))?.epoch?.uuidString
+            return launchPreferences.rememberedProfile(for: key, accountEpoch: epoch)?.profileID
+        case .legacy(let serverID):
+            return launchPreferences.legacyRememberedProfile(forServer: serverID)?.profileID
+        case .none:
+            return nil
+        }
+    }
+
     /// Resolve the selected sign-in's launch policy. Returns `true` only when
     /// a complete remembered identity was restored; callers otherwise
     /// present Who's Watching while retaining the account session.
@@ -1019,9 +1046,12 @@ final class AuthService: @unchecked Sendable {
     /// Saves the profiles a sign-in's account has, so user cards can draw
     /// them without the server (`SavedSignIn.profiles`). `key` is the
     /// sign-in the list was read for; a list read for another sign-in, or
-    /// before migration, changes nothing.
+    /// before migration, changes nothing. Neither does one read while a
+    /// remote-playback identity answers requests: that list is another
+    /// account's.
     func updateSignInDisplayCache(_ profiles: [UserProfile], for key: SignInKey?) async {
-        guard let key, await tokenStore.currentSignInKey() == key else { return }
+        guard let key, await tokenStore.currentSignInKey() == key,
+              !(await tokenStore.hasTemporaryScope()) else { return }
         await tokenStore.updateSignInDisplay(key, username: nil, profiles: profiles.map(SavedSignInProfile.init))
     }
 
@@ -1160,17 +1190,7 @@ final class AuthService: @unchecked Sendable {
     func removeSignIns(_ target: SignInRemovalTarget) async -> SignOutOutcome {
         let serverID = serverRegistry.activeServerId
         let selection = await tokenStore.currentSelection()
-        let currentUserID = await tokenStore.currentUserID()
-        let directory = try? await tokenStore.directory()
-        let affectsCurrent: Bool
-        switch target {
-        case .current:
-            affectsCurrent = true
-        case .signIn(let key):
-            affectsCurrent = selection == .signIn(key)
-        case .user(let userID):
-            affectsCurrent = currentUserID == userID && selection != .none
-        }
+        let affectsCurrent = await includesSelection(target)
         var account: RefreshAccountIdentity?
         if affectsCurrent {
             let capturedAuth = await tokenStore.captureOrdinaryRequestAuth()
@@ -1202,7 +1222,13 @@ final class AuthService: @unchecked Sendable {
             #if os(iOS) || os(tvOS)
             DiagnosticsCoordinator.activeProfileWillChange()
             #endif
+        } else if await includesSelection(target) {
+            // A switch that landed before the lease opened what this
+            // removes, so its push and caches were never handled here.
+            await httpClient.endIdentityTransition(lease)
+            return .refused
         }
+        let directory = try? await tokenStore.directory()
 
         var removedKeys: [SignInKey] = []
         var removedLegacyServers: [String] = []
@@ -1256,6 +1282,20 @@ final class AuthService: @unchecked Sendable {
         revoke(removals.compactMap(\.credential))
         guard removals.allSatisfy(\.durable) else { return .localOnly }
         return diagnosticsRemoved ? .completed : .diagnosticsCleanupFailed
+    }
+
+    /// Whether `target` includes the selected credential right now.
+    private func includesSelection(_ target: SignInRemovalTarget) async -> Bool {
+        let selection = await tokenStore.currentSelection()
+        switch target {
+        case .current:
+            return true
+        case .signIn(let key):
+            return selection == .signIn(key)
+        case .user(let userID):
+            guard selection != .none else { return false }
+            return await tokenStore.currentUserID() == userID
+        }
     }
 
     /// Decide whether a captured credential can authorize local sign-out.

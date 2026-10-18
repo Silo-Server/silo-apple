@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import XCTest
 @testable import Silo
 
@@ -75,7 +76,7 @@ final class SiloUserCoordinatorTests: XCTestCase {
             )
             auth = AuthService(
                 serverRegistry: registry, launchPreferences: preferences, restoredSessionValidator: validator,
-                httpClient: http, tokenStore: f.store, sessionPersistence: f.sessions.sessions,
+                httpClient: http, tokenStore: f.store, defaults: f.defaults, sessionPersistence: f.sessions.sessions,
                 purgeDiagnostics: { _ in true }, unregisterPush: { _ in }, restorePush: { _ in }
             )
             box.auth = auth
@@ -627,6 +628,53 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertEqual(selection, .none, "nobody is selected while choosing")
     }
 
+    /// Ask For on a return to Who's Watching (spec §6.3): no profile is
+    /// open, but past the away timeout User + Profile still shows Choose a
+    /// User with focus on the linked user, and the user opened from it shows
+    /// Who's Watching instead of reopening its remembered profile. Before the
+    /// timeout, or with Profile Only, Who's Watching stays and the away
+    /// interval ends.
+    func testAskForOnReturnToWhoIsWatching() async throws {
+        let d = try Device(self)
+        let (alex, sam) = try await d.twoUsers()
+        let alexHome = SignInKey.make(F.home, "12")
+        let epoch = try XCTUnwrap(try d.f.signIn(alexHome)?.epoch?.uuidString)
+        XCTAssertTrue(d.preferences.remember(profileID: "alex-profile", requiresPIN: false, accountEpoch: epoch,
+                                             for: alexHome, legacyOwnerAccountID: nil))
+        d.preferences.behavior = .afterOneHour
+        d.preferences.askFor = .userAndProfile
+        XCTAssertEqual(d.router.authState, .needsProfile)
+
+        XCTAssertTrue(d.preferences.markBackgrounded(at: d.now))
+        d.now = d.now.addingTimeInterval(30 * 60)
+        await d.users.applyAskForOnReturnToProfileSelection(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsProfile, "before the timeout nothing asks")
+        XCTAssertNil(d.preferences.state.backgroundedAt)
+
+        d.preferences.askFor = .profileOnly
+        XCTAssertTrue(d.preferences.markBackgrounded(at: d.now))
+        d.now = d.now.addingTimeInterval(61 * 60)
+        await d.users.applyAskForOnReturnToProfileSelection(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsProfile, "Profile Only keeps Who's Watching")
+        XCTAssertNil(d.preferences.state.backgroundedAt)
+
+        d.preferences.askFor = .userAndProfile
+        XCTAssertTrue(d.preferences.markBackgrounded(at: d.now))
+        d.now = d.now.addingTimeInterval(61 * 60)
+        await d.users.applyAskForOnReturnToProfileSelection(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsUser(focusUserID: sam.id))
+        let none = await d.selection
+        XCTAssertEqual(none, .none)
+
+        await d.users.openUser(alex.id, router: d.router)
+        await d.users.openServer(F.home, userID: alex.id, router: d.router)
+        let selection = await d.selection
+        XCTAssertEqual(selection, .signIn(alexHome))
+        XCTAssertEqual(d.router.authState, .needsProfile)
+        let profile = await d.f.store.getProfileId()
+        XCTAssertNil(profile, "the remembered profile waits for Who's Watching")
+    }
+
     // MARK: - Expiry
 
     /// A rejected refresh shows the sign-in's screen with Change server and
@@ -662,6 +710,27 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertEqual(try d.f.signIn(key)?.isSignedIn, true)
         XCTAssertEqual(try d.user(named: "alex")?.signIns, [key, .make(F.friend, "40")])
         XCTAssertEqual(d.router.authState, .needsProfile)
+    }
+
+    /// Cancel on a question that Sign in again raised lands on that sign-in
+    /// screen again, which starts over instead of keeping its finished state.
+    func testCancellingAQuestionFromSignInAgainRestartsTheSignInScreen() async throws {
+        let d = try Device(self)
+        let (alex, _) = try await d.twoUsers()
+        await d.users.openServer(F.home, userID: alex.id, router: d.router)
+        let identity = await d.f.store.refreshAccountIdentity()
+        let captured = await d.f.store.captureRefreshCredential(expected: try XCTUnwrap(identity))
+        _ = await d.f.store.invalidateRejectedRefresh(try XCTUnwrap(captured))
+        await d.users.handleSessionExpired(router: d.router)
+        let generation = d.router.signInScreenGeneration
+
+        try await d.finishSignIn("15", "kim", on: F.home)
+        let prompt = try XCTUnwrap(d.router.signInPrompt)
+        await d.users.answer(prompt, accept: false, router: d.router)
+
+        XCTAssertEqual(d.router.authState, .needsLogin)
+        XCTAssertEqual(d.router.signInContext, .signInAgain(userID: alex.id, key: .make(F.home, "12")))
+        XCTAssertEqual(d.router.signInScreenGeneration, generation + 1)
     }
 
     // MARK: - Remote playback
@@ -719,9 +788,11 @@ final class SiloUserCoordinatorTests: XCTestCase {
 
     // MARK: - A device with one user and one server
 
-    /// Signing out of the only server opens its sign-in, as before users
-    /// existed; Change server there shows "Sign in to…".
-    func testSigningOutOfTheOnlyServerOpensItsSignIn() async throws {
+    /// Signing out of the only server's last sign-in shows "Sign in to…" with
+    /// that server and Add a New Server (spec §5.4); only a device with no
+    /// saved server goes straight to server setup. Picking the server opens
+    /// its sign-in, and Change server there comes back to the list.
+    func testSigningOutOfTheOnlyServerShowsSignInTo() async throws {
         let d = try Device(self)
         _ = await d.registry.remove(serverId: F.friend)
         try await d.signIn("12", "alex", on: F.home, context: .firstRun)
@@ -729,13 +800,35 @@ final class SiloUserCoordinatorTests: XCTestCase {
         await d.users.signOutCurrent(alsoRemoveServer: false, asksForAccountChoice: false, router: d.router)
 
         XCTAssertEqual(try d.index().users, [])
-        XCTAssertEqual(d.router.authState, .needsLogin)
+        XCTAssertEqual(d.router.authState, .needsSignInTarget(.firstRun))
         XCTAssertEqual(d.router.signInContext, .firstRun)
         XCTAssertEqual(d.registry.activeServerId, F.home)
         XCTAssertNil(d.router.signInReturnPoint, "nothing to cancel back to")
+        let none = await d.selection
+        XCTAssertEqual(none, .none)
+        let targets = SignInTargetViewModel(context: .firstRun, servers: d.registry.sortedEntries,
+                                            snapshot: d.users.snapshot)
+        XCTAssertEqual(targets.rows.map(\.id), [F.home])
 
+        await d.users.beginSignIn(serverID: F.home, context: .firstRun, router: d.router)
+        XCTAssertEqual(d.router.authState, .needsLogin)
         await d.users.changeSignInServer(router: d.router)
         XCTAssertEqual(d.router.authState, .needsSignInTarget(.firstRun))
+    }
+
+    /// The same rule at launch: one saved server and no user is "Sign in
+    /// to…"; no saved server is server setup.
+    func testLaunchWithSavedServersAndNoUsersShowsSignInTo() async throws {
+        let d = try Device(self)
+        _ = await d.registry.remove(serverId: F.friend)
+
+        let oneServer = await d.users.resolveLaunch()
+        XCTAssertEqual(oneServer?.state, .needsSignInTarget(.firstRun))
+        XCTAssertEqual(oneServer?.signInContext, .firstRun)
+
+        _ = await d.registry.remove(serverId: F.home)
+        let noServer = await d.users.resolveLaunch()
+        XCTAssertEqual(noServer?.state, .needsServerSetup)
     }
 
     // MARK: - Pending legacy servers (plan §3.3)
@@ -752,6 +845,48 @@ final class SiloUserCoordinatorTests: XCTestCase {
         let switched = await d.registry.switchTo(serverId: F.home, credential: .legacy(serverID: F.home), userID: user.id)
         XCTAssertTrue(switched)
         return (d, user)
+    }
+
+    /// A pending server's own session counts as signed in only while it is
+    /// selected: with nothing selected on it (a chooser, the server step, or
+    /// setup typing its address), Who's Watching must not open.
+    func testAPendingServerIsSignedOutWhileNothingIsSelected() async throws {
+        let (d, user) = try await migratedDevice()
+        XCTAssertTrue(d.auth.isLoggedIn)
+
+        let cleared = await d.registry.switchTo(serverId: F.home, credential: .none, userID: user.id)
+        XCTAssertTrue(cleared)
+        XCTAssertFalse(d.auth.isLoggedIn)
+        XCTAssertFalse(shouldPresentProfileSelectionAfterRecovery(isLoggedIn: d.auth.isLoggedIn, activeProfileID: nil))
+
+        let reselected = await d.registry.switchTo(serverId: F.home, credential: .legacy(serverID: F.home),
+                                                   userID: user.id)
+        XCTAssertTrue(reselected)
+        XCTAssertTrue(d.auth.isLoggedIn)
+    }
+
+    /// The credential a background launch selects: an active server the
+    /// registry fell back to (a new Apple TV user's first launch, the
+    /// survivor of a removal) is no history, so with two users neither
+    /// opens; a server this Apple TV user opened before users existed opens
+    /// the migrated user, as the launch rules do.
+    func testLaunchSelectionDoesNotTreatAFallbackServerAsHistory() async throws {
+        let (d, migrated) = try await migratedDevice()
+        try await d.signIn("13", "sam", on: F.home, context: .addUser)
+        XCTAssertEqual(try d.index().users.count, 2)
+        await d.f.store.select(serverID: F.friend, credential: .none, userID: nil)
+        d.f.defaults.set(try JSONEncoder().encode(ProfileLaunchState()), forKey: SharedStorage.profileLaunchStateKey)
+        d.f.defaults.set(F.friend, forKey: SharedStorage.activeServerIdKey)
+
+        d.f.defaults.set(true, forKey: ServerRegistry.activeServerFallbackKey)
+        let fallback = await d.f.store.launchSelection(forServer: F.friend)
+        XCTAssertEqual(fallback.credential, .none)
+        XCTAssertNil(fallback.userID)
+
+        d.f.defaults.removeObject(forKey: ServerRegistry.activeServerFallbackKey)
+        let opened = await d.f.store.launchSelection(forServer: F.friend)
+        XCTAssertEqual(opened.userID, migrated.id)
+        XCTAssertEqual(opened.credential, .signIn(.make(F.friend, "40")))
     }
 
     /// A pending server whose refresh is rejected leaves its user (its
@@ -857,6 +992,195 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertNotNil(try d.user(named: "lee"))
     }
 
+    /// A sign-in that finishes after its screen was left (Change server while
+    /// it was in flight) is revoked and saved nowhere, and Cancel on the
+    /// screen now showing still goes back where the sign-in started.
+    func testASignInFinishingAfterItsScreenWasLeftIsRevoked() async throws {
+        let d = try Device(self)
+        try await d.signIn("12", "alex", on: F.home, context: .firstRun)
+        let before = try d.index()
+        await d.users.startAddUser(router: d.router)
+        await d.users.beginSignIn(serverID: F.friend, context: .addUser, router: d.router)
+        let identity = await d.f.store.refreshAccountIdentity()
+        let pending = d.pending("13", "sam", expected: try XCTUnwrap(identity))
+
+        await d.users.changeSignInServer(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsSignInTarget(.addUser))
+        do {
+            _ = try await d.users.completeSignIn(pending, router: d.router)
+            XCTFail("a sign-in for a screen that's gone was saved")
+        } catch is CancellationError {}
+
+        XCTAssertEqual(try d.index(), before)
+        XCTAssertNil(d.router.signInPrompt)
+        XCTAssertNotNil(d.router.signInReturnPoint, "Cancel still goes back")
+        try await d.waitForRevocations(1)
+        XCTAssertEqual(d.revokedAccessTokens(), [pending.accessToken])
+    }
+
+    /// Removing a server from the device while Choose a Server shows a user
+    /// whose only server it was leaves nothing to pick: the launch rules run.
+    func testRemovingTheShownUsersOnlyServerLeavesItsChooser() async throws {
+        let d = try Device(self)
+        try await d.signIn("12", "alex", on: F.home, context: .firstRun)
+        let alex = try XCTUnwrap(try d.user(named: "alex"))
+        try await d.signIn("15", "kim", on: F.friend, context: .addUser)
+        let kim = try XCTUnwrap(try d.user(named: "kim"))
+        await d.users.apply(.chooseServer(userID: alex.id, focusServerID: nil), router: d.router)
+        XCTAssertEqual(d.registry.activeServerId, F.friend, "alex's server isn't the active one")
+
+        await d.users.removeServer(F.home, router: d.router)
+
+        XCTAssertNil(try d.user(named: "alex"))
+        XCTAssertEqual(d.preferences.state.linkedUserID, kim.id)
+        let selection = await d.selection
+        XCTAssertEqual(selection, .signIn(.make(F.friend, "15")))
+        XCTAssertEqual(d.router.authState, .needsProfile)
+    }
+
+    /// Opening another user names it before its screen shows: the account
+    /// line and menus read a directory already reloaded for it.
+    func testOpeningAUserUpdatesTheDirectoryBeforeItsScreenShows() async throws {
+        let d = try Device(self)
+        let (alex, sam) = try await d.twoUsers()
+        await d.users.reloadDirectory()
+        XCTAssertEqual(d.users.directory.currentUserID, sam.id)
+        let seen = ObservedUser()
+        let users = d.users
+        withObservationTracking { _ = d.router.signInRevision } onChange: {
+            seen.userID = MainActor.assumeIsolated { users.directory.currentUserID }
+        }
+
+        await d.users.openServer(F.home, userID: alex.id, router: d.router)
+
+        XCTAssertEqual(seen.userID, alex.id)
+    }
+
+    /// Who's Watching reads "Last used" without waiting (tvOS focuses it on
+    /// the first frame), for the selected sign-in only.
+    func testTheRememberedProfileReadsWithoutWaiting() async throws {
+        let d = try Device(self)
+        let (alex, _) = try await d.twoUsers()
+        let samHome = SignInKey.make(F.home, "13")
+        let epoch = try XCTUnwrap(try d.f.signIn(samHome)?.epoch?.uuidString)
+        XCTAssertNil(d.auth.rememberedProfileIDForCurrentSelection)
+        XCTAssertTrue(d.preferences.remember(profileID: "sam-profile", requiresPIN: false, accountEpoch: epoch,
+                                             for: samHome, legacyOwnerAccountID: nil))
+        XCTAssertEqual(d.auth.rememberedProfileIDForCurrentSelection, "sam-profile")
+        let awaited = await d.auth.rememberedProfileForCurrentSelection()
+        XCTAssertEqual(awaited?.profileID, "sam-profile")
+
+        await d.users.openServer(F.home, userID: alex.id, router: d.router)
+        XCTAssertNil(d.auth.rememberedProfileIDForCurrentSelection, "sam's profile isn't alex's")
+    }
+
+    /// A profile list read while a remote-playback identity answers requests
+    /// is that account's, so it isn't saved for the user cards.
+    func testProfilesReadUnderATemporaryIdentityAreNotCachedOnTheSignIn() async throws {
+        let d = try Device(self)
+        _ = try await d.twoUsers()
+        let samHome = SignInKey.make(F.home, "13")
+        let guest = UserProfile(id: "guest", name: "Guest", avatarEmoji: nil, hasPin: false, isChild: false)
+        await d.f.store.beginTemporaryScope(TemporaryAuthScope(
+            serverId: F.home, serverURL: F.homeURL, accessToken: "temporary", refreshToken: "temporary-refresh",
+            profileId: "guest", profileToken: "proof", controllerDeviceId: "controller",
+            expiresAt: Date().addingTimeInterval(60)))
+
+        await d.auth.updateSignInDisplayCache([guest], for: samHome)
+        XCTAssertNotEqual(try d.f.signIn(samHome)?.profiles.map(\.id), ["guest"])
+
+        await d.f.store.endTemporaryScope()
+        await d.auth.updateSignInDisplayCache([guest], for: samHome)
+        XCTAssertEqual(try d.f.signIn(samHome)?.profiles.map(\.id), ["guest"])
+    }
+
+    /// A pairing that stops before anything keeps its session (here,
+    /// cancelled) ends that session on the server.
+    func testAPairingStoppedBeforeSavingEndsItsSession() async throws {
+        let d = try Device(self)
+        let users = d.users
+        let router = d.router
+        let pairing = Task { @MainActor in
+            await users.completePairing(
+                ReceiverPairingCoordinator.PersistedPairing(
+                    url: F.homeURL, fetchedName: "Home Silo", verifiedServerId: nil,
+                    accessToken: "paired-home", refreshToken: "r", accountID: "12"),
+                router: router)
+        }
+        pairing.cancel()
+
+        let saved = await pairing.value
+        XCTAssertFalse(saved)
+        XCTAssertEqual(try d.index().users, [])
+        try await d.waitForRevocations(1)
+        XCTAssertEqual(d.revokedAccessTokens(), ["paired-home"])
+    }
+
+    /// Server recovery's Try again reopens the current user's current server:
+    /// unlike a cold launch, Ask For never shows Choose a User there.
+    func testTryAgainReopensTheCurrentServerWithoutAskFor() async throws {
+        let d = try Device(self)
+        let (_, sam) = try await d.twoUsers()
+        d.preferences.behavior = .askEveryLaunch
+        d.preferences.askFor = .userAndProfile
+
+        let current = await d.users.resolveCurrentServer()
+        XCTAssertEqual(current?.state, .needsProfile)
+        let selection = await d.selection
+        XCTAssertEqual(selection, .signIn(.make(F.home, "13")))
+
+        let launch = await d.users.resolveLaunch()
+        XCTAssertEqual(launch?.state, .needsUser(focusUserID: sam.id), "a cold launch still asks")
+    }
+
+    /// A card pressed twice before the first press finishes opens once: its
+    /// servers aren't pushed twice, and Add User pressed twice keeps the
+    /// screen it started from as where Cancel returns.
+    func testAPickPressedTwiceRunsOnce() async throws {
+        let d = try Device(self)
+        let (alex, sam) = try await d.twoUsers()
+        d.router.showUserChooser(focus: sam.id)
+
+        async let first: Void = d.users.openUser(alex.id, router: d.router)
+        async let second: Void = d.users.openUser(alex.id, router: d.router)
+        _ = await (first, second)
+        XCTAssertEqual(d.router.path.count, 1, "alex's servers, once")
+
+        d.router.showProfileSelection()
+        async let addOnce: Void = d.users.startAddUser(router: d.router)
+        async let addAgain: Void = d.users.startAddUser(router: d.router)
+        _ = await (addOnce, addAgain)
+        XCTAssertEqual(d.router.signInReturnPoint?.authState, .needsProfile)
+    }
+
+    /// Sign-out and removal sentences name their server, so a user told
+    /// apart by that server isn't named with it again ("alex · Home Silo on
+    /// Home Silo"), while users sharing a name are still told apart.
+    func testSignOutCopyNeverRepeatsTheServer() async throws {
+        let d = try Device(self)
+        try await d.signIn("12", "alex", on: F.home, context: .firstRun)
+        let homeAlex = try XCTUnwrap(try d.index().users.first)
+        try await d.signIn("40", "alex", on: F.friend, context: .addUser)
+        let friendAlex = try XCTUnwrap(try d.index().users.first { $0.id != homeAlex.id })
+        try await d.signIn("41", "alexander", on: F.home, context: .addServer(userID: friendAlex.id))
+        await d.users.reloadDirectory()
+        XCTAssertEqual(d.users.directory.user(homeAlex.id)?.name, "alex · Home Silo")
+        XCTAssertEqual(d.users.directory.user(friendAlex.id)?.name, "alex · Friend's Silo")
+
+        let current = d.users.confirmation(for: .currentSignIn)
+        XCTAssertEqual(current.message, "Everyone on this Apple TV will need to sign in again to use alex · Friend's Silo on "
+                       + "Home Silo. Sign Out & Remove Server also signs out alex.")
+        let friend = d.users.confirmation(for: .signIn(.make(F.friend, "40")))
+        XCTAssertEqual(friend.message, "Everyone on this Apple TV will need to sign in again to use alex on Friend's Silo.")
+        let server = d.users.confirmation(for: .server(F.home))
+        XCTAssertEqual(server.message, "alex and alex · Friend's Silo will be signed out of Home Silo for everyone on this "
+                       + "Apple TV. Profiles and watch history stay on the server.")
+        let remove = d.users.confirmation(for: .user(homeAlex.id))
+        XCTAssertEqual(remove.title, "Remove alex from this Apple TV?")
+        XCTAssertEqual(remove.message, "alex will be signed out of Home Silo for everyone on this Apple TV. "
+                       + "Profiles and watch history stay on the server.")
+    }
+
     /// The sign-out confirmation offers Sign Out & Remove Server, so it names
     /// the other users that also signs out.
     func testSignOutConfirmationNamesOthersOnTheServer() async throws {
@@ -871,4 +1195,9 @@ final class SiloUserCoordinatorTests: XCTestCase {
         let friendCopy = d.users.confirmation(for: .signIn(.make(F.friend, "40")))
         XCTAssertFalse(friendCopy.message.contains("also signs out"), "nobody else uses Friend's Silo")
     }
+}
+
+/// The value an observation's change handler saw.
+private final class ObservedUser: @unchecked Sendable {
+    var userID: String?
 }

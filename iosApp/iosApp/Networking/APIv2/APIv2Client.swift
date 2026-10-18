@@ -233,14 +233,19 @@ struct APIv2Client: Sendable {
     /// captured session has selected: the household-parent `profile_id` query
     /// override is never sent, so a write captured for one profile cannot land
     /// on another. The status and receipt checks belong to each operation.
+    /// `accountID`, for a caller that pinned the account but no full
+    /// identity (the player's settings queue), is refused the same way under
+    /// another sign-in; `expectedIdentity`'s account wins when both are given.
     func settingsWrite(_ method: String, path: String, query: [String: String], body: Data?,
                        profileID: String, expectedIdentity: HTTPRequestIdentity? = nil,
+                       accountID: String? = nil,
                        quietStatuses: Set<Int> = []) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         guard let profile = auth.profileId else { throw SettingsAPIError.profileRequired }
         guard profile == profileID else { throw HTTPError.requestIdentityChanged }
-        let identity = Self.requestIdentity(auth, profile: profile, accountID: expectedIdentity?.accountID)
+        let identity = Self.requestIdentity(auth, profile: profile,
+                                            accountID: expectedIdentity == nil ? accountID : expectedIdentity?.accountID)
         try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
         return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {

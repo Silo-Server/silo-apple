@@ -1947,8 +1947,9 @@ final class PlayerSettings {
     /// to `scopeID`, when `accountID` owns `serverID`'s data from before
     /// accounts. Like every account-keyed store (`AccountScopedKeyAdoption`),
     /// a value moves only into an empty key, and the old key is deleted once
-    /// the copy reads back. Queued writes are rebound to `scopeID`: the
-    /// journal sends only entries of the scope it is loaded for.
+    /// the copy reads back. Queued writes are rebound to `scopeID` and its
+    /// account: the journal sends only entries of the scope it is loaded for,
+    /// and only under that account.
     // Internal for focused tests.
     static func adoptLegacyScope(
         _ legacyScopeID: String,
@@ -1975,7 +1976,7 @@ final class PlayerSettings {
                                                 defaults: shared, legacyOwner: legacyOwner)
         }
         adoptPendingWrites(from: pendingWritesKey(for: legacyScopeID), to: pendingWritesKey(for: scopeID),
-                           scopeID: scopeID, legacyScopeID: legacyScopeID, defaults: defaults)
+                           scopeID: scopeID, legacyScopeID: legacyScopeID, accountID: accountID, defaults: defaults)
     }
 
     /// The key `UserDefaultsSettingsWriteJournal` keeps a scope's queue
@@ -1985,7 +1986,7 @@ final class PlayerSettings {
     }
 
     private static func adoptPendingWrites(from legacyKey: String, to key: String, scopeID: String,
-                                           legacyScopeID: String, defaults: UserDefaults) {
+                                           legacyScopeID: String, accountID: String, defaults: UserDefaults) {
         guard defaults.object(forKey: key) == nil,
               let data = defaults.data(forKey: legacyKey),
               let stored = try? SettingsWireCoding.makeDecoder().decode([String: PendingSettingWrite].self, from: data)
@@ -2002,6 +2003,7 @@ final class PlayerSettings {
                 storedProfileValue: write.storedProfileValue,
                 scopeIdentifier: scopeID,
                 profileId: write.profileId,
+                accountID: accountID,
                 failedAttempts: write.failedAttempts,
                 isHeld: write.isHeld
             )

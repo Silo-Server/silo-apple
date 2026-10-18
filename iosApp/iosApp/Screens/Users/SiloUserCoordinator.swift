@@ -82,6 +82,8 @@ final class SiloUserCoordinator {
     private(set) var directory = SiloUserDirectory.empty
     /// The index snapshot `directory` was built from; nil before migration.
     private(set) var snapshot: SiloUserDirectorySnapshot?
+    /// A chooser pick or sign-in start is running (`pickingOnce`).
+    @ObservationIgnored private var isPicking = false
 
     init(
         auth: AuthService = .shared,
@@ -175,22 +177,27 @@ final class SiloUserCoordinator {
     /// and returns the route to commit, without touching the router. Nil
     /// before sign-in migration (the caller uses each server's own session).
     func resolveLaunch() async -> RestoredSessionAuthResolver.LocalResolution? {
-        guard let decision = await resolve(.coldLaunch) else { return nil }
+        await resolveLocally(.coldLaunch)
+    }
+
+    /// The current user's current server, as if picked again, resolved the
+    /// same way: server recovery's Try again, which must not ask for a user
+    /// or move to another one. Nil before migration or with no current user.
+    func resolveCurrentServer() async -> RestoredSessionAuthResolver.LocalResolution? {
+        guard let userID = await tokenStore.currentUserID(), let serverID = registry.activeServerId else { return nil }
+        return await resolveLocally(.serverPicked(userID: userID, serverID: serverID))
+    }
+
+    private func resolveLocally(_ trigger: SiloLaunchTrigger) async -> RestoredSessionAuthResolver.LocalResolution? {
+        guard let decision = await resolve(trigger) else { return nil }
         let resolution: RestoredSessionAuthResolver.LocalResolution
         switch decision {
         case .serverSetup(let context):
             await selectNothing(userID: nil)
             resolution = .init(state: .needsServerSetup, restoredAccount: nil, signInContext: context)
         case .signInTarget(let context):
-            if onlySavedServer(for: context) != nil {
-                // One saved server (always the active one): its sign-in, as
-                // before users existed.
-                await selectNothing(userID: nil)
-                resolution = .init(state: .needsLogin, restoredAccount: nil, signInContext: context)
-            } else {
-                await selectNothing(userID: nil)
-                resolution = .init(state: .needsSignInTarget(context), restoredAccount: nil, signInContext: context)
-            }
+            await selectNothing(userID: nil)
+            resolution = .init(state: .needsSignInTarget(context), restoredAccount: nil, signInContext: context)
         case .chooseUser(let focus):
             await selectNothing(userID: nil)
             resolution = .init(state: .needsUser(focusUserID: focus), restoredAccount: nil)
@@ -226,15 +233,6 @@ final class SiloUserCoordinator {
         }
         await reloadDirectory()
         return resolution
-    }
-
-    /// The server a first sign-in goes straight to: the only saved one. A
-    /// device with one server keeps today's sign-out and relaunch, which
-    /// land on that server's sign-in; "Sign in to…" is one Change server
-    /// away. Add User and Add Server always show the list.
-    private func onlySavedServer(for context: SignInContext) -> String? {
-        guard context == .firstRun, registry.entries.count == 1 else { return nil }
-        return registry.entries.first?.id
     }
 
     /// Selects a credential while the splash is up: through the registry
@@ -278,15 +276,11 @@ final class SiloUserCoordinator {
             router.signInReturnPoint = nil
             router.resetToServerSetup(context: context)
         case .signInTarget(let context):
+            // Saved servers and no user, even just one server: "Sign in to…"
+            // with Add a New Server (spec §5.4).
             router.signInReturnPoint = nil
-            if let only = onlySavedServer(for: context) {
-                // One saved server: its sign-in, as before users existed;
-                // Change server there shows "Sign in to…".
-                await beginSignIn(serverID: only, context: context, router: router)
-            } else {
-                await selectNothing(userID: nil)
-                router.showSignInTarget(context)
-            }
+            await selectNothing(userID: nil)
+            router.showSignInTarget(context)
         case .chooseUser(let focus):
             if pushes {
                 router.navigate(to: .chooseUser(focusUserID: focus))
@@ -312,6 +306,26 @@ final class SiloUserCoordinator {
         await reloadDirectory()
     }
 
+    /// A return from the background while Who's Watching shows (spec §6.3).
+    /// No profile is open, so nothing needs retiring, but when Profile
+    /// Selection requires a selection and Ask For is User + Profile on a
+    /// device with two or more users, Choose a User shows first, with focus
+    /// on the linked user. Otherwise the away interval ends here. After
+    /// Choose a User it lasts until a profile is picked, so the user opened
+    /// next shows Who's Watching rather than reopening its remembered
+    /// profile, as after a return with a profile open.
+    func applyAskForOnReturnToProfileSelection(router: AppRouter) async {
+        guard router.authState == .needsProfile else { return }
+        guard preferences.requiresSelectionAfterBackground(at: now()),
+              case .chooseUser(let focus)? = await resolve(.foregroundAfterAway),
+              router.authState == .needsProfile,
+              !(await tokenStore.hasTemporaryScope()) else {
+            preferences.clearBackgroundedAt()
+            return
+        }
+        await apply(.chooseUser(focusUserID: focus), router: router)
+    }
+
     /// Opens a user's server: links the user, records the server as its
     /// last, switches to the credential (restoring the remembered profile),
     /// validates it with the server, and resets the router.
@@ -320,13 +334,14 @@ final class SiloUserCoordinator {
             router.accountActionError = "Couldn't end remote playback. Try again."
             return
         }
-        preferences.link(userID: userID)
-        preferences.setLastServer(serverID, for: userID)
         guard await registry.switchTo(serverId: serverID, credential: credential, userID: userID,
                                       resolveDestinationProfile: true) else {
+            // Nothing opened, so this Apple TV user's link stays as it was.
             router.accountActionError = "Couldn't switch to that server. Try again."
             return
         }
+        preferences.link(userID: userID)
+        preferences.setLastServer(serverID, for: userID)
         guard await tokenStore.hasUsableCredential() else {
             // Expired without anyone noticing (plan G11): its sign-in screen.
             if case .signIn(let key) = credential {
@@ -357,6 +372,9 @@ final class SiloUserCoordinator {
                 state = .serverRecovery(reason)
             }
         }
+        // The account line and menus of the screen about to show name this
+        // user, not the one before.
+        await reloadDirectory()
         router.signInReturnPoint = nil
         router.resetAfterServerResolution(to: state)
         router.noteSignInChanged()
@@ -365,16 +383,30 @@ final class SiloUserCoordinator {
     /// Choose a User picked `userID` (spec §5.2): links it, then opens its
     /// only server or shows its servers with focus on the last one.
     func openUser(_ userID: String, router: AppRouter) async {
-        preferences.link(userID: userID)
-        guard let decision = await resolve(.userPicked(userID)) else { return }
-        await apply(decision, router: router, pushes: true)
+        await pickingOnce {
+            preferences.link(userID: userID)
+            guard let decision = await resolve(.userPicked(userID)) else { return }
+            await apply(decision, router: router, pushes: true)
+        }
     }
 
     /// Choose a Server picked `serverID` in `userID` (spec §5.3). Opening it
     /// links the user and makes it the user's last server.
     func openServer(_ serverID: String, userID: String, router: AppRouter) async {
-        guard let decision = await resolve(.serverPicked(userID: userID, serverID: serverID)) else { return }
-        await apply(decision, router: router, pushes: true)
+        await pickingOnce {
+            guard let decision = await resolve(.serverPicked(userID: userID, serverID: serverID)) else { return }
+            await apply(decision, router: router, pushes: true)
+        }
+    }
+
+    /// Runs one chooser pick or sign-in start at a time. A second press
+    /// while the first is still switching would push its screen twice, or
+    /// record the half-finished first as where Cancel returns.
+    private func pickingOnce(_ pick: () async -> Void) async {
+        guard !isPicking else { return }
+        isPicking = true
+        defer { isPicking = false }
+        await pick()
     }
 
     /// Re-opens the current user and server, as after picking it again:
@@ -492,6 +524,10 @@ final class SiloUserCoordinator {
     /// rebuild that stack under the setup screen. It becomes the root there,
     /// with Cancel going back.
     func startSignIn(_ context: SignInContext, router: AppRouter) async {
+        await pickingOnce { await showServerStep(context, router: router) }
+    }
+
+    private func showServerStep(_ context: SignInContext, router: AppRouter) async {
         router.signInReturnPoint = await returnPoint(router)
         router.signInContext = context
         let step: SignInServerStep
@@ -666,12 +702,12 @@ final class SiloUserCoordinator {
             await applyAfterRemoval(router: router)
             return
         }
+        await reloadDirectory()
         router.resetAfterServerResolution(to: state)
         if state == point.authState {
             router.path = point.path
         }
         router.noteSignInChanged()
-        await reloadDirectory()
     }
 
     private func returnPoint(_ router: AppRouter) async -> SignInReturnPoint {
@@ -688,13 +724,20 @@ final class SiloUserCoordinator {
     /// sign-in is saved and opened, or a question shows with the sign-in
     /// kept in memory. `routesWhenOpened: false` leaves the move to Who's
     /// Watching to the caller (the TV's code screen shows "Signed in as …"
-    /// first).
+    /// first). A sign-in that finishes after its screen was left (Change
+    /// server, Switch User, or Cancel while it was in flight) is revoked and
+    /// saved nowhere: the person chose something else, and placing it would
+    /// add or change a user behind the screen now showing.
     @discardableResult
     func completeSignIn(
         _ pending: PendingSignIn,
         router: AppRouter,
         routesWhenOpened: Bool = true
     ) async throws -> SignInCompletion {
+        guard router.authState == .needsLogin else {
+            auth.discardSignIn(pending)
+            throw CancellationError()
+        }
         let context = router.signInContext
         let snapshot: SiloUserDirectorySnapshot
         do {
@@ -746,6 +789,9 @@ final class SiloUserCoordinator {
         guard accept else {
             auth.discardSignIn(prompt.pending)
             await cancelSignIn(router: router)
+            // Back on a sign-in screen (Sign in again has nowhere else to
+            // go): the one that asked has finished, so it starts over.
+            if router.authState == .needsLogin { router.restartSignInScreen() }
             return
         }
         do {
@@ -807,13 +853,13 @@ final class SiloUserCoordinator {
         switch kind {
         case .separateUser(let existingUserID, let newUsername):
             return SignOutConfirmationCopy.separateUser(
-                existingUserName: directory.user(existingUserID)?.name ?? SiloUserNaming.fallbackName,
+                existingUserName: directory.user(existingUserID)?.name(besides: [serverName]) ?? SiloUserNaming.fallbackName,
                 serverName: serverName,
                 newUsername: newUsername
             )
         case .switchToUser(let userID, _):
             return SignOutConfirmationCopy.switchToUser(
-                otherUserName: directory.user(userID)?.name ?? SiloUserNaming.fallbackName,
+                otherUserName: directory.user(userID)?.name(besides: [serverName]) ?? SiloUserNaming.fallbackName,
                 serverName: serverName
             )
         }
@@ -830,15 +876,22 @@ final class SiloUserCoordinator {
     /// same pairing joins the user this one opened.
     func completePairing(_ pairing: ReceiverPairingCoordinator.PersistedPairing, router: AppRouter?) async -> Bool {
         let httpClient = auth.httpClient
-        guard let lease = await httpClient.beginIdentityTransition() else { return false }
+        // The phone's approval already issued the session; a pairing that
+        // stops before anything keeps it ends it on the server.
+        func abandon() -> Bool {
+            auth.revoke([RevocableCredential(serverURL: pairing.url, accessToken: pairing.accessToken,
+                                             refreshToken: pairing.refreshToken)])
+            return false
+        }
+        guard let lease = await httpClient.beginIdentityTransition() else { return abandon() }
         guard !Task.isCancelled else {
             await httpClient.endIdentityTransition(lease)
-            return false
+            return abandon()
         }
         await httpClient.cancelInFlightRequests()
         guard !Task.isCancelled else {
             await httpClient.endIdentityTransition(lease)
-            return false
+            return abandon()
         }
         let previousServerID = await tokenStore.getActiveServerId()
         let previousURL = await tokenStore.getServerUrl()
@@ -855,7 +908,7 @@ final class SiloUserCoordinator {
                                 lastUsedAt: Date(), verifiedServerId: pairing.verifiedServerId)
         guard registry.addOrUpdate(entry) != nil else {
             await httpClient.endIdentityTransition(lease)
-            return false
+            return abandon()
         }
         let context = await pairingContext(router: router)
         await tokenStore.setServerUrl(url)
@@ -869,7 +922,7 @@ final class SiloUserCoordinator {
         }
         guard let expected = await tokenStore.refreshAccountIdentity() else {
             await rollBack()
-            return false
+            return abandon()
         }
         let pending = PendingSignIn(accessToken: pairing.accessToken, refreshToken: pairing.refreshToken,
                                     account: SignInAccount(id: pairing.accountID, username: nil), expected: expected)
@@ -952,7 +1005,9 @@ final class SiloUserCoordinator {
 
     // MARK: - Sign out and remove (spec §5.6)
 
-    /// The confirmation for `target` (spec §5.6 copy).
+    /// The confirmation for `target` (spec §5.6 copy). Every sentence names
+    /// its servers, so user names leave out a server added to tell users
+    /// apart when the sentence names it already.
     func confirmation(for target: RemovalRequest.Target) -> ConfirmationCopy {
         func serverName(_ serverID: String?) -> String {
             serverID.flatMap { registry.entry(with: $0)?.displayName } ?? "this server"
@@ -960,29 +1015,33 @@ final class SiloUserCoordinator {
         switch target {
         case .currentSignIn:
             let serverID = directory.currentServerID ?? registry.activeServerId
+            let server = serverName(serverID)
             return namingOthersOnServer(SignOutConfirmationCopy.signOut(
-                userName: directory.currentUser?.name ?? "your account",
-                serverName: serverName(serverID),
+                userName: directory.currentUser?.name(besides: [server]) ?? "your account",
+                serverName: server,
                 device: device
-            ), serverID: serverID, besides: directory.currentUserID)
+            ), serverID: serverID, serverName: server, besides: directory.currentUserID)
         case .signIn(let key):
             let owner = directory.users.first { $0.servers.contains { $0.key == key } }
+            let server = serverName(key.serverID)
             return namingOthersOnServer(SignOutConfirmationCopy.signOut(
-                userName: owner?.name ?? "your account",
-                serverName: serverName(key.serverID),
+                userName: owner?.name(besides: [server]) ?? "your account",
+                serverName: server,
                 device: device
-            ), serverID: key.serverID, besides: owner?.id)
+            ), serverID: key.serverID, serverName: server, besides: owner?.id)
         case .user(let userID):
             let user = directory.user(userID)
+            let servers = user?.servers.map(\.name) ?? []
             return SignOutConfirmationCopy.removeUser(
-                userName: user?.name ?? SiloUserNaming.fallbackName,
-                serverNames: user?.servers.map(\.name) ?? [],
+                userName: user?.name(besides: servers) ?? SiloUserNaming.fallbackName,
+                serverNames: servers,
                 device: device
             )
         case .server(let serverID):
+            let server = serverName(serverID)
             return SignOutConfirmationCopy.signOutAndRemoveServer(
-                serverName: serverName(serverID),
-                userNames: directory.users(onServer: serverID).map(\.name),
+                serverName: server,
+                userNames: directory.users(onServer: serverID).map { $0.name(besides: [server]) },
                 device: device
             )
         }
@@ -990,9 +1049,10 @@ final class SiloUserCoordinator {
 
     /// Sign Out & Remove Server signs every user out of the server, so the
     /// confirmation that offers it names the others (spec §5.6).
-    private func namingOthersOnServer(_ copy: ConfirmationCopy, serverID: String?, besides userID: String?) -> ConfirmationCopy {
+    private func namingOthersOnServer(_ copy: ConfirmationCopy, serverID: String?, serverName: String,
+                                      besides userID: String?) -> ConfirmationCopy {
         guard let serverID, copy.additionalDestructiveTitle != nil else { return copy }
-        let others = directory.users(onServer: serverID).filter { $0.id != userID }.map(\.name)
+        let others = directory.users(onServer: serverID).filter { $0.id != userID }.map { $0.name(besides: [serverName]) }
         guard !others.isEmpty else { return copy }
         let names = others.count == 1
             ? others[0]
@@ -1066,7 +1126,6 @@ final class SiloUserCoordinator {
     /// run only when it was the current one; otherwise the screen stays.
     func signOut(_ key: SignInKey, router: AppRouter) async {
         let wasCurrent = await tokenStore.currentSelection() == .signIn(key)
-        let ownerID = directory.users.first { $0.servers.contains { $0.key == key } }?.id
         if wasCurrent {
             guard await endTemporaryIdentity() else {
                 router.accountActionError = "Couldn't end remote playback. Try signing out again."
@@ -1081,17 +1140,16 @@ final class SiloUserCoordinator {
         report(outcome, router: router)
         await pruneLaunchState()
         await reloadDirectory()
-        if wasCurrent || showsRemovedUser(ownerID, router: router) {
+        if wasCurrent || showsRemovedUser(router: router) {
             await applyAfterRemoval(router: router)
         }
     }
 
     /// Whether the root shows a user that no longer exists (its servers, at
     /// launch), which leaves nothing to pick.
-    private func showsRemovedUser(_ userID: String?, router: AppRouter) -> Bool {
-        guard let userID, directory.user(userID) == nil else { return false }
-        if case .needsServer(let shown, _) = router.authState { return shown == userID }
-        return false
+    private func showsRemovedUser(router: AppRouter) -> Bool {
+        guard case .needsServer(let shown, _) = router.authState else { return false }
+        return directory.user(shown) == nil
     }
 
     /// Remove from This Apple TV: every sign-in in the user, and the user.
@@ -1111,7 +1169,7 @@ final class SiloUserCoordinator {
         report(outcome, router: router)
         await pruneLaunchState()
         await reloadDirectory()
-        if wasCurrent || directory.users.isEmpty || showsRemovedUser(userID, router: router) {
+        if wasCurrent || directory.users.isEmpty || showsRemovedUser(router: router) {
             await applyAfterRemoval(router: router)
         }
     }
@@ -1133,7 +1191,7 @@ final class SiloUserCoordinator {
         }
         await pruneLaunchState()
         await reloadDirectory()
-        if removed, wasCurrent || directory.users.isEmpty {
+        if removed, wasCurrent || directory.users.isEmpty || showsRemovedUser(router: router) {
             await applyAfterRemoval(router: router)
         }
     }

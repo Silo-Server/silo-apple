@@ -54,13 +54,42 @@ final class ChooseUserViewModelTests: XCTestCase {
         XCTAssertTrue(ChooseUserViewModel(directory: one).showsRemoveHint)
     }
 
-    /// Two users with one name are told apart by the server (plan G7).
+    /// Two users with one name are told apart by the server (plan G7). A
+    /// card whose server label already names that server doesn't repeat it
+    /// in the title; VoiceOver still reads the full name.
     func testSharedNamesAreToldApart() {
         let directory = D.directory([
             .init(id: "a", signIns: [.init(serverID: D.home, accountID: "12", username: "alex")]),
             .init(id: "b", signIns: [.init(serverID: D.friend, accountID: "40", username: "alex")]),
         ])
-        XCTAssertEqual(ChooseUserViewModel(directory: directory).cards.map(\.name),
-                       ["alex · Home Silo", "alex · Friend's Silo"])
+        let cards = ChooseUserViewModel(directory: directory).cards
+        XCTAssertEqual(cards.map(\.name), ["alex", "alex"])
+        XCTAssertEqual(cards.map(\.serverLabel), ["Home Silo", "Friend's Silo"])
+        XCTAssertEqual(cards.map(\.accessibilityName), ["alex · Home Silo", "alex · Friend's Silo"])
+    }
+
+    /// The title leaves out only the server its label shows: a user with
+    /// two servers keeps the server it was told apart by, and "(2)"
+    /// numbering stays.
+    func testACardTitleLeavesOutOnlyTheServerItsLabelShows() {
+        let directory = D.directory([
+            .init(id: "two", signIns: [
+                .init(serverID: D.home, accountID: "12", username: "alex"),
+                .init(serverID: D.friend, accountID: "40", username: "alex"),
+            ]),
+            .init(id: "one", signIns: [.init(serverID: D.home, accountID: "13", username: "alex")]),
+            .init(id: "den", displayName: "Den", signIns: [.init(serverID: D.home, accountID: "14", username: "kim")]),
+            .init(id: "den2", displayName: "Den", signIns: [.init(serverID: D.home, accountID: "15", username: "lee")]),
+        ])
+        XCTAssertEqual(directory.users.map(\.name),
+                       ["alex · Home Silo · Friend's Silo", "alex · Home Silo", "Den · Home Silo", "Den · Home Silo (2)"])
+
+        let cards = ChooseUserViewModel(directory: directory).cards
+
+        XCTAssertEqual(cards.map(\.name), ["alex · Home Silo · Friend's Silo", "alex", "Den", "Den (2)"])
+        XCTAssertEqual(cards.map(\.fullName), [nil, "alex · Home Silo", "Den · Home Silo", "Den · Home Silo (2)"])
+        XCTAssertEqual(directory.users[0].name(besides: ["Home Silo"]), "alex · Friend's Silo")
+        XCTAssertEqual(directory.users[0].name(besides: ["Home Silo", "Friend's Silo"]), "alex")
+        XCTAssertEqual(directory.users[3].name(besides: ["Friend's Silo"]), "Den · Home Silo (2)")
     }
 }

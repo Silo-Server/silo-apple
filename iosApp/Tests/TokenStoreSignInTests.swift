@@ -252,6 +252,22 @@ final class TokenStoreSignInTests: XCTestCase {
 
     /// The index write is the commit point: when it fails the item is still
     /// deleted, so the session can't come back, and the runtime is blocked.
+    /// Diagnostics are server-wide, so sign-out erases them only once nobody
+    /// is signed in to the server; an index that can't be read counts as
+    /// somebody still being signed in.
+    func testAnUnreadableIndexStillCountsAsSignedInToTheServer() async throws {
+        let (f, _) = try await signedIn()
+        let home = await f.store.hasSavedSignIn(onServer: F.home)
+        let friend = await f.store.hasSavedSignIn(onServer: F.friend)
+        XCTAssertTrue(home)
+        XCTAssertFalse(friend)
+
+        f.signIns.failsAllReads = true
+        defer { f.signIns.failsAllReads = false }
+        let unreadable = await f.store.hasSavedSignIn(onServer: F.friend)
+        XCTAssertTrue(unreadable)
+    }
+
     func testRemovalThatCannotWriteTheIndexStillKeepsTheSessionFromReturning() async throws {
         let (f, _) = try await signedIn()
         f.signIns.failingWrites = [SharedStorage.usersIndexAccount]

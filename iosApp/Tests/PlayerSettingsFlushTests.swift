@@ -2580,6 +2580,8 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     private let lock = NSLock()
     private var recordedWrites: [Write] = []
     private var recordedDeletes: [Delete] = []
+    /// The account each write and delete was sent for, in order.
+    private var recordedAccountIDs: [String?] = []
     private var recordedEffectiveCalls: [[SettingKey]] = []
     private var writeFailures = 0
     private var writeError: SettingsAPIError = .transport(description: "stub")
@@ -2612,6 +2614,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         lock.lock()
         recordedWrites.removeAll()
         recordedDeletes.removeAll()
+        recordedAccountIDs.removeAll()
         recordedEffectiveCalls.removeAll()
         lock.unlock()
     }
@@ -2620,6 +2623,13 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         lock.lock()
         defer { lock.unlock() }
         return recordedWrites
+    }
+
+    /// The account every write and delete named, in the order they were sent.
+    func accountIDs() -> [String?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedAccountIDs
     }
 
     /// The last write per key, which is what a caller asserting "what did this
@@ -2667,7 +2677,8 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         key: SettingKey,
         scope: PlayerSettingWriteScope,
         value: SettingJSONValue,
-        profileId: String?
+        profileId: String?,
+        accountID: String?
     ) async throws {
         try failIfCancelled()
         onAttemptStart?()
@@ -2684,6 +2695,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         )
         lock.lock()
         recordedWrites.append(write)
+        recordedAccountIDs.append(accountID)
         let shouldFail = writeFailures > 0
         if shouldFail { writeFailures -= 1 }
         let error = writeError
@@ -2693,13 +2705,14 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         if shouldFail { throw error }
     }
 
-    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?) async throws {
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?, accountID: String?) async throws {
         try failIfCancelled()
         await writeGate.waitIfBlocked()
         try failIfCancelled()
         lock.lock()
         let delete = Delete(key: key, scope: scope)
         recordedDeletes.append(delete)
+        recordedAccountIDs.append(accountID)
         let shouldFail = deleteFailures > 0
         if shouldFail { deleteFailures -= 1 }
         let error = deleteError

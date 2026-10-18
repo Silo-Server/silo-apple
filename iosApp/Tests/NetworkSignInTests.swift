@@ -252,8 +252,9 @@ final class NetworkSignInTests: XCTestCase {
     }
 
     /// "Change server" while "Continue as …" runs leaves the sign-in screen.
-    /// The session still lands, but the sign-in must not pull the app back
-    /// to the profiles.
+    /// The sign-in must not pull the app back to the profiles, and it is
+    /// saved nowhere: placing it would add or change a user behind the
+    /// screen the person moved to, so its session is ended instead.
     @MainActor
     func testSignInDoesNotRouteOnceTheAppLeftTheSignInScreen() async throws {
         let (auth, tokens) = try await makeAuth()
@@ -270,10 +271,19 @@ final class NetworkSignInTests: XCTestCase {
         stub.release()
         let succeeded = await signIn.value
 
-        XCTAssertTrue(succeeded)
+        XCTAssertFalse(succeeded)
+        XCTAssertNil(model.networkSignInError, "leaving the screen isn't a failure to report")
         XCTAssertEqual(router.authState, .needsServerSetup)
         let access = await tokens.getAccessToken()
-        XCTAssertEqual(access, "acc")
+        XCTAssertEqual(access, "old", "the abandoned sign-in replaced nothing")
+        let stub = self.stub
+        let revoked = {
+            stub.requests.contains { $0.path.hasSuffix("/api/v2/auth/logout") && $0.header("Authorization") == "Bearer acc" }
+        }
+        for _ in 0..<300 where !revoked() {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(revoked(), "the abandoned session is ended on the server")
     }
 
     func testRefusalsReadAsSentencesNamingTheProvider() {

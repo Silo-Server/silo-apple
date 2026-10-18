@@ -205,8 +205,11 @@ final class LoginViewModel {
                 _ = try await users.completeSignIn(PendingSignIn(tokens: tokens, expected: expectedAccount),
                                                    router: router, routesWhenOpened: false)
             }).signIn(with: provider, selectAccount: selectAccount)
+            // A question keeps the account-choice request: answered Cancel,
+            // the next browser sign-in must still let the provider choose.
+            guard router.signInPrompt == nil else { return }
             prompt.clear(serverId: serverId)
-            guard router.authState == route, router.signInPrompt == nil else { return }
+            guard router.authState == route else { return }
             StartupContentPrefetcher.prefetchProfiles()
             users.showSignedIn(router: router)
         } catch {

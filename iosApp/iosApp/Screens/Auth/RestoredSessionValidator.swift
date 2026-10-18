@@ -326,4 +326,29 @@ enum RestoredSessionAuthResolver {
         let result = await AuthService.shared.validateRestoredSession(expected: expected)
         return await state(after: result, fallingBackTo: local.state)
     }
+
+    /// The current user's current server again (server recovery's Try
+    /// again): no Ask For and no other user, unlike a cold launch. Before
+    /// migration, or with no current user, the cold-launch path.
+    static func resolveCurrent() async -> LocalResolution {
+        if let current = await SiloUserCoordinator.shared.resolveCurrentServer() { return current }
+        return await resolveLocal()
+    }
+
+    /// `resolveCurrent`, validated with the server, keeping the sign-in a
+    /// sign-in screen runs.
+    static func resolveCurrentValidated() async -> LocalResolution {
+        let local = await resolveCurrent()
+        guard let expected = local.restoredAccount else { return local }
+        switch await AuthService.shared.validateRestoredSession(expected: expected) {
+        case .valid, .indeterminate:
+            return local
+        case .needsLogin:
+            return LocalResolution(state: .needsLogin, restoredAccount: nil, loginNotice: .sessionExpired)
+        case .serverRecovery(let reason):
+            return LocalResolution(state: .serverRecovery(reason), restoredAccount: nil)
+        case .identityChanged:
+            return await resolveCurrent()
+        }
+    }
 }

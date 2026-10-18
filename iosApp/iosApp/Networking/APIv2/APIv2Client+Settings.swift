@@ -70,15 +70,17 @@ extension APIv2Client {
     }
 
     /// `updateSettingValue` (200 with the stored row) for `profileID`, which
-    /// must be the captured session's profile. The receipt must describe the
-    /// row that was addressed; anything else is `unexpectedSettingReceipt`.
+    /// must be the captured session's profile, and `accountID` when given
+    /// (`settingsWrite`). The receipt must describe the row that was
+    /// addressed; anything else is `unexpectedSettingReceipt`.
     @discardableResult
     func updateSettingValue(
         key: SettingKey,
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
         profileID: String,
-        expectedIdentity: HTTPRequestIdentity? = nil
+        expectedIdentity: HTTPRequestIdentity? = nil,
+        accountID: String? = nil
     ) async throws -> StoredSettingValue {
         let body = try SettingsWireCoding.makeEncoder().encode(SettingValueWriteRequest(value: value))
         let response = try await settingsWrite(
@@ -87,7 +89,8 @@ extension APIv2Client {
             query: scope.queryItems,
             body: body,
             profileID: profileID,
-            expectedIdentity: expectedIdentity
+            expectedIdentity: expectedIdentity,
+            accountID: accountID
         )
         return try Self.settingReceipt(response, key: key, scope: scope, profileID: profileID)
     }
@@ -123,7 +126,8 @@ extension APIv2Client {
         key: SettingKey,
         scope: SettingScopeIdentity,
         profileID: String,
-        expectedIdentity: HTTPRequestIdentity? = nil
+        expectedIdentity: HTTPRequestIdentity? = nil,
+        accountID: String? = nil
     ) async throws {
         let response: HTTPRawResponse
         do {
@@ -134,6 +138,7 @@ extension APIv2Client {
                 body: nil,
                 profileID: profileID,
                 expectedIdentity: expectedIdentity,
+                accountID: accountID,
                 quietStatuses: [404]
             )
         } catch APIv2Error.problem(let problem) where problem.status == 404 {

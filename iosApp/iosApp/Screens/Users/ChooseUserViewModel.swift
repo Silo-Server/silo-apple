@@ -6,6 +6,8 @@ struct ChooseUserViewModel: Equatable {
     struct Card: Equatable, Identifiable {
         /// The user's ID.
         let id: String
+        /// The card's title: the user's name, without a server added to tell
+        /// users apart when `serverLabel` already names it.
         let name: String
         /// Profiles of the user's last-used server, at most `maxAvatars`.
         let avatars: [SavedSignInProfile]
@@ -15,6 +17,12 @@ struct ChooseUserViewModel: Equatable {
         let isLastUsed: Bool
         /// The last-used sign-in expired.
         let needsSignInAgain: Bool
+        /// The name told apart from other users' in full, when the title
+        /// left out the server the label shows. Nil when they're the same.
+        var fullName: String? = nil
+
+        /// What VoiceOver reads as the name.
+        var accessibilityName: String { fullName ?? name }
 
         /// What VoiceOver reads after the name.
         var accessibilityValue: String {
@@ -42,13 +50,15 @@ struct ChooseUserViewModel: Equatable {
 
     init(directory: SiloUserDirectory, focusUserID: String? = nil) {
         let cards = directory.users.map { user in
-            Card(
+            let title = user.servers.count == 1 ? user.name(besides: [user.servers[0].name]) : user.name
+            return Card(
                 id: user.id,
-                name: user.name,
+                name: title,
                 avatars: Array((user.lastUsedServer?.profiles ?? []).prefix(Self.maxAvatars)),
                 serverLabel: Self.serverLabel(for: user),
                 isLastUsed: user.isLinked,
-                needsSignInAgain: user.needsSignInAgain
+                needsSignInAgain: user.needsSignInAgain,
+                fullName: title == user.name ? nil : user.name
             )
         }
         self.cards = cards

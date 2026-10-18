@@ -616,6 +616,43 @@ final class AccountScopedLocalDataTests: XCTestCase {
         } catch HTTPError.requestIdentityChanged {}
     }
 
+    /// The player's settings queue keeps the account with the profile, and
+    /// the production transport sends both: a write already on its way when
+    /// sam signs in, whose profile is also `default`, is refused rather than
+    /// stored on sam's profile. The next edit, queued under sam, goes out.
+    func testQueuedPlayerSettingWrite() async throws {
+        let f = try await signedInAsAlex()
+        let stub = StubURLProtocol.Handler()
+        stub.route({ $0.path.hasPrefix("/api/v2/settings/") }) { _ in .json("{}") }
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: f.store), tokenStore: f.store)
+        let transport = GatedPlayerSettingsTransport(SiloPlayerSettingsTransport(api: api))
+        let mirrors = f.defaults
+        let journal = UserDefaultsSettingsWriteJournal(
+            defaults: suite,
+            profileProvider: { mirrors.string(forKey: SharedStorage.profileIdKey) },
+            accountProvider: { AccountScopeReader.currentAccountID(defaults: mirrors) },
+            // One partition throughout: the queue's own scope check passed
+            // before sam signed in, so only the account can stop the write.
+            scopeProvider: { "player-scope" }
+        )
+        let flusher = PlayerSettingsFlusher(transport: transport, debounce: .milliseconds(10), journal: journal)
+
+        flusher.enqueue(.playerHdrEnabled, value: .bool(false))
+        await transport.waitForHeldSend()
+        XCTAssertEqual(journal.load()[.playerHdrEnabled]?.accountID, Self.alex)
+        try await switchToSam(f)
+        await transport.release()
+        await transport.waitForOutcomes(1)
+
+        XCTAssertEqual(transport.outcomes.first?.accountID, Self.alex)
+        XCTAssertEqual(transport.outcomes.first?.sent, false, "refused under sam")
+        XCTAssertTrue(stub.requests.isEmpty, "nothing went out as sam")
+
+        flusher.enqueue(.playerHdrEnabled, value: .bool(true))
+        await transport.waitForOutcomes { $0.accountID == Self.sam }
+        XCTAssertEqual(stub.requests.map { $0.headers["authorization"] }, ["Bearer sam-access"])
+    }
+
     /// The path every settings read and write takes: `APIv2Client` passes the
     /// caller's account on to `HTTPClient`, whose `captureRequestAuth`
     /// refuses it under another sign-in with the same profile ID.
@@ -661,6 +698,86 @@ private func effectiveResponse(_ values: [String: Any]) throws -> EffectiveSetti
     }
     let data = try JSONSerialization.data(withJSONObject: ["items": rows, "revision": 1])
     return try SettingsWireCoding.makeDecoder().decode(EffectiveSettingValuesResponse.self, from: data)
+}
+
+/// The player's production settings transport behind a gate: the first send
+/// waits until released, and every send records the account it named and
+/// whether a request was sent (`HTTPRequestIdentity` refusals throw before
+/// one is).
+private final class GatedPlayerSettingsTransport: PlayerSettingsTransport, @unchecked Sendable {
+    struct Outcome {
+        let accountID: String?
+        let sent: Bool
+    }
+
+    private let base: PlayerSettingsTransport
+    private let gate = StubURLProtocol.Gate()
+    private let lock = NSLock()
+    private var recorded: [Outcome] = []
+
+    init(_ base: PlayerSettingsTransport) {
+        self.base = base
+    }
+
+    var outcomes: [Outcome] { lock.withLock { recorded } }
+
+    func waitForHeldSend() async {
+        let deadline = Date().addingTimeInterval(5)
+        while await gate.waiterCount == 0, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func release() async {
+        await gate.open()
+    }
+
+    func waitForOutcomes(_ count: Int) async {
+        let deadline = Date().addingTimeInterval(5)
+        while outcomes.count < count, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func waitForOutcomes(where matches: (Outcome) -> Bool) async {
+        let deadline = Date().addingTimeInterval(5)
+        while !outcomes.contains(where: matches), Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
+        try await base.effectiveValues(keys: keys)
+    }
+
+    func putValue(key: SettingKey, scope: PlayerSettingWriteScope, value: SettingJSONValue,
+                  profileId: String?, accountID: String?) async throws {
+        await gate.wait()
+        try await record(accountID) {
+            try await base.putValue(key: key, scope: scope, value: value, profileId: profileId, accountID: accountID)
+        }
+    }
+
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?, accountID: String?) async throws {
+        await gate.wait()
+        try await record(accountID) {
+            try await base.deleteValue(key: key, scope: scope, profileId: profileId, accountID: accountID)
+        }
+    }
+
+    /// A refused identity never reaches the network; anything else (here the
+    /// stub's empty receipt) means the request went out.
+    private func record(_ accountID: String?, _ send: () async throws -> Void) async throws {
+        do {
+            try await send()
+            lock.withLock { recorded.append(Outcome(accountID: accountID, sent: true)) }
+        } catch {
+            var refused = false
+            if case SettingsAPIError.ownerChanged = error { refused = true }
+            lock.withLock { recorded.append(Outcome(accountID: accountID, sent: !refused)) }
+            throw error
+        }
+    }
 }
 
 /// A settings server for the profile-scoped, title art, and advisory age

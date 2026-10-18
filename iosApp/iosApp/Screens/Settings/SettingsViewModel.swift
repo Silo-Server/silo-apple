@@ -361,10 +361,11 @@ final class SettingsViewModel {
     @MainActor
     func loadSettings() async {
         prefs.bindProfile(id: AuthService.shared.profileId)
-        async let remembered = AuthService.shared.rememberedProfileForCurrentSelection()
+        // Before the server round trips, so Paired Silo Profile never reads
+        // "Not paired" while they run.
+        rememberedProfileID = AuthService.shared.rememberedProfileIDForCurrentSelection
         async let directory: Void = SiloUserCoordinator.shared.reloadDirectory()
         await PlayerSettings.shared.refreshFromServer()
-        rememberedProfileID = await remembered?.profileID
         await directory
 
         async let user: UserInfo? = try? SiloAPI.shared.currentUser()

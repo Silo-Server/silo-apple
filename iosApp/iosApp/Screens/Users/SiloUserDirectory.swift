@@ -57,6 +57,28 @@ struct SiloUserDirectory: Equatable, Sendable {
         func server(_ id: String) -> Server? {
             servers.first { $0.id == id }
         }
+
+        /// `name` for text that already names `serverNames` (a card's
+        /// server label, a sentence about signing out of a server): a server
+        /// added to tell users apart is left out there, since the text names
+        /// it anyway. Any other server added, and "(2)" numbering, stay, so
+        /// users are still told apart. "alex · Home Silo" signing out of
+        /// Home Silo reads "alex".
+        func name(besides serverNames: [String]) -> String {
+            let separator = SiloUserNaming.separator
+            guard name.count > baseName.count, name.hasPrefix(baseName) else { return name }
+            var suffix = String(name.dropFirst(baseName.count))
+            var numbering = ""
+            if let range = suffix.range(of: #" \(\d+\)$"#, options: .regularExpression) {
+                numbering = String(suffix[range])
+                suffix.removeSubrange(range)
+            }
+            guard suffix.hasPrefix(separator) else { return name }
+            let named = Set(serverNames.map { $0.folding(options: .caseInsensitive, locale: nil) })
+            let kept = suffix.dropFirst(separator.count).components(separatedBy: separator)
+                .filter { !named.contains($0.folding(options: .caseInsensitive, locale: nil)) }
+            return baseName + kept.map { separator + $0 }.joined() + numbering
+        }
     }
 
     /// Index order.

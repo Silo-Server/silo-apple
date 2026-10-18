@@ -783,6 +783,15 @@ final class AppRouter {
         signInRevision &+= 1
     }
 
+    /// Bumped when a sign-in screen must start over in place: a question
+    /// its sign-in raised was answered Cancel and the same screen shows
+    /// again, with its code or form still in the finished state.
+    private(set) var signInScreenGeneration = 0
+
+    func restartSignInScreen() {
+        signInScreenGeneration &+= 1
+    }
+
     /// Choose a User as the root.
     func showUserChooser(focus userID: String?) {
         loginNotice = nil
