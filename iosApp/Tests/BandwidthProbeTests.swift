@@ -390,3 +390,54 @@ private final class FakeProbeServer: BandwidthProbeServer {
         return true
     }
 }
+
+/// The Connection group's lines, as Android words them.
+final class ConnectionSpeedTextTests: XCTestCase {
+    private typealias VM = SettingsViewModel
+    private let measured = Date(timeIntervalSinceReferenceDate: 800_000_000)
+
+    private func text(_ kbps: Int, after seconds: TimeInterval, on transport: String = "wifi") -> String {
+        VM.connectionSpeedText(kbps: kbps, measuredAt: measured, transport: transport,
+                               now: measured.addingTimeInterval(seconds))
+    }
+
+    func testTheSpeedLineSaysWhenAndOnWhatNetwork() {
+        XCTAssertEqual(text(48_317, after: 3 * 60 + 59), "48 Mbps · measured 3 minutes ago on Wi-Fi")
+        XCTAssertEqual(text(48_000, after: 59), "48 Mbps · measured just now on Wi-Fi")
+        XCTAssertEqual(text(48_000, after: -30), "48 Mbps · measured just now on Wi-Fi", "a clock behind the measurement")
+        XCTAssertEqual(text(48_000, after: 60, on: "ethernet"), "48 Mbps · measured 1 minute ago on Ethernet")
+        XCTAssertEqual(text(48_000, after: 2 * 3_600, on: "cellular"), "48 Mbps · measured 2 hours ago on cellular")
+        XCTAssertEqual(text(48_000, after: 3_600, on: "other"), "48 Mbps · measured 1 hour ago on this connection")
+        XCTAssertEqual(text(48_000, after: 26 * 3_600), "48 Mbps · measured 1 day ago on Wi-Fi")
+        XCTAssertEqual(text(400, after: 0), "400 kbps · measured just now on Wi-Fi")
+    }
+
+    func testRatesReadInWholeMegabits() {
+        XCTAssertEqual(VM.connectionRateText(kbps: 35_280), "35 Mbps")
+        XCTAssertEqual(VM.connectionRateText(kbps: 35_500), "36 Mbps")
+        XCTAssertEqual(VM.connectionRateText(kbps: 499), "499 kbps")
+    }
+
+    func testSpeedTestsAreSkippedOnMeteredNetworks() {
+        let cellular = BandwidthProbeNetwork(isConnected: true, transport: "cellular", usesCellular: true,
+                                             isMetered: true, key: "c")
+        let hotspot = BandwidthProbeNetwork(isConnected: true, transport: "wifi", usesCellular: false,
+                                            isMetered: true, key: "h")
+        let home = BandwidthProbeNetwork(isConnected: true, transport: "wifi", usesCellular: false,
+                                         isMetered: false, key: "w")
+        XCTAssertEqual(
+            VM.connectionSpeedSkippedText(network: cellular, cellularQualityApplies: true),
+            "Speed tests are skipped on cellular, and the Cellular Quality settings apply."
+        )
+        XCTAssertEqual(
+            VM.connectionSpeedSkippedText(network: hotspot, cellularQualityApplies: true),
+            "Speed tests are skipped on metered networks, and the Cellular Quality settings apply."
+        )
+        XCTAssertEqual(
+            VM.connectionSpeedSkippedText(network: hotspot, cellularQualityApplies: false),
+            "Speed tests are skipped on metered networks."
+        )
+        XCTAssertNil(VM.connectionSpeedSkippedText(network: home, cellularQualityApplies: true))
+        XCTAssertNil(VM.connectionSpeedSkippedText(network: .offline, cellularQualityApplies: true))
+    }
+}

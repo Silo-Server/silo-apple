@@ -653,6 +653,7 @@ enum TVSettingsDetailFocus: Hashable {
     case playbackMaxBitrate
     case playbackBufferingQualityMode
     case playbackLearnedLimitReset
+    case playbackConnectionSpeedTest
     case playbackAudioLanguage
     case playbackBufferAhead
     case playbackDeinterlaceMode

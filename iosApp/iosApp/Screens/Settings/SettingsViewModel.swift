@@ -435,15 +435,25 @@ final class SettingsViewModel {
         return "Limited to \(bitrate) after buffering on \(limit.observedAt.formatted(style))"
     }
 
+    /// Reads `GET /api/v2/playback/connection` for the learned-limit row and,
+    /// with `connection_speed_v1`, the Connection group.
     @MainActor
-    func loadLearnedConnectionLimit() async {
+    func loadPlaybackConnection() async {
         learnedLimitResetError = nil
-        guard await PlaybackV3CapabilityGate.shared.advertisesBufferingQuality(),
-              let auth = await TokenStore.shared.captureOrdinaryRequestAuth() else {
+        let capability = try? await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
+        let showsLearnedLimit = capability?.bufferingQuality ?? false
+        showsConnectionGroup = capability?.connectionSpeed ?? false
+        guard showsLearnedLimit || showsConnectionGroup,
+              let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              let connection = try? await SiloAPI.shared.apiV2Client.playbackConnection(auth: auth) else {
             learnedConnectionLimit = nil
+            connectionProbe = nil
+            autoBudgetKbps = nil
             return
         }
-        learnedConnectionLimit = try? await SiloAPI.shared.apiV2Client.playbackConnection(auth: auth).learnedLimit
+        learnedConnectionLimit = showsLearnedLimit ? connection.learnedLimit : nil
+        connectionProbe = showsConnectionGroup ? connection.probe : nil
+        autoBudgetKbps = showsConnectionGroup ? connection.autoBudgetKbps : nil
     }
 
     @MainActor
@@ -458,6 +468,125 @@ final class SettingsViewModel {
         } catch {
             learnedLimitResetError = Self.learnedLimitResetFailedMessage
         }
+    }
+
+    // MARK: Connection speed
+
+    /// The server advertises `connection_speed_v1`: Playback settings show a
+    /// Connection group with the measured speed, **Test speed**, and the Auto
+    /// budget.
+    private(set) var showsConnectionGroup = false
+    /// The server's latest probe for this device on this connection.
+    private(set) var connectionProbe: APIv2PlaybackConnection.Probe?
+    /// `auto_budget_kbps`, computed by the server; nil hides the line.
+    private(set) var autoBudgetKbps: Int?
+    private(set) var isTestingConnectionSpeed = false
+    /// The answer to the last **Test speed**, until the next one.
+    private(set) var connectionSpeedMessage: String?
+
+    static let connectionSectionTitle = "Connection"
+    static let connectionSpeedTitle = "Connection speed"
+    static let testSpeedAction = "Test speed"
+    static let testingSpeedLabel = "Testing…"
+    static let notMeasuredText = "Not measured yet"
+    static let stopPlaybackToTestMessage = "Stop playback before testing, then try again."
+    static let speedTestFailedMessage = "Couldn't measure the connection speed. Try again."
+
+    /// "48 Mbps · measured 3 minutes ago on Wi-Fi": the newer of the server's
+    /// probe and this device's own, or "Not measured yet".
+    @MainActor
+    var connectionSpeedText: String {
+        let own = BandwidthProbeScheduler.shared.lastMeasurement
+        let server = connectionProbe
+        if let own, server.map({ own.measuredAt >= $0.measuredAt }) ?? true {
+            return Self.connectionSpeedText(kbps: own.kbps, measuredAt: own.measuredAt, transport: own.transport)
+        }
+        if let server {
+            return Self.connectionSpeedText(kbps: server.kbps, measuredAt: server.measuredAt, transport: server.transport)
+        }
+        return Self.notMeasuredText
+    }
+
+    /// Why speed tests are skipped on the network in use, or nil when they
+    /// run. With a note, neither **Test speed** nor the budget shows.
+    @MainActor
+    var connectionSpeedSkippedText: String? {
+        Self.connectionSpeedSkippedText(
+            network: BandwidthProbeScheduler.shared.network,
+            cellularQualityApplies: PlayerSettings.offersCellularQuality
+        )
+    }
+
+    /// "Auto plays videos up to 35 Mbps without converting them."
+    @MainActor
+    var autoBudgetText: String? {
+        guard connectionSpeedSkippedText == nil, let autoBudgetKbps else { return nil }
+        return "Auto plays videos up to \(Self.connectionRateText(kbps: autoBudgetKbps)) without converting them."
+    }
+
+    /// **Test speed**: runs the probe now, reports it, then reads the
+    /// connection again for the server's budget.
+    @MainActor
+    func testConnectionSpeed() async {
+        guard !isTestingConnectionSpeed else { return }
+        isTestingConnectionSpeed = true
+        connectionSpeedMessage = nil
+        defer { isTestingConnectionSpeed = false }
+        switch await BandwidthProbeScheduler.shared.runNow() {
+        case .measured:
+            await loadPlaybackConnection()
+        case .rateLimited(let seconds):
+            connectionSpeedMessage = "Try again in \(seconds) \(seconds == 1 ? "second" : "seconds")"
+        case .playbackActive:
+            connectionSpeedMessage = Self.stopPlaybackToTestMessage
+        case .metered:
+            // The row already says speed tests are skipped here.
+            break
+        case .unavailable, .tooLittleData, .networkError, .offline, .notSupported, .interrupted:
+            connectionSpeedMessage = Self.speedTestFailedMessage
+        }
+    }
+
+    /// "48 Mbps · measured 3 minutes ago on Wi-Fi". Under a minute is "just
+    /// now"; then whole minutes, hours and days, rounded down. A clock that
+    /// reads before the measurement counts as just now.
+    static func connectionSpeedText(kbps: Int, measuredAt: Date, transport: String, now: Date = Date()) -> String {
+        let minutes = max(0, Int(now.timeIntervalSince(measuredAt) / 60))
+        let age: String
+        switch minutes {
+        case ..<1: age = "just now"
+        case ..<60: age = "\(minutes) \(minutes == 1 ? "minute" : "minutes") ago"
+        case ..<(24 * 60):
+            let hours = minutes / 60
+            age = "\(hours) \(hours == 1 ? "hour" : "hours") ago"
+        default:
+            let days = minutes / (24 * 60)
+            age = "\(days) \(days == 1 ? "day" : "days") ago"
+        }
+        let network = switch transport {
+        case "wifi": "Wi-Fi"
+        case "ethernet": "Ethernet"
+        case "cellular": "cellular"
+        default: "this connection"
+        }
+        return "\(connectionRateText(kbps: kbps)) · measured \(age) on \(network)"
+    }
+
+    /// A speed in whole megabits per second, rounded to the nearest, or in
+    /// kbps when that rounds to 0. Server figures read the same way.
+    static func connectionRateText(kbps: Int) -> String {
+        let mbps = (Double(kbps) / 1000).rounded()
+        return mbps > 0 ? "\(Int(mbps)) Mbps" : "\(max(kbps, 0)) kbps"
+    }
+
+    static func connectionSpeedSkippedText(network: BandwidthProbeNetwork, cellularQualityApplies: Bool) -> String? {
+        guard network.isConnected, network.isMetered else { return nil }
+        if network.usesCellular {
+            return "Speed tests are skipped on cellular, and the Cellular Quality settings apply."
+        }
+        return cellularQualityApplies
+            ? "Speed tests are skipped on metered networks, and the Cellular Quality settings apply."
+            : "Speed tests are skipped on metered networks."
     }
 
     // MARK: Device value or profile value

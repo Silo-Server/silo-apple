@@ -15,6 +15,9 @@ struct TVPlaybackSettingsPane: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             qualitySection
+            if viewModel.showsConnectionGroup {
+                connectionSection
+            }
             streamingSection
             episodesSection
             // Hidden entirely on servers that do not serve the two keys.
@@ -37,7 +40,7 @@ struct TVPlaybackSettingsPane: View {
         }
         .task { await seekIntervals.refresh() }
         .task { await spoilers.refresh() }
-        .task { await viewModel.loadLearnedConnectionLimit() }
+        .task { await viewModel.loadPlaybackConnection() }
         .alert(
             SettingsViewModel.useProfileSettingsTitle,
             isPresented: $showUseProfileSettingsConfirmation
@@ -109,6 +112,48 @@ struct TVPlaybackSettingsPane: View {
         if viewModel.learnedConnectionLimit == nil,
            detailFocus.wrappedValue == .playbackLearnedLimitReset {
             detailFocus.wrappedValue = .playbackBufferingQualityMode
+        }
+    }
+
+    /// The speed the bandwidth probe measured on this connection, a test on
+    /// demand, and what Auto plays as-is at that speed. Apple TV is never on
+    /// cellular, so the row always offers the test unless the network is
+    /// metered.
+    @ViewBuilder
+    private var connectionSection: some View {
+        TVSettingsSectionHeader(SettingsViewModel.connectionSectionTitle.uppercased())
+
+        Button {
+            Task { await viewModel.testConnectionSpeed() }
+        } label: {
+            HStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(SettingsViewModel.connectionSpeedTitle)
+                        .font(.system(size: 26))
+                    Text(viewModel.connectionSpeedText)
+                        .font(.system(size: 22))
+                        .opacity(0.7)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                Spacer(minLength: 16)
+                if viewModel.connectionSpeedSkippedText == nil {
+                    Text(viewModel.isTestingConnectionSpeed
+                         ? SettingsViewModel.testingSpeedLabel
+                         : SettingsViewModel.testSpeedAction)
+                        .font(.system(size: 24, weight: .semibold))
+                }
+            }
+        }
+        .buttonStyle(TVSettingsPaneRowStyle())
+        .disabled(viewModel.connectionSpeedSkippedText != nil)
+        .focused(detailFocus, equals: .playbackConnectionSpeedTest)
+
+        if let footer = viewModel.connectionSpeedSkippedText ?? viewModel.autoBudgetText {
+            TVSettingsFooter(footer)
+        }
+        if let message = viewModel.connectionSpeedMessage {
+            TVSettingsWarningFooter(message)
         }
     }
 

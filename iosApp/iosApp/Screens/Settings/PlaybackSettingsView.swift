@@ -25,6 +25,9 @@ struct PlaybackSettingsView: View {
             #if os(iOS)
             cellularQualitySection
             #endif
+            if viewModel.showsConnectionGroup {
+                connectionSection
+            }
             streamingSection
             behaviorSection
             // Hidden entirely on servers that do not serve the two keys.
@@ -35,7 +38,7 @@ struct PlaybackSettingsView: View {
             resetSection
         }
         .task { await spoilers.refresh() }
-        .task { await viewModel.loadLearnedConnectionLimit() }
+        .task { await viewModel.loadPlaybackConnection() }
         .settingsListChrome()
         .navigationTitle("Playback")
         .siloNavigationTitleDisplayMode(.inline)
@@ -101,6 +104,51 @@ struct PlaybackSettingsView: View {
             lines.append(error)
         }
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Connection
+
+    /// The speed the bandwidth probe measured on this connection, a test on
+    /// demand, and what Auto plays as-is at that speed.
+    private var connectionSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(SettingsViewModel.connectionSpeedTitle)
+                    .foregroundStyle(Color.siloOnSurface)
+                Text(viewModel.connectionSpeedText)
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+            }
+            if viewModel.connectionSpeedSkippedText == nil {
+                Button {
+                    Task { await viewModel.testConnectionSpeed() }
+                } label: {
+                    Text(viewModel.isTestingConnectionSpeed
+                         ? SettingsViewModel.testingSpeedLabel
+                         : SettingsViewModel.testSpeedAction)
+                }
+                .disabled(viewModel.isTestingConnectionSpeed)
+            }
+        } header: {
+            Text(SettingsViewModel.connectionSectionTitle)
+                .foregroundStyle(Color.siloSecondaryText)
+        } footer: {
+            if let footer = connectionFooterText {
+                Text(footer)
+                    .foregroundStyle(Color.siloSecondaryText)
+            }
+        }
+        .listRowBackground(Color.siloGroupedCell)
+    }
+
+    /// The budget or why speed tests are skipped, then the last test's
+    /// answer, one line each.
+    private var connectionFooterText: String? {
+        let lines = [
+            viewModel.connectionSpeedSkippedText ?? viewModel.autoBudgetText,
+            viewModel.connectionSpeedMessage,
+        ].compactMap { $0 }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     #if os(iOS)
