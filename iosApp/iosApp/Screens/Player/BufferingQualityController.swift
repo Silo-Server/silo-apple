@@ -1,0 +1,913 @@
+import Foundation
+
+/// Lowers quality when playback keeps buffering. One instance per player, shared
+/// by the iOS, iPadOS, tvOS and macOS players.
+///
+/// The spec is the server repo's `docs/design/2026-10-17-buffering-quality.md`:
+/// this type implements its stall tracker and trigger (Terms) and every table
+/// under "Behaviour". `BufferingQualityControllerTests` replays the vendored
+/// conformance vectors (`Tests/Fixtures/BufferingQuality/vectors.json`) case for
+/// case, as web and Android do.
+///
+/// The player feeds it plan adoptions, media events and the viewer's answers,
+/// and acts on what ``onOutput`` emits: replans to send, pills and notices to
+/// show, and `plan_summary` events. It performs no I/O itself.
+///
+/// ### Evaluation
+///
+/// The trigger is evaluated when a stall ends (``playing()``) and when a stall
+/// in progress reaches `LONG_STALL_MS`. While that long stall continues, it is
+/// evaluated again when a time-based suppression (cooldown, re-offer, an undo
+/// pill's timer) expires. Starting a wait never evaluates old history, and a
+/// suppression that expires while playing offers nothing.
+///
+/// ### Timing
+///
+/// Arithmetic is in integer milliseconds of the clock, so the vectors' times
+/// compare exactly. A pill's timer is wall-clock time that a pause or a
+/// competing pill freezes.
+@MainActor
+@Observable
+final class BufferingQualityController {
+    // MARK: - Spec constants
+
+    /// `STARTUP_GRACE_MS`, from a plan's first frame, or its first wait when no
+    /// frame has appeared yet.
+    nonisolated static let startupGraceMs = 10_000
+    /// `STALL_MIN_MS`: a shorter stall is not a counted stall.
+    nonisolated static let stallMinMs = 1_000
+    /// `STALLS_BEFORE_TRIGGER` counted stalls ended within `STALL_WINDOW_MS`.
+    nonisolated static let stallsBeforeTrigger = 2
+    nonisolated static let stallWindowMs = 120_000
+    /// `LONG_STALL_MS`: one stall this long triggers on its own.
+    nonisolated static let longStallMs = 6_000
+    /// `PROMPT_SECONDS`, for both pills.
+    nonisolated static let promptSeconds: TimeInterval = 15
+    nonisolated static let reofferMinMs = 120_000
+    nonisolated static let noLowerCooldownMs = 300_000
+    nonisolated static let rearmAfterUnadoptedMs = 60_000
+    nonisolated static let stepDownRatio = 0.7
+    nonisolated static let minEstimateKbps = 100
+
+    // MARK: - Copy
+
+    nonisolated static let promptTitle = "Playback keeps buffering"
+    nonisolated static let lowerAction = "Lower quality"
+    nonisolated static let keepAction = "Keep quality"
+    nonisolated static let undoCaption = "Quality lowered to stop buffering"
+    nonisolated static let undoAction = "Restore quality"
+    nonisolated static let loweredNotice = "Quality lowered to stop buffering"
+    nonisolated static let cantLowerNotice = "Can't lower quality for this video"
+
+    /// The `quality_preference` / plan quality for Auto.
+    nonisolated static let autoQuality = "auto"
+    private nonisolated static let observedRebufferSource = "observed_rebuffer"
+    private nonisolated static let clearLearnedLimit = "clear"
+    private nonisolated static let promptMs = Int(promptSeconds * 1000)
+
+    // MARK: - Types
+
+    /// One `available_qualities` entry.
+    struct QualityRung: Equatable {
+        var label: String
+        var bitrateKbps: Int
+        var preservesSource: Bool
+    }
+
+    /// What the controller reads from an adopted playback plan.
+    struct Plan: Equatable {
+        /// The adoption's identity: a different id is a new plan; the same id is
+        /// an in-place update. Give every adopted replan a new id, as web's
+        /// `planRevision` does. The server's `plan_id` is a hash of the route,
+        /// so a lowering that comes back unchanged repeats it, and keying on it
+        /// would read that result as an in-place update instead of no lower.
+        var id: String
+        /// `effective_recipe.bitrate_kbps`, else `source.bitrate_kbps`.
+        var deliveredKbps: Int?
+        /// `auto`, or the label of the rung the viewer picked.
+        var quality: String
+        var availableQualities: [QualityRung]
+        /// `degradation_warnings` contains `quality_reduction_unavailable`.
+        var qualityReductionUnavailable: Bool
+        /// The estimate the plan was requested with, for `plan_summary`, when
+        /// the host knows it. A replan this controller sent supplies its own.
+        var requestedBandwidthEstimateKbps: Int? = nil
+
+        var isAuto: Bool { quality == BufferingQualityController.autoQuality }
+    }
+
+    /// Why the player is waiting. Only a `.network` wait can be a stall.
+    enum WaitCause: Equatable {
+        case network
+        case seek
+        case pause
+        case reload
+    }
+
+    /// A `quality_change` replan for the host to send.
+    struct ReplanRequest: Equatable {
+        var qualityPreference: String
+        var bandwidthEstimateKbps: Int? = nil
+        /// `observed_rebuffer`. Only sent to a server that advertises
+        /// `buffering_quality_v1`.
+        var bandwidthEstimateSource: String? = nil
+        /// `clear`. Only sent to a server that advertises `buffering_quality_v1`.
+        var learnedLimit: String? = nil
+
+        var operation: String { PlaybackProtocolV3.ReplanOperation.qualityChange }
+
+        /// The request body: `operation` and every present field, snake_case.
+        var wireBody: [String: Any] {
+            var body: [String: Any] = ["operation": operation, "quality_preference": qualityPreference]
+            if let bandwidthEstimateKbps { body["bandwidth_estimate_kbps"] = bandwidthEstimateKbps }
+            if let bandwidthEstimateSource { body["bandwidth_estimate_source"] = bandwidthEstimateSource }
+            if let learnedLimit { body["learned_limit"] = learnedLimit }
+            return body
+        }
+    }
+
+    /// A display-only notice.
+    enum Notice: Equatable {
+        /// An accepted lowering came back lower.
+        case lowered
+        /// No lower rung (once per title), or a lowering that came back no lower.
+        case cantLower
+
+        var text: String {
+            switch self {
+            case .lowered: return BufferingQualityController.loweredNotice
+            case .cantLower: return BufferingQualityController.cantLowerNotice
+            }
+        }
+    }
+
+    enum PillKind: Equatable {
+        /// "Playback keeps buffering": Lower quality / Keep quality.
+        case prompt
+        /// "Quality lowered to stop buffering": Restore quality.
+        case undo
+    }
+
+    struct Pill: Equatable {
+        let kind: PillKind
+        /// When the timer runs out; nil while a pause holds it.
+        let deadline: Date?
+        /// Seconds left as of the last arm or freeze.
+        let remaining: TimeInterval
+        /// Where a fresh timer starts, for drawing progress against it.
+        let total: TimeInterval
+
+        /// How far the fill has crept, 0 when the pill appears and 1 when the
+        /// timer runs out.
+        func progress(at now: Date) -> Double {
+            guard total > 0 else { return 1 }
+            let left = deadline.map { $0.timeIntervalSince(now) } ?? remaining
+            return min(max(1 - left / total, 0), 1)
+        }
+    }
+
+    /// `buffering_action`: the last action on a plan.
+    enum Action: String, Equatable {
+        case none
+        /// A trigger in `never`.
+        case ignored
+        /// Lowered automatically.
+        case lowered
+        case restored
+        case accepted
+        case kept
+        case timedOut = "timed_out"
+        case cantLower = "cant_lower"
+    }
+
+    /// The `plan_summary` route event, for a plan that stopped being the
+    /// playing plan.
+    struct PlanSummary: Equatable {
+        var planId: String
+        var playedMs: Int
+        var stallCount: Int
+        /// Stall time with startup grace and outages excluded.
+        var stallTotalMs: Int
+        var stallLongestMs: Int
+        var deliveredKbps: Int?
+        var mode: BufferingQualityMode
+        var action: Action
+        var bandwidthEstimateKbps: Int?
+    }
+
+    enum Output: Equatable {
+        case replan(ReplanRequest)
+        /// A pill appeared for the first time: the vectors' `prompt_shown` and
+        /// `undo_shown`.
+        case pillShown(PillKind)
+        case notice(Notice)
+        case planSummary(PlanSummary)
+    }
+
+    // MARK: - State
+
+    @ObservationIgnored var mode: BufferingQualityMode = .default
+    /// The server advertises `buffering_quality_v1`. Without it the replans are
+    /// the same, minus `bandwidth_estimate_source` and `learned_limit`.
+    @ObservationIgnored var sendsBufferingQualityFields = false
+    /// Inside a Watch Party room the room's own offer applies: no trigger acts
+    /// and no pill shows, while stall stats are still recorded.
+    @ObservationIgnored var isSuspended = false {
+        didSet { if isSuspended { withdrawPill() } }
+    }
+    @ObservationIgnored var onOutput: ((Output) -> Void)?
+
+    /// The actionable pill on screen, or nil.
+    private(set) var pill: Pill?
+
+    @ObservationIgnored private let clock: PlayerPromptClock
+    @ObservationIgnored private var current: PlanState?
+
+    // The player, across plans.
+    /// When the playing state began; nil while not playing.
+    @ObservationIgnored private var playingSince: Int?
+    @ObservationIgnored private var isPaused = false
+    @ObservationIgnored private var transportTrouble = false
+    @ObservationIgnored private var competingPillVisible = false
+
+    // The title, across plans.
+    @ObservationIgnored private var answered = false
+    @ObservationIgnored private var noLowerRungNoticeShown = false
+    @ObservationIgnored private var lastOfferAt: Int?
+    /// The replan this controller sent, until the next plan settles it.
+    @ObservationIgnored private var pendingReplan: PendingReplan?
+
+    @ObservationIgnored private var presented: PresentedPill?
+
+    @ObservationIgnored private var longStallTimer: PlayerPromptTimer?
+    @ObservationIgnored private var suppressionTimer: PlayerPromptTimer?
+    @ObservationIgnored private var rearmTimer: PlayerPromptTimer?
+    @ObservationIgnored private var pillTimer: PlayerPromptTimer?
+
+    init(clock: PlayerPromptClock? = nil) {
+        self.clock = clock ?? LivePlayerPromptClock()
+    }
+
+    // MARK: - Plans
+
+    /// A plan became the playing plan.
+    ///
+    /// The same id is an in-place update and keeps its history. A different id
+    /// ends the outgoing plan (emitting its summary), takes down any pill, and
+    /// starts fresh history. If this controller's replan is pending, the plan
+    /// settles it: a lower plan shows the undo pill (automatic) or the lowered
+    /// notice (accepted); one that is no lower, or carries
+    /// `quality_reduction_unavailable`, shows the can't-lower notice and starts
+    /// `NO_LOWER_COOLDOWN_MS`.
+    func planAdopted(_ plan: Plan) {
+        let now = nowMs
+        if current?.plan.id == plan.id {
+            current?.plan = plan
+            return
+        }
+        // A stall in progress carries over as the new plan's first wait, under
+        // its own grace, so a plan that never starts is still caught.
+        let wasStalled = current?.stall != nil
+        endPlan(at: now)
+        let pending = pendingReplan
+        pendingReplan = nil
+        var state = PlanState(
+            plan: plan,
+            requestedEstimateKbps: pending?.estimateKbps ?? plan.requestedBandwidthEstimateKbps
+        )
+        // A plan adopted while playing has its first frame now.
+        if playingSince != nil {
+            playingSince = now
+            state.firstFrameAt = now
+        }
+        current = state
+        if wasStalled { beginStall(at: now) }
+        if let pending { settle(pending, at: now) }
+    }
+
+    /// The plan stopped or failed with no successor: emits its summary.
+    func planEnded() {
+        endPlan(at: nowMs)
+        pendingReplan = nil
+        playingSince = nil
+    }
+
+    /// New content: emits the current plan's summary and forgets every
+    /// decision, including the answer and the once-per-title notice. The host's
+    /// ongoing conditions (mode, suspension, transport trouble, a competing
+    /// pill) carry over.
+    func reset() {
+        planEnded()
+        isPaused = false
+        answered = false
+        noLowerRungNoticeShown = false
+        lastOfferAt = nil
+    }
+
+    // MARK: - Media events
+
+    func playing() {
+        let now = nowMs
+        isPaused = false
+        if playingSince == nil {
+            playingSince = now
+            if current != nil, current?.firstFrameAt == nil { current?.firstFrameAt = now }
+        }
+        endStall(at: now, resumed: true)
+        refreshPill()
+        evaluate(at: now)
+    }
+
+    /// The player is waiting for data. A `.network` wait is a stall (it also
+    /// means playback wants to run, so a paused pill's timer resumes); any
+    /// other cause ends a stall in progress without counting it.
+    func waiting(cause: WaitCause = .network) {
+        let now = nowMs
+        leavePlaying(at: now)
+        guard cause == .network else {
+            endStall(at: now, resumed: false)
+            return
+        }
+        isPaused = false
+        if current != nil, current?.stall == nil { beginStall(at: now) }
+        refreshPill()
+    }
+
+    func paused() {
+        let now = nowMs
+        leavePlaying(at: now)
+        endStall(at: now, resumed: false)
+        isPaused = true
+        refreshPill()
+    }
+
+    func seeked() {
+        endStall(at: nowMs, resumed: false)
+    }
+
+    /// Media requests are failing or the device is offline. Stall time during
+    /// trouble never counts; a stall still in progress when it ends is timed
+    /// from then.
+    func transportTroubleChanged(_ trouble: Bool) {
+        guard trouble != transportTrouble else { return }
+        transportTrouble = trouble
+        let now = nowMs
+        guard let state = current, var stall = state.stall else { return }
+        if trouble {
+            stall.measuredMs = stall.measured(at: now)
+            stall.measuredFrom = nil
+            stall.timedFrom = nil
+            cancelStallTimers()
+        } else {
+            let from = max(now, state.graceEnd(defaultingTo: now))
+            stall.timedFrom = from
+            stall.measuredFrom = from
+        }
+        current?.stall = stall
+        if !trouble { scheduleLongStallTimer() }
+    }
+
+    /// The replan this controller sent failed. The plan keeps playing and is
+    /// watched again at the rearm counted from the send.
+    func replanFailed() {
+        pendingReplan = nil
+    }
+
+    // MARK: - Pill answers
+
+    /// **Lower quality** on the prompt.
+    func selectLower() {
+        guard pill?.kind == .prompt, let plan = current?.plan else { return }
+        withdrawPill()
+        guard let rung = Self.lowerRung(in: plan) else { cantLower(); return }
+        if plan.isAuto {
+            guard let estimate = Self.stepDownEstimate(deliveredKbps: plan.deliveredKbps) else {
+                cantLower()
+                return
+            }
+            current?.action = .accepted
+            sendReplan(.accepted, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: plan.deliveredKbps)
+        } else {
+            // This playback only: the saved preference does not change.
+            current?.action = .accepted
+            sendReplan(
+                .accepted,
+                qualityPreference: rung.label,
+                fromKbps: plan.deliveredKbps ?? Self.activeBitrate(of: plan)
+            )
+        }
+    }
+
+    /// **Keep quality** on the prompt: answers the title at this quality.
+    func selectKeep() {
+        guard pill?.kind == .prompt else { return }
+        withdrawPill()
+        answered = true
+        current?.action = .kept
+    }
+
+    /// **Restore quality** on the undo pill: answers the title and clears the
+    /// learned limit.
+    func selectRestore() {
+        guard pill?.kind == .undo, let plan = current?.plan else { return }
+        withdrawPill()
+        answered = true
+        current?.action = .restored
+        sendReplan(.restore, qualityPreference: Self.autoQuality, learnedLimit: Self.clearLearnedLimit, fromKbps: plan.deliveredKbps)
+    }
+
+    /// Back / Menu / Escape. On the prompt it answers like Keep; on the undo pill
+    /// it only hides it. True when a visible pill consumed the press, so a
+    /// second Back behaves normally.
+    @discardableResult
+    func back() -> Bool {
+        switch pill?.kind {
+        case .prompt:
+            selectKeep()
+            return true
+        case .undo:
+            withdrawPill()
+            return true
+        case nil:
+            return false
+        }
+    }
+
+    /// Select at the player root: the visible pill's primary action.
+    func selectPrimary() {
+        switch pill?.kind {
+        case .prompt: selectLower()
+        case .undo: selectRestore()
+        case nil: break
+        }
+    }
+
+    // MARK: - Host inputs
+
+    /// The viewer picked a quality: any pill hides, history clears, and the
+    /// title is no longer answered. The re-offer wait restarts with it, since
+    /// the next offer would be about a different quality, and a pending
+    /// controller replan is dropped so the viewer's plan is not read as its
+    /// result.
+    func viewerChangedQuality() {
+        answered = false
+        lastOfferAt = nil
+        pendingReplan = nil
+        rearmTimer?.cancel()
+        rearmTimer = nil
+        current?.rearmAt = nil
+        withdrawPill()
+        clearHistory(at: nowMs)
+    }
+
+    /// The intro-skip, segment-skip or Next Up pill is showing. At most one
+    /// actionable pill shows: a buffering pill that would appear now waits, and
+    /// one already up hides with its timer frozen. Either shows when the other
+    /// pill hides, if the plan has not changed.
+    func setCompetingPillVisible(_ visible: Bool) {
+        guard visible != competingPillVisible else { return }
+        competingPillVisible = visible
+        refreshPill()
+    }
+
+    // MARK: - Trigger
+
+    private func evaluate(at now: Int) {
+        guard !isSuspended, !isPaused, !transportTrouble, let state = current else { return }
+        current?.endedStalls.removeAll { now - $0.at >= Self.stallWindowMs }
+        guard Self.triggered(state, at: now) else { return }
+
+        // A suppressed trigger leaves history intact for a later evaluation.
+        if answered || state.rearmAt != nil || presented != nil { return }
+        if let until = state.cooldownUntil, now < until {
+            watchStall(until: until)
+            return
+        }
+        guard mode != .never else {
+            current?.action = .ignored
+            return
+        }
+
+        let plan = state.plan
+        guard Self.lowerRung(in: plan) != nil else { cantLower(); return }
+        if plan.isAuto {
+            // Decision for Apple (the spec is silent): Auto without a usable
+            // step-down estimate has nothing to ask for, so it is treated as
+            // having no lower rung.
+            guard let estimate = Self.stepDownEstimate(deliveredKbps: plan.deliveredKbps) else {
+                cantLower()
+                return
+            }
+            if mode == .always {
+                current?.action = .lowered
+                sendReplan(.automatic, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: plan.deliveredKbps)
+                return
+            }
+        }
+        if let lastOfferAt, now - lastOfferAt < Self.reofferMinMs {
+            watchStall(until: lastOfferAt + Self.reofferMinMs)
+            return
+        }
+        present(.prompt)
+    }
+
+    private static func triggered(_ state: PlanState, at now: Int) -> Bool {
+        if let from = state.stall?.timedFrom, now - from >= longStallMs { return true }
+        let recent = state.endedStalls.filter { now - $0.at < stallWindowMs }
+        return recent.contains(where: \.long) || recent.count >= stallsBeforeTrigger
+    }
+
+    /// Keeps watching a long stall that a time-based suppression held back:
+    /// evaluates again when it expires, if the stall is still in progress.
+    private func watchStall(until deadline: Int) {
+        suppressionTimer?.cancel()
+        suppressionTimer = nil
+        guard current?.stall != nil else { return }
+        suppressionTimer = schedule(at: deadline) { controller in
+            controller.suppressionTimer = nil
+            controller.evaluateLongStall()
+        }
+    }
+
+    /// Evaluates only if a stall in progress has reached `LONG_STALL_MS`.
+    private func evaluateLongStall() {
+        let now = nowMs
+        guard let from = current?.stall?.timedFrom, now - from >= Self.longStallMs else { return }
+        evaluate(at: now)
+    }
+
+    /// No lower rung: the display-only notice, once per title.
+    private func cantLower() {
+        current?.action = .cantLower
+        guard !noLowerRungNoticeShown else { return }
+        noLowerRungNoticeShown = true
+        notify(.cantLower)
+    }
+
+    /// The spec's lower rung: the highest real rung below the active rung's
+    /// bitrate, or below the delivered bitrate on Auto or an unlisted quality.
+    /// Equal bitrates resolve to the earlier entry, as on web.
+    nonisolated static func lowerRung(in plan: Plan) -> QualityRung? {
+        guard let ceiling = activeBitrate(of: plan) else { return nil }
+        return plan.availableQualities
+            .filter { $0.label != autoQuality && $0.bitrateKbps > 0 && $0.bitrateKbps < ceiling }
+            .max { $0.bitrateKbps < $1.bitrateKbps }
+    }
+
+    /// `floor(STEP_DOWN_RATIO × delivered)`, or nil below `MIN_ESTIMATE_KBPS`.
+    /// The tolerance absorbs binary rounding (0.7 × 22120 is 15483.999… as a
+    /// Double), so the floor is the exact one the spec defines.
+    nonisolated static func stepDownEstimate(deliveredKbps: Int?) -> Int? {
+        guard let deliveredKbps, deliveredKbps > 0 else { return nil }
+        let estimate = Int((Double(deliveredKbps) * stepDownRatio + 1e-6).rounded(.down))
+        return estimate >= minEstimateKbps ? estimate : nil
+    }
+
+    private nonisolated static func activeBitrate(of plan: Plan) -> Int? {
+        if !plan.isAuto,
+           let picked = plan.availableQualities.first(where: { $0.label == plan.quality && $0.bitrateKbps > 0 }) {
+            return picked.bitrateKbps
+        }
+        return plan.deliveredKbps
+    }
+
+    // MARK: - Replans
+
+    private func sendReplan(
+        _ kind: PendingReplan.Kind,
+        qualityPreference: String,
+        estimateKbps: Int? = nil,
+        learnedLimit: String? = nil,
+        fromKbps: Int?
+    ) {
+        let now = nowMs
+        var request = ReplanRequest(qualityPreference: qualityPreference, bandwidthEstimateKbps: estimateKbps)
+        if sendsBufferingQualityFields {
+            request.bandwidthEstimateSource = estimateKbps == nil ? nil : Self.observedRebufferSource
+            request.learnedLimit = learnedLimit
+        }
+        pendingReplan = PendingReplan(kind: kind, fromKbps: fromKbps, estimateKbps: estimateKbps)
+        // Triggers on this plan wait for the adoption, or for the rearm if the
+        // replan fails or its plan never arrives.
+        current?.rearmAt = now + Self.rearmAfterUnadoptedMs
+        suppressionTimer?.cancel()
+        suppressionTimer = nil
+        rearmTimer?.cancel()
+        rearmTimer = schedule(at: now + Self.rearmAfterUnadoptedMs) { $0.rearm() }
+        emit(.replan(request))
+    }
+
+    private func rearm() {
+        rearmTimer = nil
+        pendingReplan = nil
+        current?.rearmAt = nil
+        clearHistory(at: nowMs)
+    }
+
+    private func settle(_ pending: PendingReplan, at now: Int) {
+        guard pending.kind != .restore, let plan = current?.plan else { return }
+        let lower: Bool
+        if plan.qualityReductionUnavailable {
+            lower = false
+        } else if let delivered = plan.deliveredKbps, let from = pending.fromKbps {
+            lower = delivered < from
+        } else {
+            // Neither outcome can be told truthfully without both bitrates.
+            return
+        }
+        if lower {
+            switch pending.kind {
+            case .automatic: present(.undo)
+            case .accepted: notify(.lowered)
+            case .restore: break
+            }
+        } else {
+            current?.cooldownUntil = now + Self.noLowerCooldownMs
+            guard !isSuspended else { return }
+            current?.action = .cantLower
+            notify(.cantLower)
+        }
+    }
+
+    // MARK: - Stall tracker
+
+    private func beginStall(at now: Int) {
+        guard var state = current else { return }
+        if state.firstFrameAt == nil, state.firstWaitAt == nil { state.firstWaitAt = now }
+        var stall = Stall()
+        if !transportTrouble {
+            // A stall that begins in the grace counts from its end.
+            let from = max(now, state.graceEnd(defaultingTo: now))
+            stall.timedFrom = from
+            stall.measuredFrom = from
+        }
+        state.stall = stall
+        current = state
+        scheduleLongStallTimer()
+    }
+
+    /// Ends a stall in progress. Only one that playback `resumed` from, outside
+    /// transport trouble, can be a counted stall; its time feeds the summary
+    /// either way.
+    private func endStall(at now: Int, resumed: Bool) {
+        guard var state = current, let stall = state.stall else { return }
+        state.stall = nil
+        state.recordStall(measuredMs: stall.measured(at: now))
+        if resumed, !transportTrouble, let from = stall.timedFrom, now - from >= Self.stallMinMs {
+            state.endedStalls.append(EndedStall(at: now, long: now - from >= Self.longStallMs))
+            state.stallCount += 1
+        }
+        current = state
+        cancelStallTimers()
+    }
+
+    /// Prompt timeout, rearm, or a quality change: history clears with startup
+    /// grace already over, and a stall in progress is timed again from now.
+    private func clearHistory(at now: Int) {
+        guard current != nil else { return }
+        current?.endedStalls.removeAll()
+        current?.graceOverAt = now
+        if current?.stall?.timedFrom != nil { current?.stall?.timedFrom = now }
+        suppressionTimer?.cancel()
+        suppressionTimer = nil
+        scheduleLongStallTimer()
+    }
+
+    private func scheduleLongStallTimer() {
+        longStallTimer?.cancel()
+        longStallTimer = nil
+        guard let from = current?.stall?.timedFrom else { return }
+        longStallTimer = schedule(at: from + Self.longStallMs) { controller in
+            controller.longStallTimer = nil
+            controller.longStallTimerFired()
+        }
+    }
+
+    private func longStallTimerFired() {
+        guard let from = current?.stall?.timedFrom else { return }
+        // The timer sleeps on a monotonic clock while `now` is wall-clock; if
+        // `now` lags, wait out the rest rather than miss the threshold.
+        guard nowMs - from >= Self.longStallMs else {
+            scheduleLongStallTimer()
+            return
+        }
+        evaluate(at: nowMs)
+    }
+
+    private func cancelStallTimers() {
+        longStallTimer?.cancel()
+        longStallTimer = nil
+        suppressionTimer?.cancel()
+        suppressionTimer = nil
+    }
+
+    private func leavePlaying(at now: Int) {
+        guard let since = playingSince else { return }
+        current?.playedMs += now - since
+        playingSince = nil
+    }
+
+    /// Closes the playing plan's books, takes down its pill and timers, and
+    /// emits its summary.
+    private func endPlan(at now: Int) {
+        guard var state = current else { return }
+        if let since = playingSince {
+            state.playedMs += now - since
+            playingSince = now
+        }
+        if let stall = state.stall {
+            state.recordStall(measuredMs: stall.measured(at: now))
+            state.stall = nil
+        }
+        current = nil
+        cancelStallTimers()
+        rearmTimer?.cancel()
+        rearmTimer = nil
+        withdrawPill()
+        emit(.planSummary(PlanSummary(
+            planId: state.plan.id,
+            playedMs: state.playedMs,
+            stallCount: state.stallCount,
+            stallTotalMs: state.stallTotalMs,
+            stallLongestMs: state.stallLongestMs,
+            deliveredKbps: state.plan.deliveredKbps,
+            mode: mode,
+            action: state.action,
+            bandwidthEstimateKbps: state.requestedEstimateKbps
+        )))
+    }
+
+    // MARK: - Pill
+
+    private func present(_ kind: PillKind) {
+        guard !isSuspended else { return }
+        presented = PresentedPill(kind: kind, remainingMs: Self.promptMs)
+        refreshPill()
+    }
+
+    private func withdrawPill() {
+        presented = nil
+        refreshPill()
+    }
+
+    /// Shows, hides, runs or freezes the pill to match the player. Its timer
+    /// runs only while it is on screen and playback is not paused; it first
+    /// counts as shown (and, for the prompt, offered) when it reaches the screen.
+    private func refreshPill() {
+        guard var shown = presented else {
+            pillTimer?.cancel()
+            pillTimer = nil
+            if pill != nil { pill = nil }
+            return
+        }
+        let now = nowMs
+        let visible = !competingPillVisible
+        let running = visible && !isPaused
+        if !running, let deadline = shown.deadlineMs {
+            shown.remainingMs = max(0, deadline - now)
+            shown.deadlineMs = nil
+            pillTimer?.cancel()
+            pillTimer = nil
+        } else if running, shown.deadlineMs == nil {
+            let deadline = now + shown.remainingMs
+            shown.deadlineMs = deadline
+            pillTimer = schedule(at: deadline) { $0.pillExpired() }
+        }
+        let firstShowing = visible && !shown.hasShown
+        if firstShowing {
+            shown.hasShown = true
+            if shown.kind == .prompt { lastOfferAt = now }
+        }
+        presented = shown
+        let next = visible ? Pill(
+            kind: shown.kind,
+            deadline: shown.deadlineMs.map(Self.date),
+            remaining: TimeInterval(shown.remainingMs) / 1000,
+            total: Self.promptSeconds
+        ) : nil
+        if pill != next { pill = next }
+        if firstShowing { emit(.pillShown(shown.kind)) }
+    }
+
+    /// The prompt's timeout leaves the title unanswered and clears history; the
+    /// undo's only hides it, the lower plan playing on.
+    private func pillExpired() {
+        pillTimer = nil
+        guard let expired = presented else { return }
+        withdrawPill()
+        switch expired.kind {
+        case .prompt:
+            current?.action = .timedOut
+            clearHistory(at: nowMs)
+        case .undo:
+            evaluateLongStall()
+        }
+    }
+
+    // MARK: - Helpers
+
+    private var nowMs: Int {
+        Int((clock.now.timeIntervalSinceReferenceDate * 1000).rounded())
+    }
+
+    private nonisolated static func date(_ ms: Int) -> Date {
+        Date(timeIntervalSinceReferenceDate: TimeInterval(ms) / 1000)
+    }
+
+    private func schedule(
+        at deadline: Int,
+        _ action: @escaping @MainActor (BufferingQualityController) -> Void
+    ) -> PlayerPromptTimer {
+        clock.schedule(after: TimeInterval(max(0, deadline - nowMs)) / 1000) { [weak self] in
+            guard let self else { return }
+            action(self)
+        }
+    }
+
+    private func notify(_ notice: Notice) {
+        guard !isSuspended else { return }
+        emit(.notice(notice))
+    }
+
+    private func emit(_ output: Output) {
+        onOutput?(output)
+    }
+
+    // MARK: - Internal types
+
+    private struct PlanState {
+        var plan: Plan
+        var requestedEstimateKbps: Int?
+        var action: Action = .none
+
+        var firstFrameAt: Int?
+        var firstWaitAt: Int?
+        /// Set when history clears: startup grace counts as over from here.
+        var graceOverAt: Int?
+        var stall: Stall?
+        var endedStalls: [EndedStall] = []
+
+        var cooldownUntil: Int?
+        var rearmAt: Int?
+
+        var playedMs = 0
+        var stallCount = 0
+        var stallTotalMs = 0
+        var stallLongestMs = 0
+
+        func graceEnd(defaultingTo now: Int) -> Int {
+            if let graceOverAt { return graceOverAt }
+            return (firstFrameAt ?? firstWaitAt ?? now) + BufferingQualityController.startupGraceMs
+        }
+
+        mutating func recordStall(measuredMs: Int) {
+            guard measuredMs > 0 else { return }
+            stallTotalMs += measuredMs
+            stallLongestMs = max(stallLongestMs, measuredMs)
+        }
+    }
+
+    private struct Stall {
+        /// Where the trigger times this stall from; nil during transport
+        /// trouble. Ahead of now while startup grace runs.
+        var timedFrom: Int?
+        /// The summary's timing, which a history clear does not re-time:
+        /// the start of the current segment outside grace and trouble.
+        var measuredFrom: Int?
+        var measuredMs = 0
+
+        func measured(at now: Int) -> Int {
+            measuredMs + (measuredFrom.map { max(0, now - $0) } ?? 0)
+        }
+    }
+
+    private struct EndedStall {
+        let at: Int
+        let long: Bool
+    }
+
+    private struct PendingReplan {
+        enum Kind {
+            /// `always` on Auto.
+            case automatic
+            /// **Lower quality** on the prompt.
+            case accepted
+            /// **Restore quality**.
+            case restore
+        }
+
+        let kind: Kind
+        /// The delivered bitrate the replan left; a lower result is below it.
+        let fromKbps: Int?
+        let estimateKbps: Int?
+    }
+
+    private struct PresentedPill {
+        let kind: PillKind
+        /// Left as of the last arm or freeze.
+        var remainingMs: Int
+        /// Set while the timer runs.
+        var deadlineMs: Int?
+        var hasShown = false
+    }
+}
