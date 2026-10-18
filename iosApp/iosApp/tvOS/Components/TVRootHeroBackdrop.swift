@@ -57,9 +57,11 @@ struct TVBackdropArtworkFadeMask: View {
 /// Page wash sampled from the backdrop, shared by the root landings and
 /// item details so both pages carry the same colors. The base tint is
 /// richest in the top-right behind the art and carried dimmed down to the
-/// bottom-left; the art's accent glows under the right half of the rows and
-/// its shadow tone pools in the bottom-left corner. The page keeps the art's
-/// colors without washing out the metadata or row captions.
+/// bottom-left; the art's accent glows up from the bottom edge under the
+/// right half of the rows, stopping below where the art ends so it never
+/// tints the artwork, and its shadow tone pools in the bottom-left corner.
+/// The page keeps the art's colors without washing out the metadata or row
+/// captions.
 struct TVBackdropTintWash: View {
     let tints: HeroBackdropPalette.Tints
     var isVisible: Bool = true
@@ -78,8 +80,8 @@ struct TVBackdropTintWash: View {
 
             EllipticalGradient(
                 colors: [tints.accent.opacity(isVisible ? 0.3 : 0.0), tints.accent.opacity(0)],
-                center: UnitPoint(x: 0.66, y: 0.78),
-                endRadiusFraction: 0.33
+                center: UnitPoint(x: 0.7, y: 1.0),
+                endRadiusFraction: 0.3
             )
 
             EllipticalGradient(
@@ -129,9 +131,10 @@ struct TVRootHeroBackdrop: View {
             tintBackground
 
             if isVisible {
-                backdropImage
-                // Dithers the large dark ramps, which band on TVs.
+                // Dithers the wash's large dark ramps, which band on TVs. It
+                // sits under the art so the artwork itself stays untouched.
                 MarqueeGrain()
+                backdropImage
                 topChromeScrim
             }
         }
