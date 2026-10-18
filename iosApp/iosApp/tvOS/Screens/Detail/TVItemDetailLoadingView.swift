@@ -73,7 +73,6 @@ struct TVItemDetailLoadingView: View {
                 }
             }
             .frame(width: artworkSize.width, height: artworkSize.height)
-            .modifier(TVBackdropArtworkDrift())
             .clipped()
             .mask { TVBackdropArtworkFadeMask() }
             .frame(

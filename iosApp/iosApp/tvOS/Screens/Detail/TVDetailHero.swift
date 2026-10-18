@@ -174,7 +174,6 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                     contentMode: .fill
                 )
                 .frame(width: artworkSize.width, height: artworkSize.height)
-                .modifier(TVBackdropArtworkDrift())
                 .clipped()
                 .mask { TVBackdropArtworkFadeMask() }
                 .frame(

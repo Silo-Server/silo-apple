@@ -61,39 +61,6 @@ struct TVBackdropArtworkFadeMask: View {
     }
 }
 
-/// Slow push-in on the backdrop art, shared by every surface that draws it.
-/// The scale is a function of wall-clock time rather than a per-view
-/// animation, so the marquee and the detail route it opens show the same
-/// frame and the push never jumps. Stops with Reduce Motion.
-struct TVBackdropArtworkDrift: ViewModifier {
-    /// Seconds for one push in (and again for the pull back out).
-    static let halfPeriod: TimeInterval = 28
-    static let maxScale: CGFloat = 1.05
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func body(content: Content) -> some View {
-        // 30 fps is plenty: the fastest step is a fraction of a pixel.
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
-            content.scaleEffect(
-                reduceMotion ? 1 : Self.scale(at: context.date),
-                // Any anchor inside the box keeps it covered while scaling
-                // up; this one leans toward where subjects usually sit.
-                anchor: UnitPoint(x: 0.8, y: 0.3)
-            )
-        }
-    }
-
-    static func scale(at date: Date) -> CGFloat {
-        let period = halfPeriod * 2
-        let phase = date.timeIntervalSinceReferenceDate
-            .truncatingRemainder(dividingBy: period) / period
-        // 0 → 1 → 0 over one period, eased at both ends.
-        let eased = (1 - cos(phase * 2 * .pi)) / 2
-        return 1 + (maxScale - 1) * CGFloat(eased)
-    }
-}
-
 /// Page wash sampled from the backdrop, shared by the root landings and
 /// item details so both pages carry the same colors. The base tint is
 /// richest in the top-right behind the art and carried dimmed down to the
@@ -228,7 +195,6 @@ struct TVRootHeroBackdrop: View {
                 }
             }
             .frame(width: artworkSize.width, height: artworkSize.height)
-            .modifier(TVBackdropArtworkDrift())
             .clipped()
             .mask { TVBackdropArtworkFadeMask() }
             // Anchor the art block to the screen's top-right corner; the
