@@ -71,9 +71,11 @@ enum AetherAuthenticationRecoveryPolicy {
     }
 
     /// Server HLS resolves the current credential for every playlist and
-    /// segment request, and direct play for every range request, so media
-    /// with video survives token rotation without a reload. Audio-only media
-    /// keeps the headers it opened with and the reload-after-rotation path.
+    /// segment request, and direct play gets the current headers pushed into
+    /// Aether as the token rotates (`AetherPlaybackController
+    /// .refreshRequestHeaders`), so media with video survives token rotation
+    /// without a reload. Audio-only media keeps the headers it opened with and
+    /// the reload-after-rotation path.
     static func resolvesRequestCredentials(delivery: String, hasVideo: Bool) -> Bool {
         hasVideo && PlaybackProtocolV3.PlanDelivery.supported.contains(delivery)
     }
@@ -142,6 +144,11 @@ struct AetherLoadSpec {
     /// and font downloads without changing registered track identities.
     let subtitleRequestAuthorization: HTTPRequestAuthorization?
     private let subtitleAuthorizationOrigin: URL?
+    /// Current headers for a direct-play source with video, from the resolver
+    /// behind `options.httpRequestAuthorization`. Aether asks that object only
+    /// for HLS and reads direct media with the headers it holds, so the
+    /// controller pushes this resolver's answers in as the token rotates.
+    let requestHeaderResolver: HTTPRequestAuthorization.Resolver?
     /// The selected native row uses the same picker ID space as sidecars,
     /// but resolves directly to its container stream, without an external slot.
     let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
@@ -218,6 +225,7 @@ struct AetherLoadSpec {
         }
         planID = "offline"
         subtitleRequestAuthorization = nil
+        requestHeaderResolver = nil
         subtitleAuthorizationOrigin = nil
         sessionID = "offline"
         delivery = PlaybackProtocolV3.PlanDelivery.originalHTTP
@@ -294,6 +302,7 @@ struct AetherLoadSpec {
         }
         planID = "legacy-direct"
         subtitleRequestAuthorization = nil
+        requestHeaderResolver = nil
         subtitleAuthorizationOrigin = nil
         sessionID = "legacy-direct"
         delivery = PlaybackProtocolV3.PlanDelivery.originalHTTP
@@ -342,6 +351,7 @@ struct AetherLoadSpec {
         sourceURLOverride: URL? = nil,
         requestHeaders: [String: String]? = nil,
         requestAuthorization: HTTPRequestAuthorization? = nil,
+        requestHeaderResolver: HTTPRequestAuthorization.Resolver? = nil,
         subtitleRequestAuthorization: HTTPRequestAuthorization? = nil,
         resolveURL: ((String) -> URL?)? = nil,
         apiOriginURL: URL? = nil,
@@ -494,11 +504,13 @@ struct AetherLoadSpec {
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,
         ].contains(plan.delivery)
+        let resolvesRequestCredentials = AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+            delivery: plan.delivery, hasVideo: plan.effectiveRecipe.videoCodec != nil
+        )
+        self.requestHeaderResolver = resolvesRequestCredentials && !isServerHLS ? requestHeaderResolver : nil
         var loadOptions = LoadOptions(
             httpHeaders: effectiveHeaders,
-            httpRequestAuthorization: AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
-                delivery: plan.delivery, hasVideo: plan.effectiveRecipe.videoCodec != nil
-            ) ? requestAuthorization : nil,
+            httpRequestAuthorization: resolvesRequestCredentials ? requestAuthorization : nil,
             dolbyVisionHandling: dolbyVisionHandling,
             matchContentEnabled: matchContentEnabled,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,

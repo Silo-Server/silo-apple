@@ -2080,11 +2080,16 @@ class PlayerViewModel {
     }
 
     /// Only static-header transports need replacement after API rotation.
-    /// Server HLS and direct play with video resolve the current credential
-    /// for each request; audio-only media keeps the headers it opened with.
+    /// Server HLS resolves the current credential for each request, and direct
+    /// play with video takes it pushed into the engine; audio-only media keeps
+    /// the headers it opened with.
     private func attemptProtocolV3AuthenticationReloadAfterProgress(
         _ result: PlaybackProgressReportResult
     ) async {
+        if result == .success, aetherPlaybackController.activeSpec?.requestHeaderResolver != nil {
+            aetherPlaybackController.refreshRequestHeaders()
+            return
+        }
         guard result == .success,
               protocolV3ReplanTask == nil,
               let protocolV3 = activePreparedProtocolV3,
@@ -3945,12 +3950,13 @@ class PlayerViewModel {
                 audioSourceStreamIndex = nil
             }
             let requestAuthorization: HTTPRequestAuthorization?
+            let requestHeaderResolver: HTTPRequestAuthorization.Resolver?
             let subtitleRequestAuthorization: HTTPRequestAuthorization?
             if resolvesRequestCredentials {
                 guard let owner = streamRequest.capturedAuth else {
                     throw HTTPError.requestIdentityChanged
                 }
-                requestAuthorization = try PlaybackMediaAuthorization.make(
+                let resolver = try PlaybackMediaAuthorization.makeResolver(
                     sourceURL: streamRequest.url,
                     serverURL: streamRequest.serverUrl,
                     transportServerURL: streamRequest.localRoute?.localOrigin,
@@ -3959,6 +3965,8 @@ class PlayerViewModel {
                     baseHeaders: streamRequest.headers,
                     http: SiloAPI.shared.http
                 )
+                requestHeaderResolver = resolver
+                requestAuthorization = HTTPRequestAuthorization(resolver: resolver)
                 subtitleRequestAuthorization = try PlaybackMediaAuthorization.makeSubtitleAuthorization(
                     serverURL: streamRequest.serverUrl,
                     sessionID: prepared.session.sessionId,
@@ -3968,6 +3976,7 @@ class PlayerViewModel {
                 )
             } else {
                 requestAuthorization = nil
+                requestHeaderResolver = nil
                 subtitleRequestAuthorization = nil
             }
             spec = try AetherLoadSpec(
@@ -3977,6 +3986,7 @@ class PlayerViewModel {
                 sourceURLOverride: streamRequest.url,
                 requestHeaders: streamRequest.headers,
                 requestAuthorization: requestAuthorization,
+                requestHeaderResolver: requestHeaderResolver,
                 subtitleRequestAuthorization: subtitleRequestAuthorization,
                 // Subtitle artifacts, inventory sidecars and font bundles stay
                 // relative API-origin routes even when the media itself moved
