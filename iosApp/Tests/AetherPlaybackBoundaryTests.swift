@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor
 final class AetherPlaybackBoundaryTests: XCTestCase {
-    func testTrueHDAtmosRendersOnlyWhenAskedAndTheOutputCanCarryIt() {
+    func testObjectAudioRendersOnlyWhenAskedAndTheOutputCanCarryIt() {
         XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .atmos), .apac(.l714))
         XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .unknown), .apac(.l714),
                        "an unreported output keeps the setting the user asked for")
@@ -702,6 +702,57 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             XCTAssertEqual(planned.options.dolbyVisionHandling, handling)
             XCTAssertEqual(offline.options.dolbyVisionHandling, handling)
             XCTAssertEqual(direct.options.dolbyVisionHandling, handling)
+        }
+    }
+
+    /// The Dolby Vision FEL setting asks Aether for the dual-layer route only
+    /// while Dolby Vision itself applies, since Aether takes that route under
+    /// `.automatic` handling alone. Each spec initializer must carry it into
+    /// its `LoadOptions`.
+    func testDolbyVisionFELSettingReachesAetherOnlyWithDolbyVisionOn() throws {
+        XCTAssertTrue(AetherLoadSpec.prefersDualLayerDolbyVision(
+            hdrEnabled: true, dolbyVisionEnabled: true, felEnabled: true))
+        XCTAssertFalse(AetherLoadSpec.prefersDualLayerDolbyVision(
+            hdrEnabled: true, dolbyVisionEnabled: true, felEnabled: false))
+        XCTAssertFalse(AetherLoadSpec.prefersDualLayerDolbyVision(
+            hdrEnabled: true, dolbyVisionEnabled: false, felEnabled: true),
+            "the FEL row reads Off while Dolby Vision is off, whatever it stores")
+        XCTAssertFalse(AetherLoadSpec.prefersDualLayerDolbyVision(
+            hdrEnabled: false, dolbyVisionEnabled: true, felEnabled: true))
+
+        let response = try PlaybackV3FixtureTestSupport.v2Decision(bundleClass: Self.self)
+        guard case .playable(let plan, let sessionID) = response.validatedForApple() else {
+            return XCTFail("Expected a playable fixture")
+        }
+        let remote = try XCTUnwrap(URL(string: "https://dev.example.test/media/movie.mkv"))
+        let local = URL(fileURLWithPath: "/tmp/silo-offline/movie.mkv")
+        for prefersDualLayer in [false, true] {
+            let planned = try AetherLoadSpec(
+                validating: plan,
+                sessionID: sessionID,
+                matchContentEnabled: true,
+                sourceURLOverride: remote,
+                preferDualLayerDolbyVision: prefersDualLayer,
+                panelIsInHDRMode: false
+            )
+            let offline = try AetherLoadSpec(
+                offlineURL: local,
+                startPosition: 0,
+                audioOnly: false,
+                preferDualLayerDolbyVision: prefersDualLayer,
+                panelIsInHDRMode: false
+            )
+            let direct = try AetherLoadSpec(
+                directURL: remote,
+                headers: [:],
+                startPosition: 0,
+                audioOnly: false,
+                preferDualLayerDolbyVision: prefersDualLayer,
+                panelIsInHDRMode: false
+            )
+            XCTAssertEqual(planned.options.preferDualLayerDolbyVision, prefersDualLayer)
+            XCTAssertEqual(offline.options.preferDualLayerDolbyVision, prefersDualLayer)
+            XCTAssertEqual(direct.options.preferDualLayerDolbyVision, prefersDualLayer)
         }
     }
 

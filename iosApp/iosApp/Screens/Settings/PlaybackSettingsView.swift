@@ -106,6 +106,11 @@ struct PlaybackSettingsView: View {
                 .tint(.siloSwitchOn)
                 .disabled(!viewModel.hdrEnabled)
 
+            Toggle("Dolby Vision FEL", isOn: $viewModel.dolbyVisionFELEnabled)
+                .foregroundStyle(Color.siloOnSurface)
+                .tint(.siloSwitchOn)
+                .disabled(!viewModel.dolbyVisionEnabled)
+
             Toggle("Seek Cache", isOn: $viewModel.seekCacheEnabled)
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
@@ -122,7 +127,7 @@ struct PlaybackSettingsView: View {
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
 
-            Toggle("TrueHD Atmos", isOn: $viewModel.trueHDAtmosEnabled)
+            Toggle("Object Audio", isOn: $viewModel.objectAudioEnabled)
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
 
@@ -163,7 +168,8 @@ struct PlaybackSettingsView: View {
     private var streamingFooterText: String {
         var text = SettingsViewModel.hdrFooterText
         text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
-        text += " TrueHD Atmos adds height channels but plays those tracks as compressed audio."
+        text += " " + SettingsViewModel.objectAudioFooterText
+        text += " " + SettingsViewModel.dolbyVisionFELFooterText
         return text
     }
 

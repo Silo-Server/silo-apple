@@ -107,6 +107,16 @@ struct TVPlaybackSettingsPane: View {
         .disabled(!viewModel.hdrEnabled)
 
         TVSettingsToggleRow(
+            title: "Dolby Vision FEL",
+            isOn: viewModel.dolbyVisionFELEnabled
+        ) {
+            let value = !viewModel.dolbyVisionFELEnabled
+            viewModel.dolbyVisionFELEnabled = value
+        }
+        // Skipped by focus while Dolby Vision is off, for the same reason.
+        .disabled(!viewModel.dolbyVisionEnabled)
+
+        TVSettingsToggleRow(
             title: "Seek Cache",
             isOn: viewModel.seekCacheEnabled
         ) {
@@ -129,11 +139,11 @@ struct TVPlaybackSettingsPane: View {
         }
 
         TVSettingsToggleRow(
-            title: "TrueHD Atmos",
-            isOn: viewModel.trueHDAtmosEnabled
+            title: "Object Audio",
+            isOn: viewModel.objectAudioEnabled
         ) {
-            let value = !viewModel.trueHDAtmosEnabled
-            viewModel.trueHDAtmosEnabled = value
+            let value = !viewModel.objectAudioEnabled
+            viewModel.objectAudioEnabled = value
         }
 
         TVSettingsPickerRow(
@@ -154,7 +164,8 @@ struct TVPlaybackSettingsPane: View {
     private var streamingFooterText: String {
         var text = SettingsViewModel.hdrFooterText
         text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
-        text += " TrueHD Atmos adds height channels but plays those tracks as compressed audio."
+        text += " " + SettingsViewModel.objectAudioFooterText
+        text += " " + SettingsViewModel.dolbyVisionFELFooterText
         return text
     }
 
