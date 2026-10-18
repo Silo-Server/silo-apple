@@ -291,7 +291,8 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertTrue(scheduler.isProbing)
 
         scheduler.playbackStarting()
-        for _ in 0..<50 { await Task.yield() }
+        // The cancelled download wakes off the main actor before it returns.
+        for _ in 0..<200 where scheduler.isProbing { try? await Task.sleep(for: .milliseconds(10)) }
         XCTAssertFalse(scheduler.isProbing)
         XCTAssertNil(scheduler.freshEstimateKbps())
 
@@ -302,6 +303,33 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         await advance(seconds: 31)
         let later = await scheduler.runNow()
         XCTAssertEqual(later, .measured(BandwidthMeasurement(
+            kbps: 48_000, bytes: 12_000_000, durationMs: 2_000, transport: "wifi", measuredAt: clock.now
+        )))
+    }
+
+    /// However the player is presented, including picture in picture, its
+    /// playback holds the probe off for as long as it lasts.
+    func testAVideoPlayerKeepsTheProbeOffUntilItEnds() async {
+        let player = NSObject()
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        scheduler.playbackStarting(by: player)
+        await advance(seconds: 10 * 60)
+        XCTAssertEqual(server.measureCount, 0, "long after the quiet minute")
+        scheduler.playbackEnded(by: player)
+        await advance(seconds: 5 * 60)
+        XCTAssertEqual(server.measureCount, 1)
+    }
+
+    func testAReleasedPlayerDoesNotHoldTheProbeOff() async {
+        var player: NSObject? = NSObject()
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        scheduler.playbackStarting(by: player!)
+        player = nil
+        await advance(seconds: 61)
+        let outcome = await scheduler.runNow()
+        XCTAssertEqual(outcome, .measured(BandwidthMeasurement(
             kbps: 48_000, bytes: 12_000_000, durationMs: 2_000, transport: "wifi", measuredAt: clock.now
         )))
     }

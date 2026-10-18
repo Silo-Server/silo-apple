@@ -170,8 +170,9 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
 ///   expires; and every ``retryInterval`` while a probe could not run or did
 ///   not finish. Leaving the foreground stops the schedule and any running
 ///   probe.
-/// - **Not**: while media plays or starts (``isMediaActive``,
-///   ``playbackStarting()``, then ``playbackQuietPeriod``), on a metered or
+/// - **Not**: while media plays or starts (a video player between
+///   ``playbackStarting(by:)`` and ``playbackEnded(by:)``, ``isMediaActive``,
+///   then ``playbackQuietPeriod``), on a metered or
 ///   cellular network, or for a server without `connection_speed_v1`. Media
 ///   starting cancels a running probe.
 /// - **Cache**: ``BandwidthProbe/estimateLifetime``, for the server and network
@@ -225,8 +226,8 @@ final class BandwidthProbeScheduler {
     private(set) var network: BandwidthProbeNetwork = .offline
     private(set) var isProbing = false
 
-    /// Whether media is playing: a video player is up, or audio plays. The
-    /// app sets it.
+    /// Whether other media plays, such as audio. The app sets it; video
+    /// players register themselves (``playbackStarting(by:)``).
     @ObservationIgnored var isMediaActive: @MainActor () -> Bool = { false }
 
     private struct Cached {
@@ -249,6 +250,9 @@ final class BandwidthProbeScheduler {
     @ObservationIgnored private var lastPlaybackStart: Date?
     @ObservationIgnored private var timer: PlayerPromptTimer?
     @ObservationIgnored private var inFlight: Run?
+    /// Video players between their playback start and their end. Weak, so a
+    /// player that goes away without saying so cannot hold the probe off.
+    @ObservationIgnored private let videoPlayers = NSHashTable<AnyObject>.weakObjects()
 
     private static let logger = Logger(subsystem: "org.siloserver.silo", category: "BandwidthProbe")
 
@@ -267,10 +271,18 @@ final class BandwidthProbeScheduler {
     }
 
     /// Playback is starting: stops a running probe and holds off new ones
-    /// while the media loads. The cached estimate stays.
-    func playbackStarting() {
+    /// while the media loads. The cached estimate stays. A video `player`
+    /// keeps the probe off until ``playbackEnded(by:)``, whichever way it is
+    /// presented, including picture in picture.
+    func playbackStarting(by player: AnyObject? = nil) {
+        if let player { videoPlayers.add(player) }
         lastPlaybackStart = clock.now
         cancelInFlight(.playbackActive)
+    }
+
+    /// The video `player` stopped for good.
+    func playbackEnded(by player: AnyObject) {
+        videoPlayers.remove(player)
     }
 
     // MARK: - Settings
@@ -367,7 +379,7 @@ final class BandwidthProbeScheduler {
         if activeServerId == nil { return .notSupported }
         if !network.isConnected { return .offline }
         if network.isMetered { return .metered }
-        if isMediaActive() { return .playbackActive }
+        if !videoPlayers.allObjects.isEmpty || isMediaActive() { return .playbackActive }
         if let lastPlaybackStart, clock.now.timeIntervalSince(lastPlaybackStart) < Self.playbackQuietPeriod {
             return .playbackActive
         }

@@ -5524,7 +5524,7 @@ class PlayerViewModel {
                     // The start carries a fresh bandwidth probe result, and a
                     // running probe stops so it cannot slow the start.
                     probeEstimateKbps = BandwidthProbeScheduler.shared.freshEstimateKbps()
-                    BandwidthProbeScheduler.shared.playbackStarting()
+                    BandwidthProbeScheduler.shared.playbackStarting(by: self)
                     prepared = try await self.runStartSession(
                         request: request,
                         resumePosition: resumePositionOverride,
@@ -8367,6 +8367,7 @@ class PlayerViewModel {
         naturalEndProgressTask = nil
         // Before the session stop below, so the plan's summary precedes it.
         endBufferingPlan()
+        BandwidthProbeScheduler.shared.playbackEnded(by: self)
         isDisposed = true
         #if os(iOS)
         // A restore waiting on a cover that will now never mount has to be

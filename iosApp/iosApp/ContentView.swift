@@ -621,13 +621,8 @@ struct ContentView: View {
 
     private func followSignedInServerForBandwidthProbe() async {
         let scheduler = BandwidthProbeScheduler.shared
-        scheduler.isMediaActive = { [router, audioStore] in
-            if router.presentedPlayer != nil || audioStore.player.isPlaying { return true }
-            #if os(iOS)
-            if PictureInPictureCoordinator.shared.isEngaged { return true }
-            #endif
-            return false
-        }
+        // Video players register themselves when their playback starts.
+        scheduler.isMediaActive = { [audioStore] in audioStore.player.isPlaying }
         guard isAuthenticatedAppVisible else {
             scheduler.setActiveServer(nil)
             return
