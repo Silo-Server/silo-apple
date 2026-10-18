@@ -501,9 +501,10 @@ class PlayerViewModel {
     /// A same-plan reload (credential refresh, background restore) whose
     /// transport has not played yet.
     @ObservationIgnored private var bufferingReloadEpoch: AetherPlaybackController.LoadEpoch?
-    /// Re-reads the buffer while a renderer wait lasts: no engine event says
-    /// when it drains into a stall.
-    @ObservationIgnored private var rendererWaitWatch: Task<Void, Never>?
+    /// Re-reads the playback facts that no engine event announces: a renderer
+    /// wait's buffer draining into a stall, and the software route's clock
+    /// stopping.
+    @ObservationIgnored private var bufferingSignalPoll: Task<Void, Never>?
     /// The app is in the background, or the Mac's player window is minimized
     /// or hidden: the player cannot show its pills.
     private(set) var isPlayerSurfaceHidden = false
@@ -10074,11 +10075,11 @@ extension PlayerViewModel {
         guard !isDisposed else { return }
         let calls = bufferingSignals.update(bufferingSignalSnapshot)
         if bufferingSignals.state == .playing { bufferingReloadEpoch = nil }
-        if bufferingSignals.state == .waiting(.renderer) {
-            watchRendererWait()
+        if needsBufferingSignalPoll {
+            pollBufferingSignals()
         } else {
-            rendererWaitWatch?.cancel()
-            rendererWaitWatch = nil
+            bufferingSignalPoll?.cancel()
+            bufferingSignalPoll = nil
         }
         for call in calls {
             switch call {
@@ -10117,8 +10118,33 @@ extension PlayerViewModel {
             connectionTrouble: connectionState != .connected
                 || !monitor.isDeviceOnline
                 || monitor.serverStatus == .unreachable,
-            bufferedAheadMs: engineBufferedAheadMs
+            bufferedAheadMs: engineBufferedAheadMs,
+            playheadFrozen: softwarePlayheadFrozen
         )
+    }
+
+    /// A video load the engine plays on its software route, which reports
+    /// no rebuffering of its own.
+    private var isSoftwareVideoRoute: Bool {
+        activeAetherLoadEpoch != nil && !isAudioOnlyAetherLoad && aetherPlaybackController.nativeTransport == nil
+    }
+
+    /// The software route's engine reports playing, but its clock has not
+    /// moved for `PlayerStallPresentation.frozenPlayheadThreshold` while the
+    /// viewer wants to play: it is rebuffering. The renderer-wait rule then
+    /// tells a starved network from a slow decoder by what is buffered.
+    private var softwarePlayheadFrozen: Bool {
+        guard isSoftwareVideoRoute, aetherPhase == .playing, aetherPlaybackController.shouldPlayWhenReady,
+              let movedAt = playheadSample?.movedAt else { return false }
+        return movedAt.duration(to: .now) >= PlayerStallPresentation.frozenPlayheadThreshold
+    }
+
+    private var needsBufferingSignalPoll: Bool {
+        switch bufferingSignals.state {
+        case .waiting(.renderer): return true
+        case .playing: return isSoftwareVideoRoute
+        default: return false
+        }
     }
 
     /// Media the engine holds past its clock: on the native route what
@@ -10132,9 +10158,9 @@ extension PlayerViewModel {
         return ahead.isFinite ? Int((ahead * 1000).rounded()) : nil
     }
 
-    private func watchRendererWait() {
-        guard rendererWaitWatch == nil else { return }
-        rendererWaitWatch = Task { @MainActor [weak self] in
+    private func pollBufferingSignals() {
+        guard bufferingSignalPoll == nil else { return }
+        bufferingSignalPoll = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard let self, !Task.isCancelled, !self.isDisposed else { return }
@@ -10250,8 +10276,8 @@ extension PlayerViewModel {
     }
 
     private func clearBufferingPlanState() {
-        rendererWaitWatch?.cancel()
-        rendererWaitWatch = nil
+        bufferingSignalPoll?.cancel()
+        bufferingSignalPoll = nil
         bufferingPlans = [:]
         bufferingPlanId = nil
         bufferingAdoptedStreamLoadGeneration = nil

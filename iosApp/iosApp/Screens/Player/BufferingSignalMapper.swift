@@ -34,6 +34,10 @@ struct BufferingSignalMapper {
         /// Media buffered past the playhead, in milliseconds; nil when
         /// unknown, which counts as nothing buffered.
         var bufferedAheadMs: Int? = nil
+        /// The software route reports playing, but its clock has not moved
+        /// for a second while the viewer wants to play. AetherEngine's
+        /// software host pauses its clock to rebuffer without reporting it.
+        var playheadFrozen = false
     }
 
     enum Call: Equatable {
@@ -110,7 +114,7 @@ struct BufferingSignalMapper {
         if s.seekInFlight || s.phase == .seeking { return .waiting(.seek) }
         if let native = s.nativeTransport {
             if native.status == .playing { return .playing }
-        } else if s.phase == .playing, !s.engineBuffering {
+        } else if s.phase == .playing, !s.engineBuffering, !s.playheadFrozen {
             return .playing
         }
         let reason = s.nativeTransport?.status == .waitingToPlayAtSpecifiedRate
@@ -126,7 +130,7 @@ struct BufferingSignalMapper {
             // `.loading` with play intent is a new plan's startup, which the
             // spec times as a wait (`slow_start`).
             return .waiting(.network)
-        case .playing where s.engineBuffering:
+        case .playing where s.engineBuffering || s.playheadFrozen:
             return .waiting(.network)
         case .idle, .playing, .paused, .seeking, .ended, .error:
             return .paused

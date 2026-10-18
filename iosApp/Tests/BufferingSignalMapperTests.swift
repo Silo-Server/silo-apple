@@ -27,12 +27,13 @@ final class BufferingSignalMapperTests: XCTestCase {
         reload: Bool = false,
         end: Bool = false,
         trouble: Bool = false,
-        bufferedMs: Int? = nil
+        bufferedMs: Int? = nil,
+        frozen: Bool = false
     ) -> Snapshot {
         Snapshot(
             hasActiveLoad: load, wantsToPlay: play, phase: phase, engineBuffering: buffering,
             nativeTransport: native, seekInFlight: seek, reloadInProgress: reload, reachedEnd: end,
-            connectionTrouble: trouble, bufferedAheadMs: bufferedMs
+            connectionTrouble: trouble, bufferedAheadMs: bufferedMs, playheadFrozen: frozen
         )
     }
 
@@ -149,6 +150,19 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(mapper.update(starved(900)), [.waiting(.network)], "an empty buffer is a stall at once")
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
         XCTAssertEqual(mapper.update(starved(nil)), [.waiting(.network)], "an unknown buffer counts as empty")
+    }
+
+    /// AetherEngine's software host pauses its clock to rebuffer without
+    /// reporting it, so a playing engine whose clock stopped is waiting.
+    func testAFrozenSoftwareClockIsAWait() {
+        var mapper = BufferingSignalMapper()
+        XCTAssertEqual(mapper.update(Self.snapshot()), [.playing])
+        XCTAssertEqual(mapper.update(Self.snapshot(frozen: true)), [.waiting(.network)], "starved")
+        XCTAssertEqual(mapper.update(Self.snapshot()), [.playing], "the clock moved again")
+        XCTAssertEqual(
+            mapper.update(Self.snapshot(bufferedMs: 5_000, frozen: true)), [.waiting(.renderer)],
+            "the decoder is behind, with media buffered"
+        )
     }
 
     func testInvalidateReportsTheCurrentStateAgain() {
