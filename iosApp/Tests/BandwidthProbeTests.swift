@@ -244,43 +244,108 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         for _ in 0..<50 { await Task.yield() }
     }
 
-    func testProbesAfterTheStartDelayAndKeepsTheEstimateForThatNetwork() async {
+    private static let day: TimeInterval = 24 * 60 * 60
+
+    private func reading(kbps: Int, ageDays: Double) -> BandwidthReading {
+        BandwidthReading(kbps: kbps, transport: "wifi", measuredAt: clock.now.addingTimeInterval(-ageDays * Self.day))
+    }
+
+    func testTestsAfterTheStartDelayWhenNoReadingExists() async {
         scheduler.networkChanged(Self.wifi)
         scheduler.setActiveServer("server")
         await advance(seconds: 4.9)
-        XCTAssertEqual(server.measureCount, 0, "the first screen settles first")
+        XCTAssertEqual(server.storedCount, 0, "the first screen settles first")
         await advance(seconds: 0.1)
+        XCTAssertEqual(server.storedCount, 1, "the server is asked first")
         XCTAssertEqual(server.measureCount, 1)
         XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
         XCTAssertEqual(server.reports.map(\.transport), ["wifi"])
-        XCTAssertEqual(scheduler.lastMeasurement?.kbps, 48_000)
-
-        scheduler.networkChanged(Self.otherWifi)
-        XCTAssertNil(scheduler.freshEstimateKbps(), "another network discards it")
-        XCTAssertNil(scheduler.lastMeasurement)
+        XCTAssertEqual(scheduler.reading?.kbps, 48_000)
     }
 
-    func testTheEstimateLastsThirtyMinutesThenTheProbeRunsAgain() async {
+    func testAFreshServerReadingIsUsedWithoutATest() async {
+        server.stored = reading(kbps: 120_000, ageDays: 6)
         scheduler.networkChanged(Self.wifi)
         scheduler.setActiveServer("server")
         await advance(seconds: 5)
-        await advance(seconds: 30 * 60)
-        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000, "still fresh at the 30-minute mark")
-        XCTAssertEqual(server.measureCount, 1)
-        await advance(seconds: 1)
-        XCTAssertEqual(server.measureCount, 2, "re-taken a second after it expires")
+        XCTAssertEqual(server.measureCount, 0)
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 120_000)
+        XCTAssertEqual(scheduler.reading?.kbps, 120_000)
     }
 
-    func testAMeteredNetworkIsNeitherProbedNorSent() async {
+    func testAServerReadingOlderThanItsLifetimeIsTestedAgain() async {
+        server.stored = reading(kbps: 120_000, ageDays: 7.1)
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        await advance(seconds: 5)
+        XCTAssertEqual(server.measureCount, 1)
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
+    }
+
+    /// No timer re-tests a reading: the next check after its lifetime does,
+    /// at a sign-in, a return to the foreground or a network change.
+    func testAReadingStandsForItsLifetimeWithoutRetesting() async {
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        await advance(seconds: 5)
+        XCTAssertEqual(server.measureCount, 1)
+
+        await advance(seconds: 6 * Self.day)
+        scheduler.setForeground(false)
+        scheduler.setForeground(true)
+        await advance(seconds: 5)
+        XCTAssertEqual(server.measureCount, 1, "starts still use it")
+        XCTAssertEqual(server.storedCount, 1, "a fresh reading in memory needs no request")
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
+
+        await advance(seconds: Self.day)
+        XCTAssertNil(scheduler.freshEstimateKbps(), "past its lifetime")
+        XCTAssertEqual(server.measureCount, 1, "nothing re-tests by itself")
+        scheduler.setForeground(false)
+        scheduler.setForeground(true)
+        await advance(seconds: 5)
+        XCTAssertEqual(server.measureCount, 2)
+    }
+
+    /// Another network has its own reading on the server.
+    func testANetworkChangeAsksTheServerForThatNetworksReading() async {
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        await advance(seconds: 5)
+        XCTAssertEqual(server.measureCount, 1)
+
+        server.stored = reading(kbps: 300_000, ageDays: 2)
+        scheduler.networkChanged(Self.otherWifi)
+        XCTAssertNil(scheduler.freshEstimateKbps(), "the old network's reading goes")
+        XCTAssertNil(scheduler.reading)
+        await advance(seconds: 5)
+        XCTAssertEqual(server.measureCount, 1, "the server had one")
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 300_000)
+    }
+
+    func testAMeteredNetworkIsNeitherTestedNorSent() async {
         scheduler.networkChanged(Self.wifi)
         scheduler.setActiveServer("server")
         await advance(seconds: 5)
         scheduler.networkChanged(Self.cellular)
         XCTAssertNil(scheduler.freshEstimateKbps())
-        await advance(seconds: 10 * 60)
-        XCTAssertEqual(server.measureCount, 1, "no probe on cellular")
+        await advance(seconds: Self.day)
+        XCTAssertEqual(server.measureCount, 1, "no test on cellular")
         let outcome = await scheduler.runNow()
         XCTAssertEqual(outcome, .metered)
+    }
+
+    func testTestSpeedTestsWhateverTheReadingsAge() async {
+        server.stored = reading(kbps: 120_000, ageDays: 1)
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        await advance(seconds: 5)
+        XCTAssertEqual(server.measureCount, 0)
+        let outcome = await scheduler.runNow()
+        XCTAssertEqual(outcome, .measured(BandwidthMeasurement(
+            kbps: 48_000, bytes: 12_000_000, durationMs: 2_000, transport: "wifi", measuredAt: clock.now
+        )))
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
     }
 
     func testPlaybackStartingStopsARunningProbeAndHoldsOffForAMinute() async {
@@ -358,6 +423,33 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertEqual(server.measureCount, 2)
     }
 
+    func testFailuresBackOffUntilATestSucceeds() async {
+        server.result = .networkError("reset")
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        await advance(seconds: 5)
+        XCTAssertEqual(server.measureCount, 1)
+        await advance(seconds: 5 * 60)
+        XCTAssertEqual(server.measureCount, 2, "5 minutes")
+        await advance(seconds: 5 * 60)
+        XCTAssertEqual(server.measureCount, 2)
+        await advance(seconds: 5 * 60)
+        XCTAssertEqual(server.measureCount, 3, "then 10")
+        server.result = .measured(kbps: 48_000, bytes: 12_000_000, durationMs: 2_000)
+        await advance(seconds: 20 * 60)
+        XCTAssertEqual(server.measureCount, 4, "then 20, which succeeds")
+        await advance(seconds: Self.day)
+        XCTAssertEqual(server.measureCount, 4, "and nothing more")
+    }
+
+    func testARefusalWaitsForTheNextCheck() async {
+        server.result = .unavailable(status: 503)
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        await advance(seconds: Self.day)
+        XCTAssertEqual(server.measureCount, 1)
+    }
+
     func testAServerWithoutAProbeIsLeftAlone() async {
         server.hasTarget = false
         scheduler.networkChanged(Self.wifi)
@@ -377,21 +469,29 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         await advance(seconds: 5)
         XCTAssertEqual(server.measureCount, 1)
         scheduler.setActiveServer(nil)
-        XCTAssertNil(scheduler.freshEstimateKbps(), "the estimate belonged to that server")
+        XCTAssertNil(scheduler.freshEstimateKbps(), "the reading belonged to that server")
     }
 }
 
 /// A probe server whose answers the test sets. Main-actor isolated, so a
-/// probe runs entirely on the main actor and a few yields let it finish.
+/// probe runs entirely on the main actor and a few yields let it finish. Like
+/// the real one, it keeps the latest reading it is sent.
 @MainActor
 private final class FakeProbeServer: BandwidthProbeServer {
     var result: BandwidthProbeResult = .measured(kbps: 48_000, bytes: 12_000_000, durationMs: 2_000)
     /// The download never ends until cancelled.
     var hangs = false
     var hasTarget = true
+    var stored: BandwidthReading?
+    private(set) var storedCount = 0
     private(set) var targetCount = 0
     private(set) var measureCount = 0
     private(set) var reports: [BandwidthMeasurement] = []
+
+    func storedReading() async throws -> BandwidthReading? {
+        storedCount += 1
+        return stored
+    }
 
     func target() async throws -> BandwidthProbeTarget? {
         targetCount += 1
@@ -415,6 +515,7 @@ private final class FakeProbeServer: BandwidthProbeServer {
 
     func report(_ measurement: BandwidthMeasurement, to target: BandwidthProbeTarget) async -> Bool {
         reports.append(measurement)
+        stored = measurement.reading
         return true
     }
 }

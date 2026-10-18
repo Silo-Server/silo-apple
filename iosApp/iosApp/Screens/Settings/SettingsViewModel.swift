@@ -498,7 +498,7 @@ final class SettingsViewModel {
     /// probe and this device's own, or "Not measured yet".
     @MainActor
     var connectionSpeedText: String {
-        let own = BandwidthProbeScheduler.shared.lastMeasurement
+        let own = BandwidthProbeScheduler.shared.reading
         let server = connectionProbe
         if let own, server.map({ own.measuredAt >= $0.measuredAt }) ?? true {
             return Self.connectionSpeedText(kbps: own.kbps, measuredAt: own.measuredAt, transport: own.transport)

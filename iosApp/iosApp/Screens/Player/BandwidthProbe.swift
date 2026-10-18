@@ -23,9 +23,6 @@ enum BandwidthProbe {
     /// usable rate.
     static let minWindowMs = 200
     static let minBytes = 1_000_000
-    /// How long a measurement stands in for the network before it is
-    /// re-taken.
-    static let estimateLifetime: TimeInterval = 30 * 60
     /// The contract bounds `bandwidth_estimate_kbps` to this range.
     static let minEstimateKbps = 100
     static let maxEstimateKbps = 1_000_000
