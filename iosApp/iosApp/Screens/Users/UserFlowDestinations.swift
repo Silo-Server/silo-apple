@@ -48,12 +48,11 @@ struct UserFlowDestination: View {
             #else
             SignInTargetScreen(router: router, context: context, isRoot: isRoot)
             #endif
+        #if !os(tvOS)
+        // Apple TV shows its users in Settings › Users (`TVSettingsView`).
         case .manageUsers:
-            #if os(tvOS)
-            TVUsersSettingsPane(router: router)
-            #else
             ManageUsersView(router: router)
-            #endif
+        #endif
         default:
             EmptyView()
         }

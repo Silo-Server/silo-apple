@@ -41,7 +41,13 @@ struct ChooseServerScreen: View {
                 }
             }
         } footer: {
-            EmptyView()
+            // Shown as the root (a user with no last server), nothing below
+            // leads to another user, so Switch User does, as on Apple TV.
+            if isRoot {
+                UserFlowUtilityButton(title: "Switch User", systemImage: "person.2") {
+                    run("switch-user") { await users.beginSwitchUser(router: router) }
+                }
+            }
         }
         .disabled(busyItemID != nil)
         .task {
@@ -53,6 +59,11 @@ struct ChooseServerScreen: View {
         .onChange(of: users.directory.isAvailable && users.directory.user(userID) == nil) { _, gone in
             if gone, !router.path.isEmpty { router.goBack() }
         }
+    }
+
+    private var isRoot: Bool {
+        guard router.path.isEmpty, case .needsServer(let shown, _) = router.authState else { return false }
+        return shown == userID
     }
 
     private func rows(_ model: ChooseServerViewModel) -> some View {

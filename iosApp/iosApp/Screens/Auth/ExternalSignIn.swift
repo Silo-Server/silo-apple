@@ -449,17 +449,12 @@ final class ExternalSignInService: Sendable {
 /// sign-out sets it: the sign-in sheet shares the system browser's cookies,
 /// so without it the provider signs the same person straight back in. The
 /// first browser sign-in that succeeds clears it.
-///
-/// "Not you? Switch account" on a TV approval also asks to start that
-/// sign-in as soon as the login screen has its providers (`autoStart`). That
-/// request lives in memory only: a relaunch never opens a browser by itself.
 @MainActor
 final class SelectAccountPrompt {
     static let shared = SelectAccountPrompt()
 
     private let defaults: UserDefaults
     private static let key = "externalSignIn.selectAccountServerIds"
-    private var autoStartServerId: String?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -471,10 +466,9 @@ final class SelectAccountPrompt {
     }
 
     /// Ask for an account choice on `serverId`'s next browser sign-in.
-    func request(serverId: String, autoStart: Bool = false) {
+    func request(serverId: String) {
         guard !serverId.isEmpty else { return }
         serverIds.insert(serverId)
-        if autoStart { autoStartServerId = serverId }
     }
 
     func isRequested(serverId: String) -> Bool { serverIds.contains(serverId) }
@@ -482,22 +476,5 @@ final class SelectAccountPrompt {
     /// A browser sign-in on `serverId` succeeded.
     func clear(serverId: String) {
         serverIds.remove(serverId)
-        if autoStartServerId == serverId { autoStartServerId = nil }
-    }
-
-    /// Whether the login screen for `serverId` should start the browser
-    /// sign-in by itself. True once per request.
-    func consumeAutoStart(serverId: String) -> Bool {
-        guard autoStartServerId == serverId else { return false }
-        autoStartServerId = nil
-        return true
-    }
-
-    /// Gives back an auto-start that `consumeAutoStart` took for a sign-in
-    /// that never finished because its login screen went away. Does nothing
-    /// once a browser sign-in succeeded (`clear`).
-    func restoreAutoStart(serverId: String) {
-        guard isRequested(serverId: serverId) else { return }
-        autoStartServerId = serverId
     }
 }

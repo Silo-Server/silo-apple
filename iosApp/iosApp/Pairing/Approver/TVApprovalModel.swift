@@ -12,37 +12,6 @@ protocol TVApprovalAPI: Sendable {
     func deny(serverURL: String, bearer: String, code: String) async throws
     /// Who approving would sign the TV in as.
     func accountName(serverURL: String, bearer: String) async -> String?
-    /// What the server's sign-in offers someone choosing another account.
-    func accountSwitch(serverURL: String) async -> TVApprovalAccountSwitch
-}
-
-/// What the server's sign-in offers someone choosing another account. "Not
-/// you?" on the approval card is Switch User, which signs nobody out and
-/// reads the same on every server; the card passes this along with it
-/// (`TVApprovalModel.offersAccountChoice`).
-enum TVApprovalAccountSwitch: Equatable, Sendable {
-    /// The server lists a browser provider and advertises `select_account`:
-    /// the provider is asked to let the person choose an account.
-    case chooseAccount
-    /// No browser provider: the password form that follows lets the person
-    /// choose the account.
-    case switchAccount
-    /// A browser provider without `select_account`, a server that takes no
-    /// password (its network provider signs the same device owner back in),
-    /// or discovery that could not be read: nothing lets the person choose
-    /// another account there.
-    case signOut
-
-    /// The rule for a server's discovery; nil is discovery that could not
-    /// be read.
-    init(_ options: SignInOptions?) {
-        guard let options else { self = .signOut; return }
-        if options.browserProviders.isEmpty {
-            self = options.acceptsPasswords ? .switchAccount : .signOut
-        } else {
-            self = options.supportsSelectAccount ? .chooseAccount : .signOut
-        }
-    }
 }
 
 struct LiveTVApprovalAPI: TVApprovalAPI {
@@ -69,10 +38,6 @@ struct LiveTVApprovalAPI: TVApprovalAPI {
             serverURL: serverURL, path: "/api/v2/account/me", bearer: bearer, timeout: ServerIdentity.probeTimeout
         )
         return account.flatMap { ServerIdentity.usable($0.username) }
-    }
-
-    func accountSwitch(serverURL: String) async -> TVApprovalAccountSwitch {
-        TVApprovalAccountSwitch(await SiloAPI.shared.apiV2Client.signInOptions(serverURL: serverURL))
     }
 }
 
@@ -131,12 +96,6 @@ final class TVApprovalModel {
     }
 
     private(set) var phase: Phase = .idle
-    /// What the server's sign-in offers for choosing another account;
-    /// nothing until the lookup has read the server's discovery.
-    private(set) var accountSwitch: TVApprovalAccountSwitch = .signOut
-    /// Whether the server's sign-in can ask the provider for an account
-    /// choice.
-    var offersAccountChoice: Bool { accountSwitch == .chooseAccount }
     let server: ServerEntry
     let code: String
 
@@ -186,12 +145,9 @@ final class TVApprovalModel {
             }
             switch lookup.status ?? "pending" {
             case "pending":
-                let api = self.api, serverURL = server.url
-                async let account = api.accountName(serverURL: serverURL, bearer: bearer)
-                async let accountSwitch = api.accountSwitch(serverURL: serverURL)
-                self.accountSwitch = await accountSwitch
+                let account = await api.accountName(serverURL: server.url, bearer: bearer)
                 reviewedBearer = bearer
-                phase = .review(request(from: lookup, account: await account))
+                phase = .review(request(from: lookup, account: account))
             case "approved", "consumed":
                 phase = .alreadyUsed
             case "denied":

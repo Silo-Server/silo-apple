@@ -181,9 +181,9 @@ struct ContentView: View {
                 // Sign in to that saved server again, then come back here.
                 deviceApprovalLink = nil
                 router.signIn(forTVApproval: pending, on: server)
-            }, onSwitchAccount: { server, pending, choosingAccount in
+            }, onSwitchUser: { pending in
                 deviceApprovalLink = nil
-                router.switchAccount(forTVApproval: pending, on: server, choosingAccount: choosingAccount)
+                router.switchUser(forTVApproval: pending)
             }, onClose: { deviceApprovalLink = nil })
         }
         #endif

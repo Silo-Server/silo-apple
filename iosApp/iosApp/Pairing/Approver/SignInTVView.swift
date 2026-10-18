@@ -14,10 +14,8 @@ struct SignInTVView: View {
     var initialServerId: String? = nil
     /// "Not you? Switch User" on the card: the caller closes this view and
     /// opens the user chooser, signing nobody out; the TV's code returns to
-    /// the card once a user is chosen or added. The flag is the card's
-    /// `offersAccountChoice`: whether the server's sign-in can ask the
-    /// provider for an account choice.
-    var onSwitchAccount: ((ServerEntry, DeviceApprovalLink, Bool) -> Void)? = nil
+    /// the card once a user is chosen or added.
+    var onSwitchUser: ((DeviceApprovalLink) -> Void)? = nil
     var onClose: () -> Void
 
     @State private var code = ""
@@ -45,11 +43,10 @@ struct SignInTVView: View {
                                 code = ""
                                 codeFocused = true
                             },
-                            onSwitchAccount: onSwitchAccount.map { switchAccount in
+                            onSwitchUser: onSwitchUser.map { switchUser in
                                 {
                                     model.stop()
-                                    switchAccount(model.server, DeviceApprovalLink(server: model.server, code: model.code),
-                                                  model.offersAccountChoice)
+                                    switchUser(DeviceApprovalLink(server: model.server, code: model.code))
                                 }
                             },
                             onClose: onClose
@@ -155,8 +152,8 @@ struct DeviceLinkApprovalView: View {
     /// Sign in to a saved server this device is signed out of, and come back
     /// to the link after signing in.
     var onSignIn: (ServerEntry, DeviceApprovalLink) -> Void
-    /// "Not you?" on the card (see `SignInTVView.onSwitchAccount`).
-    var onSwitchAccount: (ServerEntry, DeviceApprovalLink, Bool) -> Void
+    /// "Not you?" on the card (see `SignInTVView.onSwitchUser`).
+    var onSwitchUser: (DeviceApprovalLink) -> Void
     var onClose: () -> Void
 
     private enum Resolution: Equatable {
@@ -179,7 +176,7 @@ struct DeviceLinkApprovalView: View {
                         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onClose) } }
                 }
             case .saved(let server):
-                SignInTVView(initialCode: link.code, initialServerId: server.id, onSwitchAccount: onSwitchAccount,
+                SignInTVView(initialCode: link.code, initialServerId: server.id, onSwitchUser: onSwitchUser,
                              onClose: onClose)
             case .signedOut(let server):
                 NavigationStack {

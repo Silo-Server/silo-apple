@@ -22,6 +22,8 @@ final class SiloUserCoordinatorTests: XCTestCase {
     private final class Knobs: @unchecked Sendable {
         var now = Date(timeIntervalSinceReferenceDate: 1_000_000)
         var allowsEndingTemporaryIdentity = true
+        /// Servers whose pushes sign-out turned off, in order.
+        var pushTurnedOff: [String] = []
     }
 
     @MainActor
@@ -47,6 +49,8 @@ final class SiloUserCoordinatorTests: XCTestCase {
             get { knobs.allowsEndingTemporaryIdentity }
             set { knobs.allowsEndingTemporaryIdentity = newValue }
         }
+
+        var pushTurnedOff: [String] { knobs.pushTurnedOff }
 
         /// `migrated: false` leaves the device before sign-in migration, with
         /// no user index yet.
@@ -74,14 +78,15 @@ final class SiloUserCoordinatorTests: XCTestCase {
                 identityReader: { await store.refreshAccountIdentity() },
                 accessTokenReader: { _ in await store.hasUsableCredential() }
             )
+            let knobs = Knobs()
+            self.knobs = knobs
             auth = AuthService(
                 serverRegistry: registry, launchPreferences: preferences, restoredSessionValidator: validator,
                 httpClient: http, tokenStore: f.store, defaults: f.defaults, sessionPersistence: f.sessions.sessions,
-                purgeDiagnostics: { _ in true }, unregisterPush: { _ in }, restorePush: { _ in }
+                purgeDiagnostics: { _ in true }, unregisterPush: { knobs.pushTurnedOff.append($0) },
+                restorePush: { _ in }
             )
             box.auth = auth
-            let knobs = Knobs()
-            self.knobs = knobs
             users = SiloUserCoordinator(
                 auth: auth,
                 now: { knobs.now },
@@ -639,6 +644,66 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertEqual(d.users.directory.user(alex.id)?.name, "alex")
     }
 
+    /// Rename saved as pre-filled, or set back to the default name, is no
+    /// rename: rows don't start naming the account, and the default keeps
+    /// following the oldest sign-in (spec §4).
+    func testSavingTheDefaultNameIsNoRename() async throws {
+        let d = try Device(self)
+        let (alex, _) = try await d.twoUsers()
+        await d.users.requestRename(alex.id, router: d.router)
+        let prefilled = try XCTUnwrap(d.router.renameRequest?.currentName)
+
+        let saved = await d.users.renameUser(alex.id, to: prefilled)
+
+        XCTAssertTrue(saved)
+        XCTAssertNil(try d.index().users.first { $0.id == alex.id }?.displayName)
+        XCTAssertEqual(d.users.directory.user(alex.id)?.isRenamed, false)
+        XCTAssertEqual(d.users.directory.user(alex.id)?.servers.map(\.showsUsername), [false, false])
+
+        _ = await d.users.renameUser(alex.id, to: "Living Room")
+        let restored = await d.users.renameUser(alex.id, to: " alex ")
+        XCTAssertTrue(restored)
+        XCTAssertNil(try d.index().users.first { $0.id == alex.id }?.displayName)
+        XCTAssertEqual(d.users.directory.user(alex.id)?.name, "alex")
+    }
+
+    /// "Signed in as …" names the open server once, even for a name told
+    /// apart by that server (spec §5.1).
+    func testAccountLineNamesTheServerOnce() async throws {
+        let d = try Device(self)
+        try await d.signIn("12", "alex", on: F.home, context: .firstRun)
+        let homeAlex = try XCTUnwrap(try d.user(named: "alex"))
+        try await d.signIn("40", "alex2", on: F.friend, context: .addServer(userID: homeAlex.id))
+        try await d.signIn("41", "alex", on: F.friend, context: .addUser)
+        XCTAssertEqual(try d.index().users.count, 2)
+
+        await d.users.openServer(F.home, userID: homeAlex.id, router: d.router)
+
+        XCTAssertEqual(d.users.directory.user(homeAlex.id)?.name, "alex · Home Silo")
+        XCTAssertEqual(d.users.accountLine(fallbackUsername: nil), "Signed in as alex · Home Silo")
+    }
+
+    /// A server's pushes follow the current user's sign-in there, so Sign
+    /// Out of {server} on one of the current user's other servers turns that
+    /// server's pushes off before the sign-in goes; signing another user out
+    /// leaves the current user's registration alone.
+    func testSigningOutOfTheCurrentUsersOtherServerTurnsItsPushesOff() async throws {
+        let d = try Device(self)
+        let (alex, sam) = try await d.twoUsers()
+        await d.users.openServer(F.home, userID: alex.id, router: d.router)
+        XCTAssertEqual(d.pushTurnedOff, [])
+
+        await d.users.signOut(.make(F.home, "13"), router: d.router)
+        XCTAssertEqual(d.pushTurnedOff, [], "sam's sign-in isn't what Home pushes to here")
+        XCTAssertNil(try d.index().users.first { $0.id == sam.id })
+
+        await d.users.signOut(.make(F.friend, "40"), router: d.router)
+        XCTAssertEqual(d.pushTurnedOff, [F.friend])
+        XCTAssertEqual(try d.index().users.first { $0.id == alex.id }?.signIns, [.make(F.home, "12")])
+        let selection = await d.selection
+        XCTAssertEqual(selection, .signIn(.make(F.home, "12")), "Home stays open")
+    }
+
     // MARK: - Launch and Ask For
 
     /// Ask For: User + Profile at cold launch shows Choose a User with focus
@@ -973,6 +1038,26 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertEqual(try d.index().users.first?.signIns, [.make(F.friend, "40"), .make(F.home, "12")])
     }
 
+    /// A pending server whose account turns out unsaved becomes its sign-in
+    /// in place, and the screen's stores re-scope (`signInRevision`): the
+    /// account mirror went from none to the account, so stores keyed by
+    /// account read again under the keys that took over their old data.
+    func testAMigratedPendingServerReScopesTheSessionsStores() async throws {
+        let (d, migrated) = try await migratedDevice()
+        let auth = await d.f.store.captureOrdinaryRequestAuth()
+        let outcome = try await d.f.store.bindVerifiedAccount(.stub(id: "12", username: "alex"),
+                                                              expected: try XCTUnwrap(auth))
+        XCTAssertEqual(outcome, .legacyMigrated(.make(F.home, "12")))
+        let before = d.router.signInRevision
+
+        await d.users.handleSignInMigrated(outcome, router: d.router)
+
+        XCTAssertNotEqual(d.router.signInRevision, before)
+        XCTAssertEqual(d.preferences.state.lastServer(for: migrated.id), F.home)
+        let selection = await d.selection
+        XCTAssertEqual(selection, .signIn(.make(F.home, "12")))
+    }
+
     /// A pending server's account already saved in another user: the pending
     /// server goes, that sign-in takes over the server's old local data, and
     /// the launch rules pick what opens.
@@ -1082,6 +1167,40 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertEqual(d.revokedAccessTokens(), [pending.accessToken])
     }
 
+    /// Before sign-in migration, a sign-in started on one server that
+    /// finishes on another server's sign-in screen is refused and revoked:
+    /// its tokens never land in that server's own session, which stays as
+    /// it was, so they are never sent there.
+    func testALegacySignInFinishingOnAnotherServersScreenIsRefused() async throws {
+        let d = try Device(self, migrated: false)
+        try d.f.seedLegacySession(F.friend, url: F.friendURL, accountID: "40", access: "friend",
+                                  refresh: "friend-refresh")
+        let beganHome = await d.users.beginSignIn(serverID: F.home, context: .firstRun, router: d.router)
+        XCTAssertTrue(beganHome)
+        let identity = await d.f.store.refreshAccountIdentity()
+        let pending = d.pending("12", "alex", expected: try XCTUnwrap(identity))
+        let beganFriend = await d.users.beginSignIn(serverID: F.friend, context: .firstRun, router: d.router)
+        XCTAssertTrue(beganFriend)
+        XCTAssertEqual(d.router.authState, .needsLogin)
+
+        do {
+            _ = try await d.users.completeSignIn(pending, router: d.router)
+            XCTFail("Home's sign-in was saved on Friend's screen")
+        } catch HTTPError.requestIdentityChanged {}
+
+        guard case .session(let friend) = try d.f.sessions.sessions.load(F.friend) else {
+            return XCTFail("Friend's own session is gone")
+        }
+        XCTAssertEqual(friend.accessToken, "friend")
+        XCTAssertEqual(friend.origin, F.friendURL)
+        guard case .legacy = try d.f.sessions.sessions.load(F.home) else {
+            return XCTFail("nothing is saved for Home")
+        }
+        XCTAssertNil(try d.f.index(), "still before migration")
+        try await d.waitForRevocations(1)
+        XCTAssertEqual(d.revokedAccessTokens(), [pending.accessToken])
+    }
+
     /// Removing a server from the device while Choose a Server shows a user
     /// whose only server it was leaves nothing to pick: the launch rules run.
     func testRemovingTheShownUsersOnlyServerLeavesItsChooser() async throws {
@@ -1120,6 +1239,28 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertEqual(seen.userID, alex.id)
     }
 
+    /// The selected sign-in is app-wide, so a user opened in one window
+    /// re-scopes every window's screens (macOS), even on the same server:
+    /// another window must not keep alex's screens while its requests go
+    /// out as sam.
+    func testOpeningAUserInOneWindowReScopesTheOthers() async throws {
+        let d = try Device(self)
+        let (alex, _) = try await d.twoUsers()
+        let otherWindow = AppRouter()
+        otherWindow.usersOverride = d.users
+        let before = otherWindow.signInRevision
+        let changed = ObservedFlag()
+        withObservationTracking { _ = otherWindow.signInRevision } onChange: {
+            changed.value = true
+        }
+
+        await d.users.openServer(F.home, userID: alex.id, router: d.router)
+
+        XCTAssertTrue(changed.value, "the other window's identity key follows the switch")
+        XCTAssertNotEqual(otherWindow.signInRevision, before)
+        XCTAssertEqual(otherWindow.signInRevision, d.router.signInRevision)
+    }
+
     /// Who's Watching reads "Last used" without waiting (tvOS focuses it on
     /// the first frame), for the selected sign-in only.
     func testTheRememberedProfileReadsWithoutWaiting() async throws {
@@ -1131,8 +1272,6 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertTrue(d.preferences.remember(profileID: "sam-profile", requiresPIN: false, accountEpoch: epoch,
                                              for: samHome, legacyOwnerAccountID: nil))
         XCTAssertEqual(d.auth.rememberedProfileIDForCurrentSelection, "sam-profile")
-        let awaited = await d.auth.rememberedProfileForCurrentSelection()
-        XCTAssertEqual(awaited?.profileID, "sam-profile")
 
         await d.users.openServer(F.home, userID: alex.id, router: d.router)
         XCTAssertNil(d.auth.rememberedProfileIDForCurrentSelection, "sam's profile isn't alex's")
@@ -1264,4 +1403,8 @@ final class SiloUserCoordinatorTests: XCTestCase {
 /// The value an observation's change handler saw.
 private final class ObservedUser: @unchecked Sendable {
     var userID: String?
+}
+
+private final class ObservedFlag: @unchecked Sendable {
+    var value = false
 }

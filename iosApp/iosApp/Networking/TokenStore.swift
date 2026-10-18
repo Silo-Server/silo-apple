@@ -224,25 +224,6 @@ enum LegacyMigrationDeferral: String, Equatable, Sendable {
     case writeFailed
 }
 
-/// What one server's credentials looked like at one moment: the user index,
-/// every saved sign-in on the server (plus one more key, if asked), this
-/// Apple TV user's proofs for them, the server's old per-server slot, and
-/// the selection. `TokenStore.restore(_:)` puts back exactly that.
-struct SignInSnapshot: Equatable, Sendable {
-    /// False when a keychain read failed; restoring then fails closed, so
-    /// callers refuse before mutating anything.
-    let isReadable: Bool
-    fileprivate let serverID: String
-    fileprivate let index: SiloUserIndex?
-    fileprivate let keys: [SignInKey]
-    fileprivate let signIns: [SignInKey: SavedSignIn]
-    fileprivate let proofs: [SignInKey: SignInProfileProof]
-    fileprivate let legacySlot: TokenStore.AccountSessionSnapshot
-    fileprivate let selectedServerID: String
-    fileprivate let selection: CredentialSelection
-    fileprivate let userID: String?
-}
-
 /// Actor that owns session credentials.
 ///
 /// Two regimes share one API. Before the user index (`users.v1`) exists,
@@ -1920,6 +1901,21 @@ actor TokenStore {
             createsUser = true
         }
 
+        // A server whose session had ended by migration got no owner for its
+        // data from before sign-ins existed, which signing in again always
+        // brought back. The household's next sign-in there takes it over:
+        // one into the migrated user, or into the device's only user. Never
+        // another user's, and never on a server where a sign-in or pending
+        // session is saved already.
+        if placement != .refresh(key),
+           index.legacyDataOwnerByServerID?[key.serverID] == nil,
+           !index.users.contains(where: { Self.user($0, has: key.serverID) }),
+           userID == index.migratedUserID || index.users.count == (createsUser ? 0 : 1) {
+            var owners = index.legacyDataOwnerByServerID ?? [:]
+            owners[key.serverID] = key.accountID
+            index.legacyDataOwnerByServerID = owners
+        }
+
         let now = Date()
         let signIn = SavedSignIn(
             key: key,
@@ -2017,112 +2013,6 @@ actor TokenStore {
         case .signedOut?, nil:
             return nil
         }
-    }
-
-    /// Captures one server's credentials for `restore(_:)`: the index, every
-    /// saved sign-in on `serverID` plus `key`, this Apple TV user's proofs
-    /// for them, the server's per-server slot, and the selection. A corrupt
-    /// item counts as absent; a keychain read error makes the snapshot
-    /// unreadable.
-    func signInSnapshot(for key: SignInKey?, serverID: String) -> SignInSnapshot {
-        var readable = !serverID.isEmpty
-        var index: SiloUserIndex?
-        do { index = try loadIndex() } catch { readable = false }
-        var keys: [SignInKey] = key.map { [$0] } ?? []
-        for user in index?.users ?? [] {
-            for member in user.signIns where member.serverID == serverID && !keys.contains(member) {
-                keys.append(member)
-            }
-        }
-        var items: [SignInKey: SavedSignIn] = [:]
-        var proofsByKey: [SignInKey: SignInProfileProof] = [:]
-        for member in keys {
-            do {
-                items[member] = try savedSignIns.loadSignIn(member)
-            } catch where Self.isUnusableRecord(error) {
-                // Nothing usable to put back.
-            } catch {
-                readable = false
-            }
-            do {
-                proofsByKey[member] = try proofs.load(member)
-            } catch where Self.isUnusableRecord(error) {
-            } catch {
-                readable = false
-            }
-        }
-        let legacySlot = accountSessionSnapshot(for: serverID)
-        if legacySlot == .unreadable { readable = false }
-        return SignInSnapshot(
-            isReadable: readable,
-            serverID: serverID,
-            index: index,
-            keys: keys,
-            signIns: items,
-            proofs: proofsByKey,
-            legacySlot: legacySlot,
-            selectedServerID: activeServerId,
-            selection: selection,
-            userID: activeUserID
-        )
-    }
-
-    /// Puts back exactly what `snapshot` captured: saved items first, then
-    /// the index (the commit point), then deletes items added since
-    /// (invariant 5), then the selection. When the server's credentials
-    /// can't be made durable, or the snapshot was unreadable, they are
-    /// blocked for this process and this returns false. A selection on
-    /// another server was never touched, so its block state stays.
-    @discardableResult
-    func restore(_ snapshot: SignInSnapshot) -> Bool {
-        var durable = snapshot.isReadable
-        if snapshot.isReadable {
-            if accountSessionSnapshot(for: snapshot.serverID) != snapshot.legacySlot {
-                durable = restoreAccountSession(snapshot.legacySlot, for: snapshot.serverID) && durable
-            }
-            for key in snapshot.keys {
-                if let signIn = snapshot.signIns[key], (try? savedSignIns.loadSignIn(key)) != signIn {
-                    do { try savedSignIns.saveSignIn(signIn) } catch { durable = false }
-                }
-                if let proof = snapshot.proofs[key] {
-                    durable = proofs.save(proof, for: key) && durable
-                } else {
-                    proofs.remove(key)
-                }
-            }
-            do {
-                // Nothing deletes `users.v1` (invariant 4), so a snapshot taken
-                // before migration leaves a later index in place.
-                if let index = snapshot.index, try loadIndex() != index {
-                    try saveIndex(index)
-                }
-            } catch {
-                durable = false
-            }
-            for key in snapshot.keys where snapshot.signIns[key] == nil {
-                if (try? savedSignIns.loadSignIn(key)) != nil {
-                    durable = savedSignIns.removeSignIn(key) && durable
-                }
-            }
-        }
-        persistentCredentialGenerationID = UUID()
-        activeServerId = snapshot.selectedServerID
-        selection = snapshot.selection
-        activeUserID = snapshot.userID
-        invalidateLoadedCredential()
-        for key in snapshot.keys {
-            if durable { unblock(.signIn(key)) } else { block(.signIn(key)) }
-        }
-        if Self.serverID(of: selection) == snapshot.serverID {
-            if durable { unblock(selection) } else { block(selection) }
-        }
-        if !durable {
-            recordSessionEvent(phase: "sessionRestore", outcome: "failed", reason: "persistenceUnavailable")
-        }
-        ensureLoaded()
-        writeAccountMirror()
-        mirrorActiveTokensForExtension()
-        return durable
     }
 
     // MARK: - Removal

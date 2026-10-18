@@ -170,7 +170,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
     /// to retry; nothing it gets back may reach the store or clear the login
     /// that replaced the session meanwhile.
     @MainActor
-    func testLateUnauthorizedLogoutCannotRefreshOrClearNewLogin() async throws {
+    func testLateUnauthorizedLogoutRefreshesInMemoryAndCannotClearNewLogin() async throws {
         let h = try await lifecycleHarness()
         let outgoing = RevocableCredential(serverURL: "https://session.example", accessToken: "original",
                                            refreshToken: "refresh")
@@ -192,7 +192,11 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(access, "replacement")
         XCTAssertEqual(refresh, "replacement-refresh")
         XCTAssertTrue(h.auth.isLoggedIn)
-        XCTAssertEqual(h.stub.requestedPaths.filter { $0 == HTTPClient.refreshPath }.count, 1)
+        let logout = "/api/v2/auth/logout"
+        XCTAssertEqual(h.stub.requestedPaths.filter { $0 == logout || $0 == HTTPClient.refreshPath },
+                       [logout, HTTPClient.refreshPath, logout], "one refresh, then one retried logout")
+        let retried = try XCTUnwrap(h.stub.requests.last { $0.path == logout })
+        XCTAssertEqual(retried.header("Authorization"), "Bearer revocation-only")
         let refreshRequest = try XCTUnwrap(h.stub.requests.first { $0.path == HTTPClient.refreshPath })
         XCTAssertNil(refreshRequest.header("Authorization"))
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(refreshRequest.body)) as? [String: String])

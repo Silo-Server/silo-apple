@@ -85,7 +85,7 @@ struct IOSSettingsOverview: View {
         .sheet(isPresented: $showsSignInTV) {
             // "Not you?" on the approval card is Switch User: it signs nobody
             // out, and the card comes back once a user is chosen or added.
-            SignInTVView(onSwitchAccount: { _, link, _ in
+            SignInTVView(onSwitchUser: { link in
                 showsSignInTV = false
                 router.switchUser(forTVApproval: link)
             }, onClose: { showsSignInTV = false })

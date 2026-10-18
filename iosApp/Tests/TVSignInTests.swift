@@ -437,37 +437,15 @@ final class TVSignInTests: XCTestCase {
         guard case .failed = phase else { return XCTFail("a lost denial is not a decline: \(phase)") }
     }
 
-    /// An account choice is offered only where the server advertises
-    /// `select_account`; a password-only server lets the password form
-    /// choose. "Not you?" itself is Switch User everywhere and never
-    /// promises a sign-out.
+    /// "Not you?" on the approval card is Switch User on every server, and
+    /// never promises a sign-out (coordinator decision 2).
     @MainActor
-    func testNotYouOffersAnAccountChoiceOnlyWhereTheServerAdvertisesIt() async {
-        for accountSwitch in [TVApprovalAccountSwitch.chooseAccount, .switchAccount, .signOut] {
-            let api = FakeTVApprovalAPI()
-            api.accountSwitchValue = accountSwitch
-            api.lookups = [DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: "pending")]
-            let model = TVApprovalModel(server: Self.home, code: "48217730", api: api)
-            XCTAssertEqual(model.accountSwitch, .signOut)
-            await model.lookUp()
-            XCTAssertEqual(model.accountSwitch, accountSwitch)
-            XCTAssertEqual(model.offersAccountChoice, accountSwitch == .chooseAccount)
-            XCTAssertEqual(api.choiceQueries, ["https://home.example"])
-        }
-
-        let sso = APIv2AuthProvider(id: "plugin:3:oidc", displayName: "SSO", mode: "oauth", default: false,
-            iconUrl: nil, installationId: "3", nativeStartPath: "/api/v2/auth/oauth/3/native/start")
-        XCTAssertEqual(TVApprovalAccountSwitch(SignInOptions(browserProviders: [sso], acceptsPasswords: true,
-            supportsSelectAccount: true)), .chooseAccount)
-        XCTAssertEqual(TVApprovalAccountSwitch(SignInOptions(browserProviders: [sso], acceptsPasswords: true,
-            supportsSelectAccount: false)), .signOut)
-        XCTAssertEqual(TVApprovalAccountSwitch(.passwordOnly), .switchAccount, "password-only or directory-only")
-        let network = APIv2AuthProvider(id: "plugin:5:tailscale", displayName: "Tailscale", mode: "network",
-            default: false, installationId: "5", networkSignInPath: "/api/v2/auth/network/5/sign-in")
-        XCTAssertEqual(TVApprovalAccountSwitch(SignInOptions(browserProviders: [], acceptsPasswords: false,
-            supportsSelectAccount: false, networkProviders: [network])), .signOut,
-            "network sign-in only signs the same device owner back in")
-        XCTAssertEqual(TVApprovalAccountSwitch(nil), .signOut, "unread discovery promises nothing")
+    func testNotYouIsSwitchUserOnEveryServer() async {
+        let api = FakeTVApprovalAPI()
+        api.lookups = [DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: "pending")]
+        let model = TVApprovalModel(server: Self.home, code: "48217730", api: api)
+        await model.lookUp()
+        guard case .review = model.phase else { return XCTFail("the card shows the review: \(model.phase)") }
         #if os(iOS)
         XCTAssertEqual(TVApprovalCard.switchUserLink, "Not you? Switch User")
         XCTAssertFalse(TVApprovalCard.switchUserLink.lowercased().contains("sign out"))
@@ -541,8 +519,6 @@ private final class FakeTVApprovalAPI: TVApprovalAPI, @unchecked Sendable {
     var denyError: Error?
     var approveError: Error?
     var accountNameValue: String? = "laura"
-    var accountSwitchValue = TVApprovalAccountSwitch.signOut
-    private(set) var choiceQueries: [String] = []
     private(set) var bearerRequests: [String] = []
     private(set) var lookedUpCodes: [String] = []
     private(set) var approved: [String] = []
@@ -568,8 +544,4 @@ private final class FakeTVApprovalAPI: TVApprovalAPI, @unchecked Sendable {
         denied.append(code)
     }
     func accountName(serverURL: String, bearer: String) async -> String? { accountNameValue }
-    func accountSwitch(serverURL: String) async -> TVApprovalAccountSwitch {
-        choiceQueries.append(serverURL)
-        return accountSwitchValue
-    }
 }

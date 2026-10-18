@@ -63,7 +63,6 @@ struct LoginView: View {
         }
         .task {
             await viewModel.loadSignInOptions()
-            await viewModel.startRequestedSignIn(router: router)
         }
         .onChange(of: scenePhase) { _, phase in
             // Back from Settings or another app: read discovery again without

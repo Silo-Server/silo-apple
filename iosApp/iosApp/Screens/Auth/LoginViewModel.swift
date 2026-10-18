@@ -217,22 +217,6 @@ final class LoginViewModel {
         }
     }
 
-    /// Starts the browser sign-in by itself when "Not you? Switch account"
-    /// sent the person here and the server lists exactly one provider.
-    ///
-    /// SwiftUI can build a login screen and drop it while the app routes
-    /// here after the sign-out; that screen's task is already cancelled, so
-    /// it leaves the request to the screen that stays, and hands it back if
-    /// it goes away before the sign-in finished.
-    func startRequestedSignIn(router: AppRouter) async {
-        guard !Task.isCancelled, signInOptions != nil, let serverId = ServerRegistry.shared.activeServerId,
-              SelectAccountPrompt.shared.consumeAutoStart(serverId: serverId),
-              browserProviders.count == 1, let provider = browserProviders.first else { return }
-        await signIn(with: provider, router: router)
-        if Task.isCancelled {
-            SelectAccountPrompt.shared.restoreAutoStart(serverId: serverId)
-        }
-    }
     #endif
 
     /// Whether a browser sign-in sends `prompt=select_account`: asked for

@@ -224,8 +224,10 @@ struct RestoredSessionValidator: Sendable {
 
 /// Resolves the current registry/token/profile combination into the router's
 /// auth state. Cold launch can use `resolveLocal()` as an immediate fallback
-/// and apply validation only while the splash is still visible; explicit
-/// server switches use `resolveValidated()` and await the same policy.
+/// and apply validation only while the splash is still visible; server
+/// recovery's Try again uses `resolveCurrentValidated()` and awaits the same
+/// policy. Switches between users and servers go through
+/// `SiloUserCoordinator`.
 enum RestoredSessionAuthResolver {
     struct LocalResolution: Equatable {
         let state: AppRouter.AuthState
@@ -318,13 +320,6 @@ enum RestoredSessionAuthResolver {
         case .identityChanged:
             return await resolveLocal().state
         }
-    }
-
-    static func resolveValidated() async -> AppRouter.AuthState {
-        let local = await resolveLocal()
-        guard let expected = local.restoredAccount else { return local.state }
-        let result = await AuthService.shared.validateRestoredSession(expected: expected)
-        return await state(after: result, fallingBackTo: local.state)
     }
 
     /// The current user's current server again (server recovery's Try

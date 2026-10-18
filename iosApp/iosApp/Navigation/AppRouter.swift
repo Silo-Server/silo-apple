@@ -773,14 +773,16 @@ final class AppRouter {
     var renameRequest: UserRenameRequest?
     /// Bumped each time a user or sign-in is opened, even when the auth
     /// state stays the same (Automatic reopening a profile under another
-    /// account), so session-scoped stores re-scope.
-    private(set) var signInRevision = 0
+    /// account), so session-scoped stores re-scope. The coordinator keeps
+    /// it, so every window follows: on macOS, a user opened in one window
+    /// re-scopes the others too, as a server switch always has.
+    var signInRevision: Int { users.signInRevision }
     /// The coordinator this router's flows run through. Tests replace it.
     @ObservationIgnored var usersOverride: SiloUserCoordinator?
     var users: SiloUserCoordinator { usersOverride ?? .shared }
 
     func noteSignInChanged() {
-        signInRevision &+= 1
+        users.noteSignInChanged()
     }
 
     /// Bumped when a sign-in screen must start over in place: a question
@@ -1023,26 +1025,17 @@ final class AppRouter {
         // chooser shown as the root waits for a signed-in screen instead.
         deviceApprovalChooserDepth = path.count > depth ? path.count : nil
     }
-
-    /// Kept for the approval card's existing call site: switching account is
-    /// now Switch User, which signs nobody out.
-    func switchAccount(forTVApproval link: DeviceApprovalLink, on server: ServerEntry, choosingAccount: Bool) {
-        switchUser(forTVApproval: link)
-    }
     #endif
 
     /// One operation owns the button action through cleanup and navigation.
     /// Repeated taps cannot queue another logout behind a subsequent login.
-    /// `asksForAccountChoice` is false only when the session ended rather
-    /// than the person signing out.
-    private func requestSignOut(removingServer: Bool, asksForAccountChoice: Bool = true) {
+    private func requestSignOut(removingServer: Bool) {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
         Task {
             defer { isSigningOut = false }
-            await users.signOutCurrent(alsoRemoveServer: removingServer,
-                                       asksForAccountChoice: asksForAccountChoice, router: self)
+            await users.signOutCurrent(alsoRemoveServer: removingServer, asksForAccountChoice: true, router: self)
         }
     }
 

@@ -16,7 +16,7 @@ struct TVApprovalCard: View {
     /// "Not you? Switch User": the user chooser, with Add User, keeping the
     /// TV's code; the card comes back once a user is chosen or added. It
     /// signs nobody out, so it needs no confirmation. Nil hides the link.
-    var onSwitchAccount: (() -> Void)? = nil
+    var onSwitchUser: (() -> Void)? = nil
     var onClose: () -> Void
 
     var body: some View {
@@ -102,8 +102,8 @@ struct TVApprovalCard: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(signInLine(request)).font(.siloBody).fixedSize(horizontal: false, vertical: true)
-                if onSwitchAccount != nil {
-                    Button(Self.switchUserLink) { onSwitchAccount?() }
+                if onSwitchUser != nil {
+                    Button(Self.switchUserLink) { onSwitchUser?() }
                         .font(.siloCaption)
                         .disabled(busy)
                 }

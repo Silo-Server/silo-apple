@@ -301,6 +301,73 @@ final class SavedSignInMigrationTests: XCTestCase {
         XCTAssertNil(stray)
     }
 
+    // MARK: - Servers signed out at migration
+
+    /// Adds `accountID`'s sign-in on `server` for `placement`, as the sign-in
+    /// screen does.
+    @discardableResult
+    private func signIn(_ f: F, _ accountID: String, on server: String, url: String,
+                        placement: SignInPlacement) async throws -> SignInInstallResult {
+        var joined: String?
+        if case .join(let userID) = placement { joined = userID }
+        await f.store.setServerUrl(url)
+        await f.store.select(serverID: server, credential: .none, userID: joined)
+        return try await f.install(accountID, access: "\(accountID)-access", refresh: "\(accountID)-refresh",
+                                   placement: placement)
+    }
+
+    /// A server whose session had ended by the update gets no owner at
+    /// migration. The migrated user's next sign-in there takes its old local
+    /// data over, as signing in again always brought it back; a sign-in by
+    /// another user first takes nothing, and nothing after it does either.
+    func testTheMigratedUsersNextSignInOnASignedOutServerTakesOverItsOldData() async throws {
+        for anotherUserFirst in [false, true] {
+            let f = try F.make(self)
+            try f.seedLegacySession(F.home, url: F.homeURL, accountID: "12", access: "home-access",
+                                    refresh: "home-refresh")
+            XCTAssertTrue(f.sessions.sessions.invalidate(F.friend))
+            _ = await f.store.migrateLegacySessionsIfNeeded(
+                servers: [(F.home, F.homeURL), (F.friend, F.friendURL)], activeServerID: F.home)
+            let migrated = try XCTUnwrap(try f.index()?.migratedUserID)
+            XCTAssertNil(try f.index()?.legacyDataOwnerByServerID?[F.friend])
+
+            if anotherUserFirst {
+                try await signIn(f, "13", on: F.friend, url: F.friendURL, placement: .newUser)
+                XCTAssertNil(try f.index()?.legacyDataOwnerByServerID?[F.friend], "another user's account")
+            }
+            try await signIn(f, "40", on: F.friend, url: F.friendURL, placement: .join(userID: migrated))
+
+            let owner = try f.index()?.legacyDataOwnerByServerID?[F.friend]
+            XCTAssertEqual(owner, anotherUserFirst ? nil : "40")
+            XCTAssertEqual(LegacyLocalDataOwner.accountID(forServerID: F.friend), owner)
+            XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID?[F.home], "12", "Home's owner stays")
+        }
+    }
+
+    /// With every session ended by the update, the device's only user takes
+    /// over each server's old data as it signs in there again; a second user
+    /// doesn't, and neither does anyone on a server still pending.
+    func testTheOnlyUsersSignInsTakeOverOldDataAndOtherUsersDont() async throws {
+        let f = try F.make(self)
+        try f.startUserModel()
+        let alex = try await signIn(f, "12", on: F.home, url: F.homeURL, placement: .newUser)
+        XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID, [F.home: "12"])
+        try await signIn(f, "13", on: F.friend, url: F.friendURL, placement: .newUser)
+        XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID, [F.home: "12"], "a second user takes nothing")
+        XCTAssertNotEqual(alex.userID, try f.index()?.users.last?.id)
+
+        let pending = try F.make(self)
+        try pending.seedLegacySession(F.friend, url: F.friendURL, accountID: nil, access: "friend-access",
+                                      refresh: "friend-refresh")
+        _ = await pending.store.migrateLegacySessionsIfNeeded(servers: [(F.friend, F.friendURL)],
+                                                              activeServerID: F.friend)
+        let user = try XCTUnwrap(try pending.index()?.users.first)
+        XCTAssertEqual(user.pendingLegacyServerIDs, [F.friend])
+        try await signIn(pending, "40", on: F.friend, url: F.friendURL, placement: .newUser)
+        XCTAssertNil(try pending.index()?.legacyDataOwnerByServerID?[F.friend],
+                     "the pending session's account owns it once known")
+    }
+
     // MARK: - Pending legacy servers (plan §3.3)
 
     func testFirstAccountReadMovesAPendingServerIntoItsUser() async throws {

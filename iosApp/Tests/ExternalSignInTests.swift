@@ -194,29 +194,11 @@ final class ExternalSignInTests: XCTestCase {
         prompt.request(serverId: "home")
         XCTAssertTrue(prompt.isRequested(serverId: "home"))
         XCTAssertFalse(prompt.isRequested(serverId: "other"))
-        XCTAssertFalse(prompt.consumeAutoStart(serverId: "home"), "an ordinary sign-out never opens the browser")
         XCTAssertTrue(SelectAccountPrompt(defaults: defaults).isRequested(serverId: "home"), "kept across launches")
-
-        prompt.request(serverId: "home", autoStart: true)
-        XCTAssertFalse(prompt.consumeAutoStart(serverId: "other"))
-        XCTAssertTrue(prompt.consumeAutoStart(serverId: "home"))
-        XCTAssertFalse(prompt.consumeAutoStart(serverId: "home"), "once per request")
-        XCTAssertFalse(SelectAccountPrompt(defaults: defaults).consumeAutoStart(serverId: "home"),
-            "a relaunch never opens a browser by itself")
 
         prompt.clear(serverId: "home")
         XCTAssertFalse(prompt.isRequested(serverId: "home"))
-
-        // A login screen dropped before its sign-in finished hands the
-        // auto-start back to the screen that replaces it, but never after a
-        // sign-in succeeded.
-        prompt.request(serverId: "home", autoStart: true)
-        XCTAssertTrue(prompt.consumeAutoStart(serverId: "home"))
-        prompt.restoreAutoStart(serverId: "home")
-        XCTAssertTrue(prompt.consumeAutoStart(serverId: "home"), "handed back")
-        prompt.clear(serverId: "home")
-        prompt.restoreAutoStart(serverId: "home")
-        XCTAssertFalse(prompt.consumeAutoStart(serverId: "home"), "not after a successful sign-in")
+        XCTAssertFalse(SelectAccountPrompt(defaults: defaults).isRequested(serverId: "home"))
 
         let switchable = SignInOptions(browserProviders: [Self.provider()], acceptsPasswords: false, supportsSelectAccount: true)
         let older = SignInOptions(browserProviders: [Self.provider()], acceptsPasswords: false, supportsSelectAccount: false)

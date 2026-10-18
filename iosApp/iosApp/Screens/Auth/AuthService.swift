@@ -401,8 +401,9 @@ final class AuthService: @unchecked Sendable {
     /// Saves a sign-in outside any user flow, as a first sign-in would be
     /// placed: the same account refreshes its saved sign-in, a new one
     /// founds a user, and before migration the server's own session is
-    /// replaced. Tests and debug sign-in use this; the app's screens go
-    /// through `SiloUserCoordinator.completeSignIn`.
+    /// replaced. Only tests use this. The app's sign-in screens go through
+    /// `SiloUserCoordinator.completeSignIn`; debug auto sign-in uses
+    /// `commitOutsideUserFlow`.
     ///
     /// `accountID` is the account the server said the tokens authenticate
     /// (v2 `TokenPair.user.id`).
@@ -479,6 +480,13 @@ final class AuthService: @unchecked Sendable {
     /// signing in always has, restoring it if the install fails.
     func commitLegacySignIn(_ pending: PendingSignIn, holding lease: HTTPIdentityTransitionLease? = nil) async throws {
         try await withSignInTransition(holding: lease) { [self] in
+            // The identity captured before the request must still be the
+            // active one: the install below writes the active server's slot,
+            // so a sign-in that finishes after a switch to another server
+            // would otherwise send its bearer there.
+            guard await tokenStore.refreshAccountIdentity() == pending.expected else {
+                throw HTTPError.requestIdentityChanged
+            }
             try await replaceServerSession(
                 accessToken: pending.accessToken,
                 refreshToken: pending.refreshToken,
@@ -636,12 +644,6 @@ final class AuthService: @unchecked Sendable {
         case .signIn(let key):
             return .signIn(key, legacyOwnerAccountID: await tokenStore.legacyDataOwner(forServer: key.serverID))
         }
-    }
-
-    /// The profile remembered for the selected credential (Who's Watching's
-    /// "Last used"), whatever Profile Selection says.
-    func rememberedProfileForCurrentSelection() async -> RememberedProfile? {
-        rememberedProfile(in: await currentLaunchStateScope(), accountEpoch: await tokenStore.getOrCreateAccountEpoch())
     }
 
     /// The same read without waiting, from the selection mirror, for a
@@ -1223,22 +1225,34 @@ final class AuthService: @unchecked Sendable {
         let selection = await tokenStore.currentSelection()
         let affectsCurrent = await includesSelection(target)
         var account: RefreshAccountIdentity?
+        var pushServers: [String] = []
         if affectsCurrent {
             let capturedAuth = await tokenStore.captureOrdinaryRequestAuth()
             guard case .allowed(let allowed) = Self.signOutAuthorization(
                 activeServerId: serverID, capturedAuth: capturedAuth
             ) else { return .refused }
             account = allowed
-            // Only a device that can still authenticate can tell the server
-            // to stop pushing, so this runs before the credentials are
-            // cleared. A refused sign-out keeps the server signed in, so its
-            // pushes are turned back on.
-            if let serverID { await unregisterPush(serverID) }
+            if let serverID { pushServers.append(serverID) }
         } else if await tokenStore.hasTemporaryScope() {
             return .refused
         }
+        // Each server's push registration follows the current user's
+        // sign-in there (plan §2.13), so removing one of those turns its
+        // server's pushes off too, active or not. Another user's sign-in
+        // isn't what the server pushes to here.
+        for removed in await currentUsersServers(in: target) where !pushServers.contains(removed) {
+            pushServers.append(removed)
+        }
+        // Only a device that can still authenticate can tell the server to
+        // stop pushing, so this runs before the credentials are cleared. A
+        // refused sign-out keeps the servers signed in, so their pushes are
+        // turned back on.
+        for pushServer in pushServers { await unregisterPush(pushServer) }
+        func restorePushes() async {
+            for pushServer in pushServers { await restorePush(pushServer) }
+        }
         guard let lease = await httpClient.beginIdentityTransition() else {
-            if affectsCurrent, let serverID { await restorePush(serverID) }
+            await restorePushes()
             return .refused
         }
         if affectsCurrent {
@@ -1247,7 +1261,7 @@ final class AuthService: @unchecked Sendable {
                   serverRegistry.activeServerId == serverID,
                   await tokenStore.refreshAccountIdentity() == account else {
                 await httpClient.endIdentityTransition(lease)
-                if let serverID { await restorePush(serverID) }
+                await restorePushes()
                 return .refused
             }
             #if os(iOS) || os(tvOS)
@@ -1257,6 +1271,7 @@ final class AuthService: @unchecked Sendable {
             // A switch that landed before the lease opened what this
             // removes, so its push and caches were never handled here.
             await httpClient.endIdentityTransition(lease)
+            await restorePushes()
             return .refused
         }
         let directory = try? await tokenStore.directory()
@@ -1313,6 +1328,23 @@ final class AuthService: @unchecked Sendable {
         revoke(removals.compactMap(\.credential))
         guard removals.allSatisfy(\.durable) else { return .localOnly }
         return diagnosticsRemoved ? .completed : .diagnosticsCleanupFailed
+    }
+
+    /// The servers where `target` removes a sign-in, or pending legacy
+    /// server, of the user whose credential is current (`TokenStore`'s
+    /// current user, which a chooser leaves set).
+    private func currentUsersServers(in target: SignInRemovalTarget) async -> [String] {
+        guard let currentUserID = await tokenStore.currentUserID(),
+              let directory = try? await tokenStore.directory() else { return [] }
+        switch target {
+        case .current:
+            return []
+        case .signIn(let key):
+            return directory.user(owning: key)?.id == currentUserID ? [key.serverID] : []
+        case .user(let userID):
+            guard userID == currentUserID, let user = directory.user(withID: userID) else { return [] }
+            return SignInTargetList.serverIDs(in: user)
+        }
     }
 
     /// Whether `target` includes the selected credential right now.

@@ -15,8 +15,10 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
 
     // Fields for Silo users. Every one is optional so state saved by earlier
     // builds still decodes; a required field would reset Profile Selection.
-    // `rememberedByServerID` and `selectionRequiredServerIDs` stay as the
-    // read-only fallback for state recorded before sign-ins existed.
+    // `rememberedByServerID` and `selectionRequiredServerIDs` stay for a
+    // server's own session (before migration, or a pending legacy server),
+    // and saved sign-ins read them as the fallback for state recorded
+    // before sign-ins existed.
 
     /// Nil means `.profileOnly`.
     var askFor: ProfileLaunchAskFor? = nil

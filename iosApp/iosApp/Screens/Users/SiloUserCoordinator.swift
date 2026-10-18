@@ -86,6 +86,14 @@ final class SiloUserCoordinator {
     private(set) var snapshot: SiloUserDirectorySnapshot?
     /// A chooser pick or sign-in start is running (`pickingOnce`).
     @ObservationIgnored private var isPicking = false
+    /// Bumped each time a user or sign-in is opened. App-wide, because the
+    /// selected sign-in is: every window's `AppRouter.signInRevision` reads
+    /// it.
+    private(set) var signInRevision = 0
+
+    func noteSignInChanged() {
+        signInRevision &+= 1
+    }
 
     init(
         auth: AuthService = .shared,
@@ -155,7 +163,8 @@ final class SiloUserCoordinator {
               let server = directory.currentServerID.flatMap(user.server) else {
             return "Signed in as \(user.name)"
         }
-        return "Signed in as \(user.name)\(SiloUserNaming.separator)\(server.name)"
+        // A name told apart by this same server names it once.
+        return "Signed in as \(user.name(besides: [server.name]))\(SiloUserNaming.separator)\(server.name)"
     }
 
     // MARK: - Launch (spec §6.2, §6.3)
@@ -1283,9 +1292,10 @@ final class SiloUserCoordinator {
     /// `.siloSignInMigrated`: a pending legacy server became a saved
     /// sign-in, or its account was already saved and it was dropped (plan
     /// §3.3). The first changes the account mirror from nil to the account,
-    /// so downloads re-scope. The second leaves nothing selected, so the
-    /// launch rules run, unless `routes` is false (the launch under the
-    /// splash re-resolves by itself).
+    /// so downloads and the session's stores re-scope: their data moves to
+    /// the account's keys, and a refresh begun under the old keys gives up.
+    /// The second leaves nothing selected, so the launch rules run, unless
+    /// `routes` is false (the launch under the splash re-resolves by itself).
     func handleSignInMigrated(_ outcome: BindOutcome, router: AppRouter, routes: Bool = true) async {
         switch outcome {
         case .legacyMigrated(let key):
@@ -1295,6 +1305,7 @@ final class SiloUserCoordinator {
                 preferences.setLastServer(key.serverID, for: userID)
             }
             await reloadDirectory()
+            router.noteSignInChanged()
             #if !os(tvOS)
             await DownloadManager.shared.onAppActive()
             #endif
@@ -1310,8 +1321,19 @@ final class SiloUserCoordinator {
     // MARK: - Rename (spec §5.2, §5.7)
 
     /// Renames a user on this device; an empty name restores the default.
+    /// So does the default name itself (Rename saved as pre-filled): it is
+    /// no rename, and the default keeps following the oldest sign-in.
     @discardableResult
     func renameUser(_ userID: String, to name: String?) async -> Bool {
+        var name = name
+        if let snapshot = try? await tokenStore.directory(),
+           let user = snapshot.user(withID: userID),
+           SiloUserNaming.normalizedDisplayName(name) == SiloUserNaming.defaultName(
+               for: user, in: snapshot,
+               serverNames: Dictionary(registry.entries.map { ($0.id, $0.displayName) },
+                                       uniquingKeysWith: { first, _ in first })) {
+            name = nil
+        }
         let renamed = await tokenStore.renameUser(userID, to: name)
         await reloadDirectory()
         return renamed

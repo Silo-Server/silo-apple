@@ -156,6 +156,14 @@ struct TVLoginView: View {
             Task { await receiver.cancel() }
             qrVM.stop()
         }
+        // This screen is the root of a sign-in started from a chooser or
+        // Settings, so Menu goes back as Cancel does, like "Sign in to…" and
+        // server setup; otherwise it keeps its system meaning. The password
+        // screen's own Menu (back to the code) answers first.
+        .onExitCommand(perform: router.signInReturnPoint != nil && !isPairing ? {
+            guard !isSigningIn, !isSubmittingNetwork else { return }
+            cancelSignIn()
+        } : nil)
     }
 
     // MARK: - Code screen
@@ -274,8 +282,7 @@ struct TVLoginView: View {
         }
         if router.signInReturnPoint != nil {
             Button {
-                qrVM.stop()
-                Task { await router.users.cancelSignIn(router: router) }
+                cancelSignIn()
             } label: {
                 Label(ConfirmationCopy.cancelTitle, systemImage: "xmark")
             }
@@ -719,6 +726,11 @@ struct TVLoginView: View {
     private func changeServer() {
         qrVM.stop()
         Task { await router.users.changeSignInServer(router: router) }
+    }
+
+    private func cancelSignIn() {
+        qrVM.stop()
+        Task { await router.users.cancelSignIn(router: router) }
     }
 
     /// "Continue as …": the same single flight as a password sign-in, so a
