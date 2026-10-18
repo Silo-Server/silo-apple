@@ -20,3 +20,33 @@ error_response.json is not vendored: it is the retired v1 426
 client_upgrade_required envelope. v2 errors are problem documents.
 
 Refresh these files together from the server, then regenerate Silo.xcodeproj with cd iosApp && xcodegen generate.
+
+Buffering quality
+Source: silo-server docs/design/schemas/playback-v3/v3/fixtures
+Server commit: 857655f4f5786235dba6cc9f24c844e65ea33cb1
+Vendored: 2026-10-17
+
+Eight files, copied byte for byte with their names unchanged. The spec is
+docs/design/2026-10-17-buffering-quality.md at the same commit.
+
+From fixtures/valid:
+  buffering-start_request.json
+  buffering-replan_request.json
+  learned-limit-decision_response.json
+  plan-summary-route_event.json
+
+From fixtures/invalid (the server refuses these; the client encoder must not
+produce their shapes):
+  buffering-source-without-estimate-start_request.json
+  buffering-source-without-estimate-replan_request.json
+  buffering-without-feature-start_request.json
+  buffering-without-feature-replan_request.json
+
+learned-limit-decision_response.json is the protocol domain's decision, with
+integer file ids; BufferingQualityContractTests also decodes it on the v2
+surface with the ids as opaque strings. Re-vendor each file with
+
+  git -C <silo-server> show <commit>:docs/design/schemas/playback-v3/v3/fixtures/<valid|invalid>/<name> \
+    > iosApp/Tests/Fixtures/PlaybackV3/<name>
+
+update the commit above, and run cd iosApp && xcodegen generate.

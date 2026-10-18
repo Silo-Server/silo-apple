@@ -85,6 +85,23 @@ extension APIv2Client {
         return mutation
     }
 
+    /// `GET /api/v2/playback/connection`, answered with 200: this device's
+    /// learned limit on the connection it is using now. The server keys it by
+    /// the `X-Silo-Device-Id` every request carries. Served only by a server
+    /// that advertises `buffering_quality_v1`.
+    func playbackConnection(auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PlaybackConnection {
+        let raw = try await playbackRequest(method: "GET", suffix: "/connection", auth: auth)
+        guard raw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackConnection.self, from: raw.data)
+    }
+
+    /// `DELETE /api/v2/playback/connection/learned-limit`, answered with 204:
+    /// forgets this device's learned limit on the current connection.
+    func resetPlaybackLearnedLimit(auth: CapturedOrdinaryRequestAuth) async throws {
+        let raw = try await playbackRequest(method: "DELETE", suffix: "/connection/learned-limit", auth: auth)
+        guard raw.statusCode == 204 else { throw PlaybackSequencedError.invalidResponse }
+    }
+
     /// Mints a control ticket and builds the socket upgrade for it. Checks
     /// `GET /api/v2/playback/sessions/control/capabilities` first, then
     /// `POST /api/v2/playback/sessions/{session_id}/control/ws-ticket`,

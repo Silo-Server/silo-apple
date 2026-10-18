@@ -35,6 +35,7 @@ struct PlaybackSettingsView: View {
             resetSection
         }
         .task { await spoilers.refresh() }
+        .task { await viewModel.loadLearnedConnectionLimit() }
         .settingsListChrome()
         .navigationTitle("Playback")
         .siloNavigationTitleDisplayMode(.inline)
@@ -62,14 +63,44 @@ struct PlaybackSettingsView: View {
             choiceRow("Resolution", .resolution, value: viewModel.qualityResolutionLabel, options: resolutionChoices)
 
             choiceRow("Maximum Bitrate", .maxBitrate, value: viewModel.maxBitrateLabel, options: maxBitrateChoices)
+
+            // Three-way (labels fixed by the contract).
+            choiceRow(
+                SettingsViewModel.bufferingQualityTitle,
+                .bufferingQualityMode,
+                value: viewModel.bufferingQualityMode.label,
+                options: BufferingQualityMode.allCases.map { SettingsChoice(id: $0.wireValue, label: $0.label) }
+            )
+
+            if let limit = viewModel.learnedConnectionLimitText {
+                LabeledContent {
+                    Button("Reset") {
+                        Task { await viewModel.resetLearnedConnectionLimit() }
+                    }
+                    .buttonStyle(.borderless)
+                } label: {
+                    Text(limit)
+                }
+                .foregroundStyle(Color.siloOnSurface)
+            }
         } header: {
             Text("Quality")
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
-            Text(viewModel.qualityFooterText)
+            Text(qualityFooterText)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
+    }
+
+    /// The quality note, the buffering description, then a failed Reset, one
+    /// line each.
+    private var qualityFooterText: String {
+        var lines = [viewModel.qualityFooterText, SettingsViewModel.bufferingQualityDescription]
+        if let error = viewModel.learnedLimitResetError {
+            lines.append(error)
+        }
+        return lines.joined(separator: "\n")
     }
 
     #if os(iOS)

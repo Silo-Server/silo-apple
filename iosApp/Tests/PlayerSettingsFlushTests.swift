@@ -1382,6 +1382,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         #if os(iOS)
         switchingBatches.append(SettingKey.playerCellularQualitySettings)
         #endif
+        switchingBatches.append(SettingKey.playerBufferingQualitySettings)
         for batch in switchingBatches {
             scope.value = "scope-a"
             transport.onEffectiveValues = { keys in
@@ -1429,6 +1430,7 @@ final class PlayerSettingsFlushTests: XCTestCase {
         #if os(iOS)
         switchingBatches.append(SettingKey.playerCellularQualitySettings)
         #endif
+        switchingBatches.append(SettingKey.playerBufferingQualitySettings)
         for batch in switchingBatches {
             scope.value = "scope-a"
             transport.onEffectiveValues = { keys in
@@ -2003,17 +2005,14 @@ final class PlayerSettingsFlushTests: XCTestCase {
         await harness.settings.refreshFromServer()
 
         // One batch for the player's keys. iPhone and iPad read the cellular
-        // pair in a second one, since a server that predates the pair would
-        // refuse the whole first batch over it.
+        // pair in a second one, and every platform reads the buffering mode
+        // in its own, since a server that predates a newer key would refuse
+        // the whole first batch over it.
         let calls = harness.transport.effectiveCalls()
-        XCTAssertEqual(
-            calls.count, PlayerSettings.offersCellularQuality ? 2 : 1,
-            "a refresh must be batched, not one call per key"
-        )
+        let cellular = PlayerSettings.offersCellularQuality ? [SettingKey.playerCellularQualitySettings] : []
+        XCTAssertEqual(calls.count, 2 + cellular.count, "a refresh must be batched, not one call per key")
         XCTAssertEqual(Set(calls[0]), Set(SettingKey.playerReadSettings))
-        if PlayerSettings.offersCellularQuality {
-            XCTAssertEqual(calls[1], SettingKey.playerCellularQualitySettings)
-        }
+        XCTAssertEqual(Array(calls.dropFirst()), cellular + [SettingKey.playerBufferingQualitySettings])
     }
 
     /// Apple has no player setting for recaps: the player follows the
@@ -2180,9 +2179,13 @@ final class PlayerSettingsFlushTests: XCTestCase {
 
         await harness.settings.resetAllDeviceSettings()
 
-        // iPhone and iPad also clear the cellular pair this device can hold.
+        // iPhone and iPad also clear the cellular pair this device can hold,
+        // and every platform the buffering mode.
         let cellular = PlayerSettings.offersCellularQuality ? SettingKey.playerCellularQualitySettings : []
-        XCTAssertEqual(Set(harness.transport.deletes()), Set(SettingKey.playerReadSettings + cellular))
+        XCTAssertEqual(
+            Set(harness.transport.deletes()),
+            Set(SettingKey.playerReadSettings + cellular + SettingKey.playerBufferingQualitySettings)
+        )
     }
 
     func testAnOldServerResetAppliesContractDefaultsAndDoesNotQueueDeletes() async throws {

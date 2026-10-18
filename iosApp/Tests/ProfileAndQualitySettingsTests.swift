@@ -554,7 +554,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await harness.settings.refreshFromServer()
 
         let calls = harness.transport.effectiveCalls()
-        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(calls.count, 3, "the player batch, the cellular pair and the buffering mode")
         XCTAssertFalse(calls[0].contains(.playbackCellularPreferredQuality))
         XCTAssertEqual(calls[1], SettingKey.playerCellularQualitySettings)
         XCTAssertEqual(harness.settings.cellularQualityAxes, AppleQualityAxes(resolution: "480p", bitrateKbps: 1_500))
@@ -626,6 +626,127 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         try await waitUntil("the hold clears") { settings.heldDeviceSettingKeys.isEmpty }
     }
     #endif
+
+    // MARK: - Buffering quality mode
+
+    private static func bufferingRow(_ mode: BufferingQualityMode, scope: SettingScope = .profile) -> EffectiveSettingValue {
+        .init(
+            key: SettingKey.playbackBufferingQualityMode.rawValue,
+            value: .string(mode.wireValue),
+            source: .scope(scope),
+            scope: scope
+        )
+    }
+
+    func testTheBufferingModeDefaultsToAutomaticAndIsSavedForThisDevice() async throws {
+        let harness = try PlayerSettingsHarness()
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .always)
+
+        await harness.settings.refreshFromServer()
+        harness.transport.reset()
+        harness.settings.setBufferingQualityMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+
+        let write = try XCTUnwrap(harness.transport.writesByKey()[.playbackBufferingQualityMode])
+        XCTAssertEqual(write.value, .string("never"))
+        XCTAssertEqual(write.scope, .profileDevice)
+        XCTAssertEqual(harness.transport.writes().count, 1, "only the mode is written")
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+
+        let relaunched = PlayerSettings(
+            defaults: harness.defaults,
+            flusher: PlayerSettingsFlusher(transport: harness.transport)
+        )
+        XCTAssertEqual(relaunched.bufferingQualityMode, .never)
+    }
+
+    /// A current server's mode comes from a batch of its own, so the player
+    /// batch stays readable on servers that predate the key.
+    func testACurrentServersBufferingModeIsReadInItsOwnBatch() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [Self.bufferingRow(.ask)]
+        await harness.settings.refreshFromServer()
+
+        let calls = harness.transport.effectiveCalls()
+        XCTAssertFalse(calls[0].contains(.playbackBufferingQualityMode))
+        XCTAssertEqual(calls.filter { $0.contains(.playbackBufferingQualityMode) },
+                       [SettingKey.playerBufferingQualitySettings])
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .ask)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode), "the profile's value")
+
+        // "Use Profile Setting" clears this device's value and reads the
+        // profile's back.
+        harness.transport.effective = [Self.bufferingRow(.never, scope: .profileDevice)]
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+        harness.transport.reset()
+        harness.transport.effective = [Self.bufferingRow(.ask)]
+        await harness.settings.useProfileSetting(.bufferingQualityMode)
+        XCTAssertEqual(harness.transport.deletes(), [.playbackBufferingQualityMode])
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .ask)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+    }
+
+    /// A server older than revision 21 does not define the key: it is not
+    /// read, and a change stays on this device, still applied, until the
+    /// server serves the key.
+    func testOnAnOlderServerTheBufferingModeStaysOnThisDeviceUntilAnUpgrade() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.bufferingQualityRevision - 1
+        await harness.settings.refreshFromServer()
+        XCTAssertFalse(harness.transport.effectiveCalls().contains { $0.contains(.playbackBufferingQualityMode) })
+
+        harness.settings.setBufferingQualityMode(.ask)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(harness.transport.writes().isEmpty, "nothing an older server would refuse is sent")
+        XCTAssertFalse(harness.settings.rejectedDeviceSettingChange)
+        XCTAssertTrue(harness.settings.heldDeviceSettingKeys.isEmpty)
+
+        await harness.settings.refreshFromServer()
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .ask)
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+
+        harness.transport.revision = SettingKey.bufferingQualityRevision
+        await harness.settings.refreshFromServer()
+        XCTAssertEqual(harness.transport.writesByKey()[.playbackBufferingQualityMode]?.value, .string("ask"))
+    }
+
+    /// An older server has no profile value to go back to, so "Use Profile
+    /// Setting" leaves the contract default and sends nothing.
+    func testUsingTheProfileBufferingModeOnAnOlderServerRestoresTheDefault() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.bufferingQualityRevision - 1
+        await harness.settings.refreshFromServer()
+        harness.settings.setBufferingQualityMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+
+        await harness.settings.useProfileSetting(.bufferingQualityMode)
+
+        XCTAssertTrue(harness.transport.deletes().isEmpty)
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .default)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+    }
+
+    /// When the mode's read fails, this device keeps its mode and whether it
+    /// is its own.
+    func testAFailedBufferingModeReadKeepsThisDevicesMode() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.effective = [Self.bufferingRow(.never, scope: .profileDevice)]
+        await harness.settings.refreshFromServer()
+
+        harness.transport.onEffectiveValues = { [unowned transport = harness.transport] keys in
+            transport.effectiveError = keys == SettingKey.playerBufferingQualitySettings
+                ? .transport(description: "offline")
+                : nil
+        }
+        harness.transport.effective = []
+        let result = await harness.settings.refreshFromServer()
+
+        XCTAssertEqual(result, .refreshed, "the player batch still refreshes")
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .never)
+        XCTAssertTrue(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+    }
 
     // MARK: - Profile-scoped writes
 

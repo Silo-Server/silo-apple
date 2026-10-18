@@ -170,6 +170,10 @@ enum APIv2MutationCatalog {
         .init("POST", "/api/v2/watch-together/rooms/{room_id}/suggestions/promote", .nonRetryable),
         // Playback
         .init("POST", "/api/v2/playback/route-events", .nonRetryable),
+        // Clearing is idempotent, but the contract marks the reset
+        // non_retryable; Settings shows the failure and the viewer resets
+        // again.
+        .init("DELETE", "/api/v2/playback/connection/learned-limit", .nonRetryable),
         // Shuffle: a resent create would start a second shuffle.
         .init("POST", "/api/v2/shuffles", .nonRetryable),
         // Subtitles

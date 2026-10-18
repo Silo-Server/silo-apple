@@ -72,6 +72,16 @@ final class SettingsViewModel {
     var cellularQualityLabel: String { PlayerSettings.shared.cellularQualityLabel }
     static let cellularQualityFooterText = "Used on mobile data and metered networks, such as a phone hotspot."
 
+    var bufferingQualityMode: BufferingQualityMode {
+        get { PlayerSettings.shared.bufferingQualityMode }
+        set { PlayerSettings.shared.setBufferingQualityMode(newValue) }
+    }
+
+    /// The manifest's label and description for `playback.buffering_quality_mode`.
+    static let bufferingQualityTitle = "Lower quality when buffering"
+    static let bufferingQualityDescription =
+        "What Silo does on Auto when playback keeps buffering. Silo always asks before lowering a quality you picked."
+
     var preferredAudioLanguage: String {
         get { PlayerSettings.shared.audioLanguage }
         set { PlayerSettings.shared.setAudioLanguage(newValue) }
@@ -395,6 +405,61 @@ final class SettingsViewModel {
         await PlayerSettings.shared.resetAllDeviceSettings()
     }
 
+    // MARK: Learned connection limit
+
+    /// The limit the server learned for this device on its current
+    /// connection, shown under the buffering row with a Reset action. Nil
+    /// hides the row: a server without `buffering_quality_v1`, no limit, or a
+    /// failed read.
+    private(set) var learnedConnectionLimit: APIv2PlaybackConnection.LearnedLimit?
+
+    /// Set when Reset failed, until the next Reset or load.
+    private(set) var learnedLimitResetError: String?
+
+    static let learnedLimitResetFailedMessage = "Couldn't reset the limit. Try again."
+
+    var learnedConnectionLimitText: String? {
+        learnedConnectionLimit.map { Self.learnedLimitText($0) }
+    }
+
+    /// "Limited to 44.1 Mbps after buffering on Oct 17": the date of the most
+    /// recent lowering, as month and day in the viewer's locale.
+    static func learnedLimitText(
+        _ limit: APIv2PlaybackConnection.LearnedLimit,
+        locale: Locale = .autoupdatingCurrent,
+        timeZone: TimeZone = .autoupdatingCurrent
+    ) -> String {
+        var style = Date.FormatStyle.dateTime.month(.abbreviated).day().locale(locale)
+        style.timeZone = timeZone
+        let bitrate = ApplePlaybackQuality.formatBitrate(kbps: limit.kbps)
+        return "Limited to \(bitrate) after buffering on \(limit.observedAt.formatted(style))"
+    }
+
+    @MainActor
+    func loadLearnedConnectionLimit() async {
+        learnedLimitResetError = nil
+        guard await PlaybackV3CapabilityGate.shared.advertisesBufferingQuality(),
+              let auth = await TokenStore.shared.captureOrdinaryRequestAuth() else {
+            learnedConnectionLimit = nil
+            return
+        }
+        learnedConnectionLimit = try? await SiloAPI.shared.apiV2Client.playbackConnection(auth: auth).learnedLimit
+    }
+
+    @MainActor
+    func resetLearnedConnectionLimit() async {
+        learnedLimitResetError = nil
+        do {
+            guard let auth = await TokenStore.shared.captureOrdinaryRequestAuth() else {
+                throw HTTPError.requestIdentityChanged
+            }
+            try await SiloAPI.shared.apiV2Client.resetPlaybackLearnedLimit(auth: auth)
+            learnedConnectionLimit = nil
+        } catch {
+            learnedLimitResetError = Self.learnedLimitResetFailedMessage
+        }
+    }
+
     // MARK: Device value or profile value
 
     /// Picker tag for "Use Profile Setting": selected while this device has
@@ -423,6 +488,7 @@ final class SettingsViewModel {
         case .resolution: return PlayerSettings.shared.preferredQualityResolution
         case .maxBitrate: return PlayerSettings.shared.maxBitrateKbps.map(String.init) ?? Self.noBitrateLimitTag
         case .cellularQuality: return cellularQualityPresetId ?? Self.customQualityTag
+        case .bufferingQualityMode: return bufferingQualityMode.wireValue
         case .audioLanguage: return preferredAudioLanguage
         case .introSkipMode: return introSkipMode.wireValue
         case .autoSkipCredits: return skipCredits ? Self.onTag : Self.offTag
@@ -455,6 +521,9 @@ final class SettingsViewModel {
         case .cellularQuality:
             guard tag != Self.customQualityTag else { return }
             setCellularQualityPreset(tag)
+        case .bufferingQualityMode:
+            guard let mode = BufferingQualityMode(wireValue: tag) else { return }
+            bufferingQualityMode = mode
         case .audioLanguage:
             preferredAudioLanguage = tag
         case .introSkipMode:

@@ -14,10 +14,12 @@ final class PlaybackCapabilityGateTests: XCTestCase {
 
     /// The vendored fixture plus the header-authenticated media feature the
     /// server always advertises (`ServerFeaturesV3`), with `installation`.
-    private func available(installation: String? = nil, dropping feature: String? = nil) throws -> String {
+    private func available(installation: String? = nil, dropping feature: String? = nil,
+                           adding extra: [String] = []) throws -> String {
         let data = try Support.mutatedBody(named: "playback_capability_available", bundleClass: Self.self) {
             var features = $0["features"] as? [String] ?? []
             features.append(PlaybackProtocolV3.headerAuthenticatedMediaFeature)
+            features.append(contentsOf: extra)
             $0["features"] = features.filter { $0 != feature }
             if let installation { $0["installation_id"] = installation }
         }
@@ -83,6 +85,32 @@ final class PlaybackCapabilityGateTests: XCTestCase {
                 $0.removeValue(forKey: "installation_id")
             })
         await assertTerminal("playback_not_configured") { _ = try anonymous.requireAvailable() }
+    }
+
+    /// The buffering-quality features are optional: without them playback
+    /// still starts, and the start request and Settings leave them out.
+    func testTheCapabilityCarriesTheOptionalBufferingQualityFeatures() async throws {
+        let (plain, plainStub) = try await makeGate()
+        plainStub.reply(200, try available())
+        let without = try await plain.requireNeutralProtocolV3()
+        XCTAssertFalse(without.bufferingQuality)
+        XCTAssertFalse(without.planSummary)
+        let plainAdvertises = await plain.advertisesBufferingQuality()
+        XCTAssertFalse(plainAdvertises)
+
+        let (gate, stub) = try await makeGate()
+        stub.reply(200, try available(adding: [PlaybackProtocolV3.bufferingQualityFeature,
+                                               PlaybackProtocolV3.planSummaryFeature]))
+        let with = try await gate.requireNeutralProtocolV3()
+        XCTAssertTrue(with.bufferingQuality)
+        XCTAssertTrue(with.planSummary)
+        let advertises = await gate.advertisesBufferingQuality()
+        XCTAssertTrue(advertises)
+
+        let (refused, refusedStub) = try await makeGate()
+        refusedStub.reply(200, try fixtureString("playback_capability_unconfigured"))
+        let refusedAdvertises = await refused.advertisesBufferingQuality()
+        XCTAssertFalse(refusedAdvertises, "Settings hides the limit when playback is unavailable")
     }
 
     // MARK: Caching

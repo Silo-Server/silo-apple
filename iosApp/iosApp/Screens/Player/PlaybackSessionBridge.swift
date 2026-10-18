@@ -180,6 +180,11 @@ actor PlaybackV3CapabilityGate {
         /// one is refused with 409 `installation_changed`.
         let installationID: String
         let authorizedMediaOrigins: Bool
+        /// `buffering_quality_v1`: starts opt in, and the connection endpoints
+        /// exist. Each decision's `server_features` says the same for replans.
+        var bufferingQuality = false
+        /// `playback_plan_summary_v1`: the server accepts `plan_summary`.
+        var planSummary = false
     }
 
     private let tokenStore: TokenStore
@@ -218,7 +223,9 @@ actor PlaybackV3CapabilityGate {
                         installationID: try capabilities.requireAvailable(),
                         authorizedMediaOrigins: capabilities.features.contains(
                             PlaybackProtocolV3.authorizedMediaOriginsFeature
-                        )
+                        ),
+                        bufferingQuality: capabilities.features.contains(PlaybackProtocolV3.bufferingQualityFeature),
+                        planSummary: capabilities.features.contains(PlaybackProtocolV3.planSummaryFeature)
                     )
                 } catch {
                     throw Self.terminalFailure(for: error)
@@ -239,6 +246,13 @@ actor PlaybackV3CapabilityGate {
             probeByServerId[serverId] = nil
             throw error
         }
+    }
+
+    /// Whether the active server advertises `buffering_quality_v1`, for
+    /// surfaces outside playback (Settings). False when playback is not
+    /// available or the probe fails.
+    func advertisesBufferingQuality() async -> Bool {
+        (try? await requireNeutralProtocolV3())?.bufferingQuality ?? false
     }
 
     /// Drops every cached capability that still names `stale`'s installation,
@@ -790,6 +804,7 @@ actor PlaybackSessionBridge {
         prefersLastUsedVersion: Bool = false,
         preferredQualityOverride: String? = nil,
         onMeteredNetwork: Bool = false,
+        bufferingQualityMode: BufferingQualityMode,
         allowAlternateVersions: Bool? = nil,
         startsAtFirstPart: Bool = false
     ) async throws -> PreparedPlayback {
@@ -901,6 +916,7 @@ actor PlaybackSessionBridge {
             audioTrackIndex: resolvedAudioTrackIndex,
             subtitleTrackIndex: subtitleIntent.ffmpegStreamIndex,
             subtitleCombinedIndex: subtitleIntent.combinedIndex,
+            bufferingQualityMode: bufferingQualityMode,
             allowAlternateVersions: allowAlternateVersions
         )
     }
@@ -1022,6 +1038,7 @@ actor PlaybackSessionBridge {
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?,
         subtitleCombinedIndex: Int? = nil,
+        bufferingQualityMode: BufferingQualityMode,
         allowAlternateVersions: Bool? = nil
     ) async throws -> PreparedPlayback {
         let resolvedSubtitleCombinedIndex = subtitleCombinedIndex ?? subtitleTrackIndex.flatMap {
@@ -1039,6 +1056,7 @@ actor PlaybackSessionBridge {
             startPosition: startPosition,
             audioTrackIndex: audioTrackIndex,
             subtitleCombinedIndex: resolvedSubtitleCombinedIndex,
+            bufferingQualityMode: bufferingQualityMode,
             allowAlternateVersions: allowAlternateVersions
         )
         return adoptProtocolV3Start(staged, watchDetail: watchDetail)
@@ -1067,6 +1085,7 @@ actor PlaybackSessionBridge {
         startPosition: Double?,
         audioTrackIndex: Int?,
         subtitleCombinedIndex: Int?,
+        bufferingQualityMode: BufferingQualityMode,
         allowAlternateVersions: Bool?
     ) async throws -> StagedProtocolV3Start {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
@@ -1083,11 +1102,19 @@ actor PlaybackSessionBridge {
         let (capability, playbackAttemptId, authority, response) = try await gate.withInstallationRefresh { capability in
             let authority = PlaybackV2SessionAuthority(owner: owner, installationID: capability.installationID)
             let playbackAttemptId = "apple:\(UUID().uuidString.lowercased())"
-            let request = PlaybackV3StartRequest(
-                protocolVersion: PlaybackProtocolV3.version,
-                clientFeatures: ApplePlaybackV3Capabilities.startFeatures(
+            // Opts into buffering quality only where the server advertises it.
+            // A start sends no estimate; in `never` it carries learned_limit
+            // "ignore".
+            let buffering = PlaybackV3BufferingQualityRequest(
+                baseFeatures: ApplePlaybackV3Capabilities.startFeatures(
                     authorizedMediaOrigins: capability.authorizedMediaOrigins
                 ),
+                serverAdvertisesFeature: capability.bufferingQuality,
+                mode: bufferingQualityMode
+            )
+            let request = PlaybackV3StartRequest(
+                protocolVersion: PlaybackProtocolV3.version,
+                clientFeatures: buffering.clientFeatures,
                 fileId: selectedVersion.fileId,
                 profileId: profileId,
                 playbackAttemptId: playbackAttemptId,
@@ -1104,11 +1131,13 @@ actor PlaybackSessionBridge {
                 },
                 subtitleTrackIndex: subtitleCombinedIndex,
                 metered: false,
-                bandwidthEstimateKbps: nil,
+                bandwidthEstimateKbps: buffering.bandwidthEstimateKbps,
                 bandwidthCapKbps: bandwidthCapKbps,
                 clientCapabilities: snapshot.capabilities,
                 clientPlaybackContext: snapshot.context,
-                allowAlternateVersions: allowAlternateVersions
+                allowAlternateVersions: allowAlternateVersions,
+                bandwidthEstimateSource: buffering.bandwidthEstimateSource,
+                learnedLimit: buffering.learnedLimit
             )
 
             logger.info(
@@ -1438,7 +1467,11 @@ actor PlaybackSessionBridge {
         qualityAxes: AppleQualityAxes? = nil,
         audioTrackIndex: Int? = nil,
         subtitleTrackIndex: Int? = nil,
-        outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
+        outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil,
+        bufferingQualityMode: BufferingQualityMode,
+        bandwidthEstimateKbps: Int? = nil,
+        bandwidthEstimateSource: String? = nil,
+        learnedLimit: String? = nil
     ) async throws -> PreparedPlayback? {
         guard var active = activeProtocolV3,
               let currentSessionId = sessionId,
@@ -1560,13 +1593,24 @@ actor PlaybackSessionBridge {
             throw CancellationError()
         }
 
-        let request = PlaybackV3ReplanRequest(
-            protocolVersion: PlaybackProtocolV3.version,
+        // A replan that lists client features replaces the session's stored
+        // list, so it repeats the start's. The buffering feature follows the
+        // latest decision's server_features.
+        let buffering = PlaybackV3BufferingQualityRequest(
             // Sticky: a replan may neither add nor drop the negotiated origin
             // token, so it repeats the attempt's captured state verbatim.
-            clientFeatures: ApplePlaybackV3Capabilities.startFeatures(
+            baseFeatures: ApplePlaybackV3Capabilities.startFeatures(
                 authorizedMediaOrigins: active.negotiatedAuthorizedMediaOrigins
             ),
+            serverAdvertisesFeature: active.serverFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature),
+            mode: bufferingQualityMode,
+            bandwidthEstimateKbps: bandwidthEstimateKbps,
+            bandwidthEstimateSource: bandwidthEstimateSource,
+            learnedLimit: learnedLimit
+        )
+        let request = PlaybackV3ReplanRequest(
+            protocolVersion: PlaybackProtocolV3.version,
+            clientFeatures: buffering.clientFeatures,
             operation: operation,
             playbackAttemptId: active.playbackAttemptId,
             replanRequestId: "apple-replan:\(UUID().uuidString.lowercased())",
@@ -1578,7 +1622,7 @@ actor PlaybackSessionBridge {
             qualityPreference: requestedQualityPreference,
             positionSeconds: normalizedPosition,
             metered: false,
-            bandwidthEstimateKbps: nil,
+            bandwidthEstimateKbps: buffering.bandwidthEstimateKbps,
             bandwidthCapKbps: requestedBandwidthCapKbps,
             selectedTracks: selectedTracks,
             failure: Self.replanFailure(
@@ -1590,7 +1634,9 @@ actor PlaybackSessionBridge {
             // recipe. Its current track is carried in selectedTracks above.
             localMutations: [],
             clientCapabilities: active.snapshot.capabilities,
-            clientPlaybackContext: active.snapshot.context
+            clientPlaybackContext: active.snapshot.context,
+            bandwidthEstimateSource: buffering.bandwidthEstimateSource,
+            learnedLimit: buffering.learnedLimit
         )
         let response = try await SiloAPI.shared.apiV2Client.replanPlayback(
             sessionID: currentSessionId,
@@ -1809,6 +1855,47 @@ actor PlaybackSessionBridge {
             fallbackReason: nil,
             diagnostics: diagnostics
         )
+    }
+
+    /// The `plan_summary` event for the plan `prepared` describes. Built from
+    /// that plan rather than the active one: a summary is sent as its plan is
+    /// replaced, so the bridge may already hold the next.
+    nonisolated static func planSummaryRouteEvent(
+        _ summary: PlaybackV3PlanSummary,
+        for prepared: PreparedPlaybackV3,
+        sessionId: String
+    ) -> PlaybackV3RouteEvent {
+        PlaybackV3RouteEvent(
+            protocolVersion: PlaybackProtocolV3.version,
+            playbackAttemptId: prepared.playbackAttemptId,
+            sessionId: sessionId,
+            planId: prepared.plan.planId,
+            planAttemptId: prepared.planAttemptId,
+            planAttemptKey: prepared.planAttemptKey,
+            event: PlaybackProtocolV3.RouteEvent.planSummary,
+            failureClassification: nil,
+            fallbackReason: nil,
+            appliedQuirkIds: prepared.plan.appliedQuirks.map(\.id),
+            quirkRegistryRevision: prepared.plan.appliedQuirks.first?.registryRevision,
+            outputContextId: prepared.outputContextId,
+            diagnostics: summary.diagnostics
+        )
+    }
+
+    /// Reports `summary` for `prepared`'s plan when the server advertises
+    /// `playback_plan_summary_v1`. Best effort, like every route event.
+    func reportProtocolV3PlanSummary(
+        _ summary: PlaybackV3PlanSummary,
+        for prepared: PreparedPlaybackV3,
+        sessionId: String
+    ) async {
+        guard prepared.advertisesPlanSummary, let authority else { return }
+        let event = Self.planSummaryRouteEvent(summary, for: prepared, sessionId: sessionId)
+        do {
+            try await authority.reportRouteEvent(event)
+        } catch {
+            logger.warning("Protocol V3 route event \(event.event, privacy: .public) failed: \(MediaLogRedactor.sanitize(error), privacy: .public)")
+        }
     }
 
     private func emitProtocolV3Event(

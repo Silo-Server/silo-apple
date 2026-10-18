@@ -55,6 +55,16 @@ enum ApplePlaybackQuality {
         isAuto: true
     )
 
+    /// Auto while the plan carries `bandwidth_limit`: the server planned it
+    /// under the limit this device learned from repeated rebuffering.
+    static let autoLimitedAfterBuffering = ApplePlaybackQualityOption(
+        id: autoId,
+        label: "Auto · limited after buffering",
+        resolution: "",
+        bitrateKbps: 0,
+        isAuto: true
+    )
+
     /// A contract resolution cap without an invented bandwidth rung. A zero
     /// bitrate is a local sentinel for "uncapped" and is never sent as a cap.
     static let ultraHD = ApplePlaybackQualityOption(
@@ -117,10 +127,13 @@ enum ApplePlaybackQuality {
     /// which rungs are executable for this source; showing the wider Settings
     /// catalog here would let the user request qualities the active plan never
     /// offered. An "original" entry from an older server is dropped: Auto is
-    /// the way back to the source.
+    /// the way back to the source. A plan that carries `bandwidthLimit` labels
+    /// Auto as limited after buffering.
     static func playbackOptions(
-        serverQualities: [PlaybackV3AvailableQuality]
+        serverQualities: [PlaybackV3AvailableQuality],
+        bandwidthLimit: PlaybackV3BandwidthLimit? = nil
     ) -> [ApplePlaybackQualityOption] {
+        let auto = bandwidthLimit == nil ? Self.auto : autoLimitedAfterBuffering
         guard !serverQualities.isEmpty else {
             return [auto]
         }

@@ -81,6 +81,10 @@ enum TVSettingsOptions {
         TVSettingsOption(id: $0.wireValue, label: $0.label)
     }
 
+    static let bufferingQualityMode: [TVSettingsOption] = BufferingQualityMode.allCases.map {
+        TVSettingsOption(id: $0.wireValue, label: $0.label)
+    }
+
     static func subtitleLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
         languageOptions(
             languages,

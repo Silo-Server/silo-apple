@@ -2441,7 +2441,10 @@ class PlayerViewModel {
         qualitySwitchOnMeteredNetwork: Bool? = nil,
         requeueWhenBusy: Bool = false,
         trackTarget: QueuedProtocolV3TrackTarget? = nil,
-        outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil
+        outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil,
+        bandwidthEstimateKbps: Int? = nil,
+        bandwidthEstimateSource: String? = nil,
+        learnedLimit: String? = nil
     ) -> Bool {
         // One classification of the user's target. A track change must have a
         // stable server ordinal before it is queued or issued: falling back to
@@ -2659,7 +2662,11 @@ class PlayerViewModel {
                     qualityAxes: qualityAxes,
                     audioTrackIndex: requestedAudioTrackIndex,
                     subtitleTrackIndex: requestedSubtitleTrackIndex,
-                    outputRouteSnapshot: outputRouteSnapshot
+                    outputRouteSnapshot: outputRouteSnapshot,
+                    bufferingQualityMode: self.settings.bufferingQualityMode,
+                    bandwidthEstimateKbps: bandwidthEstimateKbps,
+                    bandwidthEstimateSource: bandwidthEstimateSource,
+                    learnedLimit: learnedLimit
                 ) else {
                     if self.reconnectCycle.isActive {
                         // No session left to replan: start a new one.
@@ -2734,7 +2741,8 @@ class PlayerViewModel {
                 self.currentTime = self.movieTime(for: prepared.session)
                 self.activeQualityId = prepared.activeQualityId
                 self.qualityOptions = ApplePlaybackQuality.playbackOptions(
-                    serverQualities: prepared.protocolV3?.plan.availableQualities ?? []
+                    serverQualities: prepared.protocolV3?.plan.availableQualities ?? [],
+                    bandwidthLimit: prepared.protocolV3?.plan.bandwidthLimit
                 )
 
                 try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
@@ -5514,7 +5522,8 @@ class PlayerViewModel {
                     }
                 }
                 self.qualityOptions = ApplePlaybackQuality.playbackOptions(
-                    serverQualities: prepared.protocolV3?.plan.availableQualities ?? []
+                    serverQualities: prepared.protocolV3?.plan.availableQualities ?? [],
+                    bandwidthLimit: prepared.protocolV3?.plan.bandwidthLimit
                 )
                 self.activeQualityId = prepared.activeQualityId
                 self.isQualitySwitching = false
@@ -5674,6 +5683,7 @@ class PlayerViewModel {
         } else {
             networkQuality?.sessionStarted(onMeteredNetwork: onMeteredNetwork, keepsViewerPick: keepsViewerPick)
         }
+        let bufferingQualityMode = settings.bufferingQualityMode
         let startSession = { [sessionBridge] () async throws -> PreparedPlayback in
             try await sessionBridge.startSession(
                 contentId: request.contentId,
@@ -5689,6 +5699,7 @@ class PlayerViewModel {
                 prefersLastUsedVersion: request.prefersLastUsedVersion,
                 preferredQualityOverride: request.preferredQualityOverride,
                 onMeteredNetwork: onMeteredNetwork,
+                bufferingQualityMode: bufferingQualityMode,
                 allowAlternateVersions: request.allowAlternateVersions,
                 startsAtFirstPart: request.startsAtFirstPart
             )

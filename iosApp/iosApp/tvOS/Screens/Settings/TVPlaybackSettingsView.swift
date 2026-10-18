@@ -37,6 +37,7 @@ struct TVPlaybackSettingsPane: View {
         }
         .task { await seekIntervals.refresh() }
         .task { await spoilers.refresh() }
+        .task { await viewModel.loadLearnedConnectionLimit() }
         .alert(
             SettingsViewModel.useProfileSettingsTitle,
             isPresented: $showUseProfileSettingsConfirmation
@@ -71,7 +72,44 @@ struct TVPlaybackSettingsPane: View {
         ) { showPicker(.maxBitrate) }
         .focused(detailFocus, equals: .playbackMaxBitrate)
 
-        TVSettingsFooter(viewModel.qualityFooterText)
+        TVSettingsPickerRow(
+            title: SettingsViewModel.bufferingQualityTitle,
+            value: viewModel.bufferingQualityMode.label
+        ) { showPicker(.bufferingQualityMode) }
+        .focused(detailFocus, equals: .playbackBufferingQualityMode)
+
+        if let limit = viewModel.learnedConnectionLimitText {
+            Button {
+                Task { await resetLearnedLimit() }
+            } label: {
+                HStack(spacing: 16) {
+                    Text(limit)
+                        .font(.system(size: 26))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Spacer(minLength: 16)
+                    Text("Reset")
+                        .font(.system(size: 24, weight: .semibold))
+                }
+            }
+            .buttonStyle(TVSettingsPaneRowStyle())
+            .focused(detailFocus, equals: .playbackLearnedLimitReset)
+        }
+
+        TVSettingsFooter("\(viewModel.qualityFooterText) \(SettingsViewModel.bufferingQualityDescription)")
+        if let error = viewModel.learnedLimitResetError {
+            TVSettingsWarningFooter(error)
+        }
+    }
+
+    /// Resets the limit. The row then disappears, so focus moves up to the
+    /// buffering row instead of being left on nothing.
+    private func resetLearnedLimit() async {
+        await viewModel.resetLearnedConnectionLimit()
+        if viewModel.learnedConnectionLimit == nil,
+           detailFocus.wrappedValue == .playbackLearnedLimitReset {
+            detailFocus.wrappedValue = .playbackBufferingQualityMode
+        }
     }
 
     @ViewBuilder
@@ -341,6 +379,13 @@ struct TVPlaybackSettingsPane: View {
                 selection: selection(.maxBitrate),
                 returnFocus: .playbackMaxBitrate
             )
+        case .bufferingQualityMode:
+            TVSettingsPickerRequest(
+                title: SettingsViewModel.bufferingQualityTitle,
+                options: [TVSettingsOptions.useProfileSetting] + TVSettingsOptions.bufferingQualityMode,
+                selection: selection(.bufferingQualityMode),
+                returnFocus: .playbackBufferingQualityMode
+            )
         case .audioLanguage:
             TVSettingsPickerRequest(
                 title: "Audio Language",
@@ -448,6 +493,7 @@ struct TVPlaybackSettingsPane: View {
     enum PickerKind {
         case resolution
         case maxBitrate
+        case bufferingQualityMode
         case audioLanguage
         case autoPlayNext
         case skipCredits

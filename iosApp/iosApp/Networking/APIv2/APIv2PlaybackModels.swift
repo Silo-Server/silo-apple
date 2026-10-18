@@ -24,8 +24,11 @@ struct APIv2PlaybackStartBody: Encodable {
     let clientCapabilities: PlaybackV3CodecCapabilities
     let clientPlaybackContext: PlaybackV3ClientContext
     let allowAlternateVersions: Bool?
+    let bandwidthEstimateSource: String?
+    let learnedLimit: String?
 
     init(_ request: PlaybackV3StartRequest, installationID: String) {
+        let request = request.withPermittedBufferingQualityMembers
         installationId = installationID
         protocolVersion = request.protocolVersion
         clientFeatures = request.clientFeatures
@@ -46,6 +49,8 @@ struct APIv2PlaybackStartBody: Encodable {
         clientCapabilities = request.clientCapabilities
         clientPlaybackContext = request.clientPlaybackContext
         allowAlternateVersions = request.allowAlternateVersions
+        bandwidthEstimateSource = request.bandwidthEstimateSource
+        learnedLimit = request.learnedLimit
     }
 }
 
@@ -121,6 +126,7 @@ struct APIv2PlaybackPlan: Decodable {
     let source: APIv2PlaybackSource
     let subtitleFidelityPolicy: String
     let availableQualities: [PlaybackV3AvailableQuality]
+    let bandwidthLimit: PlaybackV3BandwidthLimit?
 
     func legacy() throws -> PlaybackV3Plan {
         PlaybackV3Plan(
@@ -145,7 +151,8 @@ struct APIv2PlaybackPlan: Decodable {
             effectiveMediaFileId: try APIv2PlaybackID.legacy(effectiveMediaFileId),
             source: try source.legacy(),
             subtitleFidelityPolicy: subtitleFidelityPolicy,
-            availableQualities: availableQualities)
+            availableQualities: availableQualities,
+            bandwidthLimit: bandwidthLimit)
     }
 }
 
@@ -218,6 +225,48 @@ struct APIv2PlaybackCapabilities: Decodable {
     }
 }
 
+/// `GET /api/v2/playback/connection`: what the server knows about the calling
+/// device on the connection it is using now. Served when the capability
+/// document advertises `buffering_quality_v1`. Only `connection` is required:
+/// `learned_limit` is null when there is none, and `probe` and
+/// `auto_budget_kbps` arrive in a later phase, so a missing or malformed
+/// optional member reads as absent instead of failing the whole answer.
+struct APIv2PlaybackConnection: Decodable, Equatable, Sendable {
+    /// The Auto limit learned from repeated rebuffering. It lasts seven days
+    /// from `observedAt`, the most recent lowering.
+    struct LearnedLimit: Decodable, Equatable, Sendable {
+        let kbps: Int
+        let observedAt: Date
+        let expiresAt: Date
+    }
+
+    struct Probe: Decodable, Equatable, Sendable {
+        let kbps: Int
+        let measuredAt: Date
+        /// `wifi`, `ethernet`, `cellular` or `other`.
+        let transport: String
+    }
+
+    /// `local`, `remote`, or `provider:<name>`.
+    let connection: String
+    let learnedLimit: LearnedLimit?
+    let probe: Probe?
+    /// Computed by the server; clients display it and never compute it.
+    let autoBudgetKbps: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case connection, learnedLimit, probe, autoBudgetKbps
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        connection = try container.decode(String.self, forKey: .connection)
+        learnedLimit = (try? container.decodeIfPresent(LearnedLimit.self, forKey: .learnedLimit)) ?? nil
+        probe = (try? container.decodeIfPresent(Probe.self, forKey: .probe)) ?? nil
+        autoBudgetKbps = (try? container.decodeIfPresent(Int.self, forKey: .autoBudgetKbps)) ?? nil
+    }
+}
+
 /// Delegated credential for one owner-bound control handshake; never persisted.
 struct APIv2PlaybackControlTicket: Decodable {
     let ticket: String
@@ -284,7 +333,7 @@ struct APIv2PlaybackReplanBody: Encodable {
     let request: PlaybackV3ReplanRequest
     private enum CodingKeys: String, CodingKey { case installationID = "installation_id" }
     func encode(to encoder: Encoder) throws {
-        try request.encode(to: encoder)
+        try request.withPermittedBufferingQualityMembers.encode(to: encoder)
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(installationID, forKey: .installationID)
     }

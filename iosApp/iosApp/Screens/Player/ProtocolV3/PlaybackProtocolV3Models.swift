@@ -40,6 +40,36 @@ enum PlaybackProtocolV3 {
     /// maps the plan's selected audio ordinal to its concrete stream id.
     static let embeddedSubtitlesFeature = "embedded_subtitles_v1"
     static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
+    /// Native v2 only. The server accepts `bandwidth_estimate_source` and
+    /// `learned_limit` on a start or replan whose `client_features` names it,
+    /// and records and applies learned bandwidth limits only for such requests.
+    /// See ``PlaybackV3BufferingQualityRequest``.
+    static let bufferingQualityFeature = "buffering_quality_v1"
+    /// Native v2 only. The server accepts the `plan_summary` route event.
+    static let planSummaryFeature = "playback_plan_summary_v1"
+
+    /// Where a request's `bandwidth_estimate_kbps` came from.
+    enum BandwidthEstimateSource {
+        static let probe = "probe"
+        /// The step-down estimate after repeated rebuffering. The server keeps
+        /// it as this device's learned limit on the current connection.
+        static let observedRebuffer = "observed_rebuffer"
+    }
+
+    /// What a request asks the server to do with the learned limit. Absent,
+    /// the limit applies to Auto.
+    enum LearnedLimit {
+        /// Plan without the limit and keep it stored.
+        static let ignore = "ignore"
+        /// Delete the limit for this connection, then plan without it.
+        static let clear = "clear"
+    }
+
+    enum RouteEvent {
+        /// Sent when a plan stops being the playing plan; see
+        /// ``PlaybackV3PlanSummary``.
+        static let planSummary = "plan_summary"
+    }
 
     /// Delivery classes are the unit a client negotiates in
     /// `client_playback_context.deliveries`. They are deliberately coarser than
@@ -284,6 +314,11 @@ struct PlaybackV3StartRequest: Codable, Equatable {
     let clientPlaybackContext: PlaybackV3ClientContext
     /// Room playback keeps one source timeline across all participant plans.
     var allowAlternateVersions: Bool? = nil
+    /// `buffering_quality_v1` members, taken from a
+    /// ``PlaybackV3BufferingQualityRequest``. The wire body sends them only
+    /// alongside the feature.
+    var bandwidthEstimateSource: String? = nil
+    var learnedLimit: String? = nil
 }
 
 struct PlaybackV3TrackIdentity: Codable, Equatable {
@@ -329,6 +364,95 @@ struct PlaybackV3ReplanRequest: Codable, Equatable {
     let localMutations: [String]
     let clientCapabilities: PlaybackV3CodecCapabilities
     let clientPlaybackContext: PlaybackV3ClientContext
+    /// `buffering_quality_v1` members, as on ``PlaybackV3StartRequest``.
+    var bandwidthEstimateSource: String? = nil
+    var learnedLimit: String? = nil
+}
+
+/// The client features and buffering-quality members of one start or replan.
+///
+/// The server refuses `bandwidth_estimate_source` and `learned_limit` unless
+/// `client_features` names `buffering_quality_v1`, and refuses a source
+/// without `bandwidth_estimate_kbps`. Requests take all four values from here,
+/// and the v2 wire bodies apply ``permittedMembers`` again when they encode,
+/// so neither refused shape can be sent.
+struct PlaybackV3BufferingQualityRequest: Equatable, Sendable {
+    let clientFeatures: [String]
+    let bandwidthEstimateKbps: Int?
+    let bandwidthEstimateSource: String?
+    let learnedLimit: String?
+
+    /// - Parameters:
+    ///   - serverAdvertisesFeature: whether the server advertises
+    ///     `buffering_quality_v1`. Without it the estimate is still sent, and
+    ///     the two members are dropped.
+    ///   - mode: the effective `playback.buffering_quality_mode`. In `never`
+    ///     a request carries `learned_limit: "ignore"`, so a limit another
+    ///     profile on this device learned does not lower its plans.
+    ///   - learnedLimit: an explicit choice, which wins over the mode (Restore
+    ///     quality sends `clear`).
+    init(
+        baseFeatures: [String],
+        serverAdvertisesFeature: Bool,
+        mode: BufferingQualityMode,
+        bandwidthEstimateKbps: Int? = nil,
+        bandwidthEstimateSource: String? = nil,
+        learnedLimit: String? = nil
+    ) {
+        let features = serverAdvertisesFeature && !baseFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature)
+            ? baseFeatures + [PlaybackProtocolV3.bufferingQualityFeature]
+            : baseFeatures
+        let permitted = Self.permittedMembers(
+            clientFeatures: features,
+            bandwidthEstimateKbps: bandwidthEstimateKbps,
+            bandwidthEstimateSource: bandwidthEstimateSource,
+            learnedLimit: learnedLimit ?? (mode == .never ? PlaybackProtocolV3.LearnedLimit.ignore : nil)
+        )
+        clientFeatures = features
+        self.bandwidthEstimateKbps = bandwidthEstimateKbps
+        self.bandwidthEstimateSource = permitted.bandwidthEstimateSource
+        self.learnedLimit = permitted.learnedLimit
+    }
+
+    /// The two members a request may carry: neither without the feature in
+    /// `clientFeatures`, and no source without an estimate.
+    static func permittedMembers(
+        clientFeatures: [String],
+        bandwidthEstimateKbps: Int?,
+        bandwidthEstimateSource: String?,
+        learnedLimit: String?
+    ) -> (bandwidthEstimateSource: String?, learnedLimit: String?) {
+        guard clientFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature) else { return (nil, nil) }
+        return (bandwidthEstimateKbps == nil ? nil : bandwidthEstimateSource, learnedLimit)
+    }
+}
+
+extension PlaybackV3StartRequest {
+    /// This request with only the buffering-quality members the server accepts.
+    var withPermittedBufferingQualityMembers: PlaybackV3StartRequest {
+        var request = self
+        (request.bandwidthEstimateSource, request.learnedLimit) = PlaybackV3BufferingQualityRequest.permittedMembers(
+            clientFeatures: clientFeatures,
+            bandwidthEstimateKbps: bandwidthEstimateKbps,
+            bandwidthEstimateSource: bandwidthEstimateSource,
+            learnedLimit: learnedLimit
+        )
+        return request
+    }
+}
+
+extension PlaybackV3ReplanRequest {
+    /// This request with only the buffering-quality members the server accepts.
+    var withPermittedBufferingQualityMembers: PlaybackV3ReplanRequest {
+        var request = self
+        (request.bandwidthEstimateSource, request.learnedLimit) = PlaybackV3BufferingQualityRequest.permittedMembers(
+            clientFeatures: clientFeatures,
+            bandwidthEstimateKbps: bandwidthEstimateKbps,
+            bandwidthEstimateSource: bandwidthEstimateSource,
+            learnedLimit: learnedLimit
+        )
+        return request
+    }
 }
 
 struct PlaybackV3RouteEvent: Codable, Equatable {
@@ -345,6 +469,42 @@ struct PlaybackV3RouteEvent: Codable, Equatable {
     let quirkRegistryRevision: String?
     let outputContextId: String?
     let diagnostics: [String: String]
+}
+
+/// What one plan did while it was the playing plan: the `plan_summary` route
+/// event, sent when the plan is replaced, stopped or fails, and only to a
+/// server that advertises `playback_plan_summary_v1`.
+struct PlaybackV3PlanSummary: Equatable, Sendable {
+    let playedMs: Int
+    /// Counted stalls.
+    let stallCount: Int
+    /// Startup grace excluded.
+    let stallTotalMs: Int
+    let stallLongestMs: Int
+    /// `effective_recipe.bitrate_kbps`, else `source.bitrate_kbps`.
+    let deliveredKbps: Int?
+    let bufferingMode: BufferingQualityMode
+    /// The last buffering action on this plan: `none`, `ignored`, `lowered`,
+    /// `restored`, `accepted`, `kept`, `timed_out` or `cant_lower`.
+    let bufferingAction: String
+    /// The estimate the plan was requested with.
+    let bandwidthEstimateKbps: Int?
+
+    /// The event's diagnostics. Every value is a string, and an unknown
+    /// estimate or bitrate is left out rather than sent as zero.
+    var diagnostics: [String: String] {
+        var values = [
+            "played_ms": String(max(0, playedMs)),
+            "stall_count": String(max(0, stallCount)),
+            "stall_total_ms": String(max(0, stallTotalMs)),
+            "stall_longest_ms": String(max(0, stallLongestMs)),
+            "buffering_mode": bufferingMode.wireValue,
+            "buffering_action": bufferingAction,
+        ]
+        values["delivered_kbps"] = deliveredKbps.map(String.init)
+        values["bandwidth_estimate_kbps"] = bandwidthEstimateKbps.map(String.init)
+        return values
+    }
 }
 
 struct PlaybackV3Stream: Codable, Equatable {
@@ -537,6 +697,18 @@ struct PlaybackV3Plan: Codable, Equatable {
     let subtitleFidelityPolicy: String
     /// Quality rungs the server will honour for a `quality_change` replan.
     let availableQualities: [PlaybackV3AvailableQuality]
+    /// Present only when this device's learned limit lowered the plan.
+    var bandwidthLimit: PlaybackV3BandwidthLimit? = nil
+}
+
+/// `playback_plan.bandwidth_limit`: the learned limit Auto planned under,
+/// after repeated rebuffering on this device and connection.
+struct PlaybackV3BandwidthLimit: Codable, Equatable, Sendable {
+    let kbps: Int
+    /// Always `observed_rebuffer` today.
+    let source: String
+    /// RFC 3339.
+    let expiresAt: String
 }
 
 extension PlaybackV3Plan {

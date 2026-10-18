@@ -13,6 +13,20 @@ struct PreparedPlaybackV3: Equatable {
     let plan: PlaybackV3Plan
 }
 
+extension PreparedPlaybackV3 {
+    /// The server learns and applies bandwidth limits for this attempt, and
+    /// its replans may carry `bandwidth_estimate_source` and `learned_limit`.
+    /// ``PlaybackSessionBridge/replanProtocolV3`` reads the same answer.
+    var advertisesBufferingQuality: Bool {
+        serverFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature)
+    }
+
+    /// The server accepts this attempt's `plan_summary` route events.
+    var advertisesPlanSummary: Bool {
+        serverFeatures.contains(PlaybackProtocolV3.planSummaryFeature)
+    }
+}
+
 enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
     case unsupportedDelivery(String)
     case invalidTransport(String)
