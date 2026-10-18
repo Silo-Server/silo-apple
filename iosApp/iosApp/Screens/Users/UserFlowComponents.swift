@@ -227,7 +227,7 @@ struct UserCardLabel: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(card.name)
+        .accessibilityLabel(card.accessibilityName)
         .accessibilityValue(card.accessibilityValue)
     }
 }
@@ -412,133 +412,27 @@ struct StackedProfileAvatars: View {
         let shown = Array(profiles.prefix(maxCount))
         HStack(spacing: -size * 0.38) {
             if shown.isEmpty {
-                UserFlowAvatar(id: fallbackID, name: fallbackName, emoji: nil, imageURL: nil, size: size)
+                ProfileAvatar(id: fallbackID, name: fallbackName, avatarEmoji: nil, avatarImageUrl: nil,
+                              serverURL: nil, size: size, initialScale: Self.initialScale)
+                    .background(Self.separator)
             }
             ForEach(Array(shown.enumerated()), id: \.element.id) { index, profile in
-                UserFlowAvatar(
-                    id: profile.id,
-                    name: profile.name,
-                    emoji: profile.avatarEmoji,
-                    imageURL: UserCardAvatarSource.imageURL(for: profile, serverAddress: serverAddress),
-                    size: size
-                )
-                .zIndex(Double(shown.count - index))
+                // The user's last server, which needn't be the active one.
+                ProfileAvatar(profile: profile, serverURL: serverAddress, size: size,
+                              initialScale: Self.initialScale, showsFallbackUntilLoaded: true)
+                    .background(Self.separator)
+                    .zIndex(Double(shown.count - index))
             }
         }
         .accessibilityHidden(true)
     }
-}
 
-/// One round avatar in Who's Watching's style: the profile's tint as a lit
-/// sphere, with its image, emoji, or initial.
-struct UserFlowAvatar: View {
-    let id: String
-    let name: String
-    let emoji: String?
-    let imageURL: String?
-    let size: CGFloat
+    private static let initialScale: CGFloat = 0.42
 
-    @State private var loadedURL: String?
-
-    var body: some View {
-        let tint = ProfileTilePalette.tint(for: id)
-        ZStack {
-            Circle().fill(
-                RadialGradient(
-                    colors: [tint.mix(with: .white, by: 0.35), tint, tint.mix(with: .black, by: 0.45)],
-                    center: UnitPoint(x: 0.3, y: 0.25),
-                    startRadius: 0,
-                    endRadius: size * 0.8
-                )
-            )
-            // The initial or emoji stays until the image has loaded, and
-            // stays for good when it can't.
-            if imageURL == nil || loadedURL != imageURL {
-                fallback
-            }
-            if let imageURL {
-                AsyncImageView(
-                    url: imageURL,
-                    contentMode: .fill,
-                    placeholderStyle: .clear,
-                    onImageLoaded: { loadedURL = imageURL }
-                )
-                .frame(width: size, height: size)
-                .id(imageURL)
-            }
-        }
-        .frame(width: size, height: size)
-        .clipShape(Circle())
-        .overlay(Circle().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-        // Separates overlapping avatars.
-        .background(Circle().fill(Color.black).padding(-2))
-    }
-
-    @ViewBuilder
-    private var fallback: some View {
-        if let emoji = UserCardAvatarSource.displayEmoji(emoji) {
-            Text(emoji)
-                .font(.system(size: size * 0.5))
-        } else {
-            Text(UserCardAvatarSource.initial(of: name))
-                .font(.system(size: size * 0.42, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.95))
-        }
+    /// Separates overlapping avatars.
+    private static var separator: some View {
+        Circle().fill(Color.black).padding(-2)
     }
 }
 
-/// Where a user card's avatar image comes from. The profiles belong to the
-/// user's last server, which needn't be the active one, so a path is read
-/// on that server rather than the active server.
-enum UserCardAvatarSource {
-    static func imageURL(for profile: SavedSignInProfile, serverAddress: String?) -> String? {
-        if let value = nonEmpty(profile.avatarImageUrl), !isUndecodableVector(value) {
-            if isAbsolute(value) { return value }
-            if value.hasPrefix("/") { return onServer(value, serverAddress) }
-        }
-        guard let ref = nonEmpty(profile.avatarEmoji), ProfileAvatarResolver.isImage(ref),
-              !ref.lowercased().hasPrefix("upload:") else { return nil }
-        if isAbsolute(ref) { return ref }
-        // Presets build a URL of their own (DiceBear).
-        if ref.lowercased().hasPrefix("preset:") {
-            return ProfileAvatarResolver.imageURL(for: ref).flatMap { isAbsolute($0) ? $0 : nil }
-        }
-        guard ref.contains("/") else { return nil }
-        return onServer("/" + ref.trimmingCharacters(in: CharacterSet(charactersIn: "/")), serverAddress)
-    }
-
-    /// An emoji avatar, as opposed to an image reference.
-    static func displayEmoji(_ value: String?) -> String? {
-        guard let value = nonEmpty(value), !value.lowercased().hasPrefix("upload:"),
-              !ProfileAvatarResolver.isImage(value) else { return nil }
-        return value
-    }
-
-    static func initial(of name: String) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.first.map { String($0).uppercased() } ?? "?"
-    }
-
-    private static func onServer(_ path: String, _ serverAddress: String?) -> String? {
-        guard let base = nonEmpty(serverAddress)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
-              !base.isEmpty else { return nil }
-        return base + path
-    }
-
-    private static func isAbsolute(_ value: String) -> Bool {
-        let lowercased = value.lowercased()
-        return ["http://", "https://", "data:image/", "file://"].contains { lowercased.hasPrefix($0) }
-    }
-
-    /// The image pipeline has no SVG decoder (as `ProfileAvatarResolver`).
-    private static func isUndecodableVector(_ value: String) -> Bool {
-        let path = value.lowercased().split(separator: "?", maxSplits: 1).first.map(String.init) ?? ""
-        return path.hasSuffix(".svg") || path.hasSuffix("/svg")
-    }
-
-    private static func nonEmpty(_ value: String?) -> String? {
-        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
-        return trimmed
-    }
-}
 #endif

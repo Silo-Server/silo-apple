@@ -244,7 +244,7 @@ struct TVChooseUserContent: View {
                 Label(SignOutConfirmationCopy.removeFromDeviceTitle(device: .appleTV), systemImage: "trash")
             }
         }
-        .accessibilityLabel(card.name)
+        .accessibilityLabel(card.accessibilityName)
         .accessibilityValue(card.accessibilityValue)
         .accessibilityHint("Press and hold to rename or remove.")
     }

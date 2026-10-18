@@ -360,7 +360,7 @@ final class SettingsViewModel {
     /// itself main-actor bound.
     @MainActor
     func loadSettings() async {
-        prefs.bindProfile(id: AuthService.shared.profileId)
+        prefs.bindProfile(id: AuthService.shared.profileId, accountID: AccountScopeReader.currentAccountID())
         // Before the server round trips, so Paired Silo Profile never reads
         // "Not paired" while they run.
         rememberedProfileID = AuthService.shared.rememberedProfileIDForCurrentSelection
@@ -375,6 +375,7 @@ final class SettingsViewModel {
         userInfo = loadedUser
 
         let activeProfileId = AuthService.shared.profileId
+        let activeAccountID = AccountScopeReader.currentAccountID()
         if let activeProfileId {
             activeProfile = loadedProfiles.first(where: { $0.id == activeProfileId })
         } else {
@@ -384,7 +385,7 @@ final class SettingsViewModel {
         // Paint the profile's own values first, then let the batched effective
         // read replace them: it is the only source that accounts for a library,
         // series or device override winning over the profile row.
-        prefs.bindProfile(id: activeProfileId)
+        prefs.bindProfile(id: activeProfileId, accountID: activeAccountID)
         prefs.seed(from: activeProfile)
         await prefs.load()
     }

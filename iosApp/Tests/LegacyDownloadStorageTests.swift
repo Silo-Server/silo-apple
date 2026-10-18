@@ -177,6 +177,31 @@ final class LegacyDownloadStorageTests: XCTestCase {
         XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-3"], "the queue survives in the new root")
     }
 
+    func testARepeatRunCarriesAccountScopesAtTheirOwnLevel() async throws {
+        // A removal whose marker couldn't be written runs again on the next
+        // launch, after the launch in between opened an account's downloads.
+        let scope = try writeScope(server: "server", profile: "acct-12/profile", storeJSON: """
+        {"records":{"d1":{}},"progressQueue":[
+          {"id":"6F1C0E1A-2B0F-4C38-9D4E-2C0B7B9A0007","mediaItemId":"movie-4","position":5,"duration":60,"updatedAt":780000000}
+        ]}
+        """)
+        try FileManager.default.createDirectory(
+            at: scope.appendingPathComponent("d1", isDirectory: true), withIntermediateDirectories: true
+        )
+        let root: URL = self.root
+        let store = DownloadStore(rootDirectory: { root }, legacyOwner: { _ in nil })
+
+        let removal = await store.removeLegacyStorage()
+
+        XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: true, completed: true))
+        XCTAssertEqual(try contents(of: root.appendingPathComponent("server/acct-12")), ["profile"],
+                       "no store at the account level")
+        let loaded = await store.load(serverId: "server", accountId: "12", profileId: "profile")
+        XCTAssertTrue(loaded.records.isEmpty)
+        XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-4"])
+        XCTAssertEqual(loaded.legacyRowsPending, true)
+    }
+
     func testInterruptedRemovalKeepsTheNoticeAndFinishesTheDelete() throws {
         // A run that moved the tree aside but died before writing its marker.
         let aside = sandbox.appendingPathComponent("SiloDownloads.removed-\(UUID().uuidString)", isDirectory: true)

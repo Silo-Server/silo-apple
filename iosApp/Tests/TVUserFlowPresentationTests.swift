@@ -3,9 +3,9 @@ import XCTest
 @testable import Silo
 
 /// The Apple TV user screens' own rules (spec §5.2–§5.7): where focus goes
-/// when a card or row disappears, how a user card's avatars resolve on a
-/// server that isn't the active one, what a server row says, and which
-/// Settings › Users rows take focus.
+/// when a card or row disappears, what a server row says, and which
+/// Settings › Users rows take focus. Card avatars share Who's Watching's
+/// (`UserCardAvatarSourceTests`).
 final class TVUserFlowPresentationTests: XCTestCase {
     private typealias D = SiloUserDirectoryFixture
 
@@ -28,37 +28,6 @@ final class TVUserFlowPresentationTests: XCTestCase {
         XCTAssertNil(TVFocusNeighbor.replacement(for: "a", before: ["a", "b"], after: ["a", "b"]))
         XCTAssertNil(TVFocusNeighbor.replacement(for: "a", before: ["a"], after: []))
         XCTAssertNil(TVFocusNeighbor.replacement(for: "z", before: ["a"], after: ["a"]))
-    }
-
-    // MARK: - Avatars on another server
-
-    func testServerRelativePicturesResolveAgainstTheCardsServer() {
-        let profile = Self.profile(imageURL: "/api/v2/profiles/p1/avatar.webp")
-        XCTAssertEqual(
-            TVUserAvatarSource.imageURL(for: profile, serverURL: "https://friend.example/"),
-            "https://friend.example/api/v2/profiles/p1/avatar.webp"
-        )
-        XCTAssertNil(TVUserAvatarSource.imageURL(for: profile, serverURL: nil), "no server, no guess")
-    }
-
-    func testAbsolutePicturesAreUsedAsTheyAre() {
-        let profile = Self.profile(imageURL: "https://cdn.example/a.webp?sig=1")
-        XCTAssertEqual(TVUserAvatarSource.imageURL(for: profile, serverURL: "https://home.example"),
-                       "https://cdn.example/a.webp?sig=1")
-    }
-
-    func testVectorPicturesFallBackToTheEmojiOrInitial() {
-        let profile = Self.profile(emoji: "🦊", imageURL: "/avatars/fox.svg")
-        XCTAssertNil(TVUserAvatarSource.imageURL(for: profile, serverURL: "https://home.example"))
-        XCTAssertEqual(TVUserAvatarSource.emoji(for: profile), "🦊")
-    }
-
-    func testUploadReferencesAndBlankAvatarsShowTheInitial() {
-        let upload = Self.profile(name: " jamie", emoji: "upload:abc")
-        XCTAssertNil(TVUserAvatarSource.imageURL(for: upload, serverURL: "https://home.example"))
-        XCTAssertNil(TVUserAvatarSource.emoji(for: upload))
-        XCTAssertEqual(TVUserAvatarSource.initial(for: upload), "J")
-        XCTAssertEqual(TVUserAvatarSource.initial(for: Self.profile(name: "  ")), "?")
     }
 
     // MARK: - Server rows
@@ -112,15 +81,6 @@ final class TVUserFlowPresentationTests: XCTestCase {
         XCTAssertEqual(TVUserListPhase(directory: .empty, hasLoaded: false), .loading)
         XCTAssertEqual(TVUserListPhase(directory: .empty, hasLoaded: true), .unavailable)
         XCTAssertEqual(TVUserListPhase(directory: D.directory([]), hasLoaded: false), .ready)
-    }
-
-    private static func profile(
-        name: String = "Jamie",
-        emoji: String? = nil,
-        imageURL: String? = nil
-    ) -> SavedSignInProfile {
-        SavedSignInProfile(id: "p1", name: name, avatarEmoji: emoji, avatarImageUrl: imageURL,
-                           hasPin: false, isChild: false)
     }
 }
 #endif

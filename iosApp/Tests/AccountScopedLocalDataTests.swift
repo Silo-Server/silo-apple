@@ -653,6 +653,36 @@ final class AccountScopedLocalDataTests: XCTestCase {
         XCTAssertEqual(stub.requests.map { $0.headers["authorization"] }, ["Bearer sam-access"])
     }
 
+    /// The profile preferences editor binds the account with the profile,
+    /// and its writer sends both: an edit on its way when sam signs in,
+    /// whose profile is also `default`, is refused rather than stored on
+    /// sam's profile. Bound to sam, the next edit goes out as sam.
+    func testProfilePreferenceWrite() async throws {
+        let f = try await signedInAsAlex()
+        let stub = StubURLProtocol.Handler()
+        stub.route({ $0.path.hasPrefix("/api/v2/settings/") }) { _ in .json("{}") }
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: f.store), tokenStore: f.store)
+        let transport = GatedProfileSettingsTransport(SiloProfileSettingsTransport(api: api))
+        let editor = ProfilePrefsEditor(writer: ProfileSettingsWriter(
+            transport: transport, retryPolicy: SettingWriteRetryPolicy(maximumAutomaticRetries: 0)))
+        editor.bindProfile(id: "default", accountID: AccountScopeReader.currentAccountID(defaults: f.defaults))
+
+        let edit = Task { await editor.setShowForcedSubtitles(false) }
+        await transport.waitForHeldSend()
+        try await switchToSam(f)
+        await transport.release()
+        await edit.value
+
+        XCTAssertEqual(transport.outcomes.map(\.accountID), [Self.alex])
+        XCTAssertEqual(transport.outcomes.first?.sent, false, "refused under sam")
+        XCTAssertTrue(stub.requests.isEmpty, "nothing went out as sam")
+
+        editor.bindProfile(id: "default", accountID: AccountScopeReader.currentAccountID(defaults: f.defaults))
+        await editor.setSubtitleMode(SubtitleMode.always.rawValue)
+        XCTAssertEqual(stub.requests.map { $0.headers["authorization"] }, ["Bearer sam-access"])
+        XCTAssertFalse(transport.outcomes.contains { $0.accountID == Self.alex && $0.sent })
+    }
+
     /// The path every settings read and write takes: `APIv2Client` passes the
     /// caller's account on to `HTTPClient`, whose `captureRequestAuth`
     /// refuses it under another sign-in with the same profile ID.
@@ -698,6 +728,49 @@ private func effectiveResponse(_ values: [String: Any]) throws -> EffectiveSetti
     }
     let data = try JSONSerialization.data(withJSONObject: ["items": rows, "revision": 1])
     return try SettingsWireCoding.makeDecoder().decode(EffectiveSettingValuesResponse.self, from: data)
+}
+
+/// The profile preferences' production transport behind the same gate as
+/// `GatedPlayerSettingsTransport`, recording the same outcomes.
+private final class GatedProfileSettingsTransport: ProfileSettingsTransport, @unchecked Sendable {
+    private let base: ProfileSettingsTransport
+    private let gate = StubURLProtocol.Gate()
+    private let lock = NSLock()
+    private var recorded: [GatedPlayerSettingsTransport.Outcome] = []
+
+    init(_ base: ProfileSettingsTransport) {
+        self.base = base
+    }
+
+    var outcomes: [GatedPlayerSettingsTransport.Outcome] { lock.withLock { recorded } }
+
+    func waitForHeldSend() async {
+        let deadline = Date().addingTimeInterval(5)
+        while await gate.waiterCount == 0, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func release() async {
+        await gate.open()
+    }
+
+    func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
+        try await base.effectiveValues(keys: keys)
+    }
+
+    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?, accountID: String?) async throws {
+        await gate.wait()
+        do {
+            try await base.putValue(key: key, value: value, profileId: profileId, accountID: accountID)
+            lock.withLock { recorded.append(.init(accountID: accountID, sent: true)) }
+        } catch {
+            var refused = false
+            if case SettingsAPIError.ownerChanged = error { refused = true }
+            lock.withLock { recorded.append(.init(accountID: accountID, sent: !refused)) }
+            throw error
+        }
+    }
 }
 
 /// The player's production settings transport behind a gate: the first send

@@ -777,6 +777,37 @@ final class AuthService: @unchecked Sendable {
         }
     }
 
+    /// Cancel on a sign-in started with a profile open
+    /// (`SiloUserCoordinator.cancelSignIn`): opens that profile again on the
+    /// credential selected again, with the proof still stored for it, as
+    /// nobody left it. Profile Selection asking again after time away wins.
+    /// Returns whether the profile is open.
+    func reopenProfile(_ profileID: String) async -> Bool {
+        guard !launchPreferences.requiresSelectionAfterBackground(),
+              let expectedAccount = await tokenStore.refreshAccountIdentity(),
+              let transitionLease = await httpClient.beginIdentityTransition() else {
+            return false
+        }
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileWillChange()
+        #endif
+        await httpClient.cancelInFlightRequests()
+        let proof = await tokenStore.getProfileToken()
+        let reopened = await tokenStore.activateProfile(
+            profileID: profileID,
+            profileToken: proof,
+            expectedAccount: expectedAccount
+        )
+        if reopened {
+            await clearPerProfileCaches(preservingTrailerReturn: true, preservingWatchPartyRecent: true)
+        }
+        await httpClient.endIdentityTransition(transitionLease)
+        #if os(iOS) || os(tvOS)
+        DiagnosticsCoordinator.activeProfileDidChange()
+        #endif
+        return reopened
+    }
+
     /// Persist an explicit switch request before clearing request identity so
     /// killing the app on the picker cannot make Automatic silently restore
     /// the previous profile.

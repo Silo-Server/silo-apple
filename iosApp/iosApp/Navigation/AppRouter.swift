@@ -956,12 +956,33 @@ final class AppRouter {
 
     #if os(iOS)
     /// A TV approval to show again once a user is chosen, added, or signed
-    /// back in. ContentView takes it (`takePendingDeviceApproval`).
+    /// back in. ContentView takes it when it is due (`takeDueDeviceApproval`).
     private(set) var pendingDeviceApproval: DeviceApprovalLink?
+    /// How deep the Choose a User that "Not you? Switch User" pushed sits
+    /// on the stack. The approval waits while it shows, an Add User
+    /// cancelled back to it included, and is due once the person leaves it.
+    @ObservationIgnored private var deviceApprovalChooserDepth: Int?
 
     func takePendingDeviceApproval() -> DeviceApprovalLink? {
-        defer { pendingDeviceApproval = nil }
+        defer {
+            pendingDeviceApproval = nil
+            deviceApprovalChooserDepth = nil
+        }
         return pendingDeviceApproval
+    }
+
+    /// The waiting TV approval, once its card can show again: a signed-in
+    /// screen shows (approval is account-level, so Who's Watching counts)
+    /// and the Switch User chooser it waited on is gone, whether a user was
+    /// picked (the current one too) or the person went back. Going back
+    /// works like Cancel on the old sign-out confirmation: the card returns
+    /// for the user still signed in, and nothing is left to show later.
+    func takeDueDeviceApproval() -> DeviceApprovalLink? {
+        guard pendingDeviceApproval != nil, authState == .authenticated || authState == .needsProfile else {
+            return nil
+        }
+        if let depth = deviceApprovalChooserDepth, path.count >= depth { return nil }
+        return takePendingDeviceApproval()
     }
 
     /// A TV approval link named a saved server the current user can't use
@@ -970,6 +991,7 @@ final class AppRouter {
     func signIn(forTVApproval link: DeviceApprovalLink, on server: ServerEntry) {
         guard !isSigningOut else { return }
         pendingDeviceApproval = link
+        deviceApprovalChooserDepth = nil
         Task { @MainActor in
             guard await users.beginSignIn(forServer: server.id, router: self) else {
                 pendingDeviceApproval = nil
@@ -981,13 +1003,25 @@ final class AppRouter {
 
     /// "Not you?" on a TV approval: Switch User, without signing anyone out
     /// (coordinator decision 2). The chooser offers Add User too; the TV's
-    /// code returns to the approval card once a user is chosen or added.
+    /// code returns to the approval card once a user is chosen or added, or
+    /// the person goes back (`takeDueDeviceApproval`).
     func switchUser(forTVApproval link: DeviceApprovalLink) {
         guard !isSigningOut else { return }
-        pendingDeviceApproval = link
         Task { @MainActor in
-            await users.beginSwitchUser(router: self)
+            await beginSwitchUser(forTVApproval: link)
         }
+    }
+
+    /// `switchUser(forTVApproval:)`'s work, to the chooser showing.
+    func beginSwitchUser(forTVApproval link: DeviceApprovalLink) async {
+        pendingDeviceApproval = link
+        // Not due while the chooser opens.
+        deviceApprovalChooserDepth = 0
+        let depth = path.count
+        await users.beginSwitchUser(router: self)
+        // Pushed on top of the screens: due once the person leaves it. A
+        // chooser shown as the root waits for a signed-in screen instead.
+        deviceApprovalChooserDepth = path.count > depth ? path.count : nil
     }
 
     /// Kept for the approval card's existing call site: switching account is

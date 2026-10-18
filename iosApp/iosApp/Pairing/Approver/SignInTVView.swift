@@ -12,10 +12,11 @@ import SwiftUI
 struct SignInTVView: View {
     var initialCode: String = ""
     var initialServerId: String? = nil
-    /// "Not you?" on the card: the caller closes this view, signs out of the
-    /// server and signs in again with the TV's code kept. The flag is the
-    /// card's `offersAccountChoice`: whether the provider is asked to let
-    /// the person choose an account.
+    /// "Not you? Switch User" on the card: the caller closes this view and
+    /// opens the user chooser, signing nobody out; the TV's code returns to
+    /// the card once a user is chosen or added. The flag is the card's
+    /// `offersAccountChoice`: whether the server's sign-in can ask the
+    /// provider for an account choice.
     var onSwitchAccount: ((ServerEntry, DeviceApprovalLink, Bool) -> Void)? = nil
     var onClose: () -> Void
 

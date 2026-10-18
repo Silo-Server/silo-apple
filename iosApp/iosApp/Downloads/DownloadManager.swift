@@ -82,11 +82,17 @@ final class DownloadManager {
     private var fileServerId = ""
     private var fileAccountId: String?
     private var fileProfileId = ""
+    /// False when `file` is an empty stand-in for a store that couldn't be
+    /// loaded or moved to its account (`DownloadStore.loadScope`). It knows
+    /// none of the downloads in the scope's directories, so it deletes
+    /// nothing there: finished transfers stay parked for a load that can
+    /// read the store.
+    private var fileIsComplete = true
 
     /// Coalesces the several legitimate app-lifecycle callers that can all ask
     /// for the same scope at launch. Without this, a late disk read can replace
     /// a newly registered in-memory download with its older empty snapshot.
-    private var scopeLoadTask: Task<DownloadStoreFile, Never>?
+    private var scopeLoadTask: Task<(file: DownloadStoreFile, isComplete: Bool), Never>?
     private var scopeLoadToken: UUID?
     private var scopeLoadServerId = ""
     private var scopeLoadAccountId: String?
@@ -455,7 +461,8 @@ final class DownloadManager {
     }
 
     private func removeDownloadDirectory(recordId: String) {
-        guard !fileServerId.isEmpty else { return }
+        // A store that didn't load knows nothing of what the directory holds.
+        guard !fileServerId.isEmpty, fileIsComplete else { return }
         DownloadFilePaths.removeDownloadDirectory(
             serverId: fileServerId,
             accountId: fileAccountId,
@@ -716,7 +723,7 @@ final class DownloadManager {
             scopeProfileId = profileId
         }
 
-        let loadTask: Task<DownloadStoreFile, Never>
+        let loadTask: Task<(file: DownloadStoreFile, isComplete: Bool), Never>
         let loadToken: UUID
         if let existing = scopeLoadTask,
            scopeLoadServerId == serverId,
@@ -735,7 +742,7 @@ final class DownloadManager {
             // and a save landing after it would bring a stale copy back.
             let task = Task {
                 await self.waitForQueuedSaves()
-                return await DownloadStore.shared.load(serverId: serverId, accountId: accountId, profileId: profileId)
+                return await DownloadStore.shared.loadScope(serverId: serverId, accountId: accountId, profileId: profileId)
             }
             scopeLoadTask = task
             scopeLoadToken = token
@@ -746,12 +753,13 @@ final class DownloadManager {
             loadToken = token
         }
 
-        let loadedFile = await loadTask.value
+        let loaded = await loadTask.value
         guard scopeServerId == serverId, scopeAccountId == accountId, scopeProfileId == profileId else { return false }
         if scopeLoadToken == loadToken {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
-            file = loadedFile
+            file = loaded.file
+            fileIsComplete = loaded.isComplete
             fileServerId = serverId
             fileAccountId = accountId
             fileProfileId = profileId
@@ -887,7 +895,8 @@ final class DownloadManager {
     /// not loaded (another profile or server was active, or the app was not
     /// running). A record that accepts its file completes; any other parked
     /// file is removed, and so is a download directory with a parked file
-    /// but no record. Directories without a parked file are never touched.
+    /// but no record, unless the store didn't load in full, which keeps
+    /// them all parked. Directories without a parked file are never touched.
     private func settleParkedTransfers(serverId: String, accountId: String?, profileId: String) async {
         guard let scope = loadedScope, scope.serverId == serverId, scope.accountId == accountId,
               scope.profileId == profileId else { return }
@@ -912,7 +921,8 @@ final class DownloadManager {
                 loadedServerId: scope.serverId,
                 loadedAccountId: scope.accountId,
                 loadedProfileId: scope.profileId,
-                record: recordId.flatMap { file.records[$0] }
+                record: recordId.flatMap { file.records[$0] },
+                storeIsComplete: fileIsComplete
             )
             switch disposition {
             case .complete:
@@ -1006,6 +1016,7 @@ final class DownloadManager {
         fileServerId = ""
         fileAccountId = nil
         fileProfileId = ""
+        fileIsComplete = true
         parkedSettle = nil
         rateSamples.removeAll()
         transferRates.removeAll()
@@ -2200,7 +2211,8 @@ final class DownloadManager {
             loadedServerId: scope?.serverId ?? "",
             loadedAccountId: scope?.accountId,
             loadedProfileId: scope?.profileId ?? "",
-            record: loadedRecord(for: tag)
+            record: loadedRecord(for: tag),
+            storeIsComplete: fileIsComplete
         )
         let fm = FileManager.default
         switch disposition {
@@ -2237,8 +2249,8 @@ final class DownloadManager {
     enum FinishedTransferDisposition: Equatable {
         /// Its record in the loaded scope takes it as its media.
         case complete
-        /// Its owner's store is not loaded: it stays parked under that owner
-        /// until the store is next installed.
+        /// Its owner's store is not loaded, or didn't load in full: it stays
+        /// parked under that owner until the store is next installed.
         case keepForOwner
         /// Nothing wants it: the record has media already, was reset, or
         /// the task has no known owner.
@@ -2251,26 +2263,28 @@ final class DownloadManager {
     /// `loadedServerId`/`loadedAccountId`/`loadedProfileId` name the loaded
     /// scope (empty when none is), and `record` is that scope's record for
     /// the tag's download id, looked up only when the tag names the loaded
-    /// scope.
+    /// scope. `storeIsComplete` is false when the loaded store is an empty
+    /// stand-in for one that couldn't be read or moved: it can't tell a
+    /// leftover from a download it doesn't know, so it discards nothing.
     nonisolated static func finishedTransferDisposition(
         tag: DownloadTaskTag?,
         loadedServerId: String,
         loadedAccountId: String?,
         loadedProfileId: String,
-        record: DownloadRecord?
+        record: DownloadRecord?,
+        storeIsComplete: Bool = true
     ) -> FinishedTransferDisposition {
         guard let tag else { return .discardFile }
         guard !loadedServerId.isEmpty, !loadedProfileId.isEmpty,
               tag.isOwned(byServerId: loadedServerId, accountId: loadedAccountId, profileId: loadedProfileId)
         else { return .keepForOwner }
-        guard let record else { return .discardDirectory }
         // A finish that races a pause still completes the record.
-        switch record.localStatus {
-        case .downloading, .paused:
-            return record.mediaFilename == nil ? .complete : .discardFile
-        default:
-            return .discardFile
+        if let record, record.localStatus == .downloading || record.localStatus == .paused,
+           record.mediaFilename == nil {
+            return .complete
         }
+        guard storeIsComplete else { return .keepForOwner }
+        return record == nil ? .discardDirectory : .discardFile
     }
 
     /// Moves a finished file into its record's media slot and completes the

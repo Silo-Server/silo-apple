@@ -263,6 +263,13 @@ struct ContentView: View {
         .onChange(of: router.signInRevision) { _, _ in
             handleSignInChanged()
         }
+        #if os(iOS)
+        // Leaving the chooser "Not you? Switch User" pushed, by Back or a
+        // pick, brings a waiting TV approval back.
+        .onChange(of: router.path.count) { _, _ in
+            presentDueDeviceApproval()
+        }
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: .siloProfileVerificationRequired)) { notification in
             guard let event = notification.object as? ProfileVerificationRequiredEvent else { return }
             Task { await AuthService.shared.recoverFromProfileVerificationRequired(event) }
@@ -389,10 +396,10 @@ struct ContentView: View {
             #if os(iOS)
             if router.authState == .authenticated || router.authState == .needsProfile {
                 // A TV approval that waited for this sign-in ("Sign in",
-                // "Not you? Switch account", or a newly added server).
+                // "Not you? Switch User", or a newly added server).
                 // Approval is account-level, so it reopens before a profile
                 // is picked; other links still wait for one.
-                if let link = router.takePendingDeviceApproval() {
+                if let link = router.takeDueDeviceApproval() {
                     pendingDeepLink = link.url
                 }
                 if router.authState == .needsProfile, let url = pendingDeepLink, DeviceApprovalLink(url: url) != nil {
@@ -620,18 +627,23 @@ struct ContentView: View {
     /// auth state stayed the same, as when Automatic reopens a profile under
     /// another account, nothing else re-scopes the session's stores: the
     /// account changed even if the server and profile IDs didn't.
+    #if os(iOS)
+    /// Shows a waiting TV approval's card again once it is due
+    /// (`AppRouter.takeDueDeviceApproval`).
+    private func presentDueDeviceApproval() {
+        guard let url = router.takeDueDeviceApproval()?.url else { return }
+        if router.authState == .needsProfile {
+            handleDeepLink(url, revision: deepLinkRevision)
+        } else {
+            pendingDeepLink = url
+            drainPendingDeepLinkIfReady()
+        }
+    }
+    #endif
+
     private func handleSignInChanged() {
         #if os(iOS)
-        if router.authState == .authenticated || router.authState == .needsProfile,
-           let url = router.takePendingDeviceApproval()?.url {
-            // A TV approval waiting for a user to be chosen or added.
-            if router.authState == .needsProfile {
-                handleDeepLink(url, revision: deepLinkRevision)
-            } else {
-                pendingDeepLink = url
-                drainPendingDeepLinkIfReady()
-            }
-        }
+        presentDueDeviceApproval()
         #endif
         guard router.authState == .authenticated else { return }
         let revision = router.signInRevision

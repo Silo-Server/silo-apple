@@ -146,15 +146,17 @@ final class DownloadAccountScopeTests: XCTestCase {
         try Data().write(to: blocker)
         let store = makeStore()
 
-        let loaded = await store.load(serverId: Self.server, accountId: Self.alex, profileId: "default")
-        XCTAssertNil(loaded.pendingServerDeletes)
+        let loaded = await store.loadScope(serverId: Self.server, accountId: Self.alex, profileId: "default")
+        XCTAssertNil(loaded.file.pendingServerDeletes)
+        XCTAssertFalse(loaded.isComplete, "the manager deletes nothing in an incomplete scope")
         await store.save(file(deleting: ["new"]), serverId: Self.server, accountId: Self.alex, profileId: "default")
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: scope(nil).appendingPathComponent(DownloadFilePaths.storeFileName).path))
 
         try FileManager.default.removeItem(at: blocker)
-        let retried = await store.load(serverId: Self.server, accountId: Self.alex, profileId: "default")
-        XCTAssertEqual(retried.pendingServerDeletes, ["old"], "the next load moves it")
+        let retried = await store.loadScope(serverId: Self.server, accountId: Self.alex, profileId: "default")
+        XCTAssertEqual(retried.file.pendingServerDeletes, ["old"], "the next load moves it")
+        XCTAssertTrue(retried.isComplete)
     }
 
     /// Early in a launch the account's scope loads before the legacy owners
@@ -327,6 +329,38 @@ final class DownloadAccountScopeTests: XCTestCase {
                                                loadedProfileId: "default",
                                                tasks: [(taskId: 4, tag: samTag), (taskId: 5, tag: alexTag)])
         XCTAssertEqual(live, ["d1": 5])
+    }
+
+    /// A scope whose store couldn't be read or moved loads empty, so it can't
+    /// tell a leftover from a download only the unread store knows. A live
+    /// finish or the parked-file settle then keeps the file parked instead
+    /// of deleting it or its download directory; a record of this session
+    /// that is waiting for it still takes it.
+    func testAStoreThatDidNotLoadDeletesNothing() {
+        let tag = DownloadTaskTag(serverId: Self.server, accountId: Self.alex, profileId: "default", downloadId: "d1")
+        func disposition(_ status: LocalDownloadStatus?, complete: Bool) -> DownloadManager.FinishedTransferDisposition {
+            DownloadManager.finishedTransferDisposition(tag: tag, loadedServerId: Self.server,
+                                                        loadedAccountId: Self.alex, loadedProfileId: "default",
+                                                        record: status.map(Self.record), storeIsComplete: complete)
+        }
+        XCTAssertEqual(disposition(nil, complete: true), .discardDirectory)
+        XCTAssertEqual(disposition(nil, complete: false), .keepForOwner, "no record: the directory stays")
+        XCTAssertEqual(disposition(.queued, complete: true), .discardFile)
+        XCTAssertEqual(disposition(.queued, complete: false), .keepForOwner, "unwanted: the file stays parked")
+        XCTAssertEqual(disposition(.downloading, complete: false), .complete)
+        XCTAssertEqual(disposition(.paused, complete: false), .complete)
+    }
+
+    private static func record(_ status: LocalDownloadStatus) -> DownloadRecord {
+        DownloadRecord(
+            id: "d1", contentId: "c1", episodeId: nil, batchId: nil, mediaFileId: "0", format: "original",
+            serverStatus: "ready", localStatus: status, fileSize: 1_000, bytesDownloaded: 0,
+            mediaFilename: nil, manifestFilename: nil, posterFilename: nil, backdropFilename: nil,
+            logoFilename: nil, subtitleFilenames: [:], title: "Title", subtitle: nil, type: "movie",
+            seriesId: nil, seriesTitle: nil, posterThumbhash: nil, container: nil, stableIdentity: nil,
+            registeredAt: Date(timeIntervalSinceReferenceDate: 1_000), downloadedAt: nil, lastError: nil,
+            retryCount: 0, taskIdentifier: 5
+        )
     }
 }
 

@@ -715,6 +715,7 @@ final class ServerRegistry {
         let previousServerURL = defaults.string(forKey: SharedStorage.serverUrlKey)
         let previousMirroredServerID = defaults.string(forKey: SharedStorage.activeServerIdKey)
         let previousProfileID = defaults.string(forKey: SharedStorage.profileIdKey)
+        let previousSelection = await tokenStore.currentSelection()
 
         entries.removeAll(where: { $0.id == serverId })
         if removesActiveServer {
@@ -751,9 +752,17 @@ final class ServerRegistry {
             let reason = rolledBack ? reason : "\(reason)+rollbackPersistFailed"
             defaults.set(previousServerURL, forKey: SharedStorage.serverUrlKey)
             defaults.set(previousMirroredServerID, forKey: SharedStorage.activeServerIdKey)
-            defaults.set(previousProfileID, forKey: SharedStorage.profileIdKey)
-            // TokenStore owns the account mirror, and a failed removal may
-            // already have dropped the selected sign-in, so it comes from
+            // A failed removal of the active server may already have dropped
+            // the selected sign-in (or blocked the server's own session), so
+            // the profile comes back only with the credential it was picked
+            // under, still usable; otherwise no profile is open with nothing
+            // to serve it. Removing another server never touches either.
+            let selection = await tokenStore.currentSelection()
+            let usable = await tokenStore.hasUsableCredential()
+            let keepsProfile = !removesActiveServer
+                || (selection != .none && selection == previousSelection && usable)
+            defaults.set(keepsProfile ? previousProfileID : nil, forKey: SharedStorage.profileIdKey)
+            // TokenStore owns the account mirror, so it likewise comes from
             // the selection rather than from before the removal.
             defaults.set(await tokenStore.currentSignInKey()?.accountID, forKey: SharedStorage.activeAccountIdKey)
             #if os(iOS) || os(tvOS)

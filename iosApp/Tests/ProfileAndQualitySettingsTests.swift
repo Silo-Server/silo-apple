@@ -1742,7 +1742,7 @@ final class FakeProfileSettingsTransport: ProfileSettingsTransport, @unchecked S
         return EffectiveSettingValuesResponse(settings: settings, revision: SettingKey.revision)
     }
 
-    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws {
+    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?, accountID: String?) async throws {
         lock.lock()
         let write = Write(key: key, value: value, profileId: profileId)
         recordedWrites.append(write)

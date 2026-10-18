@@ -239,6 +239,50 @@ final class SignInRevocationTests: XCTestCase {
         XCTAssertFalse(stub.requestedPaths.contains(Self.logout))
     }
 
+    /// The profile likewise comes back only with the sign-in it was picked
+    /// under. Here the store has already dropped that sign-in, so no
+    /// profile is left open with nothing selected. When the removal fails
+    /// before touching the sign-in, the profile is kept.
+    @MainActor
+    func testFailedServerRemovalRestoresTheProfileOnlyWithItsSignIn() async throws {
+        let f = try F.make(self)
+        try f.startUserModel()
+        f.defaults.set(true, forKey: ServerRegistry.migratedKey)
+        let stub = APIv2TestStub()
+        stub.reply(204, "")
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: f.store)
+        let registry = ServerRegistry(defaults: f.defaults, keychain: f.keychain,
+                                      launchPreferences: ProfileLaunchPreferences(defaults: f.defaults),
+                                      tokenStore: f.store, httpClient: http, unregisterPush: { _ in })
+        XCTAssertNotNil(registry.addOrUpdate(ServerEntry(id: F.home, url: F.homeURL, fetchedName: nil,
+                                                         lastUsedAt: Date())))
+        let switched = await registry.switchTo(serverId: F.home, launchSelectionFrom: f.store)
+        XCTAssertTrue(switched)
+        try await f.install("12", access: "alex-access", refresh: "r", placement: .newUser)
+        await f.store.setProfileId("default")
+
+        // The index can't be read: nothing is removed, and the profile stays.
+        f.signIns.failsAllReads = true
+        let unreadable = await registry.remove(serverId: F.home)
+        f.signIns.failsAllReads = false
+        XCTAssertFalse(unreadable)
+        let kept = await f.store.currentSelection()
+        XCTAssertEqual(kept, .signIn(.make(F.home, "12")))
+        XCTAssertEqual(f.defaults.string(forKey: SharedStorage.profileIdKey), "default")
+
+        // The sign-in is dropped but can't be made durable.
+        f.signIns.failingWrites = [SharedStorage.usersIndexAccount, SharedStorage.signInAccount(.make(F.home, "12"))]
+        let removed = await registry.remove(serverId: F.home)
+
+        XCTAssertFalse(removed)
+        XCTAssertEqual(registry.activeServerId, F.home)
+        let selection = await f.store.currentSelection()
+        XCTAssertEqual(selection, .none)
+        XCTAssertNil(f.defaults.string(forKey: SharedStorage.profileIdKey))
+        let profile = await f.store.getProfileId()
+        XCTAssertNil(profile)
+    }
+
     private func waitUntil(_ condition: @escaping () -> Bool) async throws {
         for _ in 0..<200 where !condition() {
             try await Task.sleep(for: .milliseconds(10))

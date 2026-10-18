@@ -4,14 +4,16 @@ import SwiftUI
 import UIKit
 #endif
 
-/// Where Cancel on a sign-in goes back to (plan §2.10): the credential and
-/// screens showing when the sign-in started.
+/// Where Cancel on a sign-in goes back to (plan §2.10): the credential,
+/// profile, and screens showing when the sign-in started.
 struct SignInReturnPoint {
     let serverID: String?
     let credential: CredentialSelection
     let userID: String?
     let authState: AppRouter.AuthState
     let path: NavigationPath
+    /// The profile open on those screens, which Cancel opens again.
+    var profileID: String? = nil
 }
 
 /// A question a finished sign-in raised (spec §5.4.1). The sign-in stays in
@@ -669,8 +671,8 @@ final class SiloUserCoordinator {
     }
 
     /// Cancel on a sign-in, or on its question: back to the user, server,
-    /// and screen showing before the server step, or to the launch rules
-    /// when the sign-in had nothing to return to.
+    /// profile, and screen showing before the server step, or to the launch
+    /// rules when the sign-in had nothing to return to.
     func cancelSignIn(router: AppRouter) async {
         let point = router.signInReturnPoint
         router.signInReturnPoint = nil
@@ -683,12 +685,18 @@ final class SiloUserCoordinator {
         var state = point.authState
         switch point.authState {
         case .authenticated, .needsProfile:
+            // The profile that was open comes back as it was, whatever
+            // Profile Selection says for a launch: the person never left it.
+            let profileID = point.authState == .authenticated ? point.profileID : nil
             guard let serverID, point.credential != .none,
                   await registry.switchTo(serverId: serverID, credential: point.credential, userID: point.userID,
-                                          resolveDestinationProfile: true),
+                                          resolveDestinationProfile: profileID == nil),
                   await tokenStore.hasUsableCredential() else {
                 await applyAfterRemoval(router: router)
                 return
+            }
+            if let profileID, !(await auth.reopenProfile(profileID)) {
+                _ = await auth.resolveActiveProfileForSession()
             }
             state = auth.profileId == nil ? .needsProfile : point.authState
         case .needsUser, .needsServer, .needsSignInTarget, .needsServerSetup:
@@ -716,7 +724,8 @@ final class SiloUserCoordinator {
             credential: await tokenStore.currentSelection(),
             userID: await tokenStore.currentUserID(),
             authState: router.authState,
-            path: router.path
+            path: router.path,
+            profileID: router.authState == .authenticated ? auth.profileId : nil
         )
     }
 

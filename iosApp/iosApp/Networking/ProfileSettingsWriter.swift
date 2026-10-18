@@ -23,7 +23,9 @@ import OSLog
 /// above them.
 protocol ProfileSettingsTransport: AnyObject, Sendable {
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse
-    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws
+    /// `profileId` and `accountID` are the identity the edit was made under;
+    /// the request is refused under any other (`settingsWrite`).
+    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?, accountID: String?) async throws
 }
 
 /// The production transport: the canonical endpoints on ``SiloAPI``.
@@ -38,8 +40,8 @@ final class SiloProfileSettingsTransport: ProfileSettingsTransport {
         try await api.getEffectiveValues(keys: keys)
     }
 
-    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?) async throws {
-        try await api.putValue(key: key, scope: .profile, value: value, profileId: profileId)
+    func putValue(key: SettingKey, value: SettingJSONValue, profileId: String?, accountID: String?) async throws {
+        try await api.putValue(key: key, scope: .profile, value: value, profileId: profileId, accountID: accountID)
     }
 }
 
@@ -168,7 +170,10 @@ final class ProfileSettingsWriter: Sendable {
     // MARK: - Write
 
     /// Write one profile-scoped value, retrying it within the bound while
-    /// `isLatest` says it is still the value the user wants.
+    /// `isLatest` says it is still the value the user wants. `accountID` is
+    /// the account `profileId` belongs to: profile IDs repeat across
+    /// accounts on one server, so a write made under one account is refused
+    /// once another is signed in, even with a profile of the same ID.
     ///
     /// Throws ``SettingsAPIError`` for a failure retrying cannot fix (so a
     /// caller can tell "this server is too old" and "no profile selected" from
@@ -178,13 +183,14 @@ final class ProfileSettingsWriter: Sendable {
         _ key: SettingKey,
         value: SettingJSONValue,
         profileId: String? = nil,
+        accountID: String? = nil,
         isLatest: @escaping @MainActor () -> Bool = { true }
     ) async throws {
         var failedAttempts = 0
         while true {
             let failure: SettingsAPIError
             do {
-                try await transport.putValue(key: key, value: value, profileId: profileId)
+                try await transport.putValue(key: key, value: value, profileId: profileId, accountID: accountID)
                 return
             } catch {
                 failure = SettingsAPIError.from(error, key: key.rawValue, scope: .profile)

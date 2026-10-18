@@ -13,15 +13,11 @@ struct TVApprovalCard: View {
     /// Back to code entry when the code isn't found (a mistyped digit is the
     /// usual cause); nil hides it.
     var onEnterAnotherCode: (() -> Void)? = nil
-    /// "Not you?": sign out of this server in Silo only, then sign in again,
-    /// keeping the TV's code. The wording follows `model.accountSwitch`:
-    /// "Switch account" when the provider is asked for an account choice or
-    /// the server only takes passwords, "Sign out" when a provider could
-    /// sign the same person straight back in. Nil hides the link.
+    /// "Not you? Switch User": the user chooser, with Add User, keeping the
+    /// TV's code; the card comes back once a user is chosen or added. It
+    /// signs nobody out, so it needs no confirmation. Nil hides the link.
     var onSwitchAccount: (() -> Void)? = nil
     var onClose: () -> Void
-
-    @State private var confirmsSwitchAccount = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -78,28 +74,11 @@ struct TVApprovalCard: View {
                 closeButton("Close")
             }
         }
-        .confirmationDialog(model.offersAccountChoice ? "Switch account?" : "Sign out?",
-                            isPresented: $confirmsSwitchAccount, titleVisibility: .visible) {
-            Button(model.offersAccountChoice ? "Sign Out and Switch" : "Sign Out") { onSwitchAccount?() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(Self.switchAccountMessage(serverName: model.server.displayName,
-                                           choosingAccount: model.offersAccountChoice))
-        }
     }
 
-    static func switchAccountLink(_ accountSwitch: TVApprovalAccountSwitch) -> String {
-        accountSwitch == .signOut ? "Not you? Sign out" : "Not you? Switch account"
-    }
-
-    /// The confirmation. Without `select_account` the provider may sign the
-    /// same person straight back in, so the copy promises no account choice.
-    static func switchAccountMessage(serverName: String, choosingAccount: Bool) -> String {
-        if choosingAccount {
-            return "You'll be signed out of \(serverName) on this device, then asked which account to sign in with. The TV's code stays ready to approve."
-        }
-        return "You'll be signed out of \(serverName) on this device. Sign in with the account the TV should use, then approve it. The TV's code stays ready to approve."
-    }
+    /// The same on every server: Switch User never signs out, whatever the
+    /// server's sign-in offers.
+    static let switchUserLink = "Not you? Switch User"
 
     private func review(_ request: TVApprovalRequest, busy: Bool, declining: Bool) -> some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -124,7 +103,7 @@ struct TVApprovalCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(signInLine(request)).font(.siloBody).fixedSize(horizontal: false, vertical: true)
                 if onSwitchAccount != nil {
-                    Button(Self.switchAccountLink(model.accountSwitch)) { confirmsSwitchAccount = true }
+                    Button(Self.switchUserLink) { onSwitchAccount?() }
                         .font(.siloCaption)
                         .disabled(busy)
                 }

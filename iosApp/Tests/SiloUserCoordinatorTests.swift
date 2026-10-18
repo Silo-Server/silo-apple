@@ -448,6 +448,70 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertNil(d.router.signInReturnPoint)
     }
 
+    /// Cancel on Add User started on Home goes back to the profile that was
+    /// open, with its PIN proof, even when Profile Selection asks every
+    /// time: the person never left it. After time away, Profile Selection
+    /// asks again, as it would have on return.
+    func testCancellingAddUserFromHomeReopensTheProfile() async throws {
+        let d = try Device(self)
+        try await d.signIn("12", "alex", on: F.home, context: .firstRun)
+        d.preferences.behavior = .askEveryLaunch
+        let identity = await d.f.store.refreshAccountIdentity()
+        let opened = await d.f.store.activateProfile(profileID: "jamie", profileToken: "jamie-proof",
+                                                     expectedAccount: try XCTUnwrap(identity))
+        XCTAssertTrue(opened)
+        d.router.resetToHome()
+
+        await d.users.startAddUser(router: d.router)
+        await d.users.beginSignIn(serverID: F.friend, context: .addUser, router: d.router)
+        XCTAssertNil(d.auth.profileId, "no profile while signing in")
+        await d.users.cancelSignIn(router: d.router)
+
+        XCTAssertEqual(d.router.authState, .authenticated)
+        XCTAssertEqual(d.auth.profileId, "jamie")
+        let proof = await d.f.store.getProfileToken()
+        XCTAssertEqual(proof, "jamie-proof")
+        let selection = await d.selection
+        XCTAssertEqual(selection, .signIn(.make(F.home, "12")))
+
+        XCTAssertTrue(d.preferences.markBackgrounded(at: d.now))
+        await d.users.startAddUser(router: d.router)
+        await d.users.cancelSignIn(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsProfile, "time away asks again")
+        XCTAssertNil(d.auth.profileId)
+    }
+
+    #if os(iOS)
+    /// "Not you? Switch User" on a TV approval (coordinator decision 2): the
+    /// card waits while Choose a User shows, an Add User cancelled back to
+    /// it included, and comes back once the person leaves it, by picking a
+    /// user (the one already open too) or by going back. Nothing is left
+    /// waiting to show up later.
+    func testATVApprovalComesBackWhenSwitchUserEnds() async throws {
+        let d = try Device(self)
+        let (_, sam) = try await d.twoUsers()
+        let link = DeviceApprovalLink(server: try XCTUnwrap(d.registry.entry(with: F.home)), code: "48217730")
+
+        await d.router.beginSwitchUser(forTVApproval: link)
+        XCTAssertEqual(d.router.path.count, 1, "Choose a User on top of Who's Watching")
+        XCTAssertNil(d.router.takeDueDeviceApproval(), "waits while the chooser shows")
+        await d.users.openUser(sam.id, router: d.router)
+        XCTAssertEqual(d.router.takeDueDeviceApproval(), link, "picking the open user brings it back")
+        XCTAssertNil(d.router.pendingDeviceApproval)
+
+        await d.router.beginSwitchUser(forTVApproval: link)
+        await d.users.startAddUser(router: d.router)
+        XCTAssertNil(d.router.takeDueDeviceApproval(), "waits during Add User")
+        await d.users.cancelSignIn(router: d.router)
+        XCTAssertEqual(d.router.path.count, 1, "back on Choose a User")
+        XCTAssertNil(d.router.takeDueDeviceApproval(), "still choosing")
+        d.router.goBack()
+        XCTAssertEqual(d.router.takeDueDeviceApproval(), link, "going back returns to the card")
+        XCTAssertNil(d.router.pendingDeviceApproval, "nothing left to show later")
+        XCTAssertTrue(d.revokedAccessTokens().isEmpty, "Switch User signs nobody out")
+    }
+    #endif
+
     // MARK: - Sign out and remove
 
     /// Sign out falls back per spec §6.2: another server in the user, then

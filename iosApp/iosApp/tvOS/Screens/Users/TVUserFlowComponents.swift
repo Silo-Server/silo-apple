@@ -26,100 +26,6 @@ enum TVFocusNeighbor {
 
 // MARK: - Avatars
 
-/// One profile's round avatar as Who's Watching draws it (`ProfileTile`): the
-/// profile's tint as a lit sphere, with its picture, emoji, or initial. A user
-/// card shows profiles from a server that may not be the active one, so a
-/// server-relative picture resolves against that card's server.
-struct TVUserAvatar: View {
-    let profile: SavedSignInProfile
-    /// The address of the server the profile belongs to.
-    var serverURL: String?
-    var size: CGFloat
-
-    private var tint: Color { ProfileTilePalette.tint(for: profile.id) }
-
-    var body: some View {
-        ZStack {
-            Circle().fill(
-                RadialGradient(
-                    colors: [tint.mix(with: .white, by: 0.35), tint, tint.mix(with: .black, by: 0.45)],
-                    center: UnitPoint(x: 0.3, y: 0.25),
-                    startRadius: 0,
-                    endRadius: size * 0.8
-                )
-            )
-            content
-        }
-        .frame(width: size, height: size)
-        .clipShape(Circle())
-        .overlay(Circle().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-        .accessibilityHidden(true)
-    }
-
-    @ViewBuilder
-    private var content: some View {
-        if let url = TVUserAvatarSource.imageURL(for: profile, serverURL: serverURL) {
-            AsyncImageView(url: url, contentMode: .fill)
-                .frame(width: size, height: size)
-        } else if let emoji = TVUserAvatarSource.emoji(for: profile) {
-            Text(emoji)
-                .font(.system(size: size * 0.5))
-        } else {
-            Text(TVUserAvatarSource.initial(for: profile))
-                .font(.system(size: size * 0.44, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.95))
-        }
-    }
-}
-
-/// Where a cached profile's avatar comes from (`ProfileAvatarResolver`'s
-/// rules, with a server-relative path resolved against the profile's own
-/// server rather than the active one).
-enum TVUserAvatarSource {
-    static func imageURL(for profile: SavedSignInProfile, serverURL: String?) -> String? {
-        if let raw = trimmed(profile.avatarImageUrl) {
-            if raw.hasPrefix("/") {
-                if !isVector(raw), let resolved = resolve(raw, against: serverURL) { return resolved }
-            } else if let resolved = ProfileAvatarResolver.serverResolvedImageURL(raw) {
-                return resolved
-            }
-        }
-        guard let avatar = trimmed(profile.avatarEmoji), ProfileAvatarResolver.isImage(avatar) else { return nil }
-        if avatar.hasPrefix("/") { return resolve(avatar, against: serverURL) }
-        return ProfileAvatarResolver.imageURL(for: avatar)
-    }
-
-    /// The emoji drawn when there is no picture. An `upload:` reference only
-    /// loads through `avatar_url`.
-    static func emoji(for profile: SavedSignInProfile) -> String? {
-        guard let avatar = trimmed(profile.avatarEmoji),
-              !ProfileAvatarResolver.isImage(avatar),
-              !avatar.lowercased().hasPrefix("upload:") else { return nil }
-        return avatar
-    }
-
-    static func initial(for profile: SavedSignInProfile) -> String {
-        trimmed(profile.name).map { String($0.prefix(1)).uppercased() } ?? "?"
-    }
-
-    private static func trimmed(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
-        return value
-    }
-
-    /// The image pipeline has no SVG decoder (`ProfileAvatarResolver`).
-    private static func isVector(_ path: String) -> Bool {
-        let bare = path.lowercased().split(separator: "?", maxSplits: 1).first.map(String.init) ?? ""
-        return bare.hasSuffix(".svg") || bare.hasSuffix("/svg")
-    }
-
-    private static func resolve(_ path: String, against serverURL: String?) -> String? {
-        guard let base = trimmed(serverURL)?.trimmingCharacters(in: CharacterSet(charactersIn: "/")),
-              !base.isEmpty else { return nil }
-        return base + path
-    }
-}
-
 /// Up to four profiles of a user's last-used server, overlapping left to
 /// right (spec §5.2). A user without cached profiles shows a person glyph.
 struct TVUserAvatarStack: View {
@@ -142,7 +48,8 @@ struct TVUserAvatarStack: View {
             } else {
                 ZStack(alignment: .leading) {
                     ForEach(Array(profiles.enumerated()), id: \.element.id) { index, profile in
-                        TVUserAvatar(profile: profile, serverURL: serverURL, size: size)
+                        // The card's own server, which needn't be the active one.
+                        ProfileAvatar(profile: profile, serverURL: serverURL, size: size, initialScale: 0.44)
                             // A dark ring keeps each avatar's edge readable
                             // where it overlaps the one before it.
                             .background(Circle().fill(Color.black).padding(-4))

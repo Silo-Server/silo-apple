@@ -80,6 +80,15 @@ actor DownloadStore {
         }
     }
 
+    /// `load`, and whether the scope loaded in full. An incomplete scope (its
+    /// store or its downloads from before accounts are still where `load`
+    /// couldn't read or move them) knows none of the downloads in its
+    /// directories, so nothing may be saved over them or deleted from them.
+    func loadScope(serverId: String, accountId: String?, profileId: String) -> (file: DownloadStoreFile, isComplete: Bool) {
+        let file = load(serverId: serverId, accountId: accountId, profileId: profileId)
+        return (file, !unsavableScopes.contains(scopeKey(serverId: serverId, accountId: accountId, profileId: profileId)))
+    }
+
     /// Atomically persist the blob for a scope. No-op for an empty scope.
     func save(_ file: DownloadStoreFile, serverId: String, accountId: String?, profileId: String) {
         guard !serverId.isEmpty, !profileId.isEmpty else { return }

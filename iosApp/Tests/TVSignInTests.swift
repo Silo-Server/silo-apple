@@ -437,11 +437,10 @@ final class TVSignInTests: XCTestCase {
         guard case .failed = phase else { return XCTFail("a lost denial is not a decline: \(phase)") }
     }
 
-    /// "Not you?" promises an account choice only where the server
-    /// advertises `select_account`. A password-only server still reads
-    /// "Switch account" (the password form lets the person choose) with the
-    /// plain sign-out confirmation; only a provider that could sign the same
-    /// person straight back in reads "Sign out".
+    /// An account choice is offered only where the server advertises
+    /// `select_account`; a password-only server lets the password form
+    /// choose. "Not you?" itself is Switch User everywhere and never
+    /// promises a sign-out.
     @MainActor
     func testNotYouOffersAnAccountChoiceOnlyWhereTheServerAdvertisesIt() async {
         for accountSwitch in [TVApprovalAccountSwitch.chooseAccount, .switchAccount, .signOut] {
@@ -470,14 +469,8 @@ final class TVSignInTests: XCTestCase {
             "network sign-in only signs the same device owner back in")
         XCTAssertEqual(TVApprovalAccountSwitch(nil), .signOut, "unread discovery promises nothing")
         #if os(iOS)
-        XCTAssertEqual(TVApprovalCard.switchAccountLink(.chooseAccount), "Not you? Switch account")
-        XCTAssertEqual(TVApprovalCard.switchAccountLink(.switchAccount), "Not you? Switch account")
-        XCTAssertEqual(TVApprovalCard.switchAccountLink(.signOut), "Not you? Sign out")
-        XCTAssertTrue(TVApprovalCard.switchAccountMessage(serverName: "Home", choosingAccount: true)
-            .contains("asked which account"))
-        let plain = TVApprovalCard.switchAccountMessage(serverName: "Home", choosingAccount: false)
-        XCTAssertFalse(plain.lowercased().contains("which account"), plain)
-        XCTAssertFalse(plain.lowercased().contains("choose"), plain)
+        XCTAssertEqual(TVApprovalCard.switchUserLink, "Not you? Switch User")
+        XCTAssertFalse(TVApprovalCard.switchUserLink.lowercased().contains("sign out"))
         #endif
     }
 

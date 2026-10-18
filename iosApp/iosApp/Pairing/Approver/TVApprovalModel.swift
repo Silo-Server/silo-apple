@@ -12,13 +12,14 @@ protocol TVApprovalAPI: Sendable {
     func deny(serverURL: String, bearer: String, code: String) async throws
     /// Who approving would sign the TV in as.
     func accountName(serverURL: String, bearer: String) async -> String?
-    /// What "Not you?" on the card can offer on the server.
+    /// What the server's sign-in offers someone choosing another account.
     func accountSwitch(serverURL: String) async -> TVApprovalAccountSwitch
 }
 
-/// What "Not you?" on the approval card offers. In every case it signs out of
-/// the server in Silo only; the difference is what the next sign-in lets the
-/// person do.
+/// What the server's sign-in offers someone choosing another account. "Not
+/// you?" on the approval card is Switch User, which signs nobody out and
+/// reads the same on every server; the card passes this along with it
+/// (`TVApprovalModel.offersAccountChoice`).
 enum TVApprovalAccountSwitch: Equatable, Sendable {
     /// The server lists a browser provider and advertises `select_account`:
     /// the provider is asked to let the person choose an account.
@@ -28,8 +29,8 @@ enum TVApprovalAccountSwitch: Equatable, Sendable {
     case switchAccount
     /// A browser provider without `select_account`, a server that takes no
     /// password (its network provider signs the same device owner back in),
-    /// or discovery that could not be read: the card promises only a
-    /// sign-out.
+    /// or discovery that could not be read: nothing lets the person choose
+    /// another account there.
     case signOut
 
     /// The rule for a server's discovery; nil is discovery that could not
@@ -130,10 +131,11 @@ final class TVApprovalModel {
     }
 
     private(set) var phase: Phase = .idle
-    /// What "Not you?" offers on this server; a plain sign-out until the
-    /// lookup has read the server's discovery.
+    /// What the server's sign-in offers for choosing another account;
+    /// nothing until the lookup has read the server's discovery.
     private(set) var accountSwitch: TVApprovalAccountSwitch = .signOut
-    /// Whether "Not you?" asks the provider for an account choice.
+    /// Whether the server's sign-in can ask the provider for an account
+    /// choice.
     var offersAccountChoice: Bool { accountSwitch == .chooseAccount }
     let server: ServerEntry
     let code: String
