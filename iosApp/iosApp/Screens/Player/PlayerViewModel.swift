@@ -504,6 +504,10 @@ class PlayerViewModel {
     /// Re-reads the buffer while a renderer wait lasts: no engine event says
     /// when it drains into a stall.
     @ObservationIgnored private var rendererWaitWatch: Task<Void, Never>?
+    /// The app is in the background, or the Mac's player window is minimized
+    /// or hidden: the player cannot show its pills.
+    private(set) var isPlayerSurfaceHidden = false
+    @ObservationIgnored private var surfaceVisibilityObservers: [NSObjectProtocol] = []
     var selectedAudioId: Int64?
     var selectedSubtitleId: Int64? {
         didSet {
@@ -1568,6 +1572,7 @@ class PlayerViewModel {
         }
         observeBufferingHostInputs()
         observeBufferingConnectivity()
+        observeBufferingSurfaceVisibility()
     }
 
     /// The connection moved between metered and unmetered and the other
@@ -8448,6 +8453,8 @@ class PlayerViewModel {
             NotificationCenter.default.removeObserver(foregroundExitObserverToken)
             self.foregroundExitObserverToken = nil
         }
+        surfaceVisibilityObservers.forEach(NotificationCenter.default.removeObserver)
+        surfaceVisibilityObservers = []
         nextUpLookupTask?.cancel()
         nextUpOnDeckTask?.cancel()
         nextUpCountdownTask?.cancel()
@@ -10330,8 +10337,44 @@ extension PlayerViewModel {
         syncBufferingHostInputs()
     }
 
+    /// A higher-priority pill, or a player that cannot show pills at all,
+    /// holds a buffering pill with its remaining timer.
     private var bufferingHostInputs: (mode: BufferingQualityMode, suspended: Bool, competingPill: Bool) {
-        (settings.bufferingQualityMode, isWatchPartyPlayback, showIntroSkip || showSegmentSkip || showNextUpScreen)
+        var pillHidden = showIntroSkip || showSegmentSkip || showNextUpScreen || isPlayerSurfaceHidden
+        #if os(iOS)
+        pillHidden = pillHidden || PictureInPictureCoordinator.shared.isEngaged
+        #endif
+        return (settings.bufferingQualityMode, isWatchPartyPlayback, pillHidden)
+    }
+
+    /// Follows whether the player can show its pills: not while the app is in
+    /// the background, nor on a Mac while the app is hidden or every window it
+    /// could play in is minimized.
+    private func observeBufferingSurfaceVisibility() {
+        let center = NotificationCenter.default
+        #if os(iOS) || os(tvOS)
+        let edges: [(Notification.Name, Bool)] = [
+            (UIApplication.didEnterBackgroundNotification, true),
+            (UIApplication.willEnterForegroundNotification, false),
+        ]
+        for (name, hidden) in edges {
+            surfaceVisibilityObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.isPlayerSurfaceHidden = hidden }
+            })
+        }
+        #elseif os(macOS)
+        let names = [NSApplication.didHideNotification, NSApplication.didUnhideNotification,
+                     NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification]
+        for name in names {
+            surfaceVisibilityObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    let app = NSApplication.shared
+                    self?.isPlayerSurfaceHidden = app.isHidden
+                        || app.windows.filter(\.canBecomeMain).allSatisfy { $0.isMiniaturized || !$0.isVisible }
+                }
+            })
+        }
+        #endif
     }
 
     private func syncBufferingHostInputs() {

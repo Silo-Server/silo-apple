@@ -1,5 +1,6 @@
 import AetherEngine
 import AVFoundation
+import UIKit
 import XCTest
 @testable import Silo
 
@@ -283,6 +284,27 @@ final class BufferingQualityPlayerTests: XCTestCase {
         await eventually { model.bufferingPill != nil }
         XCTAssertEqual(model.bufferingPill?.kind, .prompt)
     }
+
+    /// Picture in picture or the app in the background shows no pills, so a
+    /// pill waits with the rest of its timer, as behind another pill.
+    func testABackgroundedPlayerHoldsTheBufferingPill() async throws {
+        let clock = ManualBufferingQualityClock()
+        let model = PlayerViewModel(bufferingQualityClock: clock)
+        defer { model.cleanup() }
+        try showPrompt(on: model, clock: clock)
+
+        NotificationCenter.default.post(name: backgroundNotification, object: nil)
+        await eventually { model.bufferingPill == nil }
+        XCTAssertNil(model.bufferingPill)
+        clock.advance(to: 60_000)
+
+        NotificationCenter.default.post(name: foregroundNotification, object: nil)
+        await eventually { model.bufferingPill != nil }
+        XCTAssertEqual(model.bufferingPill?.kind, .prompt, "its timer did not run out unseen")
+    }
+
+    private let backgroundNotification = UIApplication.didEnterBackgroundNotification
+    private let foregroundNotification = UIApplication.willEnterForegroundNotification
 
     func testWatchPartySuspendsTheController() {
         let solo = PlayerViewModel()

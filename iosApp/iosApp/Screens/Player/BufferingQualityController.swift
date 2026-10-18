@@ -510,10 +510,12 @@ final class BufferingQualityController {
         )
     }
 
-    /// The intro-skip, segment-skip or Next Up pill is showing. At most one
-    /// actionable pill shows: a buffering pill that would appear now waits, and
-    /// one already up hides with its timer frozen. Either shows when the other
-    /// pill hides, if the plan has not changed.
+    /// The intro-skip, segment-skip or Next Up pill is showing, or the player
+    /// cannot show pills at all (picture in picture, the app in the
+    /// background, a minimized window). At most one actionable pill shows: a
+    /// buffering pill that would appear now waits, and one already up hides
+    /// with its timer frozen. Either shows when the other pill hides or the
+    /// full player returns, if the plan has not changed.
     func setCompetingPillVisible(_ visible: Bool) {
         guard visible != competingPillVisible else { return }
         competingPillVisible = visible
