@@ -48,6 +48,23 @@ final class AetherPlaybackController {
         case ended
         case failure(PlaybackErrorInfo)
         case transportRestoreFailed(String)
+        /// The native route's AVPlayer appeared, went away, or changed its
+        /// `timeControlStatus` or `reasonForWaitingToPlay`; read
+        /// ``nativeTransport``.
+        case nativeTransportChanged
+        /// The current AVPlayerItem posted `playbackStalledNotification`.
+        case itemStalled
+        /// ``shouldPlayWhenReady`` or ``isRestoringTransport`` changed. The
+        /// engine can stay in `.loading` across a Play or Pause, so no state
+        /// event follows.
+        case transportIntentChanged
+    }
+
+    /// The native route's AVPlayer transport, as AVFoundation reports it.
+    struct NativeTransport: Equatable {
+        let status: AVPlayer.TimeControlStatus
+        /// Nil unless `status` is `.waitingToPlayAtSpecifiedRate`.
+        let waitingReason: AVPlayer.WaitingReason?
     }
 
     struct ScopedEvent {
@@ -127,6 +144,24 @@ final class AetherPlaybackController {
             #if os(macOS)
             refreshDisplaySleepPrevention()
             #endif
+            if shouldPlayWhenReady != oldValue { publish(.transportIntentChanged) }
+        }
+    }
+    /// A Play is rebuilding the session Aether tore down in the background:
+    /// a reload of the same plan, not a stall.
+    private(set) var isRestoringTransport = false {
+        didSet { if isRestoringTransport != oldValue { publish(.transportIntentChanged) } }
+    }
+    /// The native route's AVPlayer, observed for ``nativeTransport``.
+    private var observedTransportPlayer: AVPlayer?
+    private var transportObservations: [NSKeyValueObservation] = []
+    private var itemStallSubscription: AnyCancellable?
+
+    /// The native route's AVPlayer transport; nil on the software route or
+    /// without a player.
+    var nativeTransport: NativeTransport? {
+        observedTransportPlayer.map {
+            NativeTransport(status: $0.timeControlStatus, waitingReason: $0.reasonForWaitingToPlay)
         }
     }
     /// Watch Party resumes only through a current room command.
@@ -341,6 +376,8 @@ final class AetherPlaybackController {
                   let loadEpoch = self.activeLoadEpoch,
                   self.activeSpec != nil else { return }
             if self.hasCommittedActiveLoad, self.sessionRequiresRestore {
+                self.isRestoringTransport = true
+                defer { self.isRestoringTransport = false }
                 do {
                     try await self.engine.reloadAtCurrentPosition()
                 } catch is CancellationError {
@@ -885,6 +922,7 @@ final class AetherPlaybackController {
             .sink { [weak self] player in
                 guard let self else { return }
                 bindExternalPlayback(to: player)
+                bindNativeTransport(to: player)
                 publishSystemMediaChanged()
             }
             .store(in: &subscriptions)
@@ -892,8 +930,9 @@ final class AetherPlaybackController {
         // An Aether native host can keep the same AVPlayer while replacing
         // its item. Reassert the host policy and session binding at that seam.
         engine.$currentAVPlayerItem
-            .sink { [weak self] _ in
+            .sink { [weak self] item in
                 guard let self else { return }
+                bindItemStalls(to: item)
                 configureExternalPlaybackPolicy()
                 refreshExternalPlaybackState()
                 publishSystemMediaChanged()
@@ -980,6 +1019,33 @@ final class AetherPlaybackController {
                       self.engine.currentAVPlayer === player else { return }
                 self.refreshExternalPlaybackState()
             }
+        }
+    }
+
+    /// Follows the native AVPlayer's transport for the buffering controller.
+    private func bindNativeTransport(to player: AVPlayer?) {
+        transportObservations.forEach { $0.invalidate() }
+        transportObservations = []
+        observedTransportPlayer = player
+        defer { publish(.nativeTransportChanged) }
+        guard let player else { return }
+        let changed: (AVPlayer) -> Void = { [weak self] player in
+            Task { @MainActor [weak self, weak player] in
+                guard let self, let player, self.observedTransportPlayer === player else { return }
+                self.publish(.nativeTransportChanged)
+            }
+        }
+        transportObservations = [
+            player.observe(\.timeControlStatus, options: [.new]) { player, _ in changed(player) },
+            player.observe(\.reasonForWaitingToPlay, options: [.new]) { player, _ in changed(player) },
+        ]
+    }
+
+    private func bindItemStalls(to item: AVPlayerItem?) {
+        itemStallSubscription = item.map { item in
+            NotificationCenter.default.publisher(for: AVPlayerItem.playbackStalledNotification, object: item)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.publish(.itemStalled) }
         }
     }
 

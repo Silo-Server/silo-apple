@@ -430,7 +430,9 @@ class PlayerViewModel {
     var errorIsRetryable = true
     /// Mid-stream connection state (§6.2): `reconnecting` while the player
     /// retries after the server dropped, `lost` once it gave up.
-    private(set) var connectionState: PlaybackConnectionState = .connected
+    private(set) var connectionState: PlaybackConnectionState = .connected {
+        didSet { if connectionState != oldValue { syncBufferingQualitySignals() } }
+    }
     var isReconnecting: Bool { connectionState == .reconnecting }
     /// The notice the player shows: the reconnect status while it runs,
     /// otherwise the latest transient notice.
@@ -482,7 +484,23 @@ class PlayerViewModel {
     /// Lowers quality when playback keeps buffering, with its prompt and undo
     /// pills. See BufferingQualityController.swift and the server's
     /// buffering-quality spec.
-    let bufferingQuality = BufferingQualityController()
+    let bufferingQuality: BufferingQualityController
+    /// Turns playback facts into the controller's media events.
+    @ObservationIgnored private var bufferingSignals = BufferingSignalMapper()
+    /// Numbers each adopted plan, so a replan that comes back with the same
+    /// server `plan_id` is still a new plan to the controller.
+    @ObservationIgnored private var bufferingPlanRevision: UInt64 = 0
+    /// The adopted plans a `plan_summary` can still name: the current one,
+    /// and the one it replaced until its summary is sent.
+    @ObservationIgnored private var bufferingPlans: [String: (prepared: PreparedPlaybackV3, sessionId: String)] = [:]
+    /// The controller's id for the current plan. Read by tests.
+    @ObservationIgnored private(set) var bufferingPlanId: String?
+    /// `streamLoadGeneration` when the current plan was adopted. A replan or
+    /// load started since then is a reload until its own plan is adopted.
+    @ObservationIgnored private var bufferingAdoptedStreamLoadGeneration: UInt64?
+    /// A same-plan reload (credential refresh, background restore) whose
+    /// transport has not played yet.
+    @ObservationIgnored private var bufferingReloadEpoch: AetherPlaybackController.LoadEpoch?
     var selectedAudioId: Int64?
     var selectedSubtitleId: Int64? {
         didSet {
@@ -1378,8 +1396,11 @@ class PlayerViewModel {
         !isWatchPartyPlayback && PlaybackNetworkMonitor.shared.isMetered
     }
 
-    init(libraryId: Int? = nil) {
+    /// `bufferingQualityClock` drives the buffering controller's timers; tests
+    /// pass a manual one.
+    init(libraryId: Int? = nil, bufferingQualityClock: PlayerPromptClock? = nil) {
         self.initialLibraryId = libraryId
+        self.bufferingQuality = BufferingQualityController(clock: bufferingQualityClock)
         self.seriesReturnGeneration = SeriesPlaybackReturnInbox.generation
         self.cleanupBarrierGeneration = PlayerCleanupBarrier.playerCreated()
         let controller: AetherPlaybackController
@@ -1539,6 +1560,11 @@ class PlayerViewModel {
         networkPathObservation = PlaybackNetworkMonitor.shared.observe { [weak networkQuality] in
             Task { @MainActor in networkQuality?.connectionDidChange() }
         }
+        bufferingQuality.onOutput = { [weak self] output in
+            self?.handleBufferingQualityOutput(output)
+        }
+        observeBufferingHostInputs()
+        observeBufferingConnectivity()
     }
 
     /// The connection moved between metered and unmetered and the other
@@ -1644,6 +1670,8 @@ class PlayerViewModel {
 
     private func handleAetherEvent(_ scopedEvent: AetherPlaybackController.ScopedEvent) {
         guard !isDisposed, scopedEvent.epoch == activeAetherLoadEpoch else { return }
+        defer { syncBufferingQualitySignals() }
+        guard !noteBufferingTransportEvent(scopedEvent) else { return }
         defer { publishWatchPartySnapshot() }
         switch scopedEvent.event {
         case .state(let state):
@@ -1779,6 +1807,8 @@ class PlayerViewModel {
             // terminal wall. `handlePlaybackError` still finalizes the cases
             // that genuinely have nowhere left to go.
             handlePlaybackError(message)
+        case .nativeTransportChanged, .itemStalled, .transportIntentChanged:
+            break // noteBufferingTransportEvent
         }
     }
 
@@ -2202,6 +2232,7 @@ class PlayerViewModel {
             var shouldFallbackToReplan = true
             defer {
                 self.protocolV3ReplanTask = nil
+                self.syncBufferingQualitySignals()
                 defer { self.publishWatchPartySnapshot() }
                 if !self.isDisposed,
                    recoveryGeneration == self.streamLoadGeneration {
@@ -2308,6 +2339,8 @@ class PlayerViewModel {
                     throw CancellationError()
                 }
                 self.markProtocolV3AetherLoadCommitted()
+                // The same plan on a new transport: its start is a reload.
+                self.bufferingReloadEpoch = self.activeAetherLoadEpoch
                 shouldFallbackToReplan = false
                 Self.logger.info(
                     "Protocol V3 media credential reload succeeded for plan \(planId, privacy: .public)"
@@ -2320,6 +2353,7 @@ class PlayerViewModel {
                 )
             }
         }
+        syncBufferingQualitySignals()
         return true
     }
 
@@ -2444,7 +2478,9 @@ class PlayerViewModel {
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil,
         bandwidthEstimateKbps: Int? = nil,
         bandwidthEstimateSource: String? = nil,
-        learnedLimit: String? = nil
+        learnedLimit: String? = nil,
+        // The buffering controller's replan, which hears when it fails.
+        issuedByBufferingQuality: Bool = false
     ) -> Bool {
         // One classification of the user's target. A track change must have a
         // stable server ordinal before it is queued or issued: falling back to
@@ -2610,8 +2646,14 @@ class PlayerViewModel {
             }
             var uncommittedPrepared: PreparedPlayback?
             var chainedLoadFailureRecovery: (position: Double, classification: String, message: String)?
+            var adoptedBufferingPlan = false
             defer {
                 self.protocolV3ReplanTask = nil
+                if issuedByBufferingQuality, !adoptedBufferingPlan {
+                    Self.logger.info("[CMP-BUFFERING] replan failed or was not adopted")
+                    self.bufferingQuality.replanFailed()
+                }
+                self.syncBufferingQualitySignals()
                 defer { self.publishWatchPartySnapshot() }
                 if qualitySwitchOnMeteredNetwork != nil { self.isQualitySwitching = false }
                 // A handoff this replan began but never installed: the
@@ -2778,6 +2820,8 @@ class PlayerViewModel {
                 }
                 self.markProtocolV3AetherLoadCommitted()
                 uncommittedPrepared = nil
+                self.adoptBufferingPlan(prepared)
+                adoptedBufferingPlan = true
                 if let onMeteredNetwork = qualitySwitchOnMeteredNetwork {
                     self.recordViewerQualityPick(
                         prepared.activeQualityId,
@@ -2891,6 +2935,7 @@ class PlayerViewModel {
                 )
             }
         }
+        syncBufferingQualitySignals()
         return true
     }
 
@@ -5307,6 +5352,7 @@ class PlayerViewModel {
         // again.
         if lastLoadRequest?.contentId != request.contentId {
             introSkipPrompt.reset()
+            resetBufferingQuality()
             autoSkippedRecapKeys = []
             viewingHasPlayed = false
             reconnectLoadRequest = nil
@@ -5382,6 +5428,7 @@ class PlayerViewModel {
                     _ = self.reconnectCycle.finishHandoff()
                     self.freshLoadTask = nil
                     self.freshLoadOwnsFailureHandling = false
+                    self.syncBufferingQualitySignals()
                     self.publishWatchPartySnapshot()
                 }
             }
@@ -5574,6 +5621,7 @@ class PlayerViewModel {
                     }
                     self.markProtocolV3AetherLoadCommitted()
                     uncommittedPrepared = nil
+                    self.adoptBufferingPlan(prepared)
                     // The realtime channel is a server websocket keyed by the
                     // committed session. Binding before Aether accepts the
                     // candidate can leave commands attached to a rolled-back
@@ -5628,6 +5676,9 @@ class PlayerViewModel {
                     await self.sessionBridge.rollbackPendingProtocolV3Transition(uncommittedPrepared)
                 }
                 guard !Task.isCancelled, !self.isDisposed else { return }
+                // The plan this load replaced failed with it; its summary
+                // goes before the stop.
+                self.endBufferingPlan()
                 await self.sessionBridge.stopSession(
                     position: self.currentTime,
                     isPaused: true
@@ -5638,6 +5689,7 @@ class PlayerViewModel {
                 self.handleBeginFreshLoadFailure(error: error, origin: origin)
             }
         }
+        syncBufferingQualitySignals()
     }
 
     /// Race `sessionBridge.startSession` against an optional timeout. A nil
@@ -5873,6 +5925,7 @@ class PlayerViewModel {
         staleSessionRecoveryTask?.cancel()
         staleSessionRecoveryTask = nil
         cancelReconnect()
+        endBufferingPlan()
         disposeAetherPlayback()
         activePlaybackSessionId = nil
         activePreparedProtocolV3 = nil
@@ -6323,6 +6376,7 @@ class PlayerViewModel {
         qualitySwitchError = nil
         showControls = true
         hideControlsTask?.cancel()
+        bufferingQuality.viewerChangedQuality()
 
         if activePreparedProtocolV3 != nil {
             // A rejected replan already cleared `isQualitySwitching`, but
@@ -6615,6 +6669,7 @@ class PlayerViewModel {
         skipDebounceTask = nil
 
         holdSeekRate = forward ? 1 : -1
+        syncBufferingQualitySignals()
         // Seek preview always starts from the live playhead (ignore any
         // stale `scrubPreviewTime` left by a prior tap-skip preview that
         // didn't land).
@@ -6696,6 +6751,7 @@ class PlayerViewModel {
         holdSeekAutoRampTask?.cancel()
         holdSeekAutoRampTask = nil
         holdSeekRate = 0
+        syncBufferingQualitySignals()
     }
 
     /// Accumulate a skip delta into `scrubPreviewTime` and schedule a
@@ -6884,6 +6940,7 @@ class PlayerViewModel {
         }
 
         armSeekFilterTimeout(restoringRoomPosition: held != nil)
+        syncBufferingQualitySignals()
         // Playback ticks stop while paused, so a seek out of (or back into)
         // the intro has to reach the pill here rather than on the next tick.
         // Last, after this seek is fully issued: a seek into an unresolved
@@ -7251,6 +7308,7 @@ class PlayerViewModel {
             self.seekTargetTime = nil
             self.watchPartyHeldSeek = nil
             self.seekFilterTimeoutTask = nil
+            self.syncBufferingQualitySignals()
             if restoringRoomPosition, self.isWatchPartyPlayback, !self.isScrubbing {
                 self.currentTime = self.watchPartyPlaybackSnapshot.sourceTime
                 self.scrubPreviewTime = self.currentTime
@@ -8274,6 +8332,8 @@ class PlayerViewModel {
         )
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
+        // Before the session stop below, so the plan's summary precedes it.
+        endBufferingPlan()
         isDisposed = true
         #if os(iOS)
         // A restore waiting on a cover that will now never mount has to be
@@ -9958,6 +10018,258 @@ extension PlayerViewModel {
     }
 }
 
+// MARK: - Buffering quality
+
+extension PlayerViewModel {
+    private static let qualityReductionUnavailableWarning = "quality_reduction_unavailable"
+
+    /// Hands ``bufferingQuality`` whatever the playback facts changed. Called
+    /// on every engine event and wherever a seek, reload, reconnect, the
+    /// connection or the play intent moves.
+    private func syncBufferingQualitySignals() {
+        guard !isDisposed else { return }
+        let calls = bufferingSignals.update(bufferingSignalSnapshot)
+        if bufferingSignals.state == .playing { bufferingReloadEpoch = nil }
+        for call in calls {
+            switch call {
+            case .transportTroubleChanged(let trouble):
+                Self.logger.info("[CMP-BUFFERING] transport trouble=\(trouble, privacy: .public)")
+                bufferingQuality.transportTroubleChanged(trouble)
+            case .seeked:
+                bufferingQuality.seeked()
+            case .playing:
+                bufferingQuality.playing()
+            case .waiting(let cause):
+                Self.logger.debug("[CMP-BUFFERING] waiting cause=\(String(describing: cause), privacy: .public)")
+                bufferingQuality.waiting(cause: cause)
+            case .paused:
+                bufferingQuality.paused()
+            }
+        }
+    }
+
+    private var bufferingSignalSnapshot: BufferingSignalMapper.Snapshot {
+        let monitor = ConnectionMonitor.shared
+        let replacementPending = (protocolV3ReplanTask != nil || freshLoadTask != nil)
+            && streamLoadGeneration != bufferingAdoptedStreamLoadGeneration
+        return BufferingSignalMapper.Snapshot(
+            hasActiveLoad: activeAetherLoadEpoch != nil && aetherPlaybackController.hasActiveLoad,
+            wantsToPlay: aetherPlaybackController.shouldPlayWhenReady,
+            phase: aetherPhase,
+            engineBuffering: isBuffering,
+            nativeTransport: aetherPlaybackController.nativeTransport,
+            seekInFlight: seekTargetTime != nil || seekReplanTask != nil || isHoldSeeking,
+            reloadInProgress: replacementPending
+                || reconnectCycle.isHandingOff
+                || aetherPlaybackController.isRestoringTransport
+                || (activeAetherLoadEpoch != nil && bufferingReloadEpoch == activeAetherLoadEpoch),
+            reachedEnd: hasReachedEndOfFile,
+            connectionTrouble: connectionState != .connected
+                || !monitor.isDeviceOnline
+                || monitor.serverStatus == .unreachable
+        )
+    }
+
+    /// Records the AVPlayer events that only the buffering controller reads.
+    /// True when `scopedEvent` was one of them.
+    private func noteBufferingTransportEvent(_ scopedEvent: AetherPlaybackController.ScopedEvent) -> Bool {
+        switch scopedEvent.event {
+        case .nativeTransportChanged:
+            return true
+        case .itemStalled:
+            bufferingSignals.noteItemStalled()
+            return true
+        case .transportIntentChanged:
+            if aetherPlaybackController.isRestoringTransport { bufferingReloadEpoch = scopedEvent.epoch }
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// A plan became the playing plan: the initial start's commit, or a
+    /// replan's. Each adoption gets its own id, so a replan that returns the
+    /// same server `plan_id` still reads as a new plan.
+    private func adoptBufferingPlan(_ prepared: PreparedPlayback) {
+        guard let v3 = prepared.protocolV3 else { return }
+        adoptBufferingPlan(v3, sessionId: prepared.session.sessionId, activeQualityId: prepared.activeQualityId)
+    }
+
+    /// Internal for tests.
+    func adoptBufferingPlan(_ v3: PreparedPlaybackV3, sessionId: String, activeQualityId: String) {
+        guard !isAudioOnlyAetherLoad else { return }
+        bufferingPlanRevision &+= 1
+        let id = "\(bufferingPlanRevision):\(v3.plan.planId)"
+        bufferingPlans = bufferingPlans.filter { $0.key == bufferingPlanId }
+        bufferingPlans[id] = (v3, sessionId)
+        bufferingPlanId = id
+        bufferingAdoptedStreamLoadGeneration = streamLoadGeneration
+        bufferingReloadEpoch = nil
+        bufferingQuality.mode = settings.bufferingQualityMode
+        bufferingQuality.sendsBufferingQualityFields = v3.advertisesBufferingQuality
+        let plan = Self.bufferingPlan(id: id, prepared: v3, activeQualityId: activeQualityId)
+        Self.logger.info(
+            "[CMP-BUFFERING] plan adopted id=\(id, privacy: .public) delivered=\(plan.deliveredKbps.map(String.init) ?? "unknown", privacy: .public) quality=\(plan.quality, privacy: .public) cant_reduce=\(plan.qualityReductionUnavailable, privacy: .public)"
+        )
+        bufferingQuality.planAdopted(plan)
+        // The new plan hears whether playback is already waiting.
+        bufferingSignals.invalidate()
+        syncBufferingQualitySignals()
+    }
+
+    /// What the controller reads from an adopted plan. The quality is Auto,
+    /// or the server's label for the rung in effect.
+    static func bufferingPlan(
+        id: String,
+        prepared: PreparedPlaybackV3,
+        activeQualityId: String
+    ) -> BufferingQualityController.Plan {
+        let plan = prepared.plan
+        let active = ApplePlaybackQuality.protocolV3QualityId(activeQualityId)
+        let quality = active == ApplePlaybackQuality.autoId
+            ? BufferingQualityController.autoQuality
+            : plan.availableQualities.first { ApplePlaybackQuality.protocolV3QualityId($0.label) == active }?.label
+                ?? active
+        return BufferingQualityController.Plan(
+            id: id,
+            deliveredKbps: plan.effectiveRecipe.bitrateKbps ?? plan.source.bitrateKbps,
+            quality: quality,
+            availableQualities: plan.availableQualities.map {
+                .init(label: $0.label, bitrateKbps: $0.bitrateKbps, preservesSource: $0.preservesSource)
+            },
+            qualityReductionUnavailable: plan.degradationWarnings.contains {
+                $0.code == qualityReductionUnavailableWarning
+            }
+        )
+    }
+
+    /// The playing plan stopped or failed with no successor; its summary is
+    /// sent now, ahead of any session stop.
+    private func endBufferingPlan() {
+        bufferingQuality.planEnded()
+        clearBufferingPlanState()
+    }
+
+    /// Other content: every decision about buffering starts over.
+    private func resetBufferingQuality() {
+        bufferingQuality.reset()
+        clearBufferingPlanState()
+    }
+
+    private func clearBufferingPlanState() {
+        bufferingPlans = [:]
+        bufferingPlanId = nil
+        bufferingAdoptedStreamLoadGeneration = nil
+        bufferingReloadEpoch = nil
+        bufferingSignals.invalidate()
+    }
+
+    private func handleBufferingQualityOutput(_ output: BufferingQualityController.Output) {
+        switch output {
+        case .replan(let request):
+            Self.logger.info(
+                "[CMP-BUFFERING] trigger replan quality=\(request.qualityPreference, privacy: .public) estimate=\(request.bandwidthEstimateKbps.map(String.init) ?? "none", privacy: .public) source=\(request.bandwidthEstimateSource ?? "none", privacy: .public) learned_limit=\(request.learnedLimit ?? "none", privacy: .public)"
+            )
+            // Issued on the next turn: the controller is still inside the
+            // event that fired it, and the replan feeds it events of its own.
+            Task { @MainActor [weak self] in self?.issueBufferingReplan(request) }
+        case .pillShown(let kind):
+            Self.logger.info("[CMP-BUFFERING] pill shown kind=\(kind == .prompt ? "prompt" : "undo", privacy: .public)")
+        case .notice(let notice):
+            Self.logger.info("[CMP-BUFFERING] notice \(notice == .lowered ? "lowered" : "cant_lower", privacy: .public)")
+            showNotice(title: notice.text, message: "", tone: notice == .lowered ? .info : .warning, duration: 5)
+        case .planSummary(let summary):
+            reportBufferingPlanSummary(summary)
+        }
+    }
+
+    /// The controller's `quality_change`, sent like the viewer's switch but
+    /// recorded as nobody's pick: the saved settings and the viewer's
+    /// in-player choice stay as they are.
+    private func issueBufferingReplan(_ request: BufferingQualityController.ReplanRequest) {
+        let qualityId = ApplePlaybackQuality.protocolV3QualityId(request.qualityPreference)
+        guard !isDisposed, !isWatchPartyPlayback, activePreparedProtocolV3 != nil, freshLoadTask == nil,
+              attemptProtocolV3Replan(
+                  position: currentTime.isFinite ? max(0, currentTime) : 0,
+                  classification: "quality_changed",
+                  message: "Playback kept buffering; requesting quality \(qualityId).",
+                  operation: PlaybackProtocolV3.ReplanOperation.qualityChange,
+                  qualityPreference: qualityId,
+                  // Auto keeps the saved cap for the connection.
+                  autoBandwidthCapKbps: settings.playbackQualityAxes(onMeteredNetwork: usesMeteredQuality).bitrateKbps,
+                  bandwidthEstimateKbps: request.bandwidthEstimateKbps,
+                  bandwidthEstimateSource: request.bandwidthEstimateSource,
+                  learnedLimit: request.learnedLimit,
+                  issuedByBufferingQuality: true
+              ) else {
+            Self.logger.info("[CMP-BUFFERING] replan not issued: player busy or unavailable")
+            bufferingQuality.replanFailed()
+            return
+        }
+        Self.logger.info("[CMP-BUFFERING] replan issued quality=\(qualityId, privacy: .public)")
+    }
+
+    private func reportBufferingPlanSummary(_ summary: BufferingQualityController.PlanSummary) {
+        guard let entry = bufferingPlans.removeValue(forKey: summary.planId) else { return }
+        let report = PlaybackV3PlanSummary(
+            playedMs: summary.playedMs,
+            stallCount: summary.stallCount,
+            stallTotalMs: summary.stallTotalMs,
+            stallLongestMs: summary.stallLongestMs,
+            deliveredKbps: summary.deliveredKbps,
+            bufferingMode: summary.mode,
+            bufferingAction: summary.action.rawValue,
+            bandwidthEstimateKbps: summary.bandwidthEstimateKbps
+        )
+        Self.logger.info(
+            "[CMP-BUFFERING] plan summary id=\(summary.planId, privacy: .public) played_ms=\(summary.playedMs, privacy: .public) stalls=\(summary.stallCount, privacy: .public) stall_ms=\(summary.stallTotalMs, privacy: .public) action=\(summary.action.rawValue, privacy: .public) sent=\(entry.prepared.advertisesPlanSummary, privacy: .public)"
+        )
+        Task { [sessionBridge] in
+            await sessionBridge.reportProtocolV3PlanSummary(report, for: entry.prepared, sessionId: entry.sessionId)
+        }
+    }
+
+    /// Keeps the controller's mode, Watch Party suspension and competing-pill
+    /// state current. Observation re-arms itself after every change, so a
+    /// pill that hides on its own timer is seen too.
+    private func observeBufferingHostInputs() {
+        guard !isDisposed else { return }
+        withObservationTracking {
+            _ = bufferingHostInputs
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.observeBufferingHostInputs() }
+        }
+        syncBufferingHostInputs()
+    }
+
+    private var bufferingHostInputs: (mode: BufferingQualityMode, suspended: Bool, competingPill: Bool) {
+        (settings.bufferingQualityMode, isWatchPartyPlayback, showIntroSkip || showSegmentSkip || showNextUpScreen)
+    }
+
+    private func syncBufferingHostInputs() {
+        let inputs = bufferingHostInputs
+        bufferingQuality.mode = inputs.mode
+        if bufferingQuality.isSuspended != inputs.suspended {
+            bufferingQuality.isSuspended = inputs.suspended
+        }
+        bufferingQuality.setCompetingPillVisible(inputs.competingPill)
+    }
+
+    /// Device and server reachability feed transport trouble.
+    private func observeBufferingConnectivity() {
+        guard !isDisposed else { return }
+        let monitor = ConnectionMonitor.shared
+        withObservationTracking {
+            _ = (monitor.isDeviceOnline, monitor.serverStatus)
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.observeBufferingConnectivity()
+                self?.syncBufferingQualitySignals()
+            }
+        }
+    }
+}
+
 // MARK: - Watch Party playback boundary
 
 extension PlayerViewModel {
@@ -9977,6 +10289,8 @@ extension PlayerViewModel {
         #endif
         endHoldFastForward()
         introSkipPrompt.reset()
+        resetBufferingQuality()
+        syncBufferingHostInputs()
         cancelNextUpFlow()
         sleepTimer.cancel()
         var request = LoadRequest(

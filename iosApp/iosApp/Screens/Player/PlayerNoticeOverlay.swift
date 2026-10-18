@@ -36,10 +36,14 @@ struct PlayerNoticeOverlay: View {
                     .font(.siloSubheadline)
                     .foregroundColor(.siloOnSurface)
 
-                Text(notice.message)
-                    .font(.siloBody)
-                    .foregroundColor(.siloSecondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+                // A title-only notice, such as the buffering notices, has no
+                // second line.
+                if !notice.message.isEmpty {
+                    Text(notice.message)
+                        .font(.siloBody)
+                        .foregroundColor(.siloSecondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 0)
@@ -63,7 +67,7 @@ struct PlayerNoticeOverlay: View {
         )
         .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(notice.title). \(notice.message)")
+        .accessibilityLabel(notice.message.isEmpty ? notice.title : "\(notice.title). \(notice.message)")
     }
 }
 
