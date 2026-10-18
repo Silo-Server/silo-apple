@@ -416,7 +416,7 @@ enum PosterImageCache {
             guard let request else { return }
             _ = try? await ImagePipeline.shared.image(for: request)
         }()
-        async let tint: Void = { _ = await HeroBackdropPalette.tintColor(for: url) }()
+        async let tint: Void = { _ = await HeroBackdropPalette.tints(for: url) }()
         _ = await (image, tint)
     }
     #endif
