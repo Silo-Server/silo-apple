@@ -122,10 +122,6 @@ struct PlaybackSettingsView: View {
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
 
-            Toggle("TrueHD Atmos", isOn: $viewModel.trueHDAtmosEnabled)
-                .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloSwitchOn)
-
             Picker("Deinterlacing", selection: $viewModel.deinterlaceMode) {
                 ForEach(DeinterlacePreference.allCases, id: \.self) { mode in
                     Text(mode.label).tag(mode)
@@ -163,7 +159,6 @@ struct PlaybackSettingsView: View {
     private var streamingFooterText: String {
         var text = SettingsViewModel.hdrFooterText
         text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
-        text += " TrueHD Atmos adds height channels but plays those tracks as compressed audio."
         return text
     }
 
