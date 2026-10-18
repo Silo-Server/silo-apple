@@ -167,17 +167,17 @@ final class ArtworkSizingRequestTests: XCTestCase {
     /// The issue's Apple TV 4K table.
     func testAppleTV4KWidths() async throws {
         let capability = try await capability()
-        XCTAssertEqual(ArtworkSurface.tvHeroBackdropWidth, 1479)
+        XCTAssertEqual(ArtworkSurface.tvHeroBackdropWidth, 1344)
         XCTAssertEqual(capability.requestQuery(for: .home),
-                       ["image_size": "medium", "backdrop_width": "2958", "logo_width": "1760"])
+                       ["image_size": "medium", "backdrop_width": "2688", "logo_width": "1760"])
         XCTAssertEqual(capability.requestQuery(for: .shelves), capability.requestQuery(for: .home))
         XCTAssertEqual(capability.requestQuery(for: .detail),
-                       ["poster_width": "920", "backdrop_width": "2958", "logo_width": "1760", "photo_width": "400"])
+                       ["poster_width": "920", "backdrop_width": "2688", "logo_width": "1760", "photo_width": "400"])
         XCTAssertEqual(capability.requestQuery(for: .episodes), ["still_width": "720"])
         // Cards seed the detail hero with their backdrop, so they ask for the hero's.
-        XCTAssertEqual(capability.requestQuery(for: .similar), ["poster_width": "440", "backdrop_width": "2958"])
-        XCTAssertEqual(capability.requestQuery(for: .cards), ["poster_width": "520", "backdrop_width": "2958"])
-        XCTAssertEqual(capability.requestQuery(for: .lists), ["poster_width": "352", "backdrop_width": "2958"])
+        XCTAssertEqual(capability.requestQuery(for: .similar), ["poster_width": "440", "backdrop_width": "2688"])
+        XCTAssertEqual(capability.requestQuery(for: .cards), ["poster_width": "520", "backdrop_width": "2688"])
+        XCTAssertEqual(capability.requestQuery(for: .lists), ["poster_width": "352", "backdrop_width": "2688"])
         XCTAssertTrue(capability.requestQuery(for: .watch).isEmpty)
     }
     #endif

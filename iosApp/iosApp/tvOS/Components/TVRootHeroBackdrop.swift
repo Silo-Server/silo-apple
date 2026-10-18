@@ -9,9 +9,8 @@ enum TVBackdropArtworkLayout {
     /// tvOS renders every screen into a 1920 pt wide logical canvas, so the
     /// hero artwork size is fixed and can be computed off the main thread.
     static let viewportWidth: CGFloat = 1920
-    /// Equal fractions keep the box 16:9, so a backdrop fills it uncropped.
-    static let widthFraction: CGFloat = 0.77
-    static let heightFraction: CGFloat = 0.77
+    static let widthFraction: CGFloat = 0.64
+    static let heightFraction: CGFloat = 0.70
     /// Where the art reaches zero below the top edge, as a fraction of the
     /// viewport height. It must stay inside the detail hero's clip (690 pt
     /// on a 1080 pt canvas) so that clip never reveals a straight edge.

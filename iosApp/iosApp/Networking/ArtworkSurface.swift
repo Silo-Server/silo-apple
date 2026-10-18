@@ -47,7 +47,7 @@ enum ArtworkSurface: Sendable {
     }
 
     #if os(tvOS)
-    /// The hero backdrop's fill width: 1479 pt for the 1478 × 832 pt hero box
+    /// The hero backdrop's fill width: 1344 pt for the 1229 × 756 pt hero box
     /// (`TVBackdropArtworkLayout`). Home, For You and detail ask for the same
     /// hero widths so opening an item reuses the hero image already cached.
     static let tvHeroBackdropWidth = fillWidth(
