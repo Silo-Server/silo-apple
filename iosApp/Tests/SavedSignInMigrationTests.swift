@@ -412,8 +412,9 @@ final class SavedSignInMigrationTests: XCTestCase {
     }
 
     /// Someone saved the pending server's account in another user meanwhile:
-    /// that sign-in stays, the legacy session goes (not revoked: they may
-    /// share it), and a user left empty is removed.
+    /// that sign-in stays, the legacy session goes, and a user left empty is
+    /// removed. Its tokens differ from the sign-in's, so it is a session of
+    /// its own, handed back to end on its server.
     func testPendingServerWhoseAccountIsAlreadySavedIsDropped() async throws {
         let f = try F.make(self)
         let existing = SignInKey.make(F.friend, "34")
@@ -431,7 +432,8 @@ final class SavedSignInMigrationTests: XCTestCase {
 
         let outcome = try await f.store.bindVerifiedAccount(.stub(id: "34"), expected: captured)
 
-        XCTAssertEqual(outcome, .legacyDuplicate(existing: existing))
+        XCTAssertEqual(outcome, .legacyDuplicate(existing: existing, revoking: RevocableCredential(
+            serverURL: F.friendURL, accessToken: "legacy-access", refreshToken: "r")))
         let index = try XCTUnwrap(try f.index())
         XCTAssertEqual(index.users.map(\.id), ["other"])
         XCTAssertEqual(try f.signIn(existing)?.accessToken, "saved-access")
@@ -442,6 +444,32 @@ final class SavedSignInMigrationTests: XCTestCase {
         XCTAssertEqual(selection, .none)
         XCTAssertNil(user)
         XCTAssertNil(access)
+    }
+
+    /// A dropped legacy session holding the saved sign-in's own tokens is
+    /// that sign-in's session: nothing is handed back to revoke, whichever
+    /// token matches.
+    func testADroppedPendingServerSharingTheSavedSessionIsNotRevoked() async throws {
+        for (savedAccess, savedRefresh) in [("shared-access", "saved-refresh"), ("rotated-access", "shared-refresh")] {
+            let f = try F.make(self)
+            let existing = SignInKey.make(F.friend, "34")
+            try f.seedLegacySession(F.friend, url: F.friendURL, accountID: nil, access: "shared-access",
+                                    refresh: "shared-refresh")
+            try f.signIns.signInStore.saveSignIn(SavedSignIn(key: existing, userID: "other", origin: F.friendURL,
+                accessToken: savedAccess, refreshToken: savedRefresh, epoch: UUID(), addedAt: Date()))
+            try f.signIns.signInStore.saveIndex(SiloUserIndex(
+                users: [SiloUser(id: "migrated", createdAt: Date(), signIns: [], pendingLegacyServerIDs: [F.friend]),
+                        SiloUser(id: "other", createdAt: Date(), signIns: [existing])],
+                migratedUserID: "migrated"))
+            await f.store.setServerUrl(F.friendURL)
+            await f.store.select(serverID: F.friend, credential: .legacy(serverID: F.friend), userID: "migrated")
+            let capturedValue = await f.store.captureOrdinaryRequestAuth()
+            let captured = try XCTUnwrap(capturedValue)
+
+            let outcome = try await f.store.bindVerifiedAccount(.stub(id: "34"), expected: captured)
+
+            XCTAssertEqual(outcome, .legacyDuplicate(existing: existing, revoking: nil), "saved \(savedAccess)")
+        }
     }
 
     /// A pending server whose move fails stays pending and keeps working

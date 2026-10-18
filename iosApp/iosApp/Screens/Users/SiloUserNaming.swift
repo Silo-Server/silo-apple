@@ -47,7 +47,8 @@ enum SiloUserNaming {
     /// (plan G7). Names compare without case.
     /// 1. Add the founding (oldest) sign-in's server: "alex · Friend's Silo".
     ///    A name that already is that server's name keeps it once.
-    /// 2. Still shared: add the newest server's name, when it's another server.
+    /// 2. Still shared: add the newest server's name, when it's another server
+    ///    whose name the user's name doesn't hold yet.
     /// 3. Still shared: number the later users in index order: "alex (2)".
     static func disambiguatedNames(
         in directory: SiloUserDirectorySnapshot,
@@ -56,12 +57,16 @@ enum SiloUserNaming {
         let users = directory.users
         let baseNames = users.map { displayName(for: $0, in: directory, serverNames: serverNames) }
         var names = baseNames
+        // The parts each name holds so far, compared without case: two
+        // servers can share a name ("Silo"), which must not repeat.
+        var parts = baseNames.map { [comparisonKey($0)] }
 
         for group in sharedNameGroups(names) {
             for index in group {
                 guard let founding = foundingServerID(of: users[index]).flatMap({ nonEmpty(serverNames[$0]) }),
                       comparisonKey(founding) != comparisonKey(baseNames[index]) else { continue }
                 names[index] = baseNames[index] + separator + founding
+                parts[index].append(comparisonKey(founding))
             }
         }
 
@@ -69,7 +74,8 @@ enum SiloUserNaming {
             for index in group {
                 let servers = SignInTargetList.serverIDs(in: users[index])
                 guard servers.count > 1, let newestID = servers.last,
-                      let newest = nonEmpty(serverNames[newestID]) else { continue }
+                      let newest = nonEmpty(serverNames[newestID]),
+                      !parts[index].contains(comparisonKey(newest)) else { continue }
                 names[index] += separator + newest
             }
         }
@@ -81,6 +87,22 @@ enum SiloUserNaming {
         }
 
         return Dictionary(zip(users.map(\.id), names), uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The host to show with each of `servers` whose name another of them
+    /// shares (compared without case), keyed by server ID, so two servers
+    /// both named "Silo" read apart. Servers named apart get none; the same
+    /// server listed twice is one server.
+    static func hostsTellingApart(_ servers: [(id: String, name: String, address: String)]) -> [String: String] {
+        var idsByName: [String: Set<String>] = [:]
+        for server in servers {
+            idsByName[comparisonKey(server.name), default: []].insert(server.id)
+        }
+        var hosts: [String: String] = [:]
+        for server in servers where (idsByName[comparisonKey(server.name)]?.count ?? 0) > 1 {
+            hosts[server.id] = ServerBranding.hostLabel(server.address)
+        }
+        return hosts
     }
 
     private static func foundingServerID(of user: SiloUser) -> String? {

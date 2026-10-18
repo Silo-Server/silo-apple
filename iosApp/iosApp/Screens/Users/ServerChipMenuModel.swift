@@ -9,8 +9,18 @@ struct ServerChipMenuModel: Equatable {
         /// Registry server ID.
         let id: String
         let name: String
+        /// The server's host, when another of the user's servers shares its
+        /// name.
+        let host: String?
         let isActive: Bool
         let needsSignInAgain: Bool
+
+        /// The item's second line: the host when it tells the server apart,
+        /// and "Sign in again" once the sign-in expired.
+        var detail: String? {
+            let parts = [host, needsSignInAgain ? ChooseServerViewModel.Status.signInAgain.label : nil].compactMap { $0 }
+            return parts.isEmpty ? nil : parts.joined(separator: SiloUserNaming.separator)
+        }
     }
 
     struct UserItem: Equatable, Identifiable {
@@ -20,6 +30,12 @@ struct ServerChipMenuModel: Equatable {
         /// "Home Silo", or "2 servers".
         let detail: String
         let needsSignInAgain: Bool
+
+        /// The item's second line, with "Sign in again" once the user's
+        /// last sign-in expired.
+        var detailLine: String {
+            needsSignInAgain ? detail + SiloUserNaming.separator + ChooseUserViewModel.signInAgainLabel : detail
+        }
     }
 
     static let changeServerTitle = "Change server"
@@ -38,10 +54,13 @@ struct ServerChipMenuModel: Equatable {
         showsUsers = directory.isAvailable
         let current = directory.currentUser
         userName = current?.name
+        let hosts = SiloUserNaming.hostsTellingApart(
+            (current?.servers ?? []).map { (id: $0.id, name: $0.name, address: $0.address) })
         servers = current?.servers.map { server in
             ServerItem(
                 id: server.id,
                 name: server.name,
+                host: hosts[server.id],
                 isActive: server.id == directory.currentServerID,
                 needsSignInAgain: server.needsSignInAgain
             )

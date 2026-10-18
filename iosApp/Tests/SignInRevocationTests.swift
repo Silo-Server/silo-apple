@@ -4,16 +4,21 @@ import XCTest
 
 /// `HTTPClient.revoke(_:)`: the server ends a session only for a valid
 /// access token, so a sign-in idle past its token's lifetime is refreshed
-/// once, in memory, before logging out. Nothing it learns is ever stored, and
-/// local sign-out never waits for it.
+/// once, in memory, before logging out. Nothing it learns is stored outside
+/// the pending-revocation queue, and local sign-out never waits for it. A
+/// logout that doesn't get through is tried again, then queued for the next
+/// launch or return to the foreground.
 final class SignInRevocationTests: XCTestCase {
     private typealias F = SignInStoreFixture
     private static let logout = "/api/v2/auth/logout"
     private let credential = RevocableCredential(serverURL: F.homeURL, accessToken: "old-access",
                                                  refreshToken: "old-refresh")
+    /// Three tries with no wait between them.
+    private static let quickRetries = HTTPClient.RevocationPolicy(attempts: 3, timeout: 5, backoff: [.zero])
 
     private func client(_ stub: APIv2TestStub, store: TokenStore? = nil) throws -> HTTPClient {
-        HTTPClient(session: stub.makeSession(), tokenStore: try store ?? F.make(self).store)
+        HTTPClient(session: stub.makeSession(), tokenStore: try store ?? F.make(self).store,
+                   revocationPolicy: Self.quickRetries)
     }
 
     private static func refreshed(_ access: String) -> String {
@@ -75,31 +80,177 @@ final class SignInRevocationTests: XCTestCase {
                           "fresh-access")
     }
 
-    func testFailuresEndTheAttemptQuietly() async throws {
-        // A refused refresh means the session is already gone: no retry.
+    /// A session the server already treats as invalid is done after one
+    /// try: a refused refresh, a logout refused again after a refresh, 404,
+    /// or a 401 with nothing to refresh with. Nothing is queued.
+    func testASessionTheServerAlreadyRejectsIsDone() async throws {
+        func revoke(_ stub: APIv2TestStub, _ credential: RevocableCredential? = nil) async throws -> TokenStore {
+            let store = try F.make(self).store
+            try await client(stub, store: store).revoke(credential ?? self.credential)
+            return store
+        }
         var stub = APIv2TestStub()
         stub.reply(path: Self.logout, 401, "{}")
         stub.reply(path: HTTPClient.refreshPath, 401, "{}")
-        try await client(stub).revoke(credential)
+        var store = try await revoke(stub)
         XCTAssertEqual(stub.requestedPaths, [Self.logout, HTTPClient.refreshPath])
+        XCTAssertEqual(try store.pendingRevocations.load(), [])
 
-        // A server fault on logout isn't a stale token: no refresh.
-        stub = APIv2TestStub()
-        stub.reply(path: Self.logout, 500, "{}")
-        try await client(stub).revoke(credential)
-        XCTAssertEqual(stub.requestedPaths, [Self.logout])
-
-        // Unreachable.
-        stub = APIv2TestStub()
-        stub.fail()
-        try await client(stub).revoke(credential)
-        XCTAssertEqual(stub.requestedPaths, [Self.logout])
-
-        // Nothing to refresh with.
         stub = APIv2TestStub()
         stub.reply(path: Self.logout, 401, "{}")
-        try await client(stub).revoke(RevocableCredential(serverURL: F.homeURL, accessToken: "a", refreshToken: nil))
+        stub.reply(path: HTTPClient.refreshPath, 200, Self.refreshed("fresh-access"))
+        store = try await revoke(stub)
+        XCTAssertEqual(stub.requestedPaths, [Self.logout, HTTPClient.refreshPath, Self.logout])
+        XCTAssertEqual(try store.pendingRevocations.load(), [])
+
+        stub = APIv2TestStub()
+        stub.reply(path: Self.logout, 404, "{}")
+        store = try await revoke(stub)
         XCTAssertEqual(stub.requestedPaths, [Self.logout])
+        XCTAssertEqual(try store.pendingRevocations.load(), [])
+
+        stub = APIv2TestStub()
+        stub.reply(path: Self.logout, 401, "{}")
+        store = try await revoke(stub, RevocableCredential(serverURL: F.homeURL, accessToken: "a", refreshToken: nil))
+        XCTAssertEqual(stub.requestedPaths, [Self.logout])
+        XCTAssertEqual(try store.pendingRevocations.load(), [])
+    }
+
+    /// No answer or a server fault tries again, without refreshing (it isn't
+    /// a stale token), until the logout gets through.
+    func testAFailedLogoutIsTriedAgainUntilItGetsThrough() async throws {
+        let f = try F.make(self)
+        let stub = APIv2TestStub()
+        stub.sequence(path: Self.logout, [.failure(URLError(.timedOut)), .json(503, "{}"), .json(204, "")])
+
+        try await client(stub, store: f.store).revoke(credential)
+
+        XCTAssertEqual(stub.requestedPaths, [Self.logout, Self.logout, Self.logout])
+        XCTAssertTrue(stub.requests.allSatisfy { $0.header("Authorization") == "Bearer old-access" })
+        XCTAssertEqual(try f.store.pendingRevocations.load(), [])
+    }
+
+    /// A session still live after every try is queued in the
+    /// user-independent keychain, where a relaunched store finds it.
+    func testASessionStillLiveAfterEveryTryIsQueuedForTheNextLaunch() async throws {
+        let f = try F.make(self)
+        let stub = APIv2TestStub()
+        stub.fail(.timedOut)
+
+        try await client(stub, store: f.store).revoke(credential)
+
+        XCTAssertEqual(stub.requestedPaths, [Self.logout, Self.logout, Self.logout])
+        let relaunched = f.relaunched()
+        let queued = try relaunched.pendingRevocations.load()
+        XCTAssertEqual(queued.map(\.credential), [credential])
+        XCTAssertNotNil(f.keychain.withAudience(.userIndependent).get(PendingRevocationStore.account),
+                        "shared by every Apple TV user, like the sign-ins")
+    }
+
+    /// The session is queued before the first try, so a revocation cut short
+    /// (the app quit during the retries) is finished at the next launch. The
+    /// retry pass leaves a session still being tried to its revocation.
+    func testASessionIsQueuedWhileItsRevocationRuns() async throws {
+        let f = try F.make(self)
+        let stub = APIv2TestStub()
+        stub.reply(204, "")
+        stub.hold(path: Self.logout)
+        defer { stub.release() }
+        let http = try client(stub, store: f.store)
+        let credential = credential
+        let revocation = Task { await http.revoke(credential) }
+        await stub.waitUntilHeld()
+
+        XCTAssertEqual(try f.relaunched().pendingRevocations.load().map(\.credential), [credential])
+        await http.retryPendingRevocations()
+        XCTAssertEqual(stub.requestedPaths, [Self.logout], "left to the revocation trying it")
+
+        stub.release()
+        await revocation.value
+        XCTAssertEqual(try f.store.pendingRevocations.load(), [])
+    }
+
+    /// A refresh made to revoke replaces the queued tokens (the old refresh
+    /// token is spent) and reaches nothing else.
+    func testRefreshedTokensAreKeptOnlyInTheQueueEntry() async throws {
+        let f = try F.make(self)
+        try f.startUserModel()
+        await f.activate(F.home, url: F.homeURL)
+        try await f.install("13", access: "current-access", refresh: "current-refresh", placement: .newUser)
+        let items = f.signIns.values
+        let sessions = f.sessions.values
+        let stub = APIv2TestStub()
+        stub.sequence(path: Self.logout, [.json(401, "{}")])
+        stub.reply(path: Self.logout, 503, "{}")
+        stub.reply(path: HTTPClient.refreshPath, 200, Self.refreshed("fresh-access"))
+
+        try await client(stub, store: f.store).revoke(credential)
+
+        XCTAssertEqual(stub.requestedPaths, [Self.logout, HTTPClient.refreshPath, Self.logout, Self.logout, Self.logout])
+        XCTAssertEqual(try f.store.pendingRevocations.load().map(\.credential),
+                       [RevocableCredential(serverURL: F.homeURL, accessToken: "fresh-access", refreshToken: "fresh-refresh")])
+        XCTAssertEqual(f.signIns.values, items)
+        XCTAssertEqual(f.sessions.values, sessions)
+        let access = await f.store.getAccessToken()
+        XCTAssertEqual(access, "current-access")
+    }
+
+    /// The retry at launch and on return to the foreground: ended and
+    /// already-invalid sessions leave the queue, the rest stay for next time.
+    func testQueuedRevocationsAreRetriedOnActivation() async throws {
+        let f = try F.make(self)
+        let now = Date()
+        let ended = PendingRevocation(RevocableCredential(serverURL: F.homeURL, accessToken: "ended", refreshToken: "r"),
+                                      queuedAt: now.addingTimeInterval(-30))
+        let gone = PendingRevocation(RevocableCredential(serverURL: F.friendURL, accessToken: "gone", refreshToken: "r"),
+                                     queuedAt: now.addingTimeInterval(-20))
+        let unreachable = PendingRevocation(RevocableCredential(serverURL: F.homeURL, accessToken: "down",
+                                                                refreshToken: "r"),
+                                            queuedAt: now.addingTimeInterval(-10))
+        XCTAssertTrue(f.store.pendingRevocations.save([ended, gone, unreachable]))
+        let stub = APIv2TestStub()
+        stub.sequence(path: Self.logout, [.json(204, ""), .json(404, "{}"), .failure(URLError(.timedOut))])
+        let http = try client(stub, store: f.store)
+
+        await http.retryPendingRevocations()
+
+        XCTAssertEqual(stub.requests.map { $0.header("Authorization") }, ["Bearer ended", "Bearer gone", "Bearer down"])
+        XCTAssertEqual(stub.requests[1].url?.host, "friend.example", "each at its own server")
+        XCTAssertEqual(try f.store.pendingRevocations.load().map(\.id), [unreachable.id])
+
+        stub.reply(204, "")
+        await http.retryPendingRevocations()
+        XCTAssertEqual(try f.store.pendingRevocations.load(), [])
+        XCTAssertNil(f.keychain.withAudience(.userIndependent).get(PendingRevocationStore.account))
+    }
+
+    /// The queue can't grow forever: past 30 days an entry drops, and past
+    /// twenty the oldest go.
+    func testThePendingQueueIsBoundedByAgeAndCount() throws {
+        let memory = CredentialItemMemory()
+        let store = PendingRevocationStore(read: { try memory.read("queue") },
+                                           write: { memory.write($0, "queue") },
+                                           remove: { memory.remove("queue") })
+        let now = Date()
+        let stale = PendingRevocation(RevocableCredential(serverURL: F.homeURL, accessToken: "stale", refreshToken: nil),
+                                      queuedAt: now.addingTimeInterval(-PendingRevocationStore.maxAge - 1))
+        let recent = (0..<25).map {
+            PendingRevocation(RevocableCredential(serverURL: F.homeURL, accessToken: "a\($0)", refreshToken: nil),
+                              queuedAt: now.addingTimeInterval(TimeInterval($0) - 100))
+        }
+
+        XCTAssertTrue(store.save([stale] + recent, now: now))
+
+        let loaded = try store.load(now: now)
+        XCTAssertEqual(loaded.count, PendingRevocationStore.maxCount)
+        XCTAssertEqual(loaded.map(\.accessToken), (5..<25).map { "a\($0)" }, "the newest, oldest first")
+        XCTAssertEqual(try store.load(now: now.addingTimeInterval(PendingRevocationStore.maxAge)), [])
+        XCTAssertNil(memory.values["queue"], "an expired queue leaves the keychain")
+
+        // A keychain that can't be read is never taken for an empty queue.
+        XCTAssertTrue(store.save(recent, now: now))
+        memory.failsAllReads = true
+        XCTAssertThrowsError(try store.load(now: now))
     }
 
     /// Sign-out removes the sign-in first and returns without waiting; the

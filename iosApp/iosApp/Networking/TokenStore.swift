@@ -203,8 +203,11 @@ enum BindOutcome: Equatable, Sendable {
     /// A pending legacy server became this saved sign-in (plan §3.3).
     case legacyMigrated(SignInKey)
     /// A pending legacy server's account was already saved in some user; the
-    /// legacy session was dropped and nothing is selected.
-    case legacyDuplicate(existing: SignInKey)
+    /// legacy session was dropped and nothing is selected. `revoking` is the
+    /// dropped session to end on its server, nil when it holds the saved
+    /// sign-in's own tokens (or they can't be compared): ending it would sign
+    /// that sign-in out too.
+    case legacyDuplicate(existing: SignInKey, revoking: RevocableCredential?)
 }
 
 enum LegacyMigrationOutcome: Equatable, Sendable {
@@ -253,6 +256,9 @@ actor TokenStore {
     /// synchronous readers such as `AuthService.isLoggedIn`; every write
     /// goes through this actor.
     nonisolated let savedSignIns: SavedSignInStore
+    /// Removed sessions whose logout hasn't reached their server yet, for
+    /// `HTTPClient` to retry (it serializes every change to it).
+    nonisolated let pendingRevocations: PendingRevocationStore
     private let proofs: SignInProofStore
     #if os(iOS)
     private let displayTargets: ApplePushDisplayTargetStore
@@ -336,13 +342,15 @@ actor TokenStore {
          defaults: SharedDefaults = .shared,
          sessionPersistence: AccountSessionPersistence? = nil,
          savedSignIns: SavedSignInStore? = nil,
-         signInProofs: SignInProofStore? = nil) {
+         signInProofs: SignInProofStore? = nil,
+         pendingRevocations: PendingRevocationStore? = nil) {
         self.accountKeychain = keychain.withAudience(Self.accountCredentialAudience)
         self.profileKeychain = keychain.withAudience(Self.profileCredentialAudience)
         self.defaults = defaults
         self.sessions = sessionPersistence ?? AccountSessionPersistence(keychain: keychain)
         self.savedSignIns = savedSignIns ?? SavedSignInStore(keychain: keychain)
         self.proofs = signInProofs ?? SignInProofStore(keychain: keychain)
+        self.pendingRevocations = pendingRevocations ?? PendingRevocationStore(keychain: keychain)
         #if os(iOS)
         self.displayTargets = ApplePushDisplayTargetStore(keychain: keychain.withAudience(Self.profileCredentialAudience))
         #endif
@@ -2421,12 +2429,21 @@ actor TokenStore {
             owners[serverID] = existing.accountID
             updated.legacyDataOwnerByServerID = owners
         }
+        // Captured before the slot goes. A session holding either of the saved
+        // sign-in's tokens may be that sign-in's own, so it is dropped without
+        // revoking it; so is one whose sign-in can't be read to compare.
+        let dropped = legacyRevocableCredential(serverID: serverID)
+        let saved = try? savedSignIns.loadSignIn(existing)
+        let revoking = dropped.flatMap { dropped -> RevocableCredential? in
+            guard let saved,
+                  saved.accessToken != dropped.accessToken,
+                  dropped.refreshToken == nil || saved.refreshToken != dropped.refreshToken else { return nil }
+            return dropped
+        }
         do { try saveIndex(updated) } catch {
             recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "writeFailed")
             return .unchanged
         }
-        // The saved sign-in may share this server session, so it is dropped
-        // without revoking it.
         _ = sessions.invalidate(serverID)
         deleteRawSlots(serverID)
         profileKeychain.delete(Self.profileTokenKey(for: serverID))
@@ -2439,7 +2456,7 @@ actor TokenStore {
         clearMirroredTokensForExtension()
         writeAccountMirror()
         recordSessionEvent(phase: "signInMigration", outcome: "migrated", reason: "duplicatePendingServer")
-        return .legacyDuplicate(existing: existing)
+        return .legacyDuplicate(existing: existing, revoking: revoking)
     }
 
     // MARK: - Per-server slots (before migration, and pending legacy servers)

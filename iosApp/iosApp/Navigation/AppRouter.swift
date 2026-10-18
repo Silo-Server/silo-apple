@@ -771,6 +771,12 @@ final class AppRouter {
     var removalRequest: RemovalRequest?
     /// A user being renamed (spec §5.2).
     var renameRequest: UserRenameRequest?
+    /// How deep the Choose a User that Settings › Paired Silo Profile pushed
+    /// on Who's Watching sits on the stack. While it, or a Choose a Server
+    /// picked from it, shows, the user opened ends on its Who's Watching,
+    /// even under Automatic, so the person picks the profile to pair (spec
+    /// §5.7). Nil otherwise.
+    @ObservationIgnored var pairedProfileChooserDepth: Int?
     /// Bumped each time a user or sign-in is opened, even when the auth
     /// state stays the same (Automatic reopening a profile under another
     /// account), so session-scoped stores re-scope. The coordinator keeps

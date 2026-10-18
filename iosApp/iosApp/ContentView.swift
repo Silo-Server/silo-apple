@@ -371,6 +371,11 @@ struct ContentView: View {
             await maybeDebugAutoLogin()
         }
         #endif
+        .task {
+            // At launch: sessions removed in an earlier run whose logout never
+            // got through (a scene already active at launch reports no change).
+            await HTTPClient.shared.retryPendingRevocations()
+        }
         .task(id: router.authState) {
             if router.authState != .authenticated {
                 WatchPartySession.shared.leave(forgetRecent: router.authState != .loading && router.authState != .needsProfile)
@@ -530,7 +535,10 @@ struct ContentView: View {
             LaunchTimeline.recordScenePhase(Self.diagnosticsScenePhase(newPhase))
             #endif
             switch newPhase {
-            case .active: LocalRouteController.shared.sceneDidBecomeActive()
+            case .active:
+                LocalRouteController.shared.sceneDidBecomeActive()
+                // Sessions removed earlier whose logout never got through.
+                Task { await HTTPClient.shared.retryPendingRevocations() }
             case .background: LocalRouteController.shared.sceneDidEnterBackground()
             default: break
             }

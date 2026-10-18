@@ -7,7 +7,8 @@ import Foundation
 struct ChooseServerViewModel: Equatable {
     enum Status: Equatable {
         case none
-        /// The server this user has open now, or opened last.
+        /// The server open now, on the current user's rows only. Another
+        /// user's last server shows nothing; focus starts on it instead.
         case active
         /// The sign-in expired.
         case signInAgain
@@ -40,8 +41,9 @@ struct ChooseServerViewModel: Equatable {
     let userID: String
     let userName: String
     let rows: [Row]
-    /// The row focus starts on: the one asked for, else the active one,
-    /// else the first.
+    /// The row focus starts on: the one asked for, else the open one (for
+    /// another user, its last one) unless it needs signing in again, else
+    /// the first.
     let focusServerID: String?
 
     var title: String { "\(userName)'s servers" }
@@ -49,7 +51,9 @@ struct ChooseServerViewModel: Equatable {
     /// Nil when the user is gone.
     init?(directory: SiloUserDirectory, userID: String, focusServerID: String? = nil) {
         guard let user = directory.user(userID) else { return nil }
-        let activeID = directory.currentUserID == userID ? directory.currentServerID : user.lastServerID
+        let isCurrentUser = directory.currentUserID == userID
+        let activeID = isCurrentUser ? directory.currentServerID : nil
+        let lastID = isCurrentUser ? directory.currentServerID : user.lastServerID
         self.userID = userID
         userName = user.name
         let rows = user.servers.map { server in
@@ -64,6 +68,8 @@ struct ChooseServerViewModel: Equatable {
         }
         self.rows = rows
         let requested = focusServerID.flatMap { id in rows.contains { $0.id == id } ? id : nil }
-        self.focusServerID = requested ?? rows.first { $0.status == .active }?.id ?? rows.first?.id
+        self.focusServerID = requested
+            ?? rows.first { $0.id == lastID && $0.status != .signInAgain }?.id
+            ?? rows.first?.id
     }
 }

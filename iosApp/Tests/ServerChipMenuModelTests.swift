@@ -29,6 +29,31 @@ final class ServerChipMenuModelTests: XCTestCase {
         XCTAssertEqual(model.otherUsers.map(\.detail), ["Home Silo", "2 servers"])
     }
 
+    /// Two of the user's servers with one name read as their hosts, and an
+    /// expired one adds Sign in again, on the item's second line; another
+    /// user's line adds Sign in again too.
+    func testItemDetailsTellSameNamedServersApart() {
+        let servers = [
+            ServerEntry(id: D.home, url: "https://home.example", fetchedName: "Silo", lastUsedAt: Date()),
+            ServerEntry(id: D.friend, url: "https://friend.example", fetchedName: "Silo", lastUsedAt: Date()),
+        ]
+        let directory = D.directory([
+            .init(id: "alex", signIns: [
+                .init(serverID: D.home, accountID: "12", username: "alex"),
+                .init(serverID: D.friend, accountID: "40", username: "alex", isSignedIn: false),
+            ]),
+            .init(id: "sam", signIns: [.init(serverID: D.home, accountID: "13", username: "sam", isSignedIn: false)]),
+        ], currentUserID: "alex", currentServerID: D.home, servers: servers)
+
+        let model = ServerChipMenuModel(directory: directory)
+
+        XCTAssertEqual(model.servers.map(\.detail), ["home.example", "friend.example · Sign in again"])
+        XCTAssertEqual(model.otherUsers.map(\.detailLine), ["Silo · Sign in again"])
+        XCTAssertNil(ServerChipMenuModel(directory: D.directory([
+            .init(id: "alex", signIns: [.init(serverID: D.home, accountID: "12", username: "alex")]),
+        ], currentUserID: "alex", currentServerID: D.home)).servers.first?.detail, "a name of its own needs nothing")
+    }
+
     /// Before Silo users exist the chip offers Change server only, as before.
     func testBeforeMigrationOnlyChangeServer() {
         let model = ServerChipMenuModel(directory: .empty)

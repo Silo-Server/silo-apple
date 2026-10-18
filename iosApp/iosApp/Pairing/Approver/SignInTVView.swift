@@ -149,8 +149,8 @@ struct DeviceLinkApprovalView: View {
     let link: DeviceApprovalLink
     /// Add the server (prefilled) and come back to the link after signing in.
     var onAddServer: (String) -> Void
-    /// Sign in to a saved server this device is signed out of, and come back
-    /// to the link after signing in.
+    /// Sign in to a saved server the current user isn't signed in to, and
+    /// come back to the link after signing in.
     var onSignIn: (ServerEntry, DeviceApprovalLink) -> Void
     /// "Not you?" on the card (see `SignInTVView.onSwitchUser`).
     var onSwitchUser: (DeviceApprovalLink) -> Void
@@ -182,7 +182,7 @@ struct DeviceLinkApprovalView: View {
                 NavigationStack {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Sign in to \(server.displayName)").font(.siloTitle)
-                        Text("The TV's code belongs to \(server.displayName), and this device isn't signed in to it. Sign in, then approve the TV.")
+                        Text("The TV's code belongs to \(server.displayName), and the current user isn't signed in to it. Sign in, then approve the TV.")
                             .font(.siloBody)
                             .fixedSize(horizontal: false, vertical: true)
                         Button {

@@ -386,51 +386,90 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertTrue(d.revokedAccessTokens().isEmpty, "switching never signs anyone out")
     }
 
-    /// Add User from Who's Watching shows "Sign in to…" as its own root,
-    /// with Cancel going back; picking a saved server opens its sign-in.
-    func testAddUserShowsTheServerStepAndPickingAServerOpensSignIn() async throws {
+    /// Under Automatic, Switch User opens the picked user's remembered
+    /// profile, as Change server does. Settings › Paired Silo Profile goes
+    /// through the same chooser but always ends on the picked user's Who's
+    /// Watching, after Choose a Server for a user with two servers, so the
+    /// person picks the profile to pair (spec §5.2, §5.7). Going back past
+    /// its chooser makes the next pick ordinary again.
+    func testChangingThePairedProfileEndsOnWhoIsWatchingUnderAutomatic() async throws {
         let d = try Device(self)
-        try await d.signIn("12", "alex", on: F.home, context: .firstRun)
-        d.router.navigate(to: .chooseUser())
+        let (alex, sam) = try await d.twoUsers()
+        let alexHome = SignInKey.make(F.home, "12")
+        let samHome = SignInKey.make(F.home, "13")
+        func remember(_ profileID: String, for key: SignInKey) throws {
+            let epoch = try XCTUnwrap(try d.f.signIn(key)?.epoch?.uuidString)
+            XCTAssertTrue(d.preferences.remember(profileID: profileID, requiresPIN: false, accountEpoch: epoch,
+                                                 for: key, legacyOwnerAccountID: nil))
+        }
+        try remember("alex-profile", for: alexHome)
+        try remember("sam-profile", for: samHome)
+        d.preferences.behavior = .automatic
+        XCTAssertEqual(d.router.authState, .needsProfile, "sam, just signed in")
 
-        await d.users.startAddUser(router: d.router)
+        await d.users.beginSwitchUser(router: d.router)
+        await d.users.openUser(alex.id, router: d.router)
+        await d.users.openServer(F.home, userID: alex.id, router: d.router)
+        XCTAssertEqual(d.router.authState, .authenticated, "Switch User restores the remembered profile")
+        XCTAssertEqual(d.auth.profileId, "alex-profile")
 
-        XCTAssertEqual(d.router.authState, .needsSignInTarget(.addUser))
-        XCTAssertNotNil(d.router.signInReturnPoint)
-        let targets = SignInTargetViewModel(context: .addUser, servers: d.registry.sortedEntries,
-                                            snapshot: d.users.snapshot)
-        XCTAssertEqual(Set(targets.rows.map(\.id)), [F.home, F.friend])
+        // From alex, pairing sam: one server, straight to its Who's Watching.
+        await d.users.changePairedProfile(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsProfile)
+        XCTAssertEqual(d.router.path.count, 1, "Choose a User on Who's Watching")
+        await d.users.openUser(sam.id, router: d.router)
+        var selection = await d.selection
+        XCTAssertEqual(selection, .signIn(samHome))
+        XCTAssertEqual(d.router.authState, .needsProfile, "Who's Watching, to pick the profile to pair")
+        XCTAssertNil(d.auth.profileId)
+        XCTAssertTrue(d.preferences.state.isSelectionRequired(for: samHome, legacyOwnerAccountID: nil),
+                      "a relaunch on Who's Watching asks too")
+        XCTAssertNil(d.router.pairedProfileChooserDepth)
 
-        await d.users.beginSignIn(serverID: F.friend, context: .addUser, router: d.router)
+        // From sam, pairing alex: Choose a Server first, then Who's Watching.
+        try remember("alex-profile", for: alexHome)
+        await d.users.changePairedProfile(router: d.router)
+        await d.users.openUser(alex.id, router: d.router)
+        XCTAssertEqual(d.router.path.count, 2, "Choose a Server first")
+        await d.users.openServer(F.home, userID: alex.id, router: d.router)
+        selection = await d.selection
+        XCTAssertEqual(selection, .signIn(alexHome))
+        XCTAssertEqual(d.router.authState, .needsProfile)
+        XCTAssertNil(d.auth.profileId)
 
-        XCTAssertEqual(d.router.authState, .needsLogin)
-        XCTAssertEqual(d.router.signInContext, .addUser)
-        XCTAssertEqual(d.registry.activeServerId, F.friend)
-        let selection = await d.selection
-        XCTAssertEqual(selection, .none, "nothing selected while signing in")
+        // Back past the chooser: the next pick is ordinary again.
+        try remember("sam-profile", for: samHome)
+        await d.users.changePairedProfile(router: d.router)
+        d.router.goBack()
+        await d.users.openServer(F.home, userID: sam.id, router: d.router)
+        XCTAssertEqual(d.router.authState, .authenticated)
+        XCTAssertEqual(d.auth.profileId, "sam-profile")
     }
 
-    /// Add Server inside a user leaves that user's servers out; with none
-    /// left, the server setup shows straight away.
-    func testAddServerListsOnlyServersTheUserLacks() async throws {
+    /// Add Server from Who's Watching with every saved server already in the
+    /// user goes straight to server setup as its own root, with no "Sign in
+    /// to…" left behind it; Cancel goes back to Who's Watching as it was.
+    func testAddServerWithEveryServerInTheUserOpensSetupAlone() async throws {
         let d = try Device(self)
         try await d.signIn("12", "alex", on: F.home, context: .firstRun)
         let alex = try XCTUnwrap(try d.user(named: "alex"))
-        d.router.showServerChooser(userID: alex.id, focus: F.home)
-
-        await d.users.startSignIn(.addServer(userID: alex.id), router: d.router)
-
-        XCTAssertEqual(d.router.authState, .needsServer(userID: alex.id, focusServerID: F.home))
-        XCTAssertEqual(d.router.path.count, 1)
-        let targets = SignInTargetViewModel(context: .addServer(userID: alex.id), servers: d.registry.sortedEntries,
-                                            snapshot: d.users.snapshot)
-        XCTAssertEqual(targets.rows.map(\.id), [F.friend])
-
         try await d.signIn("40", "alex", on: F.friend, context: .addServer(userID: alex.id))
-        d.router.showServerChooser(userID: alex.id, focus: F.home)
+        XCTAssertEqual(d.router.authState, .needsProfile)
+
         await d.users.startSignIn(.addServer(userID: alex.id), router: d.router)
-        XCTAssertEqual(d.router.path.count, 1, "server setup, pushed")
+
+        XCTAssertEqual(d.router.authState, .needsServerSetup)
+        XCTAssertEqual(d.router.path.count, 0, "nothing behind setup")
         XCTAssertEqual(d.router.signInContext, .addServer(userID: alex.id))
+        XCTAssertEqual(d.router.signInReturnPoint?.authState, .needsProfile)
+
+        await d.users.cancelSignIn(router: d.router)
+
+        XCTAssertEqual(d.router.authState, .needsProfile)
+        XCTAssertEqual(d.router.path.count, 0)
+        let selection = await d.selection
+        XCTAssertEqual(selection, .signIn(.make(F.friend, "40")))
+        XCTAssertNil(d.router.signInReturnPoint)
     }
 
     /// Cancel on a sign-in started from Who's Watching restores the user,
@@ -827,6 +866,10 @@ final class SiloUserCoordinatorTests: XCTestCase {
 
         await d.users.changeSignInServer(router: d.router)
         XCTAssertEqual(d.router.authState, .needsServer(userID: alex.id, focusServerID: F.home))
+        XCTAssertTrue(d.router.path.isEmpty, "Choose a Server as the root, which offers Switch User")
+        await d.users.beginSwitchUser(router: d.router)
+        XCTAssertEqual(d.router.path.count, 1, "Choose a User on top, with Back to the servers")
+        d.router.goBack()
 
         await d.users.switchUserFromSignIn(router: d.router)
         XCTAssertEqual(d.router.authState, .needsUser(focusUserID: alex.id))
@@ -1071,7 +1114,8 @@ final class SiloUserCoordinatorTests: XCTestCase {
         let auth = await d.f.store.captureOrdinaryRequestAuth()
 
         let outcome = try await d.f.store.bindVerifiedAccount(.stub(id: "12"), expected: try XCTUnwrap(auth))
-        XCTAssertEqual(outcome, .legacyDuplicate(existing: .make(F.home, "12")))
+        XCTAssertEqual(outcome, .legacyDuplicate(existing: .make(F.home, "12"), revoking: RevocableCredential(
+            serverURL: F.homeURL, accessToken: "legacy", refreshToken: "legacy-refresh")))
         XCTAssertEqual(try d.index().legacyDataOwnerByServerID?[F.home], "12")
 
         await d.users.handleSignInMigrated(outcome, router: d.router)
@@ -1080,6 +1124,27 @@ final class SiloUserCoordinatorTests: XCTestCase {
         XCTAssertEqual(d.preferences.state.linkedUserID, sam.id)
         let selection = await d.selection
         XCTAssertEqual(selection, .signIn(.make(F.home, "12")))
+    }
+
+    /// The account read that finds a pending server's account already saved
+    /// ends the dropped session on that server, with its own tokens, when
+    /// they differ from the saved sign-in's; the saved session stays.
+    func testReadingADuplicatePendingServersAccountRevokesItsOwnSession() async throws {
+        let (d, migrated) = try await migratedDevice()
+        try await d.signIn("12", "sam", on: F.home, context: .addUser)
+        let switched = await d.registry.switchTo(serverId: F.home, credential: .legacy(serverID: F.home),
+                                                 userID: migrated.id)
+        XCTAssertTrue(switched)
+        d.stub.reply(path: "/api/v2/account/me", 200,
+                     #"{"id":"12","username":"sam","email":null,"role":"user","permissions":[],"download_allowed":true}"#)
+        let api = APIv2Client(http: d.auth.httpClient, tokenStore: d.f.store, isUpdateRequired: { false })
+
+        _ = try await api.currentUser()
+
+        try await d.waitForRevocations(1)
+        XCTAssertEqual(d.revokedAccessTokens(), ["legacy"])
+        XCTAssertEqual(d.stub.requests.last { $0.path == Self.logout }?.url?.host, "home.example")
+        XCTAssertEqual(try d.f.signIn(.make(F.home, "12"))?.accessToken, d.token("12", on: F.home))
     }
 
     // MARK: - Edges

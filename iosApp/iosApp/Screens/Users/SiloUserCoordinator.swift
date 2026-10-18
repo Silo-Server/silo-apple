@@ -339,17 +339,26 @@ final class SiloUserCoordinator {
 
     /// Opens a user's server: links the user, records the server as its
     /// last, switches to the credential (restoring the remembered profile),
-    /// validates it with the server, and resets the router.
+    /// validates it with the server, and resets the router. Picked from the
+    /// Paired Silo Profile chooser, it restores no profile and ends on Who's
+    /// Watching, as Switch Profile does.
     private func open(userID: String, serverID: String, credential: CredentialSelection, router: AppRouter) async {
         guard await endTemporaryIdentity() else {
             router.accountActionError = "Couldn't end remote playback. Try again."
             return
         }
+        let picksPairedProfile = choosesPairedProfile(router)
         guard await registry.switchTo(serverId: serverID, credential: credential, userID: userID,
-                                      resolveDestinationProfile: true) else {
+                                      resolveDestinationProfile: !picksPairedProfile) else {
             // Nothing opened, so this Apple TV user's link stays as it was.
             router.accountActionError = "Couldn't switch to that server. Try again."
             return
+        }
+        if picksPairedProfile {
+            router.pairedProfileChooserDepth = nil
+            // Saved like Switch Profile's request, so a relaunch on Who's
+            // Watching asks too instead of restoring under Automatic.
+            _ = await auth.beginExplicitProfileSelection()
         }
         preferences.link(userID: userID)
         preferences.setLastServer(serverID, for: userID)
@@ -474,6 +483,7 @@ final class SiloUserCoordinator {
     /// on top of what is showing. From Settings › Paired Silo Profile it
     /// first runs explicit profile selection, as Switch Profile does.
     func beginSwitchUser(router: AppRouter, deactivatingProfile: Bool = false) async {
+        router.pairedProfileChooserDepth = nil
         await reloadDirectory()
         let focus = directory.currentUserID ?? directory.linkedUserID
         if deactivatingProfile {
@@ -483,6 +493,7 @@ final class SiloUserCoordinator {
             }
             router.showProfileSelection()
             router.navigate(to: .chooseUser(focusUserID: focus))
+            router.pairedProfileChooserDepth = router.path.count
             return
         }
         switch router.authState {
@@ -497,8 +508,9 @@ final class SiloUserCoordinator {
     }
 
     /// Settings › Paired Silo Profile: with two or more users, changing it
-    /// goes through the user chooser (spec §5.7); otherwise it is Switch
-    /// Profile, as before.
+    /// goes through the user chooser (spec §5.7), and the user picked ends
+    /// on its Who's Watching, through Choose a Server when it has two or
+    /// more, even under Automatic; otherwise it is Switch Profile, as before.
     func changePairedProfile(router: AppRouter) async {
         await reloadDirectory()
         if directory.users.count >= 2 {
@@ -514,10 +526,23 @@ final class SiloUserCoordinator {
         return await auth.beginExplicitProfileSelection()
     }
 
+    /// Whether a pick now comes from the Paired Silo Profile chooser: it, or
+    /// a Choose a Server on top of it, still shows on Who's Watching. Once
+    /// the person goes back past it, the next pick is ordinary.
+    private func choosesPairedProfile(_ router: AppRouter) -> Bool {
+        guard let depth = router.pairedProfileChooserDepth else { return false }
+        guard router.authState == .needsProfile, router.path.count >= depth else {
+            router.pairedProfileChooserDepth = nil
+            return false
+        }
+        return true
+    }
+
     /// Change server on Who's Watching, and Switch Server in the menus: this
     /// user's servers (spec §5.3, plan G12). Before migration, the device's
     /// server list, as before.
     func showServers(router: AppRouter) async {
+        router.pairedProfileChooserDepth = nil
         await reloadDirectory()
         guard let userID = directory.currentUserID else {
             router.navigate(to: .serverList)
@@ -558,14 +583,22 @@ final class SiloUserCoordinator {
         default:
             staysOnStack = false
         }
-        if !staysOnStack {
-            router.showSignInTarget(context)
-        }
         switch step {
         case .serverSetup:
-            router.navigate(to: .serverSetup)
+            // Nothing to list (Add Server with every saved server already in
+            // the user): setup alone, with Cancel going back, rather than on
+            // top of a "Sign in to…" with nothing to pick.
+            if staysOnStack {
+                router.navigate(to: .serverSetup)
+            } else {
+                router.resetToServerSetup(context: context)
+            }
         case .list:
-            if staysOnStack { router.navigate(to: .signInTarget(context)) }
+            if staysOnStack {
+                router.navigate(to: .signInTarget(context))
+            } else {
+                router.showSignInTarget(context)
+            }
         case .signIn:
             break
         }

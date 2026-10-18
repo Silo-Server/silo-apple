@@ -31,7 +31,8 @@ enum SiloUserDirectoryFixture {
         _ users: [User],
         state: ProfileLaunchState = ProfileLaunchState(),
         currentUserID: String? = nil,
-        currentServerID: String? = nil
+        currentServerID: String? = nil,
+        servers: [ServerEntry] = SiloUserDirectoryFixture.servers
     ) -> SiloUserDirectory {
         var summaries: [SignInSummary] = []
         let index = SiloUserIndex(users: users.map { user in

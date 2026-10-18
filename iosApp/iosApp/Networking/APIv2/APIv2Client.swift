@@ -144,6 +144,11 @@ struct APIv2Client: Sendable {
             throw HTTPError.authorityChanged
         }
         let outcome = try await tokenStore.bindVerifiedAccount(value, expected: current)
+        if case .legacyDuplicate(_, let dropped?) = outcome {
+            // The dropped session is no longer kept anywhere: end it on its
+            // own server, without waiting.
+            Task { [http] in await http.revoke(dropped) }
+        }
         switch outcome {
         case .legacyMigrated, .legacyDuplicate:
             await MainActor.run {

@@ -128,6 +128,36 @@ final class SiloUserNamingTests: XCTestCase {
         XCTAssertEqual(names(d), ["u1": "alex · Home Silo", "u2": "alex · Home Silo · Friend's Silo"])
     }
 
+    /// Two servers sharing a name: the newest isn't added when the name
+    /// already holds that server name, so numbering tells the users apart.
+    func testASharedServerNameIsNotAddedTwice() {
+        let serverNames = ["s1": "Silo", "s2": "silo", "home": "Home Silo"]
+        let d = directory([
+            ("u1", nil, [("s1", "qa-multi-alex"), ("s2", "qa-multi-alex")]),
+            ("u2", nil, [("s1", "qa-multi-alex"), ("s2", "qa-multi-alex")]),
+        ])
+        XCTAssertEqual(SiloUserNaming.disambiguatedNames(in: d, serverNames: serverNames),
+                       ["u1": "qa-multi-alex · Silo", "u2": "qa-multi-alex · Silo (2)"])
+
+        let named = directory([("u1", nil, [("s1", nil), ("s2", "a")]), ("u2", nil, [("s1", nil), ("home", "b")])])
+        XCTAssertEqual(SiloUserNaming.disambiguatedNames(in: named, serverNames: serverNames),
+                       ["u1": "Silo", "u2": "Silo · Home Silo"], "a name that is the server name holds it")
+    }
+
+    /// Servers sharing a name (without case) read as their hosts; one named
+    /// apart, or the same server listed twice, needs none.
+    func testHostsTellSameNamedServersApart() {
+        let hosts = SiloUserNaming.hostsTellingApart([
+            (id: "a", name: "Silo", address: "https://silo.alex.example"),
+            (id: "b", name: "silo", address: "https://media.sam.example:8443"),
+            (id: "a", name: "Silo", address: "https://silo.alex.example"),
+            (id: "c", name: "Home Silo", address: "https://home.example"),
+            (id: "d", name: "Cabin", address: "https://cabin.example"),
+            (id: "d", name: "Cabin", address: "https://cabin.example"),
+        ])
+        XCTAssertEqual(hosts, ["a": "silo.alex.example", "b": "media.sam.example:8443"])
+    }
+
     func testANameThatIsTheServerNameIsNotRepeated() {
         let d = directory([("u1", nil, [("home", nil)]), ("u2", nil, [("home", nil)])])
         XCTAssertEqual(names(d), ["u1": "Home Silo", "u2": "Home Silo (2)"])

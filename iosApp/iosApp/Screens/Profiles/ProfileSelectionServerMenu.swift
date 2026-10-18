@@ -43,15 +43,20 @@ struct ServerChipMenuItems: View {
         if model.showsUsers {
             Section(model.userName ?? hostLabel) {
                 ForEach(model.servers) { server in
+                    let icon = server.isActive ? "checkmark" : "server.rack"
                     Button {
                         open(server)
                     } label: {
-                        Label {
-                            itemTitle(server.name, detail: server.needsSignInAgain
-                                ? ChooseServerViewModel.Status.signInAgain.label : nil)
-                        } icon: {
-                            Image(systemName: server.isActive ? "checkmark" : "server.rack")
-                        }
+                        // Written out in the label itself: iOS menus read a
+                        // second Text there as the item's subtitle, but show
+                        // only the first one inside a Label or a helper view.
+                        #if os(macOS)
+                        Label(Self.oneLine(server.name, server.detail), systemImage: icon)
+                        #else
+                        Text(server.name)
+                        if let detail = server.detail { Text(detail) }
+                        Image(systemName: icon)
+                        #endif
                     }
                     .accessibilityValue(server.isActive ? "Active" : "")
                 }
@@ -69,13 +74,13 @@ struct ServerChipMenuItems: View {
                         Button {
                             Task { await users.openUser(user.id, router: router) }
                         } label: {
-                            Label {
-                                itemTitle(user.name, detail: user.needsSignInAgain
-                                    ? user.detail + SiloUserNaming.separator + ChooseUserViewModel.signInAgainLabel
-                                    : user.detail)
-                            } icon: {
-                                Image(systemName: "person.crop.circle")
-                            }
+                            #if os(macOS)
+                            Label(Self.oneLine(user.name, user.detailLine), systemImage: "person.crop.circle")
+                            #else
+                            Text(user.name)
+                            Text(user.detailLine)
+                            Image(systemName: "person.crop.circle")
+                            #endif
                         }
                     }
                     addUser
@@ -107,16 +112,10 @@ struct ServerChipMenuItems: View {
         }
     }
 
-    /// A menu item's title, with a second line where the platform's menus
-    /// draw one (iPhone, iPad); the Mac's menus get it on the same line.
-    @ViewBuilder
-    private func itemTitle(_ title: String, detail: String?) -> some View {
-        #if os(macOS)
-        Text(detail.map { title + SiloUserNaming.separator + $0 } ?? title)
-        #else
-        Text(title)
-        if let detail { Text(detail) }
-        #endif
+    /// A menu item's title with its detail on the same line, for the Mac's
+    /// menus, which draw no second line.
+    static func oneLine(_ title: String, _ detail: String?) -> String {
+        detail.map { title + SiloUserNaming.separator + $0 } ?? title
     }
 
     /// The server open now stays open; another one opens its Who's

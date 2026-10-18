@@ -24,12 +24,15 @@ struct ManageUsersView: View {
 
     var body: some View {
         let model = UsersSettingsViewModel(directory: users.directory, device: users.device)
+        let hosts = SiloUserNaming.hostsTellingApart(users.directory.users.flatMap(\.servers).map {
+            (id: $0.id, name: $0.name, address: $0.address)
+        })
         List {
             ForEach(model.users) { user in
                 Section {
                     summaryRow(user, removeTitle: model.removeTitle)
                     ForEach(user.servers.map { ServerRow(userID: user.id, server: $0) }) { row in
-                        serverRow(row.server, in: user)
+                        serverRow(row.server, host: hosts[row.server.id], in: user)
                     }
                     Button {
                         Task { await users.requestRename(user.id, router: router) }
@@ -131,7 +134,9 @@ struct ManageUsersView: View {
 
     /// One server in the user, with Sign Out, or Sign In Again once it
     /// expired. A pending legacy server has no saved sign-in to act on yet.
-    private func serverRow(_ server: UsersSettingsViewModel.Server, in user: UsersSettingsViewModel.User) -> some View {
+    /// `host` tells it apart from another listed server with its name.
+    private func serverRow(_ server: UsersSettingsViewModel.Server, host: String?,
+                           in user: UsersSettingsViewModel.User) -> some View {
         let address = users.directory.user(user.id)?.server(server.id)?.address ?? ""
         return HStack(spacing: 12) {
             MarqueeServerMark(
@@ -142,7 +147,7 @@ struct ManageUsersView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(server.name)
                     .foregroundStyle(Color.siloOnSurface)
-                if let detail = Self.serverDetail(server) {
+                if let detail = Self.serverDetail(server, host: host) {
                     Text(detail)
                         .font(.footnote)
                         .foregroundStyle(server.needsSignInAgain ? Color.siloStatusWarning : Color.siloSecondaryText)
@@ -195,9 +200,11 @@ struct ManageUsersView: View {
     }
 
     /// The server username when it says something the user's name doesn't,
-    /// and "Sign in again" once the sign-in expired: "sam2 · Sign in again".
-    static func serverDetail(_ server: UsersSettingsViewModel.Server) -> String? {
-        let parts = [server.username, server.needsSignInAgain ? ChooseUserViewModel.signInAgainLabel : nil]
+    /// the host when another listed server shares this one's name, and "Sign
+    /// in again" once the sign-in expired: "sam2 · home.example · Sign in
+    /// again".
+    static func serverDetail(_ server: UsersSettingsViewModel.Server, host: String? = nil) -> String? {
+        let parts = [server.username, host, server.needsSignInAgain ? ChooseUserViewModel.signInAgainLabel : nil]
             .compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: SiloUserNaming.separator)
     }
