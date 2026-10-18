@@ -375,9 +375,7 @@ struct LibrariesTabView: View {
                 onOpenRequests: { router.navigate(to: .requestsHub) },
                 onSwitchProfile: {
                     router.switchProfile()
-                },
-                onSwitchServer: { router.navigate(to: .serverList) },
-                onSignOut: { router.signOutAndReset() }
+                }
             )
             .padding(.horizontal, SiloTheme.padding)
             .padding(.top, SiloTheme.smallPadding)
@@ -534,8 +532,6 @@ private struct LibrariesTopBar: View {
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
-    let onSwitchServer: () -> Void
-    let onSignOut: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -553,9 +549,7 @@ private struct LibrariesTopBar: View {
                 onSearch: onSearch,
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
-                onSwitchProfile: onSwitchProfile,
-                onSwitchServer: onSwitchServer,
-                onSignOut: onSignOut
+                onSwitchProfile: onSwitchProfile
             )
         }
         .clearsWindowControls()

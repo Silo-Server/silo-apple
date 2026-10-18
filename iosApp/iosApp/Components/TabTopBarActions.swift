@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The shared right-hand action cluster used at the top of tab-root screens:
 /// Search, the iOS TV remote control, and a profile-avatar menu with
-/// Settings / Switch Profile / Sign Out. Every root page renders the same
+/// Settings / Switch Profile / Switch Server / Sign Out. Every root page renders the same
 /// three controls so the header reads identically across Home, Libraries,
 /// For You, and Calendar.
 ///
@@ -16,8 +16,6 @@ struct TabTopBarActions: View {
     /// server reports `requests_enabled`, so the closure is inert otherwise.
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
-    let onSwitchServer: () -> Void
-    let onSignOut: () -> Void
 
     /// Shared session cache so switching pages never refetches or flashes
     /// the avatar fallback.
@@ -48,9 +46,7 @@ struct TabTopBarActions: View {
                 profile: profileStore.profile,
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
-                onSwitchProfile: onSwitchProfile,
-                onSwitchServer: onSwitchServer,
-                onSignOut: onSignOut
+                onSwitchProfile: onSwitchProfile
             )
         }
         #if os(iOS)
@@ -87,7 +83,9 @@ private struct TopBarIconButton: View {
 }
 
 /// Profile avatar opening the account menu (Watch Party, Requests, Settings,
-/// Switch Profile, Switch Server, Sign Out).
+/// Switch Profile, Switch Server, Sign Out). Switch Server lists the current
+/// user's servers (plan G12). Sign Out asks first, with the option to remove
+/// the server too, since it signs out everyone on the device (plan G10).
 struct ProfileAvatarMenu: View {
     @Environment(AppRouter.self) private var router
     let profile: UserProfile?
@@ -97,8 +95,6 @@ struct ProfileAvatarMenu: View {
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
-    let onSwitchServer: () -> Void
-    let onSignOut: () -> Void
 
     /// Capability-gated: the Requests row exists only when the server has
     /// the feature enabled (older servers 404 the probe and read as off).
@@ -151,12 +147,12 @@ struct ProfileAvatarMenu: View {
                 Label("Switch Profile", systemImage: "person.2")
             }
             Button {
-                onSwitchServer()
+                Task { await router.users.showServers(router: router) }
             } label: {
                 Label("Switch Server", systemImage: "server.rack")
             }
             Button(role: .destructive) {
-                onSignOut()
+                Task { await router.users.requestRemoval(.currentSignIn, router: router) }
             } label: {
                 Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
             }

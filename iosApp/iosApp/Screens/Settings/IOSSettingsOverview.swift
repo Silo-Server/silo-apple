@@ -9,7 +9,6 @@ struct IOSSettingsOverview: View {
     let viewModel: SettingsViewModel
     let diagnosticsModel: DiagnosticsViewModel
     let uiCustomization: UICustomizationPreferences
-    @Binding var showSignOutConfirm: Bool
 
     @Environment(AppRouter.self) private var router
     @State private var navPrefs = AppNavPreferences.shared
@@ -82,10 +81,13 @@ struct IOSSettingsOverview: View {
         .siloToolbarColorSchemeDark()
         .onAppear(perform: navPrefs.refresh)
         .task { await accountSignIn.load() }
+        .task { await router.users.reloadDirectory() }
         .sheet(isPresented: $showsSignInTV) {
-            SignInTVView(onSwitchAccount: { server, link, choosingAccount in
+            // "Not you?" on the approval card is Switch User: it signs nobody
+            // out, and the card comes back once a user is chosen or added.
+            SignInTVView(onSwitchAccount: { _, link, _ in
                 showsSignInTV = false
-                router.switchAccount(forTVApproval: link, on: server, choosingAccount: choosingAccount)
+                router.switchUser(forTVApproval: link)
             }, onClose: { showsSignInTV = false })
         }
     }
@@ -210,6 +212,19 @@ struct IOSSettingsOverview: View {
 
     private var connectionSection: some View {
         Section("Connection") {
+            if matchesUsers {
+                Button {
+                    router.navigate(to: .manageUsers)
+                } label: {
+                    SettingsOverviewRow(
+                        title: UsersSettingsViewModel.title,
+                        subtitle: "Silo users on this \(router.users.device.noun) and their servers",
+                        systemImage: "person.2.fill",
+                        value: Self.usersValue(router.users.directory),
+                        showsChevron: true
+                    )
+                }
+            }
             Button {
                 router.navigate(to: .serverList)
             } label: {
@@ -233,6 +248,23 @@ struct IOSSettingsOverview: View {
                     )
                 }
             }
+        }
+    }
+
+    /// The Users row (spec §5.7): once the device's sign-ins are kept as
+    /// Silo users.
+    private var matchesUsers: Bool {
+        let directory = router.users.directory
+        guard directory.isAvailable, !directory.users.isEmpty else { return false }
+        return matches(["users", "switch user", "add user", "rename"] + directory.users.map(\.name))
+    }
+
+    /// The current user's name, or how many users there are.
+    static func usersValue(_ directory: SiloUserDirectory) -> String? {
+        switch directory.users.count {
+        case 0: return nil
+        case 1: return directory.users[0].name
+        default: return "\(directory.users.count) users"
         }
     }
 
@@ -313,8 +345,9 @@ struct IOSSettingsOverview: View {
 
     private var signOutSection: some View {
         Section {
+            // Asks first, with Sign Out & Remove Server (spec §5.6, plan G10).
             Button("Sign Out", role: .destructive) {
-                showSignOutConfirm = true
+                Task { await router.users.requestRemoval(.currentSignIn, router: router) }
             }
             .frame(maxWidth: .infinity)
             .foregroundStyle(Color.red)
@@ -355,7 +388,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesConnectionSection: Bool {
-        matches("server", "connection", viewModel.serverDisplayName) || matchesSignInTV
+        matches("server", "connection", viewModel.serverDisplayName) || matchesUsers || matchesSignInTV
     }
 
     private var matchesAboutSection: Bool {
@@ -408,6 +441,10 @@ struct IOSSettingsOverview: View {
     }
 
     private func matches(_ terms: String...) -> Bool {
+        matches(terms)
+    }
+
+    private func matches(_ terms: [String]) -> Bool {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return true }
         return terms.contains { $0.localizedCaseInsensitiveContains(query) }

@@ -16,7 +16,6 @@ struct SettingsView: View {
     @State private var viewModel = SettingsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(AppRouter.self) private var router
-    @State private var showSignOutConfirm = false
     #if os(iOS)
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
@@ -25,22 +24,14 @@ struct SettingsView: View {
     @State private var accountSignIn = AccountSignInModel.live()
     #endif
 
+    // Sign Out asks through the app-wide confirmation, with Sign Out &
+    // Remove Server (spec §5.6, plan G10).
     var body: some View {
-        Group {
-            #if os(iOS)
-            iOSOverview
-            #else
-            macOSBody
-            #endif
-        }
-        .alert("Sign Out", isPresented: $showSignOutConfirm) {
-            Button("Sign Out", role: .destructive) {
-                router.signOutAndReset()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Are you sure you want to sign out?")
-        }
+        #if os(iOS)
+        iOSOverview
+        #else
+        macOSBody
+        #endif
     }
     #endif
 
@@ -49,8 +40,7 @@ struct SettingsView: View {
         IOSSettingsOverview(
             viewModel: viewModel,
             diagnosticsModel: diagnosticsModel,
-            uiCustomization: uiCustomization,
-            showSignOutConfirm: $showSignOutConfirm
+            uiCustomization: uiCustomization
         )
         .task {
             await viewModel.loadSettings()
@@ -66,6 +56,9 @@ struct SettingsView: View {
             if accountSignIn.showsEntry {
                 accountSignInSection
             }
+            if router.users.directory.isAvailable, !router.users.directory.users.isEmpty {
+                usersSection
+            }
             preferencesSection
             connectionSection
             aboutSection
@@ -79,6 +72,52 @@ struct SettingsView: View {
             await viewModel.loadSettings()
         }
         .task { await accountSignIn.load() }
+        .task { await router.users.reloadDirectory() }
+    }
+
+    // MARK: - Users
+
+    /// Settings › Users (spec §5.7): the device's users, each opening Manage
+    /// Users, where its servers are signed out, renamed, and removed.
+    private var usersSection: some View {
+        Section {
+            ForEach(router.users.directory.users) { user in
+                Button {
+                    router.navigate(to: .manageUsers)
+                } label: {
+                    HStack(spacing: 12) {
+                        StackedProfileAvatars(
+                            profiles: user.lastUsedServer?.profiles ?? [],
+                            fallbackID: user.id,
+                            fallbackName: user.name,
+                            serverAddress: user.lastUsedServer?.address,
+                            maxCount: 3
+                        )
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(user.name)
+                                .foregroundStyle(Color.siloOnSurface)
+                            Text(ChooseUserViewModel.serverLabel(for: user))
+                                .font(.footnote)
+                                .foregroundStyle(Color.siloSecondaryText)
+                        }
+                        Spacer(minLength: 8)
+                        if user.needsSignInAgain {
+                            Text(ChooseUserViewModel.signInAgainLabel)
+                                .foregroundStyle(Color.siloStatusWarning)
+                        } else if user.id == router.users.directory.currentUserID {
+                            Text(ManageUsersView.currentLabel)
+                                .foregroundStyle(Color.siloSecondaryText)
+                        }
+                        SettingsRowChevron()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            Text(UsersSettingsViewModel.title)
+                .foregroundStyle(Color.siloSecondaryText)
+        }
     }
 
     // MARK: - Sign-in
@@ -285,7 +324,7 @@ struct SettingsView: View {
     private var signOutSection: some View {
         Section {
             Button(role: .destructive) {
-                showSignOutConfirm = true
+                Task { await router.users.requestRemoval(.currentSignIn, router: router) }
             } label: {
                 Text("Sign Out")
                     .font(.siloBody.weight(.semibold))

@@ -142,9 +142,7 @@ struct HomeView: View {
                     onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: {
                         router.switchProfile()
-                    },
-                    onSwitchServer: { router.navigate(to: .serverList) },
-                    onSignOut: { router.signOutAndReset() }
+                    }
                 )
             }
             .clearsWindowControls()
