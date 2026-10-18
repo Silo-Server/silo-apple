@@ -11,10 +11,6 @@ enum TVBackdropArtworkLayout {
     static let viewportWidth: CGFloat = 1920
     static let widthFraction: CGFloat = 0.64
     static let heightFraction: CGFloat = 0.70
-    /// Where the art reaches zero below the top edge, as a fraction of the
-    /// viewport height. It must stay inside the detail hero's clip (690 pt
-    /// on a 1080 pt canvas) so that clip never reveals a straight edge.
-    static let fadeEndFraction: CGFloat = 0.63
 
     static func artworkSize(forViewportWidth viewportWidth: CGFloat) -> CGSize {
         let viewportHeight = viewportWidth * 9 / 16
@@ -28,35 +24,33 @@ enum TVBackdropArtworkLayout {
 /// Shared corner falloff for the root marquee and movie/series details.
 /// Keeping one mask prevents the artwork edge from visibly changing while
 /// the already-focused card opens its seeded detail route.
-///
-/// One elliptical falloff from the top-trailing corner, eased over many
-/// stops, so bright art dissolves without the diagonal seam two crossed
-/// linear ramps leave behind.
 struct TVBackdropArtworkFadeMask: View {
     var body: some View {
-        EllipticalGradient(
+        LinearGradient(
             stops: [
                 .init(color: .black, location: 0.0),
-                .init(color: .black, location: 0.34),
-                .init(color: .black.opacity(0.93), location: 0.44),
-                .init(color: .black.opacity(0.78), location: 0.54),
-                .init(color: .black.opacity(0.56), location: 0.64),
-                .init(color: .black.opacity(0.32), location: 0.74),
-                .init(color: .black.opacity(0.14), location: 0.84),
-                .init(color: .black.opacity(0.04), location: 0.92),
+                .init(color: .black, location: 0.32),
                 .init(color: .clear, location: 1.0),
             ],
-            center: .topTrailing,
-            startRadiusFraction: 0,
-            endRadiusFraction: 1
+            startPoint: .trailing,
+            endPoint: .leading
         )
-        // Squash the ellipse vertically so it ends at `fadeEndFraction`
-        // rather than the bottom of the artwork box.
-        .scaleEffect(
-            x: 1,
-            y: TVBackdropArtworkLayout.fadeEndFraction / TVBackdropArtworkLayout.heightFraction,
-            anchor: .top
-        )
+        .mask {
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0.0),
+                    .init(color: .black, location: 0.38),
+                    .init(color: .black.opacity(0.88), location: 0.52),
+                    .init(color: .black.opacity(0.58), location: 0.68),
+                    .init(color: .black.opacity(0.24), location: 0.81),
+                    // Reach zero before the detail hero's lower boundary so
+                    // its clip can never reveal a straight artwork edge.
+                    .init(color: .clear, location: 0.90),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
     }
 }
 
