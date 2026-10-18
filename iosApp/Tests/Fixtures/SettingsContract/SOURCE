@@ -14,15 +14,13 @@ vendored manifest's revision, and the generated SettingKey.revision stop
 agreeing, which is the whole point of carrying the pair rather than the
 fixture alone.
 
-conformance.json commit=5db5d4678b8d44c07089c89463e88e0bb242821d
+conformance.json commit=dc49fd7dcfe120b9a67a3d02258e382cd645b825
 manifest.json    commit=857655f4f5786235dba6cc9f24c844e65ea33cb1
-copied from      commit=857655f4f5786235dba6cc9f24c844e65ea33cb1
+copied from      commit=dc49fd7dcfe120b9a67a3d02258e382cd645b825
 generated with   commit=857655f4f5786235dba6cc9f24c844e65ea33cb1 (cmd/settingsgen -lang swift)
 
-Pending: the server's conformance.json at 857655f4f still targets manifest
-revision 20, so testTheFixtureTargetsThisBuildsManifestRevision fails until
-the server bumps it. Re-vendor conformance.json from that fix and record its
-commit above; never edit the copy here.
+The manifest and generated bindings are unchanged between those commits;
+dc49fd7dc only bumped conformance.json to revision 21.
 
 manifest.json is vendored whole, including the maintainer `notes` the server
 strips before serving /api/v1/settings/contract. Keeping it byte-identical is
