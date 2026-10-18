@@ -380,6 +380,11 @@ struct ContentView: View {
                 await refreshSessionStores()
             }
         }
+        // The bandwidth probe measures the signed-in server's media path once
+        // the first screen has settled.
+        .task(id: isAuthenticatedAppVisible) {
+            await followSignedInServerForBandwidthProbe()
+        }
         // Work that can prompt the user, or that competes with the first
         // screen for bandwidth, waits until the splash has lifted.
         .task(id: isAuthenticatedAppVisible) {
@@ -485,8 +490,12 @@ struct ContentView: View {
             LaunchTimeline.recordScenePhase(Self.diagnosticsScenePhase(newPhase))
             #endif
             switch newPhase {
-            case .active: LocalRouteController.shared.sceneDidBecomeActive()
-            case .background: LocalRouteController.shared.sceneDidEnterBackground()
+            case .active:
+                LocalRouteController.shared.sceneDidBecomeActive()
+                BandwidthProbeScheduler.shared.setForeground(true)
+            case .background:
+                LocalRouteController.shared.sceneDidEnterBackground()
+                BandwidthProbeScheduler.shared.setForeground(false)
             default: break
             }
             #if os(iOS)
@@ -608,6 +617,22 @@ struct ContentView: View {
         #else
         await overlayPrefs.hydrateIfNeeded()
         #endif
+    }
+
+    private func followSignedInServerForBandwidthProbe() async {
+        let scheduler = BandwidthProbeScheduler.shared
+        scheduler.isMediaActive = { [router, audioStore] in
+            if router.presentedPlayer != nil || audioStore.player.isPlaying { return true }
+            #if os(iOS)
+            if PictureInPictureCoordinator.shared.isEngaged { return true }
+            #endif
+            return false
+        }
+        guard isAuthenticatedAppVisible else {
+            scheduler.setActiveServer(nil)
+            return
+        }
+        scheduler.setActiveServer(await TokenStore.shared.captureOrdinaryRequestAuth()?.account.serverId)
     }
 
     /// Background audio and PiP are still active use of the selected profile,

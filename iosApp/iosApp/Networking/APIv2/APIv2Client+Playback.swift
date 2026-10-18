@@ -102,6 +102,15 @@ extension APIv2Client {
         guard raw.statusCode == 204 else { throw PlaybackSequencedError.invalidResponse }
     }
 
+    /// `POST /api/v2/playback/bandwidth-probe/results`, answered with 204.
+    /// Served by a server that advertises `connection_speed_v1`.
+    func reportPlaybackBandwidthProbe(_ result: APIv2PlaybackBandwidthProbeResult,
+                                      auth: CapturedOrdinaryRequestAuth) async throws {
+        let raw = try await playbackRequest(method: "POST", suffix: "/bandwidth-probe/results",
+            body: try Self.playbackBody(result), auth: auth)
+        guard raw.statusCode == 204 else { throw PlaybackSequencedError.invalidResponse }
+    }
+
     /// Mints a control ticket and builds the socket upgrade for it. Checks
     /// `GET /api/v2/playback/sessions/control/capabilities` first, then
     /// `POST /api/v2/playback/sessions/{session_id}/control/ws-ticket`,

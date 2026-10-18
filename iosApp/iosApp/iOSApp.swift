@@ -40,6 +40,7 @@ struct SiloApp: App {
         // is on mobile data (the cellular quality pair).
         PlaybackNetworkMonitor.shared.start()
         #endif
+        BandwidthProbeNetworkMonitor.shared.start(scheduler: .shared)
     }
 
     var body: some Scene {

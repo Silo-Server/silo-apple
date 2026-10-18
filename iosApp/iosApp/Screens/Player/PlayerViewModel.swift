@@ -5519,6 +5519,9 @@ class PlayerViewModel {
                     // annoying but doesn't wedge the UI; a hung autoplay does
                     // (the user is stuck on a half-cross-faded Next Up screen
                     // with no obvious way out).
+                    // A running bandwidth probe stops so it cannot slow the
+                    // start.
+                    BandwidthProbeScheduler.shared.playbackStarting()
                     prepared = try await self.runStartSession(
                         request: request,
                         resumePosition: resumePositionOverride,

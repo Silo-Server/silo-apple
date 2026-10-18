@@ -47,6 +47,10 @@ enum PlaybackProtocolV3 {
     static let bufferingQualityFeature = "buffering_quality_v1"
     /// Native v2 only. The server accepts the `plan_summary` route event.
     static let planSummaryFeature = "playback_plan_summary_v1"
+    /// Capability only. The server advertises `bandwidth_probe_url`, takes
+    /// probe results, and adds `probe` and `auto_budget_kbps` to the
+    /// connection endpoint. See ``BandwidthProbeScheduler``.
+    static let connectionSpeedFeature = "connection_speed_v1"
 
     /// Where a request's `bandwidth_estimate_kbps` came from.
     enum BandwidthEstimateSource {

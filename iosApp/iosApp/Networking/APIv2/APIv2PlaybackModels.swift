@@ -195,6 +195,9 @@ struct APIv2PlaybackCapabilities: Decodable {
     let allowed: Bool
     let protocolVersions: [Int]
     let features: [String]
+    /// With `connection_speed_v1`: the bandwidth probe on the path this
+    /// client's media takes, on the origin the request arrived on.
+    let bandwidthProbeUrl: String?
 
     static let notConfigured = PlaybackV3TerminalFailure(reason: "playback_not_configured",
         message: "API v2 playback is not configured on this server. Ask the server administrator to finish playback setup.",
@@ -265,6 +268,16 @@ struct APIv2PlaybackConnection: Decodable, Equatable, Sendable {
         probe = (try? container.decodeIfPresent(Probe.self, forKey: .probe)) ?? nil
         autoBudgetKbps = (try? container.decodeIfPresent(Int.self, forKey: .autoBudgetKbps)) ?? nil
     }
+}
+
+/// `POST /api/v2/playback/bandwidth-probe/results`: one probe measurement,
+/// which the server keeps as the latest for this device and connection.
+struct APIv2PlaybackBandwidthProbeResult: Encodable, Equatable, Sendable {
+    let kbps: Int
+    let bytes: Int
+    let durationMs: Int
+    /// `wifi`, `ethernet`, `cellular` or `other`.
+    let transport: String
 }
 
 /// Delegated credential for one owner-bound control handshake; never persisted.

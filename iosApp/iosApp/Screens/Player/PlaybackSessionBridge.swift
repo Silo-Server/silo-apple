@@ -185,6 +185,10 @@ actor PlaybackV3CapabilityGate {
         var bufferingQuality = false
         /// `playback_plan_summary_v1`: the server accepts `plan_summary`.
         var planSummary = false
+        /// `connection_speed_v1`: the server serves a bandwidth probe on the
+        /// media path, takes probe results, and reports the probe and the
+        /// Auto budget on the connection endpoint.
+        var connectionSpeed = false
     }
 
     private let tokenStore: TokenStore
@@ -225,7 +229,8 @@ actor PlaybackV3CapabilityGate {
                             PlaybackProtocolV3.authorizedMediaOriginsFeature
                         ),
                         bufferingQuality: capabilities.features.contains(PlaybackProtocolV3.bufferingQualityFeature),
-                        planSummary: capabilities.features.contains(PlaybackProtocolV3.planSummaryFeature)
+                        planSummary: capabilities.features.contains(PlaybackProtocolV3.planSummaryFeature),
+                        connectionSpeed: capabilities.features.contains(PlaybackProtocolV3.connectionSpeedFeature)
                     )
                 } catch {
                     throw Self.terminalFailure(for: error)

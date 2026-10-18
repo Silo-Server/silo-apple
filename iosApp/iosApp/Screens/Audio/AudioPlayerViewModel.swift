@@ -481,6 +481,8 @@ final class AudioPlayerViewModel {
             )
         }
 
+        // A running bandwidth probe stops so it cannot slow the start.
+        BandwidthProbeScheduler.shared.playbackStarting()
         let snapshot = ApplePlaybackV3Capabilities.audiobookSnapshot()
         // A start refused because the server's playback installation changed
         // runs once more with the refreshed capability and a new attempt id.

@@ -14,13 +14,13 @@ final class PlaybackCapabilityGateTests: XCTestCase {
 
     /// The vendored fixture plus the header-authenticated media feature the
     /// server always advertises (`ServerFeaturesV3`), with `installation`.
-    private func available(installation: String? = nil, dropping feature: String? = nil,
+    private func available(installation: String? = nil, dropping dropped: [String] = [],
                            adding extra: [String] = []) throws -> String {
         let data = try Support.mutatedBody(named: "playback_capability_available", bundleClass: Self.self) {
             var features = $0["features"] as? [String] ?? []
             features.append(PlaybackProtocolV3.headerAuthenticatedMediaFeature)
             features.append(contentsOf: extra)
-            $0["features"] = features.filter { $0 != feature }
+            $0["features"] = features.filter { !dropped.contains($0) }
             if let installation { $0["installation_id"] = installation }
         }
         return String(decoding: data, as: UTF8.self)
@@ -71,7 +71,7 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         for feature in [PlaybackProtocolV3.planFeature, PlaybackProtocolV3.neutralContractFeature,
                         PlaybackProtocolV3.headerAuthenticatedMediaFeature, PlaybackSequencedContract.feature] {
             let partial = try decoder.decode(APIv2PlaybackCapabilities.self,
-                from: Data(try available(dropping: feature).utf8))
+                from: Data(try available(dropping: [feature]).utf8))
             await assertTerminal("server_upgrade_required") { _ = try partial.requireAvailable() }
         }
 
@@ -90,20 +90,24 @@ final class PlaybackCapabilityGateTests: XCTestCase {
     /// The buffering-quality features are optional: without them playback
     /// still starts, and the start request and Settings leave them out.
     func testTheCapabilityCarriesTheOptionalBufferingQualityFeatures() async throws {
+        let optional = [PlaybackProtocolV3.bufferingQualityFeature, PlaybackProtocolV3.planSummaryFeature,
+                        PlaybackProtocolV3.connectionSpeedFeature]
         let (plain, plainStub) = try await makeGate()
-        plainStub.reply(200, try available())
+        plainStub.reply(200, try available(dropping: optional))
         let without = try await plain.requireNeutralProtocolV3()
         XCTAssertFalse(without.bufferingQuality)
         XCTAssertFalse(without.planSummary)
+        XCTAssertFalse(without.connectionSpeed)
         let plainAdvertises = await plain.advertisesBufferingQuality()
         XCTAssertFalse(plainAdvertises)
 
+        // The vendored fixture advertises all three.
         let (gate, stub) = try await makeGate()
-        stub.reply(200, try available(adding: [PlaybackProtocolV3.bufferingQualityFeature,
-                                               PlaybackProtocolV3.planSummaryFeature]))
+        stub.reply(200, try available())
         let with = try await gate.requireNeutralProtocolV3()
         XCTAssertTrue(with.bufferingQuality)
         XCTAssertTrue(with.planSummary)
+        XCTAssertTrue(with.connectionSpeed)
         let advertises = await gate.advertisesBufferingQuality()
         XCTAssertTrue(advertises)
 
@@ -111,6 +115,19 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         refusedStub.reply(200, try fixtureString("playback_capability_unconfigured"))
         let refusedAdvertises = await refused.advertisesBufferingQuality()
         XCTAssertFalse(refusedAdvertises, "Settings hides the limit when playback is unavailable")
+    }
+
+    /// With `connection_speed_v1` the document names the media-path probe.
+    func testTheCapabilityDecodesTheBandwidthProbeURL() throws {
+        let capabilities = try HTTPClient.makeJSONDecoder().decode(
+            APIv2PlaybackCapabilities.self,
+            from: Support.data(named: "playback_capability_available", bundleClass: Self.self)
+        )
+        XCTAssertEqual(
+            capabilities.bandwidthProbeUrl,
+            "http://api.example.test/api/v2/playback/bandwidth-probe?media_path=true"
+        )
+        XCTAssertTrue(capabilities.features.contains(PlaybackProtocolV3.connectionSpeedFeature))
     }
 
     // MARK: Caching
