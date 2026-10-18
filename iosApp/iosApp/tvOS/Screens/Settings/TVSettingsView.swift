@@ -30,6 +30,11 @@ struct TVSettingsView: View {
     @State private var preferredFocusOwner: FocusOwner = .rail
     @State private var preferredRailFocus: RailItem = .category(.general)
     @State private var preferredDetailFocus: TVSettingsDetailFocus = .top
+    /// The Settings › Users row whose action opened a confirmation or
+    /// rename; focus returns to it, or to the row that took its place.
+    @State private var usersReturnRow: TVUsersSettingsRow?
+    @State private var hasLoadedUsers = false
+    @State private var registry = ServerRegistry.shared
     @FocusState private var railFocus: RailItem?
     @FocusState private var detailFocus: TVSettingsDetailFocus?
     @Environment(\.resetFocus) private var resetFocus
@@ -45,11 +50,15 @@ struct TVSettingsView: View {
             settingsContent
 
             if showSignOutConfirm {
+                // Spec §5.6: names the user and server, says it affects
+                // everyone on this Apple TV, and offers Sign Out & Remove
+                // Server, which names the server's other users.
+                let copy = viewModel.signOutConfirmation
                 TVSettingsConfirmationOverlay(
-                    title: "Sign Out",
-                    message: "Choose whether to keep or remove this server from this Apple TV.",
-                    confirmTitle: "Sign Out",
-                    additionalDestructiveTitle: "Sign Out & Remove Server",
+                    title: copy.title,
+                    message: copy.message,
+                    confirmTitle: copy.confirmTitle,
+                    additionalDestructiveTitle: copy.additionalDestructiveTitle,
                     cancel: dismissSignOutConfirmation,
                     confirm: router.signOutAndReset,
                     additionalDestructiveAction: router.signOutRemoveServerAndReset
@@ -90,7 +99,22 @@ struct TVSettingsView: View {
         .onAppear(perform: focusGeneralOnEntry)
         .task {
             await viewModel.loadSettings()
+            hasLoadedUsers = true
             await diagnosticsModel.load(profile: viewModel.activeProfile)
+        }
+        .onChange(of: isUsersOverlayPresented) { _, presented in
+            guard !presented, selectedCategory == .users,
+                  let row = usersReturnRow, usersRows.contains(row) else { return }
+            restoreDetailFocus(to: .users(row))
+        }
+        .onChange(of: usersRows) { before, after in
+            guard let row = usersReturnRow, !after.contains(row) else { return }
+            usersReturnRow = nil
+            guard selectedCategory == .users,
+                  let next = TVFocusNeighbor.replacement(for: row, before: before, after: after) ?? after.first else { return }
+            preferredFocusOwner = .detail
+            preferredDetailFocus = .users(next)
+            restoreDetailFocus(to: .users(next))
         }
         .onChange(of: railFocus) { _, focus in
             if let focus,
@@ -131,6 +155,13 @@ struct TVSettingsView: View {
     /// A picker, confirmation, or full-screen overlay owns focus.
     private var isModalPresented: Bool {
         activePicker != nil || showSignOutConfirm || showPrivacyPolicy || showOpenSourceAcknowledgements
+            || isUsersOverlayPresented
+    }
+
+    /// A confirmation, question, or rename from the app's presenter
+    /// (`SignInPromptPresenter`), raised by Settings › Users.
+    private var isUsersOverlayPresented: Bool {
+        router.removalRequest != nil || router.renameRequest != nil || router.signInPrompt != nil
     }
 
     /// Settings always enters through General. Assign the concrete rail focus
@@ -325,6 +356,9 @@ struct TVSettingsView: View {
         if category == .general {
             return .generalAppleTVUser
         }
+        if category == .users {
+            return usersRows.first.map(TVSettingsDetailFocus.users) ?? .top
+        }
         if category == .subtitles,
            viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance {
             return .subtitleUseDeviceSettings
@@ -508,10 +542,19 @@ struct TVSettingsView: View {
         switch selectedCategory {
         case .general:
             TVGeneralSettingsPane(
-                activeProfile: viewModel.activeProfile,
+                pairedProfileValue: viewModel.pairedProfileValue,
+                hasMultipleUsers: viewModel.showsAskFor,
                 detailFocus: $detailFocus,
                 // With two or more users this goes through Choose a User.
                 changePairedProfile: { Task { await router.users.changePairedProfile(router: router) } }
+            )
+        case .users:
+            TVUsersSettingsSection(
+                model: usersModel,
+                phase: TVUserListPhase(directory: router.users.directory, hasLoaded: hasLoadedUsers),
+                addresses: Dictionary(registry.entries.map { ($0.id, $0.url) }, uniquingKeysWith: { first, _ in first }),
+                focus: $detailFocus,
+                actions: usersActions
             )
         case .playback:
             TVPlaybackSettingsPane(
@@ -613,6 +656,41 @@ struct TVSettingsView: View {
         }
     }
 
+    // MARK: - Users pane
+
+    private var usersModel: UsersSettingsViewModel {
+        UsersSettingsViewModel(directory: router.users.directory, device: router.users.device)
+    }
+
+    private var usersRows: [TVUsersSettingsRow] {
+        TVUsersSettingsSection.rows(in: usersModel)
+    }
+
+    private var usersActions: TVUsersSettingsSection.Actions {
+        TVUsersSettingsSection.Actions(
+            signOut: { key, row in
+                noteUsersAction(row)
+                Task { await router.users.requestRemoval(.signIn(key), router: router) }
+            },
+            rename: { userID, row in
+                noteUsersAction(row)
+                Task { await router.users.requestRename(userID, router: router) }
+            },
+            remove: { userID, row in
+                noteUsersAction(row)
+                Task { await router.users.requestRemoval(.user(userID), router: router) }
+            },
+            addUser: { Task { await router.users.startAddUser(router: router) } }
+        )
+    }
+
+    /// The overlay takes focus; remember the row so it comes back here.
+    private func noteUsersAction(_ row: TVUsersSettingsRow) {
+        usersReturnRow = row
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .users(row)
+    }
+
     // MARK: - Rail model
 
     enum RailItem: Hashable {
@@ -648,6 +726,7 @@ enum TVSettingsDetailFocus: Hashable {
     case top
     case generalAppleTVUser
     case generalProfileLaunch
+    case generalAskFor
     case generalAdvisoryAge
     case generalCardPreset
     case generalTopMenu
@@ -679,12 +758,14 @@ enum TVSettingsDetailFocus: Hashable {
     case serverPrivacyPolicy
     case serverOpenSourceLicenses
     case serverExperimental(ExperimentalFeature)
+    case users(TVUsersSettingsRow)
 }
 
 // MARK: - Categories
 
 enum TVSettingsCategory: String, CaseIterable, Identifiable {
     case general
+    case users
     case playback
     case subtitles
     case diagnostics
@@ -695,6 +776,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: return "General"
+        case .users: return "Users"
         case .playback: return "Playback"
         case .subtitles: return "Subtitles"
         case .diagnostics: return "Diagnostics"
@@ -705,6 +787,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .general: return "gearshape"
+        case .users: return "person.2"
         case .playback: return "play.rectangle"
         case .subtitles: return "captions.bubble"
         case .diagnostics: return "stethoscope"
@@ -716,6 +799,8 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
         switch self {
         case .general:
             return "App-level options for this Apple TV."
+        case .users:
+            return TVUsersSettingsSection.blurb
         case .playback:
             return "Streaming quality and episode behavior for this Apple TV."
         case .subtitles:
@@ -730,6 +815,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
     var railDescription: String {
         switch self {
         case .general: return "App and navigation"
+        case .users: return "Silo users and sign-ins"
         case .playback: return "Quality and episodes"
         case .subtitles: return "Language and appearance"
         case .diagnostics: return "Reports and support"

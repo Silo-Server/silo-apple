@@ -1,67 +1,53 @@
 import SwiftUI
 
-/// Picker + management UI for the set of saved Silo servers.
+/// Manage Servers: every server saved on this device, whoever signs in to
+/// it (Settings › Server). Choose a Server lists one user's servers instead.
 ///
 /// Shared between iOS and tvOS with minor platform-specific tweaks:
 /// - iOS: Navigation `List` with swipe-to-delete.
 /// - tvOS: focusable read-only server summary with a separate remove action.
 ///
-/// Switching a server asks the `AppRouter` to re-evaluate auth state so
-/// the user lands on login or profile-select for the new server (or on
-/// home if tokens are still valid there).
+/// Picking a server opens the current user's sign-in there, or starts Add
+/// Server for it. Removing one works as Sign Out & Remove Server (spec
+/// §5.6): its confirmation names everyone signed in to it, and is shown by
+/// the app's presenter (`SignInPromptPresenter`).
 struct ServerListView: View {
     @Environment(AppRouter.self) private var router
     @State private var registry = ServerRegistry.shared
-    @State private var removeTarget: ServerEntry?
     @State private var isResolvingServer = false
     #if os(tvOS)
     @FocusState private var focusedRow: TVRow?
+    /// The server whose trash button opened the confirmation.
+    @State private var removingServerID: String?
     #endif
 
     var body: some View {
         #if os(tvOS)
-        ZStack {
-            tvOSContent
-                .disabled(removeTarget != nil || isResolvingServer)
-
-            if let entry = removeTarget {
-                TVSettingsConfirmationOverlay(
-                    title: "Remove this server?",
-                    message: "Sign-in credentials for \(entry.displayName) will be forgotten on this device.",
-                    confirmTitle: "Remove",
-                    cancel: { dismissRemoveConfirmation(for: entry) },
-                    confirm: { remove(entry) }
-                )
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                .zIndex(1)
+        tvOSContent
+            .disabled(isResolvingServer)
+            .background(SettingsBackdrop())
+            .task { await router.users.reloadDirectory() }
+            .onChange(of: router.removalRequest == nil) { _, closed in
+                guard closed, let id = removingServerID, serverIDs.contains(id) else { return }
+                claimFocus(.remove(id))
             }
-        }
-        .background(SettingsBackdrop())
-        .animation(.easeOut(duration: SiloTheme.fastDuration), value: removeTarget)
+            .onChange(of: serverIDs) { before, after in
+                guard let id = removingServerID, !after.contains(id) else { return }
+                removingServerID = nil
+                claimFocus(TVFocusNeighbor.replacement(for: id, before: before, after: after).map(TVRow.server) ?? .add)
+            }
         #else
         contentList
             .disabled(isResolvingServer)
             .navigationTitle("Servers")
             .siloNavigationTitleDisplayMode(.inline)
-            .alert(
-                "Remove this server?",
-                isPresented: Binding(
-                    get: { removeTarget != nil },
-                    set: { if !$0 { removeTarget = nil } }
-                ),
-                presenting: removeTarget
-            ) { entry in
-                Button("Remove", role: .destructive) {
-                    remove(entry)
-                }
-                Button("Cancel", role: .cancel) { removeTarget = nil }
-            } message: { entry in
-                Text("Sign-in credentials for \(entry.displayName) will be forgotten on this device.")
-            }
+            .task { await router.users.reloadDirectory() }
         #endif
     }
 
     #if os(tvOS)
+    private var serverIDs: [String] { registry.sortedEntries.map(\.id) }
+
     private var tvOSContent: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 8) {
@@ -73,7 +59,7 @@ struct ServerListView: View {
                     Text("Manage Servers")
                         .font(.system(size: 38, weight: .semibold))
                         .foregroundColor(.siloOnSurface)
-                    Text("Manage saved Silo servers or add another connection.")
+                    Text("Every Silo server saved on this Apple TV, for every user.")
                         .font(.system(size: 20))
                         .foregroundColor(.siloSecondaryText)
                 }
@@ -110,7 +96,7 @@ struct ServerListView: View {
                 .buttonStyle(TVSettingsPaneRowStyle())
                 .focused($focusedRow, equals: .add)
 
-                TVSettingsFooter("Select the trash icon to remove a saved server.")
+                TVSettingsFooter("Select the trash icon to remove a saved server. Removing it signs out everyone who uses it on this Apple TV.")
             }
             .frame(maxWidth: 1080, alignment: .leading)
             .padding(.bottom, 64)
@@ -133,7 +119,8 @@ struct ServerListView: View {
             } label: {
                 TVServerSummaryLabel(
                     entry: entry,
-                    isActive: entry.id == registry.activeServerId
+                    isActive: entry.id == registry.activeServerId,
+                    userNames: router.users.directory.users(onServer: entry.id).map(\.name)
                 )
             }
             .buttonStyle(TVSettingsPaneRowStyle())
@@ -145,7 +132,8 @@ struct ServerListView: View {
             )
 
             Button {
-                removeTarget = entry
+                removingServerID = entry.id
+                requestRemoval(of: entry)
             } label: {
                 Image(systemName: "trash")
                     .font(.system(size: 24, weight: .semibold))
@@ -164,11 +152,17 @@ struct ServerListView: View {
         case add
     }
 
-    private func dismissRemoveConfirmation(for entry: ServerEntry) {
-        removeTarget = nil
+    /// Back on the trash button after Cancel, or on the row that took the
+    /// removed server's place.
+    private func claimFocus(_ row: TVRow) {
         Task { @MainActor in
             await Task.yield()
-            focusedRow = .remove(entry.id)
+            focusedRow = row
+            for _ in 0..<5 {
+                try? await Task.sleep(for: .milliseconds(80))
+                guard focusedRow == nil else { return }
+                focusedRow = row
+            }
         }
     }
     #endif
@@ -182,6 +176,9 @@ struct ServerListView: View {
                 }
             } header: {
                 Text("Saved servers")
+                    .foregroundColor(.siloSecondaryText)
+            } footer: {
+                Text("Removing a server signs out everyone who uses it on this device.")
                     .foregroundColor(.siloSecondaryText)
             }
             .listRowBackground(Color.siloGroupedCell)
@@ -209,7 +206,7 @@ struct ServerListView: View {
         .buttonStyle(.plain)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
-                removeTarget = entry
+                requestRemoval(of: entry)
             } label: {
                 Label("Remove", systemImage: "trash")
             }
@@ -231,16 +228,12 @@ struct ServerListView: View {
         }
     }
 
-    /// Removes the server and everyone's sign-in on it, then follows the
-    /// launch rules when it was the one in use (spec §5.6, §6.2).
-    private func remove(_ entry: ServerEntry) {
+    /// Asks first: removing the server signs out everyone on it and removes
+    /// a user whose only server it was, then follows the launch rules when
+    /// it was the one in use (spec §5.6, §6.2).
+    private func requestRemoval(of entry: ServerEntry) {
         guard !isResolvingServer else { return }
-        isResolvingServer = true
-        Task {
-            await router.users.removeServer(entry.id, router: router)
-            isResolvingServer = false
-            removeTarget = nil
-        }
+        Task { await router.users.requestRemoval(.server(entry.id), router: router) }
     }
 
     /// Recompute auth state for the active server and drop any in-tab

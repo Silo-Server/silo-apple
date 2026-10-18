@@ -13,15 +13,31 @@ struct TVGeneralSettingsPane: View {
     @State private var activePicker: PickerKind?
     @State private var showsMenuEditor = false
     @State private var registry = ServerRegistry.shared
-    /// The profile remembered for the current sign-in.
-    @State private var rememberedProfileID: String?
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
-    let activeProfile: UserProfile?
+    /// "Jamie", or "alex › Jamie" with two or more Silo users
+    /// (`SettingsViewModel.pairedProfileValue`).
+    let pairedProfileValue: String
+    /// Two or more Silo users: Ask For shows (spec §5.7).
+    let hasMultipleUsers: Bool
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let changePairedProfile: () -> Void
     private let appleTVUserContext = AppleTVUserContext.current
     @Environment(\.scenePhase) private var scenePhase
+
+    init(
+        pairedProfileValue: String,
+        hasMultipleUsers: Bool,
+        detailFocus: FocusState<TVSettingsDetailFocus?>.Binding,
+        changePairedProfile: @escaping () -> Void,
+        launchPreferences: ProfileLaunchPreferences = .shared
+    ) {
+        self.pairedProfileValue = pairedProfileValue
+        self.hasMultipleUsers = hasMultipleUsers
+        self.detailFocus = detailFocus
+        self.changePairedProfile = changePairedProfile
+        _launchPreferences = State(initialValue: launchPreferences)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -29,10 +45,11 @@ struct TVGeneralSettingsPane: View {
 
             TVSettingsPickerRow(
                 title: "Paired Silo Profile",
-                value: pairedProfileName,
+                value: pairedProfileValue,
                 action: changePairedProfile
             )
             .focused(detailFocus, equals: .generalAppleTVUser)
+            .accessibilityHint(hasMultipleUsers ? "Choose the Silo user, then the profile." : "Choose the profile.")
 
             TVSettingsFooter(pairingDescription)
 
@@ -46,6 +63,10 @@ struct TVGeneralSettingsPane: View {
             .accessibilityHint(launchPreferences.behavior.tvDescription)
 
             TVSettingsFooter(launchPreferences.behavior.tvDescription)
+
+            if hasMultipleUsers {
+                askForRow
+            }
 
             if titleArt.isOffered {
                 titleArtGroup
@@ -170,7 +191,6 @@ struct TVGeneralSettingsPane: View {
             TVMenuCustomizationSheet(libraries: libraries)
         }
         .task {
-            rememberedProfileID = await AuthService.shared.rememberedProfileForCurrentSelection()?.profileID
             async let preferencesRefresh: Void = preferences.refresh()
             async let titleArtRefresh: Void = titleArt.refresh()
             async let advisoryRefresh: Void = advisoryAgePreference.refresh()
@@ -232,17 +252,36 @@ struct TVGeneralSettingsPane: View {
         ).count
     }
 
-    /// `SettingsViewModel.pairedProfileValue`: "alex › Jamie" with two or
-    /// more users. WP4 finishes the row.
-    private var pairedProfileName: String {
-        SettingsViewModel.pairedProfileValue(rememberedProfileID: rememberedProfileID, activeProfile: activeProfile,
-                                             directory: SiloUserCoordinator.shared.directory)
+    private var pairingDescription: String {
+        var text = appleTVUserContext.pairingDescription
+        if hasMultipleUsers {
+            text += " This Apple TV has more than one Silo user, so changing it starts with the user."
+        }
+        if launchPreferences.behavior == .askEveryLaunch {
+            text += " Ask Every Time is on, so Silo will still show Who's Watching at launch."
+        }
+        return text
     }
 
-    private var pairingDescription: String {
-        let base = appleTVUserContext.pairingDescription
-        guard launchPreferences.behavior == .askEveryLaunch else { return base }
-        return "\(base) Ask Every Time is on, so Silo will still show Who's Watching at launch."
+    /// Ask For (spec §5.7): only with two or more Silo users. Under
+    /// Automatic Silo never asks, so the row is dimmed and says when it
+    /// applies; it stays focusable so its value can still be read and set.
+    @ViewBuilder
+    private var askForRow: some View {
+        let isActive = launchPreferences.behavior != .automatic
+        TVSettingsPickerRow(
+            title: "Ask For",
+            value: launchPreferences.askFor.title
+        ) { activePicker = .askFor }
+        .focused(detailFocus, equals: .generalAskFor)
+        .opacity(isActive ? 1 : 0.42)
+        .accessibilityHint(isActive
+            ? launchPreferences.askFor.description
+            : ProfileLaunchAskFor.inactiveUnderAutomaticFooter)
+
+        TVSettingsFooter(isActive
+            ? launchPreferences.askFor.description
+            : ProfileLaunchAskFor.inactiveUnderAutomaticFooter)
     }
 
     @ViewBuilder
@@ -275,6 +314,18 @@ struct TVGeneralSettingsPane: View {
                 title: "Profile Selection",
                 options: TVSettingsOptions.profileLaunch,
                 selection: $launchPreferences.behaviorID
+            )
+        case .askFor:
+            TVSettingsPickerSheet(
+                title: "Ask For",
+                options: TVSettingsOptions.askFor,
+                selection: Binding(
+                    get: { launchPreferences.askFor.rawValue },
+                    set: { value in
+                        guard let askFor = ProfileLaunchAskFor(rawValue: value) else { return }
+                        launchPreferences.askFor = askFor
+                    }
+                )
             )
         case .preset:
             TVSettingsPickerSheet(
@@ -333,6 +384,7 @@ struct TVGeneralSettingsPane: View {
 
     private enum PickerKind: String, Identifiable {
         case profileLaunch
+        case askFor
         case preset
         case posterSize
         case caption

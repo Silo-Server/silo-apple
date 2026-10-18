@@ -47,6 +47,9 @@ struct TVMainTabView: View {
         return cached.first(where: { $0.id == profileId })
     }()
     @State private var showSignOutConfirm = false
+    /// The Sign Out confirmation's text, read from the users directory when
+    /// it opens (spec §5.6).
+    @State private var signOutCopy: ConfirmationCopy?
     @State private var librariesStaleSinceBackground = false
     @State private var registry = ServerRegistry.shared
     /// Local, per-profile legacy Audiobooks opt-in. It only seeds the app
@@ -185,11 +188,12 @@ struct TVMainTabView: View {
         .allowsHitTesting(!showSignOutConfirm)
         .overlay {
             if showSignOutConfirm {
+                let copy = signOutCopy ?? router.users.confirmation(for: .currentSignIn)
                 TVSettingsConfirmationOverlay(
-                    title: "Sign Out",
-                    message: "Choose whether to keep or remove this server from this Apple TV.",
-                    confirmTitle: "Sign Out",
-                    additionalDestructiveTitle: "Sign Out & Remove Server",
+                    title: copy.title,
+                    message: copy.message,
+                    confirmTitle: copy.confirmTitle,
+                    additionalDestructiveTitle: copy.additionalDestructiveTitle,
                     cancel: dismissSignOutConfirmation,
                     confirm: router.signOutAndReset,
                     additionalDestructiveAction: router.signOutRemoveServerAndReset
@@ -761,9 +765,30 @@ struct TVMainTabView: View {
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
-            onSwitchServer: { closePanel(then: { navigateFromBar(.serverList) }) },
-            onSignOut: { closePanel(then: { showSignOutConfirm = true }) }
+            // This user's servers (spec §5.3, plan G12); the device's server
+            // list stays in Settings › Server.
+            onSwitchServer: { closePanel(then: { Task { await switchServer() } }) },
+            onSignOut: { closePanel(then: { Task { await presentSignOutConfirmation() } }) }
         )
+    }
+
+    /// Choose a Server for the current user. Before sign-in migration there
+    /// are no users, so it is the device's server list, as before.
+    private func switchServer() async {
+        await router.users.reloadDirectory()
+        let directory = router.users.directory
+        guard let userID = directory.currentUserID else {
+            navigateFromBar(.serverList)
+            return
+        }
+        navigateFromBar(.chooseServer(userID: userID, focusServerID: directory.currentServerID))
+    }
+
+    /// The copy names the current user and server, so it is read fresh.
+    private func presentSignOutConfirmation() async {
+        await router.users.reloadDirectory()
+        signOutCopy = router.users.confirmation(for: .currentSignIn)
+        showSignOutConfirm = true
     }
 
     private func dismissSignOutConfirmation() {

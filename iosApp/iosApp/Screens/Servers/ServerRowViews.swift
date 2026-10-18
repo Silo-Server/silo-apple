@@ -1,12 +1,16 @@
 import SwiftUI
 
-// The server list's row views, shared with Choose a Server and "Sign in
-// to…" (WP4 and WP5 build those screens from them).
+// The server list's row views. On Apple TV, Choose a Server and "Sign in
+// to…" use the chooser rows in `TVUserFlowComponents` instead.
 
 #if os(tvOS)
+/// A saved server in Manage Servers: name, address, who signs in to it, and
+/// the local-network line for the active server.
 struct TVServerSummaryLabel: View {
     let entry: ServerEntry
     let isActive: Bool
+    /// The Silo users signed in to it on this Apple TV.
+    var userNames: [String] = []
 
     var body: some View {
         HStack(spacing: 18) {
@@ -22,6 +26,12 @@ struct TVServerSummaryLabel: View {
                     .font(.system(size: 19))
                     .opacity(0.62)
                     .lineLimit(1)
+                if !userNames.isEmpty {
+                    Label(userNames.joined(separator: ", "), systemImage: "person.2")
+                        .font(.system(size: 19))
+                        .opacity(0.62)
+                        .lineLimit(1)
+                }
                 if isActive, LocalRouteController.shared.isOnLocalNetwork {
                     LocalRouteStatusLine()
                         .font(.system(size: 19))
@@ -39,7 +49,9 @@ struct TVServerSummaryLabel: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityValue(isActive ? "Active" : "Saved")
+        .accessibilityValue(([isActive ? "Active" : "Saved"]
+            + (userNames.isEmpty ? [] : ["Users: \(userNames.joined(separator: ", "))"]))
+            .joined(separator: ", "))
     }
 }
 #endif

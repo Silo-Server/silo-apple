@@ -33,6 +33,18 @@ struct TVServerSetupView: View {
         case port
         case connect
         case back
+        case cancel
+    }
+
+    /// Server setup is the root of an Add User or Add Server sign-in (Change
+    /// server led here): Menu would leave Silo, so it offers Cancel, back to
+    /// where the sign-in started. Pushed, Back already does that.
+    private var cancelsSignIn: Bool {
+        route == .needsServerSetup && router.signInReturnPoint != nil
+    }
+
+    private func cancelSignIn() {
+        Task { await router.users.cancelSignIn(router: router) }
     }
 
     /// True once a phone is on the line; the screen hands over to the pairing screens.
@@ -123,7 +135,7 @@ struct TVServerSetupView: View {
                     .frame(width: 760, alignment: .leading)
                     .padding(.top, 16)
             }
-            HStack {
+            HStack(spacing: 22) {
                 Button {
                     // A found server may be connecting; leaving now would let
                     // its result land behind manual entry.
@@ -135,6 +147,13 @@ struct TVServerSetupView: View {
                 }
                 .buttonStyle(.marquee(.glass, fullWidth: false))
                 .focused($focusedField, equals: .enterAddress)
+
+                if cancelsSignIn {
+                    Button(ConfirmationCopy.cancelTitle, action: cancelSignIn)
+                        .buttonStyle(.marquee(.plain, fullWidth: false))
+                        .focused($focusedField, equals: .cancel)
+                        .disabled(viewModel.isLoading)
+                }
             }
             .padding(.top, 18)
         } card: {
@@ -142,6 +161,10 @@ struct TVServerSetupView: View {
         }
         .defaultFocus($focusedField, .enterAddress, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, .enterAddress)
+        .onExitCommand(perform: cancelsSignIn ? {
+            guard !viewModel.isLoading else { return }
+            cancelSignIn()
+        } : nil)
         .animation(.easeOut(duration: 0.32), value: discovery.servers)
         .animation(.easeInOut(duration: 0.2), value: viewModel.discoveryError)
     }
