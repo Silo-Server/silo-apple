@@ -9,8 +9,13 @@ enum TVBackdropArtworkLayout {
     /// tvOS renders every screen into a 1920 pt wide logical canvas, so the
     /// hero artwork size is fixed and can be computed off the main thread.
     static let viewportWidth: CGFloat = 1920
-    static let widthFraction: CGFloat = 0.64
-    static let heightFraction: CGFloat = 0.70
+    /// Equal fractions keep the box 16:9, so a backdrop fills it uncropped.
+    static let widthFraction: CGFloat = 0.77
+    static let heightFraction: CGFloat = 0.77
+    /// Where the art reaches zero below the top edge, as a fraction of the
+    /// viewport height. It must stay inside the detail hero's clip (690 pt
+    /// on a 1080 pt canvas) so that clip never reveals a straight edge.
+    static let fadeEndFraction: CGFloat = 0.63
 
     static func artworkSize(forViewportWidth viewportWidth: CGFloat) -> CGSize {
         let viewportHeight = viewportWidth * 9 / 16
@@ -24,31 +29,103 @@ enum TVBackdropArtworkLayout {
 /// Shared corner falloff for the root marquee and movie/series details.
 /// Keeping one mask prevents the artwork edge from visibly changing while
 /// the already-focused card opens its seeded detail route.
+///
+/// One elliptical falloff from the top-trailing corner, eased over many
+/// stops, so bright art dissolves without the diagonal seam two crossed
+/// linear ramps leave behind.
 struct TVBackdropArtworkFadeMask: View {
     var body: some View {
-        LinearGradient(
+        EllipticalGradient(
             stops: [
                 .init(color: .black, location: 0.0),
-                .init(color: .black, location: 0.32),
+                .init(color: .black, location: 0.34),
+                .init(color: .black.opacity(0.93), location: 0.44),
+                .init(color: .black.opacity(0.78), location: 0.54),
+                .init(color: .black.opacity(0.56), location: 0.64),
+                .init(color: .black.opacity(0.32), location: 0.74),
+                .init(color: .black.opacity(0.14), location: 0.84),
+                .init(color: .black.opacity(0.04), location: 0.92),
                 .init(color: .clear, location: 1.0),
             ],
-            startPoint: .trailing,
-            endPoint: .leading
+            center: .topTrailing,
+            startRadiusFraction: 0,
+            endRadiusFraction: 1
         )
-        .mask {
+        // Squash the ellipse vertically so it ends at `fadeEndFraction`
+        // rather than the bottom of the artwork box.
+        .scaleEffect(
+            x: 1,
+            y: TVBackdropArtworkLayout.fadeEndFraction / TVBackdropArtworkLayout.heightFraction,
+            anchor: .top
+        )
+    }
+}
+
+/// Slow push-in on the backdrop art, shared by every surface that draws it.
+/// The scale is a function of wall-clock time rather than a per-view
+/// animation, so the marquee and the detail route it opens show the same
+/// frame and the push never jumps. Stops with Reduce Motion.
+struct TVBackdropArtworkDrift: ViewModifier {
+    /// Seconds for one push in (and again for the pull back out).
+    static let halfPeriod: TimeInterval = 28
+    static let maxScale: CGFloat = 1.05
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        // 30 fps is plenty: the fastest step is a fraction of a pixel.
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { context in
+            content.scaleEffect(
+                reduceMotion ? 1 : Self.scale(at: context.date),
+                // Any anchor inside the box keeps it covered while scaling
+                // up; this one leans toward where subjects usually sit.
+                anchor: UnitPoint(x: 0.8, y: 0.3)
+            )
+        }
+    }
+
+    static func scale(at date: Date) -> CGFloat {
+        let period = halfPeriod * 2
+        let phase = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: period) / period
+        // 0 → 1 → 0 over one period, eased at both ends.
+        let eased = (1 - cos(phase * 2 * .pi)) / 2
+        return 1 + (maxScale - 1) * CGFloat(eased)
+    }
+}
+
+/// Page wash sampled from the backdrop, shared by the root landings and
+/// item details so both pages carry the same colors. The base tint is
+/// richest in the top-right behind the art and carried dimmed down to the
+/// bottom-left; the art's accent glows under the right half of the rows and
+/// its shadow tone pools in the bottom-left corner. The page keeps the art's
+/// colors without washing out the metadata or row captions.
+struct TVBackdropTintWash: View {
+    let tints: HeroBackdropPalette.Tints
+    var isVisible: Bool = true
+
+    var body: some View {
+        ZStack {
             LinearGradient(
                 stops: [
-                    .init(color: .black, location: 0.0),
-                    .init(color: .black, location: 0.38),
-                    .init(color: .black.opacity(0.88), location: 0.52),
-                    .init(color: .black.opacity(0.58), location: 0.68),
-                    .init(color: .black.opacity(0.24), location: 0.81),
-                    // Reach zero before the detail hero's lower boundary so
-                    // its clip can never reveal a straight artwork edge.
-                    .init(color: .clear, location: 0.90),
+                    .init(color: tints.base, location: 0.0),
+                    .init(color: tints.base.opacity(isVisible ? 0.5 : 0.0), location: 0.45),
+                    .init(color: tints.base.opacity(isVisible ? 0.18 : 0.0), location: 1.0),
                 ],
-                startPoint: .top,
-                endPoint: .bottom
+                startPoint: .topTrailing,
+                endPoint: .bottomLeading
+            )
+
+            EllipticalGradient(
+                colors: [tints.accent.opacity(isVisible ? 0.3 : 0.0), tints.accent.opacity(0)],
+                center: UnitPoint(x: 0.66, y: 0.78),
+                endRadiusFraction: 0.33
+            )
+
+            EllipticalGradient(
+                colors: [tints.shadow.opacity(isVisible ? 0.55 : 0.0), tints.shadow.opacity(0)],
+                center: .bottomLeading,
+                endRadiusFraction: 0.42
             )
         }
     }
@@ -61,12 +138,12 @@ struct TVBackdropArtworkFadeMask: View {
 /// On Home and the library Browse landings the artwork tracks the
 /// marquee's focused item (Skyline §5.4): a crisp image is anchored in the
 /// top-right corner and fades out toward the leading edge and the bottom
-/// into a color sampled from the art itself, which is carried (dimmed)
+/// into colors sampled from the art itself, which are carried (dimmed)
 /// across the rest of the page so the metadata and rows below sit on the
-/// same tint. Calendar passes nil artwork with `.siloBackground` and
-/// renders flat.
+/// same tint. Calendar passes nil artwork with flat `.siloBackground` tints
+/// and renders flat.
 struct TVRootHeroBackdrop: View {
-    let tintColor: Color
+    let tints: HeroBackdropPalette.Tints
     let artworkURL: String?
     let artworkThumbhash: String?
     var isVisible: Bool = true
@@ -93,6 +170,8 @@ struct TVRootHeroBackdrop: View {
 
             if isVisible {
                 backdropImage
+                // Dithers the large dark ramps, which band on TVs.
+                MarqueeGrain()
                 topChromeScrim
             }
         }
@@ -103,33 +182,23 @@ struct TVRootHeroBackdrop: View {
         }
     }
 
-    /// Sampled-color wash: richest in the top-right behind the art, carried
-    /// dimmed down to the bottom-left so the page keeps the art's color
-    /// without washing out the metadata or row captions. When the caller
-    /// passes `.siloBackground` (Calendar) every stop
-    /// collapses to the app background, so the wash renders flat.
+    /// Sampled-color wash; when the caller passes flat `.siloBackground`
+    /// tints (Calendar) every stop collapses to the app background, so the
+    /// wash renders flat.
     private var tintBackground: some View {
-        LinearGradient(
-            stops: [
-                .init(color: tintColor, location: 0.0),
-                .init(color: tintColor.opacity(isVisible ? 0.5 : 0.0), location: 0.45),
-                .init(color: tintColor.opacity(isVisible ? 0.18 : 0.0), location: 1.0),
-            ],
-            startPoint: .topTrailing,
-            endPoint: .bottomLeading
-        )
-        // The first tint (cold-entry seed with a prefetch-warmed sample)
-        // snaps in with the artwork; only tint→tint changes crossfade.
-        .animation(
-            reduceMotion || !hasDisplayedArtwork
-                ? nil
-                : .easeInOut(duration: crossfadeDuration),
-            value: tintColor
-        )
-        .animation(
-            reduceMotion || !hasDisplayedArtwork ? nil : .easeInOut(duration: 0.24),
-            value: isVisible
-        )
+        TVBackdropTintWash(tints: tints, isVisible: isVisible)
+            // The first tint (cold-entry seed with a prefetch-warmed sample)
+            // snaps in with the artwork; only tint→tint changes crossfade.
+            .animation(
+                reduceMotion || !hasDisplayedArtwork
+                    ? nil
+                    : .easeInOut(duration: crossfadeDuration),
+                value: tints
+            )
+            .animation(
+                reduceMotion || !hasDisplayedArtwork ? nil : .easeInOut(duration: 0.24),
+                value: isVisible
+            )
     }
 
     @ViewBuilder
@@ -159,6 +228,7 @@ struct TVRootHeroBackdrop: View {
                 }
             }
             .frame(width: artworkSize.width, height: artworkSize.height)
+            .modifier(TVBackdropArtworkDrift())
             .clipped()
             .mask { TVBackdropArtworkFadeMask() }
             // Anchor the art block to the screen's top-right corner; the
