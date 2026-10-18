@@ -46,6 +46,10 @@ final class BufferingQualityController {
     nonisolated static let reofferMinMs = 120_000
     nonisolated static let noLowerCooldownMs = 300_000
     nonisolated static let rearmAfterUnadoptedMs = 60_000
+    /// `RENDERER_WAIT_BUFFER_MS`: a wait that begins with more media than this
+    /// buffered past the playhead is the renderer's, not a stall
+    /// (``WaitCause/renderer``).
+    nonisolated static let rendererWaitBufferMs = 1_000
     /// `STEP_DOWN_RATIO`, as the vectors state it. The estimate itself is the
     /// exact integer `delivered × 7 / 10` (``stepDownEstimate(deliveredKbps:)``).
     nonisolated static let stepDownRatio = 0.7
@@ -104,6 +108,11 @@ final class BufferingQualityController {
         case seek
         case pause
         case reload
+        /// The wait began with more than `RENDERER_WAIT_BUFFER_MS` of media
+        /// buffered past the playhead: the decoder or renderer is behind, not
+        /// the network. A `.network` wait that follows means the buffer fell
+        /// to the threshold, and the stall begins then.
+        case renderer
     }
 
     /// The fields of a replan for the host to send: the controller's own
@@ -336,14 +345,19 @@ final class BufferingQualityController {
         evaluate(at: now)
     }
 
-    /// The player is waiting for data. A `.network` wait is a stall (it also
-    /// means playback wants to run, so a paused pill's timer resumes); any
-    /// other cause ends a stall in progress without counting it.
+    /// The player is waiting. A `.network` wait is a stall; any other cause
+    /// ends a stall in progress without counting it. A `.network` or
+    /// `.renderer` wait means playback wants to run, so a paused pill's timer
+    /// resumes.
     func waiting(cause: WaitCause = .network) {
         let now = nowMs
         leavePlaying(at: now)
         guard cause == .network else {
             endStall(at: now, resumed: false)
+            if cause == .renderer {
+                isPaused = false
+                refreshPill()
+            }
             return
         }
         isPaused = false

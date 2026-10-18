@@ -1,5 +1,5 @@
 Source: silo-server docs/design/schemas/buffering-quality/v1/vectors.json
-Server commit: 408328dc76e97bb18fa213c51faadc084b0d0486
+Server commit: 416f0d8ed8e177e7263915109aeb09c9138f7761
 Vendored: 2026-10-18
 
 The buffering-quality conformance vectors, copied byte for byte. The spec is

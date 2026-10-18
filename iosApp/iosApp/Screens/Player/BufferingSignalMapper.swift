@@ -31,6 +31,9 @@ struct BufferingSignalMapper {
         /// The player is reconnecting or lost its connection, or the device
         /// or server is offline. A `.stalled` phase adds to it.
         var connectionTrouble: Bool
+        /// Media buffered past the playhead, in milliseconds; nil when
+        /// unknown, which counts as nothing buffered.
+        var bufferedAheadMs: Int? = nil
     }
 
     enum Call: Equatable {
@@ -74,7 +77,8 @@ struct BufferingSignalMapper {
             transportTrouble = trouble
             calls.append(.transportTroubleChanged(trouble))
         }
-        let next = mediaState(snapshot)
+        var next = mediaState(snapshot)
+        if next == .waiting(.network) { next = classifyWait(bufferedAheadMs: snapshot.bufferedAheadMs) }
         if next == .playing { itemStalledSincePlaying = false }
         guard next != state else { return calls }
         if next == .waiting(.seek), state == .playing || state == .paused {
@@ -87,6 +91,17 @@ struct BufferingSignalMapper {
         case .paused: calls.append(.paused)
         }
         return calls
+    }
+
+    /// The spec's renderer wait: a wait that begins with more than
+    /// `RENDERER_WAIT_BUFFER_MS` buffered past the playhead is the decoder or
+    /// renderer falling behind, not the network. It becomes a stall once the
+    /// buffer falls to the threshold, and a stall stays one until playback
+    /// resumes.
+    private func classifyWait(bufferedAheadMs: Int?) -> MediaState {
+        if state == .waiting(.network) { return .waiting(.network) }
+        let buffered = (bufferedAheadMs ?? 0) > BufferingQualityController.rendererWaitBufferMs
+        return buffered ? .waiting(.renderer) : .waiting(.network)
     }
 
     private func mediaState(_ s: Snapshot) -> MediaState {

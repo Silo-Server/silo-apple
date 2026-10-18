@@ -41,7 +41,7 @@ final class BufferingQualityControllerTests: XCTestCase {
         XCTAssertEqual(Set(constants.keys), [
             "STARTUP_GRACE_MS", "STALL_MIN_MS", "STALLS_BEFORE_TRIGGER", "STALL_WINDOW_MS",
             "LONG_STALL_MS", "PROMPT_SECONDS", "REOFFER_MIN_MS", "NO_LOWER_COOLDOWN_MS",
-            "REARM_AFTER_UNADOPTED_MS", "STEP_DOWN_RATIO", "MIN_ESTIMATE_KBPS",
+            "REARM_AFTER_UNADOPTED_MS", "STEP_DOWN_RATIO", "MIN_ESTIMATE_KBPS", "RENDERER_WAIT_BUFFER_MS",
         ], "a new constant needs a controller counterpart")
         XCTAssertEqual(constants["STARTUP_GRACE_MS"] as? Int, Controller.startupGraceMs)
         XCTAssertEqual(constants["STALL_MIN_MS"] as? Int, Controller.stallMinMs)
@@ -54,6 +54,7 @@ final class BufferingQualityControllerTests: XCTestCase {
         XCTAssertEqual(constants["REARM_AFTER_UNADOPTED_MS"] as? Int, Controller.rearmAfterUnadoptedMs)
         XCTAssertEqual(constants["STEP_DOWN_RATIO"] as? Double, Controller.stepDownRatio)
         XCTAssertEqual(constants["MIN_ESTIMATE_KBPS"] as? Int, Controller.minEstimateKbps)
+        XCTAssertEqual(constants["RENDERER_WAIT_BUFFER_MS"] as? Int, Controller.rendererWaitBufferMs)
 
         XCTAssertEqual(vectors.copy, [
             "prompt_title": Controller.promptTitle,
@@ -608,6 +609,7 @@ private struct VectorEvent {
             case "seek": kind = .waiting(.seek)
             case "pause": kind = .waiting(.pause)
             case "reload": kind = .waiting(.reload)
+            case "renderer": kind = .waiting(.renderer)
             case let cause?: throw VectorError.malformed("\(caseName): unknown wait cause \(cause)")
             }
         case "pause": kind = .pause

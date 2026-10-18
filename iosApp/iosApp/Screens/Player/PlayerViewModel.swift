@@ -501,6 +501,9 @@ class PlayerViewModel {
     /// A same-plan reload (credential refresh, background restore) whose
     /// transport has not played yet.
     @ObservationIgnored private var bufferingReloadEpoch: AetherPlaybackController.LoadEpoch?
+    /// Re-reads the buffer while a renderer wait lasts: no engine event says
+    /// when it drains into a stall.
+    @ObservationIgnored private var rendererWaitWatch: Task<Void, Never>?
     var selectedAudioId: Int64?
     var selectedSubtitleId: Int64? {
         didSet {
@@ -10064,6 +10067,12 @@ extension PlayerViewModel {
         guard !isDisposed else { return }
         let calls = bufferingSignals.update(bufferingSignalSnapshot)
         if bufferingSignals.state == .playing { bufferingReloadEpoch = nil }
+        if bufferingSignals.state == .waiting(.renderer) {
+            watchRendererWait()
+        } else {
+            rendererWaitWatch?.cancel()
+            rendererWaitWatch = nil
+        }
         for call in calls {
             switch call {
             case .transportTroubleChanged(let trouble):
@@ -10100,8 +10109,31 @@ extension PlayerViewModel {
             reachedEnd: hasReachedEndOfFile,
             connectionTrouble: connectionState != .connected
                 || !monitor.isDeviceOnline
-                || monitor.serverStatus == .unreachable
+                || monitor.serverStatus == .unreachable,
+            bufferedAheadMs: engineBufferedAheadMs
         )
+    }
+
+    /// Media the engine holds past its clock: on the native route what
+    /// AVPlayer and the segment cache hold, on the software route the newest
+    /// demuxed packet. Nil for an audio-only load, whose buffered position
+    /// mirrors the clock.
+    private var engineBufferedAheadMs: Int? {
+        guard !isAudioOnlyAetherLoad else { return nil }
+        let engine = aetherPlaybackController.engine
+        let ahead = engine.bufferedPosition - engine.currentTime
+        return ahead.isFinite ? Int((ahead * 1000).rounded()) : nil
+    }
+
+    private func watchRendererWait() {
+        guard rendererWaitWatch == nil else { return }
+        rendererWaitWatch = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, !Task.isCancelled, !self.isDisposed else { return }
+                self.syncBufferingQualitySignals()
+            }
+        }
     }
 
     /// Records the AVPlayer events that only the buffering controller reads.
@@ -10211,6 +10243,8 @@ extension PlayerViewModel {
     }
 
     private func clearBufferingPlanState() {
+        rendererWaitWatch?.cancel()
+        rendererWaitWatch = nil
         bufferingPlans = [:]
         bufferingPlanId = nil
         bufferingAdoptedStreamLoadGeneration = nil

@@ -25,12 +25,13 @@ final class BufferingSignalMapperTests: XCTestCase {
         seek: Bool = false,
         reload: Bool = false,
         end: Bool = false,
-        trouble: Bool = false
+        trouble: Bool = false,
+        bufferedMs: Int? = nil
     ) -> Snapshot {
         Snapshot(
             hasActiveLoad: load, wantsToPlay: play, phase: phase, engineBuffering: buffering,
             nativeTransport: native, seekInFlight: seek, reloadInProgress: reload, reachedEnd: end,
-            connectionTrouble: trouble
+            connectionTrouble: trouble, bufferedAheadMs: bufferedMs
         )
     }
 
@@ -130,6 +131,23 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(mapper.update(held), [.waiting(.network)])
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
         XCTAssertEqual(mapper.update(held), [.paused], "playing cleared the stall")
+    }
+
+    /// The spec's renderer wait: a wait that begins with more than a second
+    /// buffered is the decoder falling behind, until the buffer drains.
+    func testAWaitWithMediaBufferedIsTheRenderersUntilTheBufferDrains() {
+        var mapper = BufferingSignalMapper()
+        let starved = { (ms: Int?) in Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), bufferedMs: ms) }
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying, bufferedMs: 8_000)), [.playing])
+        XCTAssertEqual(mapper.update(starved(3_000)), [.waiting(.renderer)])
+        XCTAssertEqual(mapper.update(starved(1_001)), [], "still more than the threshold")
+        XCTAssertEqual(mapper.update(starved(1_000)), [.waiting(.network)], "the stall begins as it drains")
+        XCTAssertEqual(mapper.update(starved(5_000)), [], "a stall stays one until playback resumes")
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying, bufferedMs: 5_000)), [.playing])
+
+        XCTAssertEqual(mapper.update(starved(900)), [.waiting(.network)], "an empty buffer is a stall at once")
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
+        XCTAssertEqual(mapper.update(starved(nil)), [.waiting(.network)], "an unknown buffer counts as empty")
     }
 
     func testInvalidateReportsTheCurrentStateAgain() {
