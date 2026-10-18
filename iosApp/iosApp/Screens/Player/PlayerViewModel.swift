@@ -1578,6 +1578,8 @@ class PlayerViewModel {
         // load is still starting waits and is checked again, not dropped.
         guard protocolV3ReplanTask == nil, !isLoading, !isQualitySwitching else { return .busy }
         guard activePreparedProtocolV3 != nil else { return .unavailable }
+        // A quality change the buffering controller did not send.
+        bufferingQuality.qualityChanged()
         let issued = attemptProtocolV3Replan(
             position: currentTime.isFinite ? max(0, currentTime) : 0,
             classification: "quality_changed",
@@ -2568,6 +2570,18 @@ class PlayerViewModel {
         // failed transport is torn down, and that pause is not theirs.
         let resolvedOperation = operation
             ?? PlaybackSessionBridge.replanOperation(forClassification: classification)
+        // The player's own replans on Auto repeat the kept step-down estimate,
+        // so a lowering holds where no learned limit applies. The buffering
+        // controller's replans carry their own fields.
+        let keptEstimateKbps = bandwidthEstimateKbps == nil && !issuedByBufferingQuality
+            ? bufferingQuality.clientReplan(operation: resolvedOperation)?.bandwidthEstimateKbps
+            : nil
+        if let keptEstimateKbps {
+            Self.logger.info(
+                "[CMP-BUFFERING] \(resolvedOperation, privacy: .public) replan repeats kept estimate=\(keptEstimateKbps, privacy: .public)"
+            )
+        }
+        let requestedEstimateKbps = bandwidthEstimateKbps ?? keptEstimateKbps
         let joinsReconnectWhenUnanswered = classification != "output_route_changed"
             && (resolvedOperation == PlaybackProtocolV3.ReplanOperation.failureRecovery
                 || resolvedOperation == PlaybackProtocolV3.ReplanOperation.seekReanchor)
@@ -2706,7 +2720,7 @@ class PlayerViewModel {
                     subtitleTrackIndex: requestedSubtitleTrackIndex,
                     outputRouteSnapshot: outputRouteSnapshot,
                     bufferingQualityMode: self.settings.bufferingQualityMode,
-                    bandwidthEstimateKbps: bandwidthEstimateKbps,
+                    bandwidthEstimateKbps: requestedEstimateKbps,
                     bandwidthEstimateSource: bandwidthEstimateSource,
                     learnedLimit: learnedLimit
                 ) else {
@@ -2820,7 +2834,11 @@ class PlayerViewModel {
                 }
                 self.markProtocolV3AetherLoadCommitted()
                 uncommittedPrepared = nil
-                self.adoptBufferingPlan(prepared)
+                self.adoptBufferingPlan(
+                    prepared,
+                    requestedEstimateKbps: requestedEstimateKbps,
+                    controllerInitiated: issuedByBufferingQuality
+                )
                 adoptedBufferingPlan = true
                 if let onMeteredNetwork = qualitySwitchOnMeteredNetwork {
                     self.recordViewerQualityPick(
@@ -5344,6 +5362,8 @@ class PlayerViewModel {
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
+        // Every start is a new attempt, which drops a kept step-down estimate.
+        bufferingQuality.newAttempt()
         // Intro and recap decisions belong to the content, not to one stream
         // of it. A retry or a reload that lands a seek keeps them, so a viewer
         // who skipped or dismissed an intro is not asked again, `always`
@@ -5621,7 +5641,7 @@ class PlayerViewModel {
                     }
                     self.markProtocolV3AetherLoadCommitted()
                     uncommittedPrepared = nil
-                    self.adoptBufferingPlan(prepared)
+                    self.adoptBufferingPlan(prepared, requestedEstimateKbps: nil, controllerInitiated: false)
                     // The realtime channel is a server websocket keyed by the
                     // committed session. Binding before Aether accepts the
                     // candidate can leave commands attached to a rolled-back
@@ -10090,13 +10110,32 @@ extension PlayerViewModel {
     /// A plan became the playing plan: the initial start's commit, or a
     /// replan's. Each adoption gets its own id, so a replan that returns the
     /// same server `plan_id` still reads as a new plan.
-    private func adoptBufferingPlan(_ prepared: PreparedPlayback) {
+    /// `requestedEstimateKbps` is the estimate the request carried, for the
+    /// plan's summary, and `controllerInitiated` says whether it answers the
+    /// buffering controller's own replan.
+    private func adoptBufferingPlan(
+        _ prepared: PreparedPlayback,
+        requestedEstimateKbps: Int?,
+        controllerInitiated: Bool
+    ) {
         guard let v3 = prepared.protocolV3 else { return }
-        adoptBufferingPlan(v3, sessionId: prepared.session.sessionId, activeQualityId: prepared.activeQualityId)
+        adoptBufferingPlan(
+            v3,
+            sessionId: prepared.session.sessionId,
+            activeQualityId: prepared.activeQualityId,
+            requestedEstimateKbps: requestedEstimateKbps,
+            controllerInitiated: controllerInitiated
+        )
     }
 
     /// Internal for tests.
-    func adoptBufferingPlan(_ v3: PreparedPlaybackV3, sessionId: String, activeQualityId: String) {
+    func adoptBufferingPlan(
+        _ v3: PreparedPlaybackV3,
+        sessionId: String,
+        activeQualityId: String,
+        requestedEstimateKbps: Int? = nil,
+        controllerInitiated: Bool = false
+    ) {
         guard !isAudioOnlyAetherLoad else { return }
         bufferingPlanRevision &+= 1
         let id = "\(bufferingPlanRevision):\(v3.plan.planId)"
@@ -10107,11 +10146,12 @@ extension PlayerViewModel {
         bufferingReloadEpoch = nil
         bufferingQuality.mode = settings.bufferingQualityMode
         bufferingQuality.sendsBufferingQualityFields = v3.advertisesBufferingQuality
-        let plan = Self.bufferingPlan(id: id, prepared: v3, activeQualityId: activeQualityId)
+        var plan = Self.bufferingPlan(id: id, prepared: v3, activeQualityId: activeQualityId)
+        plan.requestedBandwidthEstimateKbps = requestedEstimateKbps
         Self.logger.info(
             "[CMP-BUFFERING] plan adopted id=\(id, privacy: .public) delivered=\(plan.deliveredKbps.map(String.init) ?? "unknown", privacy: .public) quality=\(plan.quality, privacy: .public) cant_reduce=\(plan.qualityReductionUnavailable, privacy: .public)"
         )
-        bufferingQuality.planAdopted(plan)
+        bufferingQuality.planAdopted(plan, controllerInitiated: controllerInitiated)
         // The new plan hears whether playback is already waiting.
         bufferingSignals.invalidate()
         syncBufferingQualitySignals()

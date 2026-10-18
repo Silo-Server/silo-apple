@@ -224,6 +224,29 @@ final class BufferingQualityPlayerTests: XCTestCase {
         XCTAssertNil(model.bufferingPill)
     }
 
+    /// A lowering's estimate rides on the player's own Auto replans until the
+    /// viewer picks a quality.
+    func testTheViewersQualityPickDropsTheKeptEstimate() throws {
+        let clock = ManualBufferingQualityClock()
+        let model = PlayerViewModel(bufferingQualityClock: clock)
+        defer { model.cleanup() }
+        model.adoptBufferingPlan(try preparedPlan(), sessionId: "session", activeQualityId: "auto")
+        model.bufferingQuality.mode = .always
+        model.bufferingQuality.playing()
+        clock.advance(to: 20_000)
+        model.bufferingQuality.waiting(cause: .network)
+        clock.advance(to: 26_000)
+        XCTAssertEqual(model.bufferingQuality.keptEstimateKbps, 5_600, "7/10 of the plan's 8000 kbps")
+        XCTAssertEqual(
+            model.bufferingQuality.clientReplan(operation: PlaybackProtocolV3.ReplanOperation.trackChange)?
+                .bandwidthEstimateKbps,
+            5_600
+        )
+
+        model.switchQuality("720p")
+        XCTAssertNil(model.bufferingQuality.keptEstimateKbps)
+    }
+
     func testAnotherPillHoldsTheBufferingPillUntilItHides() async throws {
         let clock = ManualBufferingQualityClock()
         let model = PlayerViewModel(bufferingQualityClock: clock)
