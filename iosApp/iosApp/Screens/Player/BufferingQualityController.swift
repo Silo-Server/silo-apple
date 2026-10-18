@@ -46,6 +46,8 @@ final class BufferingQualityController {
     nonisolated static let reofferMinMs = 120_000
     nonisolated static let noLowerCooldownMs = 300_000
     nonisolated static let rearmAfterUnadoptedMs = 60_000
+    /// `STEP_DOWN_RATIO`, as the vectors state it. The estimate itself is the
+    /// exact integer `delivered × 7 / 10` (``stepDownEstimate(deliveredKbps:)``).
     nonisolated static let stepDownRatio = 0.7
     nonisolated static let minEstimateKbps = 100
 
@@ -104,8 +106,11 @@ final class BufferingQualityController {
         case reload
     }
 
-    /// A `quality_change` replan for the host to send.
+    /// The fields of a replan for the host to send: the controller's own
+    /// `quality_change`, or one the player sends for its own reasons
+    /// (``clientReplan(operation:)``).
     struct ReplanRequest: Equatable {
+        var operation: String = PlaybackProtocolV3.ReplanOperation.qualityChange
         var qualityPreference: String
         var bandwidthEstimateKbps: Int? = nil
         /// `observed_rebuffer`. Only sent to a server that advertises
@@ -113,8 +118,6 @@ final class BufferingQualityController {
         var bandwidthEstimateSource: String? = nil
         /// `clear`. Only sent to a server that advertises `buffering_quality_v1`.
         var learnedLimit: String? = nil
-
-        var operation: String { PlaybackProtocolV3.ReplanOperation.qualityChange }
 
         /// The request body: `operation` and every present field, snake_case.
         var wireBody: [String: Any] {
@@ -197,8 +200,8 @@ final class BufferingQualityController {
 
     enum Output: Equatable {
         case replan(ReplanRequest)
-        /// A pill appeared for the first time: the vectors' `prompt_shown` and
-        /// `undo_shown`.
+        /// A pill came on screen: first, or again after a higher-priority pill
+        /// hid. The vectors' `prompt_shown` and `undo_shown`.
         case pillShown(PillKind)
         case notice(Notice)
         case planSummary(PlanSummary)
@@ -219,6 +222,13 @@ final class BufferingQualityController {
 
     /// The actionable pill on screen, or nil.
     private(set) var pill: Pill?
+
+    /// The step-down estimate of the latest Auto lowering, from when its
+    /// replan is sent until **Restore quality**, a quality change this
+    /// controller did not send, or a new attempt. The player's own later Auto
+    /// replans repeat it without a source (``clientReplan(operation:)``), so a
+    /// lowering holds where no learned limit applies. It is never stored.
+    @ObservationIgnored private(set) var keptEstimateKbps: Int?
 
     @ObservationIgnored private let clock: PlayerPromptClock
     @ObservationIgnored private var current: PlanState?
@@ -254,12 +264,13 @@ final class BufferingQualityController {
     ///
     /// The same id is an in-place update and keeps its history. A different id
     /// ends the outgoing plan (emitting its summary), takes down any pill, and
-    /// starts fresh history. If this controller's replan is pending, the plan
-    /// settles it: a lower plan shows the undo pill (automatic) or the lowered
-    /// notice (accepted); one that is no lower, or carries
+    /// starts fresh history. A plan that answers this controller's pending
+    /// replan settles it: a lower plan shows the undo pill (automatic) or the
+    /// lowered notice (accepted); one that is no lower, or carries
     /// `quality_reduction_unavailable`, shows the can't-lower notice and starts
-    /// `NO_LOWER_COOLDOWN_MS`.
-    func planAdopted(_ plan: Plan) {
+    /// `NO_LOWER_COOLDOWN_MS`. Pass `controllerInitiated: false` for a plan
+    /// that answers a replan the controller did not send; it settles nothing.
+    func planAdopted(_ plan: Plan, controllerInitiated: Bool = true) {
         let now = nowMs
         if current?.plan.id == plan.id {
             current?.plan = plan
@@ -269,7 +280,7 @@ final class BufferingQualityController {
         // its own grace, so a plan that never starts is still caught.
         let wasStalled = current?.stall != nil
         endPlan(at: now)
-        let pending = pendingReplan
+        let pending = controllerInitiated ? pendingReplan : nil
         pendingReplan = nil
         var state = PlanState(
             plan: plan,
@@ -292,12 +303,19 @@ final class BufferingQualityController {
         playingSince = nil
     }
 
+    /// The player starts a new playback attempt of the title: the kept
+    /// estimate belonged to the one that lowered.
+    func newAttempt() {
+        keptEstimateKbps = nil
+    }
+
     /// New content: emits the current plan's summary and forgets every
-    /// decision, including the answer and the once-per-title notice. The host's
-    /// ongoing conditions (mode, suspension, transport trouble, a competing
-    /// pill) carry over.
+    /// decision, including the answer, the once-per-title notice and the kept
+    /// estimate. The host's ongoing conditions (mode, suspension, transport
+    /// trouble, a competing pill) carry over.
     func reset() {
         planEnded()
+        newAttempt()
         isPaused = false
         answered = false
         noLowerRungNoticeShown = false
@@ -412,6 +430,7 @@ final class BufferingQualityController {
         guard pill?.kind == .undo, let plan = current?.plan else { return }
         withdrawPill()
         answered = true
+        keptEstimateKbps = nil
         current?.action = .restored
         sendReplan(.restore, qualityPreference: Self.autoQuality, learnedLimit: Self.clearLearnedLimit, fromKbps: plan.deliveredKbps)
     }
@@ -444,12 +463,14 @@ final class BufferingQualityController {
 
     // MARK: - Host inputs
 
-    /// The viewer picked a quality: any pill hides, history clears, and the
-    /// title is no longer answered. The re-offer wait restarts with it, since
-    /// the next offer would be about a different quality, and a pending
-    /// controller replan is dropped so the viewer's plan is not read as its
-    /// result.
-    func viewerChangedQuality() {
+    /// A quality change this controller did not send: the viewer's pick, or
+    /// the switch between the Wi-Fi and cellular qualities. Any pill hides,
+    /// history clears, the title is no longer answered, and the kept estimate
+    /// goes. The re-offer wait restarts with it, since the next offer would be
+    /// about a different quality, and a pending controller replan is dropped
+    /// so the new plan is not read as its result.
+    func qualityChanged() {
+        keptEstimateKbps = nil
         answered = false
         lastOfferAt = nil
         pendingReplan = nil
@@ -458,6 +479,21 @@ final class BufferingQualityController {
         current?.rearmAt = nil
         withdrawPill()
         clearHistory(at: nowMs)
+    }
+
+    /// A replan the player sends for its own reasons: a track change, seek
+    /// reanchor, seek failure recovery, failure recovery or output change.
+    /// It asks for the adopted plan's quality and, on Auto, carries the kept
+    /// estimate without a source: it repeats an earlier observation rather
+    /// than reporting a new one. The player adds its other request fields.
+    /// Nil before a plan is adopted.
+    func clientReplan(operation: String) -> ReplanRequest? {
+        guard let plan = current?.plan else { return nil }
+        return ReplanRequest(
+            operation: operation,
+            qualityPreference: plan.quality,
+            bandwidthEstimateKbps: plan.isAuto ? keptEstimateKbps : nil
+        )
     }
 
     /// The intro-skip, segment-skip or Next Up pill is showing. At most one
@@ -491,9 +527,8 @@ final class BufferingQualityController {
         let plan = state.plan
         guard Self.lowerRung(in: plan) != nil else { cantLower(); return }
         if plan.isAuto {
-            // Decision for Apple (the spec is silent): Auto without a usable
-            // step-down estimate has nothing to ask for, so it is treated as
-            // having no lower rung.
+            // Auto without a usable step-down estimate (no delivered bitrate,
+            // or under MIN_ESTIMATE_KBPS) has no lower rung.
             guard let estimate = Self.stepDownEstimate(deliveredKbps: plan.deliveredKbps) else {
                 cantLower()
                 return
@@ -554,12 +589,12 @@ final class BufferingQualityController {
             .max { $0.bitrateKbps < $1.bitrateKbps }
     }
 
-    /// `floor(STEP_DOWN_RATIO × delivered)`, or nil below `MIN_ESTIMATE_KBPS`.
-    /// The tolerance absorbs binary rounding (0.7 × 22120 is 15483.999… as a
-    /// Double), so the floor is the exact one the spec defines.
+    /// `floor(delivered × 7 / 10)` in integer arithmetic, or nil below
+    /// `MIN_ESTIMATE_KBPS`. Multiplying by the Double 0.7 would floor 22120 to
+    /// 15483 instead of the spec's 15484.
     nonisolated static func stepDownEstimate(deliveredKbps: Int?) -> Int? {
         guard let deliveredKbps, deliveredKbps > 0 else { return nil }
-        let estimate = Int((Double(deliveredKbps) * stepDownRatio + 1e-6).rounded(.down))
+        let estimate = deliveredKbps * 7 / 10
         return estimate >= minEstimateKbps ? estimate : nil
     }
 
@@ -586,6 +621,8 @@ final class BufferingQualityController {
             request.bandwidthEstimateSource = estimateKbps == nil ? nil : Self.observedRebufferSource
             request.learnedLimit = learnedLimit
         }
+        // Only an Auto lowering sends an estimate; the next one replaces it.
+        if let estimateKbps { keptEstimateKbps = estimateKbps }
         pendingReplan = PendingReplan(kind: kind, fromKbps: fromKbps, estimateKbps: estimateKbps)
         // Triggers on this plan wait for the adoption, or for the rearm if the
         // replan fails or its plan never arrives.
@@ -751,8 +788,9 @@ final class BufferingQualityController {
     }
 
     /// Shows, hides, runs or freezes the pill to match the player. Its timer
-    /// runs only while it is on screen and playback is not paused; it first
-    /// counts as shown (and, for the prompt, offered) when it reaches the screen.
+    /// runs only while it is on screen and playback is not paused. It counts
+    /// as shown each time it reaches the screen, and the prompt as offered the
+    /// first time.
     private func refreshPill() {
         guard var shown = presented else {
             pillTimer?.cancel()
@@ -773,11 +811,12 @@ final class BufferingQualityController {
             shown.deadlineMs = deadline
             pillTimer = schedule(at: deadline) { $0.pillExpired() }
         }
-        let firstShowing = visible && !shown.hasShown
-        if firstShowing {
+        let appearing = visible && !shown.isOnScreen
+        if appearing, !shown.hasShown {
             shown.hasShown = true
             if shown.kind == .prompt { lastOfferAt = now }
         }
+        shown.isOnScreen = visible
         presented = shown
         let next = visible ? Pill(
             kind: shown.kind,
@@ -786,7 +825,7 @@ final class BufferingQualityController {
             total: Self.promptSeconds
         ) : nil
         if pill != next { pill = next }
-        if firstShowing { emit(.pillShown(shown.kind)) }
+        if appearing { emit(.pillShown(shown.kind)) }
     }
 
     /// The prompt's timeout leaves the title unanswered and clears history; the
@@ -909,5 +948,6 @@ final class BufferingQualityController {
         /// Set while the timer runs.
         var deadlineMs: Int?
         var hasShown = false
+        var isOnScreen = false
     }
 }

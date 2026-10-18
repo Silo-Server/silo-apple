@@ -151,12 +151,13 @@ final class BufferingQualityControllerTests: XCTestCase {
         XCTAssertEqual(h.shown, [
             .init(131_000, .replan(Self.autoLowering(44_100))),
             .init(134_000, .pillShown(.undo)),
-        ], "coming back is not a second showing")
+            .init(200_000, .pillShown(.undo)),
+        ], "coming back is shown again")
     }
 
     // MARK: - Host inputs
 
-    func testViewerQualityChangeClearsTheAnswerAndThePill() {
+    func testQualityChangeClearsTheAnswerAndThePill() {
         let h = Harness(mode: .ask)
         h.startPlaying(Self.plan("p1"))
         h.at(125_000) { $0.waiting() }
@@ -167,12 +168,12 @@ final class BufferingQualityControllerTests: XCTestCase {
         h.at(207_000) { $0.playing() }
         XCTAssertEqual(h.shown.count, 1, "an answered title is not prompted again")
 
-        h.at(210_000) { $0.viewerChangedQuality() }
+        h.at(210_000) { $0.qualityChanged() }
         h.at(300_000) { $0.waiting() }
         h.clock.advance(to: 306_000)
         XCTAssertEqual(h.controller.pill?.kind, .prompt, "the answer was for the old quality")
 
-        h.at(307_000) { $0.viewerChangedQuality() }
+        h.at(307_000) { $0.qualityChanged() }
         XCTAssertNil(h.controller.pill)
         h.at(308_000) { $0.playing() }
         XCTAssertEqual(h.shown, [
@@ -278,8 +279,8 @@ final class BufferingQualityControllerTests: XCTestCase {
         var adopted: [String] = []
         for event in vectorCase.events {
             h.clock.advance(to: event.t)
-            if case .planAdopted(let plan) = event.kind { adopted.append(plan.id) }
-            event.apply(to: h.controller)
+            if case .planAdopted(let plan, _) = event.kind { adopted.append(plan.id) }
+            if let sent = event.apply(to: h.controller) { h.record(sent) }
         }
         h.clock.advance(to: vectorCase.until)
         h.controller.planEnded()
@@ -378,6 +379,12 @@ private final class Harness {
             if case .planSummary(let summary) = $0.output { return summary }
             return nil
         }
+    }
+
+    /// An output the player sends itself with the controller's fields, such
+    /// as a client replan.
+    func record(_ output: BufferingQualityController.Output) {
+        outputs.append(Recorded(clock.nowMs, output))
     }
 
     func at(_ ms: Int, _ action: (BufferingQualityController) -> Void) {
@@ -489,7 +496,19 @@ private struct Vectors {
     let outputTypes: [String]
     let cases: [VectorCase]
 
+    /// Every top-level key, so a new section fails loudly instead of being
+    /// skipped. `connection_budget_cases` is the server's oracle for the
+    /// connection endpoint's budget, which clients display and never compute.
+    static let knownKeys: Set<String> = [
+        "version", "spec", "about", "constants", "copy", "event_types", "output_types", "defaults", "cases",
+        "connection_budget_cases",
+    ]
+
     init(_ object: [String: Any]) throws {
+        let unknown = Set(object.keys).subtracting(Self.knownKeys)
+        guard unknown.isEmpty else {
+            throw VectorError.malformed("unknown top-level keys \(unknown.sorted())")
+        }
         guard let constants = object["constants"] as? [String: Any],
               let copy = object["copy"] as? [String: String],
               let eventTypes = object["event_types"] as? [String],
@@ -537,18 +556,30 @@ private struct VectorCase {
 
 private struct VectorEvent {
     enum Kind {
-        case planAdopted(BufferingQualityController.Plan)
+        case planAdopted(BufferingQualityController.Plan, controllerInitiated: Bool)
         case playing
         case waiting(BufferingQualityController.WaitCause)
         case pause, seek
         case transportErrorStart, transportErrorEnd
         case replanFailed
         case selectLower, selectKeep, selectRestore, back
+        /// A higher-priority actionable pill appeared, or the last one hid.
+        case pillObscured, pillUnobscured
+        /// The player sends a replan for its own reasons.
+        case clientReplan(operation: String)
+        case qualityChanged
+        case newAttempt
     }
 
     static let knownTypes = [
         "plan_adopted", "playing", "waiting", "pause", "seek", "transport_error_start",
         "transport_error_end", "replan_failed", "select_lower", "select_keep", "select_restore", "back",
+        "pill_obscured", "pill_unobscured", "client_replan", "quality_changed", "new_attempt",
+    ]
+
+    /// The operations a `client_replan` may carry.
+    static let clientReplanOperations: Set<String> = [
+        "track_change", "seek_reanchor", "seek_failure_recovery", "failure_recovery", "output_change",
     ]
 
     let t: Int
@@ -564,7 +595,12 @@ private struct VectorEvent {
             guard let plan = object["plan"] as? [String: Any] else {
                 throw VectorError.malformed("\(caseName): plan_adopted without plan")
             }
-            kind = .planAdopted(try Self.plan(plan, in: caseName))
+            // Absent means the adoption answers the controller's own replan,
+            // or a start.
+            kind = .planAdopted(
+                try Self.plan(plan, in: caseName),
+                controllerInitiated: object["controllerInitiated"] as? Bool ?? true
+            )
         case "playing": kind = .playing
         case "waiting":
             switch object["cause"] as? String {
@@ -583,14 +619,27 @@ private struct VectorEvent {
         case "select_keep": kind = .selectKeep
         case "select_restore": kind = .selectRestore
         case "back": kind = .back
+        case "pill_obscured": kind = .pillObscured
+        case "pill_unobscured": kind = .pillUnobscured
+        case "client_replan":
+            guard let operation = object["operation"] as? String,
+                  Self.clientReplanOperations.contains(operation) else {
+                throw VectorError.malformed("\(caseName): client_replan operation")
+            }
+            kind = .clientReplan(operation: operation)
+        case "quality_changed": kind = .qualityChanged
+        case "new_attempt": kind = .newAttempt
         default: throw VectorError.malformed("\(caseName): unknown event type \(type)")
         }
     }
 
+    /// Feeds the event to the controller. Returns what the player sends itself
+    /// with the controller's fields: a client replan.
     @MainActor
-    func apply(to controller: BufferingQualityController) {
+    func apply(to controller: BufferingQualityController) -> BufferingQualityController.Output? {
         switch kind {
-        case .planAdopted(let plan): controller.planAdopted(plan)
+        case .planAdopted(let plan, let controllerInitiated):
+            controller.planAdopted(plan, controllerInitiated: controllerInitiated)
         case .playing: controller.playing()
         case .waiting(let cause): controller.waiting(cause: cause)
         case .pause: controller.paused()
@@ -602,7 +651,14 @@ private struct VectorEvent {
         case .selectKeep: controller.selectKeep()
         case .selectRestore: controller.selectRestore()
         case .back: controller.back()
+        case .pillObscured: controller.setCompetingPillVisible(true)
+        case .pillUnobscured: controller.setCompetingPillVisible(false)
+        case .clientReplan(let operation):
+            return controller.clientReplan(operation: operation).map(BufferingQualityController.Output.replan)
+        case .qualityChanged: controller.qualityChanged()
+        case .newAttempt: controller.newAttempt()
         }
+        return nil
     }
 
     private static func plan(_ object: [String: Any], in caseName: String) throws -> BufferingQualityController.Plan {
@@ -612,17 +668,22 @@ private struct VectorEvent {
             throw VectorError.malformed("\(caseName): plan keys")
         }
         let warnings = object["degradation_warnings"] as? [String] ?? []
+        // The vectors write a missing delivered bitrate as 0.
+        let delivered = object["delivered_kbps"] as? Int
         return .init(
             id: id,
-            deliveredKbps: object["delivered_kbps"] as? Int,
+            deliveredKbps: delivered == 0 ? nil : delivered,
             quality: quality,
             availableQualities: try rungs.map { rung in
                 guard let label = rung["label"] as? String,
-                      let bitrate = rung["bitrate_kbps"] as? Int,
-                      let preservesSource = rung["preserves_source"] as? Bool else {
+                      let bitrate = rung["bitrate_kbps"] as? Int else {
                     throw VectorError.malformed("\(caseName): quality keys")
                 }
-                return .init(label: label, bitrateKbps: bitrate, preservesSource: preservesSource)
+                return .init(
+                    label: label,
+                    bitrateKbps: bitrate,
+                    preservesSource: rung["preserves_source"] as? Bool ?? false
+                )
             },
             qualityReductionUnavailable: warnings.contains("quality_reduction_unavailable")
         )

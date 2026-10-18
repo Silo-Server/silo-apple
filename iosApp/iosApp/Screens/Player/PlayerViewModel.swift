@@ -6376,7 +6376,7 @@ class PlayerViewModel {
         qualitySwitchError = nil
         showControls = true
         hideControlsTask?.cancel()
-        bufferingQuality.viewerChangedQuality()
+        bufferingQuality.qualityChanged()
 
         if activePreparedProtocolV3 != nil {
             // A rejected replan already cleared `isQualitySwitching`, but
