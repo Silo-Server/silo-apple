@@ -380,10 +380,17 @@ final class BandwidthProbeDownload: NSObject, URLSessionDataDelegate, @unchecked
         timer.resume()
     }
 
+    /// The error's domain and code, safe to log: a description can name the
+    /// host, as a certificate error's does.
+    static func describe(_ error: Error) -> String {
+        let error = error as NSError
+        return "\(error.domain) \(error.code)"
+    }
+
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard !isFinished else { return }
         if let error {
-            finish(.networkError(error.localizedDescription))
+            finish(.networkError(Self.describe(error)))
         } else if firstByteAt == nil {
             finish(.tooLittleData)
         } else {

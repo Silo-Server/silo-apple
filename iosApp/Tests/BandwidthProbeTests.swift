@@ -144,6 +144,15 @@ final class BandwidthProbeDownloadTests: XCTestCase {
         XCTAssertEqual(proxied.value(forHTTPHeaderField: "X-Silo-Device-Id"), "device-1")
     }
 
+    /// Failures are logged publicly, so they never carry the host.
+    func testAFailureIsDescribedWithoutItsHost() {
+        let error = URLError(.serverCertificateUntrusted, userInfo: [
+            NSLocalizedDescriptionKey: "The certificate for this server is invalid. You might be connecting to a server that is pretending to be “silo.example”.",
+            NSURLErrorFailingURLErrorKey: probeURL,
+        ])
+        XCTAssertEqual(BandwidthProbeDownload.describe(error), "NSURLErrorDomain -1202")
+    }
+
     func testCancellingTheCallerCancelsTheProbe() async throws {
         StubProbeProtocol.respond { _ in .init(status: 200, hangs: true) }
         let probe = download()
