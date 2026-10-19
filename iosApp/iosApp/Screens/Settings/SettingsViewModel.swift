@@ -171,6 +171,12 @@ final class SettingsViewModel {
         set { PlayerSettings.shared.setDeinterlaceFieldRate(newValue) }
     }
 
+    /// Local — what this device plays into is a fact about its room.
+    var trueHDAtmosEnabled: Bool {
+        get { PlayerSettings.shared.trueHDAtmosEnabled }
+        set { PlayerSettings.shared.setTrueHDAtmosEnabled(newValue) }
+    }
+
     // Subtitle styling (local — applies to renderer overrides, not the
     // language/behavior selection that lives server-side). Changed through
     // the subtitle setters below.

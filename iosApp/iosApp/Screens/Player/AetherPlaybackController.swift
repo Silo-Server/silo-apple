@@ -896,7 +896,8 @@ final class AetherPlaybackController {
         }
         .store(in: &subscriptions)
 
-        // The audio pipeline the engine built, once it settles: the channel
+        // The audio pipeline the engine built, once it settles: TrueHD Atmos
+        // rendered for its heights reads "… Atmos → APAC 7.1.4", the channel
         // bridge names its codec. Essential tier, like the decision line.
         // Deduplicated per load, so the next item on the same pipeline still
         // gets its line.

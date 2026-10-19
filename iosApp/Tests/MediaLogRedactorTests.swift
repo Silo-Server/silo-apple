@@ -206,18 +206,28 @@ final class MediaLogRedactorTests: XCTestCase {
 
     /// The lines that place missing TrueHD Atmos heights or LFE reach a report
     /// without Debug Logging; the rest of the engine's chatter still waits for
-    /// it. The samples follow lines AetherEngine writes: `aetherctl serve` on a
+    /// it. The samples are lines AetherEngine wrote: `aetherctl serve` on a
     /// TrueHD Atmos title, and the route line on the tvOS 27 simulator.
     func testAtmosAndAudioRouteLinesAreEssentialAndTheRestVerbose() {
         let essential = [
+            "[SpatialAudioBridge] init: layout=7.1.4 bitRate=3840 kbps codecs=apac.31.03 priming=2048 frames",
+            "[SpatialAudioBridge] bed levels 7.1.4 at 5.0 s over 30.0 s, rms/peak dBFS: L -50.4/-22.4, R -46.9/-20.0, "
+                + "C -39.0/-13.0, LFE -30.3/-11.8, Ls -42.6/-24.1, Rs -41.8/-24.1, Rls -40.8/-23.1, "
+                + "Rrs -39.6/-23.9, Vhl -35.3/-16.9, Vhr -35.4/-16.8, Ltr -31.8/-11.4, Rtr -31.6/-11.5; "
+                + "objects: up to 15 active, 12 elevated",
+            "[HLSVideoEngine] TrueHD Atmos: channel presentation split into 7.1.4 by the objects' energy, "
+                + "delivered as apac.31.03 (lossy)",
+            "[HLSVideoEngine] DTS:X: bed and heights routed one to one into 7.1.4, delivered as apac.31.03 (lossy)",
+            "[HLSVideoEngine] DTS-HD MA track is not DTS:X LibDTSX renders (alternate presentation); "
+                + "keeping the channel bridge",
             "[HLSVideoEngine] TrueHD Atmos with objectAudioRendering off; the channel bridge carries the 7.1 "
                 + "presentation, with the objects mixed into the floor channels",
-            #"[HLSVideoEngine] master audio: codecs="avc1.640029,fLaC" audioRendition=no channels=none"#,
+            #"[HLSVideoEngine] master audio: codecs="avc1.640029,apac.31.03" audioRendition=no channels=none"#,
             "[NativeAVPlayerHost] #3 audioRoute output=2 preferred=2 max=2 rendering=notApplicable "
                 + "multichannelContent=false ports=[Speaker[ch=-1]] latency=0ms io=10.0ms (settled)",
             "[AetherEngine] audioRoute rendering mode changed output=8 preferred=8 max=8 rendering=surround",
             "[SoftwarePlaybackHost] audioRoute output=2 preferred=2 max=2 (session start, live=false)",
-            "[NativeAVPlayerHost] #3 item.audioTrack codec='flac' enabled=true sr=48000 ch=8 (readyToPlay)",
+            "[NativeAVPlayerHost] #3 item.audioTrack codec='apac' enabled=true sr=48000 ch=12 (readyToPlay)",
             "[NativeAVPlayerHost] #3 item.allowedAudioSpatializationFormats=monoStereoAndMultichannel (readyToPlay)",
             "[NativeAVPlayerHost] #3 WARNING: FLAC bridge produced 8-channel LPCM but active audio route "
                 + "carries only 2 LPCM channels, tvOS will downmix",
