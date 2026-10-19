@@ -152,6 +152,24 @@ final class TrailerRailModelTests: XCTestCase {
         )
     }
 
+    func testEntryThumbnailUsesYouTubeStillOrTheExtrasOwnImage() {
+        let remote = TrailerRailEntry.remote(video("k1"))
+        XCTAssertEqual(remote.thumbnailURL, "https://i.ytimg.com/vi/k1/hqdefault.jpg")
+        XCTAssertNil(remote.thumbhash)
+
+        let withImage = TrailerRailEntry.local(ItemExtra(
+            contentId: "extra:1",
+            kind: "featurette",
+            stillUrl: "https://silo.example/api/v2/artwork/local/extras/extra:1/still/w500.r.webp",
+            stillThumbhash: "hash"
+        ))
+        XCTAssertEqual(withImage.thumbnailURL, "https://silo.example/api/v2/artwork/local/extras/extra:1/still/w500.r.webp")
+        XCTAssertEqual(withImage.thumbhash, "hash")
+
+        // An extra the server has no image for keeps the placeholder tile.
+        XCTAssertNil(TrailerRailEntry.local(extra("extra:2")).thumbnailURL)
+    }
+
     func testKeysWithUnderscoresAndHyphensSurviveURLConstruction() {
         // Real YouTube ids use the URL-safe base64 alphabet.
         let key = "a-B_c1D2e3F"

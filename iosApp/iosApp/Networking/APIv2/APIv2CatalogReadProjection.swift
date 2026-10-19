@@ -371,6 +371,8 @@ extension ItemExtra {
         self.title = value.title
         self.durationSeconds = try value.durationSeconds.map { try catalogLegacyInt($0) }
         self.fileId = try value.fileId.map { try catalogLegacyInt($0) }
+        self.stillUrl = value.stillUrl
+        self.stillThumbhash = value.stillThumbhash
     }
 }
 

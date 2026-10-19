@@ -41,6 +41,22 @@ enum TrailerRailEntry: Identifiable, Hashable {
             return ExtraKindLabels.label(for: extra.kind)
         }
     }
+
+    /// Card image: YouTube's still for a remote video, or the extra's own
+    /// image (a sidecar beside its file, or a frame the server took). Nil
+    /// while a local extra has none.
+    var thumbnailURL: String? {
+        switch self {
+        case .remote(let video): return TrailerRail.thumbnailURL(siteKey: video.siteKey)?.absoluteString
+        case .local(let extra): return extra.stillUrl
+        }
+    }
+
+    /// Placeholder hash shown while a local extra's image loads.
+    var thumbhash: String? {
+        guard case .local(let extra) = self else { return nil }
+        return extra.stillThumbhash
+    }
 }
 
 /// Pure shaping + URL construction for the detail page's trailers rail.

@@ -351,6 +351,8 @@ enum APIv2CatalogRead {
         // Current embedded extras schema uses a numeric ID; distinct from FileVersion.
         let fileId: Int64?
         let kind: String
+        let stillThumbhash: String?
+        @ArtworkURL var stillUrl: String?
         let title: String?
     }
 
