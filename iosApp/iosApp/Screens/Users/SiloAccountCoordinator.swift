@@ -977,8 +977,13 @@ final class SiloAccountCoordinator {
         }
         let othersOnServer = (try? await tokenStore.directory())?
             .accounts.contains { $0.serverID == account.serverID && $0 != account }
-        guard othersOnServer == true else {
-            return await removeServer(account.serverID, router: router)
+        if othersOnServer != true {
+            switch await removeLastAccount(account, router: router) {
+            case .removed: return true
+            case .failed: return false
+            // Another account was added there meanwhile: only this one goes.
+            case .othersOnServer: break
+            }
         }
         let outcome = await auth.removeSignIns(.remove(account))
         guard outcome != .refused else {
@@ -1003,6 +1008,29 @@ final class SiloAccountCoordinator {
         }
         guard let serverID = registry.activeServerId else { return false }
         return await removeServer(serverID, router: router)
+    }
+
+    /// `account` and its server, while it is the server's only account.
+    private func removeLastAccount(_ account: SiloAccountRef,
+                                   router: AppRouter) async -> ServerRegistry.LastAccountRemoval {
+        let wasCurrent = registry.activeServerId == account.serverID
+        if wasCurrent {
+            guard await endTemporaryIdentity() else {
+                router.accountActionError = "Couldn't end remote playback. Try again."
+                return .failed
+            }
+        }
+        let outcome = await registry.removeLastAccount(account)
+        if outcome == .failed {
+            router.accountActionError = "Silo couldn't remove that account. Please try again."
+        }
+        guard outcome == .removed else { return outcome }
+        await pruneLaunchState()
+        await reloadDirectory()
+        if wasCurrent || directory.accounts.isEmpty {
+            await applyAfterRemoval(router: router)
+        }
+        return outcome
     }
 
     /// A server and every account on it.

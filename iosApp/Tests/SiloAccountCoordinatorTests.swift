@@ -879,6 +879,21 @@ final class SiloAccountCoordinatorTests: XCTestCase {
         XCTAssertEqual(d.revokedAccessTokens(), [d.token("12", on: F.home)])
     }
 
+    /// The last-account check is made again once the removal holds the
+    /// identity transition: an account another window added meanwhile keeps
+    /// the server, and nothing is removed with it.
+    func testRemovingTheLastAccountStopsWhenAnotherAppeared() async throws {
+        let d = try Device(self)
+        try await d.threeAccounts()
+
+        let outcome = await d.registry.removeLastAccount(.signIn(alexHome))
+
+        XCTAssertEqual(outcome, .othersOnServer)
+        XCTAssertNotNil(d.registry.entry(with: F.home))
+        XCTAssertEqual(try d.savedAccounts(), [.signIn(alexHome), .signIn(alexFriend), .signIn(samHome)])
+        XCTAssertEqual(try d.f.signIn(alexHome)?.isSignedIn, true)
+    }
+
     /// A card picked after its account was removed elsewhere: the chooser
     /// on screen redraws without it rather than pushing another one.
     func testPickingARemovedAccountRedrawsTheChooser() async throws {

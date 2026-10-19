@@ -601,13 +601,39 @@ final class ServerRegistry {
         }
     }
 
-    /// Forget the entry and every user's sign-in on it, revoking each session
-    /// once it is gone locally. Removing the active server makes the most
-    /// recently used remaining server active, with the credential the launch
-    /// rules give it outside a chooser; the caller then applies the launch
-    /// rules (spec §6.2), which pick the user and server to open.
+    /// What `removeLastAccount` did.
+    enum LastAccountRemoval: Equatable, Sendable {
+        case removed
+        case failed
+        /// Another account was saved on the server meanwhile; nothing was
+        /// removed.
+        case othersOnServer
+    }
+
+    /// Forget `account`'s server with it, while `account` is still the only
+    /// account saved there. Checked under the same identity transition as
+    /// the deletion, so an account another window adds meanwhile is never
+    /// removed with it.
+    func removeLastAccount(_ account: SiloAccountRef) async -> LastAccountRemoval {
+        let serverId = account.serverID
+        var othersOnServer = false
+        let removed = await remove(serverId: serverId) { [tokenStore] in
+            guard let directory = try? await tokenStore.directory() else { return true }
+            othersOnServer = directory.accounts.contains { $0.serverID == serverId && $0 != account }
+            return !othersOnServer
+        }
+        if removed { return .removed }
+        return othersOnServer ? .othersOnServer : .failed
+    }
+
+    /// Forget the entry and every account on it, revoking each session once
+    /// it is gone locally. Removing the active server makes the most recently
+    /// used remaining server active, with the credential the launch rules
+    /// give it outside a chooser; the caller then applies the launch rules
+    /// (spec §6.2), which pick the account to open. `proceeds`, checked once
+    /// the identity transition is held, can still call the removal off.
     @discardableResult
-    func remove(serverId: String) async -> Bool {
+    func remove(serverId: String, proceeds: (() async -> Bool)? = nil) async -> Bool {
         // Only a device that can still authenticate can tell the server to
         // stop pushing, so this runs before the credentials are deleted. A
         // removal that then fails leaves the server saved and signed in, so
@@ -616,14 +642,14 @@ final class ServerRegistry {
         if turnsPushOff {
             await unregisterPush(serverId)
         }
-        let removed = await removeEntry(serverId: serverId)
+        let removed = await removeEntry(serverId: serverId, proceeds: proceeds)
         if turnsPushOff, !removed {
             await restorePush(serverId)
         }
         return removed
     }
 
-    private func removeEntry(serverId: String) async -> Bool {
+    private func removeEntry(serverId: String, proceeds: (() async -> Bool)?) async -> Bool {
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
             recordRegistryEvent(
                 phase: "removeServer",
@@ -647,6 +673,15 @@ final class ServerRegistry {
                 phase: "removeServer",
                 outcome: "failed",
                 reason: "unknownServer"
+            )
+            return false
+        }
+        if let proceeds, !(await proceeds()) {
+            await httpClient.endIdentityTransition(transitionLease)
+            recordRegistryEvent(
+                phase: "removeServer",
+                outcome: "skipped",
+                reason: "accountsChanged"
             )
             return false
         }
