@@ -38,7 +38,8 @@ struct PlaybackSettingsView: View {
             resetSection
         }
         .task { await spoilers.refresh() }
-        .task { await viewModel.loadPlaybackConnection() }
+        // Reloads on another network, whose speed and limit differ.
+        .task(id: BandwidthProbeScheduler.shared.network.key) { await viewModel.loadPlaybackConnection() }
         .settingsListChrome()
         .navigationTitle("Playback")
         .siloNavigationTitleDisplayMode(.inline)
