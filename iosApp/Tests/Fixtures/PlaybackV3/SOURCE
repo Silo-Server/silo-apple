@@ -23,8 +23,8 @@ Refresh these files together from the server, then regenerate Silo.xcodeproj wit
 
 Buffering quality
 Source: silo-server docs/design/schemas/playback-v3/v3/fixtures
-Server commit: 857655f4f5786235dba6cc9f24c844e65ea33cb1
-Vendored: 2026-10-17
+Server commit: 893d809f2e376e0b6ef7c9aed288c0a6c87dbbe7
+Vendored: 2026-10-19
 
 Eight files, copied byte for byte with their names unchanged. The spec is
 docs/design/2026-10-17-buffering-quality.md at the same commit.

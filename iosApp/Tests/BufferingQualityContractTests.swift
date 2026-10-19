@@ -221,7 +221,8 @@ final class BufferingQualityContractTests: XCTestCase {
     func testTheLearnedLimitDecodesOnBothSurfacesAndLabelsAuto() throws {
         let domain = try PlaybackV3FixtureTestSupport.decode(
             PlaybackV3DecisionResponse.self, named: "learned-limit-decision_response", bundleClass: Self.self)
-        let expected = PlaybackV3BandwidthLimit(kbps: 44_100, source: observedRebuffer, expiresAt: "2026-10-24T16:21:40Z")
+        // The limit lowered the plan: file 41 was asked for, version 42 plays.
+        let expected = PlaybackV3BandwidthLimit(kbps: 10_500, source: observedRebuffer, expiresAt: "2026-10-24T16:21:40Z")
         XCTAssertEqual(domain.playbackPlan?.bandwidthLimit, expected)
 
         // The v2 surface spells file ids as opaque strings.
@@ -230,7 +231,7 @@ final class BufferingQualityContractTests: XCTestCase {
         var source = try XCTUnwrap(plan["source"] as? [String: Any])
         source["media_file_id"] = "42"
         plan["source"] = source
-        plan["requested_media_file_id"] = "42"
+        plan["requested_media_file_id"] = "41"
         plan["effective_media_file_id"] = "42"
         object["playback_plan"] = plan
         let limited = try XCTUnwrap(PlaybackV3FixtureTestSupport.v2Decision(object).playbackPlan)
