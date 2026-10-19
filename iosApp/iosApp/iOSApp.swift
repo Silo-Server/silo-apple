@@ -41,6 +41,9 @@ struct SiloApp: App {
         PlaybackNetworkMonitor.shared.start()
         #endif
         BandwidthProbeNetworkMonitor.shared.start(scheduler: .shared)
+        #if os(macOS)
+        BandwidthProbeScheduler.shared.followMacVisibility()
+        #endif
     }
 
     var body: some Scene {

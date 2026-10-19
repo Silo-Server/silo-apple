@@ -1,6 +1,9 @@
 import Foundation
 import Network
 import os
+#if os(macOS)
+import AppKit
+#endif
 
 /// The network in use, as the bandwidth probe sees it.
 struct BandwidthProbeNetwork: Equatable, Sendable {
@@ -75,69 +78,93 @@ final class BandwidthProbeNetworkMonitor: @unchecked Sendable {
     }
 }
 
-/// A connection speed reading for the network in use: this device's own
-/// probe, or the one the server keeps for this device on this connection.
-/// Playback starts send it as their estimate, and Settings shows it.
+/// A connection speed reading for the network in use, from this device's own
+/// test or the server's store for this device and connection.
 struct BandwidthReading: Equatable, Sendable {
+    enum Source: Equatable, Sendable {
+        /// A speed test, taken on `transport` (`wifi`, `ethernet`, `cellular`
+        /// or `other`).
+        case probe(transport: String)
+        /// The throughput a plan's media requests received.
+        case playbackSample
+    }
+
     let kbps: Int
-    /// `wifi`, `ethernet`, `cellular` or `other`.
-    let transport: String
+    /// The link is at least this fast: a quick test that reached its
+    /// target, a result over the probe's ceiling, or a playback sample.
+    let lowerBound: Bool
     let measuredAt: Date
+    let source: Source
 }
 
-/// One probe measurement, as this device reports it to the server.
+/// One test's measurement, as this device reports it to the server.
 struct BandwidthMeasurement: Equatable, Sendable {
     let kbps: Int
+    let lowerBound: Bool
     let bytes: Int
     let durationMs: Int
     /// `wifi`, `ethernet`, `cellular` or `other`, as reported to the server.
     let transport: String
     let measuredAt: Date
 
-    var reading: BandwidthReading { BandwidthReading(kbps: kbps, transport: transport, measuredAt: measuredAt) }
+    var reading: BandwidthReading {
+        BandwidthReading(kbps: kbps, lowerBound: lowerBound, measuredAt: measuredAt, source: .probe(transport: transport))
+    }
 }
 
-/// The probe endpoint of the active server, for one probe and its report.
+/// The readings the server keeps for this device on the connection in use.
+struct BandwidthStoredReadings: Equatable, Sendable {
+    var probe: BandwidthReading?
+    var playbackSample: BandwidthReading?
+
+    static let none = BandwidthStoredReadings()
+}
+
+/// The active server's speed test, from a fresh capability response.
 struct BandwidthProbeTarget: Sendable {
-    /// The download URL, `size` included.
+    /// `bandwidth_probe_url`, resolved; a test adds its `size`.
     let url: URL
+    /// `bandwidth_probe_target_kbps`: the rate a quick test has to prove.
+    let targetKbps: Int?
+    /// `bandwidth_probe_automatic`: false when the admin turned automatic
+    /// tests off.
+    let automatic: Bool
+    /// `bandwidth_probe_max_age_seconds`: how long a reading stays current.
+    let maxAge: TimeInterval
     let auth: CapturedOrdinaryRequestAuth
 
     var serverId: String { auth.account.serverId }
 }
 
-/// The server side of a probe: discovery, the download and the report.
+/// The server side of a test: its settings, the stored readings, the
+/// download and the report.
 protocol BandwidthProbeServer: Sendable {
-    /// The reading the server keeps for this device on the connection in use
-    /// now, from `GET /api/v2/playback/connection`; nil when it has none.
-    func storedReading() async throws -> BandwidthReading?
-    /// The active profile's probe endpoint, read from a fresh capability
-    /// response; nil when the server advertises none.
+    /// The active profile's speed test from a fresh capability response; nil
+    /// when the server advertises none.
     func target() async throws -> BandwidthProbeTarget?
-    func measure(_ target: BandwidthProbeTarget) async throws -> BandwidthProbeResult
+    /// What `GET /api/v2/playback/connection` keeps for this device on the
+    /// connection in use now.
+    func storedReadings() async throws -> BandwidthStoredReadings
+    func measure(_ target: BandwidthProbeTarget, mode: BandwidthProbeMeter.Mode) async throws -> BandwidthProbeResult
     /// POSTs `measurement`; true once the server stored it.
     func report(_ measurement: BandwidthMeasurement, to target: BandwidthProbeTarget) async -> Bool
 }
 
-/// ``BandwidthProbeServer`` over `/api/v2`. The probe runs only for a server
+/// ``BandwidthProbeServer`` over `/api/v2`. Tests run only against a server
 /// whose capability `features` carry `connection_speed_v1` and that names a
 /// `bandwidth_probe_url`.
 struct LiveBandwidthProbeServer: BandwidthProbeServer {
-    func storedReading() async throws -> BandwidthReading? {
-        guard let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
-              let profileId = auth.profileId, !profileId.isEmpty else { return nil }
-        let probe = try await SiloAPI.shared.apiV2Client.playbackConnection(auth: auth).probe
-        return probe.map { BandwidthReading(kbps: $0.kbps, transport: $0.transport, measuredAt: $0.measuredAt) }
-    }
+    /// Before the redesign a server sent no schedule settings: a reading
+    /// lasted 7 days and automatic tests ran.
+    static let fallbackMaxAge: TimeInterval = 7 * 24 * 60 * 60
 
     func target() async throws -> BandwidthProbeTarget? {
-        // The report is profile-scoped, so a probe needs a chosen profile.
-        guard let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
-              let profileId = auth.profileId, !profileId.isEmpty else { return nil }
+        guard let auth = await profileAuth() else { return nil }
         let capabilities: APIv2PlaybackCapabilities
         do {
             // Read afresh: the URL is on the origin the request arrived on,
-            // which a local route can change.
+            // which a local route can change, and the admin can change the
+            // schedule.
             capabilities = try await SiloAPI.shared.apiV2Client.playbackCapabilities(auth: auth)
         } catch APIv2Error.serverUpdateRequired {
             return nil
@@ -145,14 +172,41 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
         guard capabilities.features.contains(PlaybackProtocolV3.connectionSpeedFeature),
               let advertised = capabilities.bandwidthProbeUrl, !advertised.isEmpty,
               let serverURL = URL(string: auth.account.serverURL),
-              let url = BandwidthProbe.downloadURL(serverURL: serverURL, advertised: advertised) else {
+              let url = URL(string: advertised, relativeTo: serverURL)?.absoluteURL else {
             return nil
         }
-        return BandwidthProbeTarget(url: url, auth: auth)
+        return BandwidthProbeTarget(
+            url: url,
+            targetKbps: capabilities.bandwidthProbeTargetKbps,
+            automatic: capabilities.bandwidthProbeAutomatic ?? true,
+            maxAge: capabilities.bandwidthProbeMaxAgeSeconds.map(TimeInterval.init) ?? Self.fallbackMaxAge,
+            auth: auth
+        )
     }
 
-    func measure(_ target: BandwidthProbeTarget) async throws -> BandwidthProbeResult {
-        var request = URLRequest(url: target.url)
+    func storedReadings() async throws -> BandwidthStoredReadings {
+        guard let auth = await profileAuth() else { return .none }
+        let connection = try await SiloAPI.shared.apiV2Client.playbackConnection(auth: auth)
+        return BandwidthStoredReadings(
+            probe: connection.probe.map {
+                BandwidthReading(kbps: $0.kbps, lowerBound: $0.lowerBound, measuredAt: $0.measuredAt,
+                                 source: .probe(transport: $0.transport))
+            },
+            playbackSample: connection.playbackSample.map {
+                BandwidthReading(kbps: $0.kbps, lowerBound: true, measuredAt: $0.measuredAt, source: .playbackSample)
+            }
+        )
+    }
+
+    func measure(_ target: BandwidthProbeTarget, mode: BandwidthProbeMeter.Mode) async throws -> BandwidthProbeResult {
+        let download = BandwidthProbeDownload(mode: mode)
+        guard let serverURL = URL(string: target.auth.account.serverURL),
+              let url = BandwidthProbe.downloadURL(
+                  serverURL: serverURL, advertised: target.url.absoluteString, bytes: download.requestedBytes
+              ) else {
+            return .unavailable(status: 0)
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         AppleDeviceIdentity.current.applyHeaders(to: &request)
         // The account's own credentials, refreshed when they have expired.
@@ -160,7 +214,7 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
             expectedAuth: target.auth,
             baseHeaders: request.allHTTPHeaderFields ?? [:]
         )
-        return try await BandwidthProbeDownload().measure(request)
+        return try await download.measure(request)
     }
 
     func report(_ measurement: BandwidthMeasurement, to target: BandwidthProbeTarget) async -> Bool {
@@ -170,7 +224,8 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
                     kbps: measurement.kbps,
                     bytes: measurement.bytes,
                     durationMs: measurement.durationMs,
-                    transport: measurement.transport
+                    transport: measurement.transport,
+                    lowerBound: measurement.lowerBound
                 ),
                 auth: target.auth
             )
@@ -179,32 +234,38 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
             return false
         }
     }
+
+    /// The report and the connection read are profile-scoped, so both need a
+    /// chosen profile.
+    private func profileAuth() async -> CapturedOrdinaryRequestAuth? {
+        guard let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              let profileId = auth.profileId, !profileId.isEmpty else { return nil }
+        return auth
+    }
 }
 
-
-/// Keeps a connection speed reading for the active server and network, for
-/// playback starts (``freshEstimateKbps()``) and Settings (``reading``,
+/// Keeps the connection speed readings for the active server and network, for
+/// playback starts (``freshEstimateKbps()``) and Settings (``probeReading``,
 /// ``runNow()``). One per app. The spec is the server repo's
-/// `docs/design/2026-10-17-buffering-quality.md`, "Probe on Android and
-/// Apple".
+/// `docs/design/2026-10-17-buffering-quality.md`, "Connection speed test" >
+/// "When to test".
 ///
-/// Tests are rare: a reading stands for ``readingLifetime`` (7 days) on the
-/// server and network it was taken on, and the server keeps the latest one
-/// for this device and connection.
-/// - **Check**: ``startDelay`` after a server is signed in, Silo returns to the
-///   foreground, or the network changes. A fresh reading in memory ends it.
-///   Otherwise it asks the server for its stored reading and adopts a fresh
-///   one. Only then does it test.
-/// - **Retry**: only while there is no reading. After `Retry-After` on a 429,
-///   ``retryInterval`` after playback held the test off, and on a doubling
-///   backoff after a failure. A refusal, a metered network or no network waits
-///   for the next check.
+/// - **Look**: ``startDelay`` after a server is signed in, Silo returns to the
+///   foreground, or the network changes. A look reads the server's stored
+///   readings, then runs a quick test only when automatic tests are on and no
+///   current reading proves the link. There is no periodic test.
+/// - **Current**: a reading younger than the server's
+///   `bandwidth_probe_max_age_seconds`. A settled rate proves the link; a
+///   lower bound proves it only while it reaches the current target.
 /// - **Not**: while media plays or starts (a video player between
 ///   ``playbackStarting(by:)`` and ``playbackEnded(by:)``, ``isMediaActive``,
-///   then ``playbackQuietPeriod``), on a metered or cellular network, or for a
-///   server without `connection_speed_v1`. Media starting cancels a running
-///   test.
-/// - **Test speed** (``runNow()``) tests whatever the reading's age.
+///   then ``playbackQuietPeriod``), on a metered or cellular network, or with
+///   Silo in the background, hidden or minimized. A test running when one of
+///   these begins is cancelled and measured nothing.
+/// - **Failures** wait for the next look, and after a 429 no earlier than its
+///   `Retry-After`.
+/// - **Test speed** (``runNow()``) runs the accurate test whenever no media
+///   plays, even with automatic tests off or a current reading.
 /// - **Reporting**: every measurement is POSTed with the transport it was
 ///   taken on.
 @MainActor
@@ -212,27 +273,20 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
 final class BandwidthProbeScheduler {
     static let shared = BandwidthProbeScheduler(server: LiveBandwidthProbeServer())
 
-    /// Lets the first screen settle before checking.
+    /// Lets the first screen settle before looking.
     nonisolated static let startDelay: TimeInterval = 5
-    /// How soon to look again when playback held a test off, and the first
-    /// step of the failure backoff.
-    nonisolated static let retryInterval: TimeInterval = 5 * 60
-    /// The longest wait between attempts after repeated failures.
-    nonisolated static let maxRetryInterval: TimeInterval = 6 * 60 * 60
     /// How long after a playback start a test holds off: media is still
     /// loading for a while after the start itself.
     nonisolated static let playbackQuietPeriod: TimeInterval = 60
-    /// How long a reading stands for its server and network.
-    nonisolated static let defaultReadingLifetime: TimeInterval = 7 * 24 * 60 * 60
 
-    /// What a probe request came to.
+    /// What a test came to.
     enum Outcome: Equatable {
         case measured(BandwidthMeasurement)
         /// HTTP 429: try again after `retryAfterSeconds`.
         case rateLimited(retryAfterSeconds: Int)
         /// The server refused the download: no media path serves probes.
         case unavailable
-        /// Too little data arrived to give a rate.
+        /// The test measured nothing.
         case tooLittleData
         /// The request or the capability read failed, or the first byte never
         /// came.
@@ -251,25 +305,19 @@ final class BandwidthProbeScheduler {
         case interrupted
     }
 
-    /// The reading for the active server and network, from this device's own
-    /// test or the server's store, kept past its lifetime so Settings can
-    /// show it. Nil once the network or server changes.
-    private(set) var reading: BandwidthReading?
+    /// The latest speed test on the active server and network: this device's
+    /// own, or the server's when that is newer. Kept past its lifetime so
+    /// Settings can show it; nil once the network or server changes.
+    private(set) var probeReading: BandwidthReading?
+    /// The server's playback sample for this network.
+    private(set) var playbackSample: BandwidthReading?
     /// The network in use.
     private(set) var network: BandwidthProbeNetwork = .offline
     private(set) var isProbing = false
-    /// How long a reading stands before a check tests again.
-    @ObservationIgnored var readingLifetime: TimeInterval = BandwidthProbeScheduler.defaultReadingLifetime
 
     /// Whether other media plays, such as audio. The app sets it; video
     /// players register themselves (``playbackStarting(by:)``).
     @ObservationIgnored var isMediaActive: @MainActor () -> Bool = { false }
-
-    private struct Cached {
-        let serverId: String
-        let networkKey: String
-        let reading: BandwidthReading
-    }
 
     /// One test, and the outcome it ends with when something cancels it.
     private final class Run {
@@ -280,14 +328,18 @@ final class BandwidthProbeScheduler {
     @ObservationIgnored private let server: BandwidthProbeServer
     @ObservationIgnored private let clock: PlayerPromptClock
     @ObservationIgnored private var isForeground = true
+    @ObservationIgnored private var isHidden = false
     @ObservationIgnored private var activeServerId: String?
-    @ObservationIgnored private var cached: Cached?
+    /// The server and network the readings belong to.
+    @ObservationIgnored private var readingsKey: (serverId: String, networkKey: String)?
+    /// The last speed test settings the server sent.
+    @ObservationIgnored private var lastTarget: BandwidthProbeTarget?
     @ObservationIgnored private var lastPlaybackStart: Date?
+    /// A 429's `Retry-After`: no automatic test before it.
+    @ObservationIgnored private var notBefore: Date?
     @ObservationIgnored private var timer: PlayerPromptTimer?
     @ObservationIgnored private var inFlight: Run?
-    @ObservationIgnored private var isChecking = false
-    /// Failed attempts in a row on this server and network, for the backoff.
-    @ObservationIgnored private var consecutiveFailures = 0
+    @ObservationIgnored private var isLooking = false
     /// Video players between their playback start and their end. Weak, so a
     /// player that goes away without saying so cannot hold tests off.
     @ObservationIgnored private let videoPlayers = NSHashTable<AnyObject>.weakObjects()
@@ -301,15 +353,16 @@ final class BandwidthProbeScheduler {
 
     // MARK: - Playback
 
-    /// The reading's kbps for the active server on the network in use now, or
-    /// nil when there is none within its lifetime or the network is metered.
+    /// The highest current reading's kbps for the active server on the network
+    /// in use now, which a playback start sends as its estimate. Nil when
+    /// there is none, or on a metered network.
     func freshEstimateKbps() -> Int? {
-        guard let cached, isFresh(cached) else { return nil }
-        return cached.reading.kbps
+        guard network.isConnected, !network.isMetered, readingsBelongHere else { return nil }
+        return currentReadings.map(\.kbps).max()
     }
 
     /// Playback is starting: stops a running test and holds off new ones
-    /// while the media loads. The reading stays. A video `player` keeps tests
+    /// while the media loads. The readings stay. A video `player` keeps tests
     /// off until ``playbackEnded(by:)``, whichever way it is presented,
     /// including picture in picture.
     func playbackStarting(by player: AnyObject? = nil) {
@@ -325,33 +378,35 @@ final class BandwidthProbeScheduler {
 
     // MARK: - Settings
 
-    /// **Test speed**: tests now and reports the result, whatever the
-    /// reading's age. Refuses as the automatic test does; joins a test that is
-    /// already running.
+    /// **Test speed**: runs the accurate test and reports it. Refuses while
+    /// media plays or on a metered network; joins a test already running.
     func runNow() async -> Outcome {
         if let refused = gate() { return refused }
-        return await probeOnce()
+        return await probeOnce(mode: .accurate)
     }
 
     // MARK: - App inputs
 
+    /// The scene became active, or left for the background.
     func setForeground(_ foreground: Bool) {
         guard foreground != isForeground else { return }
         isForeground = foreground
-        if foreground {
-            if activeServerId != nil { schedule(after: Self.startDelay) }
-        } else {
-            timer?.cancel()
-            timer = nil
-            cancelInFlight(.interrupted)
-        }
+        activityChanged()
+    }
+
+    /// On a Mac: the app is hidden, or every window it could play in is
+    /// minimized.
+    func setHidden(_ hidden: Bool) {
+        guard hidden != isHidden else { return }
+        isHidden = hidden
+        activityChanged()
     }
 
     /// The server signed in with a profile, or nil when none is.
     func setActiveServer(_ serverId: String?) {
         guard serverId != activeServerId else { return }
         activeServerId = serverId
-        if cached?.serverId != serverId { forget() }
+        forget()
         cancelInFlight(.interrupted)
         if serverId != nil {
             schedule(after: Self.startDelay)
@@ -361,8 +416,8 @@ final class BandwidthProbeScheduler {
         }
     }
 
-    /// Another network has its own reading, kept by the server: the check
-    /// asks for it before anything is tested.
+    /// Another network has its own readings on the server: a look asks for
+    /// them before anything is tested.
     func networkChanged(_ next: BandwidthProbeNetwork) {
         let changed = next.key != network.key
         network = next
@@ -372,18 +427,61 @@ final class BandwidthProbeScheduler {
         if activeServerId != nil { schedule(after: Self.startDelay) }
     }
 
-    // MARK: - Check
+    // MARK: - Look
 
-    private func forget() {
-        cached = nil
-        reading = nil
-        consecutiveFailures = 0
+    private var isActive: Bool { isForeground && !isHidden }
+
+    private func activityChanged() {
+        if isActive {
+            if activeServerId != nil { schedule(after: Self.startDelay) }
+        } else {
+            timer?.cancel()
+            timer = nil
+            cancelInFlight(.interrupted)
+        }
     }
 
-    private func adopt(_ reading: BandwidthReading, serverId: String, networkKey: String) {
-        cached = Cached(serverId: serverId, networkKey: networkKey, reading: reading)
-        self.reading = reading
-        consecutiveFailures = 0
+    private func forget() {
+        readingsKey = nil
+        probeReading = nil
+        playbackSample = nil
+        lastTarget = nil
+        notBefore = nil
+    }
+
+    private var readingsBelongHere: Bool {
+        readingsKey.map { $0.serverId == activeServerId && $0.networkKey == network.key } ?? false
+    }
+
+    private var maxAge: TimeInterval {
+        lastTarget?.maxAge ?? LiveBandwidthProbeServer.fallbackMaxAge
+    }
+
+    private var currentReadings: [BandwidthReading] {
+        [probeReading, playbackSample].compactMap { $0 }.filter {
+            let age = clock.now.timeIntervalSince($0.measuredAt)
+            return age >= 0 && age < maxAge
+        }
+    }
+
+    /// A current settled reading proves the link; a current lower bound only
+    /// while it reaches the target. With no target there is nothing to prove.
+    private var linkIsProven: Bool {
+        currentReadings.contains { reading in
+            guard reading.lowerBound, let target = lastTarget?.targetKbps else { return true }
+            return reading.kbps >= target
+        }
+    }
+
+    /// Keeps the newer probe, the server's or this device's own, and the
+    /// server's playback sample.
+    private func adopt(_ stored: BandwidthStoredReadings, serverId: String, networkKey: String) {
+        if !readingsBelongHere { probeReading = nil }
+        readingsKey = (serverId, networkKey)
+        if let probe = stored.probe, probe.measuredAt >= (probeReading?.measuredAt ?? .distantPast) {
+            probeReading = probe
+        }
+        playbackSample = stored.playbackSample
     }
 
     private func cancelInFlight(_ reason: Outcome) {
@@ -395,33 +493,31 @@ final class BandwidthProbeScheduler {
     private func schedule(after delay: TimeInterval) {
         timer?.cancel()
         timer = nil
-        guard isForeground else { return }
+        guard isActive else { return }
         timer = clock.schedule(after: max(delay, 0)) { [weak self] in
             guard let self else { return }
             self.timer = nil
-            Task { await self.check() }
+            Task { await self.look() }
         }
     }
 
-    /// Ensures a reading: the one in memory, the server's, or a test.
-    private func check() async {
-        guard let serverId = activeServerId, !isChecking, inFlight == nil else { return }
-        if let cached, isFresh(cached) { return }
-        isChecking = true
-        defer { isChecking = false }
+    /// Reads the server's readings and settings, then tests if nothing
+    /// current proves the link.
+    private func look() async {
+        guard let serverId = activeServerId, isActive, !isLooking, inFlight == nil else { return }
+        isLooking = true
+        defer { isLooking = false }
         let networkKey = network.key
-        if let stored = try? await server.storedReading(),
-           activeServerId == serverId, network.key == networkKey,
-           age(of: stored) <= readingLifetime {
-            adopt(stored, serverId: serverId, networkKey: networkKey)
-            return
-        }
-        guard activeServerId == serverId, network.key == networkKey else { return }
-        if let refused = gate() {
-            if refused == .playbackActive { schedule(after: Self.retryInterval) }
-            return
-        }
-        _ = await probeOnce()
+        let stored = try? await server.storedReadings()
+        let target = try? await server.target()
+        guard activeServerId == serverId, network.key == networkKey, isActive else { return }
+        adopt(stored ?? .none, serverId: serverId, networkKey: networkKey)
+        guard let target, target.serverId == serverId else { return }
+        lastTarget = target
+        guard target.automatic, !linkIsProven else { return }
+        if let notBefore, clock.now < notBefore { return }
+        guard gate() == nil else { return }
+        _ = await probeOnce(mode: .quick(targetKbps: target.targetKbps))
     }
 
     /// Why a test may not run now, or nil when it may.
@@ -436,61 +532,30 @@ final class BandwidthProbeScheduler {
         return nil
     }
 
-    private func age(of reading: BandwidthReading) -> TimeInterval {
-        clock.now.timeIntervalSince(reading.measuredAt)
-    }
-
-    private func isFresh(_ entry: Cached) -> Bool {
-        guard network.isConnected, !network.isMetered,
-              network.key == entry.networkKey, activeServerId == entry.serverId else { return false }
-        return age(of: entry.reading) <= readingLifetime
-    }
-
     // MARK: - Test
 
-    private func probeOnce() async -> Outcome {
+    private func probeOnce(mode: BandwidthProbeMeter.Mode) async -> Outcome {
         if let inFlight, let task = inFlight.task { return await task.value }
         let run = Run()
         inFlight = run
         isProbing = true
         let task = Task { [weak self] () -> Outcome in
             guard let self else { return .interrupted }
-            let outcome = await self.measureAndReport(run)
+            let outcome = await self.measureAndReport(run, mode: mode)
             if self.inFlight === run {
                 self.inFlight = nil
                 self.isProbing = false
             }
-            self.followUp(outcome, run: run)
+            if case .rateLimited(let seconds) = outcome {
+                self.notBefore = self.clock.now.addingTimeInterval(TimeInterval(seconds))
+            }
             return outcome
         }
         run.task = task
         return await task.value
     }
 
-    /// Schedules the next attempt while there is still no reading.
-    private func followUp(_ outcome: Outcome, run: Run) {
-        // A cancelled test was replaced by whatever cancelled it, except
-        // playback, which leaves the link busy for a while.
-        if let reason = run.cancelledFor {
-            if reason == .playbackActive, reading == nil { schedule(after: Self.retryInterval) }
-            return
-        }
-        switch outcome {
-        case .measured, .notSupported, .unavailable, .metered, .offline, .interrupted:
-            // Nothing to retry until the next check.
-            break
-        case .rateLimited(let seconds):
-            schedule(after: max(Self.retryInterval, TimeInterval(seconds)))
-        case .playbackActive:
-            schedule(after: Self.retryInterval)
-        case .tooLittleData, .networkError:
-            let backoff = Self.retryInterval * pow(2, Double(consecutiveFailures))
-            consecutiveFailures += 1
-            schedule(after: min(backoff, Self.maxRetryInterval))
-        }
-    }
-
-    private func measureAndReport(_ run: Run) async -> Outcome {
+    private func measureAndReport(_ run: Run, mode: BandwidthProbeMeter.Mode) async -> Outcome {
         let target: BandwidthProbeTarget
         do {
             guard let found = try await server.target() else { return run.cancelledFor ?? .notSupported }
@@ -501,38 +566,74 @@ final class BandwidthProbeScheduler {
         if let reason = run.cancelledFor { return reason }
         if let refused = gate() { return refused }
         guard target.serverId == activeServerId else { return .interrupted }
+        lastTarget = target
+        // A quick test proves the target the server sends now.
+        let mode: BandwidthProbeMeter.Mode = if case .quick = mode { .quick(targetKbps: target.targetKbps) } else { mode }
         let measuredOn = network
         let result: BandwidthProbeResult
         do {
-            result = try await server.measure(target)
+            result = try await server.measure(target, mode: mode)
         } catch {
             return run.cancelledFor ?? (error is CancellationError ? .interrupted : .networkError)
         }
         if let reason = run.cancelledFor { return reason }
-        let rate: (kbps: Int, bytes: Int, durationMs: Int)
+        let rate: (kbps: Int, bytes: Int, durationMs: Int, lowerBound: Bool)
         switch result {
-        case .measured(let kbps, let bytes, let durationMs): rate = (kbps, bytes, durationMs)
+        case .measured(let kbps, let bytes, let durationMs, let lowerBound): rate = (kbps, bytes, durationMs, lowerBound)
         case .rateLimited(let seconds): return .rateLimited(retryAfterSeconds: seconds)
         case .unavailable: return .unavailable
         case .tooLittleData: return .tooLittleData
         case .networkError(let reason):
-            Self.logger.info("bandwidth probe failed: \(reason, privacy: .public)")
+            Self.logger.info("speed test failed: \(reason, privacy: .public)")
             return .networkError
         }
         // A change mid-test cancels it; this catches one that raced its end.
         guard network.key == measuredOn.key, activeServerId == target.serverId else { return .interrupted }
         let measurement = BandwidthMeasurement(
             kbps: rate.kbps,
+            lowerBound: rate.lowerBound,
             bytes: rate.bytes,
             durationMs: rate.durationMs,
             transport: measuredOn.transport,
             measuredAt: clock.now
         )
-        adopt(measurement.reading, serverId: target.serverId, networkKey: measuredOn.key)
+        if !readingsBelongHere { playbackSample = nil }
+        readingsKey = (target.serverId, measuredOn.key)
+        probeReading = measurement.reading
         let reported = await server.report(measurement, to: target)
         Self.logger.info(
-            "bandwidth probe: \(measurement.kbps, privacy: .public) kbps over \(measurement.durationMs, privacy: .public) ms on \(measurement.transport, privacy: .public)\(reported ? "" : " (report failed)", privacy: .public)"
+            "speed test: \(measurement.kbps, privacy: .public) kbps\(measurement.lowerBound ? " or faster" : "", privacy: .public) over \(measurement.durationMs, privacy: .public) ms on \(measurement.transport, privacy: .public)\(reported ? "" : " (report failed)", privacy: .public)"
         )
         return .measured(measurement)
     }
 }
+
+#if os(macOS)
+/// Whether a Mac app can be seen: not while it is hidden, nor while every
+/// window it could play in is minimized.
+enum MacAppVisibility {
+    /// The notifications after which ``isHidden`` can have changed.
+    static let changeNotifications = [
+        NSApplication.didHideNotification, NSApplication.didUnhideNotification,
+        NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
+    ]
+
+    @MainActor
+    static var isHidden: Bool {
+        let app = NSApplication.shared
+        return app.isHidden || app.windows.filter(\.canBecomeMain).allSatisfy { $0.isMiniaturized || !$0.isVisible }
+    }
+}
+
+extension BandwidthProbeScheduler {
+    /// Treats a hidden or minimized Silo as in the background. Called once at
+    /// launch; the scheduler lives as long as the app.
+    func followMacVisibility() {
+        for name in MacAppVisibility.changeNotifications {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.setHidden(MacAppVisibility.isHidden) }
+            }
+        }
+    }
+}
+#endif

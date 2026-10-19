@@ -500,9 +500,10 @@ private struct Vectors {
     /// Every top-level key, so a new section fails loudly instead of being
     /// skipped. `connection_budget_cases` is the server's oracle for the
     /// connection endpoint's budget, which clients display and never compute.
+    /// `probe_cases` are replayed by `BandwidthProbeMeterTests`.
     static let knownKeys: Set<String> = [
         "version", "spec", "about", "constants", "copy", "event_types", "output_types", "defaults", "cases",
-        "connection_budget_cases",
+        "connection_budget_cases", "probe_about", "probe_constants", "probe_cases",
     ]
 
     init(_ object: [String: Any]) throws {

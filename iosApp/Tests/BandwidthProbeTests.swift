@@ -1,91 +1,88 @@
 import XCTest
 @testable import Silo
 
-/// The web probe's windowing, ported: `web/src/player/bandwidth-probe.ts` in
-/// the server repo. Android's `BandwidthProbeTest` checks the same cases.
-final class BandwidthProbeWindowTests: XCTestCase {
-    func testASteadyTransferIsTimedAfterTheWarmupFromTheFirstByte() {
-        var window = BandwidthProbeWindow()
-        // The first chunk opens the window at 1000; its bytes arrived before it.
-        XCTAssertFalse(window.onChunk(at: 1_000, size: 5_000_000))
-        var done = false
-        var at = 1_000
-        while !done {
-            at += 100
-            done = window.onChunk(at: at, size: 1_000_000)
+/// The speed test's arithmetic, replayed against the vendored vectors'
+/// `probe_cases` (see `Fixtures/BufferingQuality/SOURCE`). Web and Android
+/// replay the same cases.
+final class BandwidthProbeMeterTests: XCTestCase {
+    private func probeVectors() throws -> [String: Any] {
+        let url = try PlaybackV3FixtureTestSupport.fixtureURL(named: "vectors", bundleClass: Self.self)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    }
+
+    func testEveryProbeCase() throws {
+        let cases = try XCTUnwrap(try probeVectors()["probe_cases"] as? [[String: Any]])
+        XCTAssertFalse(cases.isEmpty)
+        for probeCase in cases {
+            let name = try XCTUnwrap(probeCase["name"] as? String)
+            let known: Set<String> = ["name", "mode", "target_kbps", "chunks", "end", "expect", "note"]
+            XCTAssertEqual(Set(probeCase.keys).subtracting(known), [], "\(name): a new key needs the replay's attention")
+            let mode: BandwidthProbeMeter.Mode
+            switch probeCase["mode"] as? String {
+            case "quick": mode = .quick(targetKbps: probeCase["target_kbps"] as? Int)
+            case "accurate": mode = .accurate
+            case let other: return XCTFail("\(name): mode \(String(describing: other))")
+            }
+            var meter = BandwidthProbeMeter(mode: mode)
+            for chunk in try XCTUnwrap(probeCase["chunks"] as? [[Int]]) {
+                meter.receive(chunk[1], at: chunk[0])
+            }
+            if let end = probeCase["end"] as? Int {
+                meter.transferEnded(at: end)
+            } else {
+                meter.advance(to: meter.maxMs)
+            }
+            if let expect = probeCase["expect"] as? [String: Any] {
+                XCTAssertEqual(meter.stoppedAt, expect["stop"] as? Int, "\(name): stop")
+                XCTAssertEqual(meter.result, BandwidthProbeMeter.Measurement(
+                    kbps: try XCTUnwrap(expect["kbps"] as? Int),
+                    lowerBound: try XCTUnwrap(expect["lower_bound"] as? Bool),
+                    bytes: try XCTUnwrap(expect["bytes"] as? Int),
+                    durationMs: try XCTUnwrap(expect["duration_ms"] as? Int)
+                ), name)
+            } else {
+                XCTAssertNil(meter.result, "\(name): measured nothing")
+            }
         }
-        XCTAssertEqual(at, 3_000, "the budget ends the window 2 s after the first byte")
-        // Warm at 1300 with 3 MB; 17 MB in the 1700 ms that followed.
-        XCTAssertEqual(window.result(), .measured(kbps: 80_000, bytes: 17_000_000, durationMs: 1_700))
     }
 
-    func testTheWholeWindowIsUsedWhenLessTimeFollowedTheWarmup() {
-        var window = BandwidthProbeWindow()
-        _ = window.onChunk(at: 0, size: 1)
-        _ = window.onChunk(at: 300, size: 600_000) // warm at 300
-        _ = window.onChunk(at: 500, size: 400_000) // only 200 ms followed the warmup
-        XCTAssertEqual(window.result(), .measured(kbps: 16_000, bytes: 1_000_000, durationMs: 500))
+    func testTheConstantsMatchTheVectors() throws {
+        let constants = try XCTUnwrap(try probeVectors()["probe_constants"] as? [String: Int])
+        XCTAssertEqual(constants, [
+            "PROBE_WINDOW_MS": BandwidthProbe.windowMs,
+            "QUICK_PROBE_BYTES": BandwidthProbe.quickBytes,
+            "QUICK_PROBE_MAX_MS": BandwidthProbe.quickMaxMs,
+            "QUICK_SETTLE_WINDOWS": BandwidthProbe.quickSettleWindows,
+            "ACCURATE_PROBE_BYTES": BandwidthProbe.accurateBytes,
+            "ACCURATE_PROBE_MAX_MS": BandwidthProbe.accurateMaxMs,
+            "ACCURATE_SETTLE_WINDOWS": BandwidthProbe.accurateSettleWindows,
+            "PROBE_FIRST_BYTE_DEADLINE_MS": BandwidthProbe.firstByteDeadlineMs,
+            "MIN_PROBE_KBPS": BandwidthProbe.minKbps,
+            "MAX_PROBE_KBPS": BandwidthProbe.maxKbps,
+        ], "a new constant needs a counterpart")
     }
 
-    func testAShortWindowNeedsAMegabyte() {
-        var short = BandwidthProbeWindow()
-        _ = short.onChunk(at: 0, size: 1)
-        _ = short.onChunk(at: 150, size: 999_999)
-        XCTAssertEqual(short.result(), .tooLittleData)
-
-        var enough = BandwidthProbeWindow()
-        _ = enough.onChunk(at: 0, size: 1)
-        _ = enough.onChunk(at: 150, size: 1_000_000)
-        XCTAssertEqual(enough.result(), .measured(kbps: 53_333, bytes: 1_000_000, durationMs: 150))
-    }
-
-    func testOnlyTheFirstChunkIsNoMeasurement() {
-        XCTAssertEqual(BandwidthProbeWindow().result(), .tooLittleData)
-        var window = BandwidthProbeWindow()
-        _ = window.onChunk(at: 0, size: 40_000_000)
-        XCTAssertEqual(window.result(), .tooLittleData)
-    }
-
-    func testAStalledTransferIsCutOffAndItsSilenceCountsAgainstTheRate() {
-        var window = BandwidthProbeWindow()
-        // First byte at 100, then 1 MB every 100 ms until 1000, then nothing.
-        _ = window.onChunk(at: 100, size: 1)
-        for at in stride(from: 200, through: 1_000, by: 100) {
-            XCTAssertFalse(window.onChunk(at: at, size: 1_000_000))
-        }
-        window.cutOff(at: 2_600)
-        // Warm at 400 with 3 MB; 6 MB in the 2200 ms after.
-        XCTAssertEqual(window.result(), .measured(kbps: 21_818, bytes: 6_000_000, durationMs: 2_200))
-    }
-
-    func testRatesAreClampedToTheContractsRange() {
-        var slow = BandwidthProbeWindow()
-        _ = slow.onChunk(at: 0, size: 1)
-        _ = slow.onChunk(at: 2_000, size: 10_000)
-        XCTAssertEqual(slow.result(), .tooLittleData, "40 kbps is below the floor")
-        XCTAssertEqual(BandwidthProbe.clampKbps(5_000_000), 1_000_000)
-        XCTAssertEqual(BandwidthProbe.clampKbps(100), 100)
-        XCTAssertNil(BandwidthProbe.clampKbps(99.9))
-        XCTAssertNil(BandwidthProbe.clampKbps(.nan))
-    }
-
-    func testTheDownloadURLAsksForFortyMegabytes() throws {
+    func testEachModeAsksForItsOwnSize() throws {
+        XCTAssertEqual(BandwidthProbeMeter(mode: .quick(targetKbps: nil)).requestedBytes, 100_000_000)
+        XCTAssertEqual(BandwidthProbeMeter(mode: .accurate).requestedBytes, 1_000_000_000)
         let server = try XCTUnwrap(URL(string: "https://silo.example"))
         XCTAssertEqual(
             BandwidthProbe.downloadURL(
                 serverURL: server,
-                advertised: "https://silo.example/api/v2/playback/bandwidth-probe?media_path=true"
+                advertised: "https://silo.example/api/v2/playback/bandwidth-probe?media_path=true",
+                bytes: 100_000_000
             )?.absoluteString,
-            "https://silo.example/api/v2/playback/bandwidth-probe?media_path=true&size=40000000"
+            "https://silo.example/api/v2/playback/bandwidth-probe?media_path=true&size=100000000"
         )
         XCTAssertEqual(
             BandwidthProbe.downloadURL(
                 serverURL: try XCTUnwrap(URL(string: "https://silo.example:8096")),
-                advertised: "/api/v2/playback/bandwidth-probe"
+                advertised: "/api/v2/playback/bandwidth-probe?size=5",
+                bytes: 1_000_000_000
             )?.absoluteString,
-            "https://silo.example:8096/api/v2/playback/bandwidth-probe?size=40000000"
+            "https://silo.example:8096/api/v2/playback/bandwidth-probe?size=1000000000"
         )
-        XCTAssertNil(BandwidthProbe.downloadURL(serverURL: server, advertised: "ftp://silo.example/probe"))
+        XCTAssertNil(BandwidthProbe.downloadURL(serverURL: server, advertised: "ftp://silo.example/probe", bytes: 1))
     }
 }
 
@@ -102,7 +99,7 @@ final class BandwidthProbeDownloadTests: XCTestCase {
     private func download() -> BandwidthProbeDownload {
         let configuration = BandwidthProbeDownload.defaultConfiguration()
         configuration.protocolClasses = [StubProbeProtocol.self]
-        return BandwidthProbeDownload(configuration: configuration)
+        return BandwidthProbeDownload(mode: .quick(targetKbps: 115_000), configuration: configuration)
     }
 
     private func request() -> URLRequest {
@@ -227,6 +224,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
     private static let cellular = BandwidthProbeNetwork(
         isConnected: true, transport: "cellular", usesCellular: true, isMetered: true, key: "cellular|pdp0|"
     )
+    private static let day: TimeInterval = 24 * 60 * 60
 
     private var clock: ManualBufferingQualityClock!
     private var server: FakeProbeServer!
@@ -240,115 +238,174 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
 
     private func advance(seconds: TimeInterval) async {
         clock.advance(to: clock.nowMs + Int(seconds * 1000))
-        // Let a probe the timer started run on the main actor.
+        // Let a look the timer started run on the main actor.
         for _ in 0..<50 { await Task.yield() }
     }
 
-    private static let day: TimeInterval = 24 * 60 * 60
-
-    private func reading(kbps: Int, ageDays: Double) -> BandwidthReading {
-        BandwidthReading(kbps: kbps, transport: "wifi", measuredAt: clock.now.addingTimeInterval(-ageDays * Self.day))
+    private func probe(kbps: Int, lowerBound: Bool = false, ageDays: Double) -> BandwidthReading {
+        BandwidthReading(kbps: kbps, lowerBound: lowerBound,
+                         measuredAt: clock.now.addingTimeInterval(-ageDays * Self.day), source: .probe(transport: "wifi"))
     }
 
-    func testTestsAfterTheStartDelayWhenNoReadingExists() async {
+    private func sample(kbps: Int, ageDays: Double) -> BandwidthReading {
+        BandwidthReading(kbps: kbps, lowerBound: true,
+                         measuredAt: clock.now.addingTimeInterval(-ageDays * Self.day), source: .playbackSample)
+    }
+
+    /// Signs in on Wi-Fi and lets the first look run.
+    private func signIn() async {
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        await advance(seconds: 5)
+    }
+
+    func testALookReadsTheServerThenRunsAQuickTestWhenNothingProvesTheLink() async {
         scheduler.networkChanged(Self.wifi)
         scheduler.setActiveServer("server")
         await advance(seconds: 4.9)
         XCTAssertEqual(server.storedCount, 0, "the first screen settles first")
         await advance(seconds: 0.1)
-        XCTAssertEqual(server.storedCount, 1, "the server is asked first")
-        XCTAssertEqual(server.measureCount, 1)
-        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
-        XCTAssertEqual(server.reports.map(\.transport), ["wifi"])
-        XCTAssertEqual(scheduler.reading?.kbps, 48_000)
+        XCTAssertEqual(server.storedCount, 1, "the server's readings come first")
+        XCTAssertEqual(server.modes, [.quick(targetKbps: 115_000)])
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 115_000)
+        XCTAssertEqual(server.reports.map(\.lowerBound), [true])
+        XCTAssertEqual(scheduler.probeReading?.kbps, 115_000)
     }
 
-    func testAFreshServerReadingIsUsedWithoutATest() async {
-        server.stored = reading(kbps: 120_000, ageDays: 6)
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
+    func testACurrentSettledProbeProvesTheLink() async {
+        server.stored.probe = probe(kbps: 48_000, ageDays: 6)
+        await signIn()
+        XCTAssertEqual(server.modes, [])
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
+    }
+
+    func testALowerBoundProvesTheLinkOnlyWhileItReachesTheTarget() async {
+        server.stored.probe = probe(kbps: 115_000, lowerBound: true, ageDays: 1)
+        await signIn()
+        XCTAssertEqual(server.modes, [], "it reaches the 115 Mbps target")
+
+        // The library grew: the target rose past the lower bound.
+        server.targetKbps = 150_000
+        scheduler.setForeground(false)
+        scheduler.setForeground(true)
         await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 0)
+        XCTAssertEqual(server.modes, [.quick(targetKbps: 150_000)])
+    }
+
+    func testAPlaybackSampleIsALowerBound() async {
+        server.stored.playbackSample = sample(kbps: 120_000, ageDays: 1)
+        await signIn()
+        XCTAssertEqual(server.modes, [], "above the target, it proves the link")
         XCTAssertEqual(scheduler.freshEstimateKbps(), 120_000)
-        XCTAssertEqual(scheduler.reading?.kbps, 120_000)
+
+        let slow = FakeProbeServer()
+        slow.stored.playbackSample = sample(kbps: 51_200, ageDays: 1)
+        let other = BandwidthProbeScheduler(server: slow, clock: clock)
+        other.networkChanged(Self.wifi)
+        other.setActiveServer("server")
+        await advance(seconds: 5)
+        XCTAssertEqual(slow.modes, [.quick(targetKbps: 115_000)], "below the target, it does not")
     }
 
-    func testAServerReadingOlderThanItsLifetimeIsTestedAgain() async {
-        server.stored = reading(kbps: 120_000, ageDays: 7.1)
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
-        await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 1)
-        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
+    func testAStartSendsTheHighestCurrentReading() async {
+        server.result = .measured(kbps: 48_000, bytes: 6_000_000, durationMs: 1_000, lowerBound: false)
+        server.stored.playbackSample = sample(kbps: 60_000, ageDays: 1)
+        server.stored.probe = probe(kbps: 30_000, ageDays: 1)
+        await signIn()
+        XCTAssertEqual(server.modes, [], "the settled probe proves the link")
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 60_000)
     }
 
-    /// No timer re-tests a reading: the next check after its lifetime does,
-    /// at a sign-in, a return to the foreground or a network change.
-    func testAReadingStandsForItsLifetimeWithoutRetesting() async {
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
-        await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 1)
+    func testReadingsOlderThanTheMaxAgeAreNotCurrent() async {
+        server.maxAge = 3 * Self.day
+        server.stored.probe = probe(kbps: 48_000, ageDays: 3.1)
+        await signIn()
+        XCTAssertEqual(server.modes, [.quick(targetKbps: 115_000)])
+    }
 
-        await advance(seconds: 6 * Self.day)
-        scheduler.setForeground(false)
-        scheduler.setForeground(true)
-        await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 1, "starts still use it")
-        XCTAssertEqual(server.storedCount, 1, "a fresh reading in memory needs no request")
-        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
-
-        await advance(seconds: Self.day)
+    /// No timer re-tests a reading: a look after its lifetime does.
+    func testThereIsNoPeriodicTest() async {
+        await signIn()
+        XCTAssertEqual(server.modes.count, 1)
+        await advance(seconds: 30 * Self.day)
+        XCTAssertEqual(server.modes.count, 1, "nothing re-tests by itself")
         XCTAssertNil(scheduler.freshEstimateKbps(), "past its lifetime")
-        XCTAssertEqual(server.measureCount, 1, "nothing re-tests by itself")
         scheduler.setForeground(false)
         scheduler.setForeground(true)
         await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 2)
+        XCTAssertEqual(server.modes.count, 2)
+    }
+
+    func testAutomaticTestsOffLeaveTestSpeed() async {
+        server.automatic = false
+        await signIn()
+        XCTAssertEqual(server.modes, [])
+        let outcome = await scheduler.runNow()
+        XCTAssertEqual(server.modes, [.accurate])
+        XCTAssertEqual(outcome, .measured(BandwidthMeasurement(
+            kbps: 115_000, lowerBound: true, bytes: 7_187_500, durationMs: 500, transport: "wifi", measuredAt: clock.now
+        )))
+    }
+
+    func testTestSpeedRunsTheAccurateTestWhateverTheReading() async {
+        server.stored.probe = probe(kbps: 48_000, ageDays: 1)
+        await signIn()
+        _ = await scheduler.runNow()
+        XCTAssertEqual(server.modes, [.accurate])
     }
 
     /// Another network has its own reading on the server.
-    func testANetworkChangeAsksTheServerForThatNetworksReading() async {
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
-        await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 1)
-
-        server.stored = reading(kbps: 300_000, ageDays: 2)
+    func testANetworkChangeLooksAgainForThatNetwork() async {
+        await signIn()
+        XCTAssertEqual(server.modes.count, 1)
+        server.stored.probe = probe(kbps: 300_000, ageDays: 2)
         scheduler.networkChanged(Self.otherWifi)
-        XCTAssertNil(scheduler.freshEstimateKbps(), "the old network's reading goes")
-        XCTAssertNil(scheduler.reading)
+        XCTAssertNil(scheduler.freshEstimateKbps(), "the old network's readings go")
+        XCTAssertNil(scheduler.probeReading)
         await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 1, "the server had one")
+        XCTAssertEqual(server.modes.count, 1, "the server had one")
         XCTAssertEqual(scheduler.freshEstimateKbps(), 300_000)
     }
 
     func testAMeteredNetworkIsNeitherTestedNorSent() async {
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
-        await advance(seconds: 5)
+        await signIn()
         scheduler.networkChanged(Self.cellular)
         XCTAssertNil(scheduler.freshEstimateKbps())
         await advance(seconds: Self.day)
-        XCTAssertEqual(server.measureCount, 1, "no test on cellular")
+        XCTAssertEqual(server.modes.count, 1, "no test on cellular")
         let outcome = await scheduler.runNow()
         XCTAssertEqual(outcome, .metered)
     }
 
-    func testTestSpeedTestsWhateverTheReadingsAge() async {
-        server.stored = reading(kbps: 120_000, ageDays: 1)
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
+    func testAFailureWaitsForTheNextLook() async {
+        server.result = .networkError("reset")
+        await signIn()
+        XCTAssertEqual(server.modes.count, 1)
+        await advance(seconds: Self.day)
+        XCTAssertEqual(server.modes.count, 1, "no retry timer")
+        scheduler.setForeground(false)
+        scheduler.setForeground(true)
         await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 0)
-        let outcome = await scheduler.runNow()
-        XCTAssertEqual(outcome, .measured(BandwidthMeasurement(
-            kbps: 48_000, bytes: 12_000_000, durationMs: 2_000, transport: "wifi", measuredAt: clock.now
-        )))
-        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
+        XCTAssertEqual(server.modes.count, 2)
     }
 
-    func testPlaybackStartingStopsARunningProbeAndHoldsOffForAMinute() async {
+    func testARateLimitHoldsLooksUntilItsRetryAfter() async {
+        server.result = .rateLimited(retryAfterSeconds: 600)
+        await signIn()
+        server.result = .measured(kbps: 48_000, bytes: 6_000_000, durationMs: 1_000, lowerBound: false)
+        scheduler.setForeground(false)
+        scheduler.setForeground(true)
+        await advance(seconds: 5)
+        XCTAssertEqual(server.modes.count, 1, "too soon")
+        await advance(seconds: 600)
+        XCTAssertEqual(server.modes.count, 1, "and still no timer")
+        scheduler.setForeground(false)
+        scheduler.setForeground(true)
+        await advance(seconds: 5)
+        XCTAssertEqual(server.modes.count, 2)
+    }
+
+    func testPlaybackStartingCancelsARunningTestWhichMeasuresNothing() async {
         server.hangs = true
         scheduler.networkChanged(Self.wifi)
         scheduler.setActiveServer("server")
@@ -366,138 +423,99 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         let tooSoon = await scheduler.runNow()
         XCTAssertEqual(tooSoon, .playbackActive, "the media is still loading")
         await advance(seconds: 31)
-        let later = await scheduler.runNow()
-        XCTAssertEqual(later, .measured(BandwidthMeasurement(
-            kbps: 48_000, bytes: 12_000_000, durationMs: 2_000, transport: "wifi", measuredAt: clock.now
-        )))
+        if case .measured = await scheduler.runNow() {} else { XCTFail("Test speed runs once playback has settled") }
     }
 
     /// However the player is presented, including picture in picture, its
-    /// playback holds the probe off for as long as it lasts.
-    func testAVideoPlayerKeepsTheProbeOffUntilItEnds() async {
+    /// playback holds tests off for as long as it lasts.
+    func testAVideoPlayerHoldsLooksOffUntilItEnds() async {
         let player = NSObject()
         scheduler.networkChanged(Self.wifi)
         scheduler.setActiveServer("server")
         scheduler.playbackStarting(by: player)
         await advance(seconds: 10 * 60)
-        XCTAssertEqual(server.measureCount, 0, "long after the quiet minute")
+        XCTAssertEqual(server.modes, [])
+        let refused = await scheduler.runNow()
+        XCTAssertEqual(refused, .playbackActive)
         scheduler.playbackEnded(by: player)
-        await advance(seconds: 5 * 60)
-        XCTAssertEqual(server.measureCount, 1)
+        scheduler.setForeground(false)
+        scheduler.setForeground(true)
+        await advance(seconds: 5)
+        XCTAssertEqual(server.modes.count, 1)
     }
 
-    func testAReleasedPlayerDoesNotHoldTheProbeOff() async {
+    func testAReleasedPlayerDoesNotHoldTestsOff() async {
         var player: NSObject? = NSObject()
         scheduler.networkChanged(Self.wifi)
         scheduler.setActiveServer("server")
         scheduler.playbackStarting(by: player!)
         player = nil
         await advance(seconds: 61)
-        let outcome = await scheduler.runNow()
-        XCTAssertEqual(outcome, .measured(BandwidthMeasurement(
-            kbps: 48_000, bytes: 12_000_000, durationMs: 2_000, transport: "wifi", measuredAt: clock.now
-        )))
+        if case .measured = await scheduler.runNow() {} else { XCTFail("the released player left no hold") }
     }
 
-    func testMediaThatIsPlayingKeepsTheProbeOff() async {
-        var playing = true
-        scheduler.isMediaActive = { playing }
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
-        await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 0)
-        playing = false
-        await advance(seconds: 5 * 60)
-        XCTAssertEqual(server.measureCount, 1, "looked again after the retry interval")
-    }
-
-    func testARateLimitWaitsForItsRetryAfter() async {
-        server.result = .rateLimited(retryAfterSeconds: 600)
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
-        await advance(seconds: 5)
-        server.result = .measured(kbps: 48_000, bytes: 12_000_000, durationMs: 2_000)
-        await advance(seconds: 5 * 60)
-        XCTAssertEqual(server.measureCount, 1, "the retry interval is shorter than Retry-After")
-        await advance(seconds: 5 * 60)
-        XCTAssertEqual(server.measureCount, 2)
-    }
-
-    func testFailuresBackOffUntilATestSucceeds() async {
-        server.result = .networkError("reset")
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
-        await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 1)
-        await advance(seconds: 5 * 60)
-        XCTAssertEqual(server.measureCount, 2, "5 minutes")
-        await advance(seconds: 5 * 60)
-        XCTAssertEqual(server.measureCount, 2)
-        await advance(seconds: 5 * 60)
-        XCTAssertEqual(server.measureCount, 3, "then 10")
-        server.result = .measured(kbps: 48_000, bytes: 12_000_000, durationMs: 2_000)
-        await advance(seconds: 20 * 60)
-        XCTAssertEqual(server.measureCount, 4, "then 20, which succeeds")
-        await advance(seconds: Self.day)
-        XCTAssertEqual(server.measureCount, 4, "and nothing more")
-    }
-
-    func testARefusalWaitsForTheNextCheck() async {
-        server.result = .unavailable(status: 503)
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
-        await advance(seconds: Self.day)
-        XCTAssertEqual(server.measureCount, 1)
-    }
-
-    func testAServerWithoutAProbeIsLeftAlone() async {
-        server.hasTarget = false
-        scheduler.networkChanged(Self.wifi)
-        scheduler.setActiveServer("server")
-        await advance(seconds: 60 * 60)
-        XCTAssertEqual(server.targetCount, 1)
-        XCTAssertEqual(server.measureCount, 0)
-    }
-
-    func testSigningOutAndBackgroundingStopTheSchedule() async {
+    func testBackgroundAndHiddenStopLooksAndCancelTests() async {
         scheduler.networkChanged(Self.wifi)
         scheduler.setActiveServer("server")
         scheduler.setForeground(false)
         await advance(seconds: 60)
-        XCTAssertEqual(server.measureCount, 0)
+        XCTAssertEqual(server.storedCount, 0)
         scheduler.setForeground(true)
+        scheduler.setHidden(true)
+        await advance(seconds: 60)
+        XCTAssertEqual(server.storedCount, 0, "a hidden or minimized Mac counts as background")
+        server.hangs = true
+        scheduler.setHidden(false)
         await advance(seconds: 5)
-        XCTAssertEqual(server.measureCount, 1)
+        XCTAssertTrue(scheduler.isProbing)
+        scheduler.setHidden(true)
+        for _ in 0..<200 where scheduler.isProbing { try? await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(scheduler.isProbing)
+        XCTAssertNil(scheduler.freshEstimateKbps(), "a cancelled test measured nothing")
+    }
+
+    func testAServerWithoutAProbeIsLeftAlone() async {
+        server.hasTarget = false
+        await signIn()
+        await advance(seconds: Self.day)
+        XCTAssertEqual(server.targetCount, 1)
+        XCTAssertEqual(server.modes, [])
+    }
+
+    func testSigningOutForgetsTheReadings() async {
+        await signIn()
+        XCTAssertNotNil(scheduler.freshEstimateKbps())
         scheduler.setActiveServer(nil)
-        XCTAssertNil(scheduler.freshEstimateKbps(), "the reading belonged to that server")
+        XCTAssertNil(scheduler.freshEstimateKbps(), "they belonged to that server")
     }
 }
 
 /// A probe server whose answers the test sets. Main-actor isolated, so a
-/// probe runs entirely on the main actor and a few yields let it finish. Like
-/// the real one, it keeps the latest reading it is sent.
+/// test runs entirely on the main actor and a few yields let it finish. Like
+/// the real one, it keeps the latest result it is sent.
 @MainActor
 private final class FakeProbeServer: BandwidthProbeServer {
-    var result: BandwidthProbeResult = .measured(kbps: 48_000, bytes: 12_000_000, durationMs: 2_000)
+    var result: BandwidthProbeResult = .measured(kbps: 115_000, bytes: 7_187_500, durationMs: 500, lowerBound: true)
     /// The download never ends until cancelled.
     var hangs = false
     var hasTarget = true
-    var stored: BandwidthReading?
+    var targetKbps: Int? = 115_000
+    var automatic = true
+    var maxAge: TimeInterval = 7 * 24 * 60 * 60
+    var stored = BandwidthStoredReadings.none
     private(set) var storedCount = 0
     private(set) var targetCount = 0
-    private(set) var measureCount = 0
+    private(set) var modes: [BandwidthProbeMeter.Mode] = []
     private(set) var reports: [BandwidthMeasurement] = []
-
-    func storedReading() async throws -> BandwidthReading? {
-        storedCount += 1
-        return stored
-    }
 
     func target() async throws -> BandwidthProbeTarget? {
         targetCount += 1
         guard hasTarget else { return nil }
         return BandwidthProbeTarget(
-            url: URL(string: "https://silo.example/api/v2/playback/bandwidth-probe?size=40000000")!,
+            url: URL(string: "https://silo.example/api/v2/playback/bandwidth-probe")!,
+            targetKbps: targetKbps,
+            automatic: automatic,
+            maxAge: maxAge,
             auth: CapturedOrdinaryRequestAuth(
                 account: RefreshAccountIdentity(serverId: "server", serverURL: "https://silo.example",
                                                 credentialGenerationID: UUID()),
@@ -507,15 +525,20 @@ private final class FakeProbeServer: BandwidthProbeServer {
         )
     }
 
-    func measure(_ target: BandwidthProbeTarget) async throws -> BandwidthProbeResult {
-        measureCount += 1
+    func storedReadings() async throws -> BandwidthStoredReadings {
+        storedCount += 1
+        return stored
+    }
+
+    func measure(_ target: BandwidthProbeTarget, mode: BandwidthProbeMeter.Mode) async throws -> BandwidthProbeResult {
+        modes.append(mode)
         if hangs { try await Task.sleep(for: .seconds(3_600)) }
         return result
     }
 
     func report(_ measurement: BandwidthMeasurement, to target: BandwidthProbeTarget) async -> Bool {
         reports.append(measurement)
-        stored = measurement.reading
+        stored.probe = measurement.reading
         return true
     }
 }
@@ -539,6 +562,18 @@ final class ConnectionSpeedTextTests: XCTestCase {
         XCTAssertEqual(text(48_000, after: 3_600, on: "other"), "48 Mbps · measured 1 hour ago on this connection")
         XCTAssertEqual(text(48_000, after: 26 * 3_600), "48 Mbps · measured 1 day ago on Wi-Fi")
         XCTAssertEqual(text(400, after: 0), "400 kbps · measured just now on Wi-Fi")
+    }
+
+    func testALowerBoundReadsFasterThan() {
+        XCTAssertEqual(
+            VM.connectionSpeedText(kbps: 115_000, lowerBound: true, measuredAt: measured, transport: "wifi",
+                                   now: measured.addingTimeInterval(180)),
+            "Faster than 115 Mbps · measured 3 minutes ago on Wi-Fi"
+        )
+        XCTAssertEqual(
+            VM.playbackSampleText(kbps: 51_200, measuredAt: measured, now: measured.addingTimeInterval(2 * 3_600)),
+            "Faster than 51 Mbps · seen during playback 2 hours ago"
+        )
     }
 
     func testRatesReadInWholeMegabits() {

@@ -448,11 +448,13 @@ final class SettingsViewModel {
               let connection = try? await SiloAPI.shared.apiV2Client.playbackConnection(auth: auth) else {
             learnedConnectionLimit = nil
             connectionProbe = nil
+            connectionSample = nil
             autoBudgetKbps = nil
             return
         }
         learnedConnectionLimit = showsLearnedLimit ? connection.learnedLimit : nil
         connectionProbe = showsConnectionGroup ? connection.probe : nil
+        connectionSample = showsConnectionGroup ? connection.playbackSample : nil
         autoBudgetKbps = showsConnectionGroup ? connection.autoBudgetKbps : nil
     }
 
@@ -480,6 +482,8 @@ final class SettingsViewModel {
     private(set) var showsConnectionGroup = false
     /// The server's latest probe for this device on this connection.
     private(set) var connectionProbe: APIv2PlaybackConnection.Probe?
+    /// The server's playback sample for this device on this connection.
+    private(set) var connectionSample: APIv2PlaybackConnection.PlaybackSample?
     /// `auto_budget_kbps`, computed by the server; nil hides the line.
     private(set) var autoBudgetKbps: Int?
     private(set) var isTestingConnectionSpeed = false
@@ -494,17 +498,28 @@ final class SettingsViewModel {
     static let stopPlaybackToTestMessage = "Stop playback before testing, then try again."
     static let speedTestFailedMessage = "Couldn't measure the connection speed. Try again."
 
-    /// "48 Mbps · measured 3 minutes ago on Wi-Fi": the newer of the server's
-    /// probe and this device's own, or "Not measured yet".
+    /// "48 Mbps · measured 3 minutes ago on Wi-Fi", or "Faster than 115 Mbps
+    /// · …" for a lower bound: the newer of the server's speed test and this
+    /// device's own. Without one, the playback sample: "Faster than 51 Mbps ·
+    /// seen during playback 2 hours ago". Else "Not measured yet".
     @MainActor
     var connectionSpeedText: String {
-        let own = BandwidthProbeScheduler.shared.reading
+        let own = BandwidthProbeScheduler.shared.probeReading
         let server = connectionProbe
-        if let own, server.map({ own.measuredAt >= $0.measuredAt }) ?? true {
-            return Self.connectionSpeedText(kbps: own.kbps, measuredAt: own.measuredAt, transport: own.transport)
+        if let own, case .probe(let transport) = own.source,
+           server.map({ own.measuredAt >= $0.measuredAt }) ?? true {
+            return Self.connectionSpeedText(
+                kbps: own.kbps, lowerBound: own.lowerBound, measuredAt: own.measuredAt, transport: transport
+            )
         }
         if let server {
-            return Self.connectionSpeedText(kbps: server.kbps, measuredAt: server.measuredAt, transport: server.transport)
+            return Self.connectionSpeedText(
+                kbps: server.kbps, lowerBound: server.lowerBound, measuredAt: server.measuredAt,
+                transport: server.transport
+            )
+        }
+        if let sample = connectionSample {
+            return Self.playbackSampleText(kbps: sample.kbps, measuredAt: sample.measuredAt)
         }
         return Self.notMeasuredText
     }
@@ -549,29 +564,46 @@ final class SettingsViewModel {
         }
     }
 
-    /// "48 Mbps · measured 3 minutes ago on Wi-Fi". Under a minute is "just
-    /// now"; then whole minutes, hours and days, rounded down. A clock that
-    /// reads before the measurement counts as just now.
-    static func connectionSpeedText(kbps: Int, measuredAt: Date, transport: String, now: Date = Date()) -> String {
-        let minutes = max(0, Int(now.timeIntervalSince(measuredAt) / 60))
-        let age: String
-        switch minutes {
-        case ..<1: age = "just now"
-        case ..<60: age = "\(minutes) \(minutes == 1 ? "minute" : "minutes") ago"
-        case ..<(24 * 60):
-            let hours = minutes / 60
-            age = "\(hours) \(hours == 1 ? "hour" : "hours") ago"
-        default:
-            let days = minutes / (24 * 60)
-            age = "\(days) \(days == 1 ? "day" : "days") ago"
-        }
+    /// "48 Mbps · measured 3 minutes ago on Wi-Fi", or "Faster than 115 Mbps ·
+    /// measured …" for a lower bound.
+    static func connectionSpeedText(
+        kbps: Int, lowerBound: Bool = false, measuredAt: Date, transport: String, now: Date = Date()
+    ) -> String {
         let network = switch transport {
         case "wifi": "Wi-Fi"
         case "ethernet": "Ethernet"
         case "cellular": "cellular"
         default: "this connection"
         }
-        return "\(connectionRateText(kbps: kbps)) · measured \(age) on \(network)"
+        return "\(speedText(kbps: kbps, lowerBound: lowerBound)) · measured \(ageText(since: measuredAt, now: now)) on \(network)"
+    }
+
+    /// "Faster than 51 Mbps · seen during playback 2 hours ago": a playback
+    /// sample, always a lower bound.
+    static func playbackSampleText(kbps: Int, measuredAt: Date, now: Date = Date()) -> String {
+        "\(speedText(kbps: kbps, lowerBound: true)) · seen during playback \(ageText(since: measuredAt, now: now))"
+    }
+
+    private static func speedText(kbps: Int, lowerBound: Bool) -> String {
+        lowerBound ? "Faster than \(connectionRateText(kbps: kbps))" : connectionRateText(kbps: kbps)
+    }
+
+    /// Under a minute is "just now"; then whole minutes, hours and days,
+    /// rounded down. A clock that reads before `date` counts as just now.
+    private static func ageText(since date: Date, now: Date) -> String {
+        let minutes = max(0, Int(now.timeIntervalSince(date) / 60))
+        switch minutes {
+        case ..<1:
+            return "just now"
+        case ..<60:
+            return "\(minutes) \(minutes == 1 ? "minute" : "minutes") ago"
+        case ..<(24 * 60):
+            let hours = minutes / 60
+            return "\(hours) \(hours == 1 ? "hour" : "hours") ago"
+        default:
+            let days = minutes / (24 * 60)
+            return "\(days) \(days == 1 ? "day" : "days") ago"
+        }
     }
 
     /// A speed in whole megabits per second, rounded to the nearest, or in

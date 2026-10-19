@@ -10389,15 +10389,9 @@ extension PlayerViewModel {
             })
         }
         #elseif os(macOS)
-        let names = [NSApplication.didHideNotification, NSApplication.didUnhideNotification,
-                     NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification]
-        for name in names {
+        for name in MacAppVisibility.changeNotifications {
             surfaceVisibilityObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    let app = NSApplication.shared
-                    self?.isPlayerSurfaceHidden = app.isHidden
-                        || app.windows.filter(\.canBecomeMain).allSatisfy { $0.isMiniaturized || !$0.isVisible }
-                }
+                Task { @MainActor [weak self] in self?.isPlayerSurfaceHidden = MacAppVisibility.isHidden }
             })
         }
         #endif

@@ -198,6 +198,13 @@ struct APIv2PlaybackCapabilities: Decodable {
     /// With `connection_speed_v1`: the bandwidth probe on the path this
     /// client's media takes, on the origin the request arrived on.
     let bandwidthProbeUrl: String?
+    /// The rate a quick speed test has to prove; absent when the server has
+    /// no target.
+    let bandwidthProbeTargetKbps: Int?
+    /// False when the admin turned automatic speed tests off.
+    let bandwidthProbeAutomatic: Bool?
+    /// How long a speed reading stays current.
+    let bandwidthProbeMaxAgeSeconds: Int?
 
     static let notConfigured = PlaybackV3TerminalFailure(reason: "playback_not_configured",
         message: "API v2 playback is not configured on this server. Ask the server administrator to finish playback setup.",
@@ -248,17 +255,38 @@ struct APIv2PlaybackConnection: Decodable, Equatable, Sendable {
         let measuredAt: Date
         /// `wifi`, `ethernet`, `cellular` or `other`.
         let transport: String
+        /// The link is at least this fast: a quick test that reached its
+        /// target, or a result over the probe's ceiling. Absent means false.
+        let lowerBound: Bool
+
+        private enum CodingKeys: String, CodingKey { case kbps, measuredAt, transport, lowerBound }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            kbps = try container.decode(Int.self, forKey: .kbps)
+            measuredAt = try container.decode(Date.self, forKey: .measuredAt)
+            transport = try container.decode(String.self, forKey: .transport)
+            lowerBound = (try? container.decodeIfPresent(Bool.self, forKey: .lowerBound)) ?? false
+        }
+    }
+
+    /// The throughput a plan's media requests received, kept as a lower
+    /// bound on the link.
+    struct PlaybackSample: Decodable, Equatable, Sendable {
+        let kbps: Int
+        let measuredAt: Date
     }
 
     /// `local`, `remote`, or `provider:<name>`.
     let connection: String
     let learnedLimit: LearnedLimit?
     let probe: Probe?
+    let playbackSample: PlaybackSample?
     /// Computed by the server; clients display it and never compute it.
     let autoBudgetKbps: Int?
 
     private enum CodingKeys: String, CodingKey {
-        case connection, learnedLimit, probe, autoBudgetKbps
+        case connection, learnedLimit, probe, playbackSample, autoBudgetKbps
     }
 
     init(from decoder: Decoder) throws {
@@ -266,6 +294,7 @@ struct APIv2PlaybackConnection: Decodable, Equatable, Sendable {
         connection = try container.decode(String.self, forKey: .connection)
         learnedLimit = (try? container.decodeIfPresent(LearnedLimit.self, forKey: .learnedLimit)) ?? nil
         probe = (try? container.decodeIfPresent(Probe.self, forKey: .probe)) ?? nil
+        playbackSample = (try? container.decodeIfPresent(PlaybackSample.self, forKey: .playbackSample)) ?? nil
         autoBudgetKbps = (try? container.decodeIfPresent(Int.self, forKey: .autoBudgetKbps)) ?? nil
     }
 }
@@ -278,6 +307,18 @@ struct APIv2PlaybackBandwidthProbeResult: Encodable, Equatable, Sendable {
     let durationMs: Int
     /// `wifi`, `ethernet`, `cellular` or `other`.
     let transport: String
+    /// The link is at least `kbps`. Sent only when true: `false` is the
+    /// default, and a server from before the speed-test redesign refuses
+    /// the member.
+    let lowerBound: Bool?
+
+    init(kbps: Int, bytes: Int, durationMs: Int, transport: String, lowerBound: Bool) {
+        self.kbps = kbps
+        self.bytes = bytes
+        self.durationMs = durationMs
+        self.transport = transport
+        self.lowerBound = lowerBound ? true : nil
+    }
 }
 
 /// Delegated credential for one owner-bound control handshake; never persisted.

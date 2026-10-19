@@ -1,141 +1,205 @@
 import Foundation
 
-/// The bandwidth probe, ported from the web player's `bandwidth-probe.ts`
-/// (and Android's `BandwidthProbe.kt`) with its constants and windowing
-/// unchanged. Spec: the server repo's
-/// `docs/design/2026-10-17-buffering-quality.md`, "Probe on Android and Apple".
+/// The connection speed test. Spec: the server repo's
+/// `docs/design/2026-10-17-buffering-quality.md`, "Connection speed test";
+/// the vectors' `probe_cases` pin its arithmetic (``BandwidthProbeMeter``).
+///
+/// It measures the path the media takes over one connection, because playback
+/// reads through one connection: one `AVIOReader` pump, or one Aether relay
+/// request per AVPlayer request.
 enum BandwidthProbe {
-    /// Bytes requested (`?size=`); the time budget usually ends the transfer
-    /// first.
-    static let requestedBytes = 40_000_000
-    /// How long to keep timing once bytes flow: enough to see past TCP
-    /// ramp-up.
-    static let timeBudgetMs = 2_000
-    /// A probe that has not delivered its first byte by then is abandoned.
+    /// `PROBE_WINDOW_MS`: bytes count in the window they arrive in.
+    static let windowMs = 500
+    /// `QUICK_PROBE_BYTES`, `QUICK_PROBE_MAX_MS`, `QUICK_SETTLE_WINDOWS`.
+    static let quickBytes = 100_000_000
+    static let quickMaxMs = 3_000
+    static let quickSettleWindows = 2
+    /// `ACCURATE_PROBE_BYTES`, `ACCURATE_PROBE_MAX_MS`,
+    /// `ACCURATE_SETTLE_WINDOWS`.
+    static let accurateBytes = 1_000_000_000
+    static let accurateMaxMs = 10_000
+    static let accurateSettleWindows = 6
+    /// `PROBE_FIRST_BYTE_DEADLINE_MS`: a test whose first byte has not arrived
+    /// by then is abandoned.
     static let firstByteDeadlineMs = 10_000
-    /// Slack past the time budget before a read that has stopped returning is
-    /// cut off; the rate is then taken from the bytes that did arrive.
-    static let stalledReadGraceMs = 500
-    /// Ramp-up excluded from the rate when the probe ran long enough to spare
-    /// it.
-    static let warmupMs = 300
-    /// The shortest timed window, or smallest byte count, that yields a
-    /// usable rate.
-    static let minWindowMs = 200
-    static let minBytes = 1_000_000
-    /// The contract bounds `bandwidth_estimate_kbps` to this range.
-    static let minEstimateKbps = 100
-    static let maxEstimateKbps = 1_000_000
+    /// `MIN_PROBE_KBPS`: a slower result measured nothing.
+    static let minKbps = 100
+    /// `MAX_PROBE_KBPS`: a faster result is reported as this, as a lower
+    /// bound. It is also the contract's ceiling on `bandwidth_estimate_kbps`.
+    static let maxKbps = 1_000_000
 
-    /// The URL a probe downloads: the advertised `bandwidth_probe_url`,
-    /// resolved against `serverURL` when it is relative, asking for
-    /// ``requestedBytes``.
-    static func downloadURL(serverURL: URL, advertised: String) -> URL? {
+    /// The URL a test downloads: the advertised `bandwidth_probe_url`,
+    /// resolved against `serverURL` when it is relative, asking for `bytes`.
+    static func downloadURL(serverURL: URL, advertised: String, bytes: Int) -> URL? {
         guard let resolved = URL(string: advertised, relativeTo: serverURL)?.absoluteURL,
               var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false),
               components.scheme == "http" || components.scheme == "https" else {
             return nil
         }
         var items = (components.queryItems ?? []).filter { $0.name != "size" }
-        items.append(URLQueryItem(name: "size", value: String(requestedBytes)))
+        items.append(URLQueryItem(name: "size", value: String(bytes)))
         components.queryItems = items
         return components.url
     }
-
-    /// `kbps` rounded and capped to the contract's range, or nil below its
-    /// floor.
-    static func clampKbps(_ kbps: Double) -> Int? {
-        guard kbps.isFinite, kbps >= Double(minEstimateKbps) else { return nil }
-        return min(Int(kbps.rounded()), maxEstimateKbps)
-    }
 }
 
-/// One probe download, timed: a rate, or why there is none.
+/// One test download, timed: a rate, or why there is none.
 enum BandwidthProbeResult: Equatable {
-    /// `kbps` measured from `bytes` over `durationMs`, the window the rate
-    /// was taken over.
-    case measured(kbps: Int, bytes: Int, durationMs: Int)
-    /// HTTP 429: the server allows another probe after `retryAfterSeconds`.
+    /// `kbps` measured from `bytes` over `durationMs`, the windows the rate
+    /// came from. A `lowerBound` says the link is at least this fast.
+    case measured(kbps: Int, bytes: Int, durationMs: Int, lowerBound: Bool)
+    /// HTTP 429: the server allows another test after `retryAfterSeconds`.
     case rateLimited(retryAfterSeconds: Int)
     /// The server refused the download with `status`, for example a
-    /// proxy-only policy with no proxy that serves probes. The probe never
+    /// proxy-only policy with no proxy that serves probes. The test never
     /// falls back to measuring another path.
     case unavailable(status: Int)
-    /// The transfer moved too little data, in too short a window, to mean
-    /// anything.
+    /// No complete window after window 0, or a rate under the floor.
     case tooLittleData
     /// The request failed, or no byte arrived by
     /// ``BandwidthProbe/firstByteDeadlineMs``.
     case networkError(String)
 }
 
-/// The window arithmetic of one probe, apart from any I/O. Feed it each chunk
-/// with the time it arrived (``onChunk(at:size:)``), or the time a stalled
-/// read was cut off (``cutOff(at:)``), then read ``result()``. Times are
-/// milliseconds on a monotonic clock.
+/// The speed test's arithmetic, apart from any I/O, as the spec's
+/// "Measuring" defines it and `probe_cases` pins it. Times are milliseconds
+/// after the first byte.
 ///
-/// The clock starts at the first chunk, so request latency and server setup do
-/// not count against the link; that chunk's bytes are not counted either,
-/// since they arrived before the window opened.
-struct BandwidthProbeWindow {
-    private(set) var start: Int?
-    private var warmAt: Int?
-    private var warmBytes = 0
-    private var bytes = 0
-    private var now = 0
-
-    /// Records `size` bytes arriving at `at`. True once the time budget is
-    /// spent.
-    mutating func onChunk(at: Int, size: Int) -> Bool {
-        now = at
-        guard let start else {
-            self.start = at
-            return false
-        }
-        bytes += size
-        if warmAt == nil, at - start >= BandwidthProbe.warmupMs {
-            warmAt = at
-            warmBytes = bytes
-        }
-        return at - start >= BandwidthProbe.timeBudgetMs
+/// Window `k` covers `[500k, 500k + 500)`. Window 0 is TCP ramp-up and never
+/// counts; a window counts once the clock passes its end, at 0 if nothing
+/// arrived in it, so a stalled transfer lowers the result.
+/// - A quick test with a target stops at the end of the first window after
+///   window 0 whose rate reaches the target, and reports the target as a
+///   lower bound. Otherwise it reports the settled rate.
+/// - The settled rate is over the last complete windows after window 0 that
+///   fill the span (2 quick, 6 accurate), or all of them when there are fewer.
+struct BandwidthProbeMeter {
+    enum Mode: Equatable {
+        /// Automatic. `targetKbps` is the server's `bandwidth_probe_target_kbps`.
+        case quick(targetKbps: Int?)
+        /// **Test speed** only.
+        case accurate
     }
 
-    /// Ends the window at `at`: the silent stretch of a stalled read counts
-    /// against the rate.
-    mutating func cutOff(at: Int) {
-        now = at
+    struct Measurement: Equatable {
+        let kbps: Int
+        let lowerBound: Bool
+        /// The bytes and span of the windows the rate came from.
+        let bytes: Int
+        let durationMs: Int
     }
 
-    func result() -> BandwidthProbeResult {
-        guard let start, now > start else { return .tooLittleData }
-        let elapsed = now - start
-        if elapsed < BandwidthProbe.minWindowMs, bytes < BandwidthProbe.minBytes { return .tooLittleData }
-        // Prefer the rate after ramp-up when at least as much time followed it.
-        if let warmAt, now - warmAt >= warmAt - start {
-            let timed = bytes - warmBytes
-            guard let kbps = BandwidthProbe.clampKbps(Double(timed) * 8 / Double(now - warmAt)) else {
-                return .tooLittleData
+    let mode: Mode
+    /// `size=` for the request.
+    let requestedBytes: Int
+    /// The test stops this long after the first byte.
+    let maxMs: Int
+    private let settleWindows: Int
+
+    /// Bytes per window, by index.
+    private var windowBytes: [Int] = []
+    /// Windows whose end the clock has passed.
+    private(set) var closedWindows = 0
+    /// When the test stopped reading; nil while it runs.
+    private(set) var stoppedAt: Int?
+    /// The window that reached the quick test's target.
+    private var targetWindow: Int?
+
+    init(mode: Mode) {
+        self.mode = mode
+        switch mode {
+        case .quick:
+            requestedBytes = BandwidthProbe.quickBytes
+            maxMs = BandwidthProbe.quickMaxMs
+            settleWindows = BandwidthProbe.quickSettleWindows
+        case .accurate:
+            requestedBytes = BandwidthProbe.accurateBytes
+            maxMs = BandwidthProbe.accurateMaxMs
+            settleWindows = BandwidthProbe.accurateSettleWindows
+        }
+    }
+
+    /// The clock reached `t`: closes every window that ended by then, which
+    /// can stop a quick test on its target, and stops any test at its limit.
+    /// True once the test has stopped.
+    @discardableResult
+    mutating func advance(to t: Int) -> Bool {
+        guard stoppedAt == nil else { return true }
+        let now = min(t, maxMs)
+        while (closedWindows + 1) * BandwidthProbe.windowMs <= now {
+            let window = closedWindows
+            closedWindows += 1
+            if window > 0, case .quick(let target?) = mode, rate(of: window) >= target {
+                targetWindow = window
+                stoppedAt = closedWindows * BandwidthProbe.windowMs
+                return true
             }
-            return .measured(kbps: kbps, bytes: timed, durationMs: now - warmAt)
         }
-        // bytes × 8 bits / ms = kbit/s.
-        guard let kbps = BandwidthProbe.clampKbps(Double(bytes) * 8 / Double(elapsed)) else {
-            return .tooLittleData
+        if t >= maxMs {
+            stoppedAt = maxMs
+            return true
         }
-        return .measured(kbps: kbps, bytes: bytes, durationMs: elapsed)
+        return false
+    }
+
+    /// `bytes` arrived at `t`. Bytes after the test stopped do not count.
+    mutating func receive(_ bytes: Int, at t: Int) {
+        guard !advance(to: t) else { return }
+        let window = t / BandwidthProbe.windowMs
+        if windowBytes.count <= window {
+            windowBytes.append(contentsOf: repeatElement(0, count: window + 1 - windowBytes.count))
+        }
+        windowBytes[window] += bytes
+    }
+
+    /// The transfer ended at `t`. A window it cut short does not count.
+    mutating func transferEnded(at t: Int) {
+        guard !advance(to: t) else { return }
+        stoppedAt = t
+    }
+
+    /// What the test measured once it stopped; nil when it measured nothing.
+    var result: Measurement? {
+        guard stoppedAt != nil else { return nil }
+        if let targetWindow, case .quick(let target?) = mode {
+            return Measurement(
+                kbps: target, lowerBound: true,
+                bytes: bytes(of: targetWindow), durationMs: BandwidthProbe.windowMs
+            )
+        }
+        let complete = closedWindows - 1
+        guard complete > 0 else { return nil }
+        let count = min(settleWindows, complete)
+        let bytes = (closedWindows - count..<closedWindows).reduce(0) { $0 + self.bytes(of: $1) }
+        let durationMs = count * BandwidthProbe.windowMs
+        let kbps = bytes * 8 / durationMs
+        guard kbps >= BandwidthProbe.minKbps else { return nil }
+        if kbps > BandwidthProbe.maxKbps {
+            return Measurement(kbps: BandwidthProbe.maxKbps, lowerBound: true, bytes: bytes, durationMs: durationMs)
+        }
+        return Measurement(kbps: kbps, lowerBound: false, bytes: bytes, durationMs: durationMs)
+    }
+
+    private func bytes(of window: Int) -> Int {
+        window < windowBytes.count ? windowBytes[window] : 0
+    }
+
+    /// `floor(bytes × 8 / 500)` kbps.
+    private func rate(of window: Int) -> Int {
+        bytes(of: window) * 8 / BandwidthProbe.windowMs
     }
 }
 
-/// Times one probe download on its own session, reading bytes as they arrive.
+/// Runs one test on its own session, reading bytes as they arrive and timing
+/// them with a ``BandwidthProbeMeter``.
 ///
-/// A probe that has not delivered its first byte within
-/// ``BandwidthProbe/firstByteDeadlineMs`` of being asked for is abandoned.
-/// Once bytes flow it is timed for ``BandwidthProbe/timeBudgetMs``; a transfer
-/// that stops delivering is cut off ``BandwidthProbe/stalledReadGraceMs`` after
-/// that, and the rate is taken from what arrived. Finishing cancels the
+/// The meter's clock starts at the first byte of the body, so request latency
+/// does not count. A tick every window closes windows in which nothing
+/// arrived. A test whose first byte has not arrived within
+/// ``BandwidthProbe/firstByteDeadlineMs`` is abandoned. Stopping cancels the
 /// transfer, and the server stops at its next write.
 ///
-/// The session refuses cellular, expensive and constrained paths, so a probe
+/// The session refuses cellular, expensive and constrained paths, so a test
 /// cannot spend metered data even if the caller's check raced a network
 /// change. A redirect, to the proxy that serves the media, is followed
 /// without the account's credentials: the proxy URL carries its own token.
@@ -148,18 +212,25 @@ final class BandwidthProbeDownload: NSObject, URLSessionDataDelegate, @unchecked
     private let clock: @Sendable () -> Int
     /// Everything below is confined to this queue.
     private let queue = DispatchQueue(label: "org.siloserver.silo.bandwidth-probe")
-    private var window = BandwidthProbeWindow()
+    private var meter: BandwidthProbeMeter
+    private var firstByteAt: Int?
+    private var tick: DispatchSourceTimer?
     private var session: URLSession?
     private var continuation: CheckedContinuation<BandwidthProbeResult?, Never>?
     private var isFinished = false
 
     init(
+        mode: BandwidthProbeMeter.Mode,
         configuration: URLSessionConfiguration = BandwidthProbeDownload.defaultConfiguration(),
         clock: @escaping @Sendable () -> Int = { Int(DispatchTime.now().uptimeNanoseconds / 1_000_000) }
     ) {
+        meter = BandwidthProbeMeter(mode: mode)
         self.configuration = configuration
         self.clock = clock
     }
+
+    /// The `size=` this test asks for.
+    var requestedBytes: Int { meter.requestedBytes }
 
     static func defaultConfiguration() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.ephemeral
@@ -201,9 +272,26 @@ final class BandwidthProbeDownload: NSObject, URLSessionDataDelegate, @unchecked
         self.session = session
         session.dataTask(with: request).resume()
         queue.asyncAfter(deadline: .now() + .milliseconds(BandwidthProbe.firstByteDeadlineMs)) {
-            guard !self.isFinished, self.window.start == nil else { return }
+            guard !self.isFinished, self.firstByteAt == nil else { return }
             self.finish(.networkError("No probe byte arrived in time."))
         }
+    }
+
+    /// Milliseconds since the first byte.
+    private var elapsed: Int {
+        clock() - (firstByteAt ?? clock())
+    }
+
+    /// The test stopped: its measurement, or why there is none.
+    private func finishMeasured() {
+        guard let measurement = meter.result else {
+            finish(.tooLittleData)
+            return
+        }
+        finish(.measured(
+            kbps: measurement.kbps, bytes: measurement.bytes,
+            durationMs: measurement.durationMs, lowerBound: measurement.lowerBound
+        ))
     }
 
     /// Resumes the caller once, with `result` or nil for a cancellation, and
@@ -211,6 +299,8 @@ final class BandwidthProbeDownload: NSObject, URLSessionDataDelegate, @unchecked
     private func finish(_ result: BandwidthProbeResult?) {
         guard !isFinished else { return }
         isFinished = true
+        tick?.cancel()
+        tick = nil
         session?.invalidateAndCancel()
         session = nil
         continuation?.resume(returning: result)
@@ -241,29 +331,36 @@ final class BandwidthProbeDownload: NSObject, URLSessionDataDelegate, @unchecked
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard !isFinished else { return }
-        let firstChunk = window.start == nil
-        if window.onChunk(at: clock(), size: data.count) {
-            finish(window.result())
-            return
+        if firstByteAt == nil {
+            firstByteAt = clock()
+            startTick()
         }
-        guard firstChunk else { return }
-        // Ends a transfer that stops delivering, which the budget check above
-        // would never reach. The silent stretch counts against the rate.
-        let cutOff = BandwidthProbe.timeBudgetMs + BandwidthProbe.stalledReadGraceMs
-        queue.asyncAfter(deadline: .now() + .milliseconds(cutOff)) {
-            guard !self.isFinished else { return }
-            self.window.cutOff(at: self.clock())
-            self.finish(self.window.result())
+        meter.receive(data.count, at: elapsed)
+        if meter.stoppedAt != nil { finishMeasured() }
+    }
+
+    /// Closes windows on the clock, not only when data arrives.
+    private func startTick() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        let window = DispatchTimeInterval.milliseconds(BandwidthProbe.windowMs)
+        timer.schedule(deadline: .now() + window, repeating: window, leeway: .milliseconds(10))
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.isFinished else { return }
+            if self.meter.advance(to: self.elapsed) { self.finishMeasured() }
         }
+        tick = timer
+        timer.resume()
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard !isFinished else { return }
         if let error {
             finish(.networkError(error.localizedDescription))
+        } else if firstByteAt == nil {
+            finish(.tooLittleData)
         } else {
-            // The server sent every byte before the budget ran out.
-            finish(window.result())
+            meter.transferEnded(at: elapsed)
+            finishMeasured()
         }
     }
 
