@@ -47,6 +47,10 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         var connections = 0
         var holdTransportSend = false
         var transportWaiters: [CheckedContinuation<Void, Never>] = []
+        var holdNextLobbySend = false
+        var lobbyWaiters: [CheckedContinuation<Void, Error>] = []
+        var lobbyCompletions = 0
+        var lobbyCompletionWasCancelled = false
         private var continuation: AsyncThrowingStream<WatchPartySocket.Event, Error>.Continuation?
 
         func connect(serverURL: String, roomId: String, ticket: WatchPartySocketTicket) throws -> AsyncThrowingStream<WatchPartySocket.Event, Error> {
@@ -61,6 +65,15 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         func send(_ message: WatchPartyClientMessage) async throws {
             if failSend { throw WatchPartySocketError.closed }
             sent.append(message)
+            if message.type == "lobby_ready", holdNextLobbySend {
+                holdNextLobbySend = false
+                do { try await withCheckedThrowingContinuation { lobbyWaiters.append($0) } }
+                catch {
+                    lobbyCompletions += 1
+                    lobbyCompletionWasCancelled = Task.isCancelled
+                    throw error
+                }
+            }
             if message.type == "transport_request", holdTransportSend {
                 await withCheckedContinuation { transportWaiters.append($0) }
             }
@@ -100,8 +113,12 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         var onFailure: ((String?, String) -> Void)?
         var heldTarget: Double?
         var releases = 0
+        var appliedActions: [WatchPartyPlaybackAction] = []
         func prepare(_ context: WatchPartyPlaybackContext) { self.context = context }
-        func apply(_ action: WatchPartyPlaybackAction, origin: WatchPartySeekOrigin) async throws -> WatchPartyPlaybackSnapshot { snapshot }
+        func apply(_ action: WatchPartyPlaybackAction, origin: WatchPartySeekOrigin) async throws -> WatchPartyPlaybackSnapshot {
+            appliedActions.append(action)
+            return snapshot
+        }
         func correct(to position: Double, seekBand: Double) async throws -> WatchPartyPlaybackSnapshot { snapshot }
         func cancelCorrection() {}
         func roomSeekArrived(at position: Double) {}
@@ -179,6 +196,7 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         addTeardownBlock { @MainActor in
             validationGate?.release()
             socket.transportWaiters.forEach { $0.resume() }; socket.transportWaiters.removeAll()
+            socket.lobbyWaiters.forEach { $0.resume(throwing: CancellationError()) }; socket.lobbyWaiters.removeAll()
             session.leave(forgetRecent: true)
             clock.finish()
             _ = await tokens.clearTokens()
@@ -210,6 +228,222 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         f.socket.emit(.snapshot(room))
         await waitUntil { f.session.room?.attachedSessionId == "synthetic-playback" }
         return (f, playback)
+    }
+
+    func testQueuedSeekPrecedesLaterPauseWithoutShorteningItsWindow() async throws {
+        let (f, playback) = try await playingFixture()
+        playback.snapshot.isPlaying = true
+        XCTAssertTrue(playback.request(.seek(70)))
+        let deadline = f.clock.now + 0.25
+        await waitUntil { f.clock.hasDeadline(deadline) }
+        f.clock.advance(0.1)
+        XCTAssertTrue(playback.request(.pause))
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
+        f.clock.advance(0.149)
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
+        f.clock.advance(0.002)
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+        let messages = f.socket.sent.filter { $0.type == "transport_request" }
+        XCTAssertEqual(messages.map(\.action), [.seek, .pause])
+        XCTAssertEqual(messages.first?.positionSeconds, 70)
+        XCTAssertEqual(messages.first?.isPaused, false)
+    }
+
+    func testSeekBatchAndFollowingControlStayOrderedAcrossSuspendedSend() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.seek(70)))
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+        XCTAssertTrue(playback.request(.pause))
+        f.socket.holdTransportSend = true
+        f.clock.advance(0.251)
+        await waitUntil { f.socket.transportWaiters.count == 1 }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), [.seek])
+        XCTAssertTrue(playback.request(.play))
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1)
+        f.socket.holdTransportSend = false
+        f.socket.transportWaiters.removeFirst().resume()
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 3 }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), [.seek, .pause, .play])
+    }
+
+    func testSeekWindowKeepsLatestTargetAndEveryDistinctFollowingControlInOrder() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.seek(70)))
+        let deadline = f.clock.now + 0.25
+        await waitUntil { f.clock.hasDeadline(deadline) }
+        f.clock.advance(0.05)
+        XCTAssertTrue(playback.request(.pause))
+        f.clock.advance(0.05)
+        XCTAssertTrue(playback.request(.seek(80)))
+        f.clock.advance(0.05)
+        XCTAssertTrue(playback.request(.play))
+        f.clock.advance(0.05)
+        XCTAssertTrue(playback.request(.pause))
+        f.clock.advance(0.04)
+        XCTAssertTrue(playback.request(.seek(90)))
+        XCTAssertEqual(playback.heldTarget, 90)
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
+        f.clock.advance(0.011)
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 4 }
+        let messages = f.socket.sent.filter { $0.type == "transport_request" }
+        XCTAssertEqual(messages.map(\.action), [.seek, .pause, .play, .pause])
+        XCTAssertEqual(messages.first?.positionSeconds, 90)
+        XCTAssertEqual(Set(messages.compactMap(\.requestId)).count, 4)
+        XCTAssertTrue(playback.request(.seek(100)))
+        let nextDeadline = f.clock.now + 0.25
+        await waitUntil { f.clock.hasDeadline(nextDeadline) }
+        f.clock.advance(0.249)
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 4)
+        f.clock.advance(0.002)
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 5 }
+        XCTAssertEqual(f.socket.sent.last { $0.type == "transport_request" }?.positionSeconds, 100)
+    }
+
+    func testAuthorityChangeDiscardsSeekAndFollowingControlsWithoutReplay() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.seek(70)))
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+        XCTAssertTrue(playback.request(.pause))
+        let releases = playback.releases
+        var room = try XCTUnwrap(f.session.room)
+        room.generation += 1
+        f.socket.emit(.snapshot(room))
+        await waitUntil { f.session.room?.generation == room.generation }
+        XCTAssertNil(playback.heldTarget)
+        XCTAssertEqual(playback.releases, releases + 1)
+        XCTAssertTrue(f.session.workStatusMessage?.contains("not sent") == true)
+        f.clock.advance(0.3)
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
+    }
+
+    func testOldLobbyFailureAfterRealLeaveAndJoinCannotEraseReplacementDesire() async throws {
+        // Include a replacement with the same bool: value equality is not ownership.
+        for replacement in [false, true] {
+            let f = try await fixture()
+            f.socket.holdNextLobbySend = true
+            f.session.setLobbyReady(true)
+            await waitUntil { f.socket.lobbyWaiters.count == 1 }
+            f.session.leaveRoom()
+            XCTAssertEqual(f.session.connection, .idle)
+            let joined = await f.session.join(code: "TESTROOM")
+            XCTAssertTrue(joined)
+            await waitUntil { f.socket.connections == 2 && f.session.connection == .connected }
+            f.session.setLobbyReady(replacement)
+            await waitUntil { f.socket.sent.filter { $0.type == "lobby_ready" }.count == 2 }
+            let current = try XCTUnwrap(f.socket.sent.last { $0.type == "lobby_ready" })
+            let status = f.session.workStatusMessage
+            let reads = f.stub.requestedPaths.filter { $0 == "/api/v2/watch-together/rooms/synthetic-room" }.count
+            f.socket.lobbyWaiters.removeFirst().resume(throwing: WatchPartySocketError.closed)
+            await waitUntil { f.socket.lobbyCompletions == 1 }
+            for _ in 0..<30 { await Task.yield() }
+            XCTAssertFalse(f.socket.lobbyCompletionWasCancelled)
+            XCTAssertEqual(f.session.lobbyReadyDesired, replacement)
+            XCTAssertEqual(f.session.workStatusMessage, status)
+            XCTAssertEqual(f.stub.requestedPaths.filter { $0 == "/api/v2/watch-together/rooms/synthetic-room" }.count, reads)
+            f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: current.requestId,
+                retryAfterMilliseconds: 1000, workStarted: false)))
+            await waitUntil { f.session.workStatusMessage?.contains("delayed") == true }
+            f.clock.advance(0.9)
+            for _ in 0..<30 { await Task.yield() }
+            XCTAssertEqual(f.socket.sent.filter { $0.type == "lobby_ready" }.count, 2)
+            f.clock.advance(0.6)
+            await waitUntil { f.socket.sent.filter { $0.type == "lobby_ready" }.count == 3 }
+            let retry = try XCTUnwrap(f.socket.sent.last { $0.type == "lobby_ready" })
+            XCTAssertEqual(retry.ready, replacement)
+            f.socket.emit(.actionResult(requestId: retry.requestId, action: "lobby_ready", status: "applied"))
+            await waitUntil { f.session.lobbyReadyDesired == nil }
+        }
+    }
+
+    func testOlderLobbyFailureCannotOwnANewerToggleBackToTheSameValue() async throws {
+        let f = try await fixture()
+        f.socket.holdNextLobbySend = true
+        f.session.setLobbyReady(true)
+        await waitUntil { f.socket.lobbyWaiters.count == 1 }
+        let old = try XCTUnwrap(f.socket.sent.last { $0.type == "lobby_ready" })
+        f.session.setLobbyReady(false)
+        f.session.setLobbyReady(true)
+        let status = f.session.workStatusMessage
+        let reads = f.stub.requestedPaths.count
+        f.socket.lobbyWaiters.removeFirst().resume(throwing: WatchPartySocketError.closed)
+        await waitUntil { f.socket.lobbyCompletions == 1 }
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.session.lobbyReadyDesired, true)
+        XCTAssertEqual(f.session.workStatusMessage, status)
+        XCTAssertEqual(f.stub.requestedPaths.count, reads)
+        f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: old.requestId,
+            retryAfterMilliseconds: 250, workStarted: false)))
+        await waitUntil { f.session.workStatusMessage?.contains("delayed") == true }
+        f.clock.advance(0.5)
+        await waitUntil { f.socket.sent.filter { $0.type == "lobby_ready" }.count == 2 }
+        let retry = try XCTUnwrap(f.socket.sent.last { $0.type == "lobby_ready" })
+        XCTAssertEqual(retry.ready, true)
+    }
+
+    func testCurrentLobbyFailureStillReconcilesAndNeverMarksReadinessSaved() async throws {
+        let f = try await fixture()
+        f.socket.holdNextLobbySend = true
+        f.session.setLobbyReady(true)
+        await waitUntil { f.socket.lobbyWaiters.count == 1 }
+        let reads = f.stub.requestedPaths.filter { $0 == "/api/v2/watch-together/rooms/synthetic-room" }.count
+        f.socket.lobbyWaiters.removeFirst().resume(throwing: WatchPartySocketError.closed)
+        await waitUntil { f.session.lobbyReadyDesired == nil && f.session.workStatusMessage?.contains("could not be confirmed") == true }
+        await waitUntil { f.stub.requestedPaths.filter { $0 == "/api/v2/watch-together/rooms/synthetic-room" }.count == reads + 1 }
+        XCTAssertFalse(f.session.room?.members.first(where: \.isSelf)?.lobbyReady ?? true)
+        f.clock.advance(0.5)
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "lobby_ready" }.count, 1)
+    }
+
+    func testReportEchoCannotEraseFreshGenerationDiscardNotice() async throws {
+        let (f, playback) = try await playingFixture()
+        f.socket.emit(.transport(.init(commandId: "synthetic-command", sessionId: "synthetic-playback", selectionRevision: 1,
+            action: .pause, positionSeconds: 30, executeAt: .distantPast, issuedAt: Date(), playbackState: .paused)))
+        await waitUntil { !playback.appliedActions.isEmpty }
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+        f.clock.advance(0.5)
+        await waitUntil { f.socket.sent.contains { $0.type == "state_report" } }
+        XCTAssertTrue(playback.request(.seek(70)))
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+        let releases = playback.releases
+        var room = try XCTUnwrap(f.session.room)
+        room.generation += 1
+        room.members[1].isReady = true
+        f.socket.emit(.snapshot(room))
+        await waitUntil { f.session.room?.generation == room.generation }
+        XCTAssertNil(playback.heldTarget)
+        XCTAssertEqual(playback.releases, releases + 1)
+        XCTAssertTrue(f.session.workStatusMessage?.contains("not sent") == true)
+        f.clock.advance(0.3)
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
+    }
+
+    func testSameGenerationReportEchoKeepsTheQueuedSeekEligible() async throws {
+        let (f, playback) = try await playingFixture()
+        f.socket.emit(.transport(.init(commandId: "synthetic-command", sessionId: "synthetic-playback", selectionRevision: 1,
+            action: .pause, positionSeconds: 30, executeAt: .distantPast, issuedAt: Date(), playbackState: .paused)))
+        await waitUntil { !playback.appliedActions.isEmpty }
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+        f.clock.advance(0.5)
+        await waitUntil { f.socket.sent.contains { $0.type == "state_report" } }
+        XCTAssertTrue(playback.request(.seek(70)))
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+        let releases = playback.releases
+        let generation = try XCTUnwrap(f.session.room?.generation)
+        f.socket.emit(.snapshot(try XCTUnwrap(f.session.room)))
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.session.room?.generation, generation)
+        XCTAssertEqual(playback.heldTarget, 70)
+        XCTAssertEqual(playback.releases, releases)
+        f.clock.advance(0.251)
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
     }
 
     func testOldLobbySnapshotCannotSaveUnsentOppositeReplacement() async throws {
@@ -525,11 +759,11 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
                     XCTAssertTrue(window.drawHierarchy(in: window.bounds, afterScreenUpdates: true))
                 }
                 let attachment = XCTAttachment(image: image)
-                attachment.name = "C30 synthetic lobby \(name) \(Int(size.width))x\(Int(size.height))"
+                attachment.name = "Synthetic recovery lobby \(name) \(Int(size.width))x\(Int(size.height))"
                 attachment.lifetime = .keepAlways
                 add(attachment)
                 let traits = XCTAttachment(string: "Native viewport \(size); idiom \(host.traitCollection.userInterfaceIdiom.rawValue); horizontal size class \(host.traitCollection.horizontalSizeClass.rawValue)")
-                traits.name = "C30 native traits \(name)"
+                traits.name = "Recovery fixture traits \(name)"
                 traits.lifetime = .keepAlways
                 add(traits)
             }

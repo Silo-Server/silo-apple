@@ -21,9 +21,9 @@ ID and payload, runs once within five seconds, and requires unchanged engagement
 socket, room, selection, generation, playback session, command, and authority.
 An acknowledgement timeout, failed send, disconnect, downstream error, or identity
 change causes reconciliation and visible uncertainty without transport replay.
-Distinct play and pause requests remain separate. Absolute seeks retain their
-latest target in one 250 ms input window; the player's existing held seek shows
-the pending target immediately.
+Distinct play and pause requests remain separate and follow any queued seek at
+its original deadline. Absolute seeks retain their latest target in one 250 ms
+input window; the player's existing held seek shows the pending target immediately.
 
 The reporting loop services one pending desire per action kind and recomputes
 current payloads at execution. Refusal floors apply to the whole operation class.

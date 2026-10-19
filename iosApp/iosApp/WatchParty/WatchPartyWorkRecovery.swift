@@ -235,7 +235,8 @@ struct WatchPartyWorkRecovery {
     }
 }
 
-/// One fixed input window for absolute seeks. Play/pause bypass this state.
+/// One fixed input window for absolute seeks. The session orders following
+/// play/pause controls after this window without merging their intents.
 struct WatchPartySeekWindow {
     private(set) var message: WatchPartyClientMessage?
     private(set) var identity: WatchPartyWorkRecovery.Identity?
