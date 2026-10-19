@@ -121,8 +121,27 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), seek: true)), [])
 
         // From a network wait the seek wait itself ends the stall.
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls))), [.waiting(.network)])
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avWaiting(nil), seek: true)), [.waiting(.seek)])
+    }
+
+    /// The seek lands before the player has buffered enough to run: that
+    /// buffering is still the seek's, and only a wait after playback runs
+    /// again can be a stall.
+    func testBufferingAfterASeekLandsIsTheSeeksUntilPlaybackRuns() {
+        var native = BufferingSignalMapper()
+        _ = native.update(Self.snapshot(native: Self.avPlaying))
+        _ = native.update(Self.snapshot(native: Self.avPlaying, seek: true))
+        XCTAssertEqual(native.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls))), [])
+        XCTAssertEqual(native.update(Self.snapshot(native: Self.avPlaying)), [.playing])
+        XCTAssertEqual(native.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls))), [.waiting(.network)])
+
+        var software = BufferingSignalMapper()
+        _ = software.update(Self.snapshot())
+        _ = software.update(Self.snapshot(phase: .seeking))
+        XCTAssertEqual(software.update(Self.snapshot(phase: .rebuffering)), [])
+        XCTAssertEqual(software.update(Self.snapshot()), [.playing])
     }
 
     func testAnItemStallCountsUntilPlaybackRuns() {

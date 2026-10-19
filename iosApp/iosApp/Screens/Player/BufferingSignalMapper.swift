@@ -82,6 +82,9 @@ struct BufferingSignalMapper {
             calls.append(.transportTroubleChanged(trouble))
         }
         var next = mediaState(snapshot)
+        // Buffering a seek began stays the seek's until playback runs, even
+        // once the seek has landed, as on Android.
+        if next == .waiting(.network), state == .waiting(.seek) { next = .waiting(.seek) }
         if next == .waiting(.network) { next = classifyWait(bufferedAheadMs: snapshot.bufferedAheadMs) }
         if next == .playing { itemStalledSincePlaying = false }
         guard next != state else { return calls }
