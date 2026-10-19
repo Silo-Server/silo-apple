@@ -10,6 +10,49 @@ enum SiloControlProtocol {
     }
 }
 
+/// Optional behaviors a peer lists in its hello. Each side uses one only when
+/// the other side listed it too, so new fields, payloads and reasons never
+/// reach a build that would misread them. Peers ignore names they don't know.
+enum SiloControlFeature {
+    /// The receiver keeps other controllers connected. A `close` from it
+    /// concerns this controller alone, never a takeover.
+    static let multiController = "multi_controller"
+    /// `close` may carry a reason (`SiloControlCloseReason`).
+    static let closeReason = "close_reason"
+    /// The receiver issues `resumeToken` in `handoff_ready`; the controller
+    /// sends it back to reuse that identity from a later connection.
+    static let resumeToken = "resume_token"
+    /// The receiver refuses a handoff that would replace another profile's
+    /// title with `handoff_cancel` reason `replace_confirmation_required`,
+    /// and the controller resends with `replaceConfirmed` after asking.
+    static let replaceConfirmation = "replace_confirmation"
+
+    static let receiverFeatures = [multiController, closeReason, resumeToken, replaceConfirmation]
+}
+
+/// Why a peer closed the session. Sent only to peers that list
+/// `SiloControlFeature.closeReason`.
+enum SiloControlCloseReason {
+    /// A newer connection from the same device took this one's place.
+    static let replaced = "replaced"
+    /// Someone disconnected remote control on the TV.
+    static let tvDisconnected = "tv_disconnected"
+    /// The receiver is at its controller limit.
+    static let tooManyControllers = "too_many_controllers"
+    /// The peer never sent hello, or stopped answering pings.
+    static let timeout = "timeout"
+    /// The peer can't be authorized (version or server mismatch).
+    static let unauthorized = "unauthorized"
+    /// A borrowed profile was never used and has been handed back.
+    static let launchTimeout = "launch_timeout"
+}
+
+/// Values for `SiloControlHello.clientKind`. Absent means a Silo app.
+enum SiloControlClientKind {
+    /// A home-automation or other third-party integration.
+    static let integration = "integration"
+}
+
 enum SiloControlPeerRole: String, Codable, Equatable, Sendable {
     case phone
     case tv
@@ -26,6 +69,19 @@ struct SiloControlHello: Codable, Equatable, Sendable {
     /// it. Lets a phone and a TV on different addresses of one server
     /// recognise each other. Optional on the wire: older peers omit it.
     var serverIdentity: String? = nil
+    /// `SiloControlFeature` names this peer supports. Absent from older
+    /// peers, which support none of them.
+    var features: [String]? = nil
+    /// A controller that only watches state: a phone's silent auto-resume or
+    /// an integration. It never puts up the TV's standby screen.
+    var passive: Bool? = nil
+    /// `SiloControlClientKind`. `role` stays `phone` for integrations,
+    /// because shipped receivers fail to decode any other role.
+    var clientKind: String? = nil
+
+    func supports(_ feature: String) -> Bool {
+        features?.contains(feature) == true
+    }
 }
 
 struct SiloControlPlaybackRequest: Codable, Equatable, Sendable {
@@ -62,6 +118,12 @@ struct SiloControlHandoffOffer: Codable, Equatable, Sendable {
     /// Other addresses the deployment offers, from its connections document.
     /// Public first, then providers. Reachability is the TV's to test.
     var serverEndpoints: [ServerEndpoint]? = nil
+    /// The token from an earlier `handoff_ready`, to reuse that identity
+    /// from a new connection without another approval.
+    var resumeToken: String? = nil
+    /// The user agreed to replace a title another profile started, after the
+    /// TV answered `replace_confirmation_required`.
+    var replaceConfirmed: Bool? = nil
 
     /// Whether `serverId` is the registry key of `serverURL`
     /// (`ServerRegistry.serverId(for:)`). A TV refuses an offer that fails
@@ -85,12 +147,37 @@ struct SiloControlHandoffReady: Codable, Equatable, Sendable {
     let profileId: String
     let sessionExpiresAt: String
     let reused: Bool
+    /// Proof for reusing this identity from a later connection. Sent only to
+    /// controllers that list `SiloControlFeature.resumeToken`, over the
+    /// session's TLS channel; never shared with other controllers.
+    var resumeToken: String? = nil
 }
 
 struct SiloControlHandoffCancel: Codable, Equatable, Sendable {
     let requestId: String
     let reason: String
     let message: String?
+    /// With reason `replace_confirmation_required`: the title the handoff
+    /// would replace, so the controller can ask its user.
+    var nowPlaying: SiloControlNowPlayingSummary? = nil
+}
+
+enum SiloControlHandoffCancelReason {
+    /// A newer handoff from another controller replaced this one, or another
+    /// controller's identity is now active.
+    static let superseded = "superseded"
+    /// The handoff would replace a title another profile started. Resend the
+    /// offer with `replaceConfirmed` once the user agrees.
+    static let replaceConfirmationRequired = "replace_confirmation_required"
+}
+
+/// What a controller needs to ask "Replace what Alex is watching?".
+struct SiloControlNowPlayingSummary: Codable, Equatable, Sendable {
+    let contentId: String?
+    let title: String
+    let subtitle: String?
+    let profileName: String?
+    let controllerName: String?
 }
 
 struct SiloControlTrack: Codable, Equatable, Identifiable, Sendable {
@@ -302,13 +389,20 @@ enum SiloControlMessage: Equatable, Sendable {
     case error(SiloControlErrorMessage)
     case ping
     case pong
-    case close
+    /// `reason` is a `SiloControlCloseReason`, sent only to peers that list
+    /// `SiloControlFeature.closeReason`; older peers get a bare `close`.
+    case close(reason: String?)
+}
+
+/// The optional `close` payload.
+private struct SiloControlClosePayload: Codable {
+    let reason: String
 }
 
 extension SiloControlMessage: Codable {
     private enum CodingKeys: String, CodingKey {
         case type, v
-        case hello, launch, control, state, error
+        case hello, launch, control, state, error, close
         case handoffOffer, handoffChallenge, handoffReady, handoffCancel
     }
 
@@ -370,8 +464,11 @@ extension SiloControlMessage: Codable {
             try c.encode(Kind.ping, forKey: .type)
         case .pong:
             try c.encode(Kind.pong, forKey: .type)
-        case .close:
+        case .close(let reason):
             try c.encode(Kind.close, forKey: .type)
+            if let reason {
+                try c.encode(SiloControlClosePayload(reason: reason), forKey: .close)
+            }
         }
     }
 
@@ -406,7 +503,8 @@ extension SiloControlMessage: Codable {
         case .pong:
             self = .pong
         case .close:
-            self = .close
+            let payload = try? c.decodeIfPresent(SiloControlClosePayload.self, forKey: .close)
+            self = .close(reason: payload?.reason)
         }
     }
 }

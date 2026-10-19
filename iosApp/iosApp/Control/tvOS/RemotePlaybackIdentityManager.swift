@@ -156,11 +156,14 @@ final class RemotePlaybackIdentityManager {
     /// while the outgoing identity (the TV's own or an earlier phone's) still
     /// owns them, so whatever is playing can close its server session under the
     /// identity it started with. An offer that fails or is denied leaves the
-    /// current identity and playback alone.
+    /// current identity and playback alone. `allowReuse` gates answering a
+    /// matching offer from the active identity without a new approval; the
+    /// receiver decides it (`SiloControlReceiverPolicy.mayReuseIdentity`).
     func prepare(
         offer: SiloControlHandoffOffer,
         controllerDeviceId: String,
         controllerDeviceName: String?,
+        allowReuse: Bool,
         beforeActivation: () async throws -> Void = {},
         onChallenge: @escaping (SiloControlHandoffChallenge) async throws -> Void
     ) async throws -> SiloControlHandoffReady {
@@ -170,7 +173,8 @@ final class RemotePlaybackIdentityManager {
             throw HandoffError.invalidOffer
         }
 
-        if matches(offer, controllerDeviceId: controllerDeviceId),
+        if allowReuse,
+           matches(offer, controllerDeviceId: controllerDeviceId),
            let activeIdentity {
             return SiloControlHandoffReady(
                 requestId: offer.requestId,
