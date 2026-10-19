@@ -302,6 +302,14 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertEqual(server.modes, [.quick(targetKbps: 150_000)])
     }
 
+    /// The server's clock can run ahead of the device's.
+    func testAReadingDatedAheadOfTheDeviceClockIsCurrent() async {
+        server.stored.probe = probe(kbps: 48_000, ageDays: -30.0 / Self.day)
+        await signIn()
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
+        XCTAssertEqual(server.modes, [], "it proves the link")
+    }
+
     func testAPlaybackSampleIsALowerBound() async {
         server.stored.playbackSample = sample(kbps: 120_000, ageDays: 1)
         await signIn()

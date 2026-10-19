@@ -466,8 +466,9 @@ final class BandwidthProbeScheduler {
 
     private var currentReadings: [BandwidthReading] {
         [probeReading, playbackSample].compactMap { $0 }.filter {
-            let age = clock.now.timeIntervalSince($0.measuredAt)
-            return age >= 0 && age < maxAge
+            // The server dates its readings by its own clock; one ahead of
+            // the device's is as fresh as now.
+            max(0, clock.now.timeIntervalSince($0.measuredAt)) < maxAge
         }
     }
 
