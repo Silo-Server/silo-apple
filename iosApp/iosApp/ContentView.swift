@@ -2504,6 +2504,14 @@ struct MainTabView: View {
                 visibleDestinations: visibleDestinations
             )
         }
+        #if os(macOS)
+        .onChange(of: RequestsFeatureStore.shared.isEnabled) { _, _ in
+            selectedDestinationID = resolvedVisibleMainTabDestination(
+                selectedDestinationID,
+                visibleDestinations: visibleDestinations
+            )
+        }
+        #endif
         .onChange(of: librarySnapshot) { _, _ in
             #if os(macOS)
             // The fallback Libraries row gives way to the real library rows
@@ -2650,7 +2658,8 @@ struct MainTabView: View {
         macSidebarSections(
             destinations: projectedDestinations,
             libraries: librarySnapshot.availableLibraries(for: currentLibraryAuthority),
-            showAudiobooks: navPrefs.showAudiobooks
+            showAudiobooks: navPrefs.showAudiobooks,
+            requestsEnabled: RequestsFeatureStore.shared.isEnabled
         )
     }
     #endif
@@ -2899,8 +2908,10 @@ struct MainTabView: View {
                 // title on root pages would repeat them.
                 .toolbar(removing: .title)
                 .modifier(MacRootPageTopInset(
-                    // Search keeps the toolbar strip: its field lives there.
+                    // Search and Requests keep the toolbar strip: their
+                    // fields live there.
                     reclaimsToolbarStrip: selectedDestination.id != .app(.search)
+                        && selectedDestination.id != .app(.requests)
                 ))
                 #endif
                 #if os(iOS)
@@ -3103,6 +3114,9 @@ struct MainTabView: View {
 
         case .downloads:
             DownloadsView()
+
+        case .requests:
+            RequestsHubView()
 
         case .settings:
             SettingsView()

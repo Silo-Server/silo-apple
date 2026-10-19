@@ -60,7 +60,7 @@ struct SiloControlMiniBar: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, isInline ? 4 : 8)
+            .padding(.vertical, style == .accessory ? 4 : 8)
             .modifier(NowPlayingBarChrome(style: style))
             .foregroundStyle(Color.siloOnSurface)
             .contentShape(Rectangle())
@@ -73,15 +73,18 @@ struct SiloControlMiniBar: View {
         }
     }
 
-    /// 2:3 poster sized to sit inside the bar. The inline pill is too short for
-    /// the full-size poster, which the capsule would otherwise clip.
+    /// 2:3 poster sized to sit inside the bar. The system accessory has a fixed
+    /// height (about 48pt expanded, less when inline) and clips anything taller,
+    /// so only the self-sizing card gets the full-size poster.
     private var thumbSize: CGSize {
-        isInline ? CGSize(width: 22, height: 33) : CGSize(width: 34, height: 50)
+        if isInline { return CGSize(width: 22, height: 33) }
+        if style == .accessory { return CGSize(width: 24, height: 36) }
+        return CGSize(width: 34, height: 50)
     }
 
     @ViewBuilder
     private var thumb: some View {
-        let shape = RoundedRectangle(cornerRadius: isInline ? 4 : 6, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: style == .accessory ? 4 : 6, style: .continuous)
         if let url = artwork.tilePosterURL, !url.isEmpty {
             AsyncImageView(url: url, contentMode: .fill)
                 .frame(width: thumbSize.width, height: thumbSize.height)

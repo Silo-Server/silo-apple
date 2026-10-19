@@ -6,7 +6,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Silo-Server/AetherEngine",
       "state" : {
-        "revision" : "b0712217abb7399aeb21f875bcc7c26e7af92fd8"
+        "revision" : "898946d788186f61a648c79a21814db833ae13e6"
       }
     },
     {
@@ -34,24 +34,6 @@
       "state" : {
         "revision" : "0d7cce1d6836a30d13a3a2326e50a153af53f014",
         "version" : "2.1.0"
-      }
-    },
-    {
-      "identity" : "libdtsx",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/superuser404notfound/LibDTSX",
-      "state" : {
-        "revision" : "9906f8fe9b72eb4d79a85754adbba6fa52cfe7b2",
-        "version" : "1.0.1"
-      }
-    },
-    {
-      "identity" : "libtruehd",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/superuser404notfound/LibTrueHD",
-      "state" : {
-        "revision" : "577de495184254e2c660ebfd6ce3f7d97f45899d",
-        "version" : "2.3.0"
       }
     },
     {

@@ -1,5 +1,4 @@
 import AetherEngine
-import AVFoundation
 import Foundation
 
 /// Resolves the language hint Aether uses for its initial audio pick.
@@ -72,9 +71,11 @@ enum AetherAuthenticationRecoveryPolicy {
     }
 
     /// Server HLS resolves the current credential for every playlist and
-    /// segment request, and direct play for every range request, so media
-    /// with video survives token rotation without a reload. Audio-only media
-    /// keeps the headers it opened with and the reload-after-rotation path.
+    /// segment request, and direct play gets the current headers pushed into
+    /// Aether as the token rotates (`AetherPlaybackController
+    /// .refreshRequestHeaders`), so media with video survives token rotation
+    /// without a reload. Audio-only media keeps the headers it opened with and
+    /// the reload-after-rotation path.
     static func resolvesRequestCredentials(delivery: String, hasVideo: Bool) -> Bool {
         hasVideo && PlaybackProtocolV3.PlanDelivery.supported.contains(delivery)
     }
@@ -143,6 +144,11 @@ struct AetherLoadSpec {
     /// and font downloads without changing registered track identities.
     let subtitleRequestAuthorization: HTTPRequestAuthorization?
     private let subtitleAuthorizationOrigin: URL?
+    /// Current headers for a direct-play source with video, from the resolver
+    /// behind `options.httpRequestAuthorization`. Aether asks that object only
+    /// for HLS and reads direct media with the headers it holds, so the
+    /// controller pushes this resolver's answers in as the token rotates.
+    let requestHeaderResolver: HTTPRequestAuthorization.Resolver?
     /// The selected native row uses the same picker ID space as sidecars,
     /// but resolves directly to its container stream, without an external slot.
     let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
@@ -195,7 +201,6 @@ struct AetherLoadSpec {
         preferredSubtitleLanguages: [String] = [],
         forwardBufferSegments: Int? = nil,
         audioBridgeMode: AudioBridgeMode = Self.defaultAudioBridgeMode,
-        objectAudioRendering: ObjectAudioRendering = .off,
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
@@ -220,6 +225,7 @@ struct AetherLoadSpec {
         }
         planID = "offline"
         subtitleRequestAuthorization = nil
+        requestHeaderResolver = nil
         subtitleAuthorizationOrigin = nil
         sessionID = "offline"
         delivery = PlaybackProtocolV3.PlanDelivery.originalHTTP
@@ -240,7 +246,6 @@ struct AetherLoadSpec {
             dolbyVisionHandling: dolbyVisionHandling,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
-            objectAudioRendering: objectAudioRendering,
             audioOnly: audioOnly,
             preserveASSMarkup: true,
             prepareNativeSubtitles: true,
@@ -267,7 +272,6 @@ struct AetherLoadSpec {
         preferredSubtitleLanguages: [String] = [],
         forwardBufferSegments: Int? = nil,
         audioBridgeMode: AudioBridgeMode = Self.defaultAudioBridgeMode,
-        objectAudioRendering: ObjectAudioRendering = .off,
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
@@ -298,6 +302,7 @@ struct AetherLoadSpec {
         }
         planID = "legacy-direct"
         subtitleRequestAuthorization = nil
+        requestHeaderResolver = nil
         subtitleAuthorizationOrigin = nil
         sessionID = "legacy-direct"
         delivery = PlaybackProtocolV3.PlanDelivery.originalHTTP
@@ -323,7 +328,6 @@ struct AetherLoadSpec {
             dolbyVisionHandling: dolbyVisionHandling,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
-            objectAudioRendering: objectAudioRendering,
             audioOnly: audioOnly,
             preserveASSMarkup: true,
             prepareNativeSubtitles: true,
@@ -347,6 +351,7 @@ struct AetherLoadSpec {
         sourceURLOverride: URL? = nil,
         requestHeaders: [String: String]? = nil,
         requestAuthorization: HTTPRequestAuthorization? = nil,
+        requestHeaderResolver: HTTPRequestAuthorization.Resolver? = nil,
         subtitleRequestAuthorization: HTTPRequestAuthorization? = nil,
         resolveURL: ((String) -> URL?)? = nil,
         apiOriginURL: URL? = nil,
@@ -354,7 +359,6 @@ struct AetherLoadSpec {
         preferredAudioLanguages: [String] = [],
         forwardBufferSegments: Int? = nil,
         audioBridgeMode: AudioBridgeMode = Self.defaultAudioBridgeMode,
-        objectAudioRendering: ObjectAudioRendering = .off,
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
@@ -500,16 +504,17 @@ struct AetherLoadSpec {
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,
         ].contains(plan.delivery)
+        let resolvesRequestCredentials = AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
+            delivery: plan.delivery, hasVideo: plan.effectiveRecipe.videoCodec != nil
+        )
+        self.requestHeaderResolver = resolvesRequestCredentials && !isServerHLS ? requestHeaderResolver : nil
         var loadOptions = LoadOptions(
             httpHeaders: effectiveHeaders,
-            httpRequestAuthorization: AetherAuthenticationRecoveryPolicy.resolvesRequestCredentials(
-                delivery: plan.delivery, hasVideo: plan.effectiveRecipe.videoCodec != nil
-            ) ? requestAuthorization : nil,
+            httpRequestAuthorization: resolvesRequestCredentials ? requestAuthorization : nil,
             dolbyVisionHandling: dolbyVisionHandling,
             matchContentEnabled: matchContentEnabled,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
-            objectAudioRendering: objectAudioRendering,
             audioOnly: plan.effectiveRecipe.videoCodec == nil,
             nativeRemoteHLS: isServerHLS,
             preserveASSMarkup: true,
@@ -586,67 +591,4 @@ struct AetherLoadSpec {
         }
         return isTrustedOrigin ? headers : [:]
     }
-}
-
-/// How the TrueHD Atmos setting becomes Aether's `objectAudioRendering`.
-enum AetherObjectAudioPolicy {
-    /// The bed Aether renders Atmos objects into. Nothing downstream plays it
-    /// speaker for speaker: an Atmos receiver or soundbar re-renders the Dolby
-    /// Atmos it receives onto its own speakers, and AirPods or the built-in
-    /// speakers render it as Spatial Audio. So one detailed bed serves every
-    /// system, and 7.1.4 keeps sides apart from rears and front heights apart
-    /// from rear heights for that renderer to fold down.
-    static let layout: SpatialSpeakerLayout = .l714
-
-    /// What the device's audio output can do with Atmos, as far as it says.
-    enum Output: Equatable {
-        /// Renders Dolby Atmos (an Atmos receiver or soundbar) or spatial audio.
-        case atmos
-        /// Plays channels without heights: stereo, multichannel PCM, Dolby Digital.
-        case channelsOnly
-        /// Not reported. Treated as capable, since the setting was asked for.
-        case unknown
-    }
-
-    /// The setting is the user's request; the output decides whether it helps.
-    /// On an output that cannot carry Atmos the heights would only be folded
-    /// back into channels, so the lossless 7.1 bridge is the better stream.
-    static func rendering(enabled: Bool, output: Output) -> ObjectAudioRendering {
-        guard enabled, output != .channelsOnly else { return .off }
-        return .apac(layout)
-    }
-
-    /// `apac 7.1.4` or `off`, for the diagnostics line.
-    static func diagnosticName(_ rendering: ObjectAudioRendering) -> String {
-        switch rendering {
-        case .off: return "off"
-        case .apac(let layout): return "apac \(layout.rawValue)"
-        }
-    }
-
-    #if os(tvOS)
-    /// Apple TV's HDMI output as tvOS reports it. The Atmos route to a receiver
-    /// or soundbar is Dolby MAT, which tvOS reports as `.dolbyAtmos`.
-    static func currentOutput(_ mode: AVAudioSession.RenderingMode = AVAudioSession.sharedInstance().renderingMode) -> Output {
-        switch mode {
-        case .dolbyAtmos, .spatialAudio: return .atmos
-        case .monoStereo, .surround, .dolbyAudio: return .channelsOnly
-        default: return .unknown
-        }
-    }
-
-    /// The mode's own name for the diagnostics line, so a report shows what
-    /// tvOS said rather than only what Silo made of it.
-    static func renderingModeName(_ mode: AVAudioSession.RenderingMode) -> String {
-        switch mode {
-        case .notApplicable: return "notApplicable"
-        case .monoStereo: return "monoStereo"
-        case .surround: return "surround"
-        case .spatialAudio: return "spatialAudio"
-        case .dolbyAudio: return "dolbyAudio"
-        case .dolbyAtmos: return "dolbyAtmos"
-        @unknown default: return "raw\(mode.rawValue)"
-        }
-    }
-    #endif
 }

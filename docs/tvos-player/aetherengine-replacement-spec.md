@@ -447,7 +447,7 @@ server fallback.
   its optional host callback is mirrored only into Silo's consent-gated log
   ring after media URL, filename, path, and credential redaction. Most lines
   need Debug Logging; the few that place missing TrueHD Atmos heights or LFE
-  (the audio path, bed levels, the master's audio attributes, the audio route
+  (the audio path, the master's audio attributes, the audio route
   and its channel-count warnings) are essential tier (`AetherDiagnosticsBridge`).
   Aether's route lines name output ports by type, never by the user's name for
   the device.

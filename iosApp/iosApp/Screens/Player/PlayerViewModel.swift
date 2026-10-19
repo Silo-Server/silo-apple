@@ -2134,11 +2134,16 @@ class PlayerViewModel {
     }
 
     /// Only static-header transports need replacement after API rotation.
-    /// Server HLS and direct play with video resolve the current credential
-    /// for each request; audio-only media keeps the headers it opened with.
+    /// Server HLS resolves the current credential for each request, and direct
+    /// play with video takes it pushed into the engine; audio-only media keeps
+    /// the headers it opened with.
     private func attemptProtocolV3AuthenticationReloadAfterProgress(
         _ result: PlaybackProgressReportResult
     ) async {
+        if result == .success, aetherPlaybackController.activeSpec?.requestHeaderResolver != nil {
+            aetherPlaybackController.refreshRequestHeaders()
+            return
+        }
         guard result == .success,
               protocolV3ReplanTask == nil,
               let protocolV3 = activePreparedProtocolV3,
@@ -3978,25 +3983,6 @@ class PlayerViewModel {
         let audioBridgeMode: AudioBridgeMode = settings.losslessAudioEnabled
             ? .lossless
             : .surroundCompat
-        // TrueHD Atmos keeps its heights when the setting is on and, on Apple TV, the output reports
-        // Atmos; Aether applies it to Atmos TrueHD alone and keeps `audioBridgeMode` for the rest.
-        #if os(tvOS)
-        let renderingMode = AVAudioSession.sharedInstance().renderingMode
-        let atmosOutput = AetherObjectAudioPolicy.currentOutput(renderingMode)
-        let renderingModeField = " renderingMode=\(AetherObjectAudioPolicy.renderingModeName(renderingMode))"
-        #else
-        let atmosOutput = AetherObjectAudioPolicy.Output.unknown
-        let renderingModeField = ""
-        #endif
-        let trueHDAtmosEnabled = settings.trueHDAtmosEnabled
-        let objectAudioRendering = AetherObjectAudioPolicy.rendering(
-            enabled: trueHDAtmosEnabled, output: atmosOutput)
-        // Essential tier, so a report without Debug Logging says which path
-        // TrueHD Atmos was offered; the engine logs what it then built.
-        cmpLog(
-            "[CMP-ATMOS] setting=\(trueHDAtmosEnabled)\(renderingModeField) output=\(atmosOutput) "
-                + "rendering=\(AetherObjectAudioPolicy.diagnosticName(objectAudioRendering))"
-        )
         let deinterlaceMode: DeinterlaceMode = settings.deinterlaceMode == .software
             ? .software
             : .auto
@@ -4057,12 +4043,13 @@ class PlayerViewModel {
                 audioSourceStreamIndex = nil
             }
             let requestAuthorization: HTTPRequestAuthorization?
+            let requestHeaderResolver: HTTPRequestAuthorization.Resolver?
             let subtitleRequestAuthorization: HTTPRequestAuthorization?
             if resolvesRequestCredentials {
                 guard let owner = streamRequest.capturedAuth else {
                     throw HTTPError.requestIdentityChanged
                 }
-                requestAuthorization = try PlaybackMediaAuthorization.make(
+                let resolver = try PlaybackMediaAuthorization.makeResolver(
                     sourceURL: streamRequest.url,
                     serverURL: streamRequest.serverUrl,
                     transportServerURL: streamRequest.localRoute?.localOrigin,
@@ -4071,6 +4058,8 @@ class PlayerViewModel {
                     baseHeaders: streamRequest.headers,
                     http: SiloAPI.shared.http
                 )
+                requestHeaderResolver = resolver
+                requestAuthorization = HTTPRequestAuthorization(resolver: resolver)
                 subtitleRequestAuthorization = try PlaybackMediaAuthorization.makeSubtitleAuthorization(
                     serverURL: streamRequest.serverUrl,
                     sessionID: prepared.session.sessionId,
@@ -4080,6 +4069,7 @@ class PlayerViewModel {
                 )
             } else {
                 requestAuthorization = nil
+                requestHeaderResolver = nil
                 subtitleRequestAuthorization = nil
             }
             spec = try AetherLoadSpec(
@@ -4089,6 +4079,7 @@ class PlayerViewModel {
                 sourceURLOverride: streamRequest.url,
                 requestHeaders: streamRequest.headers,
                 requestAuthorization: requestAuthorization,
+                requestHeaderResolver: requestHeaderResolver,
                 subtitleRequestAuthorization: subtitleRequestAuthorization,
                 // Subtitle artifacts, inventory sidecars and font bundles stay
                 // relative API-origin routes even when the media itself moved
@@ -4107,7 +4098,6 @@ class PlayerViewModel {
                 preferredAudioLanguages: preferredAudio,
                 forwardBufferSegments: forwardBufferSegments,
                 audioBridgeMode: audioBridgeMode,
-                objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
                 dolbyVisionHandling: dolbyVisionHandling,
@@ -4145,7 +4135,6 @@ class PlayerViewModel {
                 preferredSubtitleLanguages: preferredSubtitles,
                 forwardBufferSegments: forwardBufferSegments,
                 audioBridgeMode: audioBridgeMode,
-                objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
                 dolbyVisionHandling: dolbyVisionHandling
@@ -4161,7 +4150,6 @@ class PlayerViewModel {
                 preferredSubtitleLanguages: preferredSubtitles,
                 forwardBufferSegments: forwardBufferSegments,
                 audioBridgeMode: audioBridgeMode,
-                objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
                 dolbyVisionHandling: dolbyVisionHandling

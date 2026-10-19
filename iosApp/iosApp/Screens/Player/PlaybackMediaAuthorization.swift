@@ -179,12 +179,35 @@ enum PlaybackMediaAuthorization {
         baseHeaders: [String: String],
         http: HTTPClient
     ) throws -> HTTPRequestAuthorization {
+        HTTPRequestAuthorization(resolver: try makeResolver(
+            sourceURL: sourceURL,
+            serverURL: serverURL,
+            transportServerURL: transportServerURL,
+            sessionID: sessionID,
+            expectedAuth: expectedAuth,
+            baseHeaders: baseHeaders,
+            http: http
+        ))
+    }
+
+    /// The closure behind ``make``. Aether keeps an `HTTPRequestAuthorization`'s
+    /// closure to itself and asks it only for HLS, so direct play holds this
+    /// one and pushes its answers into the engine (`AetherPlaybackController`).
+    static func makeResolver(
+        sourceURL: URL,
+        serverURL: String,
+        transportServerURL: String? = nil,
+        sessionID: String,
+        expectedAuth: CapturedOrdinaryRequestAuth,
+        baseHeaders: [String: String],
+        http: HTTPClient
+    ) throws -> HTTPRequestAuthorization.Resolver {
         guard ServerRegistry.normalize(url: expectedAuth.account.serverURL)
                 == ServerRegistry.normalize(url: serverURL) else {
             throw ValidationError.credentialOwnerMismatch
         }
         let scope = try Scope(sourceURL: sourceURL, serverURL: transportServerURL ?? serverURL, sessionID: sessionID)
-        return HTTPRequestAuthorization { url, rejectedHeaders in
+        return { url, rejectedHeaders in
             guard scope.allows(url) else { throw ValidationError.outsideSessionScope }
             return try await http.mediaRequestHeaders(
                 expectedAuth: expectedAuth,

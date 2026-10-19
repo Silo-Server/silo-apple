@@ -18,36 +18,42 @@ enum TVDetailLayout {
     static let pageBottomPadding: CGFloat = 140
 }
 
-/// Fully opaque page surface sampled from the title artwork. The sampled tint
-/// is composited over black, so this remains a cheap, solid background rather
-/// than a live material or blur. Artwork itself lives inside the scrolling
-/// hero and therefore leaves the screen naturally as the viewer moves down.
+/// Fully opaque page surface sampled from the title artwork. The base tint is
+/// composited over black, so the art's fade blends into the same dim tint as
+/// before; the accent and shadow washes from the root landings carry Home's
+/// colors around it. Artwork itself lives inside the scrolling hero and
+/// therefore leaves the screen naturally as the viewer moves down.
 struct TVDetailPageSurface<Content: View>: View {
     let backdropURL: String?
     @ViewBuilder let content: () -> Content
 
-    @State private var sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+    private static var fallbackTints: HeroBackdropPalette.Tints {
+        .flat(Color(red: 0.04, green: 0.12, blue: 0.14))
+    }
+
+    @State private var sampledTints = Self.fallbackTints
 
     var body: some View {
         ZStack {
             Color.black
-            sampledTint.opacity(0.42)
+            sampledTints.base.opacity(0.42)
+            TVBackdropTintWash(tints: sampledTints, includesBase: false)
             content()
         }
         .ignoresSafeArea()
         .task(id: backdropURL) {
             guard let rawURL = backdropURL,
                   let url = URL(string: rawURL) else {
-                sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
+                sampledTints = Self.fallbackTints
                 return
             }
 
-            if let cached = HeroBackdropPalette.cachedTint(for: url) {
-                sampledTint = cached
+            if let cached = HeroBackdropPalette.cachedTints(for: url) {
+                sampledTints = cached
             }
-            if let tint = await HeroBackdropPalette.tintColor(for: url),
+            if let tints = await HeroBackdropPalette.tints(for: url),
                !Task.isCancelled {
-                sampledTint = tint
+                sampledTints = tints
             }
         }
     }

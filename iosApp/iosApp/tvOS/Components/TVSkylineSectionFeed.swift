@@ -360,7 +360,7 @@ struct TVSkylineBackdrop: View {
 
     var body: some View {
         TVRootHeroBackdrop(
-            tintColor: model.tintColor,
+            tints: model.tints,
             artworkURL: model.backdropURL,
             artworkThumbhash: model.backdropThumbhash,
             isVisible: model.backdropURL != nil,

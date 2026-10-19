@@ -54,6 +54,50 @@ struct TVBackdropArtworkFadeMask: View {
     }
 }
 
+/// Page wash sampled from the backdrop, shared by the root landings and
+/// item details so both pages carry the same colors. The base tint is
+/// richest in the top-right behind the art and carried dimmed down to the
+/// bottom-left; the art's accent glows up from the bottom edge under the
+/// right half of the rows, stopping below where the art ends so it never
+/// tints the artwork, and its shadow tone pools in the bottom-left corner.
+/// The page keeps the art's colors without washing out the metadata or row
+/// captions.
+struct TVBackdropTintWash: View {
+    let tints: HeroBackdropPalette.Tints
+    var isVisible: Bool = true
+    /// The base gradient sits behind the art and shows through its fade.
+    /// Item details turn it off to keep their own dimmer tint behind the art.
+    var includesBase: Bool = true
+
+    var body: some View {
+        ZStack {
+            if includesBase {
+                LinearGradient(
+                    stops: [
+                        .init(color: tints.base, location: 0.0),
+                        .init(color: tints.base.opacity(isVisible ? 0.5 : 0.0), location: 0.45),
+                        .init(color: tints.base.opacity(isVisible ? 0.18 : 0.0), location: 1.0),
+                    ],
+                    startPoint: .topTrailing,
+                    endPoint: .bottomLeading
+                )
+            }
+
+            EllipticalGradient(
+                colors: [tints.accent.opacity(isVisible ? 0.3 : 0.0), tints.accent.opacity(0)],
+                center: UnitPoint(x: 0.7, y: 1.0),
+                endRadiusFraction: 0.3
+            )
+
+            EllipticalGradient(
+                colors: [tints.shadow.opacity(isVisible ? 0.55 : 0.0), tints.shadow.opacity(0)],
+                center: .bottomLeading,
+                endRadiusFraction: 0.42
+            )
+        }
+    }
+}
+
 /// Page-level ambient hero backdrop for root tvOS screens.
 ///
 /// Keeping this behind the whole page instead of inside the hero/marquee
@@ -61,12 +105,12 @@ struct TVBackdropArtworkFadeMask: View {
 /// On Home and the library Browse landings the artwork tracks the
 /// marquee's focused item (Skyline §5.4): a crisp image is anchored in the
 /// top-right corner and fades out toward the leading edge and the bottom
-/// into a color sampled from the art itself, which is carried (dimmed)
+/// into colors sampled from the art itself, which are carried (dimmed)
 /// across the rest of the page so the metadata and rows below sit on the
-/// same tint. Calendar passes nil artwork with `.siloBackground` and
-/// renders flat.
+/// same tint. Calendar passes nil artwork with flat `.siloBackground` tints
+/// and renders flat.
 struct TVRootHeroBackdrop: View {
-    let tintColor: Color
+    let tints: HeroBackdropPalette.Tints
     let artworkURL: String?
     let artworkThumbhash: String?
     var isVisible: Bool = true
@@ -103,33 +147,23 @@ struct TVRootHeroBackdrop: View {
         }
     }
 
-    /// Sampled-color wash: richest in the top-right behind the art, carried
-    /// dimmed down to the bottom-left so the page keeps the art's color
-    /// without washing out the metadata or row captions. When the caller
-    /// passes `.siloBackground` (Calendar) every stop
-    /// collapses to the app background, so the wash renders flat.
+    /// Sampled-color wash; when the caller passes flat `.siloBackground`
+    /// tints (Calendar) every stop collapses to the app background, so the
+    /// wash renders flat.
     private var tintBackground: some View {
-        LinearGradient(
-            stops: [
-                .init(color: tintColor, location: 0.0),
-                .init(color: tintColor.opacity(isVisible ? 0.5 : 0.0), location: 0.45),
-                .init(color: tintColor.opacity(isVisible ? 0.18 : 0.0), location: 1.0),
-            ],
-            startPoint: .topTrailing,
-            endPoint: .bottomLeading
-        )
-        // The first tint (cold-entry seed with a prefetch-warmed sample)
-        // snaps in with the artwork; only tint→tint changes crossfade.
-        .animation(
-            reduceMotion || !hasDisplayedArtwork
-                ? nil
-                : .easeInOut(duration: crossfadeDuration),
-            value: tintColor
-        )
-        .animation(
-            reduceMotion || !hasDisplayedArtwork ? nil : .easeInOut(duration: 0.24),
-            value: isVisible
-        )
+        TVBackdropTintWash(tints: tints, isVisible: isVisible)
+            // The first tint (cold-entry seed with a prefetch-warmed sample)
+            // snaps in with the artwork; only tint→tint changes crossfade.
+            .animation(
+                reduceMotion || !hasDisplayedArtwork
+                    ? nil
+                    : .easeInOut(duration: crossfadeDuration),
+                value: tints
+            )
+            .animation(
+                reduceMotion || !hasDisplayedArtwork ? nil : .easeInOut(duration: 0.24),
+                value: isVisible
+            )
     }
 
     @ViewBuilder
