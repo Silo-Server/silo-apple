@@ -24,6 +24,9 @@ change causes reconciliation and visible uncertainty without transport replay.
 Distinct play and pause requests remain separate and follow any queued seek at
 its original deadline. Absolute seeks retain their latest target in one 250 ms
 input window; the player's existing held seek shows the pending target immediately.
+A correlated applied result may advance the dispatch identity for still-unsent
+controls after one matching snapshot/command response, or a no-op. Additional
+external changes discard those controls visibly. Retry identities remain fixed.
 
 The reporting loop services one pending desire per action kind and recomputes
 current payloads at execution. Refusal floors apply to the whole operation class.

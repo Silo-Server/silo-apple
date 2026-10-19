@@ -269,6 +269,102 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), [.seek, .pause, .play])
     }
 
+    func testOwnSeekCommitBetweenValidationAndAppliedResultPreservesFollowingControls() async throws {
+        let gate = ValidationGate()
+        let (f, playback) = try await playingFixture(validationGate: gate)
+        XCTAssertTrue(playback.request(.seek(70)))
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+        XCTAssertTrue(playback.request(.pause))
+        XCTAssertTrue(playback.request(.play))
+        f.socket.holdTransportSend = true
+        f.clock.advance(0.251)
+        await waitUntil { f.socket.transportWaiters.count == 1 }
+        let seek = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        gate.holding = true
+        f.socket.holdTransportSend = false
+        f.socket.transportWaiters.removeFirst().resume()
+        await waitUntil { gate.waiters.count == 1 }
+        var committed = try XCTUnwrap(f.session.room)
+        committed.generation += 1; committed.anchorPositionSeconds = 70; committed.playbackState = .waiting
+        f.socket.emit(.snapshot(committed))
+        await waitUntil { gate.waiters.count == 2 }
+        gate.waiters.removeLast().resume()
+        await waitUntil { f.session.room?.generation == committed.generation }
+        // Let the next control finish validation after the snapshot but before
+        // the command/result. It must wait for correlated completion, not drop.
+        gate.release()
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1)
+        f.socket.emit(.transport(.init(commandId: "own-seek-command", sessionId: "synthetic-playback", selectionRevision: 1,
+            action: .seek, positionSeconds: 70, executeAt: .distantFuture, issuedAt: Date(), playbackState: .paused)))
+        f.socket.emit(.actionResult(requestId: seek.requestId, action: "transport_request", status: "applied"))
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 3 }
+        let controls = f.socket.sent.filter { $0.type == "transport_request" }
+        XCTAssertEqual(controls.map(\.action), [.seek, .pause, .play])
+        XCTAssertEqual(Set(controls.compactMap(\.requestId)).count, 3)
+        XCTAssertFalse(f.session.workStatusMessage?.contains("not sent") == true)
+    }
+
+    func testUnconfirmedSeekCommitExpiresWithoutSendingFollowingControls() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.seek(70)))
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+        XCTAssertTrue(playback.request(.pause))
+        f.socket.holdTransportSend = true
+        f.clock.advance(0.251)
+        await waitUntil { f.socket.transportWaiters.count == 1 }
+        var committed = try XCTUnwrap(f.session.room)
+        committed.generation += 1; committed.anchorPositionSeconds = 70
+        f.socket.emit(.snapshot(committed))
+        await waitUntil { f.session.room?.generation == committed.generation }
+        f.socket.holdTransportSend = false
+        f.socket.transportWaiters.removeFirst().resume()
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1)
+        f.clock.advance(5.1)
+        await waitUntil { f.session.workStatusMessage?.contains("Later controls were not sent") == true }
+        XCTAssertTrue(f.session.workStatusMessage?.contains("could not be confirmed") == true)
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1)
+    }
+
+    func testIndependentChangeAfterOwnSeekAppliedStillFencesFollowingControls() async throws {
+        for change in ["generation", "generation-before-result", "session", "authority"] {
+            let gate = ValidationGate()
+            let (f, playback) = try await playingFixture(validationGate: gate)
+            XCTAssertTrue(playback.request(.seek(70)))
+            await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+            XCTAssertTrue(playback.request(.pause))
+            f.socket.holdTransportSend = true
+            f.clock.advance(0.251)
+            await waitUntil { f.socket.transportWaiters.count == 1 }
+            let seek = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+            var committed = try XCTUnwrap(f.session.room)
+            committed.generation += 1; committed.anchorPositionSeconds = 70
+            f.socket.emit(.snapshot(committed))
+            f.socket.emit(.transport(.init(commandId: "own-seek-command", sessionId: "synthetic-playback", selectionRevision: 1,
+                action: .seek, positionSeconds: 70, executeAt: .distantFuture, issuedAt: Date(), playbackState: .paused)))
+            if change == "generation-before-result" {
+                committed.generation += 1
+                f.socket.emit(.snapshot(committed))
+            }
+            f.socket.emit(.actionResult(requestId: seek.requestId, action: "transport_request", status: "applied"))
+            f.socket.emit(.error(.init(code: "synthetic_marker", message: "own seek applied")))
+            await waitUntil { f.session.errorMessage == "own seek applied" }
+            if change == "session" { playback.replaceSession() }
+            else if change != "generation-before-result" {
+                committed.generation += 1
+                if change == "authority" { committed.selfCanControlTransport = false }
+                f.socket.emit(.snapshot(committed))
+                await waitUntil { f.session.room?.generation == committed.generation }
+            }
+            f.socket.holdTransportSend = false
+            f.socket.transportWaiters.removeFirst().resume()
+            await waitUntil { f.session.workStatusMessage?.contains("not sent") == true }
+            for _ in 0..<30 { await Task.yield() }
+            XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1, change)
+        }
+    }
+
     func testSeekWindowKeepsLatestTargetAndEveryDistinctFollowingControlInOrder() async throws {
         let (f, playback) = try await playingFixture()
         XCTAssertTrue(playback.request(.seek(70)))

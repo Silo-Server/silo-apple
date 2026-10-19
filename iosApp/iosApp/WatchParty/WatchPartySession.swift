@@ -107,6 +107,17 @@ final class WatchPartySession {
     @ObservationIgnored private var seekWindow = WatchPartySeekWindow()
     @ObservationIgnored private var seekFollowingControls: [WatchPartyClientMessage] = []
     @ObservationIgnored private var transportSendTask: Task<Void, Never>?
+    @ObservationIgnored private var transportDispatch: TransportDispatch?
+
+    @MainActor private final class TransportDispatch {
+        let origin: WatchPartyWorkRecovery.Identity
+        var identity: WatchPartyWorkRecovery.Identity
+        var requests: Set<String> = []
+        var snapshotChanges = 0
+        var commandChanges = 0
+        var waiter: CheckedContinuation<Void, Never>?
+        init(_ identity: WatchPartyWorkRecovery.Identity) { origin = identity; self.identity = identity }
+    }
     @ObservationIgnored private let workNow: () -> TimeInterval
     @ObservationIgnored private let retryJitter: () -> TimeInterval
     @ObservationIgnored private var reconciliationTask: Task<Void, Never>?
@@ -578,11 +589,13 @@ final class WatchPartySession {
     }
 
     private func receive(_ message: WatchPartyServerMessage) {
+        defer { resumeTransportDispatchIfPossible() }
         switch message {
         case .snapshot(let room):
             accept(room)
         case .transport(let command):
             guard let room, commands.receive(command, room: room, sessionId: adapter?.snapshot.sessionId) else { return }
+            if let dispatch = transportDispatch { dispatch.commandChanges += 1 }
             if usesWorkAdmission { stall.reset() }
             if command.action == .seek { adapter?.roomSeekArrived(at: command.positionSeconds) }
             // A rate nudge keeps running until the command executes; changing
@@ -604,8 +617,24 @@ final class WatchPartySession {
             terminate("This profile joined the party on another device. Rejoin here to take over playback.", replaced: true)
         case .actionResult(let requestId, let action, let status):
             let appliedLobbyValue = workRecovery.desired[.lobby]?.message.ready
+            let appliedTransport = requestId.flatMap { workRecovery.transport[$0]?.message }
             guard usesWorkAdmission, status == "applied", let identity = workIdentity(),
                   workRecovery.applied(requestId: requestId, action: action, identity: identity, at: workNow()) else { return }
+            if action == "transport_request", let requestId, let dispatch = transportDispatch,
+               dispatch.requests.remove(requestId) != nil, dispatch.identity.canAcknowledge(identity) {
+                let command = commands.pending ?? commands.completed
+                let ownCommit = dispatch.snapshotChanges == 1 && dispatch.commandChanges == 1
+                    && dispatch.identity.generation < Int64.max && identity.generation == dispatch.identity.generation + 1
+                    && command?.action == appliedTransport?.action
+                    && (appliedTransport?.action != .seek || command?.positionSeconds == appliedTransport?.positionSeconds)
+                // The result must close one matching snapshot/command response,
+                // or a no-op. Extra external changes cannot rebase queued intent.
+                if identity == dispatch.identity || ownCommit {
+                    dispatch.identity = identity
+                    dispatch.snapshotChanges = 0
+                    dispatch.commandChanges = 0
+                }
+            }
             if action == "lobby_ready" {
                 if appliedLobbyValue == lobbyReadyDesired { lobbyReadyDesired = nil }
             } else { controlUncertain = false }
@@ -654,6 +683,7 @@ final class WatchPartySession {
     private func accept(_ incoming: WatchPartyRoom, requestReceipt: UInt64? = nil) {
         let old = room
         guard state.accept(incoming, requestReceipt: requestReceipt) else { return }
+        if old?.generation != incoming.generation, let dispatch = transportDispatch { dispatch.snapshotChanges += 1 }
         roomReceivedAt = Date()
         if incoming.phase == .ended { terminate("This party has ended.", canRejoin: false); return }
         if let auth {
@@ -1055,14 +1085,39 @@ final class WatchPartySession {
             // Keep transport batches ordered even if validation or a preceding
             // send suspends. Every dispatch still checks current authority.
             await previous?.value
+            guard let self, !Task.isCancelled, owner == self.engagement, socketID == self.connectionID else { return }
+            var dispatch: TransportDispatch?
+            if orderedTransport, let expected {
+                if let current = self.transportDispatch, current.origin == expected || current.identity == expected {
+                    dispatch = current
+                } else {
+                    dispatch = TransportDispatch(expected)
+                    self.transportDispatch = dispatch
+                }
+            }
             for message in messages {
-                guard let self, !Task.isCancelled, await self.validateIdentity(),
-                      owner == self.engagement, socketID == self.connectionID, !Task.isCancelled,
-                      self.room?.roomId == room.roomId, self.room?.selectionRevision == room.selectionRevision,
-                      self.room?.phase == room.phase else { return }
-                guard !self.usesWorkAdmission || self.workIdentity() == expected else {
-                    self.transportDiscarded()
-                    return
+                while true {
+                    guard !Task.isCancelled, await self.validateIdentity(),
+                          owner == self.engagement, socketID == self.connectionID, !Task.isCancelled,
+                          self.room?.roomId == room.roomId, self.room?.selectionRevision == room.selectionRevision,
+                          self.room?.phase == room.phase else { return }
+                    let required = dispatch?.identity ?? expected
+                    guard !self.usesWorkAdmission || self.workIdentity() == required else {
+                        if let dispatch, let identity = self.workIdentity(), dispatch.identity.canAcknowledge(identity),
+                           dispatch.requests.contains(where: { self.workRecovery.transport[$0]?.delivery == .dispatched }) {
+                            // A snapshot/command may precede our applied result.
+                            // The existing report loop expires this wait at the
+                            // original five-second deadline; no new timer/replay.
+                            await withCheckedContinuation { dispatch.waiter = $0 }
+                            guard self.transportDispatch === dispatch else { return }
+                            continue
+                        }
+                        self.transportDiscarded(self.controlUncertain
+                            ? "The earlier control could not be confirmed. Later controls were not sent. Check the party before trying again."
+                            : "The queued controls were not sent because the party changed. Try again.")
+                        return
+                    }
+                    break
                 }
                 if self.usesWorkAdmission, let kind = WatchPartyWorkRecovery.Kind(rawValue: message.type),
                    !self.workRecovery.canSend(kind, at: self.workNow()) {
@@ -1074,8 +1129,9 @@ final class WatchPartySession {
                     guard self.attachmentConfirmed, self.adapter?.snapshot.sessionId == sessionId else { return }
                 }
                 var wire = message
-                if self.usesWorkAdmission, let expected {
+                if self.usesWorkAdmission, let expected = dispatch?.identity ?? expected {
                     wire = self.workRecovery.track(message, identity: expected, at: self.workNow())
+                    if let requestID = wire.requestId { dispatch?.requests.insert(requestID) }
                 }
                 do { try await socket.send(wire) }
                 catch {
@@ -1122,6 +1178,8 @@ final class WatchPartySession {
 
     private func invalidateWork() {
         transportSendTask?.cancel(); transportSendTask = nil
+        transportDispatch?.waiter?.resume(); transportDispatch?.waiter = nil
+        transportDispatch = nil
         lobbyReadyDesireID = UUID()
         lobbyReadyAttempt = nil
         if seekWindow.message != nil { workStatusMessage = "The pending seek was not sent. Try again after reconnecting." }
@@ -1137,8 +1195,22 @@ final class WatchPartySession {
     }
 
     private func expireTransport(identity: WatchPartyWorkRecovery.Identity) {
+        defer { resumeTransportDispatchIfPossible() }
         if workRecovery.expire(identity: identity, at: workNow()) { transportUncertain() }
         else if workRecovery.discardedUnsentTransport { transportDiscarded() }
+    }
+
+    private func resumeTransportDispatchIfPossible() {
+        guard let dispatch = transportDispatch else { return }
+        dispatch.requests.formIntersection(workRecovery.transport.keys)
+        guard let waiter = dispatch.waiter else { return }
+        let current = workIdentity()
+        let stillDispatched = dispatch.requests.contains { workRecovery.transport[$0]?.delivery == .dispatched }
+        let sameAuthority = current.map { dispatch.identity.canAcknowledge($0) } ?? false
+        if current == dispatch.identity || !sameAuthority || !stillDispatched {
+            dispatch.waiter = nil
+            waiter.resume()
+        }
     }
 
     private func transportDiscarded(_ message: String = "The control was not sent before the party changed. Try again.") {
