@@ -419,11 +419,19 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertNil(scheduler.freshEstimateKbps())
 
         server.hangs = false
+        if case .measured = await scheduler.runNow() {} else { XCTFail("Test speed runs once nothing plays") }
+    }
+
+    /// Media is still loading for a while after a start, which holds
+    /// automatic tests but not **Test speed**.
+    func testTheQuietPeriodAfterAStartHoldsOnlyAutomaticTests() async {
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        scheduler.playbackStarting()
         await advance(seconds: 30)
-        let tooSoon = await scheduler.runNow()
-        XCTAssertEqual(tooSoon, .playbackActive, "the media is still loading")
-        await advance(seconds: 31)
-        if case .measured = await scheduler.runNow() {} else { XCTFail("Test speed runs once playback has settled") }
+        XCTAssertEqual(server.modes, [])
+        if case .measured = await scheduler.runNow() {} else { XCTFail("Test speed runs when nothing plays") }
+        XCTAssertEqual(server.modes, [.accurate])
     }
 
     /// However the player is presented, including picture in picture, its

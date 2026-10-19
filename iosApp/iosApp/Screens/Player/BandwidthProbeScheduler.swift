@@ -259,9 +259,9 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
 ///   lower bound proves it only while it reaches the current target.
 /// - **Not**: while media plays or starts (a video player between
 ///   ``playbackStarting(by:)`` and ``playbackEnded(by:)``, ``isMediaActive``,
-///   then ``playbackQuietPeriod``), on a metered or cellular network, or with
-///   Silo in the background, hidden or minimized. A test running when one of
-///   these begins is cancelled and measured nothing.
+///   then ``playbackQuietPeriod`` for automatic tests), on a metered or
+///   cellular network, or with Silo in the background, hidden or minimized. A
+///   test running when one of these begins is cancelled and measured nothing.
 /// - **Failures** wait for the next look, and after a 429 no earlier than its
 ///   `Retry-After`.
 /// - **Test speed** (``runNow()``) runs the accurate test whenever no media
@@ -275,8 +275,8 @@ final class BandwidthProbeScheduler {
 
     /// Lets the first screen settle before looking.
     nonisolated static let startDelay: TimeInterval = 5
-    /// How long after a playback start a test holds off: media is still
-    /// loading for a while after the start itself.
+    /// How long after a playback start automatic tests hold off: media is
+    /// still loading for a while after the start itself.
     nonisolated static let playbackQuietPeriod: TimeInterval = 60
 
     /// What a test came to.
@@ -381,7 +381,7 @@ final class BandwidthProbeScheduler {
     /// **Test speed**: runs the accurate test and reports it. Refuses while
     /// media plays or on a metered network; joins a test already running.
     func runNow() async -> Outcome {
-        if let refused = gate() { return refused }
+        if let refused = gate(automatic: false) { return refused }
         return await probeOnce(mode: .accurate)
     }
 
@@ -516,17 +516,19 @@ final class BandwidthProbeScheduler {
         lastTarget = target
         guard target.automatic, !linkIsProven else { return }
         if let notBefore, clock.now < notBefore { return }
-        guard gate() == nil else { return }
+        guard gate(automatic: true) == nil else { return }
         _ = await probeOnce(mode: .quick(targetKbps: target.targetKbps))
     }
 
-    /// Why a test may not run now, or nil when it may.
-    private func gate() -> Outcome? {
+    /// Why a test may not run now, or nil when it may. The quiet period after
+    /// a playback start holds only automatic tests.
+    private func gate(automatic: Bool) -> Outcome? {
         if activeServerId == nil { return .notSupported }
         if !network.isConnected { return .offline }
         if network.isMetered { return .metered }
         if !videoPlayers.allObjects.isEmpty || isMediaActive() { return .playbackActive }
-        if let lastPlaybackStart, clock.now.timeIntervalSince(lastPlaybackStart) < Self.playbackQuietPeriod {
+        if automatic, let lastPlaybackStart,
+           clock.now.timeIntervalSince(lastPlaybackStart) < Self.playbackQuietPeriod {
             return .playbackActive
         }
         return nil
@@ -564,7 +566,7 @@ final class BandwidthProbeScheduler {
             return run.cancelledFor ?? .networkError
         }
         if let reason = run.cancelledFor { return reason }
-        if let refused = gate() { return refused }
+        if let refused = gate(automatic: mode != .accurate) { return refused }
         guard target.serverId == activeServerId else { return .interrupted }
         lastTarget = target
         // A quick test proves the target the server sends now.
@@ -580,9 +582,15 @@ final class BandwidthProbeScheduler {
         let rate: (kbps: Int, bytes: Int, durationMs: Int, lowerBound: Bool)
         switch result {
         case .measured(let kbps, let bytes, let durationMs, let lowerBound): rate = (kbps, bytes, durationMs, lowerBound)
-        case .rateLimited(let seconds): return .rateLimited(retryAfterSeconds: seconds)
-        case .unavailable: return .unavailable
-        case .tooLittleData: return .tooLittleData
+        case .rateLimited(let seconds):
+            Self.logger.info("speed test rate limited: retry after \(seconds, privacy: .public) s")
+            return .rateLimited(retryAfterSeconds: seconds)
+        case .unavailable(let status):
+            Self.logger.info("speed test refused: HTTP \(status, privacy: .public)")
+            return .unavailable
+        case .tooLittleData:
+            Self.logger.info("speed test measured nothing")
+            return .tooLittleData
         case .networkError(let reason):
             Self.logger.info("speed test failed: \(reason, privacy: .public)")
             return .networkError
