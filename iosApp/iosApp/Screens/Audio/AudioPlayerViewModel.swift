@@ -178,6 +178,8 @@ final class AudioPlayerViewModel {
 
     func play() {
         guard context != nil else { return }
+        // Resuming is media starting again: a running speed test stops.
+        BandwidthProbeScheduler.shared.playbackStarting()
         engine.setRate(playbackRate, shouldResume: true)
         pushNowPlaying()
     }

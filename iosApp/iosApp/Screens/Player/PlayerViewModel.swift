@@ -5973,6 +5973,8 @@ class PlayerViewModel {
         cancelReconnect()
         endBufferingPlan()
         disposeAetherPlayback()
+        // Nothing plays behind the error, so speed tests may run again.
+        BandwidthProbeScheduler.shared.playbackEnded(by: self)
         activePlaybackSessionId = nil
         activePreparedProtocolV3 = nil
         // The error view hides the pill, but Menu, Escape and Return still
