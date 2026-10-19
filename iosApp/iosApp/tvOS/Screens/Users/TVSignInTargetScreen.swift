@@ -47,8 +47,16 @@ struct TVSignInTargetScreen: View {
         }
     }
 
+    /// One way out at a time, as on iPhone: a pick still switching servers
+    /// would otherwise open its sign-in over the screen Cancel restored, and
+    /// a second Cancel would find no return point and apply the launch rules.
     private func cancel() {
-        Task { await accounts.cancelSignIn(router: router) }
+        guard !isStarting else { return }
+        isStarting = true
+        Task {
+            await accounts.cancelSignIn(router: router)
+            isStarting = false
+        }
     }
 }
 

@@ -195,6 +195,31 @@ final class SignInRevocationTests: XCTestCase {
         XCTAssertEqual(access, "current-access")
     }
 
+    /// The refresh spends the old refresh token, so the new pair is queued
+    /// before the logout that uses it: an app that quits during that logout
+    /// retries with tokens that still work.
+    func testRefreshedTokensAreQueuedBeforeTheirLogout() async throws {
+        let f = try F.make(self)
+        let stub = APIv2TestStub()
+        stub.sequence(path: Self.logout, [.json(401, "{}"), .json(204, "")])
+        stub.reply(path: HTTPClient.refreshPath, 200, Self.refreshed("fresh-access"))
+        let http = try client(stub, store: f.store)
+        stub.hold(path: Self.logout)
+
+        let revoking = Task { await http.revoke(credential) }
+        await stub.waitUntilHeld()
+        stub.release()
+        stub.hold(path: Self.logout)
+        await stub.waitUntilHeld()
+
+        XCTAssertEqual(stub.requestedPaths, [Self.logout, HTTPClient.refreshPath, Self.logout])
+        XCTAssertEqual(try f.store.pendingRevocations.load().map(\.credential),
+                       [RevocableCredential(serverURL: F.homeURL, accessToken: "fresh-access", refreshToken: "fresh-refresh")])
+        stub.release()
+        await revoking.value
+        XCTAssertEqual(try f.store.pendingRevocations.load(), [])
+    }
+
     /// The retry at launch and on return to the foreground: ended and
     /// already-invalid sessions leave the queue, the rest stay for next time.
     func testQueuedRevocationsAreRetriedOnActivation() async throws {

@@ -1030,6 +1030,9 @@ final class AppRouter {
         deviceApprovalChooserDepth = 0
         let depth = path.count
         await accounts.beginSwitchAccount(router: self)
+        // A newer link replaced or dropped this approval while the chooser
+        // opened; the gate is that link's now.
+        guard pendingDeviceApproval == link else { return }
         // Pushed on top of the screens: due once the person leaves it. A
         // chooser shown as the root waits for a signed-in screen instead.
         deviceApprovalChooserDepth = path.count > depth ? path.count : nil

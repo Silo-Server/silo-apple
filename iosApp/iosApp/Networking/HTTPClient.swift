@@ -478,7 +478,7 @@ actor HTTPClient {
             if attempt > 0, let delay = backoff.indices.contains(attempt - 1) ? backoff[attempt - 1] : backoff.last {
                 try? await Task.sleep(for: delay)
             }
-            switch await attemptRevocation(current, session: revocationSession) {
+            switch await attemptRevocation(current, entryID: entryID, session: revocationSession) {
             case .finished:
                 if let entryID { updatePendingRevocation(entryID, to: nil) }
                 return
@@ -504,7 +504,7 @@ actor HTTPClient {
         let revocationSession = URLSession(configuration: session.configuration)
         defer { revocationSession.invalidateAndCancel() }
         for entry in entries where !revocationsInFlight.contains(entry.id) {
-            switch await attemptRevocation(entry.credential, session: revocationSession) {
+            switch await attemptRevocation(entry.credential, entryID: entry.id, session: revocationSession) {
             case .finished:
                 updatePendingRevocation(entry.id, to: nil)
             case .retry(let next):
@@ -543,8 +543,12 @@ actor HTTPClient {
     }
 
     /// One try: logout with the session's access token and, answered 401,
-    /// one refresh in memory and a logout with the new access token.
-    private func attemptRevocation(_ credential: RevocableCredential, session: URLSession) async -> RevocationAttempt {
+    /// one refresh and a logout with the new access token. The refresh spends
+    /// the old refresh token, so the new pair goes into the queue entry
+    /// (`entryID`) before that logout: an app that quits during it retries
+    /// with tokens that still work.
+    private func attemptRevocation(_ credential: RevocableCredential, entryID: UUID?,
+                                   session: URLSession) async -> RevocationAttempt {
         let status = await sendLogout(serverURL: credential.serverURL, bearer: credential.accessToken,
                                       session: session)
         guard status == 401 else {
@@ -570,6 +574,7 @@ actor HTTPClient {
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken.isEmpty ? credential.refreshToken : tokens.refreshToken
         )
+        if let entryID { updatePendingRevocation(entryID, to: refreshed) }
         let retried = await sendLogout(serverURL: refreshed.serverURL, bearer: refreshed.accessToken,
                                        session: session)
         guard let retried else { return .retry(refreshed) }

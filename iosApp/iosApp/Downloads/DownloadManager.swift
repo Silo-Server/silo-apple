@@ -704,9 +704,11 @@ final class DownloadManager {
             releaseHeldSessionEvents()
             return false
         }
+        // A store that didn't load in full is loaded again, so a move that
+        // failed (a scope's downloads from before accounts) is retried.
         if serverId == scopeServerId, accountId == scopeAccountId, profileId == scopeProfileId,
            fileServerId == serverId, fileAccountId == accountId, fileProfileId == profileId,
-           !file.records.isEmpty || file.capability != nil {
+           fileIsComplete, !file.records.isEmpty || file.capability != nil {
             releaseHeldSessionEvents()
             // A switch away and back before the other store loaded keeps
             // this store installed, but a finish in that window was parked.

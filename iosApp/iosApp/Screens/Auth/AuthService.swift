@@ -1058,7 +1058,7 @@ final class AuthService: @unchecked Sendable {
         }
     }
 
-    /// Saves the profiles a sign-in's account has, so user cards can draw
+    /// Saves the profiles a sign-in's account has, so account cards can draw
     /// them without the server (`SavedSignIn.profiles`). `key` is the
     /// sign-in the list was read for; a list read for another sign-in, or
     /// before migration, changes nothing. Neither does one read while a

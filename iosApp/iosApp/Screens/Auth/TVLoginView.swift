@@ -44,6 +44,7 @@ struct TVLoginView: View {
     /// Set by `goToProfiles()`, the one place this screen moves on after a
     /// device sign-in (the QR approval and the nearby panel both land there).
     @State private var navigatedAfterApproval = false
+    @State private var isCancellingSignIn = false
 
     @FocusState private var focusedField: Field?
     /// Where focus goes once the system keyboard closes after Done.
@@ -689,9 +690,16 @@ struct TVLoginView: View {
         Task { await router.accounts.leaveSignIn(router: router) }
     }
 
+    /// Runs once: a second press would find the return point cleared and
+    /// apply the launch rules over the screen the first one restored.
     private func cancelSignIn() {
+        guard !isCancellingSignIn else { return }
+        isCancellingSignIn = true
         qrVM.stop()
-        Task { await router.accounts.cancelSignIn(router: router) }
+        Task {
+            await router.accounts.cancelSignIn(router: router)
+            isCancellingSignIn = false
+        }
     }
 
     /// "Continue as …": the same single flight as a password sign-in, so a

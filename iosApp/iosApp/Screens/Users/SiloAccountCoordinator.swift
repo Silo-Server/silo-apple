@@ -1092,6 +1092,12 @@ final class SiloAccountCoordinator {
             _ = await tokenStore.removeLegacyServer(serverID)
             await pruneLaunchState()
             let remaining = try? await tokenStore.directory()
+            // A switch made while this ran owns the selection now; this
+            // expiry no longer describes what shows.
+            guard registry.activeServerId == serverID, await tokenStore.currentSelection() == .none else {
+                await reloadDirectory()
+                return
+            }
             await selectNone(serverID: serverID)
             await reloadDirectory()
             router.expiredSession(context: remaining?.accounts.isEmpty == false ? .addAccount : .firstRun,
