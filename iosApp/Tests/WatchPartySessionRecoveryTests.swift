@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class WatchPartySessionRecoveryTests: XCTestCase {
-    private final class Clock {
+    @MainActor private final class Clock {
         var now: TimeInterval = 0
         private var sleepers: [UUID: (TimeInterval, CheckedContinuation<Void, Error>)] = [:]
         var pendingCount: Int { sleepers.count }
@@ -71,7 +71,7 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         func close() { closed = true; continuation?.finish(); continuation = nil }
     }
 
-    private final class ValidationGate {
+    @MainActor private final class ValidationGate {
         var holding = false
         var waiters: [CheckedContinuation<Void, Never>] = []
         func wait() async {
