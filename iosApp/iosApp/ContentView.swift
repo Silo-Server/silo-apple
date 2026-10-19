@@ -380,9 +380,10 @@ struct ContentView: View {
                 await refreshSessionStores()
             }
         }
-        // The bandwidth probe measures the signed-in server's media path once
-        // the first screen has settled.
-        .task(id: isAuthenticatedAppVisible) {
+        // A signed-in profile reads the server's speed reading at once, so a
+        // start in the first seconds sends it; the speed test waits a few
+        // seconds for the first screen to settle.
+        .task(id: router.authState == .authenticated) {
             await followSignedInServerForBandwidthProbe()
         }
         // Work that can prompt the user, or that competes with the first
@@ -623,7 +624,7 @@ struct ContentView: View {
         let scheduler = BandwidthProbeScheduler.shared
         // Video players register themselves when their playback starts.
         scheduler.isMediaActive = { [audioStore] in audioStore.player.isPlaying }
-        guard isAuthenticatedAppVisible else {
+        guard router.authState == .authenticated else {
             scheduler.setActiveServer(nil)
             return
         }
