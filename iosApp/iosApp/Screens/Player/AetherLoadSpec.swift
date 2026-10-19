@@ -611,22 +611,14 @@ enum AetherObjectAudioPolicy {
     /// from rear heights for that renderer to fold down.
     static let layout: SpatialSpeakerLayout = .l714
 
-    /// What the device's audio output can do with Atmos, as far as it says.
-    enum Output: Equatable {
-        /// Renders Dolby Atmos (an Atmos receiver or soundbar) or spatial audio.
-        case atmos
-        /// Plays channels without heights: stereo, multichannel PCM, Dolby Digital.
-        case channelsOnly
-        /// Not reported. Treated as capable, since the setting was asked for.
-        case unknown
-    }
-
-    /// The setting is the user's request; the output decides whether it helps.
-    /// On an output that cannot carry Atmos the heights would only be folded
-    /// back into channels, so the lossless 7.1 bridge is the better stream.
-    static func rendering(enabled: Bool, output: Output) -> ObjectAudioRendering {
-        guard enabled, output != .channelsOnly else { return .off }
-        return .apac(layout)
+    /// The setting alone decides. tvOS doesn't say whether its output can carry
+    /// Atmos: `AVAudioSession.renderingMode` resolves for the content already
+    /// playing (stereo reads `monoStereo`, the lossless 7.1 bridge `surround`),
+    /// so a check before the load would turn heights off on an Atmos receiver
+    /// after any other stream. A setup without Atmos turns the setting off
+    /// instead and keeps `audioBridgeMode`'s channels.
+    static func rendering(enabled: Bool) -> ObjectAudioRendering {
+        enabled ? .apac(layout) : .off
     }
 
     /// `apac 7.1.4` or `off`, for the diagnostics line.
@@ -638,18 +630,8 @@ enum AetherObjectAudioPolicy {
     }
 
     #if os(tvOS)
-    /// Apple TV's HDMI output as tvOS reports it. The Atmos route to a receiver
-    /// or soundbar is Dolby MAT, which tvOS reports as `.dolbyAtmos`.
-    static func currentOutput(_ mode: AVAudioSession.RenderingMode = AVAudioSession.sharedInstance().renderingMode) -> Output {
-        switch mode {
-        case .dolbyAtmos, .spatialAudio: return .atmos
-        case .monoStereo, .surround, .dolbyAudio: return .channelsOnly
-        default: return .unknown
-        }
-    }
-
-    /// The mode's own name for the diagnostics line, so a report shows what
-    /// tvOS said rather than only what Silo made of it.
+    /// The mode's own name for the diagnostics line: what tvOS had resolved
+    /// for whatever was playing when the load began.
     static func renderingModeName(_ mode: AVAudioSession.RenderingMode) -> String {
         switch mode {
         case .notApplicable: return "notApplicable"

@@ -163,7 +163,7 @@ struct PlaybackSettingsView: View {
     private var streamingFooterText: String {
         var text = SettingsViewModel.hdrFooterText
         text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
-        text += " TrueHD Atmos and DTS:X keep their height channels but play as compressed audio."
+        text += " With TrueHD Atmos and DTS:X on, those tracks keep their height channels but play as compressed audio."
         return text
     }
 

@@ -111,10 +111,12 @@ validated.
 ### 3.3 TrueHD Atmos and DTS:X heights
 
 The Playback setting "TrueHD Atmos and DTS:X" (device-local, default On) selects
-Aether's `LoadOptions.objectAudioRendering = .apac(.l714)` when the Apple TV's output
-reports Dolby Atmos (`AVAudioSession.renderingMode == .dolbyAtmos`) or does not report a
-mode. An output reporting stereo, multichannel PCM or Dolby Digital keeps the lossless
-channel path, since there the heights would only be folded back into channels.
+Aether's `LoadOptions.objectAudioRendering = .apac(.l714)` whenever it is on. Silo does
+not check the output first: `AVAudioSession.renderingMode` resolves for the content
+already playing (stereo reads `monoStereo`, the lossless 7.1 bridge `surround`), not for
+what the receiver can carry, so before a load it cannot tell an Atmos receiver from one
+without Atmos. A setup without Atmos keeps the lossless channel path by turning the
+setting off.
 
 Upstream AetherEngine builds this path only with its `TrueHDObjectAudio` and
 `DTSXObjectAudio` package traits, off by default since 7.39.0 because the components may

@@ -507,8 +507,7 @@ final class PlayerSettings {
     /// one to one) and delivers Apple Positional Audio, which an Atmos receiver
     /// or soundbar gets as Dolby Atmos and AirPods or the built-in speakers
     /// render as Spatial Audio. The trade is a compressed stream in place of
-    /// lossless 7.1, which is why Apple TV only uses it when its output reports
-    /// Dolby Atmos.
+    /// lossless 7.1, so a setup without Atmos is better with it off.
     ///
     /// Never synced to the server: what this device plays into is a fact about
     /// the room or the headphones, not the profile. Default on.
