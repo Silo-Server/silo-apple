@@ -251,10 +251,10 @@ final class NetworkSignInTests: XCTestCase {
         XCTAssertTrue(stub.requests.isEmpty)
     }
 
-    /// "Change server" while "Continue as …" runs leaves the sign-in screen.
-    /// The sign-in must not pull the app back to the profiles, and it is
-    /// saved nowhere: placing it would add or change a user behind the
-    /// screen the person moved to, so its session is ended instead.
+    /// Back while "Continue as …" runs leaves the sign-in screen. The
+    /// sign-in must not pull the app back to the profiles, and it is saved
+    /// nowhere: saving it would add or refresh an account behind the screen
+    /// the person moved to, so its session is ended instead.
     @MainActor
     func testSignInDoesNotRouteOnceTheAppLeftTheSignInScreen() async throws {
         let (auth, tokens) = try await makeAuth()
@@ -284,6 +284,23 @@ final class NetworkSignInTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(revoked(), "the abandoned session is ended on the server")
+    }
+
+    /// Add Account keeps "Continue as …": the network names the account,
+    /// which is saved as a new account or refreshes the saved one.
+    @MainActor
+    func testEverySignInContextOffersNetworkSignIn() async throws {
+        let (auth, _) = try await makeAuth()
+        let network = Self.network()
+        let options = SignInOptions(providers: APIv2AuthProviders(items: [network], passwordLogin: true), oauth: nil)
+        let key = try XCTUnwrap(SignInKey(serverID: "server", accountID: "12"))
+
+        for context: SignInContext in [.firstRun, .addAccount, .signInAgain(key)] {
+            let model = LoginViewModel(auth: auth, context: context)
+            model.discovery = .loaded(options)
+            XCTAssertEqual(model.signInOptions, options, "\(context)")
+            XCTAssertEqual(model.networkProviders, [network], "\(context)")
+        }
     }
 
     func testRefusalsReadAsSentencesNamingTheProvider() {

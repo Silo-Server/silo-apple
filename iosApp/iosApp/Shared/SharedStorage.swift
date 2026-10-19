@@ -82,9 +82,10 @@ enum SharedStorage {
         keychainAccountPrefix + "\(serverID).accountEpoch"
     }
 
-    /// The device's Silo users and which sign-ins belong to each
-    /// (`SiloUserIndex`), in the user-independent audience. The keychain
-    /// can't list items, so this index is how sign-ins are found.
+    /// The device's accounts (`SiloAccountIndex`), in the user-independent
+    /// audience. The keychain can't list items, so this index is how sign-ins
+    /// are found. The name is from the first multi-account format, which the
+    /// current one converts.
     static let usersIndexAccount = keychainAccountPrefix + "users.v1"
     /// The same index as of its last successful write, read only when
     /// `usersIndexAccount` holds something that can't be decoded.

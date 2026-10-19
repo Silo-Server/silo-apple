@@ -77,21 +77,16 @@ struct ContentView: View {
     /// The choosers and the server step hold no server data either, and a
     /// sign-in started from them makes its server active before moving on.
     ///
-    /// Opening another user or sign-in is the same boundary even on the same
+    /// Opening another account is the same boundary even on the same
     /// server (`AppRouter.signInRevision`): profile IDs repeat across
     /// accounts, so nothing keyed by server and profile may survive it.
     private var authContentIdentity: String? {
         switch router.authState {
         case .needsServerSetup: return "serverSetup"
-        case .needsUser: return "chooseUser"
-        case .needsServer(let userID, _): return "chooseServer.\(userID)"
+        case .needsAccount: return "chooseAccount"
         case .needsSignInTarget: return "signInTarget"
         case .needsProfile, .authenticated:
             return serverRegistry.activeServerId.map { "\($0)#\(router.signInRevision)" }
-        case .needsLogin:
-            // Stays put while the sign-in it finished opens; starts over
-            // after its question is answered Cancel.
-            return serverRegistry.activeServerId.map { "\($0)#signIn\(router.signInScreenGeneration)" }
         default:
             // The sign-in screen stays put while the sign-in it finished opens.
             return serverRegistry.activeServerId
@@ -176,18 +171,18 @@ struct ContentView: View {
                 deviceApprovalLink = nil
                 pendingDeepLink = link.url
                 router.prefillServerSetup(with: url)
-                Task { await router.users.startAddServer(router: router) }
+                Task { await router.accounts.startAddAccountOnNewServer(router: router) }
             }, onSignIn: { server, pending in
                 // Sign in to that saved server again, then come back here.
                 deviceApprovalLink = nil
                 router.signIn(forTVApproval: pending, on: server)
-            }, onSwitchUser: { pending in
+            }, onSwitchAccount: { pending in
                 deviceApprovalLink = nil
-                router.switchUser(forTVApproval: pending)
+                router.switchAccount(forTVApproval: pending)
             }, onClose: { deviceApprovalLink = nil })
         }
         #endif
-        .modifier(SignInPromptPresenter(router: router))
+        .modifier(RemovalRequestPresenter(router: router))
         #if DEBUG
         .modifier(DebugPlayerPresentationModifier(
             contentId: debugPlayContentId,
@@ -248,7 +243,7 @@ struct ContentView: View {
                 #if !os(tvOS)
                 DownloadManager.shared.clearForSignOut()
                 #endif
-                await router.users.handleSessionExpired(router: router)
+                await router.accounts.handleSessionExpired(router: router)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .siloSignInMigrated)) { notification in
@@ -256,7 +251,7 @@ struct ContentView: View {
             Task { @MainActor in
                 // At launch the validation that read the account re-resolves
                 // the route itself.
-                await router.users.handleSignInMigrated(outcome, router: router,
+                await router.accounts.handleSignInMigrated(outcome, router: router,
                                                         routes: router.authState != .loading)
             }
         }
@@ -760,7 +755,7 @@ struct ContentView: View {
         defer { isApplyingProfileReturnPolicy = false }
         // Ask For (spec §6.3) reads the away clock, so it is decided before
         // the profile is cleared.
-        let launchDecision = await router.users.resolve(.foregroundAfterAway)
+        let launchDecision = await router.accounts.resolve(.foregroundAfterAway)
 
         // Retire player UI and audio state while the old profile still owns
         // request identity, then close the HTTP dispatch gate and clear every
@@ -800,8 +795,8 @@ struct ContentView: View {
         }
         #endif
         guard deactivated else { return }
-        if case .chooseUser(let focus)? = launchDecision {
-            await router.users.apply(.chooseUser(focusUserID: focus), router: router)
+        if case .chooseAccount(let focus)? = launchDecision {
+            await router.accounts.apply(.chooseAccount(focus: focus), router: router)
         } else {
             router.showProfileSelection()
         }
@@ -878,7 +873,7 @@ struct ContentView: View {
                 .onboardingTourGate(router: router)
             #endif
 
-        case .needsUser, .needsServer, .needsSignInTarget:
+        case .needsAccount, .needsSignInTarget:
             NavigationStack(path: router.path(for: router.authState)) {
                 UserFlowRoot(router: router)
                     .navigationDestination(for: Route.self) { route in
@@ -1246,7 +1241,7 @@ struct ContentView: View {
         #endif
         guard router.authState == .authenticated else {
             if router.authState == .needsProfile {
-                Task { await router.users.applyAskForOnReturnToProfileSelection(router: router) }
+                Task { await router.accounts.applyAskForOnReturnToProfileSelection(router: router) }
             }
             maintainPushRegistrationsWithoutProfile()
             return
@@ -1507,7 +1502,7 @@ struct ContentView: View {
             #else
             ServerSetupView(router: router)
             #endif
-        case .chooseUser, .chooseServer, .signInTarget, .manageUsers:
+        case .chooseAccount, .signInTarget, .manageAccounts:
             UserFlowDestination(route: route, router: router)
         default:
             // Signed-out screens push only the routes above, and this stack
@@ -1519,17 +1514,12 @@ struct ContentView: View {
         }
     }
 
-    /// Destinations reachable from the profile-selection stack. The
-    /// "Change Server" chip pushes `.serverList`; from there the user
-    /// can swap active servers or dive into `.serverSetup` to add a
-    /// new one. Auth-flow routes are included so an "Add Server" tap
-    /// on tvOS — which stays inside this stack rather than flipping
-    /// `authState` — still lands on a real view.
+    /// Destinations reachable from the profile-selection stack: Switch
+    /// Account, Manage Accounts, and the server step of Add Account, which
+    /// stays inside this stack rather than flipping `authState`.
     @ViewBuilder
     private func profileFlowDestination(for route: Route) -> some View {
         switch route {
-        case .serverList:
-            ServerListView()
         case .serverSetup:
             #if os(tvOS)
             TVServerSetupView(router: router)
@@ -1542,7 +1532,7 @@ struct ContentView: View {
             #else
             ServerNeedsSetupView(router: router)
             #endif
-        case .chooseUser, .chooseServer, .signInTarget, .manageUsers:
+        case .chooseAccount, .signInTarget, .manageAccounts:
             UserFlowDestination(route: route, router: router)
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
@@ -3324,9 +3314,7 @@ struct MainTabView: View {
             #endif
         case .settings:
             SettingsView()
-        case .serverList:
-            ServerListView()
-        case .chooseUser, .chooseServer, .signInTarget, .manageUsers:
+        case .chooseAccount, .signInTarget, .manageAccounts:
             UserFlowDestination(route: route, router: router)
         case .serverSetup:
             ServerSetupView(router: router)

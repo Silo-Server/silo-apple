@@ -19,7 +19,7 @@ struct LoginView: View {
     @State private var expandsPasswordForm = false
     /// Counts failed password attempts so the fields shake on each one.
     @State private var passwordFailures = 0
-    /// Change server, Switch User, or Cancel is running; another tap waits.
+    /// Back, Switch Account, or Cancel is running; another tap waits.
     @State private var isLeaving = false
     @FocusState private var focusedField: Field?
     @Environment(\.scenePhase) private var scenePhase
@@ -31,7 +31,7 @@ struct LoginView: View {
         // back from server setup, so going back waits until it settles.
         MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { changeServer() }) {
             MarqueeTopBar {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Change server") {
+                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back") {
                     changeServer()
                 }
                 .disabled(viewModel.isBusy)
@@ -43,8 +43,7 @@ struct LoginView: View {
                 title: "Sign in",
                 // An expired session says why sign-in is back on screen.
                 lead: router.loginNotice?.message(serverName: server.serverName)
-                    ?? Self.contextLead(router.signInContext, serverName: server.serverName,
-                                        directory: router.users.directory)
+                    ?? Self.contextLead(router.signInContext, serverName: server.serverName)
                     ?? server.branding?.loginSubtitle ?? "Use your \(server.serverName) account."
             )
             options
@@ -80,14 +79,11 @@ struct LoginView: View {
         .marqueeTransparentNavigation()
     }
 
-    /// Who the sign-in is for, when it isn't the person already here: a new
-    /// user, or a server joining a user.
-    static func contextLead(_ context: SignInContext, serverName: String, directory: SiloUserDirectory) -> String? {
+    /// What the sign-in adds, when it isn't the person already here.
+    static func contextLead(_ context: SignInContext, serverName: String) -> String? {
         switch context {
-        case .addUser:
-            return "Sign in with the new user's \(serverName) account."
-        case .addServer(let userID):
-            return directory.user(userID).map { "Sign in to add \(serverName) to \($0.name)." }
+        case .addAccount:
+            return "Sign in with the \(serverName) account to add."
         case .firstRun, .signInAgain:
             return nil
         }
@@ -95,9 +91,9 @@ struct LoginView: View {
 
     static let noSignInText = "This server doesn't offer a sign-in this app can use. Sign in on the web, or ask the server's admin."
 
-    /// Back to the server step, or for Sign in again, the user's servers.
+    /// Back to the server step, or for Sign in again, Choose an Account.
     private func changeServer() {
-        leave { await router.users.changeSignInServer(router: router) }
+        leave { await router.accounts.leaveSignIn(router: router) }
     }
 
     /// Runs one way out of this sign-in at a time: a second Cancel after the
@@ -114,10 +110,14 @@ struct LoginView: View {
     private var serverMenu: some View {
         Menu {
             Section(server.hostLabel) {
-                Button {
-                    changeServer()
-                } label: {
-                    Label("Use a different server", systemImage: "server.rack")
+                // An expired account belongs to this server; a new sign-in
+                // can pick another one.
+                if !isSignInAgain {
+                    Button {
+                        changeServer()
+                    } label: {
+                        Label("Use a different server", systemImage: "server.rack")
+                    }
                 }
             }
         } label: {
@@ -126,11 +126,11 @@ struct LoginView: View {
         .menuStyle(.button)
         .buttonStyle(.marqueePressable)
         .disabled(viewModel.isBusy)
-        .accessibilityLabel("\(server.serverName), server. Double-tap to change.")
+        .accessibilityLabel("\(server.serverName), server")
     }
 
     /// Whether this sign-in can be abandoned for the screen it started on
-    /// (Add User, Add Server).
+    /// (Add Account).
     private var offersCancel: Bool { router.signInReturnPoint != nil }
 
     /// Sign in again for a saved sign-in (spec §6.2.3).
@@ -140,8 +140,8 @@ struct LoginView: View {
     }
 
     /// The ways out of this sign-in, small and under the form like Who's
-    /// Watching's utilities: Change server and Switch User when a saved
-    /// sign-in expired (spec §6.2.3), Cancel for Add User and Add Server.
+    /// Watching's utilities: Switch Account when a saved sign-in expired
+    /// (spec §6.2.3), Cancel for Add Account.
     @ViewBuilder
     private var contextActions: some View {
         if isSignInAgain || offersCancel {
@@ -158,24 +158,16 @@ struct LoginView: View {
     private var contextButtons: some View {
         if isSignInAgain {
             Button {
-                changeServer()
+                leave { await router.accounts.switchAccountFromSignIn(router: router) }
             } label: {
-                Label("Change server", systemImage: "server.rack")
-            }
-            .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
-            .disabled(viewModel.isBusy || isLeaving)
-
-            Button {
-                leave { await router.users.switchUserFromSignIn(router: router) }
-            } label: {
-                Label("Switch User", systemImage: "person.2")
+                Label("Switch Account", systemImage: "person.2")
             }
             .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
             .disabled(viewModel.isBusy || isLeaving)
         }
         if offersCancel {
             Button {
-                leave { await router.users.cancelSignIn(router: router) }
+                leave { await router.accounts.cancelSignIn(router: router) }
             } label: {
                 Label(ConfirmationCopy.cancelTitle, systemImage: "xmark")
             }
@@ -183,20 +175,6 @@ struct LoginView: View {
             .keyboardShortcut(.cancelAction)
             .disabled(viewModel.isBusy || isLeaving)
         }
-    }
-
-    /// Add User on a server whose only way in from here is network sign-in,
-    /// which signs in whoever owns the network (plan G9).
-    private var networkOnlyNotice: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            MarqueeErrorText(Self.networkOnlyText(serverName: server.serverName))
-            Button("Change server") { changeServer() }
-                .buttonStyle(.marquee(.glass))
-        }
-    }
-
-    static func networkOnlyText(serverName: String) -> String {
-        "\(serverName) only signs in this network's owner here, so it can't add a new user. Choose another server."
     }
 
     // MARK: - Options
@@ -229,9 +207,7 @@ struct LoginView: View {
                     }
                 }
 
-                if viewModel.onlyNetworkSignInAvailableForAddUser {
-                    networkOnlyNotice
-                } else if viewModel.offersNoSignIn {
+                if viewModel.offersNoSignIn {
                     MarqueeErrorText(Self.noSignInText)
                 }
 

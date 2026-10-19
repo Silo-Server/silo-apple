@@ -56,11 +56,8 @@ struct SettingsView: View {
             if accountSignIn.showsEntry {
                 accountSignInSection
             }
-            if router.users.directory.isAvailable, !router.users.directory.users.isEmpty {
-                usersSection
-            }
+            accountsSection
             preferencesSection
-            connectionSection
             aboutSection
             signOutSection
         }
@@ -72,40 +69,40 @@ struct SettingsView: View {
             await viewModel.loadSettings()
         }
         .task { await accountSignIn.load() }
-        .task { await router.users.reloadDirectory() }
+        .task { await router.accounts.reloadDirectory() }
     }
 
-    // MARK: - Users
+    // MARK: - Accounts
 
-    /// Settings › Users (spec §5.7): the device's users, each opening Manage
-    /// Users, where its servers are signed out, renamed, and removed.
-    private var usersSection: some View {
+    /// Settings › Accounts (spec §5.7): the device's accounts, each opening
+    /// Manage Accounts, where accounts are signed out of and removed.
+    private var accountsSection: some View {
         Section {
-            ForEach(router.users.directory.users) { user in
+            ForEach(router.accounts.directory.accounts) { account in
                 Button {
-                    router.navigate(to: .manageUsers)
+                    router.navigate(to: .manageAccounts)
                 } label: {
                     HStack(spacing: 12) {
                         StackedProfileAvatars(
-                            profiles: user.lastUsedServer?.profiles ?? [],
-                            fallbackID: user.id,
-                            fallbackName: user.name,
-                            serverAddress: user.lastUsedServer?.address,
+                            profiles: account.profiles,
+                            fallbackID: account.id.storageKey,
+                            fallbackName: account.name,
+                            serverAddress: account.serverAddress,
                             maxCount: 3
                         )
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(user.name)
+                            Text(account.name)
                                 .foregroundStyle(Color.siloOnSurface)
-                            Text(ChooseUserViewModel.serverLabel(for: user))
+                            Text(account.detailLines.joined(separator: AccountMenuModel.separator))
                                 .font(.footnote)
                                 .foregroundStyle(Color.siloSecondaryText)
                         }
                         Spacer(minLength: 8)
-                        if user.needsSignInAgain {
-                            Text(ChooseUserViewModel.signInAgainLabel)
+                        if account.needsSignInAgain {
+                            Text(ChooseAccountViewModel.signInAgainLabel)
                                 .foregroundStyle(Color.siloStatusWarning)
-                        } else if user.id == router.users.directory.currentUserID {
-                            Text(ManageUsersView.currentLabel)
+                        } else if account.id == router.accounts.directory.currentAccountID {
+                            Text(AccountsSettingsViewModel.currentLabel)
                                 .foregroundStyle(Color.siloSecondaryText)
                         }
                         SettingsRowChevron()
@@ -114,8 +111,25 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
             }
+            if router.accounts.directory.accounts.isEmpty {
+                Button {
+                    router.navigate(to: .manageAccounts)
+                } label: {
+                    HStack(spacing: 0) {
+                        SettingsRowLabel(
+                            title: "Server",
+                            systemImage: "server.rack",
+                            color: .teal,
+                            value: viewModel.serverDisplayName
+                        )
+                        SettingsRowChevron()
+                            .padding(.leading, 8)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
         } header: {
-            Text(UsersSettingsViewModel.title)
+            Text(AccountsSettingsViewModel.title)
                 .foregroundStyle(Color.siloSecondaryText)
         }
     }
@@ -247,28 +261,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Connection
-
-    private var connectionSection: some View {
-        Section {
-            Button {
-                router.navigate(to: .serverList)
-            } label: {
-                HStack(spacing: 0) {
-                    SettingsRowLabel(
-                        title: "Server",
-                        systemImage: "server.rack",
-                        color: .teal,
-                        value: viewModel.serverDisplayName
-                    )
-                    SettingsRowChevron()
-                        .padding(.leading, 8)
-                }
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
     // MARK: - About
 
     private var aboutSection: some View {
@@ -324,7 +316,7 @@ struct SettingsView: View {
     private var signOutSection: some View {
         Section {
             Button(role: .destructive) {
-                Task { await router.users.requestRemoval(.currentSignIn, router: router) }
+                Task { await router.accounts.requestRemoval(.currentAccount, router: router) }
             } label: {
                 Text("Sign Out")
                     .font(.siloBody.weight(.semibold))

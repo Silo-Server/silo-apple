@@ -56,13 +56,11 @@ final class AppRouter {
         case needsProfile
         /// Fully authenticated with an active profile.
         case authenticated
-        /// Choose a User as the root: at launch with two or more users and
-        /// none linked, when Ask For says so, or after a removal (spec §6.2).
-        case needsUser(focusUserID: String?)
-        /// Choose a Server as the root, for a user with two or more servers
-        /// and no last server still in it (spec §6.2).
-        case needsServer(userID: String, focusServerID: String?)
-        /// "Sign in to…" as the root: no users yet, but servers are saved
+        /// Choose an Account as the root: at launch with two or more
+        /// accounts and none linked, when Ask For says so, or after a removal
+        /// (spec §6.2).
+        case needsAccount(focus: SiloAccountRef?)
+        /// "Sign in to…" as the root: no accounts yet, but servers are saved
         /// (spec §5.4).
         case needsSignInTarget(SignInContext)
 
@@ -79,8 +77,7 @@ final class AppRouter {
             case .serverRecovery(let reason): return "serverRecovery.\(reason.rawValue)"
             case .needsProfile: return "needsProfile"
             case .authenticated: return "authenticated"
-            case .needsUser: return "needsUser"
-            case .needsServer: return "needsServer"
+            case .needsAccount: return "needsAccount"
             case .needsSignInTarget: return "needsSignInTarget"
             }
         }
@@ -89,7 +86,7 @@ final class AppRouter {
         var showsMarqueeBackdrop: Bool {
             switch self {
             case .needsServerSetup, .needsLogin, .serverRecovery, .needsProfile,
-                 .needsUser, .needsServer, .needsSignInTarget: true
+                 .needsAccount, .needsSignInTarget: true
             case .loading, .authenticated: false
             }
         }
@@ -100,7 +97,7 @@ final class AppRouter {
             switch (self, other) {
             case (.loading, .loading), (.needsServerSetup, .needsServerSetup), (.needsLogin, .needsLogin),
                  (.serverRecovery, .serverRecovery), (.needsProfile, .needsProfile),
-                 (.authenticated, .authenticated), (.needsUser, .needsUser), (.needsServer, .needsServer),
+                 (.authenticated, .authenticated), (.needsAccount, .needsAccount),
                  (.needsSignInTarget, .needsSignInTarget):
                 return true
             default:
@@ -784,64 +781,41 @@ final class AppRouter {
 
     private(set) var loginNotice: LoginNotice?
 
-    // MARK: - Silo users (spec §5, plan §2.10)
+    // MARK: - Silo accounts (spec §5, plan §2.10)
 
-    /// Why the sign-in screens are running: the server step, the placement
-    /// of the sign-in, and the sign-in screen's buttons follow it.
+    /// Why the sign-in screens are running: the server step and the
+    /// sign-in screen's buttons follow it.
     var signInContext: SignInContext = .firstRun
-    /// Where Cancel on a sign-in returns: the user, server, and screens
-    /// showing when the sign-in started. Nil for a first sign-in.
+    /// Where Cancel on a sign-in returns: the account and screens showing
+    /// when the sign-in started. Nil for a first sign-in.
     var signInReturnPoint: SignInReturnPoint?
-    /// A question a finished sign-in raised (spec §5.4.1), answered through
-    /// `SiloUserCoordinator.answer`.
-    var signInPrompt: SignInPrompt?
     /// A sign-out or removal waiting for its confirmation (spec §5.6).
     var removalRequest: RemovalRequest?
-    /// A user being renamed (spec §5.2).
-    var renameRequest: UserRenameRequest?
-    /// How deep the Choose a User that Settings › Paired Silo Profile pushed
-    /// on Who's Watching sits on the stack. While it, or a Choose a Server
-    /// picked from it, shows, the user opened ends on its Who's Watching,
-    /// even under Automatic, so the person picks the profile to pair (spec
-    /// §5.7). Nil otherwise.
+    /// How deep the Choose an Account that Settings › Paired Silo Profile
+    /// pushed on Who's Watching sits on the stack. While it shows, the
+    /// account opened ends on its Who's Watching, even under Automatic, so
+    /// the person picks the profile to pair (spec §5.7). Nil otherwise.
     @ObservationIgnored var pairedProfileChooserDepth: Int?
-    /// Bumped each time a user or sign-in is opened, even when the auth
-    /// state stays the same (Automatic reopening a profile under another
-    /// account), so session-scoped stores re-scope. The coordinator keeps
-    /// it, so every window follows: on macOS, a user opened in one window
-    /// re-scopes the others too, as a server switch always has.
-    var signInRevision: Int { users.signInRevision }
+    /// Bumped each time an account is opened, even when the auth state stays
+    /// the same (Automatic reopening a profile under another account), so
+    /// session-scoped stores re-scope. The coordinator keeps it, so every
+    /// window follows: on macOS, an account opened in one window re-scopes
+    /// the others too, as a server switch always has.
+    var signInRevision: Int { accounts.signInRevision }
     /// The coordinator this router's flows run through. Tests replace it.
-    @ObservationIgnored var usersOverride: SiloUserCoordinator?
-    var users: SiloUserCoordinator { usersOverride ?? .shared }
+    @ObservationIgnored var accountsOverride: SiloAccountCoordinator?
+    var accounts: SiloAccountCoordinator { accountsOverride ?? .shared }
 
     func noteSignInChanged() {
-        users.noteSignInChanged()
+        accounts.noteSignInChanged()
     }
 
-    /// Bumped when a sign-in screen must start over in place: a question
-    /// its sign-in raised was answered Cancel and the same screen shows
-    /// again, with its code or form still in the finished state.
-    private(set) var signInScreenGeneration = 0
-
-    func restartSignInScreen() {
-        signInScreenGeneration &+= 1
-    }
-
-    /// Choose a User as the root.
-    func showUserChooser(focus userID: String?) {
+    /// Choose an Account as the root.
+    func showAccountChooser(focus account: SiloAccountRef?) {
         loginNotice = nil
-        recordScreenBreadcrumb(target: "chooseUser", action: "reset")
+        recordScreenBreadcrumb(target: "chooseAccount", action: "reset")
         path = NavigationPath()
-        setAuthState(.needsUser(focusUserID: userID), reason: "showUserChooser")
-    }
-
-    /// Choose a Server as the root.
-    func showServerChooser(userID: String, focus serverID: String?) {
-        loginNotice = nil
-        recordScreenBreadcrumb(target: "chooseServer", action: "reset")
-        path = NavigationPath()
-        setAuthState(.needsServer(userID: userID, focusServerID: serverID), reason: "showServerChooser")
+        setAuthState(.needsAccount(focus: account), reason: "showAccountChooser")
     }
 
     /// "Sign in to…" as the root.
@@ -965,11 +939,11 @@ final class AppRouter {
     }
 
     func signOutAndReset() {
-        requestSignOut(removingServer: false)
+        requestSignOut(removingAccount: false)
     }
 
     /// "Sign In Again" after the session expired. Not a sign-out: the saved
-    /// sign-in stays (other users on the device are untouched) and its
+    /// sign-in stays (other accounts on the device are untouched) and its
     /// sign-in screen opens, so the same person signs straight back in.
     /// Before sign-in migration, the server's own session is signed out as
     /// it always was.
@@ -979,23 +953,23 @@ final class AppRouter {
         accountActionError = nil
         Task {
             defer { isSigningOut = false }
-            guard await users.signInAgainForCurrentSession(router: self) else {
-                await users.signOutCurrent(alsoRemoveServer: false, asksForAccountChoice: false, router: self)
+            guard await accounts.signInAgainForCurrentSession(router: self) else {
+                await accounts.signOutCurrent(alsoRemoveAccount: false, asksForAccountChoice: false, router: self)
                 return
             }
         }
     }
 
-    func signOutRemoveServerAndReset() {
-        requestSignOut(removingServer: true)
+    func signOutRemoveAccountAndReset() {
+        requestSignOut(removingAccount: true)
     }
 
     #if os(iOS)
-    /// A TV approval to show again once a user is chosen, added, or signed
-    /// back in. ContentView takes it when it is due (`takeDueDeviceApproval`).
+    /// A TV approval to show again once an account is chosen, added, or
+    /// signed back in. ContentView takes it when it is due (`takeDueDeviceApproval`).
     private(set) var pendingDeviceApproval: DeviceApprovalLink?
-    /// How deep the Choose a User that "Not you? Switch User" pushed sits
-    /// on the stack. The approval waits while it shows, an Add User
+    /// How deep the Choose an Account that "Not you? Switch Account" pushed
+    /// sits on the stack. The approval waits while it shows, an Add Account
     /// cancelled back to it included, and is due once the person leaves it.
     @ObservationIgnored private var deviceApprovalChooserDepth: Int?
 
@@ -1009,10 +983,11 @@ final class AppRouter {
 
     /// The waiting TV approval, once its card can show again: a signed-in
     /// screen shows (approval is account-level, so Who's Watching counts)
-    /// and the Switch User chooser it waited on is gone, whether a user was
-    /// picked (the current one too) or the person went back. Going back
-    /// works like Cancel on the old sign-out confirmation: the card returns
-    /// for the user still signed in, and nothing is left to show later.
+    /// and the Switch Account chooser it waited on is gone, whether an
+    /// account was picked (the current one too) or the person went back.
+    /// Going back works like Cancel on the old sign-out confirmation: the
+    /// card returns for the account still signed in, and nothing is left to
+    /// show later.
     func takeDueDeviceApproval() -> DeviceApprovalLink? {
         guard pendingDeviceApproval != nil, authState == .authenticated || authState == .needsProfile else {
             return nil
@@ -1021,15 +996,15 @@ final class AppRouter {
         return takePendingDeviceApproval()
     }
 
-    /// A TV approval link named a saved server the current user can't use
-    /// right now: open its sign-in screen. The TV's code returns to the
+    /// A TV approval link named a saved server the current account isn't
+    /// on: open that server's account, or its sign-in screen. The TV's code returns to the
     /// approval card after that sign-in.
     func signIn(forTVApproval link: DeviceApprovalLink, on server: ServerEntry) {
         guard !isSigningOut else { return }
         pendingDeviceApproval = link
         deviceApprovalChooserDepth = nil
         Task { @MainActor in
-            guard await users.beginSignIn(forServer: server.id, router: self) else {
+            guard await accounts.beginSignIn(forServer: server.id, router: self) else {
                 pendingDeviceApproval = nil
                 accountActionError = "Couldn't switch to that server. Try again."
                 return
@@ -1037,24 +1012,24 @@ final class AppRouter {
         }
     }
 
-    /// "Not you?" on a TV approval: Switch User, without signing anyone out
-    /// (coordinator decision 2). The chooser offers Add User too; the TV's
-    /// code returns to the approval card once a user is chosen or added, or
-    /// the person goes back (`takeDueDeviceApproval`).
-    func switchUser(forTVApproval link: DeviceApprovalLink) {
+    /// "Not you?" on a TV approval: Switch Account, without signing anyone
+    /// out (coordinator decision 2). The chooser offers Add Account too; the
+    /// TV's code returns to the approval card once an account is chosen or
+    /// added, or the person goes back (`takeDueDeviceApproval`).
+    func switchAccount(forTVApproval link: DeviceApprovalLink) {
         guard !isSigningOut else { return }
         Task { @MainActor in
-            await beginSwitchUser(forTVApproval: link)
+            await beginSwitchAccount(forTVApproval: link)
         }
     }
 
-    /// `switchUser(forTVApproval:)`'s work, to the chooser showing.
-    func beginSwitchUser(forTVApproval link: DeviceApprovalLink) async {
+    /// `switchAccount(forTVApproval:)`'s work, to the chooser showing.
+    func beginSwitchAccount(forTVApproval link: DeviceApprovalLink) async {
         pendingDeviceApproval = link
         // Not due while the chooser opens.
         deviceApprovalChooserDepth = 0
         let depth = path.count
-        await users.beginSwitchUser(router: self)
+        await accounts.beginSwitchAccount(router: self)
         // Pushed on top of the screens: due once the person leaves it. A
         // chooser shown as the root waits for a signed-in screen instead.
         deviceApprovalChooserDepth = path.count > depth ? path.count : nil
@@ -1063,25 +1038,25 @@ final class AppRouter {
 
     /// One operation owns the button action through cleanup and navigation.
     /// Repeated taps cannot queue another logout behind a subsequent login.
-    private func requestSignOut(removingServer: Bool) {
+    private func requestSignOut(removingAccount: Bool) {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
         Task {
             defer { isSigningOut = false }
-            await users.signOutCurrent(alsoRemoveServer: removingServer, asksForAccountChoice: true, router: self)
+            await accounts.signOutCurrent(alsoRemoveAccount: removingAccount, asksForAccountChoice: true, router: self)
         }
     }
 
     /// Runs a confirmed sign-out or removal through the same single flight
     /// as Sign out.
-    func performRemoval(_ request: RemovalRequest, removingServer: Bool = false) {
+    func performRemoval(_ request: RemovalRequest, removingAccount: Bool = false) {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
         Task {
             defer { isSigningOut = false }
-            await users.perform(request, removingServer: removingServer, router: self)
+            await accounts.perform(request, removingAccount: removingAccount, router: self)
         }
     }
 
@@ -1258,8 +1233,6 @@ private extension Route {
             return "collectionDetail"
         case .settings:
             return "settings"
-        case .serverList:
-            return "serverList"
         case .watchParty:
             return "watchParty"
         case .requestsHub:
@@ -1276,14 +1249,12 @@ private extension Route {
             return "offlineDownloadDetail"
         case .autoDownloads:
             return "autoDownloads"
-        case .chooseUser:
-            return "chooseUser"
-        case .chooseServer:
-            return "chooseServer"
+        case .chooseAccount:
+            return "chooseAccount"
         case .signInTarget:
             return "signInTarget"
-        case .manageUsers:
-            return "manageUsers"
+        case .manageAccounts:
+            return "manageAccounts"
         }
     }
 }

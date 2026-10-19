@@ -4,10 +4,10 @@ import Foundation
 /// app running (plan §2.12). Pure: every keychain read arrives as a value or
 /// a closure, and nothing is ever written.
 ///
-/// Before the user index exists, Top Shelf keeps reading the active server's
-/// per-server slots as it always has. Afterwards it picks the user and server
-/// with the app's launch rules (`SiloLaunchResolver`, plan §2.8), and that
-/// user's sign-in there. The app's runtime mirrors must agree, so nothing
+/// Before the accounts index exists, Top Shelf keeps reading the active
+/// server's per-server slots as it always has. Afterwards it picks the
+/// account with the app's launch rules (`SiloLaunchResolver`, plan §2.8),
+/// and only when that account is on the active server. The app's runtime mirrors must agree, so nothing
 /// shows while the app is signed in somewhere else.
 enum TopShelfCredentialResolver {
     struct SignInCredential: Equatable, Sendable {
@@ -32,7 +32,7 @@ enum TopShelfCredentialResolver {
     }
 
     /// - Parameters:
-    ///   - index: `users.v1`, or nil when it was never written.
+    ///   - index: the accounts index, or nil when it was never written.
     ///   - savedServerIDs: the saved server list's IDs.
     ///   - state: this Apple TV user's launch state.
     ///   - activeServerID, activeAccountID, activeProfileID, serverURL: the
@@ -41,7 +41,7 @@ enum TopShelfCredentialResolver {
     ///   - proof: reads this Apple TV user's proof for a sign-in.
     ///   - legacyProof: reads this Apple TV user's `<serverID>.profileToken`.
     static func resolve(
-        index: SiloUserIndex?,
+        index: SiloAccountIndex?,
         savedServerIDs: Set<String>,
         state: ProfileLaunchState,
         activeServerID: String?,
@@ -55,18 +55,17 @@ enum TopShelfCredentialResolver {
         guard let activeServerID, !activeServerID.isEmpty else { return .unavailable }
         guard let index else { return .legacy(serverID: activeServerID) }
 
-        guard let user = user(in: index, state: state),
-              let serverID = server(of: user, savedServerIDs: savedServerIDs,
-                                    state: state, activeServerID: activeServerID),
-              serverID == activeServerID else {
+        guard let account = account(in: index, savedServerIDs: savedServerIDs, state: state,
+                                    activeServerID: activeServerID),
+              account.serverID == activeServerID, savedServerIDs.contains(activeServerID) else {
             return .unavailable
         }
-        if user.pendingLegacyServerIDs?.contains(serverID) == true {
+        let serverID = activeServerID
+        guard case .signIn(let key) = account else {
             return .legacy(serverID: serverID)
         }
 
-        guard let key = user.signIns.first(where: { $0.serverID == serverID }),
-              let saved = signIn(key), saved.userID == user.id, saved.isSignedIn,
+        guard let saved = signIn(key), saved.isSignedIn,
               let accessToken = saved.accessToken, let refreshToken = saved.refreshToken,
               let epoch = saved.epoch else {
             return .unavailable
@@ -101,44 +100,25 @@ enum TopShelfCredentialResolver {
         ))
     }
 
-    /// The linked user while it exists; else the migrated user for an Apple
-    /// TV user who used Silo before users existed; else the only user.
-    /// "Used Silo before" means remembered profiles or an active server from
-    /// then, and no user opened since (every open records a last server).
-    /// `resolve` already requires the active-server mirror, so only the
-    /// last-server check is left.
-    private static func user(in index: SiloUserIndex, state: ProfileLaunchState) -> SiloUser? {
-        if let linked = state.linkedUserID, let user = index.users.first(where: { $0.id == linked }) {
-            return user
-        }
-        let hasLegacyHistory = (state.lastServerByUserID ?? [:]).isEmpty
-        if hasLegacyHistory, let migrated = index.migratedUserID,
-           let user = index.users.first(where: { $0.id == migrated }) {
-            return user
-        }
-        return index.users.count == 1 ? index.users.first : nil
-    }
-
-    /// The user's last server while the user can still open it; else, when
-    /// none is recorded for the user yet, the server the app has active
-    /// (plan §2.12: the migrated user's server from before users existed, or
-    /// any user's while no last server is written); else the user's only
-    /// server.
-    private static func server(
-        of user: SiloUser,
+    /// The linked account while it exists; else, for an Apple TV user who
+    /// used Silo before accounts existed, the account that took over the
+    /// active server's session from then; else the only account on a saved
+    /// server, as the app's launch rules count them. "Used Silo before" means
+    /// no account linked yet; `resolve` already requires the active-server
+    /// mirror.
+    private static func account(
+        in index: SiloAccountIndex,
         savedServerIDs: Set<String>,
         state: ProfileLaunchState,
         activeServerID: String
-    ) -> String? {
-        let openable = Set(user.signIns.map(\.serverID) + (user.pendingLegacyServerIDs ?? []))
-            .intersection(savedServerIDs)
-        let last = state.lastServer(for: user.id)
-        if let last, openable.contains(last) {
-            return last
+    ) -> SiloAccountRef? {
+        if let linked = state.linkedAccountRef.flatMap(index.resolve) {
+            return linked
         }
-        if last == nil, openable.contains(activeServerID) {
-            return activeServerID
+        if state.linkedAccount == nil, let owner = index.legacyAccount(onServer: activeServerID) {
+            return owner
         }
+        let openable = index.accounts.filter { savedServerIDs.contains($0.serverID) }
         return openable.count == 1 ? openable.first : nil
     }
 

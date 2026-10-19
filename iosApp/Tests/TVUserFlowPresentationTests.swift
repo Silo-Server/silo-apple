@@ -2,12 +2,12 @@
 import XCTest
 @testable import Silo
 
-/// The Apple TV user screens' own rules (spec §5.2–§5.7): where focus goes
-/// when a card or row disappears, what a server row says, and which
-/// Settings › Users rows take focus. Card avatars share Who's Watching's
+/// The Apple TV account screens' own rules (spec §5.2–§5.7): where focus
+/// goes when a card or row disappears, and which Settings › Accounts rows
+/// take focus. Card avatars share Who's Watching's
 /// (`UserCardAvatarSourceTests`).
 final class TVUserFlowPresentationTests: XCTestCase {
-    private typealias D = SiloUserDirectoryFixture
+    private typealias D = SiloAccountDirectoryFixture
 
     // MARK: - Focus after a removal
 
@@ -20,7 +20,7 @@ final class TVUserFlowPresentationTests: XCTestCase {
     }
 
     func testFocusSkipsItemsRemovedTogether() {
-        // A user's last server signed out with it: both rows go.
+        // An account removed from Settings › Accounts: both its rows go.
         XCTAssertEqual(TVFocusNeighbor.replacement(for: "b", before: ["a", "b", "c", "d"], after: ["a", "d"]), "d")
     }
 
@@ -30,50 +30,24 @@ final class TVUserFlowPresentationTests: XCTestCase {
         XCTAssertNil(TVFocusNeighbor.replacement(for: "z", before: ["a"], after: ["a"]))
     }
 
-    // MARK: - Server rows
+    // MARK: - Settings › Accounts
 
-    func testServerRowNamesTheAccountOnlyWhenItDiffersFromTheUser() throws {
-        var state = ProfileLaunchState()
-        state.lastServerByUserID = ["alex": D.home]
-        let directory = D.directory([
-            .init(id: "alex", signIns: [
-                .init(serverID: D.home, accountID: "12", username: "alex"),
-                .init(serverID: D.friend, accountID: "40", username: "alexander", isSignedIn: false),
-            ]),
-        ], state: state, currentUserID: "alex", currentServerID: D.home)
-        let model = try XCTUnwrap(ChooseServerViewModel(directory: directory, userID: "alex"))
+    func testAccountRowsListEachSignOutAndRemoveThenAddAccount() {
+        let alex = D.Account(serverID: D.home, accountID: "12", username: "alex")
+        let sam = D.Account(serverID: D.home, accountID: "13", username: "sam", isSignedIn: false)
+        let pending = D.Account(serverID: D.friend)
+        let model = AccountsSettingsViewModel(directory: D.directory([alex, sam, pending]), device: .appleTV)
 
-        let home = model.rows[0]
-        XCTAssertEqual(TVChooseServerContent.detail(for: home), "home.example")
-        XCTAssertEqual(TVChooseServerContent.badge(for: home.status), .active)
-        XCTAssertEqual(TVChooseServerContent.accessibilityValue(for: home), "Active")
-
-        let friend = model.rows[1]
-        XCTAssertEqual(TVChooseServerContent.detail(for: friend), "alexander · friend.example")
-        XCTAssertEqual(TVChooseServerContent.badge(for: friend.status), .signInAgain)
-        XCTAssertEqual(TVChooseServerContent.accessibilityValue(for: friend), "Signed in as alexander, Sign in again")
-    }
-
-    // MARK: - Settings › Users
-
-    func testUsersRowsListEachSignOutThenRenameAndRemoveThenAddUser() {
-        let directory = D.directory([
-            .init(id: "alex", signIns: [
-                .init(serverID: D.home, accountID: "12", username: "alex"),
-            ], pendingLegacyServerIDs: [D.friend]),
-            .init(id: "sam", signIns: [.init(serverID: D.home, accountID: "13", username: "sam")]),
-        ])
-        let model = UsersSettingsViewModel(directory: directory, device: .appleTV)
-
-        XCTAssertEqual(TVUsersSettingsSection.rows(in: model), [
-            .server(userID: "alex", serverID: D.home),
-            // A server still waiting for its account has no Sign Out.
-            .rename(userID: "alex"),
-            .remove(userID: "alex"),
-            .server(userID: "sam", serverID: D.home),
-            .rename(userID: "sam"),
-            .remove(userID: "sam"),
-            .addUser,
+        XCTAssertEqual(TVAccountsSettingsSection.rows(in: model), [
+            .account(alex.ref),
+            .remove(alex.ref),
+            // Sign In Again takes the Sign Out row's place.
+            .account(sam.ref),
+            .remove(sam.ref),
+            // An account still waiting for the server to name it has no
+            // sign-in to sign out of.
+            .remove(pending.ref),
+            .addAccount,
         ])
     }
 

@@ -47,7 +47,7 @@ struct TVMainTabView: View {
         return cached.first(where: { $0.id == profileId })
     }()
     @State private var showSignOutConfirm = false
-    /// The Sign Out confirmation's text, read from the users directory when
+    /// The Sign Out confirmation's text, read from the accounts directory when
     /// it opens (spec §5.6).
     @State private var signOutCopy: ConfirmationCopy?
     @State private var librariesStaleSinceBackground = false
@@ -188,7 +188,7 @@ struct TVMainTabView: View {
         .allowsHitTesting(!showSignOutConfirm)
         .overlay {
             if showSignOutConfirm {
-                let copy = signOutCopy ?? router.users.confirmation(for: .currentSignIn)
+                let copy = signOutCopy ?? router.accounts.confirmation(for: .currentAccount)
                 TVSettingsConfirmationOverlay(
                     title: copy.title,
                     message: copy.message,
@@ -196,7 +196,7 @@ struct TVMainTabView: View {
                     additionalDestructiveTitle: copy.additionalDestructiveTitle,
                     cancel: dismissSignOutConfirmation,
                     confirm: router.signOutAndReset,
-                    additionalDestructiveAction: router.signOutRemoveServerAndReset
+                    additionalDestructiveAction: router.signOutRemoveAccountAndReset
                 )
                 .transition(.opacity)
             }
@@ -765,29 +765,17 @@ struct TVMainTabView: View {
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
-            // This user's servers (spec §5.3, plan G12); the device's server
-            // list stays in Settings › Server.
-            onSwitchServer: { closePanel(then: { Task { await switchServer() } }) },
+            // Choose an Account (spec §5.8).
+            onSwitchAccount: { closePanel(then: { Task { await router.accounts.beginSwitchAccount(router: router) } }) },
             onSignOut: { closePanel(then: { Task { await presentSignOutConfirmation() } }) }
         )
     }
 
-    /// Choose a Server for the current user. Before sign-in migration there
-    /// are no users, so it is the device's server list, as before.
-    private func switchServer() async {
-        await router.users.reloadDirectory()
-        let directory = router.users.directory
-        guard let userID = directory.currentUserID else {
-            navigateFromBar(.serverList)
-            return
-        }
-        navigateFromBar(.chooseServer(userID: userID, focusServerID: directory.currentServerID))
-    }
-
-    /// The copy names the current user and server, so it is read fresh.
+    /// The copy names the current account and its server, so it is read
+    /// fresh.
     private func presentSignOutConfirmation() async {
-        await router.users.reloadDirectory()
-        signOutCopy = router.users.confirmation(for: .currentSignIn)
+        await router.accounts.reloadDirectory()
+        signOutCopy = router.accounts.confirmation(for: .currentAccount)
         showSignOutConfirm = true
     }
 
@@ -1450,16 +1438,14 @@ struct TVMainTabView: View {
             SearchView(usesTVTopMenuInset: false, seededQuery: $siriSearchRequest)
         case .settings:
             TVSettingsView()
-        case .serverList:
-            ServerListView()
         case .serverSetup:
-            // Pushed from the server list's "Add Server" button — staying
-            // on the nav stack means the tvOS back button returns to the
-            // previous active server instead of dropping the authenticated
-            // tree entirely. Successful `connect()` flips authState to
+            // Pushed by Add Account's "Add a New Server" — staying on the
+            // nav stack means the tvOS back button returns to the account
+            // that was open instead of dropping the authenticated tree
+            // entirely. Successful `connect()` flips authState to
             // `.needsLogin` and replaces this view tree.
             TVServerSetupView(router: router)
-        case .chooseUser, .chooseServer, .signInTarget, .manageUsers:
+        case .chooseAccount, .signInTarget, .manageAccounts:
             UserFlowDestination(route: route, router: router)
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)

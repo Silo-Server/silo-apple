@@ -402,7 +402,7 @@ final class ServerRegistry {
 
     // MARK: - Server switching
 
-    /// Activate a server and select `credential` on it for `userID`: write
+    /// Activate a server and select `credential` on it: write
     /// the URL/active-ID mirrors and clear the profile id, then publish
     /// `activeServerId` and select the credential in TokenStore. Mirrors are
     /// written first so views reacting to the change read consistent
@@ -411,17 +411,15 @@ final class ServerRegistry {
     func switchTo(
         serverId: String,
         credential: CredentialSelection,
-        userID: String?,
         resolveDestinationProfile: Bool = false
     ) async -> Bool {
-        await performSwitch(serverId: serverId, credential: credential, userID: userID,
+        await performSwitch(serverId: serverId, credential: credential,
                             resolveDestinationProfile: resolveDestinationProfile)
     }
 
     private func performSwitch(
         serverId: String,
         credential: CredentialSelection,
-        userID: String?,
         resolveDestinationProfile: Bool
     ) async -> Bool {
         guard entries.contains(where: { $0.id == serverId }) else {
@@ -455,7 +453,7 @@ final class ServerRegistry {
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
-        let committed = await commitSwitchTo(serverId: serverId, credential: credential, userID: userID,
+        let committed = await commitSwitchTo(serverId: serverId, credential: credential,
                                              abortIfCancelled: true)
         guard committed else {
             #if os(iOS) || os(tvOS)
@@ -482,7 +480,6 @@ final class ServerRegistry {
     func commitSwitchTo(
         serverId: String,
         credential: CredentialSelection,
-        userID: String?,
         holding transitionLease: HTTPIdentityTransitionLease
     ) async -> Bool {
         guard entries.contains(where: { $0.id == serverId }),
@@ -501,7 +498,7 @@ final class ServerRegistry {
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileWillChange()
         #endif
-        let committed = await commitSwitchTo(serverId: serverId, credential: credential, userID: userID,
+        let committed = await commitSwitchTo(serverId: serverId, credential: credential,
                                              abortIfCancelled: false)
         #if os(iOS) || os(tvOS)
         DiagnosticsCoordinator.activeProfileDidChange()
@@ -522,7 +519,6 @@ final class ServerRegistry {
     private func commitSwitchTo(
         serverId: String,
         credential: CredentialSelection,
-        userID: String?,
         abortIfCancelled: Bool
     ) async -> Bool {
         guard let entry = entries.first(where: { $0.id == serverId }) else {
@@ -563,7 +559,7 @@ final class ServerRegistry {
             return false
         }
         activeServerIsFallback = false
-        await tokenStore.select(serverID: serverId, credential: credential, userID: userID)
+        await tokenStore.select(serverID: serverId, credential: credential)
         return true
     }
 
@@ -809,11 +805,11 @@ final class ServerRegistry {
         if removesActiveServer {
             // The fallback serves what the launch rules would give it there
             // (before migration, its own session). Screens then apply the
-            // launch rules (spec §6.2), which may open another user.
+            // launch rules (spec §6.2), which may open another account.
             activeServerIsFallback = true
             let fallbackID = activeServerId ?? ""
             let fallback = await tokenStore.launchSelection(forServer: fallbackID)
-            await tokenStore.select(serverID: fallbackID, credential: fallback.credential, userID: fallback.userID)
+            await tokenStore.select(serverID: fallbackID, credential: fallback)
         }
         launchPreferences.forgetServer(serverId)
         // Branding is cached by address; another saved entry for the same

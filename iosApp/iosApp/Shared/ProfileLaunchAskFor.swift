@@ -1,10 +1,11 @@
 import Foundation
 
 /// What Silo asks for when Profile Selection requires a selection and the
-/// device has more than one Silo user.
+/// device has more than one account.
 enum ProfileLaunchAskFor: String, Codable, CaseIterable, Identifiable, Sendable {
     case profileOnly
-    case userAndProfile
+    /// Stored under the name the first multi-account design used.
+    case accountAndProfile = "userAndProfile"
 
     var id: String { rawValue }
 
@@ -12,8 +13,8 @@ enum ProfileLaunchAskFor: String, Codable, CaseIterable, Identifiable, Sendable 
         switch self {
         case .profileOnly:
             return "Profile Only"
-        case .userAndProfile:
-            return "User + Profile"
+        case .accountAndProfile:
+            return "Account + Profile"
         }
     }
 
@@ -21,20 +22,20 @@ enum ProfileLaunchAskFor: String, Codable, CaseIterable, Identifiable, Sendable 
     var description: String {
         switch self {
         case .profileOnly:
-            return "Show Who's Watching for this Apple TV user's Silo user."
-        case .userAndProfile:
-            return "Choose a user first when this Apple TV has more than one."
+            return "Show Who's Watching for this Apple TV user's Silo account."
+        case .accountAndProfile:
+            return "Choose an account first when this Apple TV has more than one."
         }
     }
 
     /// iPhone, iPad, and Mac copy. These devices have no Apple TV user, so
-    /// the setting follows the user last used on the device.
+    /// the setting follows the account last used on the device.
     var standardDescription: String {
         switch self {
         case .profileOnly:
-            return "Show Who's Watching for the Silo user last used on this device."
-        case .userAndProfile:
-            return "Choose a user first when this device has more than one."
+            return "Show Who's Watching for the Silo account last used on this device."
+        case .accountAndProfile:
+            return "Choose an account first when this device has more than one."
         }
     }
 

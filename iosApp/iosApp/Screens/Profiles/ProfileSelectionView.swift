@@ -67,7 +67,7 @@ struct ProfileSelectionView: View {
         .task {
             MarqueeScene.shared.showActiveServer()
             MarqueeScene.shared.focus = .profiles
-            async let account: Void = viewModel.loadAccount(users: router.users)
+            async let account: Void = viewModel.loadAccount(accounts: router.accounts)
             await viewModel.loadProfiles()
             await skipPickerIfSingleProfile()
             await account
@@ -240,11 +240,11 @@ struct ProfileSelectionView: View {
         #endif
     }
 
-    /// Which user and server these profiles belong to (spec §5.1). The line
+    /// Which account these profiles belong to (spec §5.1). The line
     /// keeps its height while the account loads so the picker doesn't shift
     /// when it appears.
     private var accountLine: some View {
-        let line = viewModel.accountLine(users: router.users)
+        let line = viewModel.accountLine(accounts: router.accounts)
         return Text(line ?? " ")
             .font(.system(size: MarqueeMetrics.leadFont))
             .foregroundStyle(Color.siloOnSurface.opacity(0.62))
@@ -255,20 +255,20 @@ struct ProfileSelectionView: View {
     }
 
     #if !os(tvOS)
-    /// Changing server and signing out are utilities, kept small and below
-    /// the people. Change server lists this user's servers; Sign out asks
-    /// first, since it affects everyone on the device (plan G10, G12).
+    /// Switching account and signing out are utilities, kept small and below
+    /// the people. Switch Account shows Choose an Account; Sign out asks
+    /// first, since it affects everyone on the device (plan G10).
     private var footerActions: some View {
         HStack(spacing: footerSpacing) {
             Button {
-                Task { await router.users.showServers(router: router) }
+                Task { await router.accounts.beginSwitchAccount(router: router) }
             } label: {
-                Label("Change server", systemImage: "server.rack")
+                Label("Switch Account", systemImage: "person.2")
             }
             .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
 
             Button {
-                Task { await router.users.requestRemoval(.currentSignIn, router: router) }
+                Task { await router.accounts.requestRemoval(.currentAccount, router: router) }
             } label: {
                 Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
             }

@@ -87,7 +87,7 @@ final class TopShelfSignInTests: XCTestCase {
     }
 
     /// After migration the server's raw slots are gone. Top Shelf finds the
-    /// migrated user, its sign-in on the active server, the remembered
+    /// sign-in that took over the active server's session, the remembered
     /// profile by epoch, and the old proof, which it reads but never moves.
     func testAfterMigrationTheSignInIsRead() async throws {
         let h = try harness()
@@ -107,8 +107,8 @@ final class TopShelfSignInTests: XCTestCase {
     func testAPendingServerKeepsUsingItsOwnSlots() async throws {
         let h = try harness(verified: false)
         await h.migrate()
-        XCTAssertEqual(try SavedSignInStore(keychain: h.keychain).loadIndex()?.users.first?.pendingLegacyServerIDs,
-                       [F.home])
+        XCTAssertEqual(try SavedSignInStore(keychain: h.keychain).loadIndex()?.accounts,
+                       [.pendingLegacy(serverID: F.home)])
 
         let request = try await shelfRequest(h.client(), h.stub)
 
@@ -196,13 +196,13 @@ final class TopShelfSignInTests: XCTestCase {
 
     // MARK: - Resolver rules
 
-    private func signIn(_ key: SignInKey, user: String) -> SavedSignIn {
-        SavedSignIn(key: key, userID: user, origin: F.homeURL, accessToken: "\(key.accountID)-access",
+    private func signIn(_ key: SignInKey, origin: String = F.homeURL) -> SavedSignIn {
+        SavedSignIn(key: key, origin: origin, accessToken: "\(key.accountID)-access",
                     refreshToken: "\(key.accountID)-refresh", epoch: UUID(), addedAt: Date())
     }
 
     private func resolve(
-        _ index: SiloUserIndex?,
+        _ index: SiloAccountIndex?,
         saved: Set<String> = [F.home, F.friend],
         state: ProfileLaunchState = ProfileLaunchState(),
         server: String? = F.home,
@@ -222,25 +222,25 @@ final class TopShelfSignInTests: XCTestCase {
         )
     }
 
-    func testTheLinkedUsersLastServerIsUsedOnlyWhileTheAppIsThere() {
-        let index = SiloUserIndex(users: [
-            SiloUser(id: "alex", createdAt: Date(), signIns: [alexHome]),
-            SiloUser(id: "sam", createdAt: Date(), signIns: [samHome, .make(F.friend, "13")]),
-        ], migratedUserID: "alex", legacyDataOwnerByServerID: [F.home: "12"])
-        var state = ProfileLaunchState()
-        state.linkedUserID = "sam"
-        state.lastServerByUserID = ["sam": F.home]
-        let saved = [signIn(alexHome, user: "alex"), signIn(samHome, user: "sam")]
+    /// The app's launch rules (`SiloLaunchResolver`, plan §2.8), and only
+    /// while the app has that account's server open.
+    func testTheLinkedAccountIsUsedOnlyWhileTheAppIsOnItsServer() {
+        let samFriend = SignInKey.make(F.friend, "13")
+        let index = SiloAccountIndex(accounts: [.signIn(alexHome), .signIn(samHome), .signIn(samFriend)],
+                                     migrated: true, legacyDataOwnerByServerID: [F.home: "12"])
+        let state = ProfileLaunchState(linkedAccount: SiloAccountRef.signIn(samHome).storageKey)
+        let saved = [signIn(alexHome), signIn(samHome), signIn(samFriend, origin: F.friendURL)]
 
         guard case .signIn(let credential) = resolve(index, state: state, account: "13", signIns: saved) else {
-            return XCTFail("sam's sign-in")
+            return XCTFail("sam's sign-in on Home")
         }
         XCTAssertEqual(credential.key, samHome)
         XCTAssertEqual(credential.accessToken, "13-access")
         XCTAssertEqual(credential.legacyOwnerAccountID, "12")
 
         // The app is signing in to another server.
-        XCTAssertEqual(resolve(index, state: state, server: F.friend, account: "13", signIns: saved), .unavailable)
+        XCTAssertEqual(resolve(index, state: state, server: F.friend, account: "13", url: F.friendURL,
+                               signIns: saved), .unavailable)
         // Only the legacy owner may go without an account mirror.
         XCTAssertEqual(resolve(index, state: state, account: nil, signIns: saved), .unavailable)
         // The bearer goes only to the sign-in's own address.
@@ -248,81 +248,79 @@ final class TopShelfSignInTests: XCTestCase {
                        .unavailable)
     }
 
-    /// The app's launch rules (plan §2.8): the migrated user is assumed only
-    /// for an Apple TV user who used Silo before users existed, and its
-    /// active server only while it has never recorded a last server.
-    func testUserAndServerFollowTheAppsLaunchRules() {
-        let alexFriend = SignInKey.make(F.friend, "12")
-        let index = SiloUserIndex(users: [
-            SiloUser(id: "alex", createdAt: Date(), signIns: [alexHome, alexFriend]),
-            SiloUser(id: "sam", createdAt: Date(), signIns: [samHome]),
-        ], migratedUserID: "alex", legacyDataOwnerByServerID: [F.home: "12"])
-        let saved = [signIn(alexHome, user: "alex"), signIn(alexFriend, user: "alex"), signIn(samHome, user: "sam")]
+    /// The legacy owner is Home's, but this Apple TV user linked an account
+    /// on Friend's: nothing shows while the app has Home open.
+    func testALinkedAccountOnAnotherServerShowsNothing() {
+        let samFriend = SignInKey.make(F.friend, "13")
+        let index = SiloAccountIndex(accounts: [.signIn(alexHome), .signIn(samFriend)],
+                                     migrated: true, legacyDataOwnerByServerID: [F.home: "12"])
+        let state = ProfileLaunchState(linkedAccount: SiloAccountRef.signIn(samFriend).storageKey)
+        let saved = [signIn(alexHome), signIn(samFriend, origin: F.friendURL)]
 
-        // Legacy history: the migrated user, on the server the app has active.
-        guard case .signIn(let migrated) = resolve(index, account: "12", signIns: saved) else {
-            return XCTFail("the migrated user on its active server")
-        }
-        XCTAssertEqual(migrated.key, alexHome)
-
-        // This Apple TV user has picked servers since: no legacy history, and
-        // two users with no link means no personal content.
-        var state = ProfileLaunchState()
-        state.lastServerByUserID = ["sam": F.home]
         XCTAssertEqual(resolve(index, state: state, account: "12", signIns: saved), .unavailable)
+        XCTAssertEqual(resolve(index, state: state, signIns: saved), .unavailable)
+    }
 
-        // The migrated user with a recorded last server uses it, not the
-        // mirror; a last server no longer saved falls back to the only one left.
-        state = ProfileLaunchState()
-        state.linkedUserID = "alex"
-        state.lastServerByUserID = ["alex": F.friend]
-        XCTAssertEqual(resolve(index, state: state, account: "12", signIns: saved), .unavailable,
-                       "the app is on Home but alex last used Friend's")
-        guard case .signIn(let onlyLeft) = resolve(index, saved: [F.home], state: state, account: "12",
-                                                   signIns: saved) else {
-            return XCTFail("Friend's is no longer saved, so Home is alex's only server")
+    /// For an Apple TV user who used Silo before accounts existed (no link
+    /// yet), the account that took over the active server's session.
+    func testTheLegacyOwnerIsUsedWithoutALink() {
+        let index = SiloAccountIndex(accounts: [.signIn(samHome), .signIn(alexHome)],
+                                     migrated: true, legacyDataOwnerByServerID: [F.home: "12"])
+        let saved = [signIn(alexHome), signIn(samHome)]
+
+        guard case .signIn(let owner) = resolve(index, signIns: saved) else {
+            return XCTFail("the legacy owner, before the app set an account mirror")
         }
-        XCTAssertEqual(onlyLeft.key, alexHome)
+        XCTAssertEqual(owner.key, alexHome)
 
+        // Once this Apple TV user linked an account, now removed, the two
+        // left are a choice the app hasn't made.
+        let linkedGone = ProfileLaunchState(linkedAccount: SiloAccountRef.signIn(.make(F.home, "99")).storageKey)
+        XCTAssertEqual(resolve(index, state: linkedGone, account: "12", signIns: saved), .unavailable)
+
+        // A link made while Home was pending names the sign-in that took over.
+        let linkedLegacy = ProfileLaunchState(linkedAccount: SiloAccountRef.pendingLegacy(serverID: F.home).storageKey)
+        guard case .signIn(let stale) = resolve(index, state: linkedLegacy, account: "12", signIns: saved) else {
+            return XCTFail("the pending legacy link resolved")
+        }
+        XCTAssertEqual(stale.key, alexHome)
+    }
+
+    func testAPendingLegacyAccountReadsTheServersSlots() {
+        let index = SiloAccountIndex(accounts: [.signIn(SignInKey.make(F.friend, "13")), .pendingLegacy(serverID: F.home)],
+                                     migrated: true)
+
+        XCTAssertEqual(resolve(index), .legacy(serverID: F.home))
+        let linked = ProfileLaunchState(linkedAccount: SiloAccountRef.pendingLegacy(serverID: F.home).storageKey)
+        XCTAssertEqual(resolve(index, state: linked), .legacy(serverID: F.home))
+        XCTAssertEqual(resolve(SiloAccountIndex(accounts: [.pendingLegacy(serverID: F.home)])), .legacy(serverID: F.home))
+    }
+
+    func testTheOnlyAccountIsUsedOnItsOwnServer() {
+        let index = SiloAccountIndex(accounts: [.signIn(alexHome)])
+        guard case .signIn(let only) = resolve(index, account: "12", signIns: [signIn(alexHome)]) else {
+            return XCTFail("the only account")
+        }
+        XCTAssertEqual(only.key, alexHome)
+
+        let onFriend = SignInKey.make(F.friend, "12")
+        XCTAssertEqual(resolve(SiloAccountIndex(accounts: [.signIn(onFriend)]), account: "12",
+                               signIns: [signIn(onFriend, origin: F.friendURL)]), .unavailable)
         // A server missing from the saved list can't be opened.
-        state.lastServerByUserID = nil
-        XCTAssertEqual(resolve(index, saved: [F.friend], state: state, account: "12", signIns: saved), .unavailable)
+        XCTAssertEqual(resolve(index, saved: [F.friend], account: "12", signIns: [signIn(alexHome)]), .unavailable)
+        // An account on a server no longer saved doesn't count, as the app's
+        // launch rules don't count it: Home's account is still the only one.
+        let withRemoved = SiloAccountIndex(accounts: [.signIn(onFriend), .signIn(alexHome)])
+        guard case .signIn(let stillOnly) = resolve(withRemoved, saved: [F.home], account: "12",
+                                                     signIns: [signIn(alexHome)]) else {
+            return XCTFail("the only account on a saved server")
+        }
+        XCTAssertEqual(stillOnly.key, alexHome)
     }
 
-    /// A user created by signing in rather than by migration, with two
-    /// servers: until a last server is recorded for it, the server the app
-    /// has open is the one, as for the migrated user. Today's single user
-    /// with two servers keeps a shelf for whichever server is open.
-    func testAUserWithoutALastServerUsesTheServerTheAppHasOpen() {
-        let alexFriend = SignInKey.make(F.friend, "12")
-        let index = SiloUserIndex(users: [SiloUser(id: "alex", createdAt: Date(), signIns: [alexHome, alexFriend])])
-        let friendSignIn = SavedSignIn(key: alexFriend, userID: "alex", origin: F.friendURL, accessToken: "friend-access",
-                                       refreshToken: "friend-refresh", epoch: UUID(), addedAt: Date())
-        let saved = [signIn(alexHome, user: "alex"), friendSignIn]
-
-        guard case .signIn(let home) = resolve(index, account: "12", signIns: saved) else {
-            return XCTFail("Home is open")
-        }
-        XCTAssertEqual(home.key, alexHome)
-        guard case .signIn(let friend) = resolve(index, server: F.friend, account: "12", url: F.friendURL,
-                                                 signIns: saved) else {
-            return XCTFail("Friend's is open")
-        }
-        XCTAssertEqual(friend.key, alexFriend)
-        XCTAssertEqual(friend.accessToken, "friend-access")
-
-        // Once a last server is recorded, the app opens that one.
-        var state = ProfileLaunchState()
-        state.lastServerByUserID = ["alex": F.friend]
-        XCTAssertEqual(resolve(index, state: state, account: "12", signIns: saved), .unavailable)
-    }
-
-    func testWithoutALinkTwoUsersAndNoMigratedUserShowNothing() {
-        let index = SiloUserIndex(users: [
-            SiloUser(id: "alex", createdAt: Date(), signIns: [alexHome]),
-            SiloUser(id: "sam", createdAt: Date(), signIns: [samHome]),
-        ])
-        let saved = [signIn(alexHome, user: "alex"), signIn(samHome, user: "sam")]
+    func testWithoutALinkTwoAccountsAndNoLegacyOwnerShowNothing() {
+        let index = SiloAccountIndex(accounts: [.signIn(alexHome), .signIn(samHome)])
+        let saved = [signIn(alexHome), signIn(samHome)]
 
         XCTAssertEqual(resolve(index, account: "12", signIns: saved), .unavailable)
         XCTAssertEqual(resolve(nil), .legacy(serverID: F.home))
@@ -330,15 +328,14 @@ final class TopShelfSignInTests: XCTestCase {
     }
 
     func testExpiredSignInsAndOtherProfilesProofsAreNotUsed() {
-        let index = SiloUserIndex(users: [SiloUser(id: "alex", createdAt: Date(), signIns: [alexHome])],
-                                  legacyDataOwnerByServerID: [F.home: "12"])
-        var expired = signIn(alexHome, user: "alex")
+        let index = SiloAccountIndex(accounts: [.signIn(alexHome)], legacyDataOwnerByServerID: [F.home: "12"])
+        var expired = signIn(alexHome)
         expired.accessToken = nil
         expired.refreshToken = nil
         expired.epoch = nil
         XCTAssertEqual(resolve(index, account: "12", signIns: [expired]), .unavailable)
 
-        let saved = [signIn(alexHome, user: "alex")]
+        let saved = [signIn(alexHome)]
         let otherProfile = resolve(index, account: "12", signIns: saved,
                                    proofs: [alexHome: SignInProfileProof(profileID: "kids", token: "kids-proof")],
                                    legacyProof: "old-proof")
@@ -350,8 +347,8 @@ final class TopShelfSignInTests: XCTestCase {
         guard case .signIn(let withProof) = adopted else { return XCTFail() }
         XCTAssertEqual(withProof.profileToken, "adopted")
 
-        let orphan = resolve(index, account: "12", signIns: [signIn(alexHome, user: "someone-else")])
-        XCTAssertEqual(orphan, .unavailable)
+        // A listed sign-in whose item can't be read.
+        XCTAssertEqual(resolve(index, account: "12", signIns: []), .unavailable)
     }
 
     func testTheSignInPolicyUsesTheEpochAndLegacyOwnerRules() {
@@ -373,7 +370,7 @@ final class TopShelfSignInTests: XCTestCase {
 }
 
 #if os(tvOS)
-/// Saved sign-ins and the user index are shared by every Apple TV user;
+/// Saved sign-ins and the accounts index are shared by every Apple TV user;
 /// PIN proofs belong to the one who entered the PIN.
 final class SignInKeychainAudienceTests: XCTestCase {
     func testSignInsAndIndexAreSharedAndProofsArePerAppleTVUser() async throws {
@@ -383,9 +380,9 @@ final class SignInKeychainAudienceTests: XCTestCase {
         let f = try SignInStoreFixture.make(self)
         let keychain = f.keychain
         let store = TokenStore(keychain: keychain, defaults: f.defaults)
-        try SavedSignInStore(keychain: keychain).saveIndex(SiloUserIndex())
+        try SavedSignInStore(keychain: keychain).saveIndex(SiloAccountIndex())
         await f.activate(SignInStoreFixture.home, url: SignInStoreFixture.homeURL, in: store)
-        try await f.install("12", access: "a", refresh: "r", placement: .newUser, in: store)
+        try await f.install("12", access: "a", refresh: "r", in: store)
         await store.setProfileId("default")
         _ = await store.setProfileToken("pin")
         let key = SignInKey.make(SignInStoreFixture.home, "12")

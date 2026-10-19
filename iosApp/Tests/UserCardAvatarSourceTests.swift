@@ -1,7 +1,7 @@
 import XCTest
 @testable import Silo
 
-/// User cards draw the profiles of each user's last server, which is often
+/// Account cards draw the profiles of each account's server, which is often
 /// not the active one, so an avatar stored as a path must load from that
 /// server (`ProfileAvatar`, shared with Who's Watching).
 final class UserCardAvatarSourceTests: XCTestCase {

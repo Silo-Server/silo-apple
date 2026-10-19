@@ -11,10 +11,10 @@ struct SavedSignInProfile: Codable, Equatable, Sendable, Identifiable {
     let isChild: Bool
 }
 
-/// One user's sign-in on one server, shared by every Apple TV user. Stored
-/// in the user-independent keychain under `SharedStorage.signInAccount(_:)`.
-/// The index (`SiloUserIndex`) lists which user it belongs to; `userID` is
-/// kept here as a cross-check, and a mismatch makes this item an orphan.
+/// One account's sign-in on one server, shared by every Apple TV user.
+/// Stored in the user-independent keychain under
+/// `SharedStorage.signInAccount(_:)`. The index (`SiloAccountIndex`) lists
+/// it; an item the index doesn't list is an orphan.
 struct SavedSignIn: Codable, Equatable, Sendable {
     static let currentVersion = 1
 
@@ -22,11 +22,13 @@ struct SavedSignIn: Codable, Equatable, Sendable {
     let key: SignInKey
     var serverID: String { key.serverID }
     var accountID: String { key.accountID }
-    let userID: String
     /// Normalized server URL. The bearer is only ever sent here.
     let origin: String
     /// Nil after migration or pairing until `/api/v2/account/me` fills it.
     var username: String?
+    /// The server account's email, when it has one. Filled by
+    /// `/api/v2/account/me`.
+    var email: String?
     /// Tokens and epoch all nil means the sign-in expired and shows
     /// "Sign in again".
     var accessToken: String?
@@ -40,9 +42,9 @@ struct SavedSignIn: Codable, Equatable, Sendable {
 
     init(
         key: SignInKey,
-        userID: String,
         origin: String,
         username: String? = nil,
+        email: String? = nil,
         accessToken: String?,
         refreshToken: String?,
         epoch: UUID?,
@@ -52,9 +54,9 @@ struct SavedSignIn: Codable, Equatable, Sendable {
     ) {
         self.version = Self.currentVersion
         self.key = key
-        self.userID = userID
         self.origin = origin
         self.username = username
+        self.email = email
         self.accessToken = accessToken
         self.refreshToken = refreshToken
         self.epoch = epoch
@@ -68,9 +70,10 @@ struct SavedSignIn: Codable, Equatable, Sendable {
     }
 
     // The key is stored as two flat fields, matching the record's other
-    // identity fields.
+    // identity fields. Items written by the first multi-account design also
+    // carry a `userID`, which is ignored.
     private enum CodingKeys: String, CodingKey {
-        case version, serverID, accountID, userID, origin, username
+        case version, serverID, accountID, origin, username, email
         case accessToken, refreshToken, epoch, addedAt, profiles, adoptsLegacyLocalData
     }
 
@@ -80,9 +83,9 @@ struct SavedSignIn: Codable, Equatable, Sendable {
         key = try SignInKey(from: decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decode(Int.self, forKey: .version)
-        userID = try container.decode(String.self, forKey: .userID)
         origin = try container.decode(String.self, forKey: .origin)
         username = try container.decodeIfPresent(String.self, forKey: .username)
+        email = try container.decodeIfPresent(String.self, forKey: .email)
         accessToken = try container.decodeIfPresent(String.self, forKey: .accessToken)
         refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken)
         epoch = try container.decodeIfPresent(UUID.self, forKey: .epoch)
@@ -96,9 +99,9 @@ struct SavedSignIn: Codable, Equatable, Sendable {
         try container.encode(version, forKey: .version)
         try container.encode(key.serverID, forKey: .serverID)
         try container.encode(key.accountID, forKey: .accountID)
-        try container.encode(userID, forKey: .userID)
         try container.encode(origin, forKey: .origin)
         try container.encodeIfPresent(username, forKey: .username)
+        try container.encodeIfPresent(email, forKey: .email)
         try container.encodeIfPresent(accessToken, forKey: .accessToken)
         try container.encodeIfPresent(refreshToken, forKey: .refreshToken)
         try container.encodeIfPresent(epoch, forKey: .epoch)

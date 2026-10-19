@@ -1,9 +1,9 @@
 #if os(tvOS)
 import SwiftUI
 
-// Pieces shared by the Apple TV user screens (spec §5.2–§5.7): Choose a
-// User's cards, the server rows of Choose a Server and "Sign in to…", their
-// status badges, and where focus goes after a card or row disappears.
+// Pieces shared by the Apple TV account screens (spec §5.2–§5.7): Choose an
+// Account's cards, the server rows of "Sign in to…", their status badges,
+// and where focus goes after a card or row disappears.
 
 // MARK: - Focus after a removal
 
@@ -26,8 +26,8 @@ enum TVFocusNeighbor {
 
 // MARK: - Avatars
 
-/// Up to four profiles of a user's last-used server, overlapping left to
-/// right (spec §5.2). A user without cached profiles shows a person glyph.
+/// Up to four of an account's profiles, overlapping left to right (spec
+/// §5.2). An account without cached profiles shows a person glyph.
 struct TVUserAvatarStack: View {
     let profiles: [SavedSignInProfile]
     var serverURL: String?
@@ -71,10 +71,10 @@ struct TVUserAvatarStack: View {
 /// glass and on the white focused platter.
 struct TVUserStatusBadge: View {
     enum Kind {
-        /// This Apple TV user's Silo user (Choose a User).
+        /// This Apple TV user's account (Choose an Account).
         case lastUsed
-        /// The server open now (Choose a Server).
-        case active
+        /// The account open now (Settings › Accounts).
+        case current
         /// The saved sign-in expired.
         case signInAgain
     }
@@ -103,16 +103,16 @@ struct TVUserStatusBadge: View {
 
     var title: String {
         switch kind {
-        case .lastUsed: return ChooseUserViewModel.lastUsedLabel
-        case .active: return ChooseServerViewModel.Status.active.label ?? "Active"
-        case .signInAgain: return ChooseUserViewModel.signInAgainLabel
+        case .lastUsed: return ChooseAccountViewModel.lastUsedLabel
+        case .current: return AccountsSettingsViewModel.currentLabel
+        case .signInAgain: return ChooseAccountViewModel.signInAgainLabel
         }
     }
 
     private var symbol: String? {
         switch kind {
         case .lastUsed: return nil
-        case .active: return "checkmark"
+        case .current: return "checkmark"
         case .signInAgain: return "exclamationmark.circle.fill"
         }
     }
@@ -124,7 +124,7 @@ struct TVUserStatusBadge: View {
     private var fill: Color {
         switch kind {
         case .signInAgain: return Color.siloStatusWarning
-        case .active, .lastUsed: return Color(white: 0.16)
+        case .current, .lastUsed: return Color(white: 0.16)
         }
     }
 
@@ -192,7 +192,8 @@ private struct TVUserCardBody: View {
 
 enum TVUserCardMetrics {
     static let width: CGFloat = 360
-    static let height: CGFloat = 320
+    /// Room for the username, the email, and the server.
+    static let height: CGFloat = 352
     static let spacing: CGFloat = 56
     /// Four per row: 4 × 360 + 3 × 56 = 1608, which leaves room for the
     /// focus ring and lift inside the 1740 pt safe width.
@@ -201,7 +202,7 @@ enum TVUserCardMetrics {
 
 // MARK: - Server rows
 
-/// The row look shared by Choose a Server and "Sign in to…": glass at rest,
+/// The row look of "Sign in to…": glass at rest,
 /// a white platter with dark ink on focus, like the first-run buttons.
 struct TVServerRowStyle: ButtonStyle {
     var isDashed = false

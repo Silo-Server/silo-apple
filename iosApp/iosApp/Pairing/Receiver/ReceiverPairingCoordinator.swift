@@ -156,8 +156,8 @@ final class ReceiverPairingCoordinator {
     private let api: any PairingDeviceAuthorizing
     private let identityProbe: @Sendable (_ serverURL: String) async -> ServerIdentityProbeResult
     /// Commits a collected sign-in. The setup screen points it at
-    /// `SiloUserCoordinator.completePairing` with its router, so the
-    /// sign-in is placed in the running flow and can ask its questions.
+    /// `SiloAccountCoordinator.completePairing` with its router, so Who's
+    /// Watching follows for the account it saves.
     @ObservationIgnored var persist: @MainActor (PersistedPairing) async -> Bool
     private var signedInNames: [String] = []
     private var consented = false
@@ -677,10 +677,10 @@ final class ReceiverPairingCoordinator {
     }
 
     /// Commit the now-trusted server + tokens. Runs only after a successful
-    /// poll. Without a screen's router the sign-in is placed as the current
-    /// user's Add Server, or as a new user, and can't ask a question.
+    /// poll. Without a screen's router the account is saved, as a new one or
+    /// a refresh of the saved one, and nothing routes.
     @MainActor
     static func persistServer(_ pairing: PersistedPairing) async -> Bool {
-        await SiloUserCoordinator.shared.completePairing(pairing, router: nil)
+        await SiloAccountCoordinator.shared.completePairing(pairing, router: nil)
     }
 }

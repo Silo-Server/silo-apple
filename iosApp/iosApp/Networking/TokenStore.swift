@@ -154,33 +154,15 @@ struct SignInAccount: Equatable, Sendable {
     let username: String?
 }
 
-/// Where `TokenStore.installSignIn` puts a new session.
-enum SignInPlacement: Equatable, Sendable {
-    /// The account is already saved: new tokens and epoch, keeping its user,
-    /// `addedAt`, and profile cache.
-    case refresh(SignInKey)
-    /// A new sign-in in an existing user.
-    case join(userID: String)
-    /// A new sign-in that creates a new user.
-    case newUser
-}
-
 struct SignInInstallResult: Equatable, Sendable {
     let key: SignInKey
-    let userID: String
-    let createdUser: Bool
+    /// False when the account was already saved and this refreshed it.
+    let addedAccount: Bool
     /// The refreshed sign-in's previous session, to revoke.
     let superseded: RevocableCredential?
 }
 
-enum SignInInstallError: Error, Equatable {
-    /// The placement would break an index invariant: an account in two
-    /// users, two sign-ins on one server in one user, or a refresh of an
-    /// account that isn't saved.
-    case invalidPlacement
-}
-
-/// Thrown by reads of the user model while `users.v1` has never been
+/// Thrown by reads of the account model while the index has never been
 /// written: the device still runs on per-server sessions.
 enum SavedSignInAccessError: Error, Equatable {
     case notMigrated
@@ -190,9 +172,7 @@ struct SignInRemoval: Equatable, Sendable {
     /// Captured before deletion so the session can be revoked. Nil when the
     /// sign-in held no session.
     let credential: RevocableCredential?
-    /// The user deleted by this removal because it had nothing left.
-    let removedUserID: String?
-    /// Whether the sign-in can no longer come back after a relaunch.
+    /// Whether the session can no longer come back after a relaunch.
     let durable: Bool
 }
 
@@ -202,8 +182,8 @@ enum BindOutcome: Equatable, Sendable {
     case usernameUpdated
     /// A pending legacy server became this saved sign-in (plan §3.3).
     case legacyMigrated(SignInKey)
-    /// A pending legacy server's account was already saved in some user; the
-    /// legacy session was dropped and nothing is selected. `revoking` is the
+    /// A pending legacy account's account was already saved; the legacy
+    /// session was dropped and nothing is selected. `revoking` is the
     /// dropped session to end on its server, nil when it holds the saved
     /// sign-in's own tokens (or they can't be compared): ending it would sign
     /// that sign-in out too.
@@ -211,7 +191,7 @@ enum BindOutcome: Equatable, Sendable {
 }
 
 enum LegacyMigrationOutcome: Equatable, Sendable {
-    /// `users.v1` already existed.
+    /// The accounts index already existed.
     case notNeeded
     case migrated
     /// Nothing was written; the next launch tries again.
@@ -229,13 +209,13 @@ enum LegacyMigrationDeferral: String, Equatable, Sendable {
 
 /// Actor that owns session credentials.
 ///
-/// Two regimes share one API. Before the user index (`users.v1`) exists,
-/// every server has one per-server slot (`AccountSessionPersistence` plus the
-/// raw per-token mirrors) and the selection is `.legacy(serverID)`. Once
-/// migration writes the index, credentials are saved sign-ins
-/// (`SavedSignIn`, one per server account) grouped into Silo users, and the
-/// selection names one of them; a per-server slot is read only for a
-/// migrated user's pending legacy servers (plan §3.3).
+/// Two regimes share one API. Before the accounts index exists, every
+/// server has one per-server slot (`AccountSessionPersistence` plus the raw
+/// per-token mirrors) and the selection is `.legacy(serverID)`. Once
+/// migration writes the index, each account is a saved sign-in
+/// (`SavedSignIn`, one per server account) and the selection names one of
+/// them; a per-server slot is read only for a pending legacy account
+/// (plan §3.3).
 ///
 /// The active server URL and profile ID live in `SharedDefaults`, with the
 /// selected account mirrored to `activeAccountId`. The active access and
@@ -252,7 +232,7 @@ actor TokenStore {
     private let profileKeychain: SharedKeychain
     private let defaults: SharedDefaults
     private let sessions: AccountSessionPersistence
-    /// The user index and saved sign-ins. Read-only outside the actor, for
+    /// The accounts index and saved sign-ins. Read-only outside the actor, for
     /// synchronous readers such as `AuthService.isLoggedIn`; every write
     /// goes through this actor.
     nonisolated let savedSignIns: SavedSignInStore
@@ -300,10 +280,7 @@ actor TokenStore {
     }
     /// `selection` for synchronous readers (`mirroredSelection`).
     private nonisolated let selectionSnapshot = Mutex<CredentialSelection>(.none)
-    /// The Silo user the selection belongs to. Nil before migration and
-    /// while no user is chosen.
-    private var activeUserID: String?
-    /// `SiloUserIndex.legacyDataOwnerByServerID` as last read or written.
+    /// `SiloAccountIndex.legacyDataOwnerByServerID` as last read or written.
     private var legacyDataOwners: [String: String] = [:]
     /// Whether `legacyDataOwners` came from an index read or write in this
     /// process.
@@ -410,7 +387,6 @@ actor TokenStore {
         case SavedSignInStoreError.corrupt, SavedSignInStoreError.keyMismatch: return "invalidSignInRecord"
         case SavedSignInStoreError.unsupportedVersion: return "unsupportedSignInRecord"
         case SavedSignInAccessError.notMigrated: return "notMigrated"
-        case SignInInstallError.invalidPlacement: return "invalidPlacement"
         case HTTPError.requestIdentityChanged: return "identityChanged"
         case is DecodingError: return "invalidSessionRecord"
         case is SharedKeychain.ReadError: return "keychainReadFailed"
@@ -442,8 +418,8 @@ actor TokenStore {
     /// user's proof, and writes the `activeAccountId` and Top Shelf mirrors.
     /// A credential for another server than `serverID` selects nothing.
     /// Selecting what is already selected changes nothing.
-    func select(serverID: String?, credential: CredentialSelection, userID: String?) {
-        applySelection(serverID: serverID, credential: credential, userID: userID)
+    func select(serverID: String?, credential: CredentialSelection) {
+        applySelection(serverID: serverID, credential: credential)
         ensureLoaded()
         mirrorActiveTokensForExtension()
     }
@@ -462,41 +438,39 @@ actor TokenStore {
         return key
     }
 
-    func currentUserID() -> String? { activeUserID }
+    /// The account the selection belongs to. Nil while none is chosen.
+    func currentAccount() -> SiloAccountRef? { SiloAccountRef(selection) }
 
     /// The credential the launch rules (spec §6.2) give `serverID` when no
     /// chooser is involved: before migration, the server's own slot;
-    /// afterwards the user's sign-in or pending legacy server there. The user
-    /// is the selected one, else the one this Apple TV user (or device) is
-    /// linked to, else the user migration created when this Apple TV user
-    /// used Silo before users existed, else the only user. Background
-    /// launches (push, download refresh) use this; foreground launches go
-    /// through `SiloUserCoordinator`, which selects explicitly.
-    func launchSelection(forServer serverID: String) -> (credential: CredentialSelection, userID: String?) {
-        guard !serverID.isEmpty else { return (.none, nil) }
-        let index: SiloUserIndex?
+    /// afterwards the selected account when it is on that server, else the
+    /// account this Apple TV user (or device) is linked to when it is, else
+    /// the account that took over the server's state from before accounts
+    /// existed when this Apple TV user used Silo then, else the server's
+    /// only account. Background launches (push, download refresh) use this;
+    /// foreground launches go through `SiloAccountCoordinator`, which
+    /// selects explicitly.
+    func launchSelection(forServer serverID: String) -> CredentialSelection {
+        guard !serverID.isEmpty else { return .none }
+        let index: SiloAccountIndex?
         do { index = try loadIndex() } catch {
             // Unreadable index: no writes, and this launch uses the server's
             // own slot as before migration (plan §3.5).
             recordSessionEvent(phase: "selectCredential", outcome: "fallback", reason: Self.persistenceFailureReason(error))
-            return (.legacy(serverID: serverID), nil)
+            return .legacy(serverID: serverID)
         }
-        guard let index else { return (.legacy(serverID: serverID), nil) }
+        guard let index else { return .legacy(serverID: serverID) }
         let launch = ProfileLaunchState.load(from: defaults)
         // As in `SiloLaunchResolver`: an active server the registry fell
         // back to (a new Apple TV user's first launch, the survivor of a
-        // removal) is not history, so it never opens the migrated user.
+        // removal) is not history.
         let openedServerBefore = defaults.string(forKey: SharedStorage.activeServerIdKey) != nil
             && !defaults.bool(forKey: ServerRegistry.activeServerFallbackKey)
-        let hasLegacyHistory = (launch.lastServerByUserID ?? [:]).isEmpty
+        let hasLegacyHistory = launch.linkedAccount == nil
             && (!launch.rememberedByServerID.isEmpty || openedServerBefore)
-        func user(_ id: String?) -> SiloUser? { id.flatMap { id in index.users.first { $0.id == id } } }
-        let chosen = user(activeUserID)
-            ?? user(launch.linkedUserID)
-            ?? (hasLegacyHistory ? user(index.migratedUserID) : nil)
-            ?? (index.users.count == 1 ? index.users.first : nil)
-        guard let chosen else { return (.none, nil) }
-        return (Self.credential(of: chosen, onServer: serverID), chosen.id)
+        return index.launchAccount(onServer: serverID, current: SiloAccountRef(selection),
+                                   linked: launch.linkedAccountRef, hasLegacyHistory: hasLegacyHistory)?
+            .credential ?? .none
     }
 
     /// Point the store at `serverId` with the launch rules' credential there
@@ -505,8 +479,7 @@ actor TokenStore {
     /// made through `select` stands.
     func switchActiveServer(serverId: String) {
         guard serverId != activeServerId else { return }
-        let resolved = launchSelection(forServer: serverId)
-        select(serverID: serverId, credential: resolved.credential, userID: resolved.userID)
+        select(serverID: serverId, credential: launchSelection(forServer: serverId))
     }
 
     /// The same choice as `switchActiveServer`, without loading credentials
@@ -514,11 +487,10 @@ actor TokenStore {
     /// before routing settles.
     func retargetActiveServer(serverId: String) {
         guard serverId != activeServerId else { return }
-        let resolved = launchSelection(forServer: serverId)
-        applySelection(serverID: serverId, credential: resolved.credential, userID: resolved.userID)
+        applySelection(serverID: serverId, credential: launchSelection(forServer: serverId))
     }
 
-    private func applySelection(serverID: String?, credential: CredentialSelection, userID: String?) {
+    private func applySelection(serverID: String?, credential: CredentialSelection) {
         let serverID = serverID ?? ""
         var credential = credential
         switch credential {
@@ -531,43 +503,36 @@ actor TokenStore {
         }
         if serverID.isEmpty { credential = .none }
         defer { writeAccountMirror() }
-        guard serverID != activeServerId || credential != selection || userID != activeUserID else { return }
+        guard serverID != activeServerId || credential != selection else { return }
         persistentCredentialGenerationID = UUID()
         activeServerId = serverID
         selection = credential
-        activeUserID = userID
         invalidateLoadedCredential()
     }
 
-    /// The current user's credential on `serverID`, without changing the
-    /// selection. Before migration every server is its own slot; afterwards
-    /// a server outside the current user, or no current user (a chooser is
-    /// showing), has none. An unreadable index releases nothing.
+    /// The account background work for `serverID` uses
+    /// (`storedCredential(forServer:)`): push registration follows it.
+    func backgroundAccount(forServer serverID: String) -> SiloAccountRef? {
+        SiloAccountRef(storedCredential(forServer: serverID))
+    }
+
+    /// The credential on `serverID` that background work for that server
+    /// uses, without changing the selection. Before migration every server
+    /// is its own slot. Afterwards it is the account this Apple TV user (or
+    /// device) is linked to when it is on that server, else the server's
+    /// only account, and none while no account is chosen (a chooser is
+    /// showing). An unreadable index releases nothing.
     private func storedCredential(forServer serverID: String) -> CredentialSelection {
         guard !serverID.isEmpty else { return .none }
         if serverID == activeServerId { return selection }
-        let index: SiloUserIndex?
+        let index: SiloAccountIndex?
         do { index = try loadIndex() } catch { return .none }
         guard let index else { return .legacy(serverID: serverID) }
-        guard let userID = activeUserID, let user = index.users.first(where: { $0.id == userID }) else {
-            return .none
-        }
-        return Self.credential(of: user, onServer: serverID)
-    }
-
-    private static func credential(of user: SiloUser, onServer serverID: String) -> CredentialSelection {
-        if let key = user.signIns.first(where: { $0.serverID == serverID }) {
-            return .signIn(key)
-        }
-        if user.pendingLegacyServerIDs?.contains(serverID) == true {
-            return .legacy(serverID: serverID)
-        }
-        return .none
-    }
-
-    private static func user(_ user: SiloUser, has serverID: String) -> Bool {
-        user.signIns.contains(where: { $0.serverID == serverID })
-            || user.pendingLegacyServerIDs?.contains(serverID) == true
+        guard selection != .none else { return .none }
+        let launch = ProfileLaunchState.load(from: defaults)
+        return index.launchAccount(onServer: serverID, current: nil,
+                                   linked: launch.linkedAccountRef, hasLegacyHistory: false)?
+            .credential ?? .none
     }
 
     private static func serverID(of selection: CredentialSelection) -> String? {
@@ -615,47 +580,43 @@ actor TokenStore {
         }
     }
 
-    // MARK: - User index
+    // MARK: - Accounts index
 
     /// Strict index read. Every successful read republishes the legacy
     /// data owners for synchronous local-data stores.
-    private func loadIndex() throws -> SiloUserIndex? {
+    private func loadIndex() throws -> SiloAccountIndex? {
         let index = try savedSignIns.loadIndex()
         if let index { publishLegacyOwners(index) }
         return index
     }
 
-    /// The commit point of every user-model change (invariant 5).
-    private func saveIndex(_ index: SiloUserIndex) throws {
+    /// The commit point of every account-model change (invariant 5).
+    private func saveIndex(_ index: SiloAccountIndex) throws {
         try savedSignIns.saveIndex(index)
         publishLegacyOwners(index)
     }
 
-    private func publishLegacyOwners(_ index: SiloUserIndex) {
+    private func publishLegacyOwners(_ index: SiloAccountIndex) {
         let owners = index.legacyDataOwnerByServerID ?? [:]
         hasReadLegacyDataOwners = true
         legacyDataOwners = owners
         LegacyLocalDataOwner.publish(owners)
     }
 
-    /// The device's users and a secret-free summary of each readable
+    /// The device's accounts and a secret-free summary of each readable
     /// sign-in. Throws `SavedSignInAccessError.notMigrated` before migration
     /// and the read error when the index can't be read. A sign-in whose
-    /// item is missing, unreadable, or names another user has no summary.
-    func directory() throws -> SiloUserDirectorySnapshot {
+    /// item is missing or unreadable has no summary.
+    func directory() throws -> SiloAccountDirectorySnapshot {
         guard let index = try loadIndex() else { throw SavedSignInAccessError.notMigrated }
-        var summaries: [SignInSummary] = []
-        for user in index.users {
-            for key in user.signIns {
-                guard let signIn = try? savedSignIns.loadSignIn(key), signIn.userID == user.id else { continue }
-                summaries.append(SignInSummary(signIn))
-            }
+        let summaries = index.accounts.compactMap(\.signInKey).compactMap { key in
+            (try? savedSignIns.loadSignIn(key)).flatMap { $0 }.map(SignInSummary.init)
         }
-        return SiloUserDirectorySnapshot(index: index, signIns: summaries)
+        return SiloAccountDirectorySnapshot(index: index, signIns: summaries)
     }
 
     /// The account that took over `serverID`'s state from before sign-ins
-    /// existed (`SiloUserIndex.legacyDataOwnerByServerID`). Nil before
+    /// existed (`SiloAccountIndex.legacyDataOwnerByServerID`). Nil before
     /// migration and for servers no migrated sign-in owns.
     func legacyDataOwner(forServer serverID: String) -> String? {
         if !hasReadLegacyDataOwners {
@@ -666,30 +627,29 @@ actor TokenStore {
         return legacyDataOwners[serverID]
     }
 
-    /// Whether any user has a sign-in, or a pending legacy server, on
-    /// `serverID`. False before migration. True when the index can't be
-    /// read: callers keep server-wide state (diagnostics) that another
-    /// user may still need.
+    /// Whether any account is saved on `serverID`. False before migration.
+    /// True when the index can't be read: callers keep server-wide state
+    /// (diagnostics) that another account may still need.
     func hasSavedSignIn(onServer serverID: String) -> Bool {
-        let index: SiloUserIndex?
+        let index: SiloAccountIndex?
         do { index = try loadIndex() } catch { return true }
         guard let index else { return false }
-        return index.users.contains { Self.user($0, has: serverID) }
+        return !index.accounts(onServer: serverID).isEmpty
     }
 
     // MARK: - Migration (plan §3.2)
 
-    /// Moves today's per-server sessions into one Silo user, once. Verified
-    /// sessions become saved sign-ins with the same epoch; unverified ones
-    /// stay pending legacy servers in that user until their first account
-    /// read. Idempotent: an existing index means done, and only retries the
+    /// Moves today's per-server sessions into accounts, once: one account
+    /// per server session. Verified sessions become saved sign-ins with the
+    /// same epoch; unverified ones stay pending legacy accounts until their
+    /// first account read. Idempotent: an existing index means done, and only retries the
     /// cleanup of migrated slots. A keychain read error or a failed write
     /// defers without changing anything that is read afterwards.
     func migrateLegacySessionsIfNeeded(
         servers: [(id: String, url: String)],
         activeServerID: String?
     ) -> LegacyMigrationOutcome {
-        let existing: SiloUserIndex?
+        let existing: SiloAccountIndex?
         do { existing = try loadIndex() } catch {
             recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "indexUnreadable")
             return .deferred(.indexUnreadable)
@@ -749,7 +709,7 @@ actor TokenStore {
                 recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "serverListUnreadable")
                 return .deferred(.serverListUnreadable)
             }
-            let index = SiloUserIndex()
+            let index = SiloAccountIndex()
             do { try saveIndex(index) } catch {
                 recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "writeFailed")
                 return .deferred(.writeFailed)
@@ -760,14 +720,12 @@ actor TokenStore {
         }
 
         let now = Date()
-        let userID = UUID().uuidString
         var migrated: [SavedSignIn] = []
         for (key, session) in verified {
-            // The active server's sign-in is the oldest, so it names the user
-            // (spec §9: the order isn't recorded).
+            // The active server's account is listed first (spec §9: the order
+            // isn't recorded).
             let signIn = SavedSignIn(
                 key: key,
-                userID: userID,
                 origin: ServerRegistry.normalize(url: session.origin ?? ""),
                 accessToken: session.accessToken,
                 refreshToken: session.refreshToken,
@@ -785,16 +743,10 @@ actor TokenStore {
         }
         let ordered = migrated.enumerated()
             .sorted { ($0.element.addedAt, $0.offset) < ($1.element.addedAt, $1.offset) }
-            .map(\.element.key)
-        let user = SiloUser(
-            id: userID,
-            createdAt: now,
-            signIns: ordered,
-            pendingLegacyServerIDs: pending.isEmpty ? nil : pending
-        )
-        let index = SiloUserIndex(
-            users: [user],
-            migratedUserID: userID,
+            .map { SiloAccountRef.signIn($0.element.key) }
+        let index = SiloAccountIndex(
+            accounts: ordered + pending.map { SiloAccountRef.pendingLegacy(serverID: $0) },
+            migrated: true,
             legacyDataOwnerByServerID: verified.isEmpty
                 ? nil
                 : Dictionary(verified.map { ($0.key.serverID, $0.key.accountID) }, uniquingKeysWith: { first, _ in first })
@@ -810,22 +762,24 @@ actor TokenStore {
     }
 
     /// A selection made before migration (a background launch) can still
-    /// name a server's own slot that no user lists as pending, which is
-    /// never read again once the index exists (invariant 4): a migrated
+    /// name a server's own slot that no pending legacy account holds, which
+    /// is never read again once the index exists (invariant 4): a migrated
     /// server's tombstone, or a server that had no working sign-in.
-    private func reselectRetiredLegacySelection(_ index: SiloUserIndex) {
+    private func reselectRetiredLegacySelection(_ index: SiloAccountIndex) {
         guard case .legacy(let serverID) = selection,
-              !index.users.contains(where: { $0.pendingLegacyServerIDs?.contains(serverID) == true }) else { return }
-        let resolved = launchSelection(forServer: activeServerId)
-        select(serverID: activeServerId, credential: resolved.credential, userID: resolved.userID)
+              !index.contains(.pendingLegacy(serverID: serverID)) else { return }
+        select(serverID: activeServerId, credential: launchSelection(forServer: activeServerId))
     }
 
     /// Step 6 of plan §3.2, retried on every migration call. Once the index
     /// exists these slots are never read (invariant 4), so failures are
     /// harmless; this only keeps stale tokens from lingering. This Apple TV
     /// user's `<serverID>.profileToken` stays for proof adoption.
-    private func cleanUpMigratedLegacySlots(_ index: SiloUserIndex) {
-        let pending = Set(index.users.flatMap { $0.pendingLegacyServerIDs ?? [] })
+    private func cleanUpMigratedLegacySlots(_ index: SiloAccountIndex) {
+        let pending = Set(index.accounts.compactMap { account -> String? in
+            guard case .pendingLegacy(let serverID) = account else { return nil }
+            return serverID
+        })
         for serverID in (index.legacyDataOwnerByServerID ?? [:]).keys where !pending.contains(serverID) {
             let needsTombstone: Bool
             switch try? sessions.load(serverID) {
@@ -1545,7 +1499,8 @@ actor TokenStore {
     }
 
     /// Read a specific server's stored access token WITHOUT changing the
-    /// active server: the current user's credential on that server. Used by
+    /// active server: the background account's credential there
+    /// (`storedCredential(forServer:)`). Used by
     /// companion pairing to approve a device on a server other than the one
     /// currently active.
     func getAccessToken(for serverId: String) -> String? {
@@ -1582,7 +1537,8 @@ actor TokenStore {
 
     /// A saved server's stored session when that server is NOT the active
     /// one: what an approving phone needs to renew the bearer of a server it
-    /// is not currently using. It is the current user's sign-in there, in the
+    /// is not currently using. It is the background account's sign-in there
+    /// (`storedCredential(forServer:)`), in the
     /// record shape the renewal compares against. Nil for the active server
     /// (its credentials rotate through `HTTPClient`'s single refresh flight),
     /// a blocked slot, a signed-out or expired one, or a legacy record
@@ -1607,19 +1563,19 @@ actor TokenStore {
     }
 
     /// A saved sign-in that may hand its bearer to `serverId`: signed in,
-    /// not blocked, in the current user, and bound to the address the
-    /// server's ID names.
+    /// not blocked, and bound to the address the server's ID names.
     private func storedSignIn(_ key: SignInKey, servingServer serverId: String) -> SavedSignIn? {
         guard !isBlocked(.signIn(key)),
               let signIn = try? savedSignIns.loadSignIn(key),
-              signIn.isSignedIn, signIn.userID == activeUserID,
+              signIn.isSignedIn,
               Self.signIn(signIn, belongsTo: serverId) else { return nil }
         return signIn
     }
 
     #if os(iOS)
     /// The verified account and sign-in epoch of the session stored for a
-    /// saved server, active or not: the current user's sign-in there. Nil for
+    /// saved server, active or not: the selected or background account's
+    /// sign-in there. Nil for
     /// a signed-out, blocked, legacy, or temporary slot, which cannot keep a
     /// push registration current.
     func savedSessionAccount(for serverId: String) -> (accountID: String, epoch: UUID)? {
@@ -1776,7 +1732,7 @@ actor TokenStore {
     }
 
     /// Install a session into the active server's per-server slot. Before
-    /// migration only (the device has no user index yet): afterwards every
+    /// migration only (the device has no accounts index yet): afterwards every
     /// sign-in goes through `installSignIn`, and this throws.
     func installAccountSession(accessToken: String, refreshToken: String, accountID: String?, clearProfile: Bool = true, expectedAccount: RefreshAccountIdentity? = nil) throws {
         if let expectedAccount, refreshAccountIdentity() != expectedAccount { throw HTTPError.requestIdentityChanged }
@@ -1785,7 +1741,7 @@ actor TokenStore {
         do {
             guard temporaryScope == nil, !serverID.isEmpty, !accessToken.isEmpty, !refreshToken.isEmpty,
                   accountID == nil || accountID?.isEmpty == false else { throw AccountSessionPersistenceError.invalidIdentity }
-            let index: SiloUserIndex?
+            let index: SiloAccountIndex?
             do { index = try loadIndex() } catch { throw AccountSessionPersistenceError.unavailable }
             guard index == nil else { throw AccountSessionPersistenceError.invalidIdentity }
             let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
@@ -1819,7 +1775,6 @@ actor TokenStore {
         }
         persistentCredentialGenerationID = UUID()
         selection = legacy
-        activeUserID = nil
         canonicalSession = value
         cachedSignIn = nil
         cachedAccessToken = accessToken
@@ -1832,9 +1787,11 @@ actor TokenStore {
 
     // MARK: - Saved sign-ins
 
-    /// Add or refresh a sign-in on the active server and select it (plan
-    /// §2.5). The key is the active server plus `account.id`; `placement`
-    /// decides where it goes. It never touches other sign-ins on the server.
+    /// Add or refresh an account on the active server and select it (plan
+    /// §2.5). The key is the active server plus `account.id`: an account
+    /// already saved gets new tokens and epoch, keeping its place, `addedAt`,
+    /// and profile cache; any other is added. It never touches other
+    /// accounts on the server.
     /// Every install mints a new epoch and deletes this Apple TV user's
     /// proof for the key, so a refresh asks everyone to pick a profile again.
     ///
@@ -1842,20 +1799,19 @@ actor TokenStore {
     /// `HTTPError.requestIdentityChanged` when `expected` is no longer the
     /// active account identity, `AccountSessionPersistenceError` for an
     /// invalid account or a temporary scope (`.invalidIdentity`) and for a
-    /// keychain failure (`.unavailable`), `SignInInstallError.invalidPlacement`,
-    /// and `SavedSignInAccessError.notMigrated` before migration.
+    /// keychain failure (`.unavailable`), and
+    /// `SavedSignInAccessError.notMigrated` before migration.
     @discardableResult
     func installSignIn(
         accessToken: String,
         refreshToken: String,
         account: SignInAccount,
         origin: String,
-        placement: SignInPlacement,
         expected: RefreshAccountIdentity
     ) throws -> SignInInstallResult {
         do {
             return try commitSignIn(accessToken: accessToken, refreshToken: refreshToken, account: account,
-                                    origin: origin, placement: placement, expected: expected)
+                                    origin: origin, expected: expected)
         } catch {
             recordSessionEvent(phase: "sessionInstall", outcome: "failed", reason: Self.persistenceFailureReason(error))
             throw error
@@ -1867,7 +1823,6 @@ actor TokenStore {
         refreshToken: String,
         account: SignInAccount,
         origin: String,
-        placement: SignInPlacement,
         expected: RefreshAccountIdentity
     ) throws -> SignInInstallResult {
         guard temporaryScope == nil else { throw AccountSessionPersistenceError.invalidIdentity }
@@ -1877,18 +1832,13 @@ actor TokenStore {
               let key = SignInKey(serverID: expected.serverId, accountID: account.id) else {
             throw AccountSessionPersistenceError.invalidIdentity
         }
-        let loadedIndex: SiloUserIndex?
+        let loadedIndex: SiloAccountIndex?
         do { loadedIndex = try loadIndex() } catch { throw AccountSessionPersistenceError.unavailable }
         guard var index = loadedIndex else { throw SavedSignInAccessError.notMigrated }
 
-        let owner = index.users.firstIndex { $0.signIns.contains(key) }
-        let userID: String
+        let isSaved = index.contains(.signIn(key))
         var existing: SavedSignIn?
-        var createsUser = false
-        switch placement {
-        case .refresh(let target):
-            guard target == key, let owner else { throw SignInInstallError.invalidPlacement }
-            userID = index.users[owner].id
+        if isSaved {
             do {
                 existing = try savedSignIns.loadSignIn(key)
             } catch where Self.isUnusableRecord(error) {
@@ -1896,29 +1846,14 @@ actor TokenStore {
             } catch {
                 throw AccountSessionPersistenceError.unavailable
             }
-            if existing?.userID != userID { existing = nil }
-        case .join(let target):
-            guard owner == nil, let member = index.users.firstIndex(where: { $0.id == target }),
-                  !Self.user(index.users[member], has: key.serverID) else {
-                throw SignInInstallError.invalidPlacement
-            }
-            userID = target
-        case .newUser:
-            guard owner == nil else { throw SignInInstallError.invalidPlacement }
-            userID = UUID().uuidString
-            createsUser = true
-        }
-
-        // A server whose session had ended by migration got no owner for its
-        // data from before sign-ins existed, which signing in again always
-        // brought back. The household's next sign-in there takes it over:
-        // one into the migrated user, or into the device's only user. Never
-        // another user's, and never on a server where a sign-in or pending
-        // session is saved already.
-        if placement != .refresh(key),
-           index.legacyDataOwnerByServerID?[key.serverID] == nil,
-           !index.users.contains(where: { Self.user($0, has: key.serverID) }),
-           userID == index.migratedUserID || index.users.count == (createsUser ? 0 : 1) {
+        } else if index.legacyDataOwnerByServerID?[key.serverID] == nil,
+                  index.accounts(onServer: key.serverID).isEmpty,
+                  index.migrated == true || index.accounts.isEmpty {
+            // A server whose session had ended by migration got no owner for
+            // its data from before accounts existed, which signing in again
+            // always brought back. The next account signed in there takes it
+            // over, on a migrated device or as the device's first account.
+            // Never on a server where an account is saved already.
             var owners = index.legacyDataOwnerByServerID ?? [:]
             owners[key.serverID] = key.accountID
             index.legacyDataOwnerByServerID = owners
@@ -1927,9 +1862,9 @@ actor TokenStore {
         let now = Date()
         let signIn = SavedSignIn(
             key: key,
-            userID: userID,
             origin: origin,
             username: account.username ?? existing?.username,
+            email: existing?.email,
             accessToken: accessToken,
             refreshToken: refreshToken,
             epoch: UUID(),
@@ -1938,17 +1873,8 @@ actor TokenStore {
             adoptsLegacyLocalData: existing?.adoptsLegacyLocalData
         )
         do { try savedSignIns.saveSignIn(signIn) } catch { throw AccountSessionPersistenceError.unavailable }
-        switch placement {
-        case .refresh:
-            break
-        case .join:
-            if let member = index.users.firstIndex(where: { $0.id == userID }) {
-                index.users[member].signIns.append(key)
-            }
-        case .newUser:
-            index.users.append(SiloUser(id: userID, createdAt: now, signIns: [key]))
-        }
-        if placement != .refresh(key) {
+        if !isSaved {
+            index.accounts.append(.signIn(key))
             // The item written above is unreachable until this commit; a
             // retry overwrites it.
             do { try saveIndex(index) } catch { throw AccountSessionPersistenceError.unavailable }
@@ -1960,7 +1886,6 @@ actor TokenStore {
         unblock(.signIn(key))
         persistentCredentialGenerationID = UUID()
         selection = .signIn(key)
-        activeUserID = userID
         canonicalSession = nil
         cachedSignIn = signIn
         cachedAccessToken = accessToken
@@ -1972,7 +1897,7 @@ actor TokenStore {
         writeAccountMirror()
         mirrorActiveTokensForExtension()
         recordSessionEvent(phase: "sessionInstall", outcome: "succeeded", reason: "savedSignIn")
-        return SignInInstallResult(key: key, userID: userID, createdUser: createsUser, superseded: superseded)
+        return SignInInstallResult(key: key, addedAccount: !isSaved, superseded: superseded)
     }
 
     private static func revocableCredential(of signIn: SavedSignIn) -> RevocableCredential? {
@@ -2025,21 +1950,14 @@ actor TokenStore {
 
     // MARK: - Removal
 
-    /// Sign out of the selected credential: its saved sign-in, its pending
-    /// legacy server, or (before migration) the server's slot. The session
-    /// is captured first so the caller can revoke it once local state is
-    /// gone. Refuses while a temporary scope owns requests.
+    /// Sign out of the selected credential (`signOut(_:)`). Refuses while a
+    /// temporary scope owns requests.
     @discardableResult
-    func removeCurrentCredential() -> SignInRemoval {
+    func signOutCurrentCredential() -> SignInRemoval {
         guard temporaryScope == nil else {
-            return SignInRemoval(credential: nil, removedUserID: nil, durable: false)
+            return SignInRemoval(credential: nil, durable: false)
         }
-        switch selection {
-        case .signIn(let key):
-            return removeCredentials(keys: [key], legacyServerIDs: [], userID: nil, phase: "clearTokens")[0]
-        case .legacy(let serverID):
-            return removeCredentials(keys: [], legacyServerIDs: [serverID], userID: nil, phase: "clearTokens")[0]
-        case .none:
+        guard let account = SiloAccountRef(selection) else {
             persistentCredentialGenerationID = UUID()
             invalidateLoadedCredential()
             loadedSelection = selection
@@ -2047,11 +1965,12 @@ actor TokenStore {
             clearMirroredTokensForExtension()
             if !activeServerId.isEmpty { removeDisplayTargets(registeredBy: activeServerId) }
             recordSessionEvent(phase: "clearTokens", outcome: "cleared", reason: "noCredential")
-            return SignInRemoval(credential: nil, removedUserID: nil, durable: true)
+            return SignInRemoval(credential: nil, durable: true)
         }
+        return signOut(account)
     }
 
-    /// Sign out of the selected credential (`removeCurrentCredential`), or
+    /// Sign out of the selected credential (`signOutCurrentCredential`), or
     /// end a temporary scope. Returns whether the sign-out is durable.
     @discardableResult
     func clearTokens() -> Bool {
@@ -2070,54 +1989,100 @@ actor TokenStore {
             )
             return true
         }
-        return removeCurrentCredential().durable
+        return signOutCurrentCredential().durable
     }
 
-    /// Remove one sign-in: the index first (dropping its user when nothing
-    /// is left), then the item and this Apple TV user's proof. Other Apple
-    /// TV users' proofs stay; they stop working with the revoked session.
+    /// Sign out of an account but keep it: its sign-in stays saved without
+    /// tokens, so its card shows Sign in again (plan §2.4). The session is
+    /// captured first so the caller can revoke it. When the expired record
+    /// can't be written the item is deleted instead, which keeps the session
+    /// from coming back; the card then shows Sign in again without its
+    /// cached details. A pending legacy account, and any server slot before
+    /// migration, has nothing to keep and is removed.
     @discardableResult
-    func removeSignIn(_ key: SignInKey) -> SignInRemoval {
-        removeCredentials(keys: [key], legacyServerIDs: [], userID: nil, phase: "signInRemoval")[0]
-    }
-
-    /// Remove every sign-in and pending legacy server in a user, and the
-    /// user, in one index write.
-    @discardableResult
-    func removeUser(_ userID: String) -> [SignInRemoval] {
-        let index: SiloUserIndex?
-        do { index = try loadIndex() } catch {
-            return [SignInRemoval(credential: nil, removedUserID: nil, durable: false)]
+    func signOut(_ account: SiloAccountRef) -> SignInRemoval {
+        guard case .signIn(let key) = account else {
+            return removeAccount(account)
         }
-        guard let user = index?.users.first(where: { $0.id == userID }) else { return [] }
-        return removeCredentials(keys: user.signIns, legacyServerIDs: user.pendingLegacyServerIDs ?? [],
-                                 userID: userID, phase: "signInRemoval")
+        // The expired record is keyed by the sign-in, so an index that can't
+        // be read right now doesn't stop it; only an index that no longer
+        // lists the account turns this into a removal.
+        if let index = try? loadIndex(), !index.contains(account) {
+            return removeAccount(account)
+        }
+        let credential = revocableCredential(for: key)
+        let stored: SavedSignIn?
+        do { stored = try savedSignIns.loadSignIn(key) } catch { stored = nil }
+        var durable: Bool
+        if var expired = stored {
+            expired.accessToken = nil
+            expired.refreshToken = nil
+            expired.epoch = nil
+            do {
+                try savedSignIns.saveSignIn(expired)
+                durable = true
+            } catch {
+                durable = savedSignIns.removeSignIn(key)
+            }
+        } else {
+            durable = savedSignIns.removeSignIn(key)
+        }
+        removeProofs(for: key)
+        if durable { unblock(.signIn(key)) } else { block(.signIn(key)) }
+        if selection == .signIn(key) {
+            removeDisplayTargets(registeredBy: key.serverID)
+            persistentCredentialGenerationID = UUID()
+            selection = .none
+            invalidateLoadedCredential()
+            loadedSelection = selection
+            defaults.removeObject(forKey: profileIdDefaultsKey)
+            clearMirroredTokensForExtension()
+            writeAccountMirror()
+        }
+        recordSessionEvent(
+            phase: "clearTokens",
+            outcome: durable ? "cleared" : "failed",
+            reason: durable ? "persistentSession" : "persistenceUnavailable"
+        )
+        return SignInRemoval(credential: credential, durable: durable)
     }
 
-    /// Remove everything saved for a server: every user's sign-in on it, its
+    /// Remove an account: the index first, then its item (or server slot)
+    /// and this Apple TV user's proof. Other Apple TV users' proofs stay;
+    /// they stop working with the revoked session.
+    @discardableResult
+    func removeAccount(_ account: SiloAccountRef) -> SignInRemoval {
+        switch account {
+        case .signIn(let key):
+            return removeCredentials(keys: [key], legacyServerIDs: [], phase: "signInRemoval")[0]
+        case .pendingLegacy(let serverID):
+            return removeCredentials(keys: [], legacyServerIDs: [serverID], phase: "signInRemoval")[0]
+        }
+    }
+
+    /// Remove everything saved for a server: every account on it, its
     /// per-server slot (tombstoned), and its push display targets. When the
     /// index can't be read, its sign-ins can't be found, so nothing is
     /// removed and the result is not durable.
     @discardableResult
     func removeServer(_ serverID: String) -> [SignInRemoval] {
         guard !serverID.isEmpty else { return [] }
-        let index: SiloUserIndex?
+        let index: SiloAccountIndex?
         do { index = try loadIndex() } catch {
             recordSessionEvent(phase: "deleteTokens", outcome: "failed", reason: Self.persistenceFailureReason(error))
-            return [SignInRemoval(credential: nil, removedUserID: nil, durable: false)]
+            return [SignInRemoval(credential: nil, durable: false)]
         }
-        let keys = (index?.users ?? []).flatMap { $0.signIns.filter { $0.serverID == serverID } }
-        let removals = removeCredentials(keys: keys, legacyServerIDs: [serverID], userID: nil, phase: "deleteTokens")
+        let keys = (index?.accounts(onServer: serverID) ?? []).compactMap(\.signInKey)
+        let removals = removeCredentials(keys: keys, legacyServerIDs: [serverID], phase: "deleteTokens")
         removeDisplayTargets(registeredBy: serverID)
         return removals
     }
 
-    /// Remove a server's per-server slot: tombstone it and drop it from every
-    /// user's pending legacy servers. Before migration this is the server's
-    /// only sign-in.
+    /// Remove a server's per-server slot: tombstone it and drop its pending
+    /// legacy account. Before migration this is the server's only sign-in.
     @discardableResult
     func removeLegacyServer(_ serverID: String) -> SignInRemoval {
-        removeCredentials(keys: [], legacyServerIDs: [serverID], userID: nil, phase: "signInRemoval")[0]
+        removeCredentials(keys: [], legacyServerIDs: [serverID], phase: "signInRemoval")[0]
     }
 
     /// One removal: credentials captured first, then the index (commit
@@ -2126,10 +2091,9 @@ actor TokenStore {
     private func removeCredentials(
         keys: [SignInKey],
         legacyServerIDs: [String],
-        userID dropUserID: String?,
         phase: String
     ) -> [SignInRemoval] {
-        let index: SiloUserIndex?
+        let index: SiloAccountIndex?
         var indexReadable = true
         do { index = try loadIndex() } catch {
             index = nil
@@ -2137,43 +2101,25 @@ actor TokenStore {
         }
         let credentials = keys.map { revocableCredential(for: $0) }
         let legacyCredentials = legacyServerIDs.map { legacyRevocableCredential(serverID: $0) }
-        var ownerOfKey: [SignInKey: String] = [:]
-        var ownerOfLegacy: [String: String] = [:]
-        for user in index?.users ?? [] {
-            for key in user.signIns where keys.contains(key) { ownerOfKey[key] = user.id }
-            for serverID in user.pendingLegacyServerIDs ?? [] where legacyServerIDs.contains(serverID) {
-                ownerOfLegacy[serverID] = user.id
-            }
-        }
+        let removed = Set(keys.map(SiloAccountRef.signIn)
+            + legacyServerIDs.map { SiloAccountRef.pendingLegacy(serverID: $0) })
         // A server's own slot holds a session only while it can still be
         // read: before migration (or while the index can't be read), or as a
-        // pending legacy server.
+        // pending legacy account.
         func legacyCounts(_ serverID: String) -> Bool {
-            index == nil || ownerOfLegacy[serverID] != nil
+            index == nil || index?.contains(.pendingLegacy(serverID: serverID)) == true
         }
 
-        var removedUsers: Set<String> = []
         var indexCommitted = indexReadable && index == nil
         if indexReadable, let index {
             var updated = index
-            for member in updated.users.indices {
-                updated.users[member].signIns.removeAll { keys.contains($0) }
-                if let pending = updated.users[member].pendingLegacyServerIDs {
-                    let remaining = pending.filter { !legacyServerIDs.contains($0) }
-                    updated.users[member].pendingLegacyServerIDs = remaining.isEmpty ? nil : remaining
-                }
-            }
-            let emptied = updated.users.filter { user in
-                user.id == dropUserID || (user.signIns.isEmpty && (user.pendingLegacyServerIDs ?? []).isEmpty)
-            }.map(\.id)
-            updated.users.removeAll { emptied.contains($0.id) }
+            updated.accounts.removeAll { removed.contains($0) }
             if updated == index {
                 indexCommitted = true
             } else {
                 do {
                     try saveIndex(updated)
                     indexCommitted = true
-                    removedUsers = Set(emptied)
                 } catch {
                     recordSessionEvent(phase: phase, outcome: "failed", reason: Self.persistenceFailureReason(error))
                 }
@@ -2194,18 +2140,12 @@ actor TokenStore {
             deleteRawSlots(serverID)
             profileKeychain.delete(Self.profileTokenKey(for: serverID))
             block(.legacy(serverID: serverID))
-            // Gone for good once tombstoned, or once no user lists it as
-            // pending: it is never read again (invariant 4).
-            let stillListed = index == nil || (ownerOfLegacy[serverID] != nil && !indexCommitted)
+            // Before migration the slot is the server's only sign-in.
+            if index == nil { removeDisplayTargets(registeredBy: serverID) }
+            // Gone for good once tombstoned, or once the index no longer
+            // lists it: it is never read again (invariant 4).
+            let stillListed = index == nil || (legacyCounts(serverID) && !indexCommitted)
             legacyRemoved.append(invalidated || !stillListed)
-        }
-        let isCurrentUser: (String?) -> Bool = { owner in owner != nil && owner == self.activeUserID }
-        let currentUserLosesServer = keys.contains { isCurrentUser(ownerOfKey[$0]) }
-            || legacyServerIDs.contains { index == nil || isCurrentUser(ownerOfLegacy[$0]) }
-        if currentUserLosesServer {
-            for serverID in Set(keys.map(\.serverID) + legacyServerIDs) {
-                removeDisplayTargets(registeredBy: serverID)
-            }
         }
 
         let removesSelection: Bool
@@ -2215,6 +2155,8 @@ actor TokenStore {
         case .legacy(let serverID): removesSelection = legacyServerIDs.contains(serverID)
         }
         if removesSelection {
+            // Push follows the selected account (plan §2.13).
+            removeDisplayTargets(registeredBy: activeServerId)
             persistentCredentialGenerationID = UUID()
             // Before migration the server keeps its (now signed-out) slot
             // selected, as sign-out always has; afterwards nothing is.
@@ -2225,23 +2167,13 @@ actor TokenStore {
             clearMirroredTokensForExtension()
             writeAccountMirror()
         }
-        if let current = activeUserID, removedUsers.contains(current) {
-            activeUserID = nil
-        }
 
-        let keyResults = keys.enumerated().map { offset, key in
-            SignInRemoval(
-                credential: credentials[offset],
-                removedUserID: ownerOfKey[key].flatMap { removedUsers.contains($0) ? $0 : nil },
-                durable: indexCommitted || itemsRemoved[offset]
-            )
+        let keyResults = keys.enumerated().map { offset, _ in
+            SignInRemoval(credential: credentials[offset], durable: indexCommitted || itemsRemoved[offset])
         }
         let legacyResults = legacyServerIDs.enumerated().map { offset, serverID in
-            SignInRemoval(
-                credential: legacyCounts(serverID) ? legacyCredentials[offset] : nil,
-                removedUserID: ownerOfLegacy[serverID].flatMap { removedUsers.contains($0) ? $0 : nil },
-                durable: legacyRemoved[offset]
-            )
+            SignInRemoval(credential: legacyCounts(serverID) ? legacyCredentials[offset] : nil,
+                          durable: legacyRemoved[offset])
         }
         let results = keyResults + legacyResults
         let allDurable = results.allSatisfy(\.durable)
@@ -2253,31 +2185,22 @@ actor TokenStore {
         return results
     }
 
-    // MARK: - User and display data
+    // MARK: - Display data
 
-    /// Rename a user on this device (`SiloUserNaming.normalizedDisplayName`):
-    /// trimmed and capped at 40 characters; an empty name restores the
-    /// default.
+    /// Update a sign-in's display cache (username, email, profiles for
+    /// account cards). Nil leaves a field as it is (`.some(nil)` clears the
+    /// email); an unchanged cache is not rewritten.
     @discardableResult
-    func renameUser(_ userID: String, to name: String?) -> Bool {
-        let normalized = SiloUserNaming.normalizedDisplayName(name)
-        guard let index = try? loadIndex(), let member = index.users.firstIndex(where: { $0.id == userID }) else {
-            return false
-        }
-        guard index.users[member].displayName != normalized else { return true }
-        var updated = index
-        updated.users[member].displayName = normalized
-        do { try saveIndex(updated) } catch { return false }
-        return true
-    }
-
-    /// Update a sign-in's display cache (username, profiles for user cards).
-    /// Nil leaves a field as it is; an unchanged cache is not rewritten.
-    @discardableResult
-    func updateSignInDisplay(_ key: SignInKey, username: String?, profiles: [SavedSignInProfile]?) -> Bool {
+    func updateSignInDisplay(
+        _ key: SignInKey,
+        username: String?,
+        email: String?? = nil,
+        profiles: [SavedSignInProfile]?
+    ) -> Bool {
         guard let signIn = try? savedSignIns.loadSignIn(key) else { return false }
         var updated = signIn
         if let username { updated.username = username }
+        if let email { updated.email = email.flatMap { $0.isEmpty ? nil : $0 } }
         if let profiles { updated.profiles = profiles }
         guard updated != signIn else { return true }
         do { try savedSignIns.saveSignIn(updated) } catch { return false }
@@ -2290,11 +2213,11 @@ actor TokenStore {
     /// read it, under this exact token and process identity.
     ///
     /// - A saved sign-in must name the same account (otherwise identity
-    ///   changed); its username is filled in when it differs.
-    /// - A pending legacy server becomes a saved sign-in in its user, keeping
-    ///   the epoch, the generation, and the cached tokens, or is dropped when
-    ///   that account is already saved (plan §3.3). A failed write leaves the
-    ///   server pending and working.
+    ///   changed); its username and email are filled in when they differ.
+    /// - A pending legacy account becomes a saved sign-in in its place,
+    ///   keeping the epoch, the generation, and the cached tokens, or is
+    ///   dropped when that account is already saved (plan §3.3). A failed
+    ///   write leaves it pending and working.
     /// - Before migration the server's own record is bound, as it always was.
     ///   Access-only legacy credentials can still read account metadata, but
     ///   cannot establish a refreshable durable login envelope.
@@ -2309,14 +2232,16 @@ actor TokenStore {
             return .unchanged
         case .signIn(let key):
             guard key.accountID == account.id else { throw AccountSessionPersistenceError.invalidIdentity }
-            guard cachedSignIn?.username != account.username else { return .unchanged }
-            return updateSignInDisplay(key, username: account.username, profiles: nil) ? .usernameUpdated : .unchanged
+            let email = account.email.flatMap { $0.isEmpty ? nil : $0 }
+            guard cachedSignIn?.username != account.username || cachedSignIn?.email != email else { return .unchanged }
+            return updateSignInDisplay(key, username: account.username, email: .some(email), profiles: nil)
+                ? .usernameUpdated : .unchanged
         case .legacy(let serverID):
             guard let access = cachedAccessToken, let refresh = cachedRefreshToken else { return .unchanged }
             if let canonicalSession, canonicalSession.accountID != nil, canonicalSession.accountID != account.id {
                 throw AccountSessionPersistenceError.invalidIdentity
             }
-            let index: SiloUserIndex?
+            let index: SiloAccountIndex?
             do { index = try loadIndex() } catch {
                 // Bind nothing until the index can be read; the next account
                 // read retries.
@@ -2327,20 +2252,18 @@ actor TokenStore {
                                       serverURL: expected.account.serverURL)
                 return .unchanged
             }
-            guard let pendingOwner = index.users.firstIndex(where: {
-                $0.pendingLegacyServerIDs?.contains(serverID) == true
-            }) else {
+            guard let position = index.accounts.firstIndex(of: .pendingLegacy(serverID: serverID)) else {
                 return .unchanged
             }
             guard let key = SignInKey(serverID: serverID, accountID: account.id) else {
                 throw AccountSessionPersistenceError.invalidIdentity
             }
-            if index.users.contains(where: { $0.signIns.contains(key) }) {
+            if index.contains(.signIn(key)) {
                 return dropDuplicateLegacyServer(serverID, existing: key, index: index)
             }
-            return migratePendingLegacyServer(serverID, key: key, username: account.username, access: access,
-                                              refresh: refresh, serverURL: expected.account.serverURL,
-                                              userIndex: pendingOwner, index: index)
+            return migratePendingLegacyServer(serverID, key: key, username: account.username,
+                                              email: account.email, access: access, refresh: refresh,
+                                              serverURL: expected.account.serverURL, position: position, index: index)
         }
     }
 
@@ -2359,21 +2282,21 @@ actor TokenStore {
         _ serverID: String,
         key: SignInKey,
         username: String?,
+        email: String?,
         access: String,
         refresh: String,
         serverURL: String,
-        userIndex: Int,
-        index: SiloUserIndex
+        position: Int,
+        index: SiloAccountIndex
     ) -> BindOutcome {
-        let user = index.users[userIndex]
         let epoch = canonicalSession?.epoch
             ?? accountKeychain.get(Self.accountEpochKey(for: serverID)).flatMap(UUID.init(uuidString:))
             ?? UUID()
         let signIn = SavedSignIn(
             key: key,
-            userID: user.id,
             origin: canonicalSession?.origin.map { ServerRegistry.normalize(url: $0) } ?? serverURL,
             username: username,
+            email: email.flatMap { $0.isEmpty ? nil : $0 },
             accessToken: access,
             refreshToken: refresh,
             epoch: epoch,
@@ -2384,10 +2307,9 @@ actor TokenStore {
             recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "writeFailed")
             return .unchanged
         }
+        // The account keeps its place in the list.
         var updated = index
-        let pending = (user.pendingLegacyServerIDs ?? []).filter { $0 != serverID }
-        updated.users[userIndex].pendingLegacyServerIDs = pending.isEmpty ? nil : pending
-        updated.users[userIndex].signIns.append(key)
+        updated.accounts[position] = .signIn(key)
         var owners = updated.legacyDataOwnerByServerID ?? [:]
         owners[serverID] = key.accountID
         updated.legacyDataOwnerByServerID = owners
@@ -2402,7 +2324,6 @@ actor TokenStore {
         // The same credential, now under its sign-in: the generation and the
         // cached tokens stay, so requests in flight are unaffected.
         selection = .signIn(key)
-        activeUserID = user.id
         canonicalSession = nil
         cachedSignIn = signIn
         loadedSelection = selection
@@ -2412,16 +2333,9 @@ actor TokenStore {
         return .legacyMigrated(key)
     }
 
-    private func dropDuplicateLegacyServer(_ serverID: String, existing: SignInKey, index: SiloUserIndex) -> BindOutcome {
+    private func dropDuplicateLegacyServer(_ serverID: String, existing: SignInKey, index: SiloAccountIndex) -> BindOutcome {
         var updated = index
-        for member in updated.users.indices {
-            if let pending = updated.users[member].pendingLegacyServerIDs {
-                let remaining = pending.filter { $0 != serverID }
-                updated.users[member].pendingLegacyServerIDs = remaining.isEmpty ? nil : remaining
-            }
-        }
-        let emptied = updated.users.filter { $0.signIns.isEmpty && ($0.pendingLegacyServerIDs ?? []).isEmpty }.map(\.id)
-        updated.users.removeAll { emptied.contains($0.id) }
+        updated.accounts.removeAll { $0 == .pendingLegacy(serverID: serverID) }
         // The server's old local data belonged to this same account, so the
         // saved sign-in takes it over unless another account already has.
         var owners = updated.legacyDataOwnerByServerID ?? [:]
@@ -2449,7 +2363,6 @@ actor TokenStore {
         profileKeychain.delete(Self.profileTokenKey(for: serverID))
         persistentCredentialGenerationID = UUID()
         selection = .none
-        if let current = activeUserID, emptied.contains(current) { activeUserID = nil }
         invalidateLoadedCredential()
         loadedSelection = selection
         defaults.removeObject(forKey: profileIdDefaultsKey)
@@ -2662,7 +2575,8 @@ actor TokenStore {
         return getOrCreateAccountEpoch(for: activeServerId)
     }
 
-    /// The epoch of the current user's credential on `serverID`: a saved
+    /// The epoch of the credential on `serverID` (the selected one, else the
+    /// background account's): a saved
     /// sign-in's own, or a per-server slot's, minted on demand for a legacy
     /// slot that never had one.
     func getOrCreateAccountEpoch(for serverID: String) -> String? {
@@ -2873,8 +2787,7 @@ actor TokenStore {
         }
     }
 
-    /// A saved sign-in serves only the origin it was saved for, and only for
-    /// the user that lists it.
+    /// A saved sign-in serves only the origin it was saved for.
     private func loadSavedSignIn(_ key: SignInKey) {
         let signIn: SavedSignIn?
         do { signIn = try savedSignIns.loadSignIn(key) } catch {
@@ -2887,8 +2800,7 @@ actor TokenStore {
             return
         }
         let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
-        guard let signIn, ServerRegistry.normalize(url: signIn.origin) == origin,
-              activeUserID == nil || signIn.userID == activeUserID else { return }
+        guard let signIn, ServerRegistry.normalize(url: signIn.origin) == origin else { return }
         cachedSignIn = signIn
         guard signIn.isSignedIn else { return }
         cachedAccessToken = signIn.accessToken

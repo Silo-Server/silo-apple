@@ -63,7 +63,7 @@ class ServerSetupViewModel {
     init(
         checkServer: @escaping ServerCheck = { try await AuthService.shared.checkServer(url: $0) },
         beginSignIn: @escaping SignInStarter = { router in
-            await router.users.beginSignIn(
+            await router.accounts.beginSignIn(
                 serverID: ServerRegistry.shared.activeServerId ?? "",
                 context: router.signInContext,
                 router: router

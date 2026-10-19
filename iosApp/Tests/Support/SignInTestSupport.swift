@@ -4,8 +4,8 @@ import XCTest
 
 extension APIv2Account {
     /// An `/api/v2/account/me` answer naming `id`.
-    static func stub(id: String, username: String = "user") -> APIv2Account {
-        APIv2Account(id: id, username: username, email: nil, role: .user, permissions: [],
+    static func stub(id: String, username: String = "user", email: String? = nil) -> APIv2Account {
+        APIv2Account(id: id, username: username, email: email, role: .user, permissions: [],
                      downloadAllowed: true, impersonation: nil)
     }
 }
@@ -129,7 +129,7 @@ struct SignInStoreFixture {
         defaults.set(serverID, forKey: SharedStorage.activeServerIdKey)
         await store.setServerUrl(url)
         let selected = await store.launchSelection(forServer: serverID)
-        await store.select(serverID: serverID, credential: selected.credential, userID: selected.userID)
+        await store.select(serverID: serverID, credential: selected)
     }
 
     /// A pre-migration session on `serverID`, written the way builds before
@@ -144,13 +144,13 @@ struct SignInStoreFixture {
         account.set(epoch.uuidString, for: SharedStorage.accountEpochAccount(for: serverID))
     }
 
-    /// Writes an empty user index, as migration does on a device with no
-    /// sign-ins.
-    func startUserModel() throws {
-        try signIns.signInStore.saveIndex(SiloUserIndex())
+    /// Writes an empty accounts index, as migration does on a device with
+    /// no sign-ins.
+    func startAccountModel() throws {
+        try signIns.signInStore.saveIndex(SiloAccountIndex())
     }
 
-    func index() throws -> SiloUserIndex? {
+    func index() throws -> SiloAccountIndex? {
         try signIns.signInStore.loadIndex()
     }
 
@@ -158,17 +158,18 @@ struct SignInStoreFixture {
         try signIns.signInStore.loadSignIn(key)
     }
 
-    /// Sign in on the active server with `placement`.
+    /// Sign in on the active server: a new account, or a refresh of the
+    /// saved one.
     @discardableResult
     func install(_ accountID: String, username: String? = nil, access: String, refresh: String,
-                 placement: SignInPlacement, in store: TokenStore? = nil) async throws -> SignInInstallResult {
+                 in store: TokenStore? = nil) async throws -> SignInInstallResult {
         let store = store ?? self.store
         let identity = await store.refreshAccountIdentity()
         let expected = try XCTUnwrap(identity)
         return try await store.installSignIn(
             accessToken: access, refreshToken: refresh,
             account: SignInAccount(id: accountID, username: username),
-            origin: expected.serverURL, placement: placement, expected: expected
+            origin: expected.serverURL, expected: expected
         )
     }
 }
@@ -192,7 +193,7 @@ extension ServerRegistry {
         resolveDestinationProfile: Bool = false
     ) async -> Bool {
         let selected = await tokenStore.launchSelection(forServer: serverId)
-        return await switchTo(serverId: serverId, credential: selected.credential, userID: selected.userID,
+        return await switchTo(serverId: serverId, credential: selected,
                               resolveDestinationProfile: resolveDestinationProfile)
     }
 }

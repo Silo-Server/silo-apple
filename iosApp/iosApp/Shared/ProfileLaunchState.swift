@@ -13,7 +13,7 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
     /// builds still decodes; nil means no offer is due.
     var rememberOfferPending: Bool? = nil
 
-    // Fields for Silo users. Every one is optional so state saved by earlier
+    // Fields for Silo accounts. Every one is optional so state saved by earlier
     // builds still decodes; a required field would reset Profile Selection.
     // `rememberedByServerID` and `selectionRequiredServerIDs` stay for a
     // server's own session (before migration, or a pending legacy server),
@@ -22,10 +22,11 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
 
     /// Nil means `.profileOnly`.
     var askFor: ProfileLaunchAskFor? = nil
-    /// The Silo user this Apple TV user (or this device) opens.
-    var linkedUserID: String? = nil
-    /// User ID to the server it last opened.
-    var lastServerByUserID: [String: String]? = nil
+    /// The account this Apple TV user (or this device) opens
+    /// (`SiloAccountRef.storageKey`). State saved by the first multi-account
+    /// design linked a user instead; it is ignored, so that Apple TV user
+    /// chooses an account once.
+    var linkedAccount: String? = nil
     /// Keyed by `SignInKey.storageKey`.
     var rememberedBySignIn: [String: RememberedProfile]? = nil
     /// `SignInKey.storageKey` of each sign-in with an explicit Switch Profile
@@ -112,8 +113,8 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
             && selectionRequiredServerIDs.contains(key.serverID)
     }
 
-    func lastServer(for userID: String) -> String? {
-        lastServerByUserID?[userID]
+    var linkedAccountRef: SiloAccountRef? {
+        linkedAccount.flatMap(SiloAccountRef.init(storageKey:))
     }
 
     var effectiveAskFor: ProfileLaunchAskFor {

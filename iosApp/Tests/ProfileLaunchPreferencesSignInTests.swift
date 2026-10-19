@@ -1,8 +1,8 @@
 import XCTest
 @testable import Silo
 
-/// The per-Apple-TV-user launch state for Silo users (plan §2.7): links,
-/// last servers, remembered profiles and pending switches per sign-in, the
+/// The per-Apple-TV-user launch state for Silo accounts (plan §2.7): the
+/// linked account, remembered profiles and pending switches per sign-in, the
 /// legacy owner's adoption of server-keyed state, Ask For, and rollback.
 final class ProfileLaunchPreferencesSignInTests: XCTestCase {
     private let alex = SignInKey.make("aG9tZQ", "12")
@@ -21,20 +21,22 @@ final class ProfileLaunchPreferencesSignInTests: XCTestCase {
         RememberedProfile(profileID: profileID, requiredPINAtSelection: false, accountEpoch: epoch)
     }
 
-    func testLinkLastServerAndForgetUserPersist() throws {
+    func testLinkAndForgetAccountPersist() throws {
         let (preferences, defaults) = try preferences()
-        XCTAssertTrue(preferences.link(userID: "u1"))
-        XCTAssertTrue(preferences.setLastServer("aG9tZQ", for: "u1"))
-        XCTAssertTrue(preferences.setLastServer("ZnJpZW5k", for: "u2"))
+        XCTAssertTrue(preferences.link(.signIn(alex)))
+        XCTAssertEqual(ProfileLaunchPreferences(defaults: defaults).state.linkedAccountRef, .signIn(alex))
 
-        let restored = ProfileLaunchPreferences(defaults: defaults)
-        XCTAssertEqual(restored.state.linkedUserID, "u1")
-        XCTAssertEqual(restored.state.lastServer(for: "u1"), "aG9tZQ")
+        // Removing another account leaves the link alone.
+        XCTAssertTrue(preferences.forgetAccount(.signIn(sam)))
+        XCTAssertEqual(preferences.state.linkedAccountRef, .signIn(alex))
 
-        XCTAssertTrue(preferences.forgetUser("u1"))
-        XCTAssertNil(preferences.state.linkedUserID)
-        XCTAssertNil(preferences.state.lastServer(for: "u1"))
-        XCTAssertEqual(preferences.state.lastServer(for: "u2"), "ZnJpZW5k")
+        XCTAssertTrue(preferences.forgetAccount(.signIn(alex)))
+        XCTAssertNil(preferences.state.linkedAccount)
+        XCTAssertNil(ProfileLaunchPreferences(defaults: defaults).state.linkedAccount)
+
+        XCTAssertTrue(preferences.link(.pendingLegacy(serverID: alex.serverID)))
+        XCTAssertEqual(ProfileLaunchPreferences(defaults: defaults).state.linkedAccountRef,
+                       .pendingLegacy(serverID: alex.serverID))
     }
 
     /// Two accounts on one server keep their own remembered profile and
@@ -106,8 +108,7 @@ final class ProfileLaunchPreferencesSignInTests: XCTestCase {
         preferences.remember(profileID: "p", requiresPIN: false, accountEpoch: "e", for: friend, legacyOwnerAccountID: nil)
         preferences.markSelectionRequired(for: sam)
         preferences.rememberLegacy(profileID: "p", requiresPIN: false, accountEpoch: "e", forServer: alex.serverID)
-        preferences.setLastServer(alex.serverID, for: "u1")
-        preferences.setLastServer(friend.serverID, for: "u2")
+        preferences.link(.signIn(sam))
 
         XCTAssertTrue(preferences.forgetServer(alex.serverID))
 
@@ -115,8 +116,18 @@ final class ProfileLaunchPreferencesSignInTests: XCTestCase {
         XCTAssertNotNil(preferences.rememberedProfile(for: friend, accountEpoch: "e"))
         XCTAssertFalse(preferences.state.isSelectionRequired(for: sam, legacyOwnerAccountID: nil))
         XCTAssertNil(preferences.legacyRememberedProfile(forServer: alex.serverID))
-        XCTAssertNil(preferences.state.lastServer(for: "u1"))
-        XCTAssertEqual(preferences.state.lastServer(for: "u2"), friend.serverID)
+        XCTAssertNil(preferences.state.linkedAccount, "a link to an account on the server goes")
+    }
+
+    func testForgettingAServerKeepsALinkToAnotherServer() throws {
+        let (preferences, _) = try preferences()
+        preferences.link(.signIn(friend))
+        preferences.forgetServer(alex.serverID)
+        XCTAssertEqual(preferences.state.linkedAccountRef, .signIn(friend))
+
+        preferences.link(.pendingLegacy(serverID: alex.serverID))
+        XCTAssertTrue(preferences.forgetServer(alex.serverID))
+        XCTAssertNil(preferences.state.linkedAccount)
     }
 
     func testAskForPersistsAndDefaultsToProfileOnly() throws {
@@ -124,26 +135,25 @@ final class ProfileLaunchPreferencesSignInTests: XCTestCase {
         XCTAssertEqual(preferences.askFor, .profileOnly)
         XCTAssertNil(preferences.state.askFor)
 
-        preferences.askFor = .userAndProfile
-        XCTAssertEqual(ProfileLaunchPreferences(defaults: defaults).askFor, .userAndProfile)
+        preferences.askFor = .accountAndProfile
+        XCTAssertEqual(ProfileLaunchPreferences(defaults: defaults).askFor, .accountAndProfile)
     }
 
     /// A change that can't be saved is rolled back.
     func testFailedWritesChangeNothing() throws {
         var persists = true
         let (preferences, _) = try preferences(persists: { persists })
-        preferences.link(userID: "u1")
+        preferences.link(.signIn(alex))
         persists = false
 
-        XCTAssertFalse(preferences.link(userID: "u2"))
-        XCTAssertFalse(preferences.setLastServer("aG9tZQ", for: "u1"))
+        XCTAssertFalse(preferences.link(.signIn(sam)))
+        XCTAssertFalse(preferences.forgetAccount(.signIn(alex)))
         XCTAssertFalse(preferences.remember(profileID: "p", requiresPIN: false, accountEpoch: "e",
                                             for: alex, legacyOwnerAccountID: nil))
         XCTAssertFalse(preferences.markSelectionRequired(for: alex))
-        preferences.askFor = .userAndProfile
+        preferences.askFor = .accountAndProfile
 
-        XCTAssertEqual(preferences.state.linkedUserID, "u1")
-        XCTAssertNil(preferences.state.lastServerByUserID)
+        XCTAssertEqual(preferences.state.linkedAccountRef, .signIn(alex))
         XCTAssertNil(preferences.state.rememberedBySignIn)
         XCTAssertNil(preferences.state.selectionRequiredSignIns)
         XCTAssertEqual(preferences.askFor, .profileOnly)

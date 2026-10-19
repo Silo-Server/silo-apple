@@ -129,7 +129,7 @@ struct TopShelfHTTPClient {
     private func resolveCredential(
         state: ProfileLaunchState? = nil
     ) -> TopShelfCredentialResolver.Resolution {
-        let index: SiloUserIndex?
+        let index: SiloAccountIndex?
         do { index = try savedSignIns.loadIndex() } catch { return .unavailable }
         var savedServers: Set<String> = []
         if index != nil {

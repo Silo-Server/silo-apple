@@ -151,7 +151,7 @@ extension ExternalSignInService {
     /// The app's service: the shared v2 client and token store, the system
     /// browser, and the saved server's verified identity. A sign-in it
     /// finishes is saved outside any user flow; the sign-in screen uses
-    /// `live(installSession:)` to place it (`SiloUserCoordinator`).
+    /// `live(installSession:)` to place it (`SiloAccountCoordinator`).
     @MainActor static let live = live(installSession: { tokens, expectedAccount in
         try await AuthService.shared.commitOutsideUserFlow(PendingSignIn(tokens: tokens, expected: expectedAccount))
     })

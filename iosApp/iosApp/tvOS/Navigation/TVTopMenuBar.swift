@@ -1112,7 +1112,7 @@ private enum TVProfileAction: Hashable {
     case history
     case watchParty
     case settings
-    case switchServer
+    case switchAccount
     case signOut
 }
 
@@ -1142,7 +1142,7 @@ struct TVProfileDropdown: View {
     let onHistory: () -> Void
     let onWatchParty: () -> Void
     let onSettings: () -> Void
-    let onSwitchServer: () -> Void
+    let onSwitchAccount: () -> Void
     let onSignOut: () -> Void
 
     @FocusState private var focusedAction: TVProfileAction?
@@ -1189,10 +1189,9 @@ struct TVProfileDropdown: View {
             divider
 
             actionButton("Settings", systemImage: "gearshape.fill", id: .settings, action: onSettings)
-            // The guide marks Switch Server as Android-only (§5.8), but tvOS
-            // already ships multi-server switching — dropping it here would
-            // regress existing users.
-            actionButton("Switch Server", systemImage: "server.rack", id: .switchServer, action: onSwitchServer)
+            // Other accounts, on this server or another (spec §5.8).
+            actionButton("Switch Account", systemImage: "person.crop.circle", id: .switchAccount,
+                         action: onSwitchAccount)
             actionButton("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", id: .signOut, isDestructive: true, action: onSignOut)
         }
         .padding(SiloTheme.Skyline.dropdownPadding)

@@ -1,51 +1,41 @@
 import SwiftUI
 
-/// Owns confirmed server removal above the auth subtree. Removing an active
-/// server changes the subtree identity before Keychain cleanup completes, so
-/// this operation must not be tied to the recovery view's lifetime.
+/// Owns confirmed account removal above the auth subtree. Removing the
+/// active account changes the subtree identity before Keychain cleanup
+/// completes, so this operation must not be tied to the recovery view's
+/// lifetime.
 @MainActor
 @Observable
 final class RestoredServerRecoveryCoordinator {
-    typealias RemoveServer = (String) async -> Bool
-    typealias ResolveDestination = () async -> AppRouter.AuthState
+    /// Removes the current account and routes on (the launch rules, spec
+    /// §6.2). Returns whether it is gone.
+    typealias RemoveAccount = (AppRouter) async -> Bool
 
-    private let removeServer: RemoveServer
-    /// Nil applies the launch rules after a removal (spec §6.2) through
-    /// `SiloUserCoordinator`.
-    private let resolveDestination: ResolveDestination?
+    private let removeAccount: RemoveAccount
     @ObservationIgnored private var forgetTask: Task<Void, Never>?
 
     private(set) var isForgetting = false
     private(set) var error: String?
 
     init(
-        removeServer: @escaping RemoveServer = { serverID in
-            await ServerRegistry.shared.remove(serverId: serverID)
-        },
-        resolveDestination: ResolveDestination? = nil
+        removeAccount: @escaping RemoveAccount = { router in
+            await router.accounts.removeCurrentAccount(router: router)
+        }
     ) {
-        self.removeServer = removeServer
-        self.resolveDestination = resolveDestination
+        self.removeAccount = removeAccount
     }
 
-    /// Removes the confirmed server and commits the fallback route even if
-    /// changing the active server tears down the recovery screen meanwhile.
+    /// Removes the current account once confirmed, and routes on, even if
+    /// changing the active account tears down the recovery screen meanwhile.
     @discardableResult
-    func forget(serverID: String, router: AppRouter) -> Task<Void, Never>? {
+    func forget(router: AppRouter) -> Task<Void, Never>? {
         guard !isForgetting else { return nil }
         isForgetting = true
         error = nil
 
         let task = Task { [self] in
-            let removed = await removeServer(serverID)
-            if removed {
-                if let resolveDestination {
-                    router.resetAfterServerResolution(to: await resolveDestination())
-                } else {
-                    await router.users.routeAfterRemoval(router: router)
-                }
-            } else {
-                error = "Silo couldn't forget this server. Try again."
+            if !(await removeAccount(router)) {
+                error = "Silo couldn't remove this account. Try again."
             }
             isForgetting = false
             forgetTask = nil
@@ -73,7 +63,7 @@ struct RestoredServerRecoveryView: View {
 
     private enum RecoveryAction: Hashable {
         case retry
-        case manageServers
+        case switchAccount
         case forget
     }
     #endif
@@ -115,11 +105,11 @@ struct RestoredServerRecoveryView: View {
                     .buttonStyle(.marquee(.primary, fullWidth: false, isLoading: isChecking))
                     .focused($focusedAction, equals: .retry)
 
-                    Button("Manage servers", action: manageServers)
+                    Button("Switch Account", action: switchAccount)
                         .buttonStyle(.marquee(.glass, fullWidth: false))
-                        .focused($focusedAction, equals: .manageServers)
+                        .focused($focusedAction, equals: .switchAccount)
 
-                    Button("Forget this server", action: requestForget)
+                    Button(SignOutConfirmationCopy.removeAccountTitle, action: requestForget)
                         .buttonStyle(.marquee(.plain, fullWidth: false))
                         .focused($focusedAction, equals: .forget)
                 }
@@ -135,9 +125,9 @@ struct RestoredServerRecoveryView: View {
 
             if showForgetConfirmation {
                 TVSettingsConfirmationOverlay(
-                    title: "Forget this server?",
-                    message: forgetMessage,
-                    confirmTitle: "Forget Server",
+                    title: forgetCopy.title,
+                    message: forgetCopy.message,
+                    confirmTitle: forgetCopy.confirmTitle,
                     cancel: cancelForget,
                     confirm: confirmForget
                 )
@@ -178,10 +168,10 @@ struct RestoredServerRecoveryView: View {
                 }
                 .buttonStyle(.marquee(.primary, isLoading: isChecking))
 
-                Button("Manage servers", action: manageServers)
+                Button("Switch Account", action: switchAccount)
                     .buttonStyle(.marqueeGlass)
 
-                Button("Forget this server", role: .destructive, action: requestForget)
+                Button(SignOutConfirmationCopy.removeAccountTitle, role: .destructive, action: requestForget)
                     .buttonStyle(.marqueePlain)
             }
             .disabled(isChecking || coordinator.isForgetting)
@@ -191,11 +181,11 @@ struct RestoredServerRecoveryView: View {
         .onAppear { MarqueeScene.shared.showActiveServer() }
         .navigationBarBackButtonHidden()
         .marqueeTransparentNavigation()
-        .alert("Forget this server?", isPresented: $showForgetConfirmation) {
-            Button("Forget Server", role: .destructive, action: confirmForget)
+        .alert(forgetCopy.title, isPresented: $showForgetConfirmation) {
+            Button(forgetCopy.confirmTitle, role: .destructive, action: confirmForget)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(forgetMessage)
+            Text(forgetCopy.message)
         }
         .onDisappear(perform: cancelWork)
     }
@@ -246,9 +236,16 @@ struct RestoredServerRecoveryView: View {
         }
     }
 
-    private var forgetMessage: String {
-        let name = activeServer?.displayName ?? "this server"
-        return "This removes the saved connection and sign-in credentials for \(name) from this device. This can't be undone."
+    /// Remove Account's confirmation: the current account, through the
+    /// same copy as Settings › Accounts.
+    private var forgetCopy: ConfirmationCopy {
+        let accounts = router.accounts
+        guard let current = accounts.directory.currentAccountID else {
+            let name = activeServer?.displayName ?? "this server"
+            return SignOutConfirmationCopy.removeAccount(accountName: "Your account", serverName: name,
+                                                         device: accounts.device)
+        }
+        return accounts.confirmation(for: .remove(current))
     }
 
     private func retry() {
@@ -293,8 +290,8 @@ struct RestoredServerRecoveryView: View {
             guard !Task.isCancelled,
                   registry.activeServerId == expectedServerID else { return }
             // A rejected saved sign-in keeps its own sign-in screen, with
-            // Change server and Switch User.
-            if validation == .needsLogin, await router.users.signInAgainForCurrentSession(router: router) { return }
+            // Switch Account.
+            if validation == .needsLogin, await router.accounts.signInAgainForCurrentSession(router: router) { return }
             if let destination {
                 router.resetAfterServerResolution(to: destination)
             } else {
@@ -320,10 +317,10 @@ struct RestoredServerRecoveryView: View {
         }
     }
 
-    private func manageServers() {
+    private func switchAccount() {
         guard !coordinator.isForgetting else { return }
         cancelWork()
-        router.navigate(to: .serverList)
+        Task { await router.accounts.beginSwitchAccount(router: router) }
     }
 
     private func requestForget() {
@@ -332,10 +329,10 @@ struct RestoredServerRecoveryView: View {
     }
 
     private func confirmForget() {
-        guard !coordinator.isForgetting, let serverID = registry.activeServerId else { return }
+        guard !coordinator.isForgetting else { return }
         showForgetConfirmation = false
         error = nil
-        coordinator.forget(serverID: serverID, router: router)
+        coordinator.forget(router: router)
     }
 
     #if os(tvOS)

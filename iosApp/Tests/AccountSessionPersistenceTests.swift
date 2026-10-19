@@ -315,25 +315,25 @@ final class AccountSessionPersistenceTests: XCTestCase {
     /// it so a duplicate delivery can't replace the session it just saved.
     func testReceiverExpectationFencesSwitchAwayAndBackAndConsumesSuccess() async throws {
         let (store, keys, _, _) = try await harness()
-        try SavedSignInStore(keychain: keys).saveIndex(SiloUserIndex())
-        func install(_ access: String, _ placement: SignInPlacement, _ expected: RefreshAccountIdentity) async throws {
+        try SavedSignInStore(keychain: keys).saveIndex(SiloAccountIndex())
+        func install(_ access: String, _ expected: RefreshAccountIdentity) async throws {
             try await store.installSignIn(accessToken: access, refreshToken: "\(access)-refresh",
                 account: SignInAccount(id: "12", username: nil), origin: "https://session.example",
-                placement: placement, expected: expected)
+                expected: expected)
         }
         let captured = await store.refreshAccountIdentity()
         let expected = try XCTUnwrap(captured)
         await store.switchActiveServer(serverId: "other")
         await store.switchActiveServer(serverId: "server")
         do {
-            try await install("delayed", .newUser, expected)
+            try await install("delayed", expected)
             XCTFail("Changed owner accepted")
         } catch HTTPError.requestIdentityChanged {}
         let freshValue = await store.refreshAccountIdentity()
         let fresh = try XCTUnwrap(freshValue)
-        try await install("new", .newUser, fresh)
+        try await install("new", fresh)
         do {
-            try await install("duplicate", .refresh(SignInKey(serverID: "server", accountID: "12")!), fresh)
+            try await install("duplicate", fresh)
             XCTFail("Successful installation must consume its expectation")
         } catch HTTPError.requestIdentityChanged {}
         let saved = try SavedSignInStore(keychain: keys).loadSignIn(SignInKey(serverID: "server", accountID: "12")!)
@@ -358,19 +358,19 @@ final class AccountSessionPersistenceTests: XCTestCase {
     /// the receiver has pointed it there.
     func testReceiverInitialSetupAndExistingProfileProofBoundary() async throws {
         let (store, keys, defaults, memory) = try await harness()
-        try SavedSignInStore(keychain: keys).saveIndex(SiloUserIndex())
+        try SavedSignInStore(keychain: keys).saveIndex(SiloAccountIndex())
         let key = SignInKey(serverID: "server", accountID: "12")!
-        func install(_ store: TokenStore, _ access: String, _ placement: SignInPlacement,
+        func install(_ store: TokenStore, _ access: String,
                      url: String = "https://session.example", account: String = "12") async throws -> SignInInstallResult {
             let identity = await store.refreshAccountIdentity()
             return try await store.installSignIn(accessToken: access, refreshToken: "\(access)-refresh",
                 account: SignInAccount(id: account, username: nil), origin: url,
-                placement: placement, expected: XCTUnwrap(identity))
+                expected: XCTUnwrap(identity))
         }
-        let first = try await install(store, "old", .newUser)
+        _ = try await install(store, "old")
         await store.setProfileId("old-profile")
         _ = await store.setProfileToken("old-proof")
-        _ = try await install(store, "new", .refresh(key))
+        _ = try await install(store, "new")
         let proof = await store.getProfileToken()
         XCTAssertNil(proof)
         XCTAssertNil(try SignInProofStore(keychain: keys).load(key))
@@ -380,7 +380,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertNil(blank)
         await fresh.setServerUrl("https://candidate.example")
         await fresh.switchActiveServer(serverId: "candidate")
-        _ = try await install(fresh, "setup", .join(userID: first.userID), url: "https://candidate.example", account: "14")
+        _ = try await install(fresh, "setup", url: "https://candidate.example", account: "14")
         let access = await fresh.getAccessToken()
         XCTAssertEqual(access, "setup")
     }

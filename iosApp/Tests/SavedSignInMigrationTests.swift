@@ -2,9 +2,9 @@ import Foundation
 import XCTest
 @testable import Silo
 
-/// The one-time move from one session per server to Silo users (plan §3).
+/// The one-time move from one session per server to accounts (plan §3).
 /// It must never lose a working sign-in, never write after a read error,
-/// never let an old per-server record come back once users exist, and be
+/// never let an old per-server record come back once accounts exist, and be
 /// safe to run on every launch.
 final class SavedSignInMigrationTests: XCTestCase {
     private typealias F = SignInStoreFixture
@@ -38,18 +38,14 @@ final class SavedSignInMigrationTests: XCTestCase {
 
         XCTAssertEqual(outcome, .migrated)
         let index = try XCTUnwrap(try f.index())
-        XCTAssertEqual(index.users.count, 1)
-        let user = try XCTUnwrap(index.users.first)
         let home = SignInKey.make(F.home, "12")
-        XCTAssertEqual(index.migratedUserID, user.id)
-        XCTAssertEqual(user.signIns, [home])
-        XCTAssertEqual(user.pendingLegacyServerIDs, [F.friend, rawServer])
-        XCTAssertNil(user.displayName)
+        XCTAssertEqual(index.accounts, [.signIn(home), .pendingLegacy(serverID: F.friend),
+                                        .pendingLegacy(serverID: rawServer)])
+        XCTAssertEqual(index.migrated, true)
         XCTAssertEqual(index.legacyDataOwnerByServerID, [F.home: "12"])
         XCTAssertEqual(LegacyLocalDataOwner.accountID(forServerID: F.home), "12")
 
         let signIn = try XCTUnwrap(try f.signIn(home))
-        XCTAssertEqual(signIn.userID, user.id)
         XCTAssertEqual(signIn.origin, F.homeURL)
         XCTAssertEqual(signIn.accessToken, "home-access")
         XCTAssertEqual(signIn.refreshToken, "home-refresh")
@@ -82,17 +78,22 @@ final class SavedSignInMigrationTests: XCTestCase {
         XCTAssertNil(f.defaults.string(forKey: SharedStorage.activeAccountIdKey))
     }
 
-    /// The order sign-ins were added isn't recorded, so the active server's
-    /// is the oldest and names the user (spec §9).
-    func testActiveServersSignInIsTheOldest() async throws {
+    /// Each server session becomes an account of its own. The order they
+    /// were added isn't recorded, so the active server's is the oldest and
+    /// listed first (spec §9); unverified ones follow as pending accounts.
+    func testEachServerSessionBecomesItsOwnAccountActiveServerFirst() async throws {
         let f = try F.make(self)
         try f.seedLegacySession(F.home, url: F.homeURL, accountID: "12", access: "a", refresh: "r")
         try f.seedLegacySession(F.friend, url: F.friendURL, accountID: "40", access: "b", refresh: "s")
+        try f.seedLegacySession(rawServer, url: "https://raw.example", accountID: nil, access: "c", refresh: "t")
 
         _ = await f.store.migrateLegacySessionsIfNeeded(servers: servers, activeServerID: F.friend)
 
-        let user = try XCTUnwrap(try f.index()?.users.first)
-        XCTAssertEqual(user.signIns, [SignInKey.make(F.friend, "40"), SignInKey.make(F.home, "12")])
+        let index = try XCTUnwrap(try f.index())
+        XCTAssertEqual(index.accounts, [.signIn(.make(F.friend, "40")), .signIn(.make(F.home, "12")),
+                                        .pendingLegacy(serverID: rawServer)])
+        XCTAssertEqual(index.migrated, true)
+        XCTAssertEqual(index.legacyDataOwnerByServerID, [F.friend: "40", F.home: "12"])
         let friend = try XCTUnwrap(try f.signIn(.make(F.friend, "40")))
         let home = try XCTUnwrap(try f.signIn(.make(F.home, "12")))
         XCTAssertLessThan(friend.addedAt, home.addedAt)
@@ -105,9 +106,9 @@ final class SavedSignInMigrationTests: XCTestCase {
         let outcome = await f.store.migrateLegacySessionsIfNeeded(servers: servers, activeServerID: signedOutServer)
 
         XCTAssertEqual(outcome, .migrated)
-        XCTAssertEqual(try f.index(), SiloUserIndex())
+        XCTAssertEqual(try f.index(), SiloAccountIndex())
         let directory = try await f.store.directory()
-        XCTAssertTrue(directory.users.isEmpty)
+        XCTAssertTrue(directory.accounts.isEmpty)
     }
 
     /// No servers is trusted only when the stored server list agrees. A list
@@ -131,13 +132,13 @@ final class SavedSignInMigrationTests: XCTestCase {
         XCTAssertEqual(try f.signIn(.make(F.home, "12"))?.accessToken, "home-access")
 
         // A new device with nothing stored, or a list emptied on purpose,
-        // starts the user model at once.
+        // starts the account model at once.
         for list in [nil, #"{"entries":[]}"#] {
             let fresh = try F.make(self)
             if let list { fresh.defaults.set(Data(list.utf8), forKey: SharedStorage.serverRegistryDefaultsKey) }
             let empty = await fresh.store.migrateLegacySessionsIfNeeded(servers: [], activeServerID: nil)
             XCTAssertEqual(empty, .migrated)
-            XCTAssertEqual(try fresh.index(), SiloUserIndex())
+            XCTAssertEqual(try fresh.index(), SiloAccountIndex())
         }
     }
 
@@ -179,9 +180,7 @@ final class SavedSignInMigrationTests: XCTestCase {
         let outcome = await f.store.migrateLegacySessionsIfNeeded(servers: servers, activeServerID: F.home)
 
         XCTAssertEqual(outcome, .migrated)
-        let user = try XCTUnwrap(try f.index()?.users.first)
-        XCTAssertEqual(user.signIns, [.make(F.home, "12")])
-        XCTAssertNil(user.pendingLegacyServerIDs)
+        XCTAssertEqual(try f.index()?.accounts, [.signIn(.make(F.home, "12"))])
     }
 
     func testFailedWritesLeaveOldRecordsUsableAndRetrySucceeds() async throws {
@@ -207,7 +206,7 @@ final class SavedSignInMigrationTests: XCTestCase {
             f.signIns.failingWrites = []
             outcome = await relaunched.migrateLegacySessionsIfNeeded(servers: servers, activeServerID: F.home)
             XCTAssertEqual(outcome, .migrated)
-            XCTAssertEqual(try f.index()?.users.count, 1)
+            XCTAssertEqual(try f.index()?.accounts.first, .signIn(.make(F.home, "12")))
             XCTAssertEqual(try f.signIn(.make(F.home, "12"))?.epoch, epoch)
         }
     }
@@ -235,11 +234,10 @@ final class SavedSignInMigrationTests: XCTestCase {
         try f.seedLegacySession(F.home, url: F.homeURL, accountID: "12", access: "stale-access",
                                 refresh: "stale-refresh", epoch: epoch)
         // Killed between the index commit and cleanup (plan §3.5).
-        try f.signIns.signInStore.saveSignIn(SavedSignIn(key: home, userID: "u", origin: F.homeURL,
+        try f.signIns.signInStore.saveSignIn(SavedSignIn(key: home, origin: F.homeURL,
             accessToken: "current-access", refreshToken: "current-refresh", epoch: epoch, addedAt: Date()))
-        try f.signIns.signInStore.saveIndex(SiloUserIndex(
-            users: [SiloUser(id: "u", createdAt: Date(), signIns: [home])],
-            migratedUserID: "u", legacyDataOwnerByServerID: [F.home: "12"]))
+        try f.signIns.signInStore.saveIndex(SiloAccountIndex(
+            accounts: [.signIn(home)], migrated: true, legacyDataOwnerByServerID: [F.home: "12"]))
 
         await f.activate(F.home, url: F.homeURL)
         let access = await f.store.getAccessToken()
@@ -250,10 +248,10 @@ final class SavedSignInMigrationTests: XCTestCase {
         guard case .signedOut = try f.sessions.sessions.load(F.home) else { return XCTFail("cleanup not retried") }
         XCTAssertNil(f.keychain.withAudience(.userIndependent).get(SharedStorage.accessTokenAccount(for: F.home)))
 
-        // With no users at all, a leftover record still stays out.
+        // With no accounts at all, a leftover record still stays out.
         let empty = try F.make(self)
         try empty.seedLegacySession(F.home, url: F.homeURL, accountID: "12", access: "stale", refresh: "r")
-        try empty.startUserModel()
+        try empty.startAccountModel()
         await empty.activate(F.home, url: F.homeURL)
         let none = await empty.store.getAccessToken()
         let selection = await empty.store.currentSelection()
@@ -279,8 +277,8 @@ final class SavedSignInMigrationTests: XCTestCase {
     }
 
     /// An earlier selection of a server that had no working sign-in names a
-    /// slot no user lists either, so it is dropped as well: here a stray
-    /// refresh token that must never be spent once users exist.
+    /// slot no account holds either, so it is dropped as well: here a stray
+    /// refresh token that must never be spent once accounts exist.
     func testMigrationDropsAnEarlierSelectionOfAServerWithoutASignIn() async throws {
         let f = try F.make(self)
         f.keychain.withAudience(.userIndependent).set("stray-refresh",
@@ -294,7 +292,7 @@ final class SavedSignInMigrationTests: XCTestCase {
         let outcome = await f.store.migrateLegacySessionsIfNeeded(servers: servers, activeServerID: rawServer)
 
         XCTAssertEqual(outcome, .migrated)
-        XCTAssertEqual(try f.index(), SiloUserIndex())
+        XCTAssertEqual(try f.index(), SiloAccountIndex())
         let after = await f.store.currentSelection()
         let stray = await f.store.getRefreshToken()
         XCTAssertEqual(after, .none)
@@ -303,80 +301,67 @@ final class SavedSignInMigrationTests: XCTestCase {
 
     // MARK: - Servers signed out at migration
 
-    /// Adds `accountID`'s sign-in on `server` for `placement`, as the sign-in
-    /// screen does.
+    /// Signs `accountID` in on `server`, as the sign-in screen does.
     @discardableResult
-    private func signIn(_ f: F, _ accountID: String, on server: String, url: String,
-                        placement: SignInPlacement) async throws -> SignInInstallResult {
-        var joined: String?
-        if case .join(let userID) = placement { joined = userID }
+    private func signIn(_ f: F, _ accountID: String, on server: String,
+                        url: String) async throws -> SignInInstallResult {
         await f.store.setServerUrl(url)
-        await f.store.select(serverID: server, credential: .none, userID: joined)
-        return try await f.install(accountID, access: "\(accountID)-access", refresh: "\(accountID)-refresh",
-                                   placement: placement)
+        await f.store.select(serverID: server, credential: .none)
+        return try await f.install(accountID, access: "\(accountID)-access", refresh: "\(accountID)-refresh")
     }
 
     /// A server whose session had ended by the update gets no owner at
-    /// migration. The migrated user's next sign-in there takes its old local
-    /// data over, as signing in again always brought it back; a sign-in by
-    /// another user first takes nothing, and nothing after it does either.
-    func testTheMigratedUsersNextSignInOnASignedOutServerTakesOverItsOldData() async throws {
-        for anotherUserFirst in [false, true] {
-            let f = try F.make(self)
-            try f.seedLegacySession(F.home, url: F.homeURL, accountID: "12", access: "home-access",
-                                    refresh: "home-refresh")
-            XCTAssertTrue(f.sessions.sessions.invalidate(F.friend))
-            _ = await f.store.migrateLegacySessionsIfNeeded(
-                servers: [(F.home, F.homeURL), (F.friend, F.friendURL)], activeServerID: F.home)
-            let migrated = try XCTUnwrap(try f.index()?.migratedUserID)
-            XCTAssertNil(try f.index()?.legacyDataOwnerByServerID?[F.friend])
+    /// migration. The next account signed in there takes its old local data
+    /// over, as signing in again always brought it back; a later account on
+    /// that server takes nothing.
+    func testTheNextSignInOnAServerSignedOutAtMigrationTakesOverItsOldData() async throws {
+        let f = try F.make(self)
+        try f.seedLegacySession(F.home, url: F.homeURL, accountID: "12", access: "home-access",
+                                refresh: "home-refresh")
+        XCTAssertTrue(f.sessions.sessions.invalidate(F.friend))
+        _ = await f.store.migrateLegacySessionsIfNeeded(
+            servers: [(F.home, F.homeURL), (F.friend, F.friendURL)], activeServerID: F.home)
+        XCTAssertNil(try f.index()?.legacyDataOwnerByServerID?[F.friend])
 
-            if anotherUserFirst {
-                try await signIn(f, "13", on: F.friend, url: F.friendURL, placement: .newUser)
-                XCTAssertNil(try f.index()?.legacyDataOwnerByServerID?[F.friend], "another user's account")
-            }
-            try await signIn(f, "40", on: F.friend, url: F.friendURL, placement: .join(userID: migrated))
+        try await signIn(f, "40", on: F.friend, url: F.friendURL)
+        XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID?[F.friend], "40")
+        XCTAssertEqual(LegacyLocalDataOwner.accountID(forServerID: F.friend), "40")
 
-            let owner = try f.index()?.legacyDataOwnerByServerID?[F.friend]
-            XCTAssertEqual(owner, anotherUserFirst ? nil : "40")
-            XCTAssertEqual(LegacyLocalDataOwner.accountID(forServerID: F.friend), owner)
-            XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID?[F.home], "12", "Home's owner stays")
-        }
+        try await signIn(f, "13", on: F.friend, url: F.friendURL)
+        XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID?[F.friend], "40", "a later account takes nothing")
+        XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID?[F.home], "12", "Home's owner stays")
     }
 
-    /// With every session ended by the update, the device's only user takes
-    /// over each server's old data as it signs in there again; a second user
+    /// With every session ended by the update, the device's first account
+    /// takes over its server's old data; a later account on another server
     /// doesn't, and neither does anyone on a server still pending.
-    func testTheOnlyUsersSignInsTakeOverOldDataAndOtherUsersDont() async throws {
+    func testTheDevicesFirstAccountTakesOverOldDataAndLaterOnesDont() async throws {
         let f = try F.make(self)
-        try f.startUserModel()
-        let alex = try await signIn(f, "12", on: F.home, url: F.homeURL, placement: .newUser)
+        try f.startAccountModel()
+        try await signIn(f, "12", on: F.home, url: F.homeURL)
         XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID, [F.home: "12"])
-        try await signIn(f, "13", on: F.friend, url: F.friendURL, placement: .newUser)
-        XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID, [F.home: "12"], "a second user takes nothing")
-        XCTAssertNotEqual(alex.userID, try f.index()?.users.last?.id)
+        try await signIn(f, "13", on: F.friend, url: F.friendURL)
+        XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID, [F.home: "12"], "a second account takes nothing")
 
         let pending = try F.make(self)
         try pending.seedLegacySession(F.friend, url: F.friendURL, accountID: nil, access: "friend-access",
                                       refresh: "friend-refresh")
         _ = await pending.store.migrateLegacySessionsIfNeeded(servers: [(F.friend, F.friendURL)],
                                                               activeServerID: F.friend)
-        let user = try XCTUnwrap(try pending.index()?.users.first)
-        XCTAssertEqual(user.pendingLegacyServerIDs, [F.friend])
-        try await signIn(pending, "40", on: F.friend, url: F.friendURL, placement: .newUser)
+        XCTAssertEqual(try pending.index()?.accounts, [.pendingLegacy(serverID: F.friend)])
+        try await signIn(pending, "40", on: F.friend, url: F.friendURL)
         XCTAssertNil(try pending.index()?.legacyDataOwnerByServerID?[F.friend],
                      "the pending session's account owns it once known")
     }
 
     // MARK: - Pending legacy servers (plan §3.3)
 
-    func testFirstAccountReadMovesAPendingServerIntoItsUser() async throws {
+    func testFirstAccountReadTurnsAPendingAccountIntoASignInInPlace() async throws {
         let f = try F.make(self)
         let epoch = UUID()
         try seedEveryKind(f, homeEpoch: UUID(), friendEpoch: epoch)
         f.keychain.withAudience(.currentUser).set("pin-proof", for: SharedStorage.profileTokenAccount(for: F.friend))
         _ = await f.store.migrateLegacySessionsIfNeeded(servers: servers, activeServerID: F.home)
-        let userID = try XCTUnwrap(try f.index()?.users.first?.id)
         await f.activate(F.friend, url: F.friendURL)
         await f.store.setProfileId("default")
         let capturedValue = await f.store.captureOrdinaryRequestAuth()
@@ -386,10 +371,8 @@ final class SavedSignInMigrationTests: XCTestCase {
 
         let key = SignInKey.make(F.friend, "34")
         XCTAssertEqual(outcome, .legacyMigrated(key))
-        let user = try XCTUnwrap(try f.index()?.users.first)
-        XCTAssertEqual(user.id, userID)
-        XCTAssertEqual(user.signIns, [.make(F.home, "12"), key])
-        XCTAssertEqual(user.pendingLegacyServerIDs, [rawServer])
+        XCTAssertEqual(try f.index()?.accounts, [.signIn(.make(F.home, "12")), .signIn(key),
+                                                 .pendingLegacy(serverID: rawServer)])
         XCTAssertEqual(try f.index()?.legacyDataOwnerByServerID?[F.friend], "34")
         let signIn = try XCTUnwrap(try f.signIn(key))
         XCTAssertEqual(signIn.epoch, epoch)
@@ -411,22 +394,20 @@ final class SavedSignInMigrationTests: XCTestCase {
         XCTAssertEqual(durable?.accountEpoch, epoch)
     }
 
-    /// Someone saved the pending server's account in another user meanwhile:
-    /// that sign-in stays, the legacy session goes, and a user left empty is
-    /// removed. Its tokens differ from the sign-in's, so it is a session of
-    /// its own, handed back to end on its server.
+    /// Someone signed the pending account's server account in meanwhile:
+    /// that sign-in stays, takes over the server's old data, and the pending
+    /// account goes. Its tokens differ from the sign-in's, so it is a session
+    /// of its own, handed back to end on its server.
     func testPendingServerWhoseAccountIsAlreadySavedIsDropped() async throws {
         let f = try F.make(self)
         let existing = SignInKey.make(F.friend, "34")
         try f.seedLegacySession(F.friend, url: F.friendURL, accountID: nil, access: "legacy-access", refresh: "r")
-        try f.signIns.signInStore.saveSignIn(SavedSignIn(key: existing, userID: "other", origin: F.friendURL,
+        try f.signIns.signInStore.saveSignIn(SavedSignIn(key: existing, origin: F.friendURL,
             accessToken: "saved-access", refreshToken: "saved-refresh", epoch: UUID(), addedAt: Date()))
-        try f.signIns.signInStore.saveIndex(SiloUserIndex(
-            users: [SiloUser(id: "migrated", createdAt: Date(), signIns: [], pendingLegacyServerIDs: [F.friend]),
-                    SiloUser(id: "other", createdAt: Date(), signIns: [existing])],
-            migratedUserID: "migrated"))
+        try f.signIns.signInStore.saveIndex(SiloAccountIndex(
+            accounts: [.pendingLegacy(serverID: F.friend), .signIn(existing)], migrated: true))
         await f.store.setServerUrl(F.friendURL)
-        await f.store.select(serverID: F.friend, credential: .legacy(serverID: F.friend), userID: "migrated")
+        await f.store.select(serverID: F.friend, credential: .legacy(serverID: F.friend))
         let capturedValue = await f.store.captureOrdinaryRequestAuth()
         let captured = try XCTUnwrap(capturedValue)
 
@@ -435,14 +416,15 @@ final class SavedSignInMigrationTests: XCTestCase {
         XCTAssertEqual(outcome, .legacyDuplicate(existing: existing, revoking: RevocableCredential(
             serverURL: F.friendURL, accessToken: "legacy-access", refreshToken: "r")))
         let index = try XCTUnwrap(try f.index())
-        XCTAssertEqual(index.users.map(\.id), ["other"])
+        XCTAssertEqual(index.accounts, [.signIn(existing)])
+        XCTAssertEqual(index.legacyDataOwnerByServerID, [F.friend: "34"])
         XCTAssertEqual(try f.signIn(existing)?.accessToken, "saved-access")
         guard case .signedOut = try f.sessions.sessions.load(F.friend) else { return XCTFail("legacy kept") }
         let selection = await f.store.currentSelection()
-        let user = await f.store.currentUserID()
+        let account = await f.store.currentAccount()
         let access = await f.store.getAccessToken()
         XCTAssertEqual(selection, .none)
-        XCTAssertNil(user)
+        XCTAssertNil(account)
         XCTAssertNil(access)
     }
 
@@ -455,14 +437,12 @@ final class SavedSignInMigrationTests: XCTestCase {
             let existing = SignInKey.make(F.friend, "34")
             try f.seedLegacySession(F.friend, url: F.friendURL, accountID: nil, access: "shared-access",
                                     refresh: "shared-refresh")
-            try f.signIns.signInStore.saveSignIn(SavedSignIn(key: existing, userID: "other", origin: F.friendURL,
+            try f.signIns.signInStore.saveSignIn(SavedSignIn(key: existing, origin: F.friendURL,
                 accessToken: savedAccess, refreshToken: savedRefresh, epoch: UUID(), addedAt: Date()))
-            try f.signIns.signInStore.saveIndex(SiloUserIndex(
-                users: [SiloUser(id: "migrated", createdAt: Date(), signIns: [], pendingLegacyServerIDs: [F.friend]),
-                        SiloUser(id: "other", createdAt: Date(), signIns: [existing])],
-                migratedUserID: "migrated"))
+            try f.signIns.signInStore.saveIndex(SiloAccountIndex(
+                accounts: [.pendingLegacy(serverID: F.friend), .signIn(existing)], migrated: true))
             await f.store.setServerUrl(F.friendURL)
-            await f.store.select(serverID: F.friend, credential: .legacy(serverID: F.friend), userID: "migrated")
+            await f.store.select(serverID: F.friend, credential: .legacy(serverID: F.friend))
             let capturedValue = await f.store.captureOrdinaryRequestAuth()
             let captured = try XCTUnwrap(capturedValue)
 
@@ -486,7 +466,8 @@ final class SavedSignInMigrationTests: XCTestCase {
         let outcome = try await f.store.bindVerifiedAccount(.stub(id: "34"), expected: captured)
 
         XCTAssertEqual(outcome, .unchanged)
-        XCTAssertEqual(try f.index()?.users.first?.pendingLegacyServerIDs, [F.friend, rawServer])
+        XCTAssertEqual(try f.index()?.accounts, [.signIn(.make(F.home, "12")), .pendingLegacy(serverID: F.friend),
+                                                 .pendingLegacy(serverID: rawServer)])
         let selection = await f.store.currentSelection()
         let access = await f.store.getAccessToken()
         XCTAssertEqual(selection, .legacy(serverID: F.friend))

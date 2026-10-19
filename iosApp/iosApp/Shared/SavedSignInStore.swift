@@ -13,7 +13,7 @@ enum SavedSignInStoreError: Error, Equatable {
     case keyMismatch
 }
 
-/// Reads and writes the user index and saved sign-ins in the
+/// Reads and writes the accounts index and saved sign-ins in the
 /// user-independent keychain. Reads are strict: a keychain error throws and
 /// is never reported as an absent item. Closure-based like
 /// `AccountSessionPersistence`, so tests can use memory.
@@ -45,33 +45,42 @@ struct SavedSignInStore: Sendable {
 
     /// Nil means the index was never written, so migration hasn't run. An
     /// index that can't be decoded falls back to the backup copy; without
-    /// one, it throws. A keychain read error always throws.
-    func loadIndex() throws -> SiloUserIndex? {
+    /// one, it throws. A keychain read error always throws. An index in the
+    /// first multi-account format is converted; the next save writes it in
+    /// the current one.
+    func loadIndex() throws -> SiloAccountIndex? {
         guard let raw = try readItem(SharedStorage.usersIndexAccount) else { return nil }
         do {
-            return try Self.decode(SiloUserIndex.self, from: raw, currentVersion: SiloUserIndex.currentVersion)
+            return try Self.decodeIndex(raw)
         } catch SavedSignInStoreError.corrupt {
-            Self.logger.error("Users index can't be decoded; trying its backup copy.")
+            Self.logger.error("Accounts index can't be decoded; trying its backup copy.")
             guard let backup = try readItem(SharedStorage.usersIndexBackupAccount) else {
                 throw SavedSignInStoreError.corrupt
             }
-            return try Self.decode(SiloUserIndex.self, from: backup, currentVersion: SiloUserIndex.currentVersion)
+            return try Self.decodeIndex(backup)
         }
+    }
+
+    private static func decodeIndex(_ raw: String) throws -> SiloAccountIndex {
+        if let header = try? JSONDecoder().decode(VersionHeader.self, from: Data(raw.utf8)), header.version == 1 {
+            return SiloAccountIndex(converting: try decode(SiloAccountIndex.Version1.self, from: raw, currentVersion: 1))
+        }
+        return try decode(SiloAccountIndex.self, from: raw, currentVersion: SiloAccountIndex.currentVersion)
     }
 
     /// Writes the index and reads it back; this write is the commit point.
     /// The backup copy is then rewritten to match. If that write fails, the
     /// backup is removed rather than left older than the index.
-    func saveIndex(_ index: SiloUserIndex) throws {
-        guard index.version == SiloUserIndex.currentVersion else {
+    func saveIndex(_ index: SiloAccountIndex) throws {
+        guard index.version == SiloAccountIndex.currentVersion else {
             throw SavedSignInStoreError.unsupportedVersion(index.version)
         }
         let raw = try Self.encode(index)
         try writeVerified(raw, to: SharedStorage.usersIndexAccount)
         if !writeItem(raw, SharedStorage.usersIndexBackupAccount) {
-            Self.logger.error("Users index backup write failed; removing the stale backup.")
+            Self.logger.error("Accounts index backup write failed; removing the stale backup.")
             if !removeItem(SharedStorage.usersIndexBackupAccount) {
-                Self.logger.error("Stale users index backup could not be removed.")
+                Self.logger.error("Stale accounts index backup could not be removed.")
             }
         }
     }

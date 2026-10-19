@@ -437,18 +437,18 @@ final class TVSignInTests: XCTestCase {
         guard case .failed = phase else { return XCTFail("a lost denial is not a decline: \(phase)") }
     }
 
-    /// "Not you?" on the approval card is Switch User on every server, and
-    /// never promises a sign-out (coordinator decision 2).
+    /// "Not you?" on the approval card is Switch Account on every server,
+    /// and never promises a sign-out (coordinator decision 2).
     @MainActor
-    func testNotYouIsSwitchUserOnEveryServer() async {
+    func testNotYouIsSwitchAccountOnEveryServer() async {
         let api = FakeTVApprovalAPI()
         api.lookups = [DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: "pending")]
         let model = TVApprovalModel(server: Self.home, code: "48217730", api: api)
         await model.lookUp()
         guard case .review = model.phase else { return XCTFail("the card shows the review: \(model.phase)") }
         #if os(iOS)
-        XCTAssertEqual(TVApprovalCard.switchUserLink, "Not you? Switch User")
-        XCTAssertFalse(TVApprovalCard.switchUserLink.lowercased().contains("sign out"))
+        XCTAssertEqual(TVApprovalCard.switchAccountLink, "Not you? Switch Account")
+        XCTAssertFalse(TVApprovalCard.switchAccountLink.lowercased().contains("sign out"))
         #endif
     }
 

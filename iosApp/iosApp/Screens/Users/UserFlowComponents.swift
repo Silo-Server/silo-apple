@@ -1,12 +1,12 @@
 #if !os(tvOS)
 import SwiftUI
 
-// The pieces Choose a User, Choose a Server, "Sign in to…", and Manage Users
+// The pieces Choose an Account, "Sign in to…", and Manage Accounts
 // share on iPhone, iPad, and Mac.
 
 // MARK: - Page
 
-/// The page Choose a User, Choose a Server, and "Sign in to…" share: Who's
+/// The page Choose an Account and "Sign in to…" share: Who's
 /// Watching's look (brand light under an ambient scrim, a centered headline,
 /// utilities at the bottom) in a column that widens on iPad and Mac.
 ///
@@ -17,7 +17,7 @@ import SwiftUI
 struct UserFlowPage<Content: View, Footer: View>: View {
     var router: AppRouter
     var onCancel: (() -> Void)?
-    /// The column in a wide window: room for two user cards side by side,
+    /// The column in a wide window: room for two account cards side by side,
     /// or a narrower list of servers.
     var wideColumnWidth: CGFloat = 560
     @ViewBuilder var content: (_ isWide: Bool) -> Content
@@ -105,8 +105,8 @@ struct UserFlowCancelButton: View {
     }
 }
 
-/// A small utility under the cards (Manage Users…), styled like Who's
-/// Watching's Change server and Sign out.
+/// A small utility under the cards (Manage Accounts…), styled like Who's
+/// Watching's Switch Account and Sign out.
 struct UserFlowUtilityButton: View {
     let title: String
     let systemImage: String
@@ -120,7 +120,7 @@ struct UserFlowUtilityButton: View {
     }
 }
 
-/// The quiet line under a list ("Touch and hold a user…").
+/// The quiet line under a list ("Touch and hold an account…").
 struct UserFlowHint: View {
     let text: String
 
@@ -138,7 +138,7 @@ struct UserFlowHint: View {
 
 private let userFlowCardCorner: CGFloat = 18
 
-/// A card that is one button: a user, or an "Add …" action.
+/// A card that is one button: an account, or an "Add …" action.
 struct UserFlowCardButtonStyle: ButtonStyle {
     /// The "Add …" cards: a dashed outline instead of a fill.
     var isAddition = false
@@ -176,14 +176,12 @@ struct UserFlowCardButtonStyle: ButtonStyle {
     }
 }
 
-/// One user on Choose a User (spec §5.2): stacked avatars of the profiles on
-/// the user's last server, the name, the server ("Home Silo" or "2
-/// servers"), Last used, and Sign in again when that sign-in expired. At
-/// accessibility text sizes the avatars sit above the text.
-struct UserCardLabel: View {
-    let card: ChooseUserViewModel.Card
-    /// The last server's address, for avatars stored as paths on it.
-    let serverAddress: String?
+/// One account on Choose an Account (spec §5.2): stacked avatars of its
+/// profiles, the username, the email when known, the server, Last used, and
+/// Sign in again when the sign-in expired. At accessibility text sizes the
+/// avatars sit above the text.
+struct AccountCardLabel: View {
+    let card: ChooseAccountViewModel.Card
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -195,24 +193,28 @@ struct UserCardLabel: View {
         layout {
             StackedProfileAvatars(
                 profiles: card.avatars,
-                fallbackID: card.id,
+                fallbackID: card.id.storageKey,
                 fallbackName: card.name,
-                serverAddress: serverAddress
+                serverAddress: card.serverAddress
             )
             VStack(alignment: .leading, spacing: 3) {
                 Text(card.name)
                     .font(.headline)
                     .foregroundStyle(Color.siloOnSurface)
-                Text(card.serverLabel)
-                    .font(.subheadline)
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.62))
+                ForEach(card.detailLines, id: \.self) { line in
+                    Text(line)
+                        .font(.subheadline)
+                        .foregroundStyle(Color.siloOnSurface.opacity(0.62))
+                        .lineLimit(stacked ? nil : 1)
+                        .truncationMode(.middle)
+                }
                 if card.needsSignInAgain || card.isLastUsed {
                     HStack(spacing: 8) {
                         if card.needsSignInAgain {
-                            UserFlowBadge(text: ChooseUserViewModel.signInAgainLabel, warning: true)
+                            UserFlowBadge(text: ChooseAccountViewModel.signInAgainLabel, warning: true)
                         }
                         if card.isLastUsed {
-                            Text(ChooseUserViewModel.lastUsedLabel)
+                            Text(ChooseAccountViewModel.lastUsedLabel)
                                 .font(.caption)
                                 .foregroundStyle(Color.siloOnSurface.opacity(0.45))
                         }
@@ -227,7 +229,7 @@ struct UserCardLabel: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(card.accessibilityName)
+        .accessibilityLabel(card.name)
         .accessibilityValue(card.accessibilityValue)
     }
 }
@@ -321,89 +323,17 @@ struct UserFlowRowDivider: View {
     }
 }
 
-/// One server in a user (spec §5.3): its mark and name, the server username
-/// when it says something the user's name doesn't, and Active or Sign in
-/// again. At accessibility text sizes the status sits under the name.
-struct UserServerRowLabel: View {
-    let name: String
-    let address: String
-    let username: String?
-    let status: ChooseServerViewModel.Status
-
-    @ScaledMetric(relativeTo: .body) private var markSize: CGFloat = 40
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    var body: some View {
-        let stacked = dynamicTypeSize.isAccessibilitySize
-        HStack(alignment: stacked ? .top : .center, spacing: 12) {
-            MarqueeServerMark(
-                name: name,
-                imageURL: ServerBrandingCache.branding(for: address)?.markURL,
-                size: min(markSize, 56)
-            )
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(Color.siloOnSurface)
-                Text(detail)
-                    .font(.footnote)
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.45))
-                    .lineLimit(stacked ? nil : 2)
-                    .truncationMode(.middle)
-                if stacked {
-                    statusView
-                        .padding(.top, 4)
-                }
-            }
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if !stacked {
-                statusView
-            }
-            UserFlowChevron()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel([name, username].compactMap { $0 }.joined(separator: ", "))
-        .accessibilityValue(status.label ?? "")
-    }
-
-    @ViewBuilder
-    private var statusView: some View {
-        switch status {
-        case .signInAgain:
-            UserFlowBadge(text: ChooseServerViewModel.Status.signInAgain.label ?? "", warning: true)
-        case .active:
-            Text(ChooseServerViewModel.Status.active.label ?? "")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(Color.siloOnSurface.opacity(0.72))
-        case .none:
-            EmptyView()
-        }
-    }
-
-    /// "sam2 · friend.example", or the host alone when the username isn't
-    /// shown.
-    private var detail: String {
-        let host = ServerBranding.hostLabel(address)
-        guard let username else { return host }
-        return username + SiloUserNaming.separator + host
-    }
-}
-
 // MARK: - Avatars
 
 /// Up to four profile avatars, overlapping, the first on top (spec §5.2).
-/// Before any profiles are cached for the user, one avatar with the user's
+/// Before any profiles are cached for the account, one avatar with its
 /// initial stands in.
 struct StackedProfileAvatars: View {
     let profiles: [SavedSignInProfile]
     let fallbackID: String
     let fallbackName: String
     let serverAddress: String?
-    var maxCount = ChooseUserViewModel.maxAvatars
+    var maxCount = ChooseAccountViewModel.maxAvatars
 
     @ScaledMetric(relativeTo: .body) private var scaledSize: CGFloat = 40
 
@@ -417,7 +347,7 @@ struct StackedProfileAvatars: View {
                     .background(Self.separator)
             }
             ForEach(Array(shown.enumerated()), id: \.element.id) { index, profile in
-                // The user's last server, which needn't be the active one.
+                // The account's server, which needn't be the active one.
                 ProfileAvatar(profile: profile, serverURL: serverAddress, size: size,
                               initialScale: Self.initialScale, showsFallbackUntilLoaded: true)
                     .background(Self.separator)

@@ -489,16 +489,16 @@ final class AccountScopedLocalDataTests: XCTestCase {
     /// the same server, also with a `default` profile, comes next.
     private func signedInAsAlex() async throws -> F {
         let f = try F.make(self)
-        try f.startUserModel()
+        try f.startAccountModel()
         await f.activate(F.home, url: F.homeURL)
-        try await f.install(Self.alex, access: "alex-access", refresh: "alex-refresh", placement: .newUser)
+        try await f.install(Self.alex, access: "alex-access", refresh: "alex-refresh")
         await f.store.setProfileId("default")
         return f
     }
 
     private func switchToSam(_ f: F) async throws {
-        await f.store.select(serverID: F.home, credential: .none, userID: nil)
-        try await f.install(Self.sam, access: "sam-access", refresh: "sam-refresh", placement: .newUser)
+        await f.store.select(serverID: F.home, credential: .none)
+        try await f.install(Self.sam, access: "sam-access", refresh: "sam-refresh")
         await f.store.setProfileId("default")
     }
 

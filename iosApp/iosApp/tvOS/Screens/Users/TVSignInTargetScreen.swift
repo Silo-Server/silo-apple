@@ -1,9 +1,8 @@
 #if os(tvOS)
 import SwiftUI
 
-/// "Sign in to…" on Apple TV (spec §5.4): the server step of first run, Add
-/// User, and Add Server. Saved servers, then Add a New Server; Add Server
-/// leaves out the servers the user already has.
+/// "Sign in to…" on Apple TV (spec §5.4): the server step of first run and
+/// Add Account. Saved servers, then Add a New Server.
 struct TVSignInTargetScreen: View {
     var router: AppRouter
     let context: SignInContext
@@ -11,7 +10,7 @@ struct TVSignInTargetScreen: View {
     /// to where the sign-in started instead.
     var isRoot = false
 
-    private var users: SiloUserCoordinator { router.users }
+    private var accounts: SiloAccountCoordinator { router.accounts }
     @State private var registry = ServerRegistry.shared
     @State private var isStarting = false
 
@@ -19,8 +18,7 @@ struct TVSignInTargetScreen: View {
 
     var body: some View {
         TVSignInTargetContent(
-            model: SignInTargetViewModel(context: context, servers: registry.sortedEntries, snapshot: users.snapshot),
-            userName: context.userID.flatMap { users.directory.user($0)?.name },
+            model: SignInTargetViewModel(context: context, servers: registry.sortedEntries),
             canCancel: canCancel,
             actions: TVSignInTargetContent.Actions(
                 pick: pick,
@@ -36,7 +34,7 @@ struct TVSignInTargetScreen: View {
             MarqueeScene.shared.focus = .account
             MarqueeScene.shared.personalTint = nil
             router.signInContext = context
-            await users.reloadDirectory()
+            await accounts.reloadDirectory()
         }
     }
 
@@ -44,13 +42,13 @@ struct TVSignInTargetScreen: View {
         guard !isStarting else { return }
         isStarting = true
         Task {
-            await users.beginSignIn(serverID: serverID, context: context, router: router)
+            await accounts.beginSignIn(serverID: serverID, context: context, router: router)
             isStarting = false
         }
     }
 
     private func cancel() {
-        Task { await users.cancelSignIn(router: router) }
+        Task { await accounts.cancelSignIn(router: router) }
     }
 }
 
@@ -74,8 +72,6 @@ struct TVSignInTargetContent: View {
     }
 
     let model: SignInTargetViewModel
-    /// The user Add Server adds to.
-    var userName: String?
     var canCancel = false
     let actions: Actions
 
@@ -115,19 +111,15 @@ struct TVSignInTargetContent: View {
         switch model.context {
         case .firstRun, .signInAgain:
             return nil
-        case .addUser:
-            return (ChooseUserViewModel.addUserTitle, "person.badge.plus")
-        case .addServer:
-            return (userName.map { "Add a server for \($0)" } ?? ChooseServerViewModel.addServerTitle, "server.rack")
+        case .addAccount:
+            return (ChooseAccountViewModel.addAccountTitle, "person.badge.plus")
         }
     }
 
     private var lead: String {
         switch model.context {
-        case .addUser:
-            return "Choose the server the new user signs in to. They sign in with their own account."
-        case .addServer:
-            return "Choose a server to add to \(userName ?? "this user")."
+        case .addAccount:
+            return "Choose the server the account signs in to, or add a new one."
         case .firstRun, .signInAgain:
             return "Choose a server saved on this Apple TV, or add a new one."
         }

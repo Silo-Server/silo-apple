@@ -1,8 +1,8 @@
 import Foundation
 
 /// A finished sign-in that nothing has saved yet (plan §2.9): every sign-in
-/// path produces one, and `SiloUserCoordinator.completeSignIn` decides where
-/// it goes, or asks first. It holds secrets and is never logged.
+/// path produces one, and `SiloAccountCoordinator.completeSignIn` saves it.
+/// It holds secrets and is never logged.
 struct PendingSignIn: Equatable, Sendable {
     let serverID: String
     /// The normalized server URL the tokens were issued at.
@@ -41,17 +41,6 @@ struct PendingSignIn: Equatable, Sendable {
     /// The session, for ending it when nobody keeps the sign-in.
     var revocable: RevocableCredential {
         RevocableCredential(serverURL: origin, accessToken: accessToken, refreshToken: refreshToken)
-    }
-}
-
-extension SignInPlacement {
-    /// The placement policy's answer, case for case.
-    init(_ placement: SignInPlacementPolicy.Placement) {
-        switch placement {
-        case .refresh(let key): self = .refresh(key)
-        case .join(let userID): self = .join(userID: userID)
-        case .newUser: self = .newUser
-        }
     }
 }
 
@@ -211,10 +200,10 @@ final class AuthService: @unchecked Sendable {
     }
 
     /// A server's own session is read before sign-in migration, and after it
-    /// only while the server is a pending legacy server.
+    /// only while the server holds a pending legacy account.
     private func legacySessionCounts(for serverID: String) -> Bool {
         guard let index = try? tokenStore.savedSignIns.loadIndex() else { return true }
-        return index.users.contains { $0.pendingLegacyServerIDs?.contains(serverID) == true }
+        return index.contains(.pendingLegacy(serverID: serverID))
     }
 
     var hasProfile: Bool { profileId != nil }
@@ -226,7 +215,7 @@ final class AuthService: @unchecked Sendable {
     /// return the setup status so the caller can decide between initial
     /// setup and login. The candidate becomes active with no credential
     /// selected: every server added continues to sign-in
-    /// (`SiloUserCoordinator.beginSignIn`).
+    /// (`SiloAccountCoordinator.beginSignIn`).
     ///
     /// Candidate probes use their explicit URL and no active credentials.
     /// Global registry/default/token routing changes only after setup status
@@ -275,7 +264,7 @@ final class AuthService: @unchecked Sendable {
             throw ServerRegistryError.persistenceFailed
         }
         if serverRegistry.activeServerId != saved.id {
-            guard await serverRegistry.switchTo(serverId: saved.id, credential: .none, userID: nil) else {
+            guard await serverRegistry.switchTo(serverId: saved.id, credential: .none) else {
                 throw ServerRegistryError.persistenceFailed
             }
         }
@@ -363,7 +352,7 @@ final class AuthService: @unchecked Sendable {
 
     /// Password sign-in through `POST /api/v2/auth/login`. The token pair
     /// names the account it authenticates. Nothing is saved: the caller
-    /// places the result (`SiloUserCoordinator.completeSignIn`). A v1-only
+    /// places the result (`SiloAccountCoordinator.completeSignIn`). A v1-only
     /// server is refused before the request leaves the device
     /// (`APIv2Error.serverUpdateRequired`).
     func login(username: String, password: String) async throws -> PendingSignIn {
@@ -398,12 +387,11 @@ final class AuthService: @unchecked Sendable {
         return PendingSignIn(tokens: tokens, expected: expectedAccount)
     }
 
-    /// Saves a sign-in outside any user flow, as a first sign-in would be
-    /// placed: the same account refreshes its saved sign-in, a new one
-    /// founds a user, and before migration the server's own session is
-    /// replaced. Only tests use this. The app's sign-in screens go through
-    /// `SiloUserCoordinator.completeSignIn`; debug auto sign-in uses
-    /// `commitOutsideUserFlow`.
+    /// Saves a sign-in outside the account screens: the same account
+    /// refreshes its saved sign-in, any other is added, and before migration
+    /// the server's own session is replaced. Only tests use this. The app's
+    /// sign-in screens go through `SiloAccountCoordinator.completeSignIn`;
+    /// debug auto sign-in uses `commitOutsideUserFlow`.
     ///
     /// `accountID` is the account the server said the tokens authenticate
     /// (v2 `TokenPair.user.id`).
@@ -423,39 +411,34 @@ final class AuthService: @unchecked Sendable {
 
     /// `installSession` for a sign-in already in hand.
     func commitOutsideUserFlow(_ pending: PendingSignIn) async throws {
-        let directory: SiloUserDirectorySnapshot
         do {
-            directory = try await tokenStore.directory()
+            _ = try await tokenStore.directory()
         } catch SavedSignInAccessError.notMigrated {
             try await commitLegacySignIn(pending)
             return
         } catch {
             throw AccountSessionPersistenceError.unavailable
         }
-        switch SignInPlacementPolicy.decide(context: .firstRun, serverID: pending.serverID,
-                                            accountID: pending.account.id, username: pending.account.username,
-                                            directory: directory) {
-        case .place(let placement)?:
-            _ = try await commitSignIn(pending, placement: SignInPlacement(placement))
-        case .switchToExisting(let key, _)?:
-            _ = try await commitSignIn(pending, placement: .refresh(key))
-        case .ask?, nil:
+        do {
+            let result = try await commitSignIn(pending)
+            launchPreferences.link(.signIn(result.key))
+        } catch {
             discardSignIn(pending)
-            throw AccountSessionPersistenceError.invalidIdentity
+            throw error
         }
     }
 
-    /// Saves `pending` where `placement` says (plan §2.5): the identity
-    /// captured before the request must still be active, the sign-in becomes
-    /// the selected credential, and this Apple TV user's remembered profile
-    /// and pending Switch Profile for it go, because the session is new. A
-    /// refreshed sign-in's previous session is revoked afterwards.
+    /// Saves `pending` (plan §2.5), as a new account or a refresh of the
+    /// saved one: the identity captured before the request must still be
+    /// active, the sign-in becomes the selected credential, and this Apple
+    /// TV user's remembered profile and pending Switch Profile for it go,
+    /// because the session is new. A refreshed sign-in's previous session is
+    /// revoked afterwards.
     ///
     /// Pass `lease` when the caller already holds the identity transition
     /// (phone pairing); otherwise this takes it and cancels requests first.
     func commitSignIn(
         _ pending: PendingSignIn,
-        placement: SignInPlacement,
         holding lease: HTTPIdentityTransitionLease? = nil
     ) async throws -> SignInInstallResult {
         let result = try await withSignInTransition(holding: lease) { [tokenStore] in
@@ -464,7 +447,6 @@ final class AuthService: @unchecked Sendable {
                 refreshToken: pending.refreshToken,
                 account: pending.account,
                 origin: pending.origin,
-                placement: placement,
                 expected: pending.expected
             )
         }
@@ -497,8 +479,8 @@ final class AuthService: @unchecked Sendable {
         launchPreferences.forgetLegacyProfile(forServer: pending.serverID)
     }
 
-    /// A sign-in nobody kept (a prompt answered Cancel): end its session on
-    /// the server.
+    /// A sign-in nobody kept (it finished after its screen was left, or
+    /// couldn't be saved): end its session on the server.
     func discardSignIn(_ pending: PendingSignIn) {
         revoke([pending.revocable])
     }
@@ -780,7 +762,7 @@ final class AuthService: @unchecked Sendable {
     }
 
     /// Cancel on a sign-in started with a profile open
-    /// (`SiloUserCoordinator.cancelSignIn`): opens that profile again on the
+    /// (`SiloAccountCoordinator.cancelSignIn`): opens that profile again on the
     /// credential selected again, with the proof still stored for it, as
     /// nobody left it. Profile Selection asking again after time away wins.
     /// Returns whether the profile is open.
@@ -1195,19 +1177,17 @@ final class AuthService: @unchecked Sendable {
 
     /// What a sign-out or removal acts on (spec §5.6).
     enum SignInRemovalTarget: Equatable, Sendable {
-        /// The selected credential: its saved sign-in, its pending legacy
-        /// server, or before migration the server's own session.
+        /// Sign out of the selected credential: its account, or before
+        /// migration the server's own session.
         case current
-        /// One saved sign-in, current or not (Sign Out of {server}).
-        case signIn(SignInKey)
-        /// Every sign-in in a user, which removes the user (Remove from This
-        /// Apple TV).
-        case user(String)
+        /// Sign out of one account, current or not. Its card stays.
+        case signOut(SiloAccountRef)
+        /// Remove one account from the device.
+        case remove(SiloAccountRef)
     }
 
-    /// Sign the current user out of the active server: the selected saved
-    /// sign-in is removed (and its user, when it was the last one), or
-    /// before migration the server's own session.
+    /// Sign out of the current account, whose card stays with Sign in
+    /// again, or before migration of the server's own session.
     func signOutWithOutcome() async -> SignOutOutcome {
         await removeSignIns(.current)
     }
@@ -1236,11 +1216,10 @@ final class AuthService: @unchecked Sendable {
         } else if await tokenStore.hasTemporaryScope() {
             return .refused
         }
-        // Each server's push registration follows the current user's
-        // sign-in there (plan §2.13), so removing one of those turns its
-        // server's pushes off too, active or not. Another user's sign-in
-        // isn't what the server pushes to here.
-        for removed in await currentUsersServers(in: target) where !pushServers.contains(removed) {
+        // Each saved server's push registration follows the account
+        // background work uses there (plan §2.13), so signing out of that
+        // account turns its server's pushes off too, active or not.
+        for removed in await backgroundPushServers(in: target) where !pushServers.contains(removed) {
             pushServers.append(removed)
         }
         // Only a device that can still authenticate can tell the server to
@@ -1274,11 +1253,10 @@ final class AuthService: @unchecked Sendable {
             await restorePushes()
             return .refused
         }
-        let directory = try? await tokenStore.directory()
-
         var removedKeys: [SignInKey] = []
         var removedLegacyServers: [String] = []
-        let removals: [SignInRemoval]
+        var removedAccount: SiloAccountRef?
+        let removal: SignInRemoval
         switch target {
         case .current:
             switch selection {
@@ -1286,16 +1264,20 @@ final class AuthService: @unchecked Sendable {
             case .legacy(let legacyServerID): removedLegacyServers = [legacyServerID]
             case .none: break
             }
-            removals = [await tokenStore.removeCurrentCredential()]
-        case .signIn(let key):
-            removedKeys = [key]
-            removals = [await tokenStore.removeSignIn(key)]
-        case .user(let userID):
-            let user = directory?.user(withID: userID)
-            removedKeys = user?.signIns ?? []
-            removedLegacyServers = user?.pendingLegacyServerIDs ?? []
-            removals = await tokenStore.removeUser(userID)
+            removal = await tokenStore.signOutCurrentCredential()
+        case .signOut(let account), .remove(let account):
+            switch account {
+            case .signIn(let key): removedKeys = [key]
+            case .pendingLegacy(let legacyServerID): removedLegacyServers = [legacyServerID]
+            }
+            if case .remove = target {
+                removedAccount = account
+                removal = await tokenStore.removeAccount(account)
+            } else {
+                removal = await tokenStore.signOut(account)
+            }
         }
+        let removals = [removal]
 
         for key in removedKeys {
             launchPreferences.forgetSignIn(
@@ -1306,14 +1288,11 @@ final class AuthService: @unchecked Sendable {
         for legacyServerID in removedLegacyServers {
             launchPreferences.forgetLegacyProfile(forServer: legacyServerID)
         }
-        for userID in Set(removals.compactMap(\.removedUserID)) {
-            launchPreferences.forgetUser(userID)
-        }
-        if case .user(let userID) = target {
-            launchPreferences.forgetUser(userID)
+        if let removedAccount {
+            launchPreferences.forgetAccount(removedAccount)
         }
 
-        // Reports and consent are server-wide; another user still signed in
+        // Reports and consent are server-wide; another account still saved
         // there keeps theirs.
         var diagnosticsRemoved = true
         for affectedServerID in Set(removedKeys.map(\.serverID) + removedLegacyServers) {
@@ -1330,34 +1309,26 @@ final class AuthService: @unchecked Sendable {
         return diagnosticsRemoved ? .completed : .diagnosticsCleanupFailed
     }
 
-    /// The servers where `target` removes a sign-in, or pending legacy
-    /// server, of the user whose credential is current (`TokenStore`'s
-    /// current user, which a chooser leaves set).
-    private func currentUsersServers(in target: SignInRemovalTarget) async -> [String] {
-        guard let currentUserID = await tokenStore.currentUserID(),
-              let directory = try? await tokenStore.directory() else { return [] }
+    /// The servers whose push registration `target` signs out: a
+    /// non-selected account's server when it is the account background work
+    /// uses there (`TokenStore.backgroundAccount(forServer:)`).
+    private func backgroundPushServers(in target: SignInRemovalTarget) async -> [String] {
         switch target {
         case .current:
             return []
-        case .signIn(let key):
-            return directory.user(owning: key)?.id == currentUserID ? [key.serverID] : []
-        case .user(let userID):
-            guard userID == currentUserID, let user = directory.user(withID: userID) else { return [] }
-            return SignInTargetList.serverIDs(in: user)
+        case .signOut(let account), .remove(let account):
+            return await tokenStore.backgroundAccount(forServer: account.serverID) == account
+                ? [account.serverID] : []
         }
     }
 
     /// Whether `target` includes the selected credential right now.
     private func includesSelection(_ target: SignInRemovalTarget) async -> Bool {
-        let selection = await tokenStore.currentSelection()
         switch target {
         case .current:
             return true
-        case .signIn(let key):
-            return selection == .signIn(key)
-        case .user(let userID):
-            guard selection != .none else { return false }
-            return await tokenStore.currentUserID() == userID
+        case .signOut(let account), .remove(let account):
+            return await tokenStore.currentAccount() == account
         }
     }
 

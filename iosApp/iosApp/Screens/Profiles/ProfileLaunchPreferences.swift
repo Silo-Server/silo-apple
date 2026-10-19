@@ -125,7 +125,7 @@ final class ProfileLaunchPreferences {
         }
     }
 
-    // MARK: - Silo users (spec §6.1)
+    // MARK: - Silo accounts (spec §6.1)
 
     /// What Ask For says for this Apple TV user. Nil reads as Profile Only.
     var askFor: ProfileLaunchAskFor {
@@ -143,43 +143,24 @@ final class ProfileLaunchPreferences {
         }
     }
 
-    /// Picking a user links it to this Apple TV user.
+    /// Opening an account links it to this Apple TV user.
     @discardableResult
-    func link(userID: String) -> Bool {
+    func link(_ account: SiloAccountRef) -> Bool {
         mutate { state in
-            guard state.linkedUserID != userID else { return false }
-            state.linkedUserID = userID
+            guard state.linkedAccount != account.storageKey else { return false }
+            state.linkedAccount = account.storageKey
             return true
         }
     }
 
-    /// Picking a server makes it the user's last server.
+    /// A removed account: this Apple TV user's link to it goes. Its sign-in
+    /// state is forgotten separately (`forgetSignIn`).
     @discardableResult
-    func setLastServer(_ serverID: String, for userID: String) -> Bool {
+    func forgetAccount(_ account: SiloAccountRef) -> Bool {
         mutate { state in
-            guard state.lastServerByUserID?[userID] != serverID else { return false }
-            var servers = state.lastServerByUserID ?? [:]
-            servers[userID] = serverID
-            state.lastServerByUserID = servers
+            guard state.linkedAccount == account.storageKey else { return false }
+            state.linkedAccount = nil
             return true
-        }
-    }
-
-    /// A removed user: its link and last server go. Its sign-ins are
-    /// forgotten one by one (`forgetSignIn`).
-    @discardableResult
-    func forgetUser(_ userID: String) -> Bool {
-        mutate { state in
-            var changed = false
-            if state.linkedUserID == userID {
-                state.linkedUserID = nil
-                changed = true
-            }
-            if state.lastServerByUserID?.removeValue(forKey: userID) != nil {
-                if state.lastServerByUserID?.isEmpty == true { state.lastServerByUserID = nil }
-                changed = true
-            }
-            return changed
         }
     }
 
@@ -291,7 +272,7 @@ final class ProfileLaunchPreferences {
     }
 
     /// A server removed from the device: everything this Apple TV user kept
-    /// for it goes, including users' last-server entries that named it.
+    /// for it goes, including a link to an account on it.
     @discardableResult
     func forgetServer(_ serverID: String) -> Bool {
         mutate { state in
@@ -313,12 +294,9 @@ final class ProfileLaunchPreferences {
                     changed = true
                 }
             }
-            if let servers = state.lastServerByUserID {
-                let kept = servers.filter { $0.value != serverID }
-                if kept.count != servers.count {
-                    state.lastServerByUserID = kept.isEmpty ? nil : kept
-                    changed = true
-                }
+            if let linked = state.linkedAccountRef, linked.serverID == serverID {
+                state.linkedAccount = nil
+                changed = true
             }
             return changed
         }

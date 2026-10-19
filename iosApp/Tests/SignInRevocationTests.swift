@@ -58,9 +58,9 @@ final class SignInRevocationTests: XCTestCase {
     /// sign-in and every saved item stay exactly as they were.
     func testRefreshedTokensAreNeverStored() async throws {
         let f = try F.make(self)
-        try f.startUserModel()
+        try f.startAccountModel()
         await f.activate(F.home, url: F.homeURL)
-        try await f.install("13", access: "current-access", refresh: "current-refresh", placement: .newUser)
+        try await f.install("13", access: "current-access", refresh: "current-refresh")
         let items = f.signIns.values
         let sessions = f.sessions.values
         let stub = APIv2TestStub()
@@ -174,9 +174,9 @@ final class SignInRevocationTests: XCTestCase {
     /// token is spent) and reaches nothing else.
     func testRefreshedTokensAreKeptOnlyInTheQueueEntry() async throws {
         let f = try F.make(self)
-        try f.startUserModel()
+        try f.startAccountModel()
         await f.activate(F.home, url: F.homeURL)
-        try await f.install("13", access: "current-access", refresh: "current-refresh", placement: .newUser)
+        try await f.install("13", access: "current-access", refresh: "current-refresh")
         let items = f.signIns.values
         let sessions = f.sessions.values
         let stub = APIv2TestStub()
@@ -253,12 +253,13 @@ final class SignInRevocationTests: XCTestCase {
         XCTAssertThrowsError(try store.load(now: now))
     }
 
-    /// Sign-out removes the sign-in first and returns without waiting; the
-    /// logout that follows carries the removed session.
+    /// Sign-out ends the sign-in locally first and returns without waiting;
+    /// the logout that follows carries the session it ended. The account
+    /// stays, to sign in again.
     @MainActor
     func testSignOutRevokesAfterTheSignInIsGone() async throws {
         let f = try F.make(self)
-        try f.startUserModel()
+        try f.startAccountModel()
         f.defaults.set(true, forKey: ServerRegistry.migratedKey)
         let stub = APIv2TestStub()
         stub.reply(204, "")
@@ -270,7 +271,7 @@ final class SignInRevocationTests: XCTestCase {
                                                          lastUsedAt: Date())))
         let switched = await registry.switchTo(serverId: F.home, launchSelectionFrom: f.store)
         XCTAssertTrue(switched)
-        try await f.install("12", access: "alex-access", refresh: "alex-refresh", placement: .newUser)
+        try await f.install("12", access: "alex-access", refresh: "alex-refresh")
         let auth = AuthService(serverRegistry: registry, launchPreferences: preferences, httpClient: http,
                                tokenStore: f.store, sessionPersistence: f.sessions.sessions,
                                purgeDiagnostics: { _ in true }, unregisterPush: { _ in })
@@ -283,18 +284,19 @@ final class SignInRevocationTests: XCTestCase {
 
         XCTAssertEqual(outcome, .completed)
         await stub.waitUntilHeld()
-        XCTAssertNil(try f.signIn(.make(F.home, "12")), "removed before the server heard about it")
-        XCTAssertEqual(try f.index()?.users, [])
+        XCTAssertEqual(try f.signIn(.make(F.home, "12"))?.isSignedIn, false,
+                       "signed out before the server heard about it")
+        XCTAssertEqual(try f.index()?.accounts, [.signIn(.make(F.home, "12"))])
         XCTAssertFalse(auth.isLoggedIn)
         XCTAssertNil(auth.accountID)
         XCTAssertEqual(stub.requests.first?.header("Authorization"), "Bearer alex-access")
     }
 
-    /// Removing a server signs every user out of it and revokes each session.
+    /// Removing a server removes every account on it and revokes each session.
     @MainActor
-    func testRemovingAServerRevokesEveryUsersSession() async throws {
+    func testRemovingAServerRevokesEveryAccountsSession() async throws {
         let f = try F.make(self)
-        try f.startUserModel()
+        try f.startAccountModel()
         f.defaults.set(true, forKey: ServerRegistry.migratedKey)
         let stub = APIv2TestStub()
         stub.reply(204, "")
@@ -306,14 +308,14 @@ final class SignInRevocationTests: XCTestCase {
                                                          lastUsedAt: Date())))
         let switched = await registry.switchTo(serverId: F.home, launchSelectionFrom: f.store)
         XCTAssertTrue(switched)
-        try await f.install("12", access: "alex-access", refresh: "r", placement: .newUser)
-        await f.store.select(serverID: F.home, credential: .none, userID: nil)
-        try await f.install("13", access: "sam-access", refresh: "r", placement: .newUser)
+        try await f.install("12", access: "alex-access", refresh: "r")
+        await f.store.select(serverID: F.home, credential: .none)
+        try await f.install("13", access: "sam-access", refresh: "r")
 
         let removed = await registry.remove(serverId: F.home)
 
         XCTAssertTrue(removed)
-        XCTAssertEqual(try f.index()?.users, [])
+        XCTAssertEqual(try f.index()?.accounts, [])
         try await waitUntil { stub.requestedPaths.count == 2 }
         XCTAssertEqual(Set(stub.requests.compactMap { $0.header("Authorization") }),
                        ["Bearer alex-access", "Bearer sam-access"])
@@ -364,7 +366,7 @@ final class SignInRevocationTests: XCTestCase {
     @MainActor
     func testFailedServerRemovalRevokesNothingAndKeepsTheMirrorWithTheStore() async throws {
         let f = try F.make(self)
-        try f.startUserModel()
+        try f.startAccountModel()
         f.defaults.set(true, forKey: ServerRegistry.migratedKey)
         let stub = APIv2TestStub()
         stub.reply(204, "")
@@ -376,7 +378,7 @@ final class SignInRevocationTests: XCTestCase {
                                                          lastUsedAt: Date())))
         let switched = await registry.switchTo(serverId: F.home, launchSelectionFrom: f.store)
         XCTAssertTrue(switched)
-        try await f.install("12", access: "alex-access", refresh: "r", placement: .newUser)
+        try await f.install("12", access: "alex-access", refresh: "r")
         XCTAssertEqual(f.defaults.string(forKey: SharedStorage.activeAccountIdKey), "12")
         f.signIns.failingWrites = [SharedStorage.usersIndexAccount, SharedStorage.signInAccount(.make(F.home, "12"))]
 
@@ -397,7 +399,7 @@ final class SignInRevocationTests: XCTestCase {
     @MainActor
     func testFailedServerRemovalRestoresTheProfileOnlyWithItsSignIn() async throws {
         let f = try F.make(self)
-        try f.startUserModel()
+        try f.startAccountModel()
         f.defaults.set(true, forKey: ServerRegistry.migratedKey)
         let stub = APIv2TestStub()
         stub.reply(204, "")
@@ -409,7 +411,7 @@ final class SignInRevocationTests: XCTestCase {
                                                          lastUsedAt: Date())))
         let switched = await registry.switchTo(serverId: F.home, launchSelectionFrom: f.store)
         XCTAssertTrue(switched)
-        try await f.install("12", access: "alex-access", refresh: "r", placement: .newUser)
+        try await f.install("12", access: "alex-access", refresh: "r")
         await f.store.setProfileId("default")
 
         // The index can't be read: nothing is removed, and the profile stays.

@@ -44,7 +44,7 @@ struct TVServerSetupView: View {
     }
 
     private func cancelSignIn() {
-        Task { await router.users.cancelSignIn(router: router) }
+        Task { await router.accounts.cancelSignIn(router: router) }
     }
 
     /// True once a phone is on the line; the screen hands over to the pairing screens.
@@ -82,7 +82,7 @@ struct TVServerSetupView: View {
             // A phone's sign-in is placed in the running sign-in (first run,
             // Add User, Add Server), which can ask its questions here.
             coordinator.persist = { [router] pairing in
-                await router.users.completePairing(pairing, router: router)
+                await router.accounts.completePairing(pairing, router: router)
             }
         }
         .task { await advertise() }

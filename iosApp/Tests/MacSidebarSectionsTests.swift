@@ -142,7 +142,8 @@ final class MacSidebarSectionsTests: XCTestCase {
             library
         )
         XCTAssertNil(macSidebarHighlight(selected: library, pushedRoutes: [.settings]))
-        XCTAssertNil(macSidebarHighlight(selected: library, pushedRoutes: [.serverList]))
+        XCTAssertNil(macSidebarHighlight(selected: library, pushedRoutes: [.manageAccounts]))
+        XCTAssertNil(macSidebarHighlight(selected: library, pushedRoutes: [.chooseAccount()]))
         XCTAssertEqual(
             macSidebarHighlight(selected: library, pushedRoutes: [.requestsHub]),
             .app(.requests)

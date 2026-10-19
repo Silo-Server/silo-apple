@@ -31,7 +31,7 @@ enum TVSettingsOptions {
         }
 
     /// Ask For (spec §5.7): what Silo asks for first when it asks who's
-    /// watching on an Apple TV with two or more Silo users.
+    /// watching on an Apple TV with two or more Silo accounts.
     static let askFor: [TVSettingsOption] =
         ProfileLaunchAskFor.allCases.map {
             .init(id: $0.rawValue, label: $0.title, detail: $0.description)

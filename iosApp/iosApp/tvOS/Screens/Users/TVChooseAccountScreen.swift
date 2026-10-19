@@ -1,15 +1,16 @@
 #if os(tvOS)
 import SwiftUI
 
-/// Whether a user screen has its directory: still reading it, read, or
-/// unreadable (before sign-in migration, or the user index can't be read).
+/// Whether an account screen has its directory: still reading it, read, or
+/// unreadable (before sign-in migration, or the accounts index can't be
+/// read).
 enum TVUserListPhase: Equatable {
     case loading
     case ready
     case unavailable
 
     /// `hasLoaded` is false until the screen's first reload finishes.
-    init(directory: SiloUserDirectory, hasLoaded: Bool) {
+    init(directory: SiloAccountDirectory, hasLoaded: Bool) {
         if directory.isAvailable {
             self = .ready
         } else {
@@ -18,33 +19,30 @@ enum TVUserListPhase: Equatable {
     }
 }
 
-/// Choose a User on Apple TV (spec §5.2): a card per user and Add User. A
-/// card opens the user's only server, or Choose a Server when it has more;
-/// pressing and holding it offers Rename and Remove from This Apple TV.
-struct TVChooseUserScreen: View {
+/// Choose an Account on Apple TV (spec §5.2): a card per account and Add
+/// Account. A card opens the account, or its sign-in screen when it
+/// expired; pressing and holding it offers Sign Out and Remove from This
+/// Apple TV.
+struct TVChooseAccountScreen: View {
     var router: AppRouter
-    var focusUserID: String?
+    var focus: SiloAccountRef?
 
-    private var users: SiloUserCoordinator { router.users }
+    private var accounts: SiloAccountCoordinator { router.accounts }
     @State private var hasLoaded = false
     @State private var isOpening = false
 
     var body: some View {
-        let directory = users.directory
-        TVChooseUserContent(
-            model: ChooseUserViewModel(directory: directory, focusUserID: focusUserID),
-            serverURLs: Dictionary(
-                directory.users.map { ($0.id, $0.lastUsedServer?.address ?? "") },
-                uniquingKeysWith: { first, _ in first }
-            ),
+        let directory = accounts.directory
+        TVChooseAccountContent(
+            model: ChooseAccountViewModel(directory: directory, focus: focus),
             phase: TVUserListPhase(directory: directory, hasLoaded: hasLoaded),
             showsBrandLight: router.authState.showsMarqueeBackdrop,
-            isOverlayPresented: router.removalRequest != nil || router.renameRequest != nil,
-            actions: TVChooseUserContent.Actions(
+            isOverlayPresented: router.removalRequest != nil,
+            actions: TVChooseAccountContent.Actions(
                 open: open,
-                addUser: { Task { await users.startAddUser(router: router) } },
-                rename: { id in Task { await users.requestRename(id, router: router) } },
-                remove: { id in Task { await users.requestRemoval(.user(id), router: router) } },
+                addAccount: { Task { await accounts.startAddAccount(router: router) } },
+                signOut: { id in Task { await accounts.requestRemoval(.signOut(id), router: router) } },
+                remove: { id in Task { await accounts.requestRemoval(.remove(id), router: router) } },
                 retry: { Task { await reload() } }
             )
         )
@@ -57,49 +55,48 @@ struct TVChooseUserScreen: View {
     }
 
     private func reload() async {
-        await users.reloadDirectory()
+        await accounts.reloadDirectory()
         hasLoaded = true
     }
 
-    /// One press opens one user; a second press while it opens does nothing.
-    private func open(_ userID: String) {
+    /// One press opens one account; a second press while it opens does
+    /// nothing.
+    private func open(_ account: SiloAccountRef) {
         guard !isOpening else { return }
         isOpening = true
         Task {
-            await users.openUser(userID, router: router)
+            await accounts.openAccount(account, router: router)
             isOpening = false
         }
     }
 }
 
-/// What Choose a User draws, from its view model. Separate from the screen
-/// so it renders from fixed data.
+/// What Choose an Account draws, from its view model. Separate from the
+/// screen so it renders from fixed data.
 ///
-/// Focus: one native graph. The cards and Add User sit in one focus section;
-/// focus starts on the user this Apple TV user is linked to (or the one
-/// asked for). After Rename or Remove closes, focus returns to the card
-/// that opened it, or to the card that took its place.
-struct TVChooseUserContent: View {
+/// Focus: one native graph. The cards and Add Account sit in one focus
+/// section; focus starts on the account this Apple TV user is linked to (or
+/// the one asked for). After Sign Out or Remove closes, focus returns to the
+/// card that opened it, or to the card that took its place.
+struct TVChooseAccountContent: View {
     struct Actions {
-        var open: (String) -> Void
-        var addUser: () -> Void
-        var rename: (String) -> Void
-        var remove: (String) -> Void
+        var open: (SiloAccountRef) -> Void
+        var addAccount: () -> Void
+        var signOut: (SiloAccountRef) -> Void
+        var remove: (SiloAccountRef) -> Void
         var retry: () -> Void
     }
 
     enum Target: Hashable {
-        case user(String)
-        case addUser
+        case account(SiloAccountRef)
+        case addAccount
         case retry
     }
 
-    let model: ChooseUserViewModel
-    /// Each user's last-used server address, which resolves its avatars.
-    var serverURLs: [String: String] = [:]
+    let model: ChooseAccountViewModel
     var phase: TVUserListPhase = .ready
     var showsBrandLight = true
-    /// A confirmation, question, or rename is over the screen.
+    /// A confirmation is over the screen.
     var isOverlayPresented = false
     let actions: Actions
 
@@ -125,21 +122,22 @@ struct TVChooseUserContent: View {
             claimFocus(target)
         }
         .onChange(of: model.cards.map(\.id)) { before, after in
-            guard case .user(let id)? = returnTarget, !after.contains(id) else { return }
+            guard case .account(let id)? = returnTarget, !after.contains(id) else { return }
             returnTarget = nil
-            claimFocus(TVFocusNeighbor.replacement(for: id, before: before, after: after).map(Target.user) ?? .addUser)
+            claimFocus(TVFocusNeighbor.replacement(for: id, before: before, after: after).map(Target.account)
+                ?? .addAccount)
         }
     }
 
     private var entryTarget: Target {
         if phase == .unavailable { return .retry }
-        return model.focusUserID.map(Target.user) ?? .addUser
+        return model.focus.map(Target.account) ?? .addAccount
     }
 
     private func isShowing(_ target: Target) -> Bool {
         switch target {
-        case .user(let id): return model.cards.contains { $0.id == id }
-        case .addUser: return phase != .unavailable
+        case .account(let id): return model.cards.contains { $0.id == id }
+        case .addAccount: return phase != .unavailable
         case .retry: return phase == .unavailable
         }
     }
@@ -165,7 +163,7 @@ struct TVChooseUserContent: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
-                    TVChooserTitle(text: ChooseUserViewModel.title)
+                    TVChooserTitle(text: ChooseAccountViewModel.title)
                     statusLine
                         .padding(.top, 14)
                     grid
@@ -180,25 +178,25 @@ struct TVChooseUserContent: View {
         }
         .overlay(alignment: .bottomTrailing) {
             if model.showsRemoveHint, phase == .ready {
-                TVHoldHint(text: ChooseUserViewModel.removeHint)
+                TVHoldHint(text: ChooseAccountViewModel.removeHint)
                     .padding(.trailing, 90)
                     .padding(.bottom, 54)
             }
         }
     }
 
-    /// Under the title: loading, or why the grid holds only Add User.
+    /// Under the title: loading, or why the grid holds only Add Account.
     @ViewBuilder
     private var statusLine: some View {
         if phase == .loading && model.cards.isEmpty {
             HStack(spacing: 14) {
                 ProgressView()
-                Text("Loading users…")
+                Text("Loading accounts…")
             }
             .font(.system(size: MarqueeMetrics.leadFont))
             .foregroundStyle(Color.siloOnSurface.opacity(0.62))
         } else if phase == .ready && model.cards.isEmpty {
-            Text("No users on this Apple TV yet. Add one to sign in.")
+            Text("No accounts on this Apple TV yet. Add one to sign in.")
                 .font(.system(size: MarqueeMetrics.leadFont))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.62))
         } else {
@@ -215,42 +213,44 @@ struct TVChooseUserContent: View {
         )
         return LazyVGrid(columns: columns, spacing: TVUserCardMetrics.spacing) {
             ForEach(model.cards) { card in
-                userCard(card)
+                accountCard(card)
             }
-            addUserCard
+            addAccountCard
         }
         .focusSection()
     }
 
-    private func userCard(_ card: ChooseUserViewModel.Card) -> some View {
+    private func accountCard(_ card: ChooseAccountViewModel.Card) -> some View {
         Button {
             actions.open(card.id)
         } label: {
-            TVUserCardLabel(card: card, serverURL: serverURLs[card.id])
+            TVAccountCardLabel(card: card)
         }
         .buttonStyle(TVUserCardStyle())
-        .focused($focused, equals: .user(card.id))
+        .focused($focused, equals: .account(card.id))
         .contextMenu {
-            Button {
-                returnTarget = .user(card.id)
-                actions.rename(card.id)
-            } label: {
-                Label(UsersSettingsViewModel.renameTitle, systemImage: "pencil")
+            if !card.needsSignInAgain, card.id.signInKey != nil {
+                Button(role: .destructive) {
+                    returnTarget = .account(card.id)
+                    actions.signOut(card.id)
+                } label: {
+                    Label(SignOutConfirmationCopy.signOutTitle, systemImage: "rectangle.portrait.and.arrow.right")
+                }
             }
             Button(role: .destructive) {
-                returnTarget = .user(card.id)
+                returnTarget = .account(card.id)
                 actions.remove(card.id)
             } label: {
                 Label(SignOutConfirmationCopy.removeFromDeviceTitle(device: .appleTV), systemImage: "trash")
             }
         }
-        .accessibilityLabel(card.accessibilityName)
+        .accessibilityLabel(card.name)
         .accessibilityValue(card.accessibilityValue)
-        .accessibilityHint("Press and hold to rename or remove.")
+        .accessibilityHint("Press and hold to sign out or remove.")
     }
 
-    private var addUserCard: some View {
-        Button(action: actions.addUser) {
+    private var addAccountCard: some View {
+        Button(action: actions.addAccount) {
             VStack(spacing: 0) {
                 Image(systemName: "plus")
                     .font(.system(size: 40, weight: .light))
@@ -261,10 +261,10 @@ struct TVChooseUserContent: View {
                             .foregroundStyle(Color.white.opacity(0.4))
                     }
                     .padding(.top, 32)
-                Text(ChooseUserViewModel.addUserTitle)
+                Text(ChooseAccountViewModel.addAccountTitle)
                     .font(.system(size: 30, weight: .semibold))
                     .padding(.top, 26)
-                Text("Sign in with another account")
+                Text("Sign in to any Silo server")
                     .font(.system(size: 22))
                     .opacity(0.62)
                     .multilineTextAlignment(.center)
@@ -275,16 +275,16 @@ struct TVChooseUserContent: View {
             .foregroundStyle(Color.siloOnSurface)
         }
         .buttonStyle(TVUserCardStyle(isDashed: true))
-        .focused($focused, equals: .addUser)
-        .accessibilityLabel(ChooseUserViewModel.addUserTitle)
+        .focused($focused, equals: .addAccount)
+        .accessibilityLabel(ChooseAccountViewModel.addAccountTitle)
     }
 
     // MARK: - Unavailable
 
     private var unavailable: some View {
         VStack(spacing: 0) {
-            TVChooserTitle(text: ChooseUserViewModel.title)
-            MarqueeTVBody("Silo couldn't read the users saved on this Apple TV.")
+            TVChooserTitle(text: ChooseAccountViewModel.title)
+            MarqueeTVBody("Silo couldn't read the accounts saved on this Apple TV.")
                 .multilineTextAlignment(.center)
                 .padding(.top, 18)
             Button(action: actions.retry) {
@@ -300,25 +300,28 @@ struct TVChooseUserContent: View {
     }
 }
 
-/// One user card: stacked avatars, the name, its servers, and its badges.
-struct TVUserCardLabel: View {
-    let card: ChooseUserViewModel.Card
-    var serverURL: String?
+/// One account card: stacked avatars, the username, the email when known,
+/// the server, and its badges.
+struct TVAccountCardLabel: View {
+    let card: ChooseAccountViewModel.Card
 
     var body: some View {
         VStack(spacing: 0) {
-            TVUserAvatarStack(profiles: card.avatars, serverURL: serverURL, size: 100)
+            TVUserAvatarStack(profiles: card.avatars, serverURL: card.serverAddress, size: 100)
                 .padding(.top, 32)
             Text(card.name)
                 .font(.system(size: 30, weight: .semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .padding(.top, 26)
-            Text(card.serverLabel)
-                .font(.system(size: 22))
-                .opacity(0.62)
-                .lineLimit(1)
-                .padding(.top, 6)
+                .padding(.top, 22)
+            ForEach(card.detailLines, id: \.self) { line in
+                Text(line)
+                    .font(.system(size: 22))
+                    .opacity(0.62)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.top, 4)
+            }
             Spacer(minLength: 0)
             // Holds its height without badges so names line up across cards.
             HStack(spacing: 10) {

@@ -226,8 +226,8 @@ struct RestoredSessionValidator: Sendable {
 /// auth state. Cold launch can use `resolveLocal()` as an immediate fallback
 /// and apply validation only while the splash is still visible; server
 /// recovery's Try again uses `resolveCurrentValidated()` and awaits the same
-/// policy. Switches between users and servers go through
-/// `SiloUserCoordinator`.
+/// policy. Switches between accounts go through
+/// `SiloAccountCoordinator`.
 enum RestoredSessionAuthResolver {
     struct LocalResolution: Equatable {
         let state: AppRouter.AuthState
@@ -251,8 +251,8 @@ enum RestoredSessionAuthResolver {
     /// Runs the one-time sign-in migration first, before any credential is
     /// selected and before anything reads local data under account keys
     /// (migration publishes their legacy owners). Then the launch rules
-    /// (spec §6.2, §6.3) pick the user, server, and credential through
-    /// `SiloUserCoordinator`. Before migration, or while the user index
+    /// (spec §6.2, §6.3) pick the account and credential through
+    /// `SiloAccountCoordinator`. Before migration, or while the accounts index
     /// can't be read, the active server's own session is used, as before
     /// users existed.
     static func resolveLocal() async -> LocalResolution {
@@ -264,7 +264,7 @@ enum RestoredSessionAuthResolver {
             activeServerID: registry.activeServerId
         )
         let resolution: LocalResolution
-        if let launch = await SiloUserCoordinator.shared.resolveLaunch() {
+        if let launch = await SiloAccountCoordinator.shared.resolveLaunch() {
             resolution = launch
         } else {
             resolution = await resolveLegacy(auth: auth, registry: registry, tokenStore: tokenStore)
@@ -278,7 +278,7 @@ enum RestoredSessionAuthResolver {
         return resolution
     }
 
-    /// The active server's own session, as before users existed.
+    /// The active server's own session, as before accounts existed.
     private static func resolveLegacy(
         auth: AuthService,
         registry: ServerRegistry,
@@ -289,7 +289,7 @@ enum RestoredSessionAuthResolver {
               !activeServerID.isEmpty else {
             return LocalResolution(state: .needsServerSetup, restoredAccount: nil)
         }
-        await tokenStore.select(serverID: activeServerID, credential: .legacy(serverID: activeServerID), userID: nil)
+        await tokenStore.select(serverID: activeServerID, credential: .legacy(serverID: activeServerID))
         guard await tokenStore.hasUsableCredential() else {
             return LocalResolution(state: .needsLogin, restoredAccount: nil)
         }
@@ -322,11 +322,11 @@ enum RestoredSessionAuthResolver {
         }
     }
 
-    /// The current user's current server again (server recovery's Try
-    /// again): no Ask For and no other user, unlike a cold launch. Before
-    /// migration, or with no current user, the cold-launch path.
+    /// The current account again (server recovery's Try again): no Ask For
+    /// and no other account, unlike a cold launch. Before migration, or with
+    /// no current account, the cold-launch path.
     static func resolveCurrent() async -> LocalResolution {
-        if let current = await SiloUserCoordinator.shared.resolveCurrentServer() { return current }
+        if let current = await SiloAccountCoordinator.shared.resolveCurrentAccount() { return current }
         return await resolveLocal()
     }
 

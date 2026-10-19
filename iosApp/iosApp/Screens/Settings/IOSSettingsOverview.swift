@@ -81,13 +81,14 @@ struct IOSSettingsOverview: View {
         .siloToolbarColorSchemeDark()
         .onAppear(perform: navPrefs.refresh)
         .task { await accountSignIn.load() }
-        .task { await router.users.reloadDirectory() }
+        .task { await router.accounts.reloadDirectory() }
         .sheet(isPresented: $showsSignInTV) {
-            // "Not you?" on the approval card is Switch User: it signs nobody
-            // out, and the card comes back once a user is chosen or added.
-            SignInTVView(onSwitchUser: { link in
+            // "Not you?" on the approval card is Switch Account: it signs
+            // nobody out, and the card comes back once an account is chosen
+            // or added.
+            SignInTVView(onSwitchAccount: { link in
                 showsSignInTV = false
-                router.switchUser(forTVApproval: link)
+                router.switchAccount(forTVApproval: link)
             }, onClose: { showsSignInTV = false })
         }
     }
@@ -212,29 +213,18 @@ struct IOSSettingsOverview: View {
 
     private var connectionSection: some View {
         Section("Connection") {
-            if matchesUsers {
+            if matchesAccounts {
                 Button {
-                    router.navigate(to: .manageUsers)
+                    router.navigate(to: .manageAccounts)
                 } label: {
                     SettingsOverviewRow(
-                        title: UsersSettingsViewModel.title,
-                        subtitle: "Silo users on this \(router.users.device.noun) and their servers",
+                        title: AccountsSettingsViewModel.title,
+                        subtitle: "Silo accounts on this \(router.accounts.device.noun) and their servers",
                         systemImage: "person.2.fill",
-                        value: Self.usersValue(router.users.directory),
+                        value: Self.accountsValue(router.accounts.directory) ?? viewModel.serverDisplayName,
                         showsChevron: true
                     )
                 }
-            }
-            Button {
-                router.navigate(to: .serverList)
-            } label: {
-                SettingsOverviewRow(
-                    title: "Server",
-                    subtitle: "Manage this device's Silo connection",
-                    systemImage: "server.rack",
-                    value: viewModel.serverDisplayName,
-                    showsChevron: true
-                )
             }
             if matchesSignInTV {
                 Button {
@@ -251,20 +241,21 @@ struct IOSSettingsOverview: View {
         }
     }
 
-    /// The Users row (spec §5.7): once the device's sign-ins are kept as
-    /// Silo users.
-    private var matchesUsers: Bool {
-        let directory = router.users.directory
-        guard directory.isAvailable, !directory.users.isEmpty else { return false }
-        return matches(["users", "switch user", "add user", "rename"] + directory.users.map(\.name))
+    /// The Accounts row (spec §5.7), which also holds each account's server.
+    private var matchesAccounts: Bool {
+        let directory = router.accounts.directory
+        return matches(["accounts", "account", "server", "connection", "switch account", "add account",
+                        viewModel.serverDisplayName]
+            + directory.accounts.flatMap { [$0.name, $0.serverName] })
     }
 
-    /// The current user's name, or how many users there are.
-    static func usersValue(_ directory: SiloUserDirectory) -> String? {
-        switch directory.users.count {
+    /// The current account's name, or how many accounts there are.
+    static func accountsValue(_ directory: SiloAccountDirectory) -> String? {
+        if let current = directory.currentAccount { return current.name }
+        switch directory.accounts.count {
         case 0: return nil
-        case 1: return directory.users[0].name
-        default: return "\(directory.users.count) users"
+        case 1: return directory.accounts[0].name
+        default: return "\(directory.accounts.count) accounts"
         }
     }
 
@@ -347,7 +338,7 @@ struct IOSSettingsOverview: View {
         Section {
             // Asks first, with Sign Out & Remove Server (spec §5.6, plan G10).
             Button("Sign Out", role: .destructive) {
-                Task { await router.users.requestRemoval(.currentSignIn, router: router) }
+                Task { await router.accounts.requestRemoval(.currentAccount, router: router) }
             }
             .frame(maxWidth: .infinity)
             .foregroundStyle(Color.red)
@@ -388,7 +379,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesConnectionSection: Bool {
-        matches("server", "connection", viewModel.serverDisplayName) || matchesUsers || matchesSignInTV
+        matchesAccounts || matchesSignInTV
     }
 
     private var matchesAboutSection: Bool {

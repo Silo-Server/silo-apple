@@ -1,7 +1,7 @@
 import Foundation
 
 /// "Sign in to…" (spec §5.4): the saved servers a sign-in can use, then Add
-/// a New Server. Add Server inside a user leaves out that user's servers.
+/// a New Server.
 struct SignInTargetViewModel: Equatable {
     struct Row: Equatable, Identifiable {
         /// Registry server ID.
@@ -17,9 +17,9 @@ struct SignInTargetViewModel: Equatable {
     let rows: [Row]
 
     /// `servers` in display order (`ServerRegistry.sortedEntries`).
-    init(context: SignInContext, servers: [ServerEntry], snapshot: SiloUserDirectorySnapshot?) {
+    init(context: SignInContext, servers: [ServerEntry]) {
         self.context = context
-        let ids = SignInTargetList.servers(for: context, in: servers.map(\.id), directory: snapshot ?? .empty)
+        let ids = SignInTargetList.servers(for: context, in: servers.map(\.id))
         let byID = Dictionary(servers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         rows = ids.compactMap { id in
             byID[id].map { Row(id: $0.id, name: $0.displayName, address: $0.url) }

@@ -57,16 +57,16 @@ class ProfileSelectionViewModel {
     var rememberedProfileID: String? { auth.rememberedProfileIDForCurrentSelection }
 
     /// Reads the account, which also records its username on the saved
-    /// sign-in, then the users directory the account line names.
-    func loadAccount(users: SiloUserCoordinator) async {
+    /// sign-in, then the accounts directory the account line names.
+    func loadAccount(accounts: SiloAccountCoordinator) async {
         accountName = try? await SiloAPI.shared.currentUser().username
-        await users.reloadDirectory()
+        await accounts.reloadDirectory()
     }
 
-    /// "Signed in as alex", plus the server when the user has more than one
-    /// (spec §5.1).
-    func accountLine(users: SiloUserCoordinator) -> String? {
-        users.accountLine(fallbackUsername: accountName)
+    /// "Signed in as alex", plus the server when the device has accounts on
+    /// more than one (spec §5.1).
+    func accountLine(accounts: SiloAccountCoordinator) -> String? {
+        accounts.accountLine(fallbackUsername: accountName)
     }
 
     var primaryProfile: UserProfile? {

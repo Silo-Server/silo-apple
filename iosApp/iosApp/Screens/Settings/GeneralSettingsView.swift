@@ -11,8 +11,8 @@ struct GeneralSettingsView: View {
     var body: some View {
         List {
             profileSection
-            // Ask For only matters with two or more Silo users (spec §5.7).
-            if router.users.directory.users.count >= 2 {
+            // Ask For only matters with two or more Silo accounts (spec §5.7).
+            if router.accounts.directory.accounts.count >= 2 {
                 askForSection
             }
             if advisoryAgePreference.isSupported {
@@ -24,7 +24,7 @@ struct GeneralSettingsView: View {
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
         .task { await advisoryAgePreference.refresh() }
-        .task { await router.users.reloadDirectory() }
+        .task { await router.accounts.reloadDirectory() }
     }
 
     /// What Silo asks for when it asks who's watching (spec §6.3). Automatic

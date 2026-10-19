@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The shared right-hand action cluster used at the top of tab-root screens:
 /// Search, the iOS TV remote control, and a profile-avatar menu with
-/// Settings / Switch Profile / Switch Server / Sign Out. Every root page renders the same
+/// Settings / Switch Profile / Switch Account / Sign Out. Every root page renders the same
 /// three controls so the header reads identically across Home, Libraries,
 /// For You, and Calendar.
 ///
@@ -83,9 +83,9 @@ private struct TopBarIconButton: View {
 }
 
 /// Profile avatar opening the account menu (Watch Party, Requests, Settings,
-/// Switch Profile, Switch Server, Sign Out). Switch Server lists the current
-/// user's servers (plan G12). Sign Out asks first, with the option to remove
-/// the server too, since it signs out everyone on the device (plan G10).
+/// Switch Profile, Switch Account, Sign Out). Switch Account shows Choose an
+/// Account. Sign Out asks first, with the option to remove the account too,
+/// since it signs out everyone on the device (plan G10).
 struct ProfileAvatarMenu: View {
     @Environment(AppRouter.self) private var router
     let profile: UserProfile?
@@ -147,12 +147,12 @@ struct ProfileAvatarMenu: View {
                 Label("Switch Profile", systemImage: "person.2")
             }
             Button {
-                Task { await router.users.showServers(router: router) }
+                Task { await router.accounts.beginSwitchAccount(router: router) }
             } label: {
-                Label("Switch Server", systemImage: "server.rack")
+                Label("Switch Account", systemImage: "person.crop.circle")
             }
             Button(role: .destructive) {
-                Task { await router.users.requestRemoval(.currentSignIn, router: router) }
+                Task { await router.accounts.requestRemoval(.currentAccount, router: router) }
             } label: {
                 Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
             }

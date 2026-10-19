@@ -44,7 +44,7 @@ struct ServerSetupView: View {
                         guard !isCancelling else { return }
                         isCancelling = true
                         Task {
-                            await router.users.cancelSignIn(router: router)
+                            await router.accounts.cancelSignIn(router: router)
                             isCancelling = false
                         }
                     }

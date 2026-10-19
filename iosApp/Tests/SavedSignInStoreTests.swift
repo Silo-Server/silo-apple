@@ -3,17 +3,17 @@ import XCTest
 @testable import Silo
 
 /// Sign-ins can only be found through the index, so a corrupt or unreadable
-/// item must never read as "no users" or as someone else's sign-in.
+/// item must never read as "no accounts" or as someone else's sign-in.
 final class SavedSignInStoreTests: XCTestCase {
     private let alex = SignInKey(serverID: "aG9tZQ", accountID: "12")!
     private let sam = SignInKey(serverID: "aG9tZQ", accountID: "13")!
 
-    private func signIn(_ key: SignInKey, userID: String = "user-a", signedIn: Bool = true) -> SavedSignIn {
+    private func signIn(_ key: SignInKey, signedIn: Bool = true) -> SavedSignIn {
         SavedSignIn(
             key: key,
-            userID: userID,
             origin: "https://home.example",
             username: "alex",
+            email: "alex@home.example",
             accessToken: signedIn ? "access" : nil,
             refreshToken: signedIn ? "refresh" : nil,
             epoch: signedIn ? UUID() : nil,
@@ -24,11 +24,10 @@ final class SavedSignInStoreTests: XCTestCase {
         )
     }
 
-    private func index(_ keys: [SignInKey], pending: [String]? = nil) -> SiloUserIndex {
-        SiloUserIndex(
-            users: [SiloUser(id: "user-a", createdAt: Date(timeIntervalSinceReferenceDate: 800_000_000),
-                displayName: "Living Room", signIns: keys, pendingLegacyServerIDs: pending)],
-            migratedUserID: "user-a",
+    private func index(_ keys: [SignInKey], pending: [String] = []) -> SiloAccountIndex {
+        SiloAccountIndex(
+            accounts: keys.map(SiloAccountRef.signIn) + pending.map { .pendingLegacy(serverID: $0) },
+            migrated: true,
             legacyDataOwnerByServerID: [alex.serverID: alex.accountID]
         )
     }
@@ -159,9 +158,9 @@ final class SavedSignInStoreTests: XCTestCase {
         try store.saveIndex(index([alex]))
         try store.saveSignIn(signIn(alex))
 
-        memory.values[SharedStorage.usersIndexAccount] = #"{"version":2,"users":[]}"#
+        memory.values[SharedStorage.usersIndexAccount] = #"{"version":3,"accounts":[]}"#
         XCTAssertThrowsError(try store.loadIndex(), "a newer format doesn't fall back to an older copy") { error in
-            XCTAssertEqual(error as? SavedSignInStoreError, .unsupportedVersion(2))
+            XCTAssertEqual(error as? SavedSignInStoreError, .unsupportedVersion(3))
         }
 
         let raw = try XCTUnwrap(memory.values[SharedStorage.signInAccount(alex)])
@@ -181,6 +180,56 @@ final class SavedSignInStoreTests: XCTestCase {
             XCTAssertEqual(error as? SavedSignInStoreError, .keyMismatch)
         }
         XCTAssertEqual(try store.loadSignIn(sam)?.key, sam)
+    }
+
+    /// Test builds of the first multi-account design grouped sign-ins into
+    /// users. Each sign-in and pending server becomes its own account, in
+    /// user order; the next save writes the current format.
+    func testFirstMultiAccountIndexLoadsAsAccountsInUserOrder() throws {
+        let memory = KeychainMemory()
+        let store = memory.signInStore
+        let friend = "ZnJpZW5k"
+        memory.values[SharedStorage.usersIndexAccount] = #"""
+        {"version":1,"users":[
+          {"id":"user-a","createdAt":800000000,"displayName":"Living Room",
+           "signIns":[{"serverID":"aG9tZQ","accountID":"13"}],"pendingLegacyServerIDs":["ZnJpZW5k"]},
+          {"id":"user-b","createdAt":800000001,
+           "signIns":[{"serverID":"aG9tZQ","accountID":"12"},{"serverID":"aG9tZQ","accountID":"13"}]}
+        ],"migratedUserID":"user-a","legacyDataOwnerByServerID":{"aG9tZQ":"13"}}
+        """#
+
+        let loaded = try XCTUnwrap(try store.loadIndex())
+        XCTAssertEqual(loaded.version, SiloAccountIndex.currentVersion)
+        XCTAssertEqual(loaded.accounts, [.signIn(sam), .pendingLegacy(serverID: friend), .signIn(alex)],
+                       "a sign-in two users shared is one account")
+        XCTAssertEqual(loaded.migrated, true)
+        XCTAssertEqual(loaded.legacyDataOwnerByServerID, [sam.serverID: sam.accountID])
+
+        try store.saveIndex(loaded)
+        XCTAssertEqual(try store.loadIndex(), loaded)
+        XCTAssertFalse(try XCTUnwrap(memory.values[SharedStorage.usersIndexAccount]).contains("users"))
+    }
+
+    func testSignInFromTheFirstMultiAccountDesignStillDecodes() throws {
+        let memory = KeychainMemory()
+        let store = memory.signInStore
+        memory.values[SharedStorage.signInAccount(alex)] = #"""
+        {"version":1,"serverID":"aG9tZQ","accountID":"12","userID":"user-a","origin":"https://home.example",
+         "username":"alex","accessToken":"access","refreshToken":"refresh",
+         "epoch":"5D4B7A2E-3C1F-4E8A-9B6D-2F0C1A3E5B7D","addedAt":800000000,"profiles":[]}
+        """#
+
+        let loaded = try XCTUnwrap(try store.loadSignIn(alex))
+        XCTAssertEqual(loaded.key, alex)
+        XCTAssertEqual(loaded.username, "alex")
+        XCTAssertNil(loaded.email)
+        XCTAssertTrue(loaded.isSignedIn)
+
+        var withEmail = loaded
+        withEmail.email = "alex@home.example"
+        try store.saveSignIn(withEmail)
+        XCTAssertEqual(try store.loadSignIn(alex), withEmail)
+        XCTAssertFalse(try XCTUnwrap(memory.values[SharedStorage.signInAccount(alex)]).contains("userID"))
     }
 
     func testLegacyProofIsReadAndRemovedFromTheOldPerServerSlot() {

@@ -2,40 +2,38 @@ import Foundation
 import XCTest
 @testable import Silo
 
-/// Spec §6.2 (pick the user, the server, the credential), §6.3 (Ask For),
-/// decision 16, and the migration hints in plan §2.8.
+/// Spec §6.2 (pick the account, then the credential), §6.3 (Ask For), and
+/// the migration hints in plan §2.8.
 final class SiloLaunchResolverTests: XCTestCase {
+    private typealias Account = SiloAccountDirectoryFixture.Account
+
     private let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
     private let saved = ["home", "friend", "cabin"]
 
     private func key(_ server: String, _ account: String) -> SignInKey {
-        SignInKey(serverID: server, accountID: account)!
+        SignInKey.make(server, account)
     }
 
-    private func user(
-        _ id: String,
-        _ signIns: [(server: String, account: String, signedIn: Bool)] = [],
-        pending: [String] = []
-    ) -> SiloLaunchInput.UserSnapshot {
-        SiloLaunchInput.UserSnapshot(
-            id: id,
-            signIns: signIns.map { .init(key: key($0.server, $0.account), isSignedIn: $0.signedIn) },
-            pendingLegacyServerIDs: pending
-        )
+    private func ref(_ server: String, _ account: String) -> SiloAccountRef {
+        .signIn(key(server, account))
     }
 
-    private var alex: SiloLaunchInput.UserSnapshot {
-        user("alex", [("home", "a1", true), ("friend", "a2", true)])
+    private func signIn(_ server: String, _ account: String, signedIn: Bool = true) -> Account {
+        Account(serverID: server, accountID: account, isSignedIn: signedIn)
     }
 
-    private var sam: SiloLaunchInput.UserSnapshot {
-        user("sam", [("home", "s1", true)])
+    private func pending(_ server: String) -> Account {
+        Account(serverID: server)
     }
+
+    /// Two people on home and one on friend.
+    private var alex: Account { signIn("home", "a1") }
+    private var sam: Account { signIn("home", "s1") }
+    private var kim: Account { signIn("friend", "k1") }
 
     private func state(
         behavior: ProfileLaunchBehavior = .automatic,
-        linked: String? = nil,
-        lastServer: [String: String]? = nil,
+        linked: SiloAccountRef? = nil,
         askFor: ProfileLaunchAskFor? = nil,
         backgroundedAt: Date? = nil
     ) -> ProfileLaunchState {
@@ -43,23 +41,23 @@ final class SiloLaunchResolverTests: XCTestCase {
             behavior: behavior,
             backgroundedAt: backgroundedAt,
             askFor: askFor,
-            linkedUserID: linked,
-            lastServerByUserID: lastServer
+            linkedAccount: linked?.storageKey
         )
     }
 
     private func resolve(
-        _ users: [SiloLaunchInput.UserSnapshot],
+        _ accounts: [Account],
         saved: [String]? = nil,
-        migrated: String? = nil,
+        legacyOwners: [String: String] = [:],
         state: ProfileLaunchState = ProfileLaunchState(),
         mirror: String? = nil,
         trigger: SiloLaunchTrigger = .coldLaunch
     ) -> SiloLaunchDecision {
-        SiloLaunchResolver.resolve(SiloLaunchInput(
-            users: users,
+        var directory = SiloAccountDirectoryFixture.snapshot(accounts)
+        directory.legacyDataOwnerByServerID = legacyOwners
+        return SiloLaunchResolver.resolve(SiloLaunchInput(
+            directory: directory,
             savedServerIDs: saved ?? self.saved,
-            migratedUserID: migrated,
             state: state,
             currentServerMirror: mirror,
             trigger: trigger,
@@ -67,359 +65,270 @@ final class SiloLaunchResolverTests: XCTestCase {
         ))
     }
 
-    private func open(_ userID: String, _ server: String, _ account: String, link: Bool) -> SiloLaunchDecision {
-        .open(userID: userID, serverID: server, credential: .signIn(key(server, account)), linkUser: link)
-    }
+    // MARK: - No accounts
 
-    // MARK: - §6.2 step 1: pick the user
-
-    func testLinkedUserOpensWithoutLinkingAgain() {
-        let decision = resolve([alex, sam], state: state(linked: "sam"))
-        XCTAssertEqual(decision, open("sam", "home", "s1", link: false))
-    }
-
-    func testOnlyUserOpensAndIsLinked() {
-        XCTAssertEqual(resolve([sam]), open("sam", "home", "s1", link: true))
-    }
-
-    func testTwoUsersWithoutALinkShowChooseAUser() {
-        XCTAssertEqual(resolve([alex, sam]), .chooseUser(focusUserID: nil))
-    }
-
-    func testNoUsersAndNoServersGoToServerSetup() {
+    func testNoAccountsAndNoServersGoToServerSetup() {
         XCTAssertEqual(resolve([], saved: []), .serverSetup(.firstRun))
     }
 
-    func testNoUsersWithSavedServersShowSignInTo() {
+    func testNoAccountsWithSavedServersShowSignInTo() {
         XCTAssertEqual(resolve([]), .signInTarget(.firstRun))
     }
 
-    func testRemovedLinkedUserFallsThroughToTheOtherRules() {
-        XCTAssertEqual(resolve([sam], state: state(linked: "gone")), open("sam", "home", "s1", link: true))
-        XCTAssertEqual(resolve([alex, sam], state: state(linked: "gone")), .chooseUser(focusUserID: nil))
+    func testAccountsOnlyOnUnsavedServersCountAsNone() {
+        XCTAssertEqual(resolve([signIn("gone", "x1")]), .signInTarget(.firstRun))
+        XCTAssertEqual(resolve([signIn("gone", "x1")], saved: []), .serverSetup(.firstRun))
     }
 
-    // MARK: - §6.2 step 2: pick the server
+    // MARK: - §6.2 step 1: pick the account
 
-    func testLastServerStillInTheUserOpens() {
-        let decision = resolve([alex], state: state(linked: "alex", lastServer: ["alex": "friend"]))
-        XCTAssertEqual(decision, open("alex", "friend", "a2", link: false))
+    func testLinkedAccountOpensWithoutLinkingAgain() {
+        let decision = resolve([alex, sam, kim], state: state(linked: sam.ref))
+        XCTAssertEqual(decision, .open(sam.ref, linkAccount: false))
     }
 
-    func testRemovedLastServerFallsBackToTheOnlyServer() {
-        let decision = resolve([sam], state: state(linked: "sam", lastServer: ["sam": "friend"]))
-        XCTAssertEqual(decision, open("sam", "home", "s1", link: false))
+    func testOnlyAccountOpensAndIsLinked() {
+        XCTAssertEqual(resolve([sam]), .open(sam.ref, linkAccount: true))
     }
 
-    func testTwoServersWithoutAUsableLastServerShowChooseAServer() {
-        XCTAssertEqual(
-            resolve([alex], state: state(linked: "alex")),
-            .chooseServer(userID: "alex", focusServerID: nil)
-        )
-        XCTAssertEqual(
-            resolve([alex], state: state(linked: "alex", lastServer: ["alex": "cabin"])),
-            .chooseServer(userID: "alex", focusServerID: nil)
-        )
+    func testTwoAccountsWithoutALinkShowChooseAnAccount() {
+        XCTAssertEqual(resolve([alex, sam]), .chooseAccount(focus: nil))
+        XCTAssertEqual(resolve([alex, kim]), .chooseAccount(focus: nil))
     }
 
-    func testAUserWithNoSavedServersShowsChooseAServer() {
-        let orphan = user("alex", [("gone", "a1", true)])
-        XCTAssertEqual(
-            resolve([orphan], state: state(linked: "alex", lastServer: ["alex": "gone"])),
-            .chooseServer(userID: "alex", focusServerID: nil)
-        )
+    func testRemovedLinkedAccountFallsThroughToTheOtherRules() {
+        let gone = state(linked: ref("home", "gone"))
+        XCTAssertEqual(resolve([sam], state: gone), .open(sam.ref, linkAccount: true))
+        XCTAssertEqual(resolve([alex, sam], state: gone), .chooseAccount(focus: nil))
     }
 
-    func testSignInsOnServersThatArentSavedAreIgnored() {
-        let alex = user("alex", [("gone", "a1", true), ("home", "a2", true)])
-        XCTAssertEqual(
-            resolve([alex], state: state(linked: "alex", lastServer: ["alex": "gone"])),
-            open("alex", "home", "a2", link: false)
-        )
+    func testStaleLegacyLinkOpensTheSignInThatTookOverItsServer() {
+        // Linked while home's session was still unverified; verifying it
+        // turned the account into sam's sign-in.
+        let decision = resolve([alex, sam], legacyOwners: ["home": "s1"],
+                               state: state(linked: .pendingLegacy(serverID: "home")))
+        XCTAssertEqual(decision, .open(sam.ref, linkAccount: false))
     }
 
-    // MARK: - §6.2 step 3: the credential
+    func testAccountsOnServersThatArentSavedAreIgnored() {
+        let orphan = signIn("gone", "x1")
+        XCTAssertEqual(resolve([orphan, sam]), .open(sam.ref, linkAccount: true))
+        XCTAssertEqual(resolve([orphan, sam], state: state(linked: orphan.ref)), .open(sam.ref, linkAccount: true))
+    }
+
+    // MARK: - §6.2 step 2: the credential
 
     func testExpiredSignInShowsSignInAgain() {
-        let expired = user("sam", [("home", "s1", false)])
-        XCTAssertEqual(resolve([expired]), .signInAgain(userID: "sam", key: key("home", "s1")))
-    }
-
-    func testPendingLegacyServerOpensItsOldSignIn() {
-        let migrated = user("u", pending: ["home"])
-        XCTAssertEqual(
-            resolve([migrated], migrated: "u"),
-            .open(userID: "u", serverID: "home", credential: .legacy(serverID: "home"), linkUser: true)
-        )
+        XCTAssertEqual(resolve([signIn("home", "s1", signedIn: false)]), .signInAgain(key("home", "s1")))
     }
 
     func testUnreadableSignInCountsAsExpired() {
         let k = key("home", "s1")
-        let directory = SiloUserDirectorySnapshot(
-            users: [SiloUser(id: "sam", createdAt: now, signIns: [k])],
-            signIns: [:]
-        )
         let input = SiloLaunchInput(
-            directory: directory,
+            directory: SiloAccountDirectorySnapshot(accounts: [.signIn(k)], signIns: [:]),
             savedServerIDs: saved,
             state: ProfileLaunchState(),
             currentServerMirror: nil,
             trigger: .coldLaunch,
             now: now
         )
-        XCTAssertEqual(SiloLaunchResolver.resolve(input), .signInAgain(userID: "sam", key: k))
+        XCTAssertEqual(SiloLaunchResolver.resolve(input), .signInAgain(k))
     }
 
-    func testDirectoryInputCarriesMembershipAndMigration() {
-        let k = key("home", "s1")
-        let summary = SignInSummary(key: k, userID: "u", username: "sam", isSignedIn: true, profiles: [], addedAt: now)
-        let directory = SiloUserDirectorySnapshot(
-            users: [SiloUser(id: "u", createdAt: now, signIns: [k], pendingLegacyServerIDs: ["friend"])],
-            signIns: [k: summary],
-            migratedUserID: "u"
-        )
-        let input = SiloLaunchInput(
-            directory: directory,
-            savedServerIDs: saved,
-            state: ProfileLaunchState(),
-            currentServerMirror: "friend",
-            trigger: .coldLaunch,
-            now: now
-        )
-        XCTAssertEqual(input.users, [user("u", [("home", "s1", true)], pending: ["friend"])])
-        XCTAssertEqual(input.migratedUserID, "u")
+    func testPendingLegacyAccountOpensItsOldSignIn() {
+        XCTAssertEqual(resolve([pending("home")]), .open(.pendingLegacy(serverID: "home"), linkAccount: true))
+    }
+
+    // MARK: - Migration hints (plan §2.8, spec §9)
+
+    func testLegacyActiveServerOpensItsPendingLegacyAccount() {
         XCTAssertEqual(
-            SiloLaunchResolver.resolve(input),
-            .open(userID: "u", serverID: "friend", credential: .legacy(serverID: "friend"), linkUser: true)
+            resolve([alex, pending("friend")], mirror: "friend"),
+            .open(.pendingLegacy(serverID: "friend"), linkAccount: true)
         )
     }
 
-    // MARK: - Migration hints (plan §2.8 rules 4 and 6, spec §9)
-
-    func testLegacyRememberedProfileLinksTheMigratedUser() {
-        var legacy = state()
-        legacy.rememberedByServerID = ["home": RememberedProfile(profileID: "p", requiredPINAtSelection: false, accountEpoch: "e")]
+    func testLegacyActiveServerOpensTheSignInThatTookOverItsSession() {
         XCTAssertEqual(
-            resolve([alex, sam], migrated: "alex", state: legacy),
-            .chooseServer(userID: "alex", focusServerID: nil)
+            resolve([alex, sam, kim], legacyOwners: ["home": "s1"], mirror: "home"),
+            .open(sam.ref, linkAccount: true)
         )
+    }
+
+    func testActiveServerWithoutALegacyAccountShowsChooseAnAccount() {
+        XCTAssertEqual(resolve([alex, sam, kim], legacyOwners: ["home": "s1"], mirror: "friend"),
+                       .chooseAccount(focus: nil))
+    }
+
+    func testRemovedLegacyAccountIsNotOpened() {
+        XCTAssertEqual(resolve([alex, sam], legacyOwners: ["home": "gone"], mirror: "home"), .chooseAccount(focus: nil))
+    }
+
+    func testLegacyHistoryIgnoredOnceThisAppleTVUserLinkedAnAccount() {
+        // The linked account was removed since; this Apple TV user chooses
+        // instead of landing in the legacy account.
+        let linked = state(linked: kim.ref)
+        XCTAssertEqual(resolve([alex, sam], legacyOwners: ["home": "s1"], state: linked, mirror: "home"),
+                       .chooseAccount(focus: nil))
+    }
+
+    func testLegacyHistoryIgnoredAfterRemoval() {
         XCTAssertEqual(
-            resolve([user("alex", [("home", "a1", true)]), sam], migrated: "alex", state: legacy),
-            open("alex", "home", "a1", link: true)
+            resolve([alex, sam], legacyOwners: ["home": "s1"], mirror: "home", trigger: .afterRemoval),
+            .chooseAccount(focus: nil)
         )
-    }
-
-    func testLegacyActiveServerOpensTheMigratedUserThere() {
-        XCTAssertEqual(
-            resolve([alex, sam], migrated: "alex", mirror: "friend"),
-            open("alex", "friend", "a2", link: true)
-        )
-    }
-
-    func testActiveServerOutsideTheMigratedUserShowsChooseAServer() {
-        XCTAssertEqual(
-            resolve([alex, sam], migrated: "alex", mirror: "cabin"),
-            .chooseServer(userID: "alex", focusServerID: nil)
-        )
-    }
-
-    func testNoLegacyHistoryShowsChooseAUserEvenWithAMigratedUser() {
-        XCTAssertEqual(resolve([alex, sam], migrated: "alex"), .chooseUser(focusUserID: nil))
-    }
-
-    func testRemovedMigratedUserIsNotOpened() {
-        XCTAssertEqual(resolve([alex, sam], migrated: "gone", mirror: "home"), .chooseUser(focusUserID: nil))
-    }
-
-    func testMigrationHintIgnoredOnceThisAppleTVUserOpenedAUser() {
-        let opened = state(lastServer: ["sam": "home"])
-        XCTAssertEqual(resolve([alex, sam], migrated: "alex", state: opened, mirror: "home"), .chooseUser(focusUserID: nil))
-    }
-
-    func testMigrationHintIgnoredAfterRemoval() {
-        XCTAssertEqual(
-            resolve([alex, sam], migrated: "alex", mirror: "home", trigger: .afterRemoval),
-            .chooseUser(focusUserID: nil)
-        )
-    }
-
-    func testActiveServerIsOnlyAHintForTheMigratedUser() {
-        XCTAssertEqual(
-            resolve([alex], state: state(linked: "alex"), mirror: "friend"),
-            .chooseServer(userID: "alex", focusServerID: nil)
-        )
-    }
-
-    func testRecordedLastServerWinsOverTheActiveServer() {
-        let decision = resolve([alex], migrated: "alex", state: state(linked: "alex", lastServer: ["alex": "home"]), mirror: "friend")
-        XCTAssertEqual(decision, open("alex", "home", "a1", link: false))
-    }
-
-    func testStaleLastServerDoesNotFallBackToTheActiveServer() {
-        let decision = resolve([alex], migrated: "alex", state: state(linked: "alex", lastServer: ["alex": "cabin"]), mirror: "friend")
-        XCTAssertEqual(decision, .chooseServer(userID: "alex", focusServerID: nil))
     }
 
     // MARK: - §6.3 Ask For
 
-    func testProfileOnlyOpensTheLinkedUserWhenSelectionIsRequired() {
-        let everyTime = state(behavior: .askEveryLaunch, linked: "sam", askFor: .profileOnly)
-        XCTAssertEqual(resolve([alex, sam], state: everyTime), open("sam", "home", "s1", link: false))
+    func testProfileOnlyOpensTheLinkedAccountWhenSelectionIsRequired() {
+        let everyTime = state(behavior: .askEveryLaunch, linked: sam.ref, askFor: .profileOnly)
+        XCTAssertEqual(resolve([alex, sam], state: everyTime), .open(sam.ref, linkAccount: false))
     }
 
     func testUnsetAskForMeansProfileOnly() {
-        let everyTime = state(behavior: .askEveryLaunch, linked: "sam")
-        XCTAssertEqual(resolve([alex, sam], state: everyTime), open("sam", "home", "s1", link: false))
+        let everyTime = state(behavior: .askEveryLaunch, linked: sam.ref)
+        XCTAssertEqual(resolve([alex, sam], state: everyTime), .open(sam.ref, linkAccount: false))
     }
 
-    func testUserAndProfileShowsChooseAUserFocusedOnTheLinkedUser() {
-        let everyTime = state(behavior: .askEveryLaunch, linked: "sam", askFor: .userAndProfile)
-        XCTAssertEqual(resolve([alex, sam], state: everyTime), .chooseUser(focusUserID: "sam"))
+    func testAccountAndProfileShowsChooseAnAccountFocusedOnTheLinkedAccount() {
+        let everyTime = state(behavior: .askEveryLaunch, linked: sam.ref, askFor: .accountAndProfile)
+        XCTAssertEqual(resolve([alex, sam, kim], state: everyTime), .chooseAccount(focus: sam.ref))
     }
 
-    func testUserAndProfileFocusesTheMigratedUserBeforeItIsLinked() {
-        let everyTime = state(behavior: .askEveryLaunch, askFor: .userAndProfile)
-        XCTAssertEqual(resolve([alex, sam], migrated: "alex", state: everyTime, mirror: "home"), .chooseUser(focusUserID: "alex"))
+    func testAccountAndProfileFocusesTheLegacyAccountBeforeOneIsLinked() {
+        let everyTime = state(behavior: .askEveryLaunch, askFor: .accountAndProfile)
+        XCTAssertEqual(
+            resolve([alex, sam], legacyOwners: ["home": "a1"], state: everyTime, mirror: "home"),
+            .chooseAccount(focus: alex.ref)
+        )
     }
 
-    func testUserAndProfileWithOneUserOpensIt() {
-        let everyTime = state(behavior: .askEveryLaunch, linked: "sam", askFor: .userAndProfile)
-        XCTAssertEqual(resolve([sam], state: everyTime), open("sam", "home", "s1", link: false))
+    func testAccountAndProfileWithOneAccountOpensIt() {
+        let everyTime = state(behavior: .askEveryLaunch, linked: sam.ref, askFor: .accountAndProfile)
+        XCTAssertEqual(resolve([sam], state: everyTime), .open(sam.ref, linkAccount: false))
+        // An account on a server that isn't saved isn't a second choice.
+        XCTAssertEqual(resolve([signIn("gone", "x1"), sam], state: everyTime), .open(sam.ref, linkAccount: false))
     }
 
     func testAutomaticIgnoresAskFor() {
-        let automatic = state(behavior: .automatic, linked: "sam", askFor: .userAndProfile, backgroundedAt: now.addingTimeInterval(-86_400))
-        XCTAssertEqual(resolve([alex, sam], state: automatic), open("sam", "home", "s1", link: false))
-        XCTAssertEqual(resolve([alex, sam], state: automatic, trigger: .foregroundAfterAway), open("sam", "home", "s1", link: false))
+        let automatic = state(behavior: .automatic, linked: sam.ref, askFor: .accountAndProfile,
+                              backgroundedAt: now.addingTimeInterval(-86_400))
+        XCTAssertEqual(resolve([alex, sam], state: automatic), .open(sam.ref, linkAccount: false))
+        XCTAssertEqual(resolve([alex, sam], state: automatic, trigger: .foregroundAfterAway),
+                       .open(sam.ref, linkAccount: false))
     }
 
-    func testPendingSwitchProfileDoesNotShowChooseAUser() {
-        var pending = state(behavior: .automatic, linked: "sam", askFor: .userAndProfile)
+    func testPendingSwitchProfileDoesNotShowChooseAnAccount() {
+        var pending = state(behavior: .automatic, linked: sam.ref, askFor: .accountAndProfile)
         pending.selectionRequiredSignIns = [key("home", "s1").storageKey]
         pending.selectionRequiredServerIDs = ["home"]
-        XCTAssertEqual(resolve([alex, sam], state: pending), open("sam", "home", "s1", link: false))
+        XCTAssertEqual(resolve([alex, sam], state: pending), .open(sam.ref, linkAccount: false))
     }
 
     func testTimedSelectionAsksOnlyAfterTheAwayTimeout() {
-        let away = state(behavior: .afterOneHour, linked: "sam", askFor: .userAndProfile, backgroundedAt: now.addingTimeInterval(-3_600))
-        XCTAssertEqual(resolve([alex, sam], state: away), .chooseUser(focusUserID: "sam"))
-        XCTAssertEqual(resolve([alex, sam], state: away, trigger: .foregroundAfterAway), .chooseUser(focusUserID: "sam"))
+        let away = state(behavior: .afterOneHour, linked: sam.ref, askFor: .accountAndProfile,
+                         backgroundedAt: now.addingTimeInterval(-3_600))
+        XCTAssertEqual(resolve([alex, sam], state: away), .chooseAccount(focus: sam.ref))
+        XCTAssertEqual(resolve([alex, sam], state: away, trigger: .foregroundAfterAway), .chooseAccount(focus: sam.ref))
 
-        let brief = state(behavior: .afterOneHour, linked: "sam", askFor: .userAndProfile, backgroundedAt: now.addingTimeInterval(-60))
-        XCTAssertEqual(resolve([alex, sam], state: brief), open("sam", "home", "s1", link: false))
-        XCTAssertEqual(resolve([alex, sam], state: brief, trigger: .foregroundAfterAway), open("sam", "home", "s1", link: false))
+        let brief = state(behavior: .afterOneHour, linked: sam.ref, askFor: .accountAndProfile,
+                          backgroundedAt: now.addingTimeInterval(-60))
+        XCTAssertEqual(resolve([alex, sam], state: brief), .open(sam.ref, linkAccount: false))
+        XCTAssertEqual(resolve([alex, sam], state: brief, trigger: .foregroundAfterAway),
+                       .open(sam.ref, linkAccount: false))
     }
 
     func testEveryTimeAsksAtLaunchButOnReturnOnlyAfterRealBackgrounding() {
-        let everyTime = state(behavior: .askEveryLaunch, linked: "sam", askFor: .userAndProfile)
-        XCTAssertEqual(resolve([alex, sam], state: everyTime), .chooseUser(focusUserID: "sam"))
-        XCTAssertEqual(resolve([alex, sam], state: everyTime, trigger: .foregroundAfterAway), open("sam", "home", "s1", link: false))
+        let everyTime = state(behavior: .askEveryLaunch, linked: sam.ref, askFor: .accountAndProfile)
+        XCTAssertEqual(resolve([alex, sam], state: everyTime), .chooseAccount(focus: sam.ref))
+        XCTAssertEqual(resolve([alex, sam], state: everyTime, trigger: .foregroundAfterAway),
+                       .open(sam.ref, linkAccount: false))
 
         var backgrounded = everyTime
         backgrounded.backgroundedAt = now.addingTimeInterval(-1)
-        XCTAssertEqual(resolve([alex, sam], state: backgrounded, trigger: .foregroundAfterAway), .chooseUser(focusUserID: "sam"))
+        XCTAssertEqual(resolve([alex, sam], state: backgrounded, trigger: .foregroundAfterAway),
+                       .chooseAccount(focus: sam.ref))
     }
 
     func testAskForNeverAppliesToPicksOrRemovals() {
-        let everyTime = state(behavior: .askEveryLaunch, linked: "sam", askFor: .userAndProfile, backgroundedAt: now)
-        XCTAssertEqual(resolve([alex, sam], state: everyTime, trigger: .afterRemoval), open("sam", "home", "s1", link: false))
-        XCTAssertEqual(resolve([alex, sam], state: everyTime, trigger: .userPicked("sam")), open("sam", "home", "s1", link: false))
-        XCTAssertEqual(
-            resolve([alex, sam], state: everyTime, trigger: .serverPicked(userID: "sam", serverID: "home")),
-            open("sam", "home", "s1", link: false)
-        )
+        let everyTime = state(behavior: .askEveryLaunch, linked: sam.ref, askFor: .accountAndProfile, backgroundedAt: now)
+        XCTAssertEqual(resolve([alex, sam], state: everyTime, trigger: .afterRemoval), .open(sam.ref, linkAccount: false))
+        XCTAssertEqual(resolve([alex, sam], state: everyTime, trigger: .accountPicked(sam.ref)),
+                       .open(sam.ref, linkAccount: false))
     }
 
-    // MARK: - Decision 16 and the pick triggers
+    // MARK: - Picked in Choose an Account
 
-    func testPickedUserWithTwoServersShowsChooseAServerFocusedOnItsLastServer() {
-        let decision = resolve([alex, sam], state: state(linked: "alex", lastServer: ["alex": "friend"]), trigger: .userPicked("alex"))
-        XCTAssertEqual(decision, .chooseServer(userID: "alex", focusServerID: "friend"))
+    func testPickedAccountOpensAndLinks() {
+        let decision = resolve([alex, sam, kim], state: state(linked: alex.ref), trigger: .accountPicked(kim.ref))
+        XCTAssertEqual(decision, .open(kim.ref, linkAccount: true))
     }
 
-    func testLinkedUserWithTwoServersOpensItsLastServerAtLaunch() {
-        let decision = resolve([alex, sam], state: state(linked: "alex", lastServer: ["alex": "friend"]))
-        XCTAssertEqual(decision, open("alex", "friend", "a2", link: false))
+    func testPickedExpiredAccountShowsSignInAgain() {
+        let expired = signIn("home", "s1", signedIn: false)
+        XCTAssertEqual(resolve([alex, expired], trigger: .accountPicked(expired.ref)), .signInAgain(key("home", "s1")))
     }
 
-    func testPickedUserFocusOnlyNamesAServerStillInTheUser() {
-        let decision = resolve([alex], state: state(lastServer: ["alex": "cabin"]), trigger: .userPicked("alex"))
-        XCTAssertEqual(decision, .chooseServer(userID: "alex", focusServerID: nil))
+    func testPickedPendingLegacyAccountOpensItsOldSignIn() {
+        let legacy = pending("friend")
+        XCTAssertEqual(resolve([alex, legacy], trigger: .accountPicked(legacy.ref)),
+                       .open(.pendingLegacy(serverID: "friend"), linkAccount: true))
     }
 
-    func testPickedUserWithOneServerOpensItAndLinks() {
-        let decision = resolve([alex, sam], state: state(linked: "alex"), trigger: .userPicked("sam"))
-        XCTAssertEqual(decision, open("sam", "home", "s1", link: true))
+    func testPickedPendingLegacyAccountVerifiedSinceOpensItsSignIn() {
+        let decision = resolve([alex, sam], legacyOwners: ["home": "s1"],
+                               trigger: .accountPicked(.pendingLegacy(serverID: "home")))
+        XCTAssertEqual(decision, .open(sam.ref, linkAccount: true))
     }
 
-    func testPickedUserWithAnExpiredServerShowsSignInAgain() {
-        let expired = user("sam", [("home", "s1", false)])
-        XCTAssertEqual(resolve([alex, expired], trigger: .userPicked("sam")), .signInAgain(userID: "sam", key: key("home", "s1")))
+    func testPickedAccountThatWasRemovedShowsChooseAnAccountAgain() {
+        XCTAssertEqual(resolve([alex, sam], trigger: .accountPicked(ref("home", "gone"))), .chooseAccount(focus: nil))
+        XCTAssertEqual(resolve([alex, sam], trigger: .accountPicked(.pendingLegacy(serverID: "cabin"))),
+                       .chooseAccount(focus: nil))
+        XCTAssertEqual(resolve([], trigger: .accountPicked(ref("home", "gone"))), .signInTarget(.firstRun))
     }
 
-    func testPickedUserThatWasRemovedShowsChooseAUserAgain() {
-        XCTAssertEqual(resolve([alex, sam], trigger: .userPicked("gone")), .chooseUser(focusUserID: nil))
-        XCTAssertEqual(resolve([], trigger: .userPicked("gone")), .signInTarget(.firstRun))
-    }
-
-    func testPickedServerOpensIt() {
-        let decision = resolve([alex, sam], state: state(linked: "alex", lastServer: ["alex": "home"]), trigger: .serverPicked(userID: "alex", serverID: "friend"))
-        XCTAssertEqual(decision, open("alex", "friend", "a2", link: false))
-    }
-
-    func testPickedServerLinksAUserThatWasNotLinked() {
-        let decision = resolve([alex, sam], trigger: .serverPicked(userID: "alex", serverID: "friend"))
-        XCTAssertEqual(decision, open("alex", "friend", "a2", link: true))
-    }
-
-    func testPickedServerThatExpiredShowsSignInAgain() {
-        let alex = user("alex", [("home", "a1", true), ("friend", "a2", false)])
-        let decision = resolve([alex], trigger: .serverPicked(userID: "alex", serverID: "friend"))
-        XCTAssertEqual(decision, .signInAgain(userID: "alex", key: key("friend", "a2")))
-    }
-
-    func testPickedPendingLegacyServerOpensItsOldSignIn() {
-        let migrated = user("u", [("home", "a1", true)], pending: ["friend"])
-        let decision = resolve([migrated], migrated: "u", trigger: .serverPicked(userID: "u", serverID: "friend"))
-        XCTAssertEqual(decision, .open(userID: "u", serverID: "friend", credential: .legacy(serverID: "friend"), linkUser: true))
-    }
-
-    func testPickedServerNoLongerInTheUserShowsChooseAServerAgain() {
-        XCTAssertEqual(
-            resolve([alex], trigger: .serverPicked(userID: "alex", serverID: "cabin")),
-            .chooseServer(userID: "alex", focusServerID: nil)
-        )
-        XCTAssertEqual(resolve([alex, sam], trigger: .serverPicked(userID: "gone", serverID: "home")), .chooseUser(focusUserID: nil))
+    func testPickedAccountOnAnUnsavedServerShowsChooseAnAccountAgain() {
+        let orphan = signIn("gone", "x1")
+        XCTAssertEqual(resolve([orphan, alex, sam], trigger: .accountPicked(orphan.ref)), .chooseAccount(focus: nil))
     }
 
     // MARK: - After removal (spec §5.6)
 
-    func testAfterRemovalOpensAnotherServerInTheSameUser() {
-        let alex = user("alex", [("friend", "a2", true)])
-        let decision = resolve([alex, sam], state: state(linked: "alex", lastServer: ["alex": "home"]), mirror: "home", trigger: .afterRemoval)
-        XCTAssertEqual(decision, open("alex", "friend", "a2", link: false))
+    func testAfterRemovingTheLinkedAccountShowsTheChooserOrTheOnlyAccount() {
+        let gone = state(linked: ref("home", "gone"))
+        XCTAssertEqual(resolve([alex, sam], state: gone, trigger: .afterRemoval), .chooseAccount(focus: nil))
+        XCTAssertEqual(resolve([sam], state: gone, trigger: .afterRemoval), .open(sam.ref, linkAccount: true))
     }
 
-    func testAfterRemovalShowsChooseAServerWhenTheUserStillHasSeveral() {
-        let alex = user("alex", [("friend", "a2", true), ("cabin", "a3", true)])
-        let decision = resolve([alex], state: state(linked: "alex", lastServer: ["alex": "home"]), trigger: .afterRemoval)
-        XCTAssertEqual(decision, .chooseServer(userID: "alex", focusServerID: nil))
+    func testAfterSigningOutWithOtherAccountsShowsTheChooserFocusedOnTheSignedOutCard() {
+        let signedOut = signIn("home", "s1", signedIn: false)
+        let linked = state(linked: signedOut.ref)
+        XCTAssertEqual(resolve([alex, signedOut], state: linked, trigger: .afterRemoval),
+                       .chooseAccount(focus: signedOut.ref))
+        // At launch an expired linked account still shows its sign-in.
+        XCTAssertEqual(resolve([alex, signedOut], state: linked), .signInAgain(key("home", "s1")))
     }
 
-    func testAfterRemovingTheLinkedUserShowsTheChooserOrTheOnlyUser() {
-        XCTAssertEqual(resolve([alex, sam], state: state(linked: "gone"), trigger: .afterRemoval), .chooseUser(focusUserID: nil))
-        XCTAssertEqual(resolve([sam], state: state(linked: "gone"), trigger: .afterRemoval), open("sam", "home", "s1", link: true))
+    func testAfterSigningOutOfTheOnlyAccountShowsItsSignIn() {
+        let signedOut = signIn("home", "s1", signedIn: false)
+        XCTAssertEqual(resolve([signedOut], state: state(linked: signedOut.ref), trigger: .afterRemoval),
+                       .signInAgain(key("home", "s1")))
+        // An account on a server that isn't saved isn't another to pick.
+        XCTAssertEqual(resolve([signIn("gone", "x1"), signedOut], trigger: .afterRemoval),
+                       .signInAgain(key("home", "s1")))
     }
 
-    func testAfterRemovingTheLastUserGoesToTheServerStep() {
+    func testAfterRemovingTheLastAccountGoesToTheServerStep() {
         XCTAssertEqual(resolve([], trigger: .afterRemoval), .signInTarget(.firstRun))
         XCTAssertEqual(resolve([], saved: [], trigger: .afterRemoval), .serverSetup(.firstRun))
     }
 
     // MARK: - Foreground without Ask For
 
-    func testForegroundKeepsTheCurrentUserAndServer() {
-        let decision = resolve([alex, sam], state: state(linked: "alex", lastServer: ["alex": "friend"]), trigger: .foregroundAfterAway)
-        XCTAssertEqual(decision, open("alex", "friend", "a2", link: false))
+    func testForegroundKeepsTheLinkedAccount() {
+        let decision = resolve([alex, sam, kim], state: state(linked: kim.ref), trigger: .foregroundAfterAway)
+        XCTAssertEqual(decision, .open(kim.ref, linkAccount: false))
     }
 }

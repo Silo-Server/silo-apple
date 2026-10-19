@@ -309,37 +309,38 @@ final class SettingsViewModel {
     }()
     #endif
 
-    // MARK: - Silo users (spec §5.7)
+    // MARK: - Silo accounts (spec §5.7)
 
     /// The profile remembered for the current sign-in, read by
     /// `loadSettings`: Paired Silo Profile's value.
     private(set) var rememberedProfileID: String?
 
-    /// The device's users, as Settings › Users and the rows below read them.
-    @MainActor var usersDirectory: SiloUserDirectory { SiloUserCoordinator.shared.directory }
+    /// The device's accounts, as Settings › Accounts and the rows below read
+    /// them.
+    @MainActor var accountsDirectory: SiloAccountDirectory { SiloAccountCoordinator.shared.directory }
 
     /// Settings › General › Apple TV User › Paired Silo Profile: the
-    /// remembered profile, with its user ("alex › Jamie") when the device
+    /// remembered profile, with its account ("alex › Jamie") when the device
     /// has more than one. "Not paired" without one, and "Saved profile" when
     /// another profile is open now.
     @MainActor var pairedProfileValue: String {
         Self.pairedProfileValue(rememberedProfileID: rememberedProfileID, activeProfile: activeProfile,
-                                directory: usersDirectory)
+                                directory: accountsDirectory)
     }
 
     static func pairedProfileValue(
         rememberedProfileID: String?,
         activeProfile: UserProfile?,
-        directory: SiloUserDirectory
+        directory: SiloAccountDirectory
     ) -> String {
         guard let rememberedProfileID else { return "Not paired" }
         let profile = activeProfile?.id == rememberedProfileID ? activeProfile?.name ?? "Saved profile" : "Saved profile"
-        guard directory.users.count >= 2, let user = directory.currentUser else { return profile }
-        return "\(user.name) › \(profile)"
+        guard directory.accounts.count >= 2, let account = directory.currentAccount else { return profile }
+        return "\(account.name) › \(profile)"
     }
 
-    /// Ask For shows only on a device with two or more users.
-    @MainActor var showsAskFor: Bool { usersDirectory.users.count >= 2 }
+    /// Ask For shows only on a device with two or more accounts.
+    @MainActor var showsAskFor: Bool { accountsDirectory.accounts.count >= 2 }
 
     /// Ask For applies only when Silo asks who's watching: dimmed under
     /// Automatic, with `ProfileLaunchAskFor.inactiveUnderAutomaticFooter`.
@@ -352,7 +353,7 @@ final class SettingsViewModel {
 
     /// Settings' Sign Out confirmation (spec §5.6).
     @MainActor var signOutConfirmation: ConfirmationCopy {
-        SiloUserCoordinator.shared.confirmation(for: .currentSignIn)
+        SiloAccountCoordinator.shared.confirmation(for: .currentAccount)
     }
 
     /// Main-actor isolated: it publishes into observable state the settings
@@ -364,7 +365,7 @@ final class SettingsViewModel {
         // Before the server round trips, so Paired Silo Profile never reads
         // "Not paired" while they run.
         rememberedProfileID = AuthService.shared.rememberedProfileIDForCurrentSelection
-        async let directory: Void = SiloUserCoordinator.shared.reloadDirectory()
+        async let directory: Void = SiloAccountCoordinator.shared.reloadDirectory()
         await PlayerSettings.shared.refreshFromServer()
         await directory
 

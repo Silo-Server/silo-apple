@@ -2,8 +2,8 @@ import Foundation
 import XCTest
 @testable import Silo
 
-/// Spec §5.6 and §5.4.1 copy. These check the choices each confirmation
-/// offers and that its text names what it acts on, not its wording.
+/// Spec §5.6 copy. These check the choices each confirmation offers and
+/// that its text names what it acts on, not its wording.
 final class SignOutConfirmationCopyTests: XCTestCase {
     private let tv = SignOutConfirmationCopy.Device.appleTV
     private let phone = SignOutConfirmationCopy.Device(noun: "device", titleNoun: "Device")
@@ -19,68 +19,41 @@ final class SignOutConfirmationCopyTests: XCTestCase {
         }
     }
 
-    func testSignOutNamesTheUserServerAndDeviceAndOffersRemovingTheServer() {
-        let copy = SignOutConfirmationCopy.signOut(userName: "alex", serverName: "Home Silo", device: tv)
+    /// Signing out keeps the card; only the current account's sign-out
+    /// also offers Remove Account (`SiloAccountCoordinator.confirmation`).
+    func testSignOutNamesTheAccountServerAndDeviceAndOffersRemoveOnlyWhenAsked() {
+        let copy = SignOutConfirmationCopy.signOut(accountName: "alex", serverName: "Home Silo", device: tv)
         assertNames(copy, ["alex", "Home Silo", "Apple TV"])
-        XCTAssertTrue(copy.title.contains("Home Silo"))
+        XCTAssertTrue(copy.title.contains("alex"))
         XCTAssertTrue(copy.confirmIsDestructive)
         XCTAssertEqual(copy.confirmTitle, SignOutConfirmationCopy.signOutTitle)
-        XCTAssertEqual(copy.additionalDestructiveTitle, SignOutConfirmationCopy.signOutAndRemoveServerTitle)
-    }
-
-    func testRemoveUserNamesTheUserEveryServerAndTheDevice() {
-        let copy = SignOutConfirmationCopy.removeUser(userName: "alex", serverNames: ["Home Silo", "Friend's Silo", "Cabin"], device: tv)
-        assertNames(copy, ["alex", "Home Silo", "Friend's Silo", "Cabin", "Apple TV"])
-        XCTAssertTrue(copy.title.contains("alex"))
-        XCTAssertTrue(copy.confirmIsDestructive)
         XCTAssertNil(copy.additionalDestructiveTitle)
 
-        let noServers = SignOutConfirmationCopy.removeUser(userName: "alex", serverNames: [], device: tv)
-        assertNames(noServers, ["alex", "Apple TV"])
+        let current = SignOutConfirmationCopy.signOut(accountName: "alex", serverName: "Home Silo", device: tv,
+                                                      offersRemove: true)
+        XCTAssertEqual(current.confirmTitle, SignOutConfirmationCopy.signOutTitle)
+        XCTAssertEqual(current.additionalDestructiveTitle, SignOutConfirmationCopy.removeAccountTitle)
     }
 
-    func testRemovingAServerNamesItsUsers() {
-        let copy = SignOutConfirmationCopy.signOutAndRemoveServer(serverName: "Home Silo", userNames: ["alex", "sam", "jo"], device: tv)
-        assertNames(copy, ["Home Silo", "alex", "sam", "jo", "Apple TV"])
-        XCTAssertTrue(copy.title.contains("Home Silo"))
+    func testRemoveAccountNamesTheAccountServerAndDevice() {
+        let copy = SignOutConfirmationCopy.removeAccount(accountName: "alex", serverName: "Home Silo", device: tv)
+        assertNames(copy, ["alex", "Home Silo", "Apple TV"])
+        XCTAssertTrue(copy.title.contains("alex"))
+        XCTAssertEqual(copy.confirmTitle, SignOutConfirmationCopy.removeTitle)
         XCTAssertTrue(copy.confirmIsDestructive)
         XCTAssertNil(copy.additionalDestructiveTitle)
-
-        let nobody = SignOutConfirmationCopy.signOutAndRemoveServer(serverName: "Home Silo", userNames: [], device: tv)
-        assertNames(nobody, ["Home Silo", "Apple TV"])
-    }
-
-    func testSeparateUserPromptNamesTheExistingUserServerAndNewAccount() {
-        let copy = SignOutConfirmationCopy.separateUser(existingUserName: "alex", serverName: "Home Silo", newUsername: "sam")
-        assertNames(copy, ["alex", "Home Silo", "sam"])
-        XCTAssertTrue(copy.title.contains("alex"))
-        XCTAssertTrue(copy.title.contains("Home Silo"))
-        XCTAssertTrue(copy.confirmTitle.contains("sam"))
-        XCTAssertFalse(copy.confirmIsDestructive)
-
-        let unknown = SignOutConfirmationCopy.separateUser(existingUserName: "alex", serverName: "Home Silo", newUsername: nil)
-        assertNames(unknown, ["alex", "Home Silo"])
-        XCTAssertFalse(text(unknown).contains("nil"))
-    }
-
-    func testSwitchToUserPromptNamesTheOtherUser() {
-        let copy = SignOutConfirmationCopy.switchToUser(otherUserName: "sam", serverName: "Friend's Silo")
-        assertNames(copy, ["sam", "Friend's Silo"])
-        XCTAssertTrue(copy.confirmTitle.contains("sam"))
-        XCTAssertFalse(copy.confirmIsDestructive)
     }
 
     func testDeviceWordingComesFromTheCaller() {
-        let signOut = SignOutConfirmationCopy.signOut(userName: "alex", serverName: "Home Silo", device: phone)
+        let signOut = SignOutConfirmationCopy.signOut(accountName: "alex", serverName: "Home Silo", device: phone)
         XCTAssertFalse(text(signOut).contains("Apple TV"))
         assertNames(signOut, ["device"])
+        let remove = SignOutConfirmationCopy.removeAccount(accountName: "alex", serverName: "Home Silo", device: phone)
+        XCTAssertFalse(text(remove).contains("Apple TV"))
+        assertNames(remove, ["device"])
 
         XCTAssertTrue(SignOutConfirmationCopy.removeFromDeviceTitle(device: tv).contains("Apple TV"))
         XCTAssertTrue(SignOutConfirmationCopy.removeFromDeviceTitle(device: phone).contains("Device"))
         XCTAssertEqual(SignOutConfirmationCopy.Device(noun: "iPhone").titleNoun, "iPhone")
-    }
-
-    func testServerRowActionNamesTheServer() {
-        XCTAssertTrue(SignOutConfirmationCopy.signOutOfServerTitle(serverName: "Home Silo").contains("Home Silo"))
     }
 }

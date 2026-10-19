@@ -3,7 +3,6 @@ import SwiftUI
 
 /// "Sign in to…" on iPhone, iPad, and Mac (spec §5.4): the saved servers a
 /// sign-in can use, in server setup's Recent style, then Add a New Server.
-/// Add Server leaves out the user's own servers; Add User lists them all.
 struct SignInTargetScreen: View {
     var router: AppRouter
     let context: SignInContext
@@ -15,17 +14,16 @@ struct SignInTargetScreen: View {
     /// a second tap doesn't start another.
     @State private var busyItemID: String?
 
-    private var users: SiloUserCoordinator { router.users }
+    private var accounts: SiloAccountCoordinator { router.accounts }
 
     var body: some View {
         let model = SignInTargetViewModel(
             context: context,
-            servers: users.auth.serverRegistry.sortedEntries,
-            snapshot: users.snapshot
+            servers: accounts.auth.serverRegistry.sortedEntries
         )
         UserFlowPage(router: router, onCancel: cancel) { _ in
             MarqueeHeadline(title: SignInTargetViewModel.title,
-                            lead: Self.lead(for: context, rows: model.rows, directory: users.directory),
+                            lead: Self.lead(for: context, rows: model.rows),
                             alignment: .center)
             if !model.rows.isEmpty {
                 UserFlowRowGroup {
@@ -39,7 +37,7 @@ struct SignInTargetScreen: View {
                             isConnecting: busyItemID == row.id
                         ) {
                             run(row.id) {
-                                _ = await users.beginSignIn(serverID: row.id, context: context, router: router)
+                                _ = await accounts.beginSignIn(serverID: row.id, context: context, router: router)
                             }
                         }
                     }
@@ -61,14 +59,14 @@ struct SignInTargetScreen: View {
         .task {
             router.signInContext = context
             MarqueeScene.shared.showGeneric()
-            await users.reloadDirectory()
+            await accounts.reloadDirectory()
         }
     }
 
     /// Cancel on a root that has somewhere to go back to.
     private var cancel: (() -> Void)? {
         guard isRoot, router.signInReturnPoint != nil else { return nil }
-        return { run("cancel") { await users.cancelSignIn(router: router) } }
+        return { run("cancel") { await accounts.cancelSignIn(router: router) } }
     }
 
     private func run(_ itemID: String, _ action: @escaping () async -> Void) {
@@ -81,19 +79,12 @@ struct SignInTargetScreen: View {
     }
 
     /// What the sign-in is for, under the title.
-    static func lead(for context: SignInContext, rows: [SignInTargetViewModel.Row],
-                     directory: SiloUserDirectory) -> String {
+    static func lead(for context: SignInContext, rows: [SignInTargetViewModel.Row]) -> String {
         switch context {
-        case .addUser:
+        case .addAccount:
             return rows.isEmpty
-                ? "Add the server the new user signs in to."
-                : "Choose the server the new user signs in to."
-        case .addServer(let userID):
-            let name = directory.user(userID)?.name
-            if rows.isEmpty {
-                return name.map { "Add a server for \($0)." } ?? "Add a server."
-            }
-            return name.map { "Choose a server to add to \($0)." } ?? "Choose a server to add."
+                ? "Add the server the account signs in to."
+                : "Choose the server the account signs in to, or add a new one."
         case .firstRun, .signInAgain:
             return rows.isEmpty
                 ? "Add the server you use for Silo."

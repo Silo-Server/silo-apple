@@ -15,11 +15,11 @@ struct TVGeneralSettingsPane: View {
     @State private var registry = ServerRegistry.shared
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
-    /// "Jamie", or "alex › Jamie" with two or more Silo users
+    /// "Jamie", or "alex › Jamie" with two or more Silo accounts
     /// (`SettingsViewModel.pairedProfileValue`).
     let pairedProfileValue: String
-    /// Two or more Silo users: Ask For shows (spec §5.7).
-    let hasMultipleUsers: Bool
+    /// Two or more Silo accounts: Ask For shows (spec §5.7).
+    let hasMultipleAccounts: Bool
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let changePairedProfile: () -> Void
     private let appleTVUserContext = AppleTVUserContext.current
@@ -27,13 +27,13 @@ struct TVGeneralSettingsPane: View {
 
     init(
         pairedProfileValue: String,
-        hasMultipleUsers: Bool,
+        hasMultipleAccounts: Bool,
         detailFocus: FocusState<TVSettingsDetailFocus?>.Binding,
         changePairedProfile: @escaping () -> Void,
         launchPreferences: ProfileLaunchPreferences = .shared
     ) {
         self.pairedProfileValue = pairedProfileValue
-        self.hasMultipleUsers = hasMultipleUsers
+        self.hasMultipleAccounts = hasMultipleAccounts
         self.detailFocus = detailFocus
         self.changePairedProfile = changePairedProfile
         _launchPreferences = State(initialValue: launchPreferences)
@@ -49,7 +49,7 @@ struct TVGeneralSettingsPane: View {
                 action: changePairedProfile
             )
             .focused(detailFocus, equals: .generalAppleTVUser)
-            .accessibilityHint(hasMultipleUsers ? "Choose the Silo user, then the profile." : "Choose the profile.")
+            .accessibilityHint(hasMultipleAccounts ? "Choose the Silo account, then the profile." : "Choose the profile.")
 
             TVSettingsFooter(pairingDescription)
 
@@ -64,7 +64,7 @@ struct TVGeneralSettingsPane: View {
 
             TVSettingsFooter(launchPreferences.behavior.tvDescription)
 
-            if hasMultipleUsers {
+            if hasMultipleAccounts {
                 askForRow
             }
 
@@ -254,8 +254,8 @@ struct TVGeneralSettingsPane: View {
 
     private var pairingDescription: String {
         var text = appleTVUserContext.pairingDescription
-        if hasMultipleUsers {
-            text += " This Apple TV has more than one Silo user, so changing it starts with the user."
+        if hasMultipleAccounts {
+            text += " This Apple TV has more than one Silo account, so changing it starts with the account."
         }
         if launchPreferences.behavior == .askEveryLaunch {
             text += " Ask Every Time is on, so Silo will still show Who's Watching at launch."
@@ -263,7 +263,7 @@ struct TVGeneralSettingsPane: View {
         return text
     }
 
-    /// Ask For (spec §5.7): only with two or more Silo users. Under
+    /// Ask For (spec §5.7): only with two or more Silo accounts. Under
     /// Automatic Silo never asks, so the row is dimmed and says when it
     /// applies; it stays focusable so its value can still be read and set.
     @ViewBuilder

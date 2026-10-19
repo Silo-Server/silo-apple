@@ -23,10 +23,10 @@ struct TVLoginView: View {
         self.router = router
         route = router.authState
         _loginVM = State(initialValue: LoginViewModel(context: router.signInContext))
-        // An approval is placed in the running sign-in (`SiloUserCoordinator`);
+        // An approval is placed in the running sign-in (`SiloAccountCoordinator`);
         // the screen moves on once "Signed in as …" has shown.
         _qrVM = State(initialValue: QRLoginViewModel(completeSignIn: { pending in
-            _ = try await router.users.completeSignIn(pending, router: router, routesWhenOpened: false)
+            _ = try await router.accounts.completeSignIn(pending, router: router, routesWhenOpened: false)
         }))
     }
 
@@ -55,7 +55,7 @@ struct TVLoginView: View {
         case usePassword
         case stateAction
         case changeServer
-        case switchUser
+        case switchAccount
         case cancelSignIn
         case username
         case password
@@ -80,9 +80,6 @@ struct TVLoginView: View {
             } else if offersOnlyNetworkSignIn {
                 networkOnlyScreen
                     .transition(.opacity)
-            } else if addUserNeedsAnotherServer {
-                addUserNetworkOnlyScreen
-                    .transition(.opacity)
             } else if showsPasswordScreen {
                 passwordScreen
                     .transition(.opacity)
@@ -94,7 +91,6 @@ struct TVLoginView: View {
         .animation(.easeOut(duration: 0.32), value: isPairing)
         .animation(.easeOut(duration: 0.32), value: showsPasswordScreen)
         .animation(.easeOut(duration: 0.32), value: offersOnlyNetworkSignIn)
-        .animation(.easeOut(duration: 0.32), value: addUserNeedsAnotherServer)
         .task {
             MarqueeScene.shared.focus = .account
             MarqueeScene.shared.personalTint = nil
@@ -129,8 +125,7 @@ struct TVLoginView: View {
                 return
             }
             if newValue == .noDeviceSignIn {
-                focusedField = addUserNeedsAnotherServer ? .changeServer
-                    : networkProvider == nil ? .username : .networkSignIn
+                focusedField = networkProvider == nil ? .username : .networkSignIn
             } else if case .updateRequired = newValue, !showPasswordForm, focusedField == .usePassword {
                 // The focused password button is gone; hand focus to a neighbour.
                 focusedField = defaultCodeScreenFocus
@@ -206,7 +201,8 @@ struct TVLoginView: View {
     private var defaultCodeScreenFocus: Field {
         if networkProvider != nil { return .networkSignIn }
         // An update requirement hides the password button.
-        return offersPassword && !isUpdateRequired ? .usePassword : .changeServer
+        if offersPassword && !isUpdateRequired { return .usePassword }
+        return isSignInAgain ? .switchAccount : .changeServer
     }
 
     private var codeLead: String {
@@ -237,15 +233,17 @@ struct TVLoginView: View {
                 .focused($focusedField, equals: .usePassword)
             }
 
-            Button("Change server") { changeServer() }
-                .buttonStyle(.marquee(.plain, fullWidth: false))
-                .focused($focusedField, equals: .changeServer)
+            if !isSignInAgain {
+                Button("Use a different server") { changeServer() }
+                    .buttonStyle(.marquee(.plain, fullWidth: false))
+                    .focused($focusedField, equals: .changeServer)
+            }
         }
         .focusSection()
     }
 
-    /// Whether this sign-in offers a way back besides Change server: Switch
-    /// User for Sign in again, Cancel for one started from a chooser or
+    /// Whether this sign-in offers a way back besides Use a different server: Switch
+    /// Account for Sign in again, Cancel for one started from a chooser or
     /// Settings (spec §6.2.3, plan §2.10).
     private var hasContextActions: Bool {
         if case .signInAgain = router.signInContext { return true }
@@ -265,20 +263,27 @@ struct TVLoginView: View {
         }
     }
 
-    /// Sign in again offers Switch User; a sign-in started from a user or
-    /// server chooser, or from Settings, offers Cancel.
+    /// Sign in again for a saved account (spec §6.2.3), which keeps its
+    /// server.
+    private var isSignInAgain: Bool {
+        if case .signInAgain = router.signInContext { return true }
+        return false
+    }
+
+    /// Sign in again offers Switch Account; a sign-in started from Choose an
+    /// Account, or from Settings, offers Cancel.
     @ViewBuilder
     private var signInContextButtons: some View {
-        if case .signInAgain = router.signInContext {
+        if isSignInAgain {
             Button {
                 qrVM.stop()
-                Task { await router.users.switchUserFromSignIn(router: router) }
+                Task { await router.accounts.switchAccountFromSignIn(router: router) }
             } label: {
-                Label("Switch User", systemImage: "person.2")
+                Label("Switch Account", systemImage: "person.2")
             }
             .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
-            .focused($focusedField, equals: .switchUser)
-            .accessibilityHint("Choose another Silo user on this Apple TV.")
+            .focused($focusedField, equals: .switchAccount)
+            .accessibilityHint("Choose another Silo account on this Apple TV.")
         }
         if router.signInReturnPoint != nil {
             Button {
@@ -474,11 +479,13 @@ struct TVLoginView: View {
                     .disabled(isSubmittingPassword || isSubmittingNetwork)
                 }
 
-                Button("Change server") { changeServer() }
-                    .buttonStyle(.marquee(.plain, fullWidth: false))
-                    .focused($focusedField, equals: .changeServer)
-                    // A password sign-in in flight would pull the app back.
-                    .disabled(isSubmittingPassword)
+                if !isSignInAgain {
+                    Button("Use a different server") { changeServer() }
+                        .buttonStyle(.marquee(.plain, fullWidth: false))
+                        .focused($focusedField, equals: .changeServer)
+                        // A password sign-in in flight would pull the app back.
+                        .disabled(isSubmittingPassword)
+                }
             }
             // Full width, so Down from the show-password button reaches the
             // row; entering it lands on Sign in.
@@ -563,9 +570,11 @@ struct TVLoginView: View {
                     .padding(.top, 40)
             }
             HStack(spacing: 22) {
-                Button("Change server") { changeServer() }
-                    .buttonStyle(.marquee(.plain, fullWidth: false))
-                    .focused($focusedField, equals: .changeServer)
+                if !isSignInAgain {
+                    Button("Use a different server") { changeServer() }
+                        .buttonStyle(.marquee(.plain, fullWidth: false))
+                        .focused($focusedField, equals: .changeServer)
+                }
                 signInContextButtons
             }
             .focusSection()
@@ -589,7 +598,7 @@ struct TVLoginView: View {
     // MARK: - Pieces
 
     /// Above the server: why the sign-in is asked for (an expired session),
-    /// or which flow it belongs to (Add User, Add Server).
+    /// or which flow it belongs to (Add Account).
     @ViewBuilder
     private var sessionExpiredChip: some View {
         if let notice = router.loginNotice {
@@ -606,58 +615,11 @@ struct TVLoginView: View {
 
     private var contextChip: (text: String, systemImage: String)? {
         switch router.signInContext {
-        case .addUser:
-            return (ChooseUserViewModel.addUserTitle, "person.badge.plus")
-        case .addServer(let userID):
-            let name = router.users.directory.user(userID)?.name
-            return (name.map { "Add a server for \($0)" } ?? ChooseServerViewModel.addServerTitle, "server.rack")
+        case .addAccount:
+            return (ChooseAccountViewModel.addAccountTitle, "person.badge.plus")
         case .firstRun, .signInAgain:
             return nil
         }
-    }
-
-    // MARK: - Add User on a network-only server (plan G9)
-
-    /// Add User never offers network sign-in, which signs in as whoever owns
-    /// the network (spec §5.5). On a server with nothing else for this TV,
-    /// the screen explains and offers Change server.
-    private var addUserNeedsAnotherServer: Bool {
-        loginVM.onlyNetworkSignInAvailableForAddUser && qrVM.status == .noDeviceSignIn
-    }
-
-    private var addUserNetworkOnlyScreen: some View {
-        let provider = loginVM.discovery.options?.networkProviders.first
-            .map { SignInOptions.providerName(for: $0) } ?? "its network"
-        return MarqueeTVScreen {
-            sessionExpiredChip
-            serverCard
-            headline("This server can't add a user here")
-                .padding(.top, 44)
-            MarqueeTVBody("\(server.serverName) signs this Apple TV in through \(provider), as whoever owns the network. To add a different user, choose a server that offers a code or a password.")
-                .padding(.top, 22)
-            HStack(spacing: 22) {
-                Button("Change server") { changeServer() }
-                    .buttonStyle(.marquee(.glass, fullWidth: false))
-                    .focused($focusedField, equals: .changeServer)
-                signInContextButtons
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .focusSection()
-            .padding(.top, 40)
-        } card: {
-            MarqueeTVCard {
-                MarqueeTVCardSymbol(systemImage: "person.crop.circle.badge.exclamationmark", tint: Color.siloStatusWarning)
-                Text("No code or password")
-                    .font(.system(size: 40, weight: .bold))
-                    .padding(.top, 34)
-                Text("Network sign-in can only sign in the network's owner, so it can't add someone else.")
-                    .font(.system(size: 24))
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.62))
-                    .padding(.top, 14)
-            }
-        }
-        .defaultFocus($focusedField, .changeServer, priority: .userInitiated)
-        .marqueeTVSeedFocus($focusedField, .changeServer)
     }
 
     private var serverCard: some View {
@@ -714,10 +676,9 @@ struct TVLoginView: View {
 
     /// Leave for the profiles once, however the sign-in finished.
     private func goToProfiles() {
-        // "Change server" during the approval pause has already left this
+        // "Use a different server" during the approval pause has already left this
         // screen; don't pull the app back to profiles.
-        // A question the sign-in raised moves on by itself once answered.
-        guard !navigatedAfterApproval, router.authState == route, router.signInPrompt == nil else { return }
+        guard !navigatedAfterApproval, router.authState == route else { return }
         navigatedAfterApproval = true
         router.skipsSingleProfilePicker = true
         router.showProfileSelection()
@@ -725,12 +686,12 @@ struct TVLoginView: View {
 
     private func changeServer() {
         qrVM.stop()
-        Task { await router.users.changeSignInServer(router: router) }
+        Task { await router.accounts.leaveSignIn(router: router) }
     }
 
     private func cancelSignIn() {
         qrVM.stop()
-        Task { await router.users.cancelSignIn(router: router) }
+        Task { await router.accounts.cancelSignIn(router: router) }
     }
 
     /// "Continue as …": the same single flight as a password sign-in, so a

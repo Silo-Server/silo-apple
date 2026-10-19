@@ -3,10 +3,10 @@ import XCTest
 @testable import Silo
 
 /// `HTTPClient.freshAccessToken(serverId:)` for a saved server that is not
-/// the active one: the bearer a phone approves a TV with, from the current
-/// user's sign-in there. The sign-in renews itself once, writes the rotated
-/// pair only when it still holds the session the refresh was sent with, and
-/// never hands out an expired or rejected bearer.
+/// the active one: the bearer a phone approves a TV with, from that server's
+/// launch account (here its only one). The sign-in renews itself once,
+/// writes the rotated pair only when it still holds the session the refresh
+/// was sent with, and never hands out an expired or rejected bearer.
 final class ApproverBearerTests: XCTestCase {
     private var stub = APIv2TestStub()
     private static let refreshPath = "/api/v2/auth/refresh"
@@ -16,14 +16,14 @@ final class ApproverBearerTests: XCTestCase {
         stub = APIv2TestStub()
     }
 
-    /// One user signed in to the active server and, with `access`, to the
-    /// other one.
+    /// An account signed in to the active server and, with `access`, one
+    /// signed in to the other.
     private func harness(access: String) async throws -> (HTTPClient, TokenStore) {
         let name = "ApproverBearerTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
         let keys = SharedKeychain(service: name, accessGroup: nil)
-        try SavedSignInStore(keychain: keys).saveIndex(SiloUserIndex())
+        try SavedSignInStore(keychain: keys).saveIndex(SiloAccountIndex())
         let tokens = TokenStore(keychain: keys, defaults: SharedDefaults(suite: suite, standard: suite))
         await tokens.switchActiveServer(serverId: Self.active)
         await tokens.setServerUrl("https://active.example")
@@ -33,8 +33,8 @@ final class ApproverBearerTests: XCTestCase {
         return (HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokens)
     }
 
-    /// Signs the current user in to the other server, or refreshes that
-    /// sign-in, the way Add Server does, then returns to the active server.
+    /// Signs the other server's account in, or refreshes its sign-in, then
+    /// returns to the active server.
     private func install(access: String, refresh: String, in tokens: TokenStore,
                          origin: String = "https://other.example") async throws {
         await tokens.setServerUrl(origin)
@@ -48,14 +48,8 @@ final class ApproverBearerTests: XCTestCase {
                         in tokens: TokenStore) async throws {
         let identity = await tokens.refreshAccountIdentity()
         let expected = try XCTUnwrap(identity)
-        let key = try XCTUnwrap(SignInKey(serverID: expected.serverId, accountID: account))
-        let directory = try await tokens.directory()
-        let userID = await tokens.currentUserID()
-        let placement: SignInPlacement = directory.user(owning: key) != nil
-            ? .refresh(key) : userID.map { .join(userID: $0) } ?? .newUser
         try await tokens.installSignIn(accessToken: access, refreshToken: refresh,
-            account: SignInAccount(id: account, username: nil), origin: origin,
-            placement: placement, expected: expected)
+            account: SignInAccount(id: account, username: nil), origin: origin, expected: expected)
     }
 
     /// A JWT-shaped token whose `exp` is `expiresIn` seconds from now,

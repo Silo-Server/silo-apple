@@ -110,7 +110,7 @@ class QRLoginViewModel: NearbySignInCodeSource {
     /// `retry()` is waiting for the request in flight before starting over.
     private var restartHold = false
     /// Bumped by every `retry()` and `stop()`: a `retry()` that wakes to a
-    /// newer number was overtaken (a `stop()` from "Change server", or a
+    /// newer number was overtaken (a `stop()` from "Use a different server", or a
     /// later retry) and must not start a loop of its own.
     private var intentGeneration = 0
     /// `expires_at` minus the local clock, from the start answer: moves a
@@ -119,7 +119,7 @@ class QRLoginViewModel: NearbySignInCodeSource {
     private var nearbyWaiters: [UUID: (deviceCode: String, continuation: CheckedContinuation<NearbySignInOutcome, Never>)] = [:]
 
     /// Where an approved sign-in goes. The sign-in screen places it through
-    /// `SiloUserCoordinator.completeSignIn`; without one it is saved outside
+    /// `SiloAccountCoordinator.completeSignIn`; without one it is saved outside
     /// any user flow (`AuthService.commitOutsideUserFlow`).
     typealias CompleteSignIn = @MainActor (PendingSignIn) async throws -> Void
 

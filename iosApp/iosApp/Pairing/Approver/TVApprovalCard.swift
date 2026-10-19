@@ -13,10 +13,11 @@ struct TVApprovalCard: View {
     /// Back to code entry when the code isn't found (a mistyped digit is the
     /// usual cause); nil hides it.
     var onEnterAnotherCode: (() -> Void)? = nil
-    /// "Not you? Switch User": the user chooser, with Add User, keeping the
-    /// TV's code; the card comes back once a user is chosen or added. It
-    /// signs nobody out, so it needs no confirmation. Nil hides the link.
-    var onSwitchUser: (() -> Void)? = nil
+    /// "Not you? Switch Account": the account chooser, with Add Account,
+    /// keeping the TV's code; the card comes back once an account is chosen
+    /// or added. It signs nobody out, so it needs no confirmation. Nil hides
+    /// the link.
+    var onSwitchAccount: (() -> Void)? = nil
     var onClose: () -> Void
 
     var body: some View {
@@ -76,9 +77,9 @@ struct TVApprovalCard: View {
         }
     }
 
-    /// The same on every server: Switch User never signs out, whatever the
+    /// The same on every server: Switch Account never signs out, whatever the
     /// server's sign-in offers.
-    static let switchUserLink = "Not you? Switch User"
+    static let switchAccountLink = "Not you? Switch Account"
 
     private func review(_ request: TVApprovalRequest, busy: Bool, declining: Bool) -> some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -102,8 +103,8 @@ struct TVApprovalCard: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(signInLine(request)).font(.siloBody).fixedSize(horizontal: false, vertical: true)
-                if onSwitchUser != nil {
-                    Button(Self.switchUserLink) { onSwitchUser?() }
+                if onSwitchAccount != nil {
+                    Button(Self.switchAccountLink) { onSwitchAccount?() }
                         .font(.siloCaption)
                         .disabled(busy)
                 }

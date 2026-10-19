@@ -1,17 +1,14 @@
 import SwiftUI
 
-/// The root screen of the user-flow auth states: Choose a User, Choose a
-/// Server, and "Sign in to…" (plan §2.10). Dispatches to the platform's
-/// screen.
+/// The root screen of the account-flow auth states: Choose an Account and
+/// "Sign in to…" (plan §2.10). Dispatches to the platform's screen.
 struct UserFlowRoot: View {
     var router: AppRouter
 
     var body: some View {
         switch router.authState {
-        case .needsUser(let focus):
-            UserFlowDestination(route: .chooseUser(focusUserID: focus), router: router)
-        case .needsServer(let userID, let focus):
-            UserFlowDestination(route: .chooseServer(userID: userID, focusServerID: focus), router: router)
+        case .needsAccount(let focus):
+            UserFlowDestination(route: .chooseAccount(focus: focus), router: router)
         case .needsSignInTarget(let context):
             UserFlowDestination(route: .signInTarget(context), router: router, isRoot: true)
         default:
@@ -20,7 +17,7 @@ struct UserFlowRoot: View {
     }
 }
 
-/// A user-flow route on any navigation stack, on the platform's screen.
+/// An account-flow route on any navigation stack, on the platform's screen.
 struct UserFlowDestination: View {
     let route: Route
     var router: AppRouter
@@ -30,17 +27,11 @@ struct UserFlowDestination: View {
 
     var body: some View {
         switch route {
-        case .chooseUser(let focus):
+        case .chooseAccount(let focus):
             #if os(tvOS)
-            TVChooseUserScreen(router: router, focusUserID: focus)
+            TVChooseAccountScreen(router: router, focus: focus)
             #else
-            ChooseUserScreen(router: router, focusUserID: focus)
-            #endif
-        case .chooseServer(let userID, let focus):
-            #if os(tvOS)
-            TVChooseServerScreen(router: router, userID: userID, focusServerID: focus)
-            #else
-            ChooseServerScreen(router: router, userID: userID, focusServerID: focus)
+            ChooseAccountScreen(router: router, focus: focus)
             #endif
         case .signInTarget(let context):
             #if os(tvOS)
@@ -49,9 +40,9 @@ struct UserFlowDestination: View {
             SignInTargetScreen(router: router, context: context, isRoot: isRoot)
             #endif
         #if !os(tvOS)
-        // Apple TV shows its users in Settings › Users (`TVSettingsView`).
-        case .manageUsers:
-            ManageUsersView(router: router)
+        // Apple TV shows its accounts in Settings › Accounts (`TVSettingsView`).
+        case .manageAccounts:
+            ManageAccountsView(router: router)
         #endif
         default:
             EmptyView()

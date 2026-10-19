@@ -619,7 +619,7 @@ enum StartupContentPrefetcher {
         case .needsProfile:
             prefetchProfiles()
         case .loading, .needsServerSetup, .needsLogin, .serverRecovery,
-             .needsUser, .needsServer, .needsSignInTarget:
+             .needsAccount, .needsSignInTarget:
             break
         }
     }

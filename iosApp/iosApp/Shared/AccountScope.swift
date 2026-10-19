@@ -38,7 +38,7 @@ enum AccountScopeReader {
 
 /// Which account on each server takes over local data stored under the old
 /// server-and-profile keys. A process-wide cache of
-/// `SiloUserIndex.legacyDataOwnerByServerID`; `TokenStore` publishes it after
+/// `SiloAccountIndex.legacyDataOwnerByServerID`; `TokenStore` publishes it after
 /// every index load or write.
 enum LegacyLocalDataOwner {
     private static let owners = Mutex<[String: String]>([:])
