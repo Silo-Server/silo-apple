@@ -618,7 +618,16 @@ final class ServerRegistry {
         let serverId = account.serverID
         var othersOnServer = false
         let removed = await remove(serverId: serverId) { [tokenStore] in
-            guard let directory = try? await tokenStore.directory() else { return true }
+            let directory: SiloAccountDirectorySnapshot
+            do {
+                directory = try await tokenStore.directory()
+            } catch SavedSignInAccessError.notMigrated {
+                // Before migration the account is the server's own session.
+                return true
+            } catch {
+                // Unknown which accounts the server holds: remove nothing.
+                return false
+            }
             othersOnServer = directory.accounts.contains { $0.serverID == serverId && $0 != account }
             return !othersOnServer
         }

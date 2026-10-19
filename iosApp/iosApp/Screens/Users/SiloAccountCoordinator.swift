@@ -30,6 +30,9 @@ struct RemovalRequest: Identifiable {
     let id = UUID()
     let target: Target
     let copy: ConfirmationCopy
+    /// For `.currentAccount`, the account current when the confirmation
+    /// showed; confirming acts only while it still is.
+    var account: SiloAccountRef? = nil
 }
 
 /// How a finished sign-in ended (`SiloAccountCoordinator.completeSignIn`).
@@ -332,7 +335,11 @@ final class SiloAccountCoordinator {
         var state = local
         if let expected = await tokenStore.refreshAccountIdentity() {
             switch await auth.validateRestoredSession(expected: expected) {
-            case .valid, .indeterminate, .identityChanged:
+            case .identityChanged:
+                // Another switch or sign-out took over while this checked;
+                // that one routes.
+                return
+            case .valid, .indeterminate:
                 state = auth.profileId == nil ? .needsProfile : local
             case .needsLogin:
                 // The server rejected the session while opening it.
@@ -888,7 +895,8 @@ final class SiloAccountCoordinator {
     /// Asks for the confirmation of `target` through the router's presenter.
     func requestRemoval(_ target: RemovalRequest.Target, router: AppRouter) async {
         await reloadDirectory()
-        router.removalRequest = RemovalRequest(target: target, copy: confirmation(for: target))
+        router.removalRequest = RemovalRequest(target: target, copy: confirmation(for: target),
+                                               account: directory.currentAccountID)
     }
 
     /// Runs a confirmed sign-out or removal. `removingAccount` is Remove
@@ -896,6 +904,11 @@ final class SiloAccountCoordinator {
     func perform(_ request: RemovalRequest, removingAccount: Bool, router: AppRouter) async {
         switch request.target {
         case .currentAccount:
+            // Another window opened a different account while this asked.
+            guard await tokenStore.currentAccount() == request.account else {
+                router.accountActionError = "The account changed. Try signing out again."
+                return
+            }
             await signOutCurrent(alsoRemoveAccount: removingAccount, asksForAccountChoice: true, router: router)
         case .signOut(let account):
             await signOut(account, router: router)

@@ -2011,6 +2011,9 @@ actor TokenStore {
             return removeAccount(account)
         }
         let credential = revocableCredential(for: key)
+        // Push display targets follow the account background work uses on
+        // its server (selected or not), read before anything changes.
+        let ownsPushTargets = SiloAccountRef(storedCredential(forServer: key.serverID)) == account
         let stored: SavedSignIn?
         do { stored = try savedSignIns.loadSignIn(key) } catch { stored = nil }
         var durable: Bool
@@ -2029,8 +2032,8 @@ actor TokenStore {
         }
         removeProofs(for: key)
         if durable { unblock(.signIn(key)) } else { block(.signIn(key)) }
+        if ownsPushTargets { removeDisplayTargets(registeredBy: key.serverID) }
         if selection == .signIn(key) {
-            removeDisplayTargets(registeredBy: key.serverID)
             persistentCredentialGenerationID = UUID()
             selection = .none
             invalidateLoadedCredential()
@@ -2101,6 +2104,10 @@ actor TokenStore {
         }
         let credentials = keys.map { revocableCredential(for: $0) }
         let legacyCredentials = legacyServerIDs.map { legacyRevocableCredential(serverID: $0) }
+        // Push display targets follow the account background work uses on
+        // each server (selected or not), read before anything changes.
+        let pushTargetServers = Set(keys.filter { storedCredential(forServer: $0.serverID) == .signIn($0) }.map(\.serverID)
+            + legacyServerIDs.filter { storedCredential(forServer: $0) == .legacy(serverID: $0) })
         let removed = Set(keys.map(SiloAccountRef.signIn)
             + legacyServerIDs.map { SiloAccountRef.pendingLegacy(serverID: $0) })
         // A server's own slot holds a session only while it can still be
@@ -2154,6 +2161,7 @@ actor TokenStore {
         case .signIn(let key): removesSelection = keys.contains(key)
         case .legacy(let serverID): removesSelection = legacyServerIDs.contains(serverID)
         }
+        for serverID in pushTargetServers { removeDisplayTargets(registeredBy: serverID) }
         if removesSelection {
             // Push follows the selected account (plan §2.13).
             removeDisplayTargets(registeredBy: activeServerId)

@@ -838,6 +838,40 @@ final class SiloAccountCoordinatorTests: XCTestCase {
         XCTAssertEqual(d.revokedAccessTokens(), [d.token("13", on: F.home)])
     }
 
+    /// A sign-out confirmed after another window opened a different account
+    /// is refused: it was asked about the account current when it showed.
+    func testAStaleSignOutConfirmationIsRefused() async throws {
+        let d = try Device(self)
+        try await d.threeAccounts()
+        await d.accounts.requestRemoval(.currentAccount, router: d.router)
+        let request = try XCTUnwrap(d.router.removalRequest)
+        XCTAssertEqual(request.account, .signIn(samHome))
+        await d.accounts.openAccount(.signIn(alexFriend), router: d.router)
+
+        await d.accounts.perform(request, removingAccount: false, router: d.router)
+
+        XCTAssertNotNil(d.router.accountActionError)
+        XCTAssertEqual(try d.f.signIn(alexFriend)?.isSignedIn, true)
+        XCTAssertEqual(try d.f.signIn(samHome)?.isSignedIn, true)
+        let selection = await d.selection
+        XCTAssertEqual(selection, .signIn(alexFriend))
+    }
+
+    /// When the accounts index can't be read, which accounts a server holds
+    /// is unknown, so removing its "last" account removes nothing.
+    func testRemovingTheLastAccountStopsWhenTheIndexCantBeRead() async throws {
+        let d = try Device(self)
+        try await d.threeAccounts()
+        d.f.signIns.failingReads = [SharedStorage.usersIndexAccount, SharedStorage.usersIndexBackupAccount]
+
+        let outcome = await d.registry.removeLastAccount(.signIn(alexFriend))
+
+        XCTAssertEqual(outcome, .failed)
+        XCTAssertNotNil(d.registry.entry(with: F.friend))
+        d.f.signIns.failingReads = []
+        XCTAssertEqual(try d.f.signIn(alexFriend)?.isSignedIn, true)
+    }
+
     /// The last account on a server goes with its server, through the
     /// registry's removal.
     func testRemovingTheLastAccountOnAServerRemovesTheServer() async throws {
