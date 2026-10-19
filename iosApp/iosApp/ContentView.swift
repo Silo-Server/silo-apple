@@ -382,7 +382,8 @@ struct ContentView: View {
         }
         // A signed-in profile reads the server's speed reading at once, so a
         // start in the first seconds sends it; the speed test waits a few
-        // seconds for the first screen to settle.
+        // seconds for the first screen to settle. The server task below also
+        // hands over each server it commits.
         .task(id: router.authState == .authenticated) {
             await followSignedInServerForBandwidthProbe()
         }
@@ -437,6 +438,10 @@ struct ContentView: View {
             )
             overlayPrefs.clear()
             guard !Task.isCancelled else { return }
+            // A restored session can reach `.authenticated` before this
+            // commit, and a server switch can stay `.authenticated` across
+            // it, so the speed scheduler follows the committed server here.
+            await followSignedInServerForBandwidthProbe()
             Task { await AuthService.shared.refreshActiveServerName() }
             if router.authState == .authenticated {
                 // Nothing below reads title art, and surfaces show its cached
@@ -628,6 +633,8 @@ struct ContentView: View {
             scheduler.setActiveServer(nil)
             return
         }
+        // Captures only a committed identity, never one mid-transition.
+        guard await HTTPClient.shared.waitForRequestDispatchOpen(), !Task.isCancelled else { return }
         scheduler.setActiveServer(await TokenStore.shared.captureOrdinaryRequestAuth()?.account.serverId)
     }
 

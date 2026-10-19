@@ -184,8 +184,11 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
         )
     }
 
+    /// No profile is chosen yet, so nothing profile-scoped can be read.
+    struct NoProfile: Error {}
+
     func storedReadings() async throws -> BandwidthStoredReadings {
-        guard let auth = await profileAuth() else { return .none }
+        guard let auth = await profileAuth() else { throw NoProfile() }
         let connection = try await SiloAPI.shared.apiV2Client.playbackConnection(auth: auth)
         return BandwidthStoredReadings(
             probe: connection.probe.map {
@@ -407,6 +410,7 @@ final class BandwidthProbeScheduler {
     /// The server signed in with a profile, or nil when none is.
     func setActiveServer(_ serverId: String?) {
         guard serverId != activeServerId else { return }
+        Self.logger.info("server \(serverId == nil ? "signed out" : "signed in", privacy: .public)")
         activeServerId = serverId
         forget()
         cancelInFlight(.interrupted)
@@ -424,6 +428,7 @@ final class BandwidthProbeScheduler {
         let changed = next.key != network.key
         network = next
         guard changed else { return }
+        Self.logger.info("network changed: \(next.isConnected ? next.transport : "offline", privacy: .public)")
         forget()
         cancelInFlight(.interrupted)
         check()
@@ -506,17 +511,30 @@ final class BandwidthProbeScheduler {
     /// Reads the server's readings now, so a start in the first seconds sends
     /// one, and looks once the first screen has settled.
     private func check() {
-        guard let serverId = activeServerId, isActive else { return }
+        guard let serverId = activeServerId, isActive else {
+            Self.logger.info("check skipped: \(self.activeServerId == nil ? "no server" : "not visible", privacy: .public)")
+            return
+        }
         Task { await readStored(serverId: serverId) }
         schedule(after: Self.startDelay)
     }
 
     private func readStored(serverId: String) async {
-        guard activeServerId == serverId, isActive, network.isConnected else { return }
+        guard activeServerId == serverId, isActive, network.isConnected else {
+            Self.logger.info("connection read skipped: \(self.network.isConnected ? "server or visibility changed" : "offline", privacy: .public)")
+            return
+        }
         let networkKey = network.key
-        guard let stored = try? await server.storedReadings(),
-              activeServerId == serverId, network.key == networkKey else { return }
+        let stored: BandwidthStoredReadings
+        do {
+            stored = try await server.storedReadings()
+        } catch {
+            Self.logger.info("connection read failed: \(String(describing: type(of: error)), privacy: .public)")
+            return
+        }
+        guard activeServerId == serverId, network.key == networkKey else { return }
         adopt(stored, serverId: serverId, networkKey: networkKey)
+        Self.logger.info("connection read: \(self.currentReadings.count, privacy: .public) current reading(s)")
     }
 
     /// Reads the server's readings and settings, then tests if nothing

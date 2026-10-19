@@ -512,6 +512,20 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertEqual(server.modes, [])
     }
 
+    /// A switch to another server while signed in: the old server's estimate
+    /// goes at once and the new server's reading is read at once.
+    func testAServerSwitchReadsTheNewServerAtOnce() async {
+        server.stored.probe = probe(kbps: 48_000, ageDays: 1)
+        await signIn()
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
+
+        server.stored.probe = probe(kbps: 300_000, ageDays: 1)
+        scheduler.setActiveServer("other")
+        XCTAssertNil(scheduler.freshEstimateKbps(), "it belonged to the other server")
+        await advance(seconds: 0)
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 300_000)
+    }
+
     func testSigningOutForgetsTheReadings() async {
         await signIn()
         XCTAssertNotNil(scheduler.freshEstimateKbps())
