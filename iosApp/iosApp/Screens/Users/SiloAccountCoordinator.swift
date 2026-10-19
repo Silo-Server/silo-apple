@@ -895,8 +895,11 @@ final class SiloAccountCoordinator {
     /// Asks for the confirmation of `target` through the router's presenter.
     func requestRemoval(_ target: RemovalRequest.Target, router: AppRouter) async {
         await reloadDirectory()
+        // Read from the selection, not the directory: before migration, or
+        // while the index can't be read, the directory is empty but a
+        // server's own session can still be signed out.
         router.removalRequest = RemovalRequest(target: target, copy: confirmation(for: target),
-                                               account: directory.currentAccountID)
+                                               account: await tokenStore.currentAccount())
     }
 
     /// Runs a confirmed sign-out or removal. `removingAccount` is Remove

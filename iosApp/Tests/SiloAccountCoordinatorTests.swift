@@ -857,6 +857,26 @@ final class SiloAccountCoordinatorTests: XCTestCase {
         XCTAssertEqual(selection, .signIn(alexFriend))
     }
 
+    /// Before migration the directory is empty, but the server's own session
+    /// is selected and its sign-out confirmation still signs it out.
+    func testSignOutConfirmationWorksBeforeMigration() async throws {
+        let d = try Device(self, migrated: false)
+        try d.f.seedLegacySession(F.friend, url: F.friendURL, accountID: "40", access: "friend",
+                                  refresh: "friend-refresh")
+        let switched = await d.registry.switchTo(serverId: F.friend, credential: .legacy(serverID: F.friend))
+        XCTAssertTrue(switched)
+        await d.accounts.requestRemoval(.currentAccount, router: d.router)
+        let request = try XCTUnwrap(d.router.removalRequest)
+        XCTAssertEqual(request.account, .pendingLegacy(serverID: F.friend))
+
+        await d.accounts.perform(request, removingAccount: false, router: d.router)
+
+        XCTAssertNil(d.router.accountActionError)
+        guard case .signedOut = try d.f.sessions.sessions.load(F.friend) else {
+            return XCTFail("Friend's own session is still saved")
+        }
+    }
+
     /// When the accounts index can't be read, which accounts a server holds
     /// is unknown, so removing its "last" account removes nothing.
     func testRemovingTheLastAccountStopsWhenTheIndexCantBeRead() async throws {
