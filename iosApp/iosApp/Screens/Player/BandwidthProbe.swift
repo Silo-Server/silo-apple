@@ -46,7 +46,8 @@ enum BandwidthProbe {
 /// One test download, timed: a rate, or why there is none.
 enum BandwidthProbeResult: Equatable {
     /// `kbps` measured from `bytes` over `durationMs`, the windows the rate
-    /// came from. A `lowerBound` says the link is at least this fast.
+    /// came from or the whole transfer. A `lowerBound` says the link is at
+    /// least this fast.
     case measured(kbps: Int, bytes: Int, durationMs: Int, lowerBound: Bool)
     /// HTTP 429: the server allows another test after `retryAfterSeconds`.
     case rateLimited(retryAfterSeconds: Int)
@@ -54,7 +55,8 @@ enum BandwidthProbeResult: Equatable {
     /// proxy-only policy with no proxy that serves probes. The test never
     /// falls back to measuring another path.
     case unavailable(status: Int)
-    /// No complete window after window 0, or a rate under the floor.
+    /// No complete window after window 0 and not every requested byte, or a
+    /// rate under the floor.
     case tooLittleData
     /// The request failed, or no byte arrived by
     /// ``BandwidthProbe/firstByteDeadlineMs``.
@@ -73,6 +75,10 @@ enum BandwidthProbeResult: Equatable {
 ///   lower bound. Otherwise it reports the settled rate.
 /// - The settled rate is over the last complete windows after window 0 that
 ///   fill the span (2 quick, 6 accurate), or all of them when there are fewer.
+/// - A transfer that delivers every requested byte before a window after
+///   window 0 completes is measured over the whole transfer, which includes
+///   the ramp and so can only read low: a lower bound, or the target when a
+///   quick test's average reaches it.
 struct BandwidthProbeMeter {
     enum Mode: Equatable {
         /// Automatic. `targetKbps` is the server's `bandwidth_probe_target_kbps`.
@@ -98,6 +104,10 @@ struct BandwidthProbeMeter {
 
     /// Bytes per window, by index.
     private var windowBytes: [Int] = []
+    /// Every byte that counted.
+    private var receivedBytes = 0
+    /// Whether the transfer's end, not a limit or the target, stopped the test.
+    private var transferDidEnd = false
     /// Windows whose end the clock has passed.
     private(set) var closedWindows = 0
     /// When the test stopped reading; nil while it runs.
@@ -150,12 +160,14 @@ struct BandwidthProbeMeter {
             windowBytes.append(contentsOf: repeatElement(0, count: window + 1 - windowBytes.count))
         }
         windowBytes[window] += bytes
+        receivedBytes += bytes
     }
 
     /// The transfer ended at `t`. A window it cut short does not count.
     mutating func transferEnded(at t: Int) {
         guard !advance(to: t) else { return }
         stoppedAt = t
+        transferDidEnd = true
     }
 
     /// What the test measured once it stopped; nil when it measured nothing.
@@ -168,7 +180,7 @@ struct BandwidthProbeMeter {
             )
         }
         let complete = closedWindows - 1
-        guard complete > 0 else { return nil }
+        guard complete > 0 else { return wholeTransfer }
         let count = min(settleWindows, complete)
         let bytes = (closedWindows - count..<closedWindows).reduce(0) { $0 + self.bytes(of: $1) }
         let durationMs = count * BandwidthProbe.windowMs
@@ -178,6 +190,22 @@ struct BandwidthProbeMeter {
             return Measurement(kbps: BandwidthProbe.maxKbps, lowerBound: true, bytes: bytes, durationMs: durationMs)
         }
         return Measurement(kbps: kbps, lowerBound: false, bytes: bytes, durationMs: durationMs)
+    }
+
+    /// `floor(bytes × 8 / ms)` from the first byte to the last, when the
+    /// transfer delivered every requested byte; nil otherwise.
+    private var wholeTransfer: Measurement? {
+        guard transferDidEnd, receivedBytes >= requestedBytes, let durationMs = stoppedAt, durationMs > 0 else {
+            return nil
+        }
+        let kbps = receivedBytes * 8 / durationMs
+        if case .quick(let target?) = mode, kbps >= target {
+            return Measurement(kbps: target, lowerBound: true, bytes: receivedBytes, durationMs: durationMs)
+        }
+        return Measurement(
+            kbps: min(kbps, BandwidthProbe.maxKbps), lowerBound: true,
+            bytes: receivedBytes, durationMs: durationMs
+        )
     }
 
     private func bytes(of window: Int) -> Int {
