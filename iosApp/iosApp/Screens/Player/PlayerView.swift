@@ -306,17 +306,11 @@ struct PlayerView: View {
                     if viewModel.showNextUpScreen { loadingCloseButton }
                     #endif
 
-                    #if os(tvOS)
                     if let message = watchPartySyncMessage {
                         PlayerBufferingCapsule(message: message, delay: .milliseconds(500))
                     } else if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
                         PlayerBufferingCapsule()
                     }
-                    #else
-                    if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
-                        PlayerBufferingCapsule()
-                    }
-                    #endif
                 }
             }
         }
@@ -676,24 +670,26 @@ struct PlayerView: View {
             }
     }
 
-    #if os(tvOS)
     private var watchPartySyncMessage: LocalizedStringKey? {
         guard let context = watchPartyContext, viewModel.error == nil,
               let room = WatchPartySession.shared.room,
               room.roomId == context.roomId, room.selectionRevision == context.selectionRevision,
               room.phase == .playing else { return nil }
+        #if !os(tvOS)
+        return WatchPartySession.shared.workStatusMessage.map { LocalizedStringKey($0) }
+        #else
         if WatchPartySession.shared.connection == .reconnecting {
             return "Reconnecting to the party…"
         }
+        if let message = WatchPartySession.shared.workStatusMessage { return LocalizedStringKey(message) }
         let playback = viewModel.watchPartyPlaybackSnapshot
         if room.playbackState == .waiting || playback.isBuffering || playback.isSeeking
             || room.members.contains(where: { $0.isSelf && $0.isSyncing }) {
             return "Syncing with the party…"
         }
         return nil
+        #endif
     }
-    #endif
-
     /// The sync card for a subtitle sync this viewer started, in the
     /// top-trailing corner. On iOS it moves below the top bar while the
     /// controls show (two rows tall in portrait, one in landscape); on tvOS

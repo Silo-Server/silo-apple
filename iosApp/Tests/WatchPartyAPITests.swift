@@ -261,4 +261,28 @@ final class WatchPartyAPITests: XCTestCase {
             XCTAssertFalse(request.url?.absoluteString.contains("room-proof") ?? true)
         }
     }
+
+    func testTicketWorkRefusalsPreserveReadableRetryWithoutPermissionFailure() async throws {
+        let (api, _, auth) = try await client()
+        for status in [429, 503] {
+            stub.reply(status, #"{"type":"urn:synthetic","title":"Busy","status":\#(status),"detail":"Wait","retry_after_ms":2500}"#,
+                       headers: ["Retry-After": "4"])
+            do {
+                _ = try await api.watchPartySocketTicket(roomId: roomId, token: "room-proof", auth: auth)
+                XCTFail("Refusal must not mint a ticket")
+            } catch let error as WatchPartyTicketRefusal {
+                XCTAssertEqual(error.retryAfter, 4)
+                XCTAssertEqual(error.unavailable, status == 503)
+            }
+        }
+        XCTAssertEqual(stub.requests.count, 2, "No hidden retry of a refused ticket mint")
+    }
+
+    func testTicketCarriesAdmissionMetadataWithoutRequiringItOnOldServers() async throws {
+        let (api, _, auth) = try await client()
+        stub.reply(200, #"{"ticket":"synthetic","expires_in":30,"max_connection_seconds":300,"protocol":"silo.room.v2","work_admission":{"version":1,"backend":"memory","scope":"node","epoch":"test"}}"#)
+        let ticket = try await api.watchPartySocketTicket(roomId: roomId, token: "room-proof", auth: auth)
+        XCTAssertEqual(ticket.workAdmission?.version, 1)
+        XCTAssertEqual(ticket.workAdmission?.epoch, "test")
+    }
 }

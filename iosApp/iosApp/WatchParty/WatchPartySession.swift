@@ -13,6 +13,8 @@ final class WatchPartySession {
     private(set) var state = WatchPartyRoomState()
     private(set) var votes = WatchPartyVotes()
     private(set) var errorMessage: String?
+    private(set) var workStatusMessage: String?
+    private(set) var lobbyReadyDesired: Bool?
     private(set) var isBusy = false
     private(set) var recentRoom: WatchPartyRecentRoom?
     private(set) var wasReplaced = false
@@ -60,7 +62,9 @@ final class WatchPartySession {
     @ObservationIgnored private var roomToken = ""
     @ObservationIgnored private var engagement = UUID()
     @ObservationIgnored private var connectionID = UUID()
-    @ObservationIgnored private var socket: WatchPartySocket?
+    @ObservationIgnored private var socket: (any WatchPartySocketConnection)?
+    @ObservationIgnored private let makeSocket: @MainActor () -> any WatchPartySocketConnection
+    @ObservationIgnored private let workSleep: (TimeInterval) async throws -> Void
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
     @ObservationIgnored private var reportTask: Task<Void, Never>?
     @ObservationIgnored private var commandTask: Task<Void, Never>?
@@ -97,12 +101,29 @@ final class WatchPartySession {
     @ObservationIgnored private var roomReceivedAt: Date = .distantPast
     @ObservationIgnored private var lastCommandCompleted: Date = .distantPast
     @ObservationIgnored private var mutationSequence: UInt64 = 0
+    @ObservationIgnored private var workRecovery = WatchPartyWorkRecovery()
+    @ObservationIgnored private var seekTask: Task<Void, Never>?
+    @ObservationIgnored private var seekWindow = WatchPartySeekWindow()
+    @ObservationIgnored private let workNow: () -> TimeInterval
+    @ObservationIgnored private let retryJitter: () -> TimeInterval
+    @ObservationIgnored private var reconciliationTask: Task<Void, Never>?
+    @ObservationIgnored private var lobbyReadyIdentity: WatchPartyWorkRecovery.Identity?
+    @ObservationIgnored private var controlUncertain = false
+    private var usesWorkAdmission: Bool { capabilities?.supportsWorkAdmission == true }
 
     init(api: APIv2Client = SiloAPI.shared.apiV2Client, tokenStore: TokenStore = .shared,
-         recentStore: WatchPartyRecentStore = WatchPartyRecentStore()) {
+         recentStore: WatchPartyRecentStore = WatchPartyRecentStore(),
+         workNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         retryJitter: @escaping () -> TimeInterval = { Double.random(in: 0...0.25) },
+         makeSocket: @escaping @MainActor () -> any WatchPartySocketConnection = { WatchPartySocket() },
+         workSleep: @escaping (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
         self.api = api
         self.tokenStore = tokenStore
         self.recentStore = recentStore
+        self.workNow = workNow
+        self.retryJitter = retryJitter
+        self.makeSocket = makeSocket
+        self.workSleep = workSleep
     }
 
     func refreshCapabilities() async {
@@ -236,6 +257,9 @@ final class WatchPartySession {
                   owner == engagement, !Task.isCancelled else { return false }
             if let expectedRoomID, response.room.roomId != expectedRoomID { throw WatchPartyAPIError.invalidResponse }
             cancelConnection()
+            workRecovery = WatchPartyWorkRecovery()
+            workStatusMessage = nil
+            controlUncertain = false
             state = WatchPartyRoomState()
             votes = WatchPartyVotes()
             selectedItem = nil
@@ -284,6 +308,10 @@ final class WatchPartySession {
         errorMessage = nil
         wasReplaced = false
         isBusy = false
+        workRecovery = WatchPartyWorkRecovery()
+        workStatusMessage = nil
+        controlUncertain = false
+        lobbyReadyDesired = nil
     }
 
     /// Leave the room without crossing an identity boundary. Support was read
@@ -392,6 +420,8 @@ final class WatchPartySession {
     }
 
     private func cancelConnection() {
+        invalidateWork()
+        reconciliationTask?.cancel(); reconciliationTask = nil
         connectionID = UUID()
         connectionTask?.cancel(); connectionTask = nil
         reportTask?.cancel(); reportTask = nil
@@ -413,6 +443,8 @@ final class WatchPartySession {
     /// Drops queued and in-flight transport commands and the attach handshake.
     /// A held seek request waits on a command dropped here, so it ends too.
     private func resetCommandState() {
+        if seekWindow.message != nil { workStatusMessage = "The pending seek was not sent because the party changed. Try again." }
+        cancelPendingSeek()
         adapter?.releaseHeldSeek()
         commandTask?.cancel()
         commandTask = nil
@@ -431,13 +463,17 @@ final class WatchPartySession {
                 guard await self.validateIdentity(), let auth = self.auth, let room = self.room else { return }
                 self.connection = failures == 0 ? .connecting : .reconnecting
                 self.connectionID = UUID()
+                self.reconciliationTask?.cancel()
+                self.reconciliationTask = nil
                 let socketID = self.connectionID
-                let socket = WatchPartySocket()
+                let socket = self.makeSocket()
                 self.socket = socket
                 self.resetCommandState()
                 self.stall.reset()
                 // A catch-up nudge does not outlive the connection it came on.
                 self.adapter?.cancelCorrection()
+                var inputShield = false
+                var ticketFloor: TimeInterval = 0
                 var openedAt: Date?
                 do {
                     let receipt = self.state.receipt
@@ -448,6 +484,7 @@ final class WatchPartySession {
                     guard self.isEngaged else { return }
                     let ticket = try await self.api.watchPartySocketTicket(roomId: room.roomId, token: self.roomToken, auth: auth)
                     guard await self.ownsCurrentIdentity(), owner == self.engagement, socketID == self.connectionID else { return }
+                    if let metadata = ticket.workAdmission { self.capabilities?.workAdmission = metadata }
                     let events = try socket.connect(serverURL: auth.account.serverURL, roomId: room.roomId, ticket: ticket)
                     for try await event in events {
                         guard await self.validateIdentity(), !Task.isCancelled, owner == self.engagement, socketID == self.connectionID else { return }
@@ -456,6 +493,11 @@ final class WatchPartySession {
                             openedAt = Date()
                             self.connection = .connected
                             self.errorMessage = nil
+                            if !self.controlUncertain, self.lobbyReadyDesired == nil,
+                               self.workRecovery.canSend(.attach, at: self.workNow()),
+                               self.workRecovery.canSend(.transport, at: self.workNow()) {
+                                self.workStatusMessage = nil
+                            }
                             self.startReporting(owner: owner, socketID: socketID)
                             self.refreshSuggestions()
                         case .message(let message): self.receive(message)
@@ -474,6 +516,15 @@ final class WatchPartySession {
                         self.terminate("The party connection expired or is no longer available. Join again to continue.")
                         return
                     }
+                    inputShield = (error as? WatchPartySocketError)?.isInputShield == true
+                    if let refusal = error as? WatchPartyTicketRefusal {
+                        let synthetic = WatchPartyWorkError(code: refusal.unavailable ? "realtime_unavailable" : "realtime_rate_limited",
+                            message: refusal.localizedDescription, retryAfterMilliseconds: Int(min(86400, refusal.retryAfter) * 1000),
+                            workStarted: false)
+                        _ = self.workRecovery.refuse(synthetic, at: self.workNow(), jitter: self.retryJitter())
+                        ticketFloor = refusal.retryAfter
+                        self.workStatusMessage = refusal.localizedDescription
+                    }
                 }
                 socket.close()
                 // leave() and terminate() finish the stream without an error.
@@ -484,18 +535,18 @@ final class WatchPartySession {
                 // The room's seek for a held request may never arrive now.
                 self.adapter?.releaseHeldSeek()
                 self.attachmentConfirmed = false
-                // The server ends every room socket at its connection deadline
-                // (five minutes, or sooner when the bearer expires). A socket
-                // that stayed up reconnects at once, without backing off or
-                // showing the party as reconnecting. One that closes soon after
-                // opening keeps backing off.
-                if let openedAt, Date().timeIntervalSince(openedAt) >= 30 {
+                let delay: TimeInterval
+                if self.usesWorkAdmission || ticketFloor > 0 {
+                    delay = max(ticketFloor, max(self.workRecovery.remainingDelay(.attach, at: self.workNow()),
+                        self.workRecovery.reconnectDelay(shield: inputShield, at: self.workNow()) + min(0.25, max(0, self.retryJitter()))))
+                } else if let openedAt, Date().timeIntervalSince(openedAt) >= 30 {
                     failures = 0
                     continue
-                }
+                } else { delay = min(15, pow(2, Double(min(failures, 4)))) }
+                self.invalidateWork()
                 failures += 1
                 self.connection = .reconnecting
-                do { try await Task.sleep(for: .seconds(min(15, pow(2, Double(min(failures - 1, 4)))))) }
+                do { try await self.workSleep(delay) }
                 catch { return }
             }
         }
@@ -521,9 +572,11 @@ final class WatchPartySession {
 
     private func receive(_ message: WatchPartyServerMessage) {
         switch message {
-        case .snapshot(let room): accept(room)
+        case .snapshot(let room):
+            accept(room)
         case .transport(let command):
             guard let room, commands.receive(command, room: room, sessionId: adapter?.snapshot.sessionId) else { return }
+            if usesWorkAdmission { stall.reset() }
             if command.action == .seek { adapter?.roomSeekArrived(at: command.positionSeconds) }
             // A rate nudge keeps running until the command executes; changing
             // the rate or play state on receipt would act a lead early.
@@ -542,7 +595,38 @@ final class WatchPartySession {
         case .closed: terminate("This party has ended.", canRejoin: false)
         case .connectionReplaced:
             terminate("This profile joined the party on another device. Rejoin here to take over playback.", replaced: true)
-        case .error(let code, let message):
+        case .actionResult(let requestId, let action, let status):
+            guard usesWorkAdmission, status == "applied", let identity = workIdentity(),
+                  workRecovery.applied(requestId: requestId, action: action, identity: identity, at: workNow()) else { return }
+            if action == "lobby_ready" { lobbyReadyDesired = nil }
+            controlUncertain = false
+            workStatusMessage = nil
+        case .error(let failure):
+            let code = failure.code
+            let message = failure.message
+            if usesWorkAdmission, failure.isPreWorkRefusal {
+                switch workRecovery.refuse(failure, at: workNow(), jitter: retryJitter()) {
+                case .desired(.buffering): stall.refused()
+                case .discardedTransport:
+                    transportUncertain("The control was not applied. Try again when the party is available.")
+                    return
+                default: break
+                }
+                workStatusMessage = "Party updates are delayed. Waiting to retry…"
+                return
+            }
+            if usesWorkAdmission {
+                switch workRecovery.failed(requestId: failure.requestId) {
+                case .some(.transport):
+                    transportUncertain()
+                case .some(.lobby):
+                    lobbyReadyDesired = nil
+                    lobbyReadyIdentity = nil
+                    workStatusMessage = "Readiness could not be confirmed. Check the party and try again."
+                    reconcileRoom()
+                default: break
+                }
+            }
             if code == "connection_replaced" {
                 terminate("This profile joined the party on another device. Rejoin here to take over playback.", replaced: true)
             }
@@ -587,6 +671,36 @@ final class WatchPartySession {
                 && issuedAttachSession == adapter.snapshot.sessionId && adapter.snapshot.sessionId != nil
             applyPendingCommand()
         }
+        if usesWorkAdmission, let identity = workIdentity() {
+            var acknowledged = false
+            if attachmentConfirmed { acknowledged = workRecovery.echo(.attach, identity: identity, at: workNow()) }
+            if let member = incoming.members.first(where: \.isSelf) {
+                if member.isReady {
+                    acknowledged = workRecovery.echo(.ready, identity: identity, at: workNow()) || acknowledged
+                    acknowledged = workRecovery.echo(.report, identity: identity, at: workNow()) || acknowledged
+                }
+                if member.isBuffering { acknowledged = workRecovery.echo(.buffering, identity: identity, at: workNow()) || acknowledged }
+                if let desired = lobbyReadyDesired, member.lobbyReady == desired {
+                    workRecovery.echo(.lobby, identity: identity, at: workNow())
+                    lobbyReadyDesired = nil
+                    workStatusMessage = nil
+                }
+            }
+            if workRecovery.expire(identity: identity, at: workNow()) { transportUncertain() }
+            if incoming.phase != .lobby || lobbyReadyIdentity != identity {
+                if lobbyReadyDesired != nil { workStatusMessage = "Readiness changed before it was confirmed. Check the party and try again." }
+                lobbyReadyDesired = nil
+                lobbyReadyIdentity = nil
+            }
+            if seekWindow.message != nil, seekWindow.identity != identity {
+                cancelPendingSeek()
+                transportUncertain("The pending seek was not sent because the party changed. Try again.")
+            }
+            if acknowledged, !controlUncertain, lobbyReadyDesired == nil,
+               workRecovery.canSend(.attach, at: workNow()), workRecovery.canSend(.transport, at: workNow()) {
+                workStatusMessage = nil
+            }
+        }
     }
 
     /// Snapshots report the anchor already projected to when the server built
@@ -616,6 +730,10 @@ final class WatchPartySession {
             self.issuedAttachSession = nil
             self.stall.reset()
             self.lastAttach = .distantPast
+            self.cancelPendingSeek()
+            if let identity = self.workIdentity(), self.workRecovery.expire(identity: identity, at: self.workNow()) {
+                self.transportUncertain()
+            }
             // A nudge belongs to the stream it measured, not the new session.
             adapter?.cancelCorrection()
         }
@@ -644,7 +762,8 @@ final class WatchPartySession {
         adapter.prepare(context)
     }
 
-    /// Returns whether the request was sent; a dropped one never reaches the room.
+    /// Returns whether this intent was queued locally. Only a matching
+    /// action_result confirms that the server applied it.
     private func requestTransport(_ action: WatchPartyPlaybackAction, position: Double, paused: Bool) -> Bool {
         guard connection == .connected, attachmentConfirmed, let room,
               action.isPermitted(canPlayPause: room.selfCanControlTransport, canSeek: room.selfRole == .host) else { return false }
@@ -665,7 +784,27 @@ final class WatchPartySession {
         case .pause: wire = .pause; target = position
         case .seek(let value): wire = .seek; target = value
         }
-        return send(WatchPartyClientMessage(type: "transport_request", action: wire, positionSeconds: target, isPaused: paused))
+        let message = WatchPartyClientMessage(type: "transport_request", action: wire, positionSeconds: target, isPaused: paused)
+        if usesWorkAdmission, wire == .seek, let identity = workIdentity() {
+            seekWindow.submit(message, identity: identity, at: workNow())
+            // Keep the first window's deadline while replacing only its
+            // absolute target. The player already holds that target visibly.
+            if seekTask == nil {
+                seekTask = Task { [weak self] in
+                    guard let self else { return }
+                    do { try await self.workSleep(0.25) } catch { return }
+                    guard !Task.isCancelled else { return }
+                    self.seekTask = nil
+                    guard let message = self.seekWindow.take(identity: self.workIdentity(), at: self.workNow()) else {
+                        self.transportUncertain("The pending seek was not sent because the party changed. Try again.")
+                        return
+                    }
+                    if !self.send(message) { self.transportUncertain("The seek was not sent. Try again when the party is available.") }
+                }
+            }
+            return true
+        }
+        return send(message)
     }
 
     private func applyPendingCommand() {
@@ -732,7 +871,7 @@ final class WatchPartySession {
             while let self, !Task.isCancelled, owner == self.engagement, socketID == self.connectionID {
                 guard await self.validateIdentity() else { return }
                 await self.report()
-                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                do { try await self.workSleep(0.5) } catch { return }
             }
         }
     }
@@ -744,6 +883,17 @@ final class WatchPartySession {
         let context = playbackContext
         let now = Date()
         do {
+            if usesWorkAdmission, let identity = workIdentity() {
+                if workRecovery.expire(identity: identity, at: workNow()) { transportUncertain() }
+                let retries = workRecovery.takeTransportRetries(identity: identity, at: workNow())
+                if retries.discarded { transportUncertain("The control was not applied before the party changed. Try again.") }
+                for message in retries.messages {
+                    guard await validateIdentity(), workIdentity() == identity else { return }
+                    guard workRecovery.canDispatchTransportRetry(message.requestId, identity: identity, at: workNow()) else { continue }
+                    try await socket.send(message)
+                }
+                await reportLobbyReady()
+            }
             // A clock step discards older samples; warm up again until it refills.
             let warming = min(connectionSamples, clock.samples.count) < WatchPartyClock.warmupSamples
             let pingInterval = warming ? WatchPartyClock.warmupInterval : WatchPartyClock.interval
@@ -774,8 +924,9 @@ final class WatchPartySession {
                 // that arrive before the media is ready stay pending until it is.
                 if now.timeIntervalSince(lastAttach) >= 1.5 {
                     lastAttach = now
-                    issuedAttachSession = session
-                    try await socket.send(WatchPartyClientMessage(type: "attach_session", sessionId: session))
+                    if !usesWorkAdmission || workRecovery.canSend(.attach, at: workNow()) {
+                        _ = try await sendReport(WatchPartyClientMessage(type: "attach_session", sessionId: session))
+                    }
                 }
                 return
             }
@@ -791,9 +942,15 @@ final class WatchPartySession {
             }
             // Only a playing room pauses for a stall; in a waiting room the
             // barrier already waits for this member.
-            if room.playbackState == .playing, stall.observe(buffering: snapshot.isBuffering, at: now) {
-                try await socket.send(WatchPartyClientMessage(type: "buffering", sessionId: session,
+            if !snapshot.isBuffering { stall.reset() }
+            if usesWorkAdmission, snapshot.isBuffering, let pending = workRecovery.desired[.buffering],
+               workNow() - pending.started >= 1.5 { stall.refused() }
+            if room.playbackState == .playing,
+               !usesWorkAdmission || workRecovery.canSend(.buffering, at: workNow()),
+               stall.observe(buffering: snapshot.isBuffering, at: now) {
+                let sent = try await sendReport(WatchPartyClientMessage(type: "buffering", sessionId: session,
                     positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
+                if !sent { stall.refused() }
             }
             // A rebuffering member resumes at 1x; a nudge would drain the
             // buffer it just refilled. The loop starts it again if needed.
@@ -807,14 +964,14 @@ final class WatchPartySession {
                 sourceTime: snapshot.sourceTime, isHost: room.selfRole == .host)
             if ready, WatchPartyCommandState.awaitsReadiness(room), now.timeIntervalSince(lastReady) >= 0.5 {
                 lastReady = now
-                try await socket.send(WatchPartyClientMessage(type: "ready", sessionId: session, commandId: completed?.commandId,
+                _ = try await sendReport(WatchPartyClientMessage(type: "ready", sessionId: session, commandId: completed?.commandId,
                     positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying))
             }
             guard owner == engagement, socketID == connectionID, context == playbackContext,
                   adapter.snapshot.sessionId == session else { return }
             if ready, now.timeIntervalSince(lastReport) >= 1.5 {
                 lastReport = now
-                try await socket.send(WatchPartyClientMessage(type: "state_report", sessionId: session, commandId: completed?.commandId,
+                _ = try await sendReport(WatchPartyClientMessage(type: "state_report", sessionId: session, commandId: completed?.commandId,
                     positionSeconds: snapshot.sourceTime, isPaused: !snapshot.isPlaying, isReady: true))
             }
         } catch { socket.close() }
@@ -845,28 +1002,184 @@ final class WatchPartySession {
         }
     }
 
-    /// Returns false when there is no socket to send on.
+    /// Returns false when this intent cannot be queued. A true result is
+    /// local acceptance, never proof of server completion.
     @discardableResult
     private func send(_ message: WatchPartyClientMessage) -> Bool {
         let owner = engagement
         let socketID = connectionID
         guard let socket, let room else { return false }
         let sessionId = adapter?.snapshot.sessionId
+        let expected = workIdentity()
+        if usesWorkAdmission, let kind = WatchPartyWorkRecovery.Kind(rawValue: message.type),
+           !workRecovery.canSend(kind, at: workNow()) {
+            workStatusMessage = "Party controls are temporarily busy. Try again shortly."
+            adapter?.releaseHeldSeek()
+            return false
+        }
         Task { [weak self] in
             guard let self, await self.validateIdentity(), owner == self.engagement, socketID == self.connectionID,
                   self.room?.roomId == room.roomId, self.room?.selectionRevision == room.selectionRevision,
                   self.room?.phase == room.phase else { return }
+            guard !self.usesWorkAdmission || self.workIdentity() == expected else {
+                self.transportUncertain("The control was not sent because the party changed. Try again.")
+                return
+            }
+            if self.usesWorkAdmission, let kind = WatchPartyWorkRecovery.Kind(rawValue: message.type),
+               !self.workRecovery.canSend(kind, at: self.workNow()) {
+                self.workStatusMessage = "Party controls are temporarily busy. Try again shortly."
+                self.adapter?.releaseHeldSeek()
+                return
+            }
             if message.type == "transport_request" {
                 guard self.attachmentConfirmed, self.adapter?.snapshot.sessionId == sessionId else { return }
             }
-            do { try await socket.send(message) } catch { socket.close() }
+            var wire = message
+            if self.usesWorkAdmission, let expected {
+                wire = self.workRecovery.track(message, identity: expected, at: self.workNow())
+            }
+            do { try await socket.send(wire) }
+            catch {
+                if owner == self.engagement, socketID == self.connectionID {
+                    if self.workRecovery.failed(requestId: wire.requestId) == .transport { self.transportUncertain() }
+                    socket.close()
+                }
+            }
         }
         return true
     }
 
     func setLobbyReady(_ ready: Bool) {
         guard room?.phase == .lobby, capabilities?.lobbyReady == true else { return }
-        send(WatchPartyClientMessage(type: "lobby_ready", ready: ready))
+        guard usesWorkAdmission else { send(WatchPartyClientMessage(type: "lobby_ready", ready: ready)); return }
+        if let pending = workRecovery.desired[.lobby] { _ = workRecovery.failed(requestId: pending.message.requestId) }
+        lobbyReadyDesired = ready
+        lobbyReadyIdentity = workIdentity()
+        controlUncertain = false
+        workStatusMessage = "Waiting for the party to confirm readiness…"
+        Task { [weak self] in await self?.reportLobbyReady() }
+    }
+
+    private func workIdentity() -> WatchPartyWorkRecovery.Identity? {
+        guard let room else { return nil }
+        return .init(engagement: engagement, connection: connectionID, room: room.roomId,
+            selection: room.selectionRevision, generation: room.generation, session: adapter?.snapshot.sessionId,
+            command: commands.pending?.commandId ?? commands.completed?.commandId,
+            canControl: room.selfCanControlTransport, canSeek: room.selfRole == .host, phase: room.phase)
+    }
+
+    private func cancelPendingSeek() {
+        seekTask?.cancel(); seekTask = nil
+        seekWindow.cancel()
+    }
+
+    private func invalidateWork() {
+        if seekWindow.message != nil { workStatusMessage = "The pending seek was not sent. Try again after reconnecting." }
+        cancelPendingSeek()
+        if lobbyReadyDesired != nil { workStatusMessage = "Readiness could not be confirmed. Check the party and try again." }
+        lobbyReadyDesired = nil
+        lobbyReadyIdentity = nil
+        if workRecovery.disconnected() {
+            controlUncertain = true
+            workStatusMessage = "The control could not be confirmed. Check the party before trying again."
+            adapter?.releaseHeldSeek()
+        }
+    }
+
+    private func transportUncertain(_ message: String = "The control could not be confirmed. Check the party before trying again.") {
+        controlUncertain = true
+        workStatusMessage = message
+        adapter?.releaseHeldSeek()
+        reconcileRoom()
+    }
+
+    /// Reconciliation reads state; it never resends a transport intent.
+    private func reconcileRoom() {
+        guard reconciliationTask == nil, let auth, let room, isEngaged else { return }
+        let owner = engagement
+        let socketID = connectionID
+        let receipt = state.receipt
+        reconciliationTask = Task { [weak self] in
+            guard let self else { return }
+            defer { if owner == self.engagement, socketID == self.connectionID { self.reconciliationTask = nil } }
+            do {
+                let response = try await self.api.watchPartyRoom(id: room.roomId, token: self.roomToken, auth: auth)
+                guard await self.validateIdentity(), owner == self.engagement, socketID == self.connectionID,
+                      !Task.isCancelled else { return }
+                self.accept(response.room, requestReceipt: receipt)
+            } catch { /* Keep the uncertainty visible; a read failure cannot authorize replay. */ }
+        }
+    }
+
+    private func reportLobbyReady() async {
+        guard usesWorkAdmission, let desired = lobbyReadyDesired, room?.phase == .lobby,
+              connection == .connected, let identity = workIdentity() else { return }
+        guard lobbyReadyIdentity == identity else { lobbyReadyDesired = nil; return }
+        if let pending = workRecovery.desired[.lobby] {
+            if pending.message.ready == desired, workNow() - pending.started < 5 { return }
+            // An unacknowledged lobby write is reconciled, never called saved.
+            _ = workRecovery.failed(requestId: pending.message.requestId)
+            lobbyReadyDesired = nil
+            workStatusMessage = "Readiness could not be confirmed. Check the party and try again."
+            reconcileRoom()
+            return
+        }
+        guard workRecovery.canSend(.lobby, at: workNow()), await validateIdentity(), workIdentity() == identity else { return }
+        do { _ = try await sendReport(WatchPartyClientMessage(type: "lobby_ready", ready: desired)) }
+        catch {
+            lobbyReadyDesired = nil
+            workStatusMessage = "Readiness could not be confirmed. Check the party and try again."
+            reconcileRoom()
+        }
+    }
+
+    @discardableResult
+    private func sendReport(_ message: WatchPartyClientMessage) async throws -> Bool {
+        guard let socket, connection == .connected, let identity = workIdentity() else { return false }
+        guard usesWorkAdmission else {
+            if message.type == "attach_session" { issuedAttachSession = message.sessionId }
+            try await socket.send(message)
+            return true
+        }
+        guard let kind = WatchPartyWorkRecovery.Kind(rawValue: message.type), workRecovery.canSend(kind, at: workNow()) else { return false }
+        if kind != .lobby {
+            guard message.sessionId == identity.session else { return false }
+            if kind == .ready || kind == .report { guard message.commandId == identity.command else { return false } }
+        }
+        guard await validateIdentity(), workIdentity() == identity, !Task.isCancelled,
+              workRecovery.canSend(kind, at: workNow()) else { return false }
+        // Authority validation suspends. Sample the desired state again after
+        // it returns, so a recovered buffer or replaced lobby desire cannot
+        // leak an old payload through an otherwise unchanged identity.
+        var current = message
+        if kind == .lobby {
+            guard lobbyReadyIdentity == identity, let desired = lobbyReadyDesired else { return false }
+            current.ready = desired
+        } else {
+            guard let snapshot = adapter?.snapshot, snapshot.sessionId == identity.session,
+                  snapshot.fileId == playbackContext?.fileId else { return false }
+            current.sessionId = snapshot.sessionId
+            if kind == .attach {
+                guard !attachmentConfirmed else { return false }
+            } else {
+                guard commands.pending == nil, !snapshot.isSeeking else { return false }
+                current.positionSeconds = snapshot.sourceTime
+                current.isPaused = !snapshot.isPlaying
+                if kind == .buffering {
+                    guard room?.playbackState == .playing, snapshot.isBuffering else { return false }
+                } else {
+                    guard !snapshot.isBuffering, snapshot.isReady, let room,
+                          WatchPartyCommandState.canAcknowledge(commands.completed, roomPlaybackState: room.playbackState,
+                            sourceTime: snapshot.sourceTime, isHost: room.selfRole == .host) else { return false }
+                    if kind == .ready, !WatchPartyCommandState.awaitsReadiness(room) { return false }
+                    current.commandId = commands.completed?.commandId
+                }
+            }
+        }
+        let wire = workRecovery.track(current, identity: identity, at: workNow())
+        if kind == .attach { issuedAttachSession = message.sessionId }
+        try await socket.send(wire)
+        return true
     }
 
     @discardableResult

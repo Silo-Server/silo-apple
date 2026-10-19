@@ -28,7 +28,7 @@ enum WatchPartyPlaybackAction: Equatable, Sendable {
 enum WatchPartyRequestOutcome: Equatable {
     /// No party: the caller runs its own transport.
     case solo
-    /// The room session sent the request to the room.
+    /// The room session queued the request. Server acknowledgement is separate.
     case sent
     /// The party took the request but did not send it: not permitted, a play
     /// from the end, or a session not connected and attached. The caller
@@ -333,7 +333,7 @@ final class WatchPartyPlaybackAdapter {
     var canSeek = false
     @ObservationIgnored var onSnapshot: ((WatchPartyPlaybackSnapshot) -> Void)?
     @ObservationIgnored var onSessionCommitted: ((String) -> Void)?
-    /// Returns whether the room session sent the request.
+    /// Returns whether the room session queued the request locally.
     @ObservationIgnored var onUserTransport: ((WatchPartyPlaybackAction, Double, Bool) -> Bool)?
     @ObservationIgnored var onLocalExit: (() -> Void)?
     @ObservationIgnored var onResyncRequired: (() -> Void)?

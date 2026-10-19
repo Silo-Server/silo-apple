@@ -211,14 +211,17 @@ extension APIv2Client {
             headers["X-Room-Token"] = token
         }
         let requestHeaders = headers
+        let isTicket = path.hasSuffix("/ws-ticket")
         let identity = Self.requestIdentity(auth, profile: profile)
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: path, query: query, body: body, headers: requestHeaders,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                    requestIdentity: identity, acceptedStatuses: isTicket ? [429, 503] : [],
+                    expectedAccount: auth.account, expectedAuth: auth)
             }
         }
         try Task.checkCancellation()
+        if isTicket, [429, 503].contains(raw.statusCode) { throw WatchPartyTicketRefusal(raw) }
         guard raw.statusCode == status else { throw APIv2Error.httpStatus(raw.statusCode) }
         return raw
     }
@@ -255,5 +258,33 @@ extension APIv2Client {
     private static func isPositiveWatchPartyID(_ value: String) -> Bool {
         guard let number = Int64(value), number > 0 else { return false }
         return String(number) == value
+    }
+}
+
+/// Ticket refusal is readable HTTP, rather than a terminal permission failure
+/// or an opaque WebSocket upgrade failure. Preserve both advertised floors.
+struct WatchPartyTicketRefusal: LocalizedError {
+    let unavailable: Bool
+    let retryAfter: TimeInterval
+    var errorDescription: String? {
+        unavailable ? "Party connection is temporarily unavailable. Retrying…" : "Party connection is busy. Retrying…"
+    }
+
+    init(_ raw: HTTPRawResponse, now: Date = Date()) {
+        unavailable = raw.statusCode == 503
+        let body = (try? JSONSerialization.jsonObject(with: raw.data)) as? [String: Any]
+        let milliseconds = (body?["retry_after_ms"] as? NSNumber)?.doubleValue ?? 0
+        var headerDelay: TimeInterval = 0
+        if let header = raw.header("retry-after") {
+            if let seconds = TimeInterval(header), seconds.isFinite { headerDelay = max(0, seconds) }
+            else {
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = TimeZone(secondsFromGMT: 0)
+                formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss z"
+                if let deadline = formatter.date(from: header) { headerDelay = max(0, deadline.timeIntervalSince(now)) }
+            }
+        }
+        retryAfter = max(0.25, headerDelay, milliseconds.isFinite ? milliseconds / 1000 : 0)
     }
 }

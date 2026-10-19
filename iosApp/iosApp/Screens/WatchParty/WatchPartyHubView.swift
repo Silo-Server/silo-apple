@@ -537,7 +537,7 @@ struct WatchPartyLobbyView: View {
 
     @ViewBuilder
     private func statusBanner(_ room: WatchPartyRoom) -> some View {
-        if let message = session.errorMessage {
+        if let message = session.workStatusMessage ?? session.errorMessage {
             WatchPartyBanner(message: message, tone: .warning)
         } else if session.selectedItemUnavailable {
             WatchPartyBanner(message: room.selfCanManageRoom
@@ -648,11 +648,11 @@ struct WatchPartyLobbyView: View {
                 .accessibilityIdentifier("watchParty.suggest")
         case .ready(let isReady):
             Button {
-                session.setLobbyReady(!isReady)
+                session.setLobbyReady(!(session.lobbyReadyDesired ?? isReady))
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: isReady ? "checkmark" : "checkmark.circle")
-                    Text(isReady ? "You're ready" : "I'm ready")
+                    Text(session.lobbyReadyDesired != nil ? "Confirming readiness…" : (isReady ? "You're ready" : "I'm ready"))
                     if isReady {
                         Text("tap to undo").font(.system(size: WatchPartyMetrics.caption)).opacity(0.6)
                     }

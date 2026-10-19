@@ -230,6 +230,10 @@ struct WatchPartyStallTimer {
         began = nil
         reported = false
     }
+
+    /// A pre-work refusal did not inform the room. Keep the elapsed stall
+    /// grace, and let the next eligible tick report the current stall again.
+    mutating func refused() { reported = false }
 }
 
 /// Only HTTP determines personal votes; every socket path carries common rows.
