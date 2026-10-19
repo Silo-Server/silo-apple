@@ -1,4 +1,5 @@
 import AetherEngine
+import AVFoundation
 import Foundation
 
 /// Resolves the language hint Aether uses for its initial audio pick.
@@ -201,6 +202,7 @@ struct AetherLoadSpec {
         preferredSubtitleLanguages: [String] = [],
         forwardBufferSegments: Int? = nil,
         audioBridgeMode: AudioBridgeMode = Self.defaultAudioBridgeMode,
+        objectAudioRendering: ObjectAudioRendering = .off,
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
@@ -246,6 +248,7 @@ struct AetherLoadSpec {
             dolbyVisionHandling: dolbyVisionHandling,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
+            objectAudioRendering: objectAudioRendering,
             audioOnly: audioOnly,
             preserveASSMarkup: true,
             prepareNativeSubtitles: true,
@@ -272,6 +275,7 @@ struct AetherLoadSpec {
         preferredSubtitleLanguages: [String] = [],
         forwardBufferSegments: Int? = nil,
         audioBridgeMode: AudioBridgeMode = Self.defaultAudioBridgeMode,
+        objectAudioRendering: ObjectAudioRendering = .off,
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
@@ -328,6 +332,7 @@ struct AetherLoadSpec {
             dolbyVisionHandling: dolbyVisionHandling,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
+            objectAudioRendering: objectAudioRendering,
             audioOnly: audioOnly,
             preserveASSMarkup: true,
             prepareNativeSubtitles: true,
@@ -359,6 +364,7 @@ struct AetherLoadSpec {
         preferredAudioLanguages: [String] = [],
         forwardBufferSegments: Int? = nil,
         audioBridgeMode: AudioBridgeMode = Self.defaultAudioBridgeMode,
+        objectAudioRendering: ObjectAudioRendering = .off,
         deinterlaceMode: DeinterlaceMode = Self.defaultDeinterlaceMode,
         deinterlaceFieldRate: DeinterlaceFieldRate = Self.defaultDeinterlaceFieldRate,
         dolbyVisionHandling: DolbyVisionHandling = .automatic,
@@ -515,6 +521,7 @@ struct AetherLoadSpec {
             matchContentEnabled: matchContentEnabled,
             panelIsInHDRMode: panelIsInHDRMode ?? AetherDisplayContext.panelIsInHDRMode,
             audioBridgeMode: audioBridgeMode,
+            objectAudioRendering: objectAudioRendering,
             audioOnly: plan.effectiveRecipe.videoCodec == nil,
             nativeRemoteHLS: isServerHLS,
             preserveASSMarkup: true,
@@ -591,4 +598,50 @@ struct AetherLoadSpec {
         }
         return isTrustedOrigin ? headers : [:]
     }
+}
+
+/// How the TrueHD Atmos and DTS:X setting becomes Aether's `objectAudioRendering`.
+enum AetherObjectAudioPolicy {
+    /// The bed Aether delivers TrueHD Atmos and DTS:X heights in (DTS:X takes
+    /// only 7.1.4 or 9.1.6, its heights one to one). Nothing downstream plays it
+    /// speaker for speaker: an Atmos receiver or soundbar re-renders the Dolby
+    /// Atmos it receives onto its own speakers, and AirPods or the built-in
+    /// speakers render it as Spatial Audio. So one detailed bed serves every
+    /// system, and 7.1.4 keeps sides apart from rears and front heights apart
+    /// from rear heights for that renderer to fold down.
+    static let layout: SpatialSpeakerLayout = .l714
+
+    /// The setting alone decides. tvOS doesn't say whether its output can carry
+    /// Atmos: `AVAudioSession.renderingMode` resolves for the content already
+    /// playing (stereo reads `monoStereo`, the lossless 7.1 bridge `surround`),
+    /// so a check before the load would turn heights off on an Atmos receiver
+    /// after any other stream. A setup without Atmos turns the setting off
+    /// instead and keeps `audioBridgeMode`'s channels.
+    static func rendering(enabled: Bool) -> ObjectAudioRendering {
+        enabled ? .apac(layout) : .off
+    }
+
+    /// `apac 7.1.4` or `off`, for the diagnostics line.
+    static func diagnosticName(_ rendering: ObjectAudioRendering) -> String {
+        switch rendering {
+        case .off: return "off"
+        case .apac(let layout): return "apac \(layout.rawValue)"
+        }
+    }
+
+    #if os(tvOS)
+    /// The mode's own name for the diagnostics line: what tvOS had resolved
+    /// for whatever was playing when the load began.
+    static func renderingModeName(_ mode: AVAudioSession.RenderingMode) -> String {
+        switch mode {
+        case .notApplicable: return "notApplicable"
+        case .monoStereo: return "monoStereo"
+        case .surround: return "surround"
+        case .spatialAudio: return "spatialAudio"
+        case .dolbyAudio: return "dolbyAudio"
+        case .dolbyAtmos: return "dolbyAtmos"
+        @unknown default: return "raw\(mode.rawValue)"
+        }
+    }
+    #endif
 }

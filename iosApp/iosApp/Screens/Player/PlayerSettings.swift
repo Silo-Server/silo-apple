@@ -517,6 +517,24 @@ final class PlayerSettings {
         }
     }
 
+    /// Device-local: whether TrueHD Atmos and DTS:X tracks keep their heights.
+    /// Maps to `LoadOptions.objectAudioRendering` through
+    /// ``AetherObjectAudioPolicy``: Aether splits the track's own 7.1 mix into a
+    /// 7.1.4 bed by where the Atmos objects' energy lies (DTS:X: its four heights
+    /// one to one) and delivers Apple Positional Audio, which an Atmos receiver
+    /// or soundbar gets as Dolby Atmos and AirPods or the built-in speakers
+    /// render as Spatial Audio. The trade is a compressed stream in place of
+    /// lossless 7.1, so a setup without Atmos is better with it off.
+    ///
+    /// Never synced to the server: what this device plays into is a fact about
+    /// the room or the headphones, not the profile. Default on.
+    private(set) var trueHDAtmosEnabled: Bool {
+        didSet {
+            guard !isLoadingCache else { return }
+            defaults.set(trueHDAtmosEnabled, forKey: Self.cacheKey(Keys.trueHDAtmosEnabled))
+        }
+    }
+
     /// Device-local: the hardware deinterlacer's output cadence.
     ///
     /// Never synced to the server, and deliberately not a contract key — see
@@ -736,6 +754,11 @@ final class PlayerSettings {
         bufferAhead = Self.cachedBufferAhead(defaults)
         deinterlaceMode = Self.cachedDeinterlaceMode(defaults)
         deinterlaceFieldRate = Self.cachedDeinterlaceFieldRate(defaults)
+        trueHDAtmosEnabled = Self.cachedBool(
+            defaults,
+            key: Keys.trueHDAtmosEnabled,
+            defaultValue: true
+        )
         deviceSubtitleAppearance = SubtitleAppearance.decode(from: defaults.string(forKey: Self.cacheKey(Keys.subtitleAppearance)))
         inheritedSubtitleAppearance = SubtitleAppearance.decode(
             from: defaults.string(forKey: Self.cacheKey(Keys.inheritedSubtitleAppearance))
@@ -1057,6 +1080,12 @@ final class PlayerSettings {
         deinterlaceMode = mode
     }
 
+    /// Choose whether TrueHD Atmos and DTS:X keep their heights. Purely local —
+    /// there is no contract key to enqueue.
+    func setTrueHDAtmosEnabled(_ enabled: Bool) {
+        trueHDAtmosEnabled = enabled
+    }
+
     /// Choose the hardware deinterlacer's output cadence. Purely local — there
     /// is no contract key to enqueue.
     func setDeinterlaceFieldRate(_ rate: DeinterlaceFieldRatePreference) {
@@ -1268,6 +1297,7 @@ final class PlayerSettings {
             bufferAhead != .automatic,
             deinterlaceMode != .automatic,
             deinterlaceFieldRate != .fullMotion,
+            !trueHDAtmosEnabled,
         ].filter { $0 }.count
     }
 
@@ -1425,6 +1455,7 @@ final class PlayerSettings {
         bufferAhead = .automatic
         deinterlaceMode = .automatic
         deinterlaceFieldRate = .fullMotion
+        trueHDAtmosEnabled = true
     }
 
     /// Keep showing this device's own values for keys whose change has not
@@ -1820,6 +1851,11 @@ final class PlayerSettings {
         bufferAhead = Self.cachedBufferAhead(defaults)
         deinterlaceMode = Self.cachedDeinterlaceMode(defaults)
         deinterlaceFieldRate = Self.cachedDeinterlaceFieldRate(defaults)
+        trueHDAtmosEnabled = Self.cachedBool(
+            defaults,
+            key: Keys.trueHDAtmosEnabled,
+            defaultValue: true
+        )
         playbackSpeed = Self.clampPlaybackSpeed(
             Self.cachedDouble(defaults, key: Keys.playbackSpeed, defaultValue: 1.0)
         )
@@ -2181,6 +2217,7 @@ final class PlayerSettings {
         static let bufferAhead = "player.bufferAhead"
         static let deinterlaceMode = "player.deinterlaceMode"
         static let deinterlaceFieldRate = "player.deinterlaceFieldRate"
+        static let trueHDAtmosEnabled = "player.trueHDAtmosEnabled"
         static let subtitleAppearance = "player.subtitleAppearance"
         static let inheritedSubtitleAppearance = "player.inheritedSubtitleAppearance"
         static let subtitleUsesDeviceAppearanceOverride = "player.subtitleUsesDeviceAppearanceOverride"

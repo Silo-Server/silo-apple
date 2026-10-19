@@ -105,22 +105,38 @@ So the target for TrueHD is not "TrueHD passthrough". It is:
 
 TrueHD Atmos object metadata is out of scope for this lossless target. Atmos may
 only be claimed when the source is already Apple-compatible E-AC-3/JOC and that
-track is preserved end to end.
+track is preserved end to end, or when the heights path (3.3) is engaged and
+validated.
 
-### 3.3 TrueHD Atmos object path (removed)
+### 3.3 TrueHD Atmos and DTS:X heights
 
-From #454 until the AetherEngine 7.40.1 sync, a Playback setting "TrueHD Atmos"
-selected Aether's `LoadOptions.objectAudioRendering = .apac(.l714)`: Aether
-decoded the TrueHD Atmos objects (and later DTS:X heights), rendered them into a
-7.1.4 bed and delivered it as lossy Apple Positional Audio (APAC), which tvOS
-sent to the receiver as Dolby MAT.
+The Playback setting "TrueHD Atmos and DTS:X" (device-local, default On) selects
+Aether's `LoadOptions.objectAudioRendering = .apac(.l714)` whenever it is on. Silo does
+not check the output first: `AVAudioSession.renderingMode` resolves for the content
+already playing (stereo reads `monoStereo`, the lossless 7.1 bridge `surround`), not for
+what the receiver can carry, so before a load it cannot tell an Atmos receiver from one
+without Atmos. A setup without Atmos keeps the lossless channel path by turning the
+setting off.
 
-Upstream AetherEngine 7.39.0 moved that path, with LibTrueHD and LibDTSX, behind
-the `TrueHDObjectAudio` / `DTSXObjectAudio` package traits, off by default,
-because those components may need third-party patent licenses. Silo does not
-enable them, so the setting is gone. TrueHD Atmos plays its 7.1 channel
-presentation through the lossless channel path above, with the objects mixed
-into the floor channels, and DTS:X plays as DTS-HD MA 7.1.
+Upstream AetherEngine builds this path only with its `TrueHDObjectAudio` and
+`DTSXObjectAudio` package traits, off by default since 7.39.0 because the components may
+need third-party patent licenses. The Silo fork turns those two traits on by default
+(XcodeGen cannot set package traits). With them, for a TrueHD track FFmpeg marks as
+Atmos (or whose major sync says Atmos), Aether 7.40:
+
+- decodes the stream's own 7.1 (or 5.1) channel presentation and its Atmos objects;
+- splits each bed channel between floor and height speakers per frequency bin, by where
+  the objects' energy lies, into a 7.1.4 bed; no object signal is mixed into the output
+  and the matrix interpolation is not decoded;
+- encodes the bed as Apple Positional Audio (APAC), `CODECS="apac.31.LL"`, which tvOS
+  sends to the receiver as Dolby MAT.
+
+DTS:X in its standard presentation keeps its four heights one to one in 7.1.4 (or
+9.1.6); presentations that carry objects are refused and play as 7.1.
+
+The audio is lossy (about 320 kbps per bed channel) instead of lossless 7.1. The
+receiver should show Dolby Atmos (MAT or PCM + Atmos), never TrueHD. A TrueHD track
+without Atmos, an older OS, or a start-up failure keeps the lossless channel path above.
 
 ## 4. Product contract
 
@@ -152,8 +168,15 @@ The route may claim Dolby Vision only when:
 The route may claim Atmos only when:
 
 - selected source audio is E-AC-3/JOC and the output path preserves
-  E-AC-3/JOC by copy or another validated Apple-native Atmos path, and
-- an AVR/soundbar validation run confirms the Atmos indicator
+  E-AC-3/JOC by copy or another validated Apple-native Atmos path, or
+- selected source audio is TrueHD Atmos or DTS:X and the heights path (3.3) is
+  engaged (pipeline label `TRUEHD Atmos → APAC 7.1.4` or `DTS:X → APAC 7.1.4`), and
+- in either case, an AVR/soundbar validation run confirms the Atmos indicator
+
+The heights path (3.3) must not be described as TrueHD passthrough, as lossless, or
+as Dolby's own decoding. The accurate description is that Silo splits the track's
+channel presentation into a 7.1.4 layout and delivers that as compressed audio, which
+tvOS sends to the receiver as Dolby Atmos (MAT).
 
 The route must not claim Atmos for TrueHD-derived PCM output.
 

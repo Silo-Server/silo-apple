@@ -212,6 +212,14 @@ struct TVPlaybackSettingsPane: View {
             viewModel.losslessAudioEnabled = value
         }
 
+        TVSettingsToggleRow(
+            title: "TrueHD Atmos and DTS:X",
+            isOn: viewModel.trueHDAtmosEnabled
+        ) {
+            let value = !viewModel.trueHDAtmosEnabled
+            viewModel.trueHDAtmosEnabled = value
+        }
+
         TVSettingsPickerRow(
             title: "Deinterlacing",
             value: viewModel.deinterlaceMode.label
@@ -230,6 +238,8 @@ struct TVPlaybackSettingsPane: View {
     private var streamingFooterText: String {
         var text = SettingsViewModel.hdrFooterText
         text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
+        text += " With TrueHD Atmos and DTS:X on, those tracks keep their height channels but play as compressed audio."
+        text += " Turn it off if your receiver or soundbar doesn't support Dolby Atmos."
         return text
     }
 

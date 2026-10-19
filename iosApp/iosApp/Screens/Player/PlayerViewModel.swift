@@ -3999,6 +3999,22 @@ class PlayerViewModel {
         let audioBridgeMode: AudioBridgeMode = settings.losslessAudioEnabled
             ? .lossless
             : .surroundCompat
+        // TrueHD Atmos and DTS:X keep their heights when the setting is on; Aether applies it to those
+        // tracks alone and keeps `audioBridgeMode` for the rest.
+        #if os(tvOS)
+        let renderingMode = AVAudioSession.sharedInstance().renderingMode
+        let renderingModeField = " renderingMode=\(AetherObjectAudioPolicy.renderingModeName(renderingMode))"
+        #else
+        let renderingModeField = ""
+        #endif
+        let trueHDAtmosEnabled = settings.trueHDAtmosEnabled
+        let objectAudioRendering = AetherObjectAudioPolicy.rendering(enabled: trueHDAtmosEnabled)
+        // Essential tier, so a report without Debug Logging says which path
+        // TrueHD Atmos was offered; the engine logs what it then built.
+        cmpLog(
+            "[CMP-ATMOS] setting=\(trueHDAtmosEnabled)\(renderingModeField) "
+                + "rendering=\(AetherObjectAudioPolicy.diagnosticName(objectAudioRendering))"
+        )
         let deinterlaceMode: DeinterlaceMode = settings.deinterlaceMode == .software
             ? .software
             : .auto
@@ -4114,6 +4130,7 @@ class PlayerViewModel {
                 preferredAudioLanguages: preferredAudio,
                 forwardBufferSegments: forwardBufferSegments,
                 audioBridgeMode: audioBridgeMode,
+                objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
                 dolbyVisionHandling: dolbyVisionHandling,
@@ -4151,6 +4168,7 @@ class PlayerViewModel {
                 preferredSubtitleLanguages: preferredSubtitles,
                 forwardBufferSegments: forwardBufferSegments,
                 audioBridgeMode: audioBridgeMode,
+                objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
                 dolbyVisionHandling: dolbyVisionHandling
@@ -4166,6 +4184,7 @@ class PlayerViewModel {
                 preferredSubtitleLanguages: preferredSubtitles,
                 forwardBufferSegments: forwardBufferSegments,
                 audioBridgeMode: audioBridgeMode,
+                objectAudioRendering: objectAudioRendering,
                 deinterlaceMode: deinterlaceMode,
                 deinterlaceFieldRate: deinterlaceFieldRate,
                 dolbyVisionHandling: dolbyVisionHandling

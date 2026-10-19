@@ -5,6 +5,11 @@ import XCTest
 
 @MainActor
 final class AetherPlaybackBoundaryTests: XCTestCase {
+    func testTrueHDAtmosHeightsFollowTheSettingAlone() {
+        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true), .apac(.l714))
+        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: false), .off)
+    }
+
     func testExplicitV3AudioSelectionOverridesProfileLanguageForInitialLoad() {
         let languages = AetherInitialAudioPreference.languages(
             selectedOrdinal: 0,
