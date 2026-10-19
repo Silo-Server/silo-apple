@@ -267,8 +267,8 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
 ///   then ``playbackQuietPeriod`` for automatic tests), on a metered or
 ///   cellular network, or with Silo in the background, hidden or minimized. A
 ///   test running when one of these begins is cancelled and measured nothing.
-/// - **Failures** wait for the next look, and after a 429 no earlier than its
-///   `Retry-After`.
+/// - **Failures** wait for the next look. A 429 holds automatic tests against
+///   the server that sent it until its `Retry-After`, on any network.
 /// - **Test speed** (``runNow()``) runs the accurate test whenever no media
 ///   plays, even with automatic tests off or a current reading.
 /// - **Reporting**: every measurement is POSTed with the transport it was
@@ -326,8 +326,14 @@ final class BandwidthProbeScheduler {
 
     /// One test, and the outcome it ends with when something cancels it.
     private final class Run {
+        /// **Test speed**'s accurate test, rather than an automatic one.
+        let isTestSpeed: Bool
         var task: Task<Outcome, Never>?
         var cancelledFor: Outcome?
+
+        init(isTestSpeed: Bool) {
+            self.isTestSpeed = isTestSpeed
+        }
     }
 
     @ObservationIgnored private let server: BandwidthProbeServer
@@ -340,11 +346,14 @@ final class BandwidthProbeScheduler {
     /// The last speed test settings the server sent.
     @ObservationIgnored private var lastTarget: BandwidthProbeTarget?
     @ObservationIgnored private var lastPlaybackStart: Date?
-    /// A 429's `Retry-After`: no automatic test before it.
-    @ObservationIgnored private var notBefore: Date?
+    /// A 429's `Retry-After`: no automatic test against that server before
+    /// it, on any network.
+    @ObservationIgnored private var rateLimit: (serverId: String, until: Date)?
     @ObservationIgnored private var timer: PlayerPromptTimer?
     @ObservationIgnored private var inFlight: Run?
     @ObservationIgnored private var isLooking = false
+    /// A look came while an earlier look or test was finishing.
+    @ObservationIgnored private var looksAgain = false
     /// Video players between their playback start and their end. Weak, so a
     /// player that goes away without saying so cannot hold tests off.
     @ObservationIgnored private let videoPlayers = NSHashTable<AnyObject>.weakObjects()
@@ -453,7 +462,6 @@ final class BandwidthProbeScheduler {
         probeReading = nil
         playbackSample = nil
         lastTarget = nil
-        notBefore = nil
     }
 
     private var readingsBelongHere: Bool {
@@ -541,9 +549,18 @@ final class BandwidthProbeScheduler {
     /// Reads the server's readings and settings, then tests if nothing
     /// current proves the link.
     private func look() async {
-        guard let serverId = activeServerId, isActive, !isLooking, inFlight == nil else { return }
+        guard let serverId = activeServerId, isActive else { return }
+        guard !isLooking, inFlight == nil else {
+            // One from before a server or network change; this change's look
+            // runs once it finishes rather than being lost.
+            looksAgain = true
+            return
+        }
         isLooking = true
-        defer { isLooking = false }
+        defer {
+            isLooking = false
+            lookAgainIfAsked()
+        }
         let networkKey = network.key
         let stored = try? await server.storedReadings()
         let target = try? await server.target()
@@ -552,7 +569,7 @@ final class BandwidthProbeScheduler {
         guard let target, target.serverId == serverId else { return }
         lastTarget = target
         guard target.automatic, !linkIsProven else { return }
-        if let notBefore, clock.now < notBefore { return }
+        if let rateLimit, rateLimit.serverId == serverId, clock.now < rateLimit.until { return }
         guard gate(automatic: true) == nil else { return }
         _ = await probeOnce(mode: .quick(targetKbps: target.targetKbps))
     }
@@ -573,9 +590,21 @@ final class BandwidthProbeScheduler {
 
     // MARK: - Test
 
+    private func lookAgainIfAsked() {
+        guard looksAgain, !isLooking, inFlight == nil else { return }
+        looksAgain = false
+        Task { await look() }
+    }
+
+    /// Runs `mode`, or joins the test already running. **Test speed**
+    /// replaces a running automatic test, so it always measures accurately.
     private func probeOnce(mode: BandwidthProbeMeter.Mode) async -> Outcome {
-        if let inFlight, let task = inFlight.task { return await task.value }
-        let run = Run()
+        while let running = inFlight, let task = running.task {
+            guard mode == .accurate, !running.isTestSpeed else { return await task.value }
+            cancelInFlight(.interrupted)
+            _ = await task.value
+        }
+        let run = Run(isTestSpeed: mode == .accurate)
         inFlight = run
         isProbing = true
         let task = Task { [weak self] () -> Outcome in
@@ -585,9 +614,10 @@ final class BandwidthProbeScheduler {
                 self.inFlight = nil
                 self.isProbing = false
             }
-            if case .rateLimited(let seconds) = outcome {
-                self.notBefore = self.clock.now.addingTimeInterval(TimeInterval(seconds))
+            if case .rateLimited(let seconds) = outcome, let serverId = self.activeServerId {
+                self.rateLimit = (serverId, self.clock.now.addingTimeInterval(TimeInterval(seconds)))
             }
+            self.lookAgainIfAsked()
             return outcome
         }
         run.task = task

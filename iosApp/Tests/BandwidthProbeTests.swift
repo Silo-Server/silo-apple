@@ -428,6 +428,44 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertEqual(server.modes.count, 2)
     }
 
+    /// The hold belongs to the server that sent the 429, on any network.
+    func testARateLimitHoldsAcrossANetworkChange() async {
+        server.result = .rateLimited(retryAfterSeconds: 600)
+        await signIn()
+        server.result = .measured(kbps: 48_000, bytes: 6_000_000, durationMs: 1_000, lowerBound: false)
+        scheduler.networkChanged(Self.otherWifi)
+        await advance(seconds: 5)
+        XCTAssertEqual(server.modes.count, 1, "still within Retry-After")
+        await advance(seconds: 600)
+        scheduler.networkChanged(Self.wifi)
+        await advance(seconds: 5)
+        XCTAssertEqual(server.modes.count, 2)
+    }
+
+    /// Test speed measures accurately even while an automatic test runs.
+    func testTestSpeedReplacesARunningAutomaticTest() async {
+        server.hangs = true
+        await signIn()
+        XCTAssertTrue(scheduler.isProbing)
+        server.hangs = false
+        let outcome = await scheduler.runNow()
+        if case .measured = outcome {} else { XCTFail("Test speed ran its own test, not \(outcome)") }
+        XCTAssertEqual(server.modes, [.quick(targetKbps: 115_000), .accurate])
+    }
+
+    /// A network change while a look still waits on the server keeps its own
+    /// look, which runs once the earlier one finishes.
+    func testANetworkChangeDuringALookStillLooks() async {
+        server.holdsReads = true
+        await signIn()
+        scheduler.networkChanged(Self.otherWifi)
+        await advance(seconds: 5)
+        XCTAssertEqual(server.modes, [], "the first look still waits")
+        server.releaseReads()
+        for _ in 0..<200 where server.modes.isEmpty { await Task.yield() }
+        XCTAssertEqual(server.modes, [.quick(targetKbps: 115_000)])
+    }
+
     func testARateLimitHoldsLooksUntilItsRetryAfter() async {
         server.result = .rateLimited(retryAfterSeconds: 600)
         await signIn()
@@ -586,8 +624,19 @@ private final class FakeProbeServer: BandwidthProbeServer {
         )
     }
 
+    /// Reads wait until ``releaseReads()``.
+    var holdsReads = false
+    private var heldReads: [CheckedContinuation<Void, Never>] = []
+
+    func releaseReads() {
+        holdsReads = false
+        heldReads.forEach { $0.resume() }
+        heldReads = []
+    }
+
     func storedReadings() async throws -> BandwidthStoredReadings {
         storedCount += 1
+        if holdsReads { await withCheckedContinuation { heldReads.append($0) } }
         return stored
     }
 
