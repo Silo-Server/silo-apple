@@ -263,9 +263,10 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         scheduler.networkChanged(Self.wifi)
         scheduler.setActiveServer("server")
         await advance(seconds: 4.9)
-        XCTAssertEqual(server.storedCount, 0, "the first screen settles first")
+        XCTAssertEqual(server.storedCount, 1, "the server's readings are read at once")
+        XCTAssertEqual(server.modes, [], "the test lets the first screen settle")
         await advance(seconds: 0.1)
-        XCTAssertEqual(server.storedCount, 1, "the server's readings come first")
+        XCTAssertEqual(server.storedCount, 2, "the look reads them again first")
         XCTAssertEqual(server.modes, [.quick(targetKbps: 115_000)])
         XCTAssertEqual(scheduler.freshEstimateKbps(), 115_000)
         XCTAssertEqual(server.reports.map(\.lowerBound), [true])
@@ -352,6 +353,27 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         await signIn()
         _ = await scheduler.runNow()
         XCTAssertEqual(server.modes, [.accurate])
+    }
+
+    /// A start in the first seconds sends the server's reading.
+    func testEachCheckReadsTheServerAtOnce() async {
+        server.stored.probe = probe(kbps: 48_000, ageDays: 1)
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        await advance(seconds: 0)
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000, "on sign-in")
+
+        server.stored.probe = probe(kbps: 300_000, ageDays: 2)
+        scheduler.networkChanged(Self.otherWifi)
+        await advance(seconds: 0)
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 300_000, "after a network change")
+
+        server.stored.playbackSample = sample(kbps: 400_000, ageDays: 0)
+        scheduler.setForeground(false)
+        scheduler.setForeground(true)
+        await advance(seconds: 0)
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 400_000, "on a return to the foreground")
+        XCTAssertEqual(server.modes, [])
     }
 
     /// Another network has its own reading on the server.

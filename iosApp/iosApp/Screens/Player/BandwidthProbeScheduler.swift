@@ -250,10 +250,12 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
 /// `docs/design/2026-10-17-buffering-quality.md`, "Connection speed test" >
 /// "When to test".
 ///
-/// - **Look**: ``startDelay`` after a server is signed in, Silo returns to the
-///   foreground, or the network changes. A look reads the server's stored
-///   readings, then runs a quick test only when automatic tests are on and no
-///   current reading proves the link. There is no periodic test.
+/// - **Check**: when a server is signed in, Silo returns to the foreground, or
+///   the network changes. A check reads the server's stored readings at once,
+///   so a playback start in the first seconds sends one. Only the test waits:
+///   ``startDelay`` later a look reads them again, then runs a quick test only
+///   when automatic tests are on and no current reading proves the link. There
+///   is no periodic test.
 /// - **Current**: a reading younger than the server's
 ///   `bandwidth_probe_max_age_seconds`. A settled rate proves the link; a
 ///   lower bound proves it only while it reaches the current target.
@@ -273,7 +275,7 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
 final class BandwidthProbeScheduler {
     static let shared = BandwidthProbeScheduler(server: LiveBandwidthProbeServer())
 
-    /// Lets the first screen settle before looking.
+    /// Lets the first screen settle before a look that may test.
     nonisolated static let startDelay: TimeInterval = 5
     /// How long after a playback start automatic tests hold off: media is
     /// still loading for a while after the start itself.
@@ -409,22 +411,22 @@ final class BandwidthProbeScheduler {
         forget()
         cancelInFlight(.interrupted)
         if serverId != nil {
-            schedule(after: Self.startDelay)
+            check()
         } else {
             timer?.cancel()
             timer = nil
         }
     }
 
-    /// Another network has its own readings on the server: a look asks for
-    /// them before anything is tested.
+    /// Another network has its own readings on the server: a check reads them
+    /// before anything is tested.
     func networkChanged(_ next: BandwidthProbeNetwork) {
         let changed = next.key != network.key
         network = next
         guard changed else { return }
         forget()
         cancelInFlight(.interrupted)
-        if activeServerId != nil { schedule(after: Self.startDelay) }
+        check()
     }
 
     // MARK: - Look
@@ -433,7 +435,7 @@ final class BandwidthProbeScheduler {
 
     private func activityChanged() {
         if isActive {
-            if activeServerId != nil { schedule(after: Self.startDelay) }
+            check()
         } else {
             timer?.cancel()
             timer = nil
@@ -499,6 +501,22 @@ final class BandwidthProbeScheduler {
             self.timer = nil
             Task { await self.look() }
         }
+    }
+
+    /// Reads the server's readings now, so a start in the first seconds sends
+    /// one, and looks once the first screen has settled.
+    private func check() {
+        guard let serverId = activeServerId, isActive else { return }
+        Task { await readStored(serverId: serverId) }
+        schedule(after: Self.startDelay)
+    }
+
+    private func readStored(serverId: String) async {
+        guard activeServerId == serverId, isActive, network.isConnected else { return }
+        let networkKey = network.key
+        guard let stored = try? await server.storedReadings(),
+              activeServerId == serverId, network.key == networkKey else { return }
+        adopt(stored, serverId: serverId, networkKey: networkKey)
     }
 
     /// Reads the server's readings and settings, then tests if nothing
