@@ -117,6 +117,36 @@ final class SiloControlWireCompatibilityTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(SiloControlMessage.self, from: data))
     }
 
+    // MARK: - Messages: unknown types from newer peers
+
+    /// A newer peer's message type decodes as unsupported instead of throwing,
+    /// which would drop the connection.
+    func testUnknownMessageTypeDecodesAsUnsupported() throws {
+        let data = Data(
+            #"{"type":"controllers","v":2,"controllers":{"list":[{"deviceName":"Kitchen"}]}}"#.utf8
+        )
+        let message = try JSONDecoder().decode(SiloControlMessage.self, from: data)
+        XCTAssertEqual(message, .unsupported(type: "controllers"))
+    }
+
+    func testUnsupportedMessageRoundTrips() throws {
+        let message = SiloControlMessage.unsupported(type: "controllers")
+        let data = try JSONEncoder().encode(message)
+        XCTAssertEqual(try JSONDecoder().decode(SiloControlMessage.self, from: data), message)
+    }
+
+    /// A known type with a malformed payload is still a real decode error.
+    /// Tolerance is scoped to unknown types, not to junk.
+    func testKnownMessageTypeWithBadPayloadStillFailsToDecode() {
+        let data = Data(#"{"type":"error","v":2,"error":{"code":42}}"#.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(SiloControlMessage.self, from: data))
+    }
+
+    func testMessageWithoutTypeStillFailsToDecode() {
+        let data = Data(#"{"v":2}"#.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(SiloControlMessage.self, from: data))
+    }
+
     // MARK: - Commands: argument round trip
 
     /// `SiloControlCommand` decodes by hand, so every argument field must

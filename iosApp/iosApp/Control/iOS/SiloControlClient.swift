@@ -358,7 +358,7 @@ final class SiloControlClient {
         // phone's URL still prepare the profile. Best effort: without them
         // the TV uses `serverURL` as-is. Fetched while the version settles.
         async let endpointsFetch = Self.offeredEndpoints(for: server)
-        guard try await handshake.negotiatedVersion(within: Self.helloWait) == 2 else {
+        guard let version = try await handshake.negotiatedVersion(within: Self.helloWait), version >= 2 else {
             throw SiloControlHandoffError.updateRequired
         }
         // The server-side approval runs under the owner captured here: the
@@ -761,6 +761,9 @@ final class SiloControlClient {
             session?.enqueue(.pong)
         case .pong:
             missedHeartbeats = 0
+        case .unsupported(let type):
+            // A newer TV sent a message type this build predates.
+            Self.logger.info("control: ignoring unsupported message type \(type, privacy: .public)")
         case .launch, .control, .unsupportedControl, .handoffOffer, .presence:
             break
         }

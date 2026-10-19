@@ -196,7 +196,7 @@ struct SiloControlReplaceConsent: Equatable, Sendable {
 }
 
 /// A controller's `passive` flag after hello. Sent only to receivers that
-/// list `SiloControlFeature.presence`; other receivers drop the connection
+/// list `SiloControlFeature.presence`; older receivers drop the connection
 /// on a message type they don't know.
 struct SiloControlPresence: Codable, Equatable, Sendable {
     let passive: Bool
@@ -407,6 +407,11 @@ enum SiloControlMessage: Equatable, Sendable {
     /// implement — typically a v2 peer that predates the command's removal.
     /// Receivers ignore it; the connection survives.
     case unsupportedControl(name: String)
+    /// A frame whose `type` this build doesn't know — typically a newer peer
+    /// using a message added after this build shipped. Receivers ignore it;
+    /// the connection survives. A known `type` with a malformed payload is
+    /// still a decode error.
+    case unsupported(type: String)
     case state(SiloControlPlaybackState)
     case error(SiloControlErrorMessage)
     case presence(SiloControlPresence)
@@ -496,12 +501,24 @@ extension SiloControlMessage: Codable {
             if let reason {
                 try c.encode(SiloControlClosePayload(reason: reason), forKey: .close)
             }
+        case .unsupported(let type):
+            // Re-emit the original type so the frame round-trips back to
+            // `.unsupported`. The payload is dropped: this build can't
+            // interpret it.
+            try c.encode(type, forKey: .type)
         }
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try c.decode(Kind.self, forKey: .type)
+        // Decode `type` as a raw string rather than letting the `Kind` enum
+        // reject it: `FramedJSONSession` tears the connection down on any
+        // decode error, so one frame from a newer peer would end the session.
+        let rawType = try c.decode(String.self, forKey: .type)
+        guard let kind = Kind(rawValue: rawType) else {
+            self = .unsupported(type: rawType)
+            return
+        }
         switch kind {
         case .hello:
             self = .hello(try c.decode(SiloControlHello.self, forKey: .hello))

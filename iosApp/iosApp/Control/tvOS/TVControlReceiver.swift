@@ -441,6 +441,10 @@ final class TVControlReceiver {
             guard controller.didReceiveHello else { return }
             controller.passive = presence.passive
             refreshStandbyState()
+        case .unsupported(let type):
+            // A newer controller sent a message type this build predates.
+            // Drop it silently, for the same reason as `.unsupportedControl`.
+            Self.logger.info("control: ignoring unsupported message type \(type, privacy: .public)")
         case .ping:
             controller.session.enqueue(.pong)
         case .pong:
