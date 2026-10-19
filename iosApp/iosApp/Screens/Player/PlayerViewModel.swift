@@ -2674,9 +2674,17 @@ class PlayerViewModel {
             }
             var uncommittedPrepared: PreparedPlayback?
             var chainedLoadFailureRecovery: (position: Double, classification: String, message: String)?
+            // A lowering that failed before the engine left the current plan:
+            // that plan keeps playing, as the spec requires.
+            var keepsCurrentPlan = false
             var adoptedBufferingPlan = false
             defer {
                 self.protocolV3ReplanTask = nil
+                if keepsCurrentPlan {
+                    // Undo what the request set up: the old load still plays.
+                    self.isLoading = self.currentPhaseIsLoading()
+                    self.startProgressReporting()
+                }
                 if issuedByBufferingQuality, !adoptedBufferingPlan {
                     Self.logger.info("[CMP-BUFFERING] replan failed or was not adopted")
                     self.bufferingQuality.replanFailed()
@@ -2741,6 +2749,10 @@ class PlayerViewModel {
                     if self.reconnectCycle.isActive {
                         // No session left to replan: start a new one.
                         self.scheduleReconnectSessionStart()
+                        return
+                    }
+                    if issuedByBufferingQuality {
+                        keepsCurrentPlan = true
                         return
                     }
                     self.finalizeTerminalPlaybackError(message)
@@ -2959,6 +2971,10 @@ class PlayerViewModel {
                        reason: "protocol_v3_replan_missing_session",
                        observedPosition: position
                    ) {
+                    return
+                }
+                if issuedByBufferingQuality, self.activeAetherLoadEpoch == priorAetherLoadEpoch {
+                    keepsCurrentPlan = true
                     return
                 }
                 self.finalizeTerminalPlaybackError(
@@ -10195,6 +10211,12 @@ extension PlayerViewModel {
         )
     }
 
+    /// Internal for tests: the state of a title playing a v3 plan.
+    func installPlayingProtocolV3(watchDetail: WatchDetail, prepared: PreparedPlaybackV3) {
+        currentWatchDetail = watchDetail
+        activePreparedProtocolV3 = prepared
+    }
+
     /// Internal for tests.
     func adoptBufferingPlan(
         _ v3: PreparedPlaybackV3,
@@ -10295,7 +10317,8 @@ extension PlayerViewModel {
     /// The controller's `quality_change`, sent like the viewer's switch but
     /// recorded as nobody's pick: the saved settings and the viewer's
     /// in-player choice stay as they are.
-    private func issueBufferingReplan(_ request: BufferingQualityController.ReplanRequest) {
+    /// Internal for tests.
+    func issueBufferingReplan(_ request: BufferingQualityController.ReplanRequest) {
         let qualityId = ApplePlaybackQuality.protocolV3QualityId(request.qualityPreference)
         guard !isDisposed, !isWatchPartyPlayback, activePreparedProtocolV3 != nil, freshLoadTask == nil,
               attemptProtocolV3Replan(

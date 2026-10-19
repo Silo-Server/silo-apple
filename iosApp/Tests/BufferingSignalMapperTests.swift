@@ -208,6 +208,37 @@ final class BufferingQualityPlayerTests: XCTestCase {
         for _ in 0..<100 where !condition() { await Task.yield() }
     }
 
+    /// A lowering the server never answers keeps the current plan playing;
+    /// it must not end playback the way a failed viewer switch does.
+    func testAFailedLoweringKeepsPlaying() async throws {
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        let prepared = try preparedPlan()
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let version = try decoder.decode(FileVersion.self, from: Data(#"{"file_id":42}"#.utf8))
+        model.installPlayingProtocolV3(
+            watchDetail: WatchDetail(
+                contentId: "movie-1", type: "movie", title: "Movie", year: nil, overview: nil,
+                versions: [version], subtitles: nil, intro: nil, credits: nil, userData: nil,
+                seriesId: nil, seriesTitle: nil, seasonNumber: nil, episodeNumber: nil,
+                effectiveSubtitleLanguage: nil, effectiveSubtitleMode: nil,
+                effectiveShowForcedSubtitles: nil, effectiveSubtitleTrackSignature: nil
+            ),
+            prepared: prepared
+        )
+        model.adoptBufferingPlan(prepared, sessionId: "session", activeQualityId: "auto")
+
+        // The bridge holds no session, so the replan comes back without a plan.
+        model.issueBufferingReplan(.init(qualityPreference: "auto", bandwidthEstimateKbps: 5_600))
+        XCTAssertTrue(model.isLoading, "the replan is under way")
+        for _ in 0..<200 where model.isLoading && model.error == nil {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNil(model.error)
+        XCTAssertFalse(model.isLoading)
+    }
+
     /// The server's `plan_id` hashes the route, so a lowering that comes back
     /// unchanged repeats it; the controller must still see a new plan.
     func testEveryAdoptionIsANewPlanEvenWhenPlanIdRepeats() throws {
