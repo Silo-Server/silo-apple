@@ -64,10 +64,10 @@ enum TrailerRail {
 
     /// Merge an item's remote videos and local extras into one ordered rail.
     ///
-    /// Remote videos come first — the server already sorts them for display
-    /// (trailers first, official first) and that order is preserved verbatim
-    /// — then local extras in server order. When `allowRemote` is false
-    /// (e.g. tvOS without the YouTube app installed) remote entries are
+    /// Local extras come first: they play in Silo, while remote videos hand
+    /// off to the YouTube app. Remote videos follow in server order (trailers
+    /// first, official first), preserved verbatim. When `allowRemote` is
+    /// false (e.g. tvOS without the YouTube app installed) remote entries are
     /// dropped entirely, leaving a local-extras-only rail.
     static func entries(
         videos: [ItemVideo]?,
@@ -75,11 +75,11 @@ enum TrailerRail {
         allowRemote: Bool
     ) -> [TrailerRailEntry] {
         var result: [TrailerRailEntry] = []
-        if allowRemote {
-            result.append(contentsOf: supportedVideos(videos).map { TrailerRailEntry.remote($0) })
-        }
         if let extras {
             result.append(contentsOf: extras.map { TrailerRailEntry.local($0) })
+        }
+        if allowRemote {
+            result.append(contentsOf: supportedVideos(videos).map { TrailerRailEntry.remote($0) })
         }
         return result
     }

@@ -36,7 +36,7 @@ final class TrailerRailModelTests: XCTestCase {
 
     // MARK: - Merge order
 
-    func testRemoteVideosComeBeforeLocalExtrasInServerOrder() {
+    func testLocalExtrasComeBeforeRemoteVideosInServerOrder() {
         let entries = TrailerRail.entries(
             videos: [video("k1"), video("k2", kind: "teaser")],
             extras: [extra("extra:1"), extra("extra:2")],
@@ -45,8 +45,8 @@ final class TrailerRailModelTests: XCTestCase {
 
         XCTAssertEqual(
             entries.map(\.id),
-            ["remote:youtube:k1", "remote:youtube:k2", "local:extra:1", "local:extra:2"],
-            "remotes must lead in the server's order, then extras in theirs"
+            ["local:extra:1", "local:extra:2", "remote:youtube:k1", "remote:youtube:k2"],
+            "local extras must lead in the server's order, then remotes in theirs"
         )
     }
 
