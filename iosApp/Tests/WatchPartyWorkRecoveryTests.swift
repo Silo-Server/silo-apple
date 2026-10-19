@@ -95,6 +95,51 @@ final class WatchPartyWorkRecoveryTests: XCTestCase {
         XCTAssertTrue(recovery.takeTransportRetries(identity: owner, at: 7).messages.isEmpty)
     }
 
+    func testRefusedAndSelectedButUnsentRetriesAreNeverUncertainOnDisconnectOrExpiry() throws {
+        let owner = identity()
+        for selected in [false, true] {
+            for disconnect in [false, true] {
+                var recovery = WatchPartyWorkRecovery()
+                let message = recovery.track(.init(type: "transport_request", action: .pause), identity: owner, at: 0)
+                _ = recovery.refuse(refusal(message.requestId), at: 0, jitter: 0)
+                if selected {
+                    XCTAssertEqual(recovery.takeTransportRetries(identity: owner, at: 0.3).messages.count, 1)
+                }
+                let uncertain = disconnect ? recovery.disconnected() : recovery.expire(identity: owner, at: 5)
+                XCTAssertFalse(uncertain, "An explicitly refused retry has not crossed the dispatch boundary")
+                XCTAssertTrue(recovery.discardedUnsentTransport)
+                XCTAssertTrue(recovery.transport.isEmpty)
+            }
+        }
+    }
+
+    func testRetryWhoseDispatchBeganIsUncertainAndCannotDispatchTwice() throws {
+        let owner = identity()
+        for disconnect in [false, true] {
+            var recovery = WatchPartyWorkRecovery()
+            let message = recovery.track(.init(type: "transport_request", action: .pause), identity: owner, at: 0)
+            _ = recovery.refuse(refusal(message.requestId), at: 0, jitter: 0)
+            let retry = try XCTUnwrap(recovery.takeTransportRetries(identity: owner, at: 0.3).messages.first)
+            XCTAssertTrue(recovery.beginTransportRetry(retry.requestId, identity: owner, at: 0.3))
+            XCTAssertFalse(recovery.beginTransportRetry(retry.requestId, identity: owner, at: 0.3))
+            XCTAssertTrue(disconnect ? recovery.disconnected() : recovery.expire(identity: owner, at: 5))
+            XCTAssertFalse(recovery.discardedUnsentTransport)
+        }
+    }
+
+    func testDistinctTransportRetriesRetainOriginalIntentOrder() {
+        var recovery = WatchPartyWorkRecovery()
+        let owner = identity()
+        // Equal clock values still have an explicit user-intent order.
+        let play = recovery.track(.init(type: "transport_request", action: .play), identity: owner, at: 0)
+        let pause = recovery.track(.init(type: "transport_request", action: .pause), identity: owner, at: 0)
+        _ = recovery.refuse(refusal(pause.requestId), at: 0, jitter: 0)
+        _ = recovery.refuse(refusal(play.requestId), at: 0, jitter: 0)
+        let retries = recovery.takeTransportRetries(identity: owner, at: 0.3).messages
+        XCTAssertEqual(retries.map(\.requestId), [play.requestId, pause.requestId])
+        XCTAssertEqual(retries.map(\.action), [.play, .pause])
+    }
+
     func testLongAdvertisedFloorDiscardsRatherThanExceedingFiveSecondIntentLifetime() {
         var recovery = WatchPartyWorkRecovery()
         let owner = identity()

@@ -45,6 +45,8 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         var failSend = false
         var closed = false
         var connections = 0
+        var holdTransportSend = false
+        var transportWaiters: [CheckedContinuation<Void, Never>] = []
         private var continuation: AsyncThrowingStream<WatchPartySocket.Event, Error>.Continuation?
 
         func connect(serverURL: String, roomId: String, ticket: WatchPartySocketTicket) throws -> AsyncThrowingStream<WatchPartySocket.Event, Error> {
@@ -59,11 +61,66 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         func send(_ message: WatchPartyClientMessage) async throws {
             if failSend { throw WatchPartySocketError.closed }
             sent.append(message)
+            if message.type == "transport_request", holdTransportSend {
+                await withCheckedContinuation { transportWaiters.append($0) }
+            }
         }
 
         func emit(_ message: WatchPartyServerMessage) { continuation?.yield(.message(message)) }
         func finish(_ error: Error) { continuation?.finish(throwing: error) }
         func close() { closed = true; continuation?.finish(); continuation = nil }
+    }
+
+    private final class ValidationGate {
+        var holding = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+        func wait() async {
+            guard holding else { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        func resumeFirst() { waiters.removeFirst().resume() }
+        func release() {
+            holding = false
+            let pending = waiters; waiters.removeAll()
+            pending.forEach { $0.resume() }
+        }
+    }
+
+    private final class Playback: WatchPartyPlaybackBinding {
+        var context: WatchPartyPlaybackContext?
+        var snapshot = WatchPartyPlaybackSnapshot(sessionId: "synthetic-playback", fileId: 42,
+            sourceTime: 30, duration: 120, isReady: true)
+        var canPlayPause = false
+        var canSeek = false
+        var onSnapshot: ((WatchPartyPlaybackSnapshot) -> Void)?
+        var onSessionCommitted: ((String) -> Void)?
+        var onUserTransport: ((WatchPartyPlaybackAction, Double, Bool) -> Bool)?
+        var onLocalExit: (() -> Void)?
+        var onResyncRequired: (() -> Void)?
+        var onFailure: ((String?, String) -> Void)?
+        var heldTarget: Double?
+        var releases = 0
+        func prepare(_ context: WatchPartyPlaybackContext) { self.context = context }
+        func apply(_ action: WatchPartyPlaybackAction, origin: WatchPartySeekOrigin) async throws -> WatchPartyPlaybackSnapshot { snapshot }
+        func correct(to position: Double, seekBand: Double) async throws -> WatchPartyPlaybackSnapshot { snapshot }
+        func cancelCorrection() {}
+        func roomSeekArrived(at position: Double) {}
+        func roomCommandStarts(seekingTo position: Double?) {}
+        func releaseHeldSeek() { releases += 1; heldTarget = nil }
+        func nudge(drift: Double) {}
+        func canReachInPlace(_ position: Double) -> Bool { false }
+        func restoreIfNeeded(at position: Double) {}
+        func stop() { context = nil }
+        func request(_ action: WatchPartyPlaybackAction) -> Bool {
+            let accepted = onUserTransport?(action, snapshot.sourceTime, !snapshot.isPlaying) == true
+            if accepted, case .seek(let target) = action { heldTarget = target }
+            return accepted
+        }
+        func replaceSession() {
+            snapshot.sessionId = "replacement-playback"
+            onSessionCommitted?("replacement-playback")
+            onSnapshot?(snapshot)
+        }
     }
 
     private struct Fixture {
@@ -82,7 +139,7 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         XCTFail("Expected observable fixture state", file: file, line: line)
     }
 
-    private func fixture(admissionCapability: Bool = true, admissionTicket: Bool = false) async throws -> Fixture {
+    private func fixture(admissionCapability: Bool = true, admissionTicket: Bool = false, validationGate: ValidationGate? = nil) async throws -> Fixture {
         let name = "WatchPartyRecovery.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
@@ -114,8 +171,14 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         let clock = Clock()
         let session = WatchPartySession(api: api, tokenStore: tokens,
             recentStore: WatchPartyRecentStore(keychain: keychain), workNow: { clock.now }, retryJitter: { 0 },
-            makeSocket: { socket }, workSleep: { try await clock.sleep($0) })
+            makeSocket: { socket }, workSleep: { try await clock.sleep($0) },
+            identityIsCurrent: { captured in
+                await validationGate?.wait()
+                return await tokens.currentOrdinaryRequestAuth(matchingIdentityOf: captured) != nil
+            })
         addTeardownBlock { @MainActor in
+            validationGate?.release()
+            socket.transportWaiters.forEach { $0.resume() }; socket.transportWaiters.removeAll()
             session.leave(forgetRecent: true)
             clock.finish()
             _ = await tokens.clearTokens()
@@ -126,6 +189,176 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         await waitUntil { session.connection == .connected }
         await waitUntil { socket.sent.contains { $0.type == "ping" } && clock.pendingCount > 0 }
         return Fixture(session: session, socket: socket, clock: clock, stub: stub, tokens: tokens)
+    }
+
+    private func playingFixture(validationGate: ValidationGate? = nil) async throws -> (Fixture, Playback) {
+        let f = try await fixture(validationGate: validationGate)
+        var room = try XCTUnwrap(f.session.room)
+        room.phase = .playing; room.playbackState = .paused; room.selectionRevision = 1
+        room.selectedContentId = "synthetic-content"; room.selectedFileId = "42"
+        room.selfRole = .host; room.selfCanControlTransport = true; room.generation += 1
+        f.socket.emit(.snapshot(room))
+        await waitUntil { f.session.playbackContext != nil }
+        let playback = Playback()
+        f.session.bind(playback, context: try XCTUnwrap(f.session.playbackContext))
+        f.clock.advance(0.5)
+        await waitUntil { f.socket.sent.contains { $0.type == "attach_session" } }
+        room.attachedSessionId = "synthetic-playback"; room.members[1].isReady = true; room.generation += 1
+        let encoder = JSONEncoder(); encoder.keyEncodingStrategy = .convertToSnakeCase; encoder.dateEncodingStrategy = .iso8601
+        let json = String(decoding: try encoder.encode(WatchPartyRoomResponse(room: room, roomAccessToken: "synthetic-room-proof")), as: UTF8.self)
+        f.stub.reply(path: "/api/v2/watch-together/rooms/synthetic-room", 200, json)
+        f.socket.emit(.snapshot(room))
+        await waitUntil { f.session.room?.attachedSessionId == "synthetic-playback" }
+        return (f, playback)
+    }
+
+    func testOldLobbySnapshotCannotSaveUnsentOppositeReplacement() async throws {
+        let gate = ValidationGate()
+        let f = try await fixture(validationGate: gate)
+        f.session.setLobbyReady(true)
+        await waitUntil { f.socket.sent.contains { $0.type == "lobby_ready" } }
+        let older = try XCTUnwrap(f.socket.sent.last { $0.type == "lobby_ready" })
+        gate.holding = true
+        f.session.setLobbyReady(false)
+        // The queued old snapshot is not an acknowledgement of the unsent false.
+        f.socket.emit(.snapshot(try XCTUnwrap(f.session.room)))
+        await waitUntil { !gate.waiters.isEmpty }
+        gate.release()
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.session.lobbyReadyDesired, false)
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "lobby_ready" }.count, 1)
+        var committed = try XCTUnwrap(f.session.room)
+        committed.members[1].lobbyReady = true; committed.generation += 1
+        f.socket.emit(.snapshot(committed))
+        f.socket.emit(.actionResult(requestId: older.requestId, action: "lobby_ready", status: "applied"))
+        await waitUntil { f.session.room?.members[1].lobbyReady == true }
+        XCTAssertEqual(f.session.lobbyReadyDesired, false, "Older commit/result must not confirm its replacement")
+        f.clock.advance(0.5)
+        await waitUntil { f.socket.sent.filter { $0.type == "lobby_ready" }.count == 2 }
+        let replacement = try XCTUnwrap(f.socket.sent.last { $0.type == "lobby_ready" })
+        XCTAssertEqual(replacement.ready, false)
+        f.socket.emit(.actionResult(requestId: replacement.requestId, action: "lobby_ready", status: "applied"))
+        await waitUntil { f.session.lobbyReadyDesired == nil }
+    }
+
+    func testTwoLobbyWritersAcrossControlledValidationBarrierSendOnlyOneCurrentDesire() async throws {
+        let gate = ValidationGate()
+        let f = try await fixture(validationGate: gate)
+        gate.holding = true
+        f.session.setLobbyReady(true)
+        await waitUntil { gate.waiters.count == 1 }
+        f.clock.advance(0.5)
+        await waitUntil { gate.waiters.count == 2 }
+        // Resume the periodic loop's identity check, parking it again inside
+        // sendReport alongside the setter's already suspended sendReport.
+        gate.waiters.removeLast().resume()
+        await waitUntil { gate.waiters.count == 2 }
+        gate.release()
+        await waitUntil { f.socket.sent.contains { $0.type == "lobby_ready" } }
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "lobby_ready" }.count, 1)
+        let only = try XCTUnwrap(f.socket.sent.last { $0.type == "lobby_ready" })
+        f.socket.emit(.actionResult(requestId: only.requestId, action: "lobby_ready", status: "applied"))
+        await waitUntil { f.session.lobbyReadyDesired == nil }
+    }
+
+    func testSessionReplacementDiscardsQueuedSeekAndReleasesHeldTargetWithoutReplay() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.seek(70)))
+        XCTAssertEqual(playback.heldTarget, 70)
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+        let releases = playback.releases
+        playback.replaceSession()
+        XCTAssertNil(playback.heldTarget)
+        XCTAssertEqual(playback.releases, releases + 1)
+        XCTAssertTrue(f.session.workStatusMessage?.contains("not sent") == true)
+        XCTAssertFalse(f.session.workStatusMessage?.contains("could not be confirmed") == true)
+        f.clock.advance(0.3)
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
+    }
+
+    func testDistinctRefusedTransportsDispatchRetriesInOriginalOrder() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.play))
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 1 }
+        XCTAssertTrue(playback.request(.pause))
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+        let originals = f.socket.sent.filter { $0.type == "transport_request" }
+        for message in originals.reversed() {
+            f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: message.requestId,
+                retryAfterMilliseconds: 250, workStarted: false)))
+        }
+        // An ordered stream marker proves both preceding refusals were handled.
+        f.socket.emit(.error(.init(code: "synthetic_marker", message: "refusals processed")))
+        await waitUntil { f.session.errorMessage == "refusals processed" }
+        f.clock.advance(0.5)
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 4 }
+        let retries = Array(f.socket.sent.filter { $0.type == "transport_request" }.suffix(2))
+        XCTAssertEqual(retries.map(\.action), [.play, .pause])
+        XCTAssertEqual(retries.map(\.requestId), originals.map(\.requestId))
+    }
+
+    func testDisconnectWhileSelectedRetryValidatesShowsNotSentAndDoesNotReplay() async throws {
+        let gate = ValidationGate()
+        let (f, playback) = try await playingFixture(validationGate: gate)
+        XCTAssertTrue(playback.request(.pause))
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+        let id = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" }?.requestId)
+        f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: id,
+            retryAfterMilliseconds: 250, workStarted: false)))
+        f.socket.emit(.error(.init(code: "synthetic_marker", message: "refusal processed")))
+        await waitUntil { f.session.errorMessage == "refusal processed" }
+        gate.holding = true
+        f.clock.advance(0.5)
+        await waitUntil { gate.waiters.count == 1 }
+        gate.resumeFirst() // Reporting's outer identity check.
+        await waitUntil { gate.waiters.count == 1 } // Selected retry's final validation.
+        f.socket.finish(WatchPartySocketError.closed)
+        await waitUntil { f.session.connection == .reconnecting }
+        XCTAssertTrue(f.session.workStatusMessage?.contains("not sent") == true)
+        XCTAssertFalse(f.session.workStatusMessage?.contains("could not be confirmed") == true)
+        gate.release()
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1)
+    }
+
+    func testDisconnectAfterRetrySendBeginsKeepsUncertaintyWithoutAnotherReplay() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.pause))
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+        let id = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" }?.requestId)
+        f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: id,
+            retryAfterMilliseconds: 250, workStarted: false)))
+        f.socket.emit(.error(.init(code: "synthetic_marker", message: "refusal processed")))
+        await waitUntil { f.session.errorMessage == "refusal processed" }
+        f.socket.holdTransportSend = true
+        f.clock.advance(0.5)
+        await waitUntil { f.socket.transportWaiters.count == 1 }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 2)
+        f.socket.finish(WatchPartySocketError.closed)
+        await waitUntil { f.session.connection == .reconnecting }
+        XCTAssertTrue(f.session.workStatusMessage?.contains("could not be confirmed") == true)
+        f.socket.holdTransportSend = false
+        f.socket.transportWaiters.removeFirst().resume()
+        for _ in 0..<30 { await Task.yield() }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 2)
+    }
+
+    func testClosingFailedTransportUsesReconnectReadWithoutStandaloneReconciliation() async throws {
+        let (f, playback) = try await playingFixture()
+        let path = "/api/v2/watch-together/rooms/synthetic-room"
+        let initialReads = f.stub.requests.filter { $0.path == path }.count
+        f.socket.failSend = true
+        XCTAssertTrue(playback.request(.pause))
+        await waitUntil { f.session.connection == .reconnecting && f.clock.hasDeadline(f.clock.now + 1) }
+        XCTAssertTrue(f.session.workStatusMessage?.contains("could not be confirmed") == true)
+        XCTAssertEqual(f.stub.requests.filter { $0.path == path }.count, initialReads)
+        f.socket.failSend = false
+        f.clock.advance(1)
+        await waitUntil { f.socket.connections == 2 && f.session.connection == .connected }
+        XCTAssertEqual(f.stub.requests.filter { $0.path == path }.count, initialReads + 1)
+        XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
     }
 
     func testLobbyRefusalHonorsFloorRecomputesLatestDesireAndWaitsForAppliedResult() async throws {

@@ -324,8 +324,39 @@ struct WatchPartyReloadBudget: Equatable {
 
 /// The only room-specific interface exposed by the existing video player.
 /// Command identity, scheduling, attachment and reporting stay in the room session.
+@MainActor
+protocol WatchPartyPlaybackBinding: AnyObject {
+    var context: WatchPartyPlaybackContext? { get }
+    var snapshot: WatchPartyPlaybackSnapshot { get }
+    var canPlayPause: Bool { get set }
+    var canSeek: Bool { get set }
+    var onSnapshot: ((WatchPartyPlaybackSnapshot) -> Void)? { get set }
+    var onSessionCommitted: ((String) -> Void)? { get set }
+    var onUserTransport: ((WatchPartyPlaybackAction, Double, Bool) -> Bool)? { get set }
+    var onLocalExit: (() -> Void)? { get set }
+    var onResyncRequired: (() -> Void)? { get set }
+    var onFailure: ((String?, String) -> Void)? { get set }
+    func prepare(_ context: WatchPartyPlaybackContext)
+    func apply(_ action: WatchPartyPlaybackAction, origin: WatchPartySeekOrigin) async throws -> WatchPartyPlaybackSnapshot
+    func correct(to position: Double, seekBand: Double) async throws -> WatchPartyPlaybackSnapshot
+    func cancelCorrection()
+    func roomSeekArrived(at position: Double)
+    func roomCommandStarts(seekingTo position: Double?)
+    func releaseHeldSeek()
+    func nudge(drift: Double)
+    func canReachInPlace(_ position: Double) -> Bool
+    func restoreIfNeeded(at position: Double)
+    func stop()
+}
+
+extension WatchPartyPlaybackBinding {
+    func apply(_ action: WatchPartyPlaybackAction) async throws -> WatchPartyPlaybackSnapshot {
+        try await apply(action, origin: .room)
+    }
+}
+
 @MainActor @Observable
-final class WatchPartyPlaybackAdapter {
+final class WatchPartyPlaybackAdapter: WatchPartyPlaybackBinding {
     @ObservationIgnored private weak var player: PlayerViewModel?
     private(set) var context: WatchPartyPlaybackContext?
     private(set) var snapshot = WatchPartyPlaybackSnapshot()

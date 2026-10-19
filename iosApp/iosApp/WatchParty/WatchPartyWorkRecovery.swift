@@ -32,11 +32,14 @@ struct WatchPartyWorkRecovery {
     }
 
     struct Pending {
+        enum Delivery { case dispatched, refused, selected }
         var message: WatchPartyClientMessage
         let identity: Identity
         let started: TimeInterval
+        let sequence: UInt64
         var retryAt: TimeInterval?
         var retried = false
+        var delivery: Delivery = .dispatched
     }
 
     enum Refusal {
@@ -45,6 +48,8 @@ struct WatchPartyWorkRecovery {
 
     private(set) var desired: [Kind: Pending] = [:]
     private(set) var transport: [String: Pending] = [:]
+    private var nextSequence: UInt64 = 0
+    private(set) var discardedUnsentTransport = false
     private var recoveryFloor: TimeInterval = 0
     private var actionFloor: TimeInterval = 0
     private var recoveryOutages = 0
@@ -67,7 +72,8 @@ struct WatchPartyWorkRecovery {
         guard let kind = Kind(rawValue: message.type) else { return message }
         var message = message
         message.requestId = UUID().uuidString.lowercased()
-        let pending = Pending(message: message, identity: identity, started: now)
+        nextSequence += 1
+        let pending = Pending(message: message, identity: identity, started: now, sequence: nextSequence)
         if kind == .transport { transport[message.requestId!] = pending }
         else { desired[kind] = pending }
         return message
@@ -98,6 +104,7 @@ struct WatchPartyWorkRecovery {
                 return .discardedTransport
             }
             pending.retryAt = deadline
+            pending.delivery = .refused
             transport[id] = pending
             return .retryTransport
         }
@@ -142,14 +149,15 @@ struct WatchPartyWorkRecovery {
     mutating func takeTransportRetries(identity: Identity, at now: TimeInterval) -> (messages: [WatchPartyClientMessage], discarded: Bool) {
         var messages: [WatchPartyClientMessage] = []
         var discarded = false
-        for (id, var pending) in transport {
+        for (id, var pending) in transport.sorted(by: { $0.value.sequence < $1.value.sequence }) {
             guard pending.retryAt != nil else { continue }
-            if pending.identity != identity || now > pending.started + 5 {
+            if pending.identity != identity || now >= pending.started + 5 {
                 transport.removeValue(forKey: id)
                 discarded = true
             } else if let deadline = pending.retryAt, now >= deadline, canSend(.transport, at: now) {
                 pending.retryAt = nil
                 pending.retried = true
+                pending.delivery = .selected
                 transport[id] = pending
                 messages.append(pending.message)
             }
@@ -162,13 +170,25 @@ struct WatchPartyWorkRecovery {
     func canDispatchTransportRetry(_ requestId: String?, identity: Identity, at now: TimeInterval) -> Bool {
         guard let requestId, let pending = transport[requestId] else { return false }
         return pending.retried && pending.retryAt == nil && pending.identity == identity
-            && now <= pending.started + 5 && canSend(.transport, at: now)
+            && pending.delivery == .selected && now < pending.started + 5 && canSend(.transport, at: now)
+    }
+
+    /// Selection is still known unsent. Cross this boundary only after the
+    /// caller's final suspension and authority checks, immediately before send.
+    mutating func beginTransportRetry(_ requestId: String?, identity: Identity, at now: TimeInterval) -> Bool {
+        guard canDispatchTransportRetry(requestId, identity: identity, at: now), let requestId else { return false }
+        transport[requestId]?.delivery = .dispatched
+        return true
     }
 
     mutating func expire(identity: Identity, at now: TimeInterval) -> Bool {
         var uncertain = false
-        for (id, pending) in transport where !pending.identity.canAcknowledge(identity) || now >= pending.started + 5 {
-            uncertain = true
+        discardedUnsentTransport = false
+        for (id, pending) in transport {
+            let current = pending.delivery == .dispatched ? pending.identity.canAcknowledge(identity) : pending.identity == identity
+            guard !current || now >= pending.started + 5 else { continue }
+            if pending.delivery == .dispatched { uncertain = true }
+            else { discardedUnsentTransport = true }
             transport.removeValue(forKey: id)
         }
         for (kind, pending) in desired where pending.identity != identity {
@@ -178,7 +198,8 @@ struct WatchPartyWorkRecovery {
     }
 
     mutating func disconnected() -> Bool {
-        let uncertain = !transport.isEmpty
+        let uncertain = transport.values.contains { $0.delivery == .dispatched }
+        discardedUnsentTransport = transport.values.contains { $0.delivery != .dispatched }
         transport.removeAll()
         desired.removeAll()
         usefulSince = nil
