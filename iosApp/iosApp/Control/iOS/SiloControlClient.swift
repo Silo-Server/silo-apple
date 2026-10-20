@@ -150,7 +150,7 @@ final class SiloControlClient {
     /// Never falls through to local playback on its own: once the user has a
     /// TV engaged, a failed launch is reported on the remote cover instead.
     @discardableResult
-    func launchOnEngagedTV(_ request: SiloControlPlaybackRequest) async -> Bool {
+    func launchOnEngagedTV(_ request: SiloControlPlaybackRequest, replaceConfirmed: Bool = false) async -> Bool {
         guard remotePlaybackEngaged else { return false }
         if isReconnecting {
             isShowingRemoteControl = true
@@ -166,7 +166,7 @@ final class SiloControlClient {
                 return true
             }
         }
-        await launch(request)
+        await launch(request, replaceConfirmed: replaceConfirmed)
         return true
     }
 
