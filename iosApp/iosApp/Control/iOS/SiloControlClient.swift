@@ -755,7 +755,12 @@ final class SiloControlClient {
                 beginReconnect(reason: "Lost connection to the TV.")
             case .letGo(let forgetTarget):
                 if forgetTarget { forgetPersistedTarget() }
+                // A TV that keeps the target (full, refused, unused profile)
+                // usually sent an error first: keep an open cover up to show
+                // it, as a reconnect that gives up does.
+                let keepCoverVisible = !forgetTarget && isShowingRemoteControl
                 clearSession()
+                isShowingRemoteControl = keepCoverVisible
             }
         case .ping:
             session?.enqueue(.pong)
