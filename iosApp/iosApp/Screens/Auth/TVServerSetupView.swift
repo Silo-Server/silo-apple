@@ -81,7 +81,7 @@ struct TVServerSetupView: View {
             MarqueeScene.shared.showGeneric()
             discovery.start()
             // Each sign-in a phone sends is saved as an account; the
-            // summary's advance opens Who's Watching once the phone is done.
+            // summary moves on once the phone is done (`finishPhoneSetup`).
             coordinator.persist = { [router] pairing in
                 await router.accounts.completePairing(pairing, router: router)
             }

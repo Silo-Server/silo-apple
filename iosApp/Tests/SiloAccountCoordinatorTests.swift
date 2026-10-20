@@ -1236,10 +1236,12 @@ final class SiloAccountCoordinatorTests: XCTestCase {
 
         let first = await d.accounts.completePairing(
             Pairing(url: F.homeURL, fetchedName: "Home Silo", verifiedServerId: nil,
-                    accessToken: "paired-home", refreshToken: "r", accountID: "12"),
+                    accessToken: "paired-home", refreshToken: "r", accountID: "12", username: "alex"),
             router: d.router)
         XCTAssertTrue(first)
         XCTAssertEqual(try d.savedAccounts(), [.signIn(homePaired)])
+        // Named from the sign-in, before the server is asked.
+        XCTAssertEqual(d.accounts.directory.accounts.first { $0.id == .signIn(homePaired) }?.username, "alex")
         XCTAssertEqual(d.preferences.state.linkedAccountRef, .signIn(homePaired))
         XCTAssertEqual(d.registry.activeServerId, F.home)
         XCTAssertEqual(d.router.authState, setup)

@@ -121,6 +121,9 @@ final class ReceiverPairingCoordinator {
         /// The account the tokens authenticate (`TokenPair.user.id`), bound
         /// as the session's verified account.
         let accountID: String
+        /// That account's username, so Choose an Account names it before
+        /// the server is asked.
+        var username: String? = nil
     }
 
     private enum AlternateChoice: Sendable {
@@ -496,7 +499,8 @@ final class ReceiverPairingCoordinator {
                 verifiedServerId: push.serverIdentity,
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken,
-                accountID: tokens.user.id
+                accountID: tokens.user.id,
+                username: ServerIdentity.usable(tokens.user.username)
             )) else {
                 // A cancellation before the first write is not a failure
                 // (the catch below returns quietly).

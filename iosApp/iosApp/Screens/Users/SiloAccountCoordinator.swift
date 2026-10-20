@@ -831,7 +831,8 @@ final class SiloAccountCoordinator {
             return abandon()
         }
         let pending = PendingSignIn(accessToken: pairing.accessToken, refreshToken: pairing.refreshToken,
-                                    account: SignInAccount(id: pairing.accountID, username: nil), expected: expected)
+                                    account: SignInAccount(id: pairing.accountID, username: pairing.username),
+                                    expected: expected)
         var opened: SignInInstallResult?
         do {
             do {
