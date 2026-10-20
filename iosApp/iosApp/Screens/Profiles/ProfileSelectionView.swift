@@ -151,11 +151,15 @@ struct ProfileSelectionView: View {
         if viewModel.isLoading && viewModel.profiles.isEmpty {
             LoadingView(message: "Loading profiles...")
         } else if let error = viewModel.error, viewModel.profiles.isEmpty {
+            // Who's Watching is where accounts are switched, so a server that
+            // can't be reached still leaves the way to the others.
             ErrorView(state: error, onRetry: {
                 Task {
                     await viewModel.loadProfiles()
                     await skipPickerIfSingleProfile()
                 }
+            }, onSwitchAccount: {
+                Task { await router.accounts.beginSwitchAccount(router: router) }
             })
         } else {
             content
