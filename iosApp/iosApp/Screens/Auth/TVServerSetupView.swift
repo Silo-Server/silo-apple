@@ -79,8 +79,8 @@ struct TVServerSetupView: View {
         .onAppear {
             MarqueeScene.shared.showGeneric()
             discovery.start()
-            // A phone's sign-in is placed in the running sign-in (first run,
-            // Add User, Add Server), which can ask its questions here.
+            // Each sign-in a phone sends is saved as an account; the
+            // summary's advance opens Who's Watching once the phone is done.
             coordinator.persist = { [router] pairing in
                 await router.accounts.completePairing(pairing, router: router)
             }

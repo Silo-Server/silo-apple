@@ -859,9 +859,10 @@ final class SiloAccountCoordinator {
         await registry.refreshFeaturesAfterGatedServerSwitch()
         await reloadDirectory()
         if let router {
-            // Who's Watching for the paired sign-in, as setup from a phone
-            // always went straight there.
-            finishOpened(router: router, routes: true)
+            // The setup screen stays: the phone may push more servers in
+            // this session, and leaving it would cancel the session. Its
+            // summary moves on to Who's Watching once the phone is done.
+            finishOpened(router: router, routes: false)
         }
         return true
     }

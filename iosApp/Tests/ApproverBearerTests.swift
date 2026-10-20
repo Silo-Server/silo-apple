@@ -254,6 +254,65 @@ final class ApproverBearerTests: XCTestCase {
         XCTAssertEqual(stored?.refreshToken, "refresh-1")
     }
 
+    /// Two accounts on the active server, the first selected: the second,
+    /// expired, renews its own saved sign-in once, at that server's address,
+    /// and keeps the rotated pair without touching the selection.
+    func testANonCurrentAccountOnTheActiveServerRenewsItsOwnSignIn() async throws {
+        let (http, tokens, current, second) = try await twoAccountsOnTheActiveServer()
+        let selectedBefore = await tokens.getAccessToken()
+        let fresh = Self.token("fresh", expiresIn: 3600)
+        stub.reply(path: Self.refreshPath, 200, Self.refreshed(fresh))
+
+        let bearer = await http.freshAccessToken(for: .signIn(second))
+        XCTAssertEqual(bearer, .token(fresh))
+        XCTAssertEqual(refreshes.count, 1)
+        let request = try XCTUnwrap(refreshes.first)
+        XCTAssertEqual(request.url?.host, "active.example")
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: String])
+        XCTAssertEqual(body, ["refresh_token": "refresh-1"])
+        let stored = await tokens.backgroundSignInSession(for: second)
+        XCTAssertEqual(stored?.accessToken, fresh)
+        XCTAssertEqual(stored?.refreshToken, "refresh-2")
+
+        let selected = await tokens.currentAccount()
+        XCTAssertEqual(selected, .signIn(current))
+        let selectedAfter = await tokens.getAccessToken()
+        XCTAssertEqual(selectedAfter, selectedBefore)
+        let selectedSession = await tokens.backgroundSignInSession(for: current)
+        XCTAssertNil(selectedSession, "the selected sign-in rotates through the shared refresh flight")
+    }
+
+    /// The second account was signed in again while its renewal was in
+    /// flight: the newer session stays, and the rotated pair is dropped.
+    func testANonCurrentAccountsRenewalNeverOverwritesASignInThatChanged() async throws {
+        let (http, tokens, current, second) = try await twoAccountsOnTheActiveServer()
+        stub.reply(path: Self.refreshPath, 200, Self.refreshed(Self.token("rotated", expiresIn: 3600)))
+        stub.hold(path: Self.refreshPath)
+        let pending = Task { await http.freshAccessToken(for: .signIn(second)) }
+        await stub.waitUntilHeld()
+        let newer = Self.token("newer", expiresIn: 3600)
+        try await signIn(account: "2", access: newer, refresh: "refresh-newer", origin: "https://active.example", in: tokens)
+        await tokens.select(serverID: Self.active, credential: .signIn(current))
+        stub.release()
+
+        let bearer = await pending.value
+        XCTAssertEqual(bearer, .unreachable, "the bearer the refresh was sent for had expired")
+        let stored = await tokens.backgroundSignInSession(for: second)
+        XCTAssertEqual(stored?.accessToken, newer)
+        XCTAssertEqual(stored?.refreshToken, "refresh-newer")
+    }
+
+    /// The harness plus a second account on the active server, expired,
+    /// with the first account selected again.
+    private func twoAccountsOnTheActiveServer() async throws -> (HTTPClient, TokenStore, SignInKey, SignInKey) {
+        let (http, tokens) = try await harness(access: Self.token("other", expiresIn: 3600))
+        let current = SignInKey.make(Self.active, "1")
+        try await signIn(account: "2", access: Self.token("old", expiresIn: -60), refresh: "refresh-1",
+                         origin: "https://active.example", in: tokens)
+        await tokens.select(serverID: Self.active, credential: .signIn(current))
+        return (http, tokens, current, SignInKey.make(Self.active, "2"))
+    }
+
     /// A stored session bound to another origin than the address its slot
     /// is keyed by is never released to approve a device: not from an
     /// inactive slot, and not from the active one.

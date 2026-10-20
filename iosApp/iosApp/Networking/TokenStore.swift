@@ -1549,10 +1549,7 @@ actor TokenStore {
         case .none:
             return nil
         case .signIn(let key):
-            guard let signIn = storedSignIn(key, servingServer: serverId) else { return nil }
-            return CanonicalAccountSession(version: 1, signedOut: false, origin: signIn.origin,
-                accountID: key.accountID, epoch: signIn.epoch,
-                accessToken: signIn.accessToken, refreshToken: signIn.refreshToken)
+            return storedSignIn(key, servingServer: serverId).map(Self.storedSession(of:))
         case .legacy:
             guard !isBlocked(.legacy(serverID: serverId)),
                   case .session(let value)? = try? sessions.load(serverId), !value.signedOut,
@@ -1560,6 +1557,24 @@ actor TokenStore {
                   value.accessToken?.isEmpty == false, value.refreshToken?.isEmpty == false else { return nil }
             return value
         }
+    }
+
+    /// A saved sign-in's stored session when it is not the selected
+    /// credential: what an approving phone needs to renew the bearer of an
+    /// account it is not using, on the active server or another one. Nil
+    /// for the selected sign-in (its credentials rotate through
+    /// `HTTPClient`'s single refresh flight), a server in a temporary scope,
+    /// and a blocked, signed-out, or expired sign-in or one bound elsewhere.
+    func backgroundSignInSession(for key: SignInKey) -> CanonicalAccountSession? {
+        guard selection != .signIn(key), temporaryScope?.serverId != key.serverID else { return nil }
+        return storedSignIn(key, servingServer: key.serverID).map(Self.storedSession(of:))
+    }
+
+    /// A saved sign-in in the record shape the bearer renewals compare against.
+    private static func storedSession(of signIn: SavedSignIn) -> CanonicalAccountSession {
+        CanonicalAccountSession(version: 1, signedOut: false, origin: signIn.origin,
+            accountID: signIn.accountID, epoch: signIn.epoch,
+            accessToken: signIn.accessToken, refreshToken: signIn.refreshToken)
     }
 
     /// A saved sign-in that may hand its bearer to `serverId`: signed in,
@@ -1685,13 +1700,7 @@ actor TokenStore {
         case .none:
             return false
         case .signIn(let key):
-            guard var signIn = try? savedSignIns.loadSignIn(key) else { return false }
-            signIn.accessToken = accessToken
-            signIn.refreshToken = refreshToken
-            do { try savedSignIns.saveSignIn(signIn) } catch {
-                recordSessionEvent(phase: "tokenRefresh", outcome: "failed", reason: Self.persistenceFailureReason(error))
-                return false
-            }
+            guard storeRotatedSignIn(key, accessToken: accessToken, refreshToken: refreshToken) else { return false }
         case .legacy:
             let rotated = CanonicalAccountSession(version: 1, signedOut: false, origin: captured.origin,
                 accountID: captured.accountID, epoch: captured.epoch, accessToken: accessToken, refreshToken: refreshToken)
@@ -1701,6 +1710,39 @@ actor TokenStore {
             }
         }
         recordSessionEvent(phase: "tokenRefresh", outcome: "succeeded", reason: "inactiveServer")
+        return true
+    }
+
+    /// Store a rotated token pair for a saved sign-in that is not selected
+    /// (`backgroundSignInSession(for:)`), on the same terms as
+    /// `saveInactiveServerRefresh`: only while the sign-in still holds
+    /// exactly the session the refresh was sent with.
+    func saveBackgroundSignInRefresh(
+        accessToken: String,
+        refreshToken: String,
+        replacing captured: CanonicalAccountSession,
+        for key: SignInKey
+    ) -> Bool {
+        guard !accessToken.isEmpty, !refreshToken.isEmpty,
+              backgroundSignInSession(for: key) == captured else {
+            recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: "inactiveSlotChanged")
+            return false
+        }
+        guard storeRotatedSignIn(key, accessToken: accessToken, refreshToken: refreshToken) else { return false }
+        recordSessionEvent(phase: "tokenRefresh", outcome: "succeeded", reason: "inactiveServer")
+        return true
+    }
+
+    /// Writes a rotated pair into a saved sign-in that is not selected,
+    /// keeping its epoch.
+    private func storeRotatedSignIn(_ key: SignInKey, accessToken: String, refreshToken: String) -> Bool {
+        guard var signIn = try? savedSignIns.loadSignIn(key) else { return false }
+        signIn.accessToken = accessToken
+        signIn.refreshToken = refreshToken
+        do { try savedSignIns.saveSignIn(signIn) } catch {
+            recordSessionEvent(phase: "tokenRefresh", outcome: "failed", reason: Self.persistenceFailureReason(error))
+            return false
+        }
         return true
     }
 

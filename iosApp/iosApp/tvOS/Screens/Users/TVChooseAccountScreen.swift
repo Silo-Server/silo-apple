@@ -93,6 +93,12 @@ struct TVChooseAccountContent: View {
         case retry
     }
 
+    private struct PendingMenuAction {
+        let id = UUID()
+        let card: SiloAccountRef
+        let run: () -> Void
+    }
+
     let model: ChooseAccountViewModel
     var phase: TVUserListPhase = .ready
     var showsBrandLight = true
@@ -103,6 +109,9 @@ struct TVChooseAccountContent: View {
     @FocusState private var focused: Target?
     /// The card whose menu opened the overlay.
     @State private var returnTarget: Target?
+    /// A card menu's choice, waiting for the menu to close
+    /// (`runAfterMenuCloses`).
+    @State private var pendingMenuAction: PendingMenuAction?
 
     var body: some View {
         ZStack {
@@ -117,6 +126,11 @@ struct TVChooseAccountContent: View {
         }
         .defaultFocus($focused, entryTarget)
         .marqueeTVSeedFocus($focused, entryTarget)
+        .onChange(of: focused) { _, target in
+            // Focus is back on the card: the system menu has closed.
+            guard let pending = pendingMenuAction, target == .account(pending.card) else { return }
+            runPendingMenuAction()
+        }
         .onChange(of: isOverlayPresented) { _, presented in
             guard !presented, let target = returnTarget, isShowing(target) else { return }
             claimFocus(target)
@@ -140,6 +154,27 @@ struct TVChooseAccountContent: View {
         case .addAccount: return phase != .unavailable
         case .retry: return phase == .unavailable
         }
+    }
+
+    /// The system menu takes about a second to close and ignores the
+    /// remote until it has. A confirmation raised from inside it shows under
+    /// the lifted card and drops the first Select. So the choice runs once
+    /// focus is back on the card, or once the close is surely over.
+    private func runAfterMenuCloses(_ card: SiloAccountRef, _ action: @escaping () -> Void) {
+        returnTarget = .account(card)
+        let pending = PendingMenuAction(card: card, run: action)
+        pendingMenuAction = pending
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1400))
+            guard pendingMenuAction?.id == pending.id else { return }
+            runPendingMenuAction()
+        }
+    }
+
+    private func runPendingMenuAction() {
+        guard let pending = pendingMenuAction else { return }
+        pendingMenuAction = nil
+        pending.run()
     }
 
     /// Claims focus once the overlay's focus subtree has gone, and again
@@ -231,15 +266,13 @@ struct TVChooseAccountContent: View {
         .contextMenu {
             if !card.needsSignInAgain, card.id.signInKey != nil {
                 Button(role: .destructive) {
-                    returnTarget = .account(card.id)
-                    actions.signOut(card.id)
+                    runAfterMenuCloses(card.id) { actions.signOut(card.id) }
                 } label: {
                     Label(SignOutConfirmationCopy.signOutTitle, systemImage: "rectangle.portrait.and.arrow.right")
                 }
             }
             Button(role: .destructive) {
-                returnTarget = .account(card.id)
-                actions.remove(card.id)
+                runAfterMenuCloses(card.id) { actions.remove(card.id) }
             } label: {
                 Label(SignOutConfirmationCopy.removeFromDeviceTitle(device: .appleTV), systemImage: "trash")
             }

@@ -214,32 +214,35 @@ extension View {
     /// A page can appear while focus still belongs to what it replaces: the
     /// Sign Out alert closing over Settings, or the old screen mid-crossfade.
     /// The focus engine drops a request made then, so keep asking until one
-    /// lands, for about a second and a half.
+    /// lands, for about a second and a half. The first page after launch
+    /// draws under the startup splash, which disables it, so it asks again
+    /// once the splash lifts.
     func marqueeTVSeedFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, _ value: F) -> some View {
-        task {
-            await Task.yield()
-            for _ in 0..<15 {
-                guard focus.wrappedValue == nil else { return }
-                focus.wrappedValue = value
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-            }
-        }
+        marqueeTVSeedFocus(focus, value, id: 0)
+    }
+
+    /// The same, asked again each time `id` changes: a page that draws
+    /// before what should take focus has loaded.
+    func marqueeTVSeedFocus<F: Hashable, ID: Equatable>(_ focus: FocusState<F?>.Binding, _ value: F,
+                                                        id: ID) -> some View {
+        modifier(FocusRequest(focus: focus, value: value, id: id, overridesHeldFocus: false))
     }
 
     /// Moves focus to `value` when a page replaces another in place, as the
     /// password sign-in replaces the code screen. Focus still belongs to the
     /// page fading out, so a request made with the switch is dropped, and
     /// `marqueeTVSeedFocus` leaves a held focus alone. Keep asking until
-    /// `value` holds focus, for about a second and a half.
+    /// `value` holds focus, for about a second and a half, and again once
+    /// the startup splash lifts.
     func marqueeTVClaimFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, _ value: F) -> some View {
-        task {
-            await Task.yield()
-            for _ in 0..<15 {
-                guard focus.wrappedValue != value else { return }
-                focus.wrappedValue = value
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-            }
-        }
+        marqueeTVClaimFocus(focus, value, id: 0)
+    }
+
+    /// The same, asked again each time `id` changes: a page that swaps its
+    /// controls in place, so the one holding focus is gone.
+    func marqueeTVClaimFocus<F: Hashable, ID: Equatable>(_ focus: FocusState<F?>.Binding, _ value: F,
+                                                         id: ID) -> some View {
+        modifier(FocusRequest(focus: focus, value: value, id: id, overridesHeldFocus: true))
     }
 
     /// Moves focus after Done on the system keyboard. Each field's
@@ -249,6 +252,35 @@ extension View {
     /// gets overwritten. So the first focus that returns takes `pending`.
     func marqueeTVFocusAfterKeyboard<F: Hashable>(_ focus: FocusState<F?>.Binding, pending: Binding<F?>) -> some View {
         modifier(FocusAfterKeyboard(focus: focus, pending: pending))
+    }
+}
+
+/// `marqueeTVSeedFocus` and `marqueeTVClaimFocus`: a seed asks only while
+/// nothing holds focus, a claim until `value` holds it.
+private struct FocusRequest<F: Hashable, ID: Equatable>: ViewModifier {
+    var focus: FocusState<F?>.Binding
+    var value: F
+    var id: ID
+    var overridesHeldFocus: Bool
+    @Environment(\.isStartupSplashVisible) private var isUnderSplash
+
+    private struct Trigger: Equatable {
+        let id: ID
+        let isUnderSplash: Bool
+    }
+
+    func body(content: Content) -> some View {
+        content.task(id: Trigger(id: id, isUnderSplash: isUnderSplash)) {
+            // Everything under the splash is disabled and can't take focus.
+            guard !isUnderSplash else { return }
+            await Task.yield()
+            for _ in 0..<15 {
+                let current = focus.wrappedValue
+                guard overridesHeldFocus ? current != value : current == nil else { return }
+                focus.wrappedValue = value
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            }
+        }
     }
 }
 

@@ -153,50 +153,38 @@ struct SettingsView: View {
 
     // MARK: - Account
 
+    /// The open account: its username, email, and server. Not a button:
+    /// Who's Watching and Switch Account are elsewhere.
     private var accountSection: some View {
-        Section {
-            Button(action: switchProfile) {
-                HStack(spacing: 14) {
-                    ProfileAvatarView(
-                        avatar: viewModel.activeProfile?.avatarEmoji,
-                        imageUrl: viewModel.activeProfile?.avatarImageUrl,
-                        name: viewModel.activeProfile?.name
-                            ?? viewModel.userInfo?.username
-                            ?? "",
-                        size: 56
-                    )
+        let header = viewModel.accountHeader
+        return Section {
+            HStack(spacing: 14) {
+                ProfileAvatarView(avatar: nil, imageUrl: nil, name: header.name, size: 56)
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(viewModel.displayName)
-                            .font(.title3.weight(.semibold))
-                            .foregroundStyle(Color.siloOnSurface)
-                            .lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(header.name)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(Color.siloOnSurface)
+                        .lineLimit(1)
 
-                        Text(viewModel.accountSubtitleLine)
+                    ForEach(header.detailLines, id: \.self) { line in
+                        Text(line)
                             .font(.footnote)
                             .foregroundStyle(Color.siloSecondaryText)
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
-
-                    Spacer(minLength: 0)
-
-                    SettingsRowChevron()
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Switches to a different profile")
 
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
         } footer: {
             if viewModel.userInfo?.isAdmin == true {
                 Text("Signed in as an administrator.")
                     .foregroundStyle(Color.siloSecondaryText)
             }
         }
-    }
-
-    private func switchProfile() {
-        router.switchProfile()
     }
 
     // MARK: - Preferences

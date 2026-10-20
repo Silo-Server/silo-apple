@@ -15,9 +15,11 @@ struct TVGeneralSettingsPane: View {
     @State private var registry = ServerRegistry.shared
     @State private var librarySnapshot = MainTabLibrarySnapshot.cachedForCurrentAuthority()
     @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
-    /// "Jamie", or "alex › Jamie" with two or more Silo accounts
-    /// (`SettingsViewModel.pairedProfileValue`).
+    /// The remembered profile's name (`SettingsViewModel.pairedProfileValue`).
     let pairedProfileValue: String
+    /// Its account, with two or more Silo accounts
+    /// (`SettingsViewModel.pairedAccountLine`).
+    let pairedAccountLine: String?
     /// Two or more Silo accounts: Ask For shows (spec §5.7).
     let hasMultipleAccounts: Bool
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
@@ -27,12 +29,14 @@ struct TVGeneralSettingsPane: View {
 
     init(
         pairedProfileValue: String,
+        pairedAccountLine: String?,
         hasMultipleAccounts: Bool,
         detailFocus: FocusState<TVSettingsDetailFocus?>.Binding,
         changePairedProfile: @escaping () -> Void,
         launchPreferences: ProfileLaunchPreferences = .shared
     ) {
         self.pairedProfileValue = pairedProfileValue
+        self.pairedAccountLine = pairedAccountLine
         self.hasMultipleAccounts = hasMultipleAccounts
         self.detailFocus = detailFocus
         self.changePairedProfile = changePairedProfile
@@ -45,6 +49,7 @@ struct TVGeneralSettingsPane: View {
 
             TVSettingsPickerRow(
                 title: "Paired Silo Profile",
+                subtitle: pairedAccountLine,
                 value: pairedProfileValue,
                 action: changePairedProfile
             )

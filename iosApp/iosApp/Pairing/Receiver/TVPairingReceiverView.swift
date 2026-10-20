@@ -27,10 +27,10 @@ struct TVPairingReceiverView: View {
             MarqueeTVCard { card }
         }
         .defaultFocus($focused, .primary, priority: .userInitiated)
-        .marqueeTVSeedFocus($focused, .primary)
         // Each state draws its own buttons, so the one that had focus is gone;
-        // hand focus to the new state's main action.
-        .onChange(of: coordinator.state) { _, _ in focused = .primary }
+        // hand focus to the new state's main action. The screen also opens
+        // while the sign-in screen fades out, which drops a single request.
+        .marqueeTVClaimFocus($focused, .primary, id: coordinator.state)
     }
 
     private var isSignIn: Bool { coordinator.mode.isSignIn }
@@ -82,7 +82,7 @@ struct TVPairingReceiverView: View {
                 .padding(.top, 28)
             actions { cancelButton(.primary) }
         case let .signedIn(count):
-            headline(count <= 1 ? "Signed in" : "Signed in to\n\(count) servers")
+            headline(count <= 1 ? "Signed in" : "Signed in to\n\(count) accounts")
             MarqueeTVBody("Finishing up on your phone or tablet…")
                 .padding(.top, 28)
             // No Cancel here: this server's sign-in is already committed, so a
@@ -255,10 +255,13 @@ struct TVPairingReceiverView: View {
             .focused($focused, equals: control)
     }
 
+    /// Two accounts on one server name it once.
     private func completedSummary(_ names: [String]) -> String {
-        names.isEmpty
+        var seen = Set<String>()
+        let servers = names.filter { seen.insert($0).inserted }
+        return servers.isEmpty
             ? "Taking you to your profiles…"
-            : "Signed in to \(names.joined(separator: ", ")). Taking you to your profiles…"
+            : "Signed in to \(servers.joined(separator: ", ")). Taking you to your profiles…"
     }
 
     /// The host of an address, for a button label. Falls back to the

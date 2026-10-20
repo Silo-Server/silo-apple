@@ -2,7 +2,7 @@
 import SwiftUI
 
 /// Skyline-styled tvOS settings: a two-pane layout instead of a stock
-/// full-width `Form`. The left rail holds the profile card, the category
+/// full-width `Form`. The left rail holds the account header, the category
 /// list, and Sign Out; the right pane renders the focused category's
 /// controls inline. The pane follows rail focus live (like the system
 /// Settings app's split screens), so there is no drill-in navigation.
@@ -125,7 +125,7 @@ struct TVSettingsView: View {
             }
 
             // The pane previews whatever category the rail focus rests on.
-            // Profile / Sign Out keep the last category visible.
+            // Sign Out keeps the last category visible.
             if case .category(let category) = focus {
                 preferredDetailFocus = initialDetailFocus(for: category)
                 if category != selectedCategory {
@@ -165,8 +165,8 @@ struct TVSettingsView: View {
 
     /// Settings always enters through General. Assign the concrete rail focus
     /// before tvOS performs its first geometric resolution, then re-assert it
-    /// once the two focus scopes have mounted so the profile card cannot paint
-    /// a simultaneous entry highlight.
+    /// once the two focus scopes have mounted so no other row paints a
+    /// simultaneous entry highlight.
     private func focusGeneralOnEntry() {
         selectedCategory = .general
         preferredFocusOwner = .rail
@@ -230,7 +230,7 @@ struct TVSettingsView: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
 
-            profileRow
+            accountHeader
                 .padding(.bottom, 22)
 
             ForEach(visibleCategories) { category in
@@ -251,35 +251,31 @@ struct TVSettingsView: View {
         .padding(.bottom, 24)
     }
 
-    private var profileRow: some View {
-        Button(action: router.switchProfile) {
-            HStack(spacing: 18) {
-                ProfileAvatarView(
-                    avatar: viewModel.profileAvatar,
-                    imageUrl: viewModel.profileAvatarImageUrl,
-                    name: viewModel.displayName,
-                    size: 68
-                )
+    /// The open account: its username, email, and server. Not a button:
+    /// Who's Watching and Switch Account are elsewhere.
+    private var accountHeader: some View {
+        let header = viewModel.accountHeader
+        return HStack(spacing: 18) {
+            ProfileAvatarView(avatar: nil, imageUrl: nil, name: header.name, size: 68)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(viewModel.displayName)
-                        .font(.system(size: 27, weight: .semibold))
-                        .lineLimit(1)
-                    Text(viewModel.accountSubtitle)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(header.name)
+                    .font(.system(size: 27, weight: .semibold))
+                    .lineLimit(1)
+                ForEach(header.detailLines, id: \.self) { line in
+                    Text(line)
                         .font(.system(size: 19))
                         .opacity(0.62)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 17, weight: .semibold))
-                    .opacity(0.5)
             }
+
+            Spacer(minLength: 0)
         }
-        .buttonStyle(TVSettingsRailRowStyle())
-        .focused($railFocus, equals: .profile)
+        .foregroundStyle(Color.siloOnSurface)
+        .padding(.horizontal, 20)
+        .accessibilityElement(children: .combine)
     }
 
     private func categoryRow(_ category: TVSettingsCategory) -> some View {
@@ -542,6 +538,7 @@ struct TVSettingsView: View {
         case .general:
             TVGeneralSettingsPane(
                 pairedProfileValue: viewModel.pairedProfileValue,
+                pairedAccountLine: viewModel.pairedAccountLine,
                 hasMultipleAccounts: viewModel.showsAskFor,
                 detailFocus: $detailFocus,
                 // With two or more accounts this goes through Choose an
@@ -707,7 +704,6 @@ struct TVSettingsView: View {
     // MARK: - Rail model
 
     enum RailItem: Hashable {
-        case profile
         case category(TVSettingsCategory)
         case signOut
     }

@@ -59,14 +59,30 @@ struct ProfileTile: View {
     /// Reports touch-down and release so the picker can tint the backdrop
     /// while a finger rests on a profile.
     var onPressChange: (Bool) -> Void = { _ in }
+    /// The picker's focus, keyed by profile ID, when it moves focus itself.
+    /// The tile then draws its focus from it rather than its own.
+    var focus: FocusState<String?>.Binding? = nil
     let action: () -> Void
 
-    @FocusState private var isFocused: Bool
+    @FocusState private var hasFocus: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var scale: CGFloat { size / tileSize }
 
+    /// One `focused` binding per tile: a second one on the same button
+    /// leaves the drawn focus out of step with the engine's.
+    @ViewBuilder
     var body: some View {
+        if let focus {
+            tile(isFocused: focus.wrappedValue == profile.id)
+                .focused(focus, equals: profile.id)
+        } else {
+            tile(isFocused: hasFocus)
+                .focused($hasFocus)
+        }
+    }
+
+    private func tile(isFocused: Bool) -> some View {
         Button(action: action) {
             VStack(spacing: 0) {
                 ProfileAvatar(profile: profile, serverURL: ServerRegistry.shared.activeServerUrl, size: size)
@@ -104,7 +120,6 @@ struct ProfileTile: View {
         }
         .buttonStyle(ProfileTileButtonStyle(onPressChange: onPressChange))
         .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)
-        .focused($isFocused)
         #if os(tvOS)
         .focusEffectDisabled()
         #endif

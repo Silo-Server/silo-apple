@@ -1224,10 +1224,12 @@ final class SiloAccountCoordinatorTests: XCTestCase {
 
     /// A phone signing this TV in saves the session as an account like any
     /// other sign-in, links it, and opens it; pairing another server adds
-    /// another account.
+    /// another account. The setup screen stays up meanwhile: leaving it
+    /// would cancel the session before the phone's next server.
     func testPairingSavesEachSessionAsAnAccount() async throws {
         let d = try Device(self)
         d.router.resetToServerSetup(context: .firstRun)
+        let setup = d.router.authState
         typealias Pairing = ReceiverPairingCoordinator.PersistedPairing
         let homePaired = SignInKey.make(F.home, "12")
         let friendPaired = SignInKey.make(F.friend, "40")
@@ -1240,7 +1242,7 @@ final class SiloAccountCoordinatorTests: XCTestCase {
         XCTAssertEqual(try d.savedAccounts(), [.signIn(homePaired)])
         XCTAssertEqual(d.preferences.state.linkedAccountRef, .signIn(homePaired))
         XCTAssertEqual(d.registry.activeServerId, F.home)
-        XCTAssertEqual(d.router.authState, .needsProfile)
+        XCTAssertEqual(d.router.authState, setup)
 
         let second = await d.accounts.completePairing(
             Pairing(url: F.friendURL, fetchedName: "Friend's Silo", verifiedServerId: nil,
@@ -1251,6 +1253,7 @@ final class SiloAccountCoordinatorTests: XCTestCase {
         XCTAssertEqual(d.preferences.state.linkedAccountRef, .signIn(friendPaired))
         let selection = await d.selection
         XCTAssertEqual(selection, .signIn(friendPaired))
+        XCTAssertEqual(d.router.authState, setup)
         XCTAssertTrue(d.revokedAccessTokens().isEmpty)
     }
 

@@ -5,19 +5,17 @@ import SwiftUI
 struct TVProfileTile: View {
     let profile: UserProfile
     var isRemembered: Bool = false
-    var prefersDefaultFocus: Bool = false
-    var defaultFocusNamespace: Namespace.ID? = nil
+    /// The picker's focus, keyed by profile ID (`ProfileTile.focus`).
+    var focus: FocusState<String?>.Binding? = nil
     let action: () -> Void
 
     var body: some View {
         ProfileTile(
             profile: profile,
             isRemembered: isRemembered,
+            focus: focus,
             action: action
         )
-        // Lets the first profile tile claim initial focus instead of the
-        // engine landing on the top-right Sign Out / Change Server chips.
-        .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
         .focusEffectDisabled()
     }
 }

@@ -22,12 +22,8 @@ struct IOSSettingsOverview: View {
         List {
             Section {
                 SettingsAccountCard(
-                    avatar: viewModel.activeProfile?.avatarEmoji,
-                    avatarImageUrl: viewModel.activeProfile?.avatarImageUrl,
-                    name: viewModel.displayName,
-                    subtitle: viewModel.accountSubtitleLine,
-                    isAdministrator: viewModel.userInfo?.isAdmin == true,
-                    action: switchProfile
+                    header: viewModel.accountHeader,
+                    isAdministrator: viewModel.userInfo?.isAdmin == true
                 )
             }
 
@@ -343,10 +339,6 @@ struct IOSSettingsOverview: View {
             .frame(maxWidth: .infinity)
             .foregroundStyle(Color.red)
         }
-    }
-
-    private func switchProfile() {
-        router.switchProfile()
     }
 
     private var matchesPlayback: Bool {

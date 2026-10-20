@@ -145,6 +145,10 @@ actor HTTPClient {
     /// same refresh token joins the renewal in flight instead of sending that
     /// token a second time.
     private var inactiveServerRenewals: [String: (refreshToken: String, task: Task<ApproverBearer, Never>)] = [:]
+    /// The same for saved sign-ins that are not selected and that no
+    /// server's renewal above serves (`freshAccessToken(for:)`), keyed by
+    /// `SignInKey.storageKey`.
+    private var signInRenewals: [String: (refreshToken: String, task: Task<ApproverBearer, Never>)] = [:]
     /// The profile proof the last `.siloProfileVerificationRequired` was
     /// posted for (access token dropped), with the `TokenStore` selection
     /// generation it was installed under. A burst of rejected requests posts
@@ -2577,7 +2581,12 @@ actor HTTPClient {
         if let flight = inactiveServerRenewals[serverId], flight.refreshToken == refresh {
             return await flight.task.value
         }
-        let task = Task { await renewInactiveServer(serverId, stored: stored, access: access, refresh: refresh, origin: origin) }
+        let task = Task {
+            await renewStoredSession(access: access, refresh: refresh, origin: origin) { [tokenStore] tokens in
+                await tokenStore.saveInactiveServerRefresh(accessToken: tokens.accessToken,
+                    refreshToken: tokens.refreshToken, replacing: stored, for: serverId)
+            }
+        }
         inactiveServerRenewals[serverId] = (refresh, task)
         let bearer = await task.value
         if inactiveServerRenewals[serverId]?.refreshToken == refresh {
@@ -2586,10 +2595,66 @@ actor HTTPClient {
         return bearer
     }
 
-    /// One renewal of an inactive saved server's slot, compare-and-set
-    /// against `stored` (see `freshAccessToken(serverId:)`).
-    private func renewInactiveServer(_ serverId: String, stored: CanonicalAccountSession, access: String,
-                                     refresh: String, origin: String) async -> ApproverBearer {
+    /// A bearer for one saved account, on the same terms as
+    /// `freshAccessToken(serverId:)`, for approving another device as that
+    /// account when several share a server.
+    ///
+    /// The selected account, and the background account of a server that is
+    /// not active, renew through `freshAccessToken(serverId:)` and share its
+    /// flights. Any other saved sign-in renews its own item once,
+    /// compare-and-set against the session the refresh was sent with
+    /// (`TokenStore.saveBackgroundSignInRefresh`), and callers holding the
+    /// same refresh token wait for that renewal. A pending legacy account
+    /// has no session of its own outside those two paths: `.rejected`.
+    ///
+    /// The server's path serves whichever account holds that server's
+    /// credential. When that changed hands while the bearer was read, the
+    /// bearer may be another account's and is not handed out.
+    func freshAccessToken(for account: SiloAccountRef) async -> ApproverBearer {
+        if await servesServerBearer(account) {
+            let bearer = await freshAccessToken(serverId: account.serverID)
+            return await servesServerBearer(account) ? bearer : .unreachable
+        }
+        guard case .signIn(let key) = account,
+              let stored = await tokenStore.backgroundSignInSession(for: key),
+              let access = stored.accessToken, let refresh = stored.refreshToken,
+              let origin = stored.origin.map({ ServerRegistry.normalize(url: $0) }), !origin.isEmpty else {
+            return .rejected
+        }
+        guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
+        let slot = key.storageKey
+        if let flight = signInRenewals[slot], flight.refreshToken == refresh {
+            return await flight.task.value
+        }
+        let task = Task {
+            await renewStoredSession(access: access, refresh: refresh, origin: origin) { [tokenStore] tokens in
+                await tokenStore.saveBackgroundSignInRefresh(accessToken: tokens.accessToken,
+                    refreshToken: tokens.refreshToken, replacing: stored, for: key)
+            }
+        }
+        signInRenewals[slot] = (refresh, task)
+        let bearer = await task.value
+        if signInRenewals[slot]?.refreshToken == refresh {
+            signInRenewals[slot] = nil
+        }
+        return bearer
+    }
+
+    /// Whether `freshAccessToken(serverId:)` reads `account`'s credential:
+    /// it is selected, or it is the background account of a server that is
+    /// not active.
+    private func servesServerBearer(_ account: SiloAccountRef) async -> Bool {
+        if await tokenStore.currentAccount() == account { return true }
+        guard await tokenStore.getActiveServerId() != account.serverID else { return false }
+        return await tokenStore.backgroundAccount(forServer: account.serverID) == account
+    }
+
+    /// One renewal of a stored session that is not the selected credential,
+    /// sent to `origin`. `save` writes the rotated pair compare-and-set
+    /// against the session the refresh was sent with, and answers false when
+    /// that session changed (see `freshAccessToken(serverId:)`).
+    private func renewStoredSession(access: String, refresh: String, origin: String,
+                                    save: @Sendable (RefreshResponse) async -> Bool) async -> ApproverBearer {
         func fallback(_ failure: ApproverBearer) -> ApproverBearer {
             Self.hasExpired(access) ? failure : .token(access)
         }
@@ -2602,9 +2667,7 @@ actor HTTPClient {
             return fallback(Self.isProviderUnavailable(statusCode: http.statusCode, body: body)
                 ? .providerUnavailable : .unreachable)
         }
-        guard let tokens = try? decoder.decode(RefreshResponse.self, from: data),
-              await tokenStore.saveInactiveServerRefresh(accessToken: tokens.accessToken,
-                  refreshToken: tokens.refreshToken, replacing: stored, for: serverId) else {
+        guard let tokens = try? decoder.decode(RefreshResponse.self, from: data), await save(tokens) else {
             return fallback(.unreachable)
         }
         return .token(tokens.accessToken)
@@ -3140,7 +3203,8 @@ enum HTTPDecodingDiagnostics {
 #endif
 
 /// A bearer for approving another device's sign-in on a saved server
-/// (`HTTPClient.freshAccessToken(serverId:)`), or why there is none.
+/// (`HTTPClient.freshAccessToken(serverId:)`, or `freshAccessToken(for:)`
+/// for one account there), or why there is none.
 enum ApproverBearer: Equatable, Sendable {
     case token(String)
     /// The server refused the session, or this device has none: sign in to

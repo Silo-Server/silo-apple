@@ -299,15 +299,27 @@ private struct TVSettingsPaneRowBody: View {
 /// option sheet.
 struct TVSettingsPickerRow: View {
     let title: String
+    /// A second line under the title, such as the account a value
+    /// belongs to.
+    var subtitle: String? = nil
     let value: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 16) {
-                Text(title)
-                    .font(.system(size: 26))
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 26))
+                        .lineLimit(1)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 20))
+                            .opacity(0.62)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
                 Spacer(minLength: 16)
                 Text(value)
                     .font(.system(size: 24))

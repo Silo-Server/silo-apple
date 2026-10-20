@@ -18,13 +18,12 @@ struct ProfileSelectionView: View {
     @State private var headerHeight: CGFloat = 0
     @State private var footerHeight: CGFloat = 0
     #endif
-    @Namespace private var profileFocusNamespace
     #if os(tvOS)
     @FocusState private var isSignOutFocused: Bool
+    @FocusState private var focusedProfileID: String?
     /// The profile whose PIN prompt was open, so closing it puts focus back
     /// on that profile rather than the first one.
     @State private var returnFocusProfileID: String?
-    @Environment(\.resetFocus) private var resetFocus
     #endif
 
     private enum PINEntryPurpose: String {
@@ -280,7 +279,9 @@ struct ProfileSelectionView: View {
     #if os(tvOS)
     private var tileRow: some View {
         let rememberedProfileID = viewModel.rememberedProfileID
-        let preferredProfileID = returnFocusProfileID ?? rememberedProfileID ?? viewModel.profiles.first?.id
+        // Focus starts on the leftmost profile; closing a PIN prompt returns
+        // it to the profile that opened the prompt.
+        let preferredProfileID = returnFocusProfileID ?? viewModel.profiles.first?.id
         let grid = LazyVGrid(
             columns: gridColumns,
             spacing: rowSpacing
@@ -289,8 +290,7 @@ struct ProfileSelectionView: View {
                 TVProfileTile(
                     profile: profile,
                     isRemembered: profile.id == rememberedProfileID,
-                    prefersDefaultFocus: profile.id == preferredProfileID,
-                    defaultFocusNamespace: profileFocusNamespace
+                    focus: $focusedProfileID
                 ) {
                     handleProfileTap(profile)
                 }
@@ -299,10 +299,15 @@ struct ProfileSelectionView: View {
         }
 
         // A focus section, so Up from either footer button finds the
-        // centered grid.
+        // centered grid. The default only applies while nothing holds
+        // focus, and arriving from a screen whose focused control is gone
+        // leaves nothing focused, so it is seeded too.
         return grid
-            .focusScope(profileFocusNamespace)
             .focusSection()
+            .defaultFocus($focusedProfileID, preferredProfileID, priority: .userInitiated)
+            // The picker draws before its profiles load: seed again once the
+            // leftmost profile is there.
+            .marqueeTVSeedFocus($focusedProfileID, preferredProfileID ?? "", id: preferredProfileID)
     }
     #endif
 
@@ -473,9 +478,10 @@ struct ProfileSelectionView: View {
         #if os(tvOS)
         // The picker is enabled again in this update; once it is, send focus
         // to the profile that opened the prompt.
+        let profileID = returnFocusProfileID
         Task {
             await Task.yield()
-            resetFocus(in: profileFocusNamespace)
+            focusedProfileID = profileID
         }
         #endif
     }

@@ -61,6 +61,7 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
 
     private(set) var startedServers: [String] = []
     private(set) var approvedCodes: [String] = []
+    private(set) var approvedBearers: [String] = []
     private(set) var pollCount = 0
 
     func start(serverURL: String, deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
@@ -113,6 +114,7 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
         approveAttempts += 1
         if let approveError { throw approveError }
         approvedCodes.append(userCode)
+        approvedBearers.append(bearer)
     }
 }
 
@@ -120,6 +122,15 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
 
 private func entry(_ id: String, name: String) -> ServerEntry {
     ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, profileId: nil, lastUsedAt: Date())
+}
+
+/// A signed-in account on `server`. Without a username it is named, and
+/// summarised, by its server.
+private func account(on server: ServerEntry, id accountID: String = "1", username: String? = nil) -> CompanionPairingAccount {
+    CompanionPairingAccount(
+        id: .signIn(SignInKey.make(server.id, accountID)), server: server, username: username,
+        name: username ?? server.displayName, detailLines: username == nil ? [] : [server.displayName],
+        serverName: server.displayName, profiles: [], isCurrent: false, isServerDefault: false)
 }
 
 private func devicePoll(_ status: String, tokens: APIv2LoginTokens? = nil) -> APIv2DevicePoll {
@@ -255,7 +266,7 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
             tvName: "Living Room",
             api: api,
             deviceModel: "iPhone",
-            availableServers: { servers },
+            availableAccounts: { servers.map { account(on: $0) } },
             accessToken: { _ in .token("token") },
             serverEndpoints: { _, _ in endpoints },
             accountName: { _, _ in "laura" }
@@ -280,10 +291,10 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
 
         channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv", state: .setup, supportedVersions: [1]))
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        await coordinator.pushSelected([identified, legacy])
+        await coordinator.pushSelected([account(on: identified), account(on: legacy)])
         await expectEventually("first push") {
             channel.sent.contains {
                 if case .pushServer("https://a.example", "Home", "S", endpoints) = $0 { return true }
@@ -313,12 +324,12 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         .hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version])
     }
 
-    func testHelloPresentsServerPicker() async {
+    func testHelloPresentsAccountPicker() async {
         let channel = FakePairingChannel()
         let coordinator = makeCoordinator(channel: channel, api: FakePairingAPI(), servers: [entry("a", name: "Home")])
         channel.deliver(hello())
-        await expectEventually("server picker") {
-            if case .pickServers(_, let servers) = coordinator.state { return servers.count == 1 }
+        await expectEventually("account picker") {
+            if case .pickAccounts(_, let accounts) = coordinator.state { return accounts.count == 1 }
             return false
         }
     }
@@ -342,13 +353,13 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, accounts) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
+        await coordinator.pushSelected(accounts)
         channel.deliver(.deviceStarted(serverURL: "https://a.example", userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("confirm step") {
             // People compare the TV's sign-in code, not the match words.
@@ -375,13 +386,13 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, accounts) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
+        await coordinator.pushSelected(accounts)
         channel.deliver(.deviceStarted(serverURL: "https://a.example", userCode: "4821-7730", matchCode: "warm pony"))
         await expectEventually("both codes to compare") {
             coordinator.state == .confirmMatch(tvName: "Living Room", serverName: "Home", serverHost: "a.example",
@@ -403,10 +414,10 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: servers)
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        await coordinator.pushSelected(servers)
+        await coordinator.pushSelected(servers.map { account(on: $0) })
 
         // First server: codes agree; the user confirms.
         channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
@@ -430,6 +441,49 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         XCTAssertEqual(api.approvedCodes, ["USER-1"], "the spliced server must never be approved")
     }
 
+    /// Two accounts on one server are two pushes of that server, each
+    /// approved with its own account's bearer, and the summary names each
+    /// account. The confirm step names the first account as saved, without
+    /// asking the server.
+    func testTwoAccountsOnOneServerAreEachApprovedWithTheirOwnBearer() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        let home = entry("a", name: "Home")
+        let alex = account(on: home, id: "1", username: "alex")
+        let sam = account(on: home, id: "2", username: "sam")
+        let coordinator = CompanionPairingCoordinator(
+            channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
+            availableAccounts: { [alex, sam] },
+            accessToken: { .token("bearer-\($0.signInKey?.accountID ?? "")") },
+            serverEndpoints: { _, _ in nil },
+            accountName: { _, _ in XCTFail("the saved username names the account"); return nil })
+        coordinator.start()
+        channel.deliver(hello())
+        await expectEventually("picker") {
+            if case .pickAccounts(_, let accounts) = coordinator.state { return accounts == [alex, sam] }
+            return false
+        }
+        await coordinator.pushSelected([alex, sam])
+        channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-1", matchCode: "ABCD"))
+        await expectEventually("confirm names the first account") {
+            if case .confirmMatch(_, "Home", _, "alex", "USER-1", _) = coordinator.state { return true }
+            return false
+        }
+        await coordinator.confirmMatch()
+        channel.deliver(.serverResult(serverURL: home.url, status: .signedIn, error: nil))
+        await expectEventually("the same server pushed again") {
+            channel.sent.filter { if case .pushServer(let url, _, _, _) = $0 { return url == home.url } else { return false } }.count == 2
+        }
+        channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-2", matchCode: "ABCD"))
+        await expectEventually("second approval") { api.approvedCodes.count == 2 }
+        channel.deliver(.serverResult(serverURL: home.url, status: .signedIn, error: nil))
+        await expectEventually("summary") {
+            coordinator.state == .finished(signedIn: ["alex on Home", "sam on Home"], failed: [])
+        }
+        XCTAssertEqual(api.approvedCodes, ["USER-1", "USER-2"])
+        XCTAssertEqual(api.approvedBearers, ["bearer-1", "bearer-2"])
+    }
+
     /// Regression: a dropped connection mid-flow must read as a connection
     /// error, not a success-shaped summary full of "failed" servers.
     func testConnectionDropMidFlowShowsError() async {
@@ -437,13 +491,13 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: FakePairingAPI(), servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, accounts) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
+        await coordinator.pushSelected(accounts)
         channel.dropConnection()
         await expectEventually("connection lost") {
             if case .error(let message) = coordinator.state { return message.contains("lost") }
@@ -460,14 +514,14 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, accounts) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
-        channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+        await coordinator.pushSelected(accounts)
+        channel.deliver(.deviceStarted(serverURL: accounts[0].server.url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("zero-success summary") {
             if case .finished(let ok, let bad) = coordinator.state { return ok.isEmpty && bad.map(\.name) == ["Home"] }
             return false
@@ -484,14 +538,14 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, accounts) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
-        channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+        await coordinator.pushSelected(accounts)
+        channel.deliver(.deviceStarted(serverURL: accounts[0].server.url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("update summary") {
             if case .finished(let ok, let bad) = coordinator.state { return ok.isEmpty && bad.map(\.code) == [.updateRequired] }
             return false
@@ -509,14 +563,14 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, accounts) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
-        channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+        await coordinator.pushSelected(accounts)
+        channel.deliver(.deviceStarted(serverURL: accounts[0].server.url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("confirm prompt") {
             if case .confirmMatch = coordinator.state { return true }
             return false
@@ -1468,8 +1522,8 @@ final class TVSignInPairingTests: XCTestCase {
         let home = ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil,
             lastUsedAt: Date(), verifiedServerId: "srv-1")
         let coordinator = CompanionPairingCoordinator(
-            channel: channel, stream: channel.stream, tvName: "Living Room", fixedServer: home, api: api,
-            deviceModel: "iPhone", availableServers: { XCTFail("no chooser for a sign-in TV"); return [] },
+            channel: channel, stream: channel.stream, tvName: "Living Room", fixedAccount: account(on: home), api: api,
+            deviceModel: "iPhone", availableAccounts: { XCTFail("no chooser for a sign-in TV"); return [] },
             accessToken: { _ in .token("token") },
             serverEndpoints: { _, _ in XCTFail("a sign-in TV gets no alternate addresses"); return nil },
             accountName: { _, _ in "laura" })
@@ -1501,17 +1555,17 @@ final class TVSignInPairingTests: XCTestCase {
         api.lookupMatchCode = "ZZZZ"
         let coordinator = CompanionPairingCoordinator(
             channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
-            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+            availableAccounts: { [account(on: entry("a", name: "Home"))] },
             accessToken: { _ in .token("token") }, serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
         coordinator.start()
         channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else { return XCTFail() }
-        await coordinator.pushSelected(servers)
-        channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+        guard case let .pickAccounts(_, accounts) = coordinator.state else { return XCTFail() }
+        await coordinator.pushSelected(accounts)
+        channel.deliver(.deviceStarted(serverURL: accounts[0].server.url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("refused") {
             if case .finished(let ok, let bad) = coordinator.state { return ok.isEmpty && bad.map(\.name) == ["Home"] }
             return false
@@ -1527,19 +1581,19 @@ final class TVSignInPairingTests: XCTestCase {
         var calls = 0
         let coordinator = CompanionPairingCoordinator(
             channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
-            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+            availableAccounts: { [account(on: entry("a", name: "Home"))] },
             // The lookup gets a bearer; by approval time the renewal failed.
             accessToken: { _ in calls += 1; return calls == 1 ? .token("token") : .rejected },
             serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
         coordinator.start()
         channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else { return XCTFail() }
-        await coordinator.pushSelected(servers)
-        channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+        guard case let .pickAccounts(_, accounts) = coordinator.state else { return XCTFail() }
+        await coordinator.pushSelected(accounts)
+        channel.deliver(.deviceStarted(serverURL: accounts[0].server.url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("confirm") {
             if case .confirmMatch = coordinator.state { return true }
             return false
@@ -1566,18 +1620,18 @@ final class TVSignInPairingTests: XCTestCase {
             var calls = 0
             let coordinator = CompanionPairingCoordinator(
                 channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
-                availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+                availableAccounts: { [account(on: entry("a", name: "Home"))] },
                 accessToken: { _ in calls += 1; return calls == 1 ? .token("token") : failure },
                 serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
             coordinator.start()
             channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
             await expectEventually("picker") {
-                if case .pickServers = coordinator.state { return true }
+                if case .pickAccounts = coordinator.state { return true }
                 return false
             }
-            guard case let .pickServers(_, servers) = coordinator.state else { return XCTFail() }
-            await coordinator.pushSelected(servers)
-            channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
+            guard case let .pickAccounts(_, accounts) = coordinator.state else { return XCTFail() }
+            await coordinator.pushSelected(accounts)
+            channel.deliver(.deviceStarted(serverURL: accounts[0].server.url, userCode: "USER-1", matchCode: "ABCD"))
             await expectEventually("confirm") {
                 if case .confirmMatch = coordinator.state { return true }
                 return false
