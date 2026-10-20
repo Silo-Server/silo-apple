@@ -132,43 +132,20 @@ class HomeViewModel {
         await loadSections()
     }
 
-    /// The Continue Watching row mixes two kinds of cards, and the server keys
-    /// their dismissals differently. In-progress items are dismissed against
-    /// their exact `progress_updated_at`, so resuming playback re-surfaces
-    /// them. Next Up episodes have no progress row; they are dismissed on the
-    /// `next_up` surface keyed by series. Sending a fabricated timestamp for
-    /// a Next Up card is accepted by the server but never matches anything,
-    /// so the card returns on the next fresh fetch.
+    /// Dismisses a Continue Watching or Next Up card on the surface
+    /// `HomeDismissal` picks for it.
     func dismissContinueWatchingItem(_ item: SectionItem) async {
-        let removal: (
-            request: () async throws -> Void,
-            mutate: (_ sections: [ResolvedSection]) -> [ResolvedSection]
-        )
-        if let progressUpdatedAt = item.progressUpdatedAt {
-            removal = (
-                request: { [dismissContinueWatching] in
-                    try await dismissContinueWatching(item.contentId, progressUpdatedAt)
-                },
-                mutate: { sections in
-                    HomeSectionsMutation.removingContinueWatchingItem(
-                        contentId: item.contentId,
-                        from: sections
-                    )
-                }
-            )
-        } else if let seriesId = item.seriesId, !seriesId.isEmpty {
-            removal = (
-                request: { [dismissNextUp] in
-                    try await dismissNextUp(item.contentId, seriesId)
-                },
-                mutate: { sections in
-                    HomeSectionsMutation.removingNextUpItem(
-                        contentId: item.contentId,
-                        from: sections
-                    )
-                }
-            )
-        } else {
+        let request: () async throws -> Void
+        switch HomeDismissal(item) {
+        case .continueWatching(let progressUpdatedAt):
+            request = { [dismissContinueWatching] in
+                try await dismissContinueWatching(item.contentId, progressUpdatedAt)
+            }
+        case .nextUp(let seriesId):
+            request = { [dismissNextUp] in
+                try await dismissNextUp(item.contentId, seriesId)
+            }
+        case nil:
             // Neither surface can represent this card. Leave it in place rather
             // than hide it locally and have it reappear after relaunch.
             return
@@ -182,7 +159,7 @@ class HomeViewModel {
         actionError = nil
 
         do {
-            try await removal.request()
+            try await request()
 
             // A Home request that started before the dismissal can contain the
             // removed item. Invalidate that generation before committing the
@@ -190,13 +167,21 @@ class HomeViewModel {
             // back on screen.
             StartupContentPrefetcher.invalidateHomeSectionsInFlight()
             // Dismissing a row's last card removes the row.
-            sections = removal.mutate(sections).filter { !$0.items.isEmpty }
+            sections = HomeSectionsMutation.removingDismissedItem(item, from: sections)
+                .filter { !$0.items.isEmpty }
             ResponseCache.shared.update(CacheKey.homeSections, as: SectionsResponse.self) { response in
-                response = SectionsResponse(sections: removal.mutate(response.sections))
+                response = SectionsResponse(
+                    sections: HomeSectionsMutation.removingDismissedItem(item, from: response.sections)
+                )
             }
         } catch {
             actionError = ErrorState(error)
+            return
         }
+
+        // The server refills the rows it dropped cards from. Keep the local
+        // removal if this reconciliation cannot be fetched.
+        await loadSections()
     }
 
     /// Updates playback state through the server, then immediately removes a

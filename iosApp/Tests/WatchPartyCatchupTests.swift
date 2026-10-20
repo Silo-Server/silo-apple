@@ -369,4 +369,106 @@ final class WatchPartyCatchupTests: XCTestCase {
         XCTAssertNil(budget.target)
         XCTAssertFalse(budget.allowed(at: at(200)))
     }
+
+    func testAppleTVClosesPlayingDriftBySeekingInsteadOfByRate() {
+        #if os(tvOS)
+        XCTAssertFalse(WatchPartyCorrection.correctsByRate)
+        #else
+        XCTAssertTrue(WatchPartyCorrection.correctsByRate)
+        #endif
+    }
+
+    func testInPlaceCatchupLeavesDriftTheServerToleratesAndAimsAtTheRoom() {
+        var catchup = WatchPartyInPlaceCatchup()
+        XCTAssertNil(catchup.step(drift: 1, local: 100, at: at(0)))
+        XCTAssertNil(catchup.step(drift: -1, local: 100, at: at(0)))
+        XCTAssertNil(catchup.step(drift: .nan, local: 100, at: at(0)))
+        XCTAssertEqual(catchup.step(drift: 1.5, local: 100, at: at(0)), 101.5)
+        XCTAssertEqual(catchup.step(drift: -2, local: 100, at: at(0)), 98)
+        XCTAssertEqual(catchup.step(drift: -2, local: 1, at: at(0)), 0)
+    }
+
+    func testInPlaceCatchupAimsTheNextSeekAheadByTheShortfallTheLastLeft() {
+        var catchup = WatchPartyInPlaceCatchup()
+        XCTAssertEqual(catchup.step(drift: 2, local: 10, at: at(0)), 12)
+        catchup.seekFinished(at: at(0.5), generation: catchup.generation)
+        // Playback has not run long enough after the landing to measure it.
+        XCTAssertNil(catchup.step(drift: 0.5, local: 12.5, at: at(1)))
+        // It landed half a second behind; that converged, so no seek follows.
+        XCTAssertNil(catchup.step(drift: 0.5, local: 13, at: at(1.5)))
+        XCTAssertEqual(catchup.lead, 0.5)
+        XCTAssertEqual(catchup.interval, WatchPartyInPlaceCatchup.minInterval)
+        // The next drift is aimed ahead by that lead.
+        XCTAssertEqual(catchup.step(drift: 1.5, local: 20, at: at(10)), 22)
+        // A seek that overshot lowers the lead, never below zero.
+        catchup.seekFinished(at: at(10), generation: catchup.generation)
+        XCTAssertNil(catchup.step(drift: -4, local: 23, at: at(11)))
+        XCTAssertEqual(catchup.lead, 0)
+    }
+
+    func testInPlaceSeeksThatKeepMissingBackOffAndTheLeadIsBounded() {
+        var catchup = WatchPartyInPlaceCatchup()
+        XCTAssertNotNil(catchup.step(drift: 3, local: 0, at: at(0)))
+        catchup.seekFinished(at: at(0), generation: catchup.generation)
+        // Still 1.5 seconds behind: the lead grows and the next seek waits 2 s.
+        XCTAssertNil(catchup.step(drift: 1.5, local: 3, at: at(1)))
+        XCTAssertEqual(catchup.lead, 1.5)
+        XCTAssertEqual(catchup.interval, 2)
+        XCTAssertEqual(catchup.step(drift: 1.5, local: 4, at: at(2)), 7)
+        catchup.seekFinished(at: at(2), generation: catchup.generation)
+        // The lead stops at the host band, so a host never lands far enough
+        // ahead to move the room.
+        XCTAssertNil(catchup.step(drift: 2, local: 9, at: at(3)))
+        XCTAssertEqual(catchup.lead, WatchPartyInPlaceCatchup.maxLead)
+        XCTAssertEqual(WatchPartyInPlaceCatchup.maxLead, WatchPartyCorrection.hostSeek)
+        XCTAssertEqual(catchup.interval, 4)
+        XCTAssertNil(catchup.step(drift: 2, local: 12, at: at(5.5)))
+        XCTAssertNotNil(catchup.step(drift: 2, local: 13, at: at(6)))
+        for landing in 0..<8 {
+            catchup.seekFinished(at: at(100 * Double(landing + 1)), generation: catchup.generation)
+            _ = catchup.step(drift: 2, local: 0, at: at(100 * Double(landing + 1) + 1))
+        }
+        XCTAssertEqual(catchup.interval, WatchPartyInPlaceCatchup.maxInterval)
+    }
+
+    func testARoomSeekIsNotMeasuredAsTheCorrectionSeeksShortfall() {
+        var catchup = WatchPartyInPlaceCatchup()
+        XCTAssertEqual(catchup.step(drift: 2, local: 10, at: at(0)), 12)
+        catchup.seekFinished(at: at(0), generation: catchup.generation)
+        catchup.forgetLanding()
+        // A correction seek that started before the room's seek and finishes
+        // after it records nothing.
+        let overtaken = catchup.generation &- 1
+        catchup.seekFinished(at: at(0.5), generation: overtaken)
+        XCTAssertFalse(catchup.measuring)
+        XCTAssertEqual(catchup.landedAt, at(0))
+        XCTAssertNil(catchup.step(drift: 0.5, local: 20, at: at(1)))
+        XCTAssertEqual(catchup.lead, 0)
+        // The finished seek still spaces the next one.
+        XCTAssertNil(catchup.step(drift: 1.5, local: 20, at: at(0.5)))
+        XCTAssertEqual(catchup.step(drift: 1.5, local: 20, at: at(1)), 21.5)
+    }
+
+    func testAStoppedMemberJoiningAPlayingRoomLandsWhereTheRoomIsWhenItPlays() {
+        func command(_ state: WatchPartyPlaybackState) -> WatchPartyTransportCommand {
+            WatchPartyTransportCommand(commandId: "c", selectionRevision: 1, action: .play, positionSeconds: 100,
+                                       executeAt: at(10), issuedAt: at(9.5), playbackState: state)
+        }
+        // The first seek took 1.5 s; the room moved to 102.5 meanwhile, so
+        // the next aims that far past it.
+        XCTAssertEqual(WatchPartyCommandState.realignFollowUp(command(.playing), serverNow: at(12.5),
+                                                              sourceTime: 101, seekTook: 1.5), 104)
+        // Landed within the deadband: no second seek.
+        XCTAssertNil(WatchPartyCommandState.realignFollowUp(command(.playing), serverNow: at(12.5),
+                                                            sourceTime: 102.25, seekTook: 0.25))
+        // A slow seek never aims further ahead than the lead cap.
+        XCTAssertEqual(WatchPartyCommandState.realignFollowUp(command(.playing), serverNow: at(20),
+                                                              sourceTime: 100, seekTook: 9),
+                       110 + WatchPartyInPlaceCatchup.maxLead)
+        // A room that is not playing does not move while the member seeks.
+        XCTAssertNil(WatchPartyCommandState.realignFollowUp(command(.paused), serverNow: at(20),
+                                                            sourceTime: 90, seekTook: 2))
+        XCTAssertNil(WatchPartyCommandState.realignFollowUp(command(.playing), serverNow: at(20),
+                                                            sourceTime: .nan, seekTook: 2))
+    }
 }

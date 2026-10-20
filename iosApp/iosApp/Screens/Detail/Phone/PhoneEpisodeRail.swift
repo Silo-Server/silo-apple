@@ -235,14 +235,14 @@ private struct PhoneEpisodeCard: View {
                 nowViewingTag
             }
 
-            Text(PhoneEpisodeFormatting.title(for: episode))
+            Text(EpisodeCardCaption.railTitle(for: episode))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(titleColor)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .multilineTextAlignment(.leading)
 
             if captionStyle.showsMetadata {
-                if let metadataLine = PhoneEpisodeFormatting.metadataLine(for: episode) {
+                if let metadataLine = EpisodeCardCaption.railMetadata(for: episode) {
                     HStack(spacing: 6) {
                         Text(metadataLine)
                             .font(.caption.weight(.medium))

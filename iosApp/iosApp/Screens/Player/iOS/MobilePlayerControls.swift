@@ -349,6 +349,14 @@ struct MobilePlayerControls: View {
     static let playButtonSize: CGFloat = 64
     static let skipButtonSize: CGFloat = 52
 
+    /// A checkmark-sized blank for the unchecked menu rows. Menus redraw
+    /// template images in their own tint, so it is drawn clear as original.
+    private static let clearCheckmark: Image = {
+        let symbol = UIImage(systemName: "checkmark")?
+            .withTintColor(.clear, renderingMode: .alwaysOriginal) ?? UIImage()
+        return Image(uiImage: symbol).renderingMode(.original)
+    }()
+
     // MARK: - Bottom stack
 
     private var bottomStack: some View {
@@ -412,14 +420,22 @@ struct MobilePlayerControls: View {
 
     private func qualityMenu(compact: Bool) -> some View {
         let menu = Menu {
+            // The menu indents only rows that carry an icon, so every row
+            // gets a checkmark, invisible unless checked: the titles stay
+            // in one column instead of the checked one shifting right. The
+            // bitrate goes underneath so the indented titles still fit.
             ForEach(viewModel.qualityOptions) { option in
                 Button {
                     viewModel.switchQuality(option.id)
                 } label: {
+                    Text(option.label)
+                    if let bitrate = option.bitrateText {
+                        Text(bitrate)
+                    }
                     if option.id == viewModel.highlightedQualityOptionId {
-                        Label(option.labelWithBitrate, systemImage: "checkmark")
+                        Image(systemName: "checkmark")
                     } else {
-                        Text(option.labelWithBitrate)
+                        Self.clearCheckmark
                     }
                 }
                 .disabled(viewModel.isQualitySwitching)
@@ -465,11 +481,10 @@ struct MobilePlayerControls: View {
     /// than the full "Up to 1080p HD (High)" menu label. A fixed saved
     /// resolution the menu has no row for still reads as that resolution.
     private var qualityValueText: String {
-        let activeId = viewModel.activeQualityId
-        if let active = viewModel.qualityOptions.first(where: { $0.id == activeId }) {
+        if let active = viewModel.activeQualityOption {
             return active.isAuto || active.resolution.isEmpty ? "Auto" : active.resolution
         }
-        return SiloQualityPresets.resolutionLabel(AppleQualityAxes.split(activeId).resolution)
+        return SiloQualityPresets.resolutionLabel(AppleQualityAxes.split(viewModel.activeQualityId).resolution)
     }
 
     // MARK: - Audio & Subtitles sheet

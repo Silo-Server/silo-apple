@@ -153,20 +153,20 @@ private struct PhoneTrailerCard: View {
 
     @ViewBuilder
     private var artwork: some View {
-        if let thumbnailURL {
+        if let thumbnailURL = entry.thumbnailURL {
             // YouTube's `hqdefault` still is 4:3 with letterbox bars; a
             // fill-mode crop to 16:9 removes them almost exactly.
             AsyncImageView(
-                url: thumbnailURL.absoluteString,
+                url: thumbnailURL,
+                thumbhash: entry.thumbhash,
                 targetSize: CGSize(width: cardWidth, height: thumbnailHeight),
                 contentMode: .fill
             )
             .frame(width: cardWidth, height: thumbnailHeight)
             .clipped()
         } else {
-            // Local extras have no artwork of their own — the scanner only
-            // records the file — so they get the surface tile plus the
-            // shared play glyph.
+            // A local extra the server has no image for yet gets the
+            // surface tile plus the shared play glyph.
             Rectangle()
                 .fill(Color.siloSurfaceElevated)
                 .frame(width: cardWidth, height: thumbnailHeight)
@@ -188,11 +188,6 @@ private struct PhoneTrailerCard: View {
 
     private var kindLabel: String {
         ExtraKindLabels.label(for: entry.kind).uppercased()
-    }
-
-    private var thumbnailURL: URL? {
-        guard case .remote(let video) = entry else { return nil }
-        return TrailerRail.thumbnailURL(siteKey: video.siteKey)
     }
 
     /// Local extras are real files, so the scanner knows their runtime.

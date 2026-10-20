@@ -705,7 +705,17 @@ final class WatchPartySession {
                                                            seekBand: seekBand) {
                 case .roomSeek: _ = try await adapter.apply(.seek(target), origin: .room)
                 case .correct: _ = try await adapter.correct(to: target, seekBand: seekBand)
-                case .realign: _ = try await adapter.apply(.seek(target), origin: .realign)
+                case .realign:
+                    let seekStarted = Date()
+                    let landed = try await adapter.apply(.seek(target), origin: .realign)
+                    // The room played on during that seek; land on it before playing.
+                    if let ahead = WatchPartyCommandState.realignFollowUp(
+                        command, serverNow: Date().addingTimeInterval(self.serverOffset),
+                        sourceTime: landed.sourceTime, seekTook: Date().timeIntervalSince(seekStarted)
+                    ), adapter.canReachInPlace(ahead) {
+                        try Task.checkCancellation()
+                        _ = try await adapter.apply(.seek(ahead), origin: .realign)
+                    }
                 case .none: break
                 }
                 try Task.checkCancellation()
@@ -823,8 +833,8 @@ final class WatchPartySession {
     /// Keeps a playing member on the room between commands. The last command
     /// this member ran is the room's position at its execute time, advancing
     /// at 1x while the room plays, so drift is measured locally every tick and
-    /// closed by rate; the server only steps in for drift the nudge has not
-    /// fixed.
+    /// closed by rate, or on Apple TV by an in-place seek; the server only
+    /// steps in for drift the nudge has not fixed.
     private func nudgeTowardRoom(_ room: WatchPartyRoom, snapshot: WatchPartyPlaybackSnapshot,
                                  adapter: WatchPartyPlaybackAdapter) {
         // Sampled after the report's sends, alongside the player position.

@@ -78,3 +78,31 @@ enum EpisodeCardCaption {
         return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 }
+
+// MARK: - Episode rails
+
+/// The caption under an episode rail card on the iPhone, iPad, Mac, and Apple
+/// TV, matched by the Android and web clients: "S01E02 · Pilot", then the air
+/// date and runtime.
+extension EpisodeCardCaption {
+    /// "S01E02 · Pilot", so a special (S00) and each episode's place in the
+    /// season read at a glance. Just the code when the episode has no title.
+    static func railTitle(for episode: EpisodeListItem) -> String {
+        let code = Self.code(season: episode.seasonNumber, episode: episode.episodeNumber)
+        guard let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else { return code }
+        return "\(code) · \(title)"
+    }
+
+    /// "Feb 18, 2026  ·  52m", or nil when neither part is known.
+    static func railMetadata(for episode: EpisodeListItem) -> String? {
+        var parts: [String] = []
+        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
+            parts.append(airDate)
+        }
+        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
+            parts.append(runtime)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
+    }
+}

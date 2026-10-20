@@ -148,22 +148,20 @@ private struct TrailerCardLabel: View {
         .tvFocusRing(isFocused: isFocused, cornerRadius: thumbCornerRadius)
     }
 
-    /// YouTube stills exist for every remote video; local extras have no
-    /// artwork at all server-side, so they keep the surface tile plus a
-    /// glyph rather than an empty frame.
+    /// YouTube stills exist for every remote video. A local extra the
+    /// server has no image for yet keeps the surface tile plus a glyph
+    /// rather than an empty frame.
     @ViewBuilder
     private var artwork: some View {
-        switch entry {
-        case .remote(let video):
-            if let url = TrailerRail.thumbnailURL(siteKey: video.siteKey)?.absoluteString {
-                AsyncImageView(
-                    url: url,
-                    targetSize: CGSize(width: cardWidth, height: thumbHeight),
-                    contentMode: .fill
-                )
-                .frame(width: cardWidth, height: thumbHeight)
-            }
-        case .local:
+        if let url = entry.thumbnailURL {
+            AsyncImageView(
+                url: url,
+                thumbhash: entry.thumbhash,
+                targetSize: CGSize(width: cardWidth, height: thumbHeight),
+                contentMode: .fill
+            )
+            .frame(width: cardWidth, height: thumbHeight)
+        } else {
             Image(systemName: "film")
                 .font(.system(size: 48))
                 .foregroundColor(.siloSecondaryText)

@@ -36,7 +36,7 @@ final class TrailerRailModelTests: XCTestCase {
 
     // MARK: - Merge order
 
-    func testRemoteVideosComeBeforeLocalExtrasInServerOrder() {
+    func testLocalExtrasComeBeforeRemoteVideosInServerOrder() {
         let entries = TrailerRail.entries(
             videos: [video("k1"), video("k2", kind: "teaser")],
             extras: [extra("extra:1"), extra("extra:2")],
@@ -45,8 +45,8 @@ final class TrailerRailModelTests: XCTestCase {
 
         XCTAssertEqual(
             entries.map(\.id),
-            ["remote:youtube:k1", "remote:youtube:k2", "local:extra:1", "local:extra:2"],
-            "remotes must lead in the server's order, then extras in theirs"
+            ["local:extra:1", "local:extra:2", "remote:youtube:k1", "remote:youtube:k2"],
+            "local extras must lead in the server's order, then remotes in theirs"
         )
     }
 
@@ -150,6 +150,24 @@ final class TrailerRailModelTests: XCTestCase {
             TrailerRail.youtubeWatchURL(siteKey: key)?.absoluteString,
             "https://www.youtube.com/watch?v=tFMo3UJ4B4g"
         )
+    }
+
+    func testEntryThumbnailUsesYouTubeStillOrTheExtrasOwnImage() {
+        let remote = TrailerRailEntry.remote(video("k1"))
+        XCTAssertEqual(remote.thumbnailURL, "https://i.ytimg.com/vi/k1/hqdefault.jpg")
+        XCTAssertNil(remote.thumbhash)
+
+        let withImage = TrailerRailEntry.local(ItemExtra(
+            contentId: "extra:1",
+            kind: "featurette",
+            stillUrl: "https://silo.example/api/v2/artwork/local/extras/extra:1/still/w500.r.webp",
+            stillThumbhash: "hash"
+        ))
+        XCTAssertEqual(withImage.thumbnailURL, "https://silo.example/api/v2/artwork/local/extras/extra:1/still/w500.r.webp")
+        XCTAssertEqual(withImage.thumbhash, "hash")
+
+        // An extra the server has no image for keeps the placeholder tile.
+        XCTAssertNil(TrailerRailEntry.local(extra("extra:2")).thumbnailURL)
     }
 
     func testKeysWithUnderscoresAndHyphensSurviveURLConstruction() {
