@@ -54,6 +54,21 @@ struct SiloControlRemoteView: View {
             .sheet(isPresented: $isShowingPicker) {
                 SiloControlTargetPickerView(request: nil, controller: controller)
             }
+            .alert(
+                "Replace What's Playing?",
+                isPresented: Binding(
+                    get: { controller.pendingReplace != nil },
+                    // Buttons run before the alert dismisses, so Replace has
+                    // already taken the pending launch by the time this fires.
+                    set: { if !$0 { controller.cancelReplace() } }
+                ),
+                presenting: controller.pendingReplace
+            ) { _ in
+                Button("Replace") { controller.confirmReplace() }
+                Button("Cancel", role: .cancel) { controller.cancelReplace() }
+            } message: { pending in
+                Text(pending.message)
+            }
         }
         .preferredColorScheme(.dark)
         .onAppear {

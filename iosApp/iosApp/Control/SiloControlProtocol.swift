@@ -26,8 +26,12 @@ enum SiloControlFeature {
     /// title with `handoff_cancel` reason `replace_confirmation_required`,
     /// and the controller resends with `replaceConfirmed` after asking.
     static let replaceConfirmation = "replace_confirmation"
+    /// The receiver accepts `presence`, so a controller can change its
+    /// `passive` flag without reconnecting.
+    static let presence = "presence"
 
-    static let receiverFeatures = [multiController, closeReason, resumeToken, replaceConfirmation]
+    static let receiverFeatures = [multiController, closeReason, resumeToken, replaceConfirmation, presence]
+    static let phoneFeatures = [closeReason, resumeToken, replaceConfirmation]
 }
 
 /// Why a peer closed the session. Sent only to peers that list
@@ -178,6 +182,13 @@ struct SiloControlNowPlayingSummary: Codable, Equatable, Sendable {
     let subtitle: String?
     let profileName: String?
     let controllerName: String?
+}
+
+/// A controller's `passive` flag after hello. Sent only to receivers that
+/// list `SiloControlFeature.presence`; other receivers drop the connection
+/// on a message type they don't know.
+struct SiloControlPresence: Codable, Equatable, Sendable {
+    let passive: Bool
 }
 
 struct SiloControlTrack: Codable, Equatable, Identifiable, Sendable {
@@ -387,6 +398,7 @@ enum SiloControlMessage: Equatable, Sendable {
     case unsupportedControl(name: String)
     case state(SiloControlPlaybackState)
     case error(SiloControlErrorMessage)
+    case presence(SiloControlPresence)
     case ping
     case pong
     /// `reason` is a `SiloControlCloseReason`, sent only to peers that list
@@ -402,7 +414,7 @@ private struct SiloControlClosePayload: Codable {
 extension SiloControlMessage: Codable {
     private enum CodingKeys: String, CodingKey {
         case type, v
-        case hello, launch, control, state, error, close
+        case hello, launch, control, state, error, close, presence
         case handoffOffer, handoffChallenge, handoffReady, handoffCancel
     }
 
@@ -416,6 +428,7 @@ extension SiloControlMessage: Codable {
         case control
         case state
         case error
+        case presence
         case ping
         case pong
         case close
@@ -460,6 +473,9 @@ extension SiloControlMessage: Codable {
         case .error(let error):
             try c.encode(Kind.error, forKey: .type)
             try c.encode(error, forKey: .error)
+        case .presence(let presence):
+            try c.encode(Kind.presence, forKey: .type)
+            try c.encode(presence, forKey: .presence)
         case .ping:
             try c.encode(Kind.ping, forKey: .type)
         case .pong:
@@ -498,6 +514,8 @@ extension SiloControlMessage: Codable {
             self = .state(try c.decode(SiloControlPlaybackState.self, forKey: .state))
         case .error:
             self = .error(try c.decode(SiloControlErrorMessage.self, forKey: .error))
+        case .presence:
+            self = .presence(try c.decode(SiloControlPresence.self, forKey: .presence))
         case .ping:
             self = .ping
         case .pong:

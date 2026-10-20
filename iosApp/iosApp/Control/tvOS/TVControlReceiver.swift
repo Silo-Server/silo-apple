@@ -432,6 +432,10 @@ final class TVControlReceiver {
             // an old remote would look like a broken connection. Ignoring it
             // matches what the user sees anyway — nothing happens.
             Self.logger.info("control: ignoring unsupported command \(name, privacy: .public)")
+        case .presence(let presence):
+            guard controller.didReceiveHello else { return }
+            controller.passive = presence.passive
+            refreshStandbyState()
         case .ping:
             controller.session.enqueue(.pong)
         case .pong:

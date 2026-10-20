@@ -220,6 +220,16 @@ final class SiloControlMultiControllerTests: XCTestCase {
         XCTAssertEqual(try decode(#"{"type":"close","v":2,"close":{"why":1}}"#), .close(reason: nil))
     }
 
+    // MARK: - Wire: presence
+
+    func testPresenceRoundTrips() throws {
+        let object = try jsonObject(.presence(SiloControlPresence(passive: false)))
+        XCTAssertEqual(object["type"] as? String, "presence")
+        XCTAssertEqual((object["presence"] as? [String: Any])?["passive"] as? Bool, false)
+        XCTAssertEqual(try roundTrip(.presence(SiloControlPresence(passive: true))),
+                       .presence(SiloControlPresence(passive: true)))
+    }
+
     // MARK: - Wire: handoff
 
     func testReplaceConfirmationCancelCarriesWhatIsPlaying() throws {

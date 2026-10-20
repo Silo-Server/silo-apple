@@ -255,3 +255,119 @@ private extension SiloControlPlaybackState {
             error: nil)
     }
 }
+
+// MARK: - Several controllers on one TV (phone side)
+
+final class SiloControlPhoneMultiControllerTests: XCTestCase {
+    func testOlderTVsCloseOnlyForATakeoverOrDisconnectSoThePhoneForgetsThem() {
+        for reason in [nil, SiloControlCloseReason.timeout, SiloControlCloseReason.replaced] {
+            XCTAssertEqual(
+                SiloControlClosePolicy.response(reason: reason, tvKeepsOtherControllers: false),
+                .letGo(forgetTarget: true)
+            )
+        }
+    }
+
+    func testMultiControllerTVsSayWhyTheyClosed() {
+        func response(_ reason: String?) -> SiloControlCloseResponse {
+            SiloControlClosePolicy.response(reason: reason, tvKeepsOtherControllers: true)
+        }
+        XCTAssertEqual(response(SiloControlCloseReason.timeout), .reconnect)
+        XCTAssertEqual(response(SiloControlCloseReason.tvDisconnected), .letGo(forgetTarget: true))
+        XCTAssertEqual(response(nil), .letGo(forgetTarget: true))
+        XCTAssertEqual(response(SiloControlCloseReason.replaced), .letGo(forgetTarget: false))
+        XCTAssertEqual(response(SiloControlCloseReason.tooManyControllers), .letGo(forgetTarget: false))
+        XCTAssertEqual(response("from_a_newer_tv"), .letGo(forgetTarget: false))
+    }
+
+    func testReplacePromptNamesWhoIsWatchingWhat() {
+        let pending = SiloControlPendingReplace(
+            request: Self.request,
+            nowPlaying: SiloControlNowPlayingSummary(
+                contentId: "e1", title: "Pilot", subtitle: "Severance · S1E1",
+                profileName: "Alex", controllerName: nil
+            ),
+            tvName: "Living Room",
+            fallbackMessage: "unused"
+        )
+        XCTAssertEqual(pending.message, "Alex is watching Severance · S1E1 · Pilot on Living Room. Play yours instead?")
+    }
+
+    func testReplacePromptFallsBackToTheTVsWording() {
+        let pending = SiloControlPendingReplace(
+            request: Self.request, nowPlaying: nil, tvName: "Living Room",
+            fallbackMessage: "Someone is watching a title on this TV."
+        )
+        XCTAssertEqual(pending.message, "Someone is watching a title on this TV.")
+    }
+
+    func testResumeTokenIsOfferedOnlyForTheSameTVServerAndProfile() {
+        var tokens = SiloControlResumeTokens()
+        tokens.store("tok", tvId: "tv1", serverId: "srv", profileId: "alex")
+        XCTAssertEqual(tokens.token(tvId: "tv1", serverId: "srv", profileId: "alex"), "tok")
+        XCTAssertNil(tokens.token(tvId: "tv2", serverId: "srv", profileId: "alex"))
+        XCTAssertNil(tokens.token(tvId: "tv1", serverId: "srv", profileId: "sam"))
+        XCTAssertNil(tokens.token(tvId: "tv1", serverId: "other", profileId: "alex"))
+    }
+
+    /// A ready from an older TV carries no token and must not erase one.
+    func testAMissingTokenKeepsTheStoredOne() {
+        var tokens = SiloControlResumeTokens()
+        tokens.store("tok", tvId: "tv1", serverId: "srv", profileId: "alex")
+        tokens.store(nil, tvId: "tv1", serverId: "srv", profileId: "alex")
+        XCTAssertEqual(tokens.token(tvId: "tv1", serverId: "srv", profileId: "alex"), "tok")
+    }
+
+    @MainActor func testHandshakeRecordsTheTVsFeatures() {
+        let handshake = SiloControlHandshake()
+        XCTAssertFalse(handshake.tvSupports(SiloControlFeature.presence))
+        handshake.receive(.hello(SiloControlHello(
+            role: .tv, deviceName: "Living Room", deviceId: "tv1", serverId: "srv", serverName: nil,
+            supportedVersions: [2], features: [SiloControlFeature.presence]
+        )))
+        XCTAssertTrue(handshake.tvSupports(SiloControlFeature.presence))
+        XCTAssertFalse(handshake.tvSupports(SiloControlFeature.multiController))
+    }
+
+    @MainActor func testReplaceRefusalSurfacesWhatIsPlaying() async {
+        let handshake = SiloControlHandshake()
+        let nowPlaying = SiloControlNowPlayingSummary(
+            contentId: "c1", title: "Dune", subtitle: nil, profileName: "Alex", controllerName: nil
+        )
+        handshake.beginHandoff(requestId: "r1")
+        handshake.receive(.handoffCancel(SiloControlHandoffCancel(
+            requestId: "r1",
+            reason: SiloControlHandoffCancelReason.replaceConfirmationRequired,
+            message: "Alex is watching Dune on this TV.",
+            nowPlaying: nowPlaying
+        )))
+        do {
+            _ = try await handshake.firstReply(to: "r1", within: .seconds(1))
+            XCTFail("expected a replace refusal")
+        } catch {
+            XCTAssertEqual(
+                error as? SiloControlHandoffError,
+                .replaceConfirmationRequired(nowPlaying, message: "Alex is watching Dune on this TV.")
+            )
+        }
+    }
+
+    @MainActor func testOtherRefusalsStayPlainCancellations() async {
+        let handshake = SiloControlHandshake()
+        handshake.beginHandoff(requestId: "r1")
+        handshake.receive(.handoffCancel(SiloControlHandoffCancel(
+            requestId: "r1", reason: SiloControlHandoffCancelReason.superseded, message: "Sam started playing."
+        )))
+        do {
+            _ = try await handshake.firstReply(to: "r1", within: .seconds(1))
+            XCTFail("expected a cancellation")
+        } catch {
+            XCTAssertEqual(error as? SiloControlHandoffError, .cancelled("Sam started playing."))
+        }
+    }
+
+    private static let request = SiloControlPlaybackRequest(
+        contentId: "c2", fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil,
+        startFromBeginning: false, resumePosition: nil
+    )
+}
