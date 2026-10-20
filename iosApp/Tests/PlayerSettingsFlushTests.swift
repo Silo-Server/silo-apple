@@ -2566,6 +2566,9 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
     /// build's head so most tests simulate a fully current server; a test of
     /// revision-gated behavior overrides it to an older value.
     var revision: Int = SettingKey.revision
+    /// Keys this server defines whatever its revision, as a pre-release
+    /// server that carries a key at an earlier revision does.
+    var alsoDefines: Set<SettingKey> = []
     /// Artificial latency, so a test can overlap two flushes.
     var writeDelay: Duration?
     /// Models the production transport resolving the active profile after an
@@ -2661,10 +2664,11 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         let settings = effective.filter { requested.contains($0.key) }
         let error = effectiveError
         let reportedRevision = revision
+        let alsoDefines = alsoDefines
         lock.unlock()
         if let error { throw error }
-        // Like the server, refuse a batch naming a key its revision lacks.
-        if let undefined = keys.first(where: { !$0.isServed(atRevision: reportedRevision) }) {
+        // Like the server, refuse a batch naming a key it doesn't define.
+        if let undefined = keys.first(where: { !$0.isServed(atRevision: reportedRevision) && !alsoDefines.contains($0) }) {
             throw SettingsAPIError.unknownSetting(key: undefined.rawValue)
         }
         return EffectiveSettingValuesResponse(settings: settings, revision: reportedRevision)

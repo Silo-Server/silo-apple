@@ -727,6 +727,37 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertTrue(harness.settings.serverLacksBufferingQualityMode, "a current revision that refuses the key")
     }
 
+    /// A server that answers the key has the setting, even at a revision
+    /// below the one this build records for it: the row shows, and a change
+    /// is saved there.
+    func testAServerThatAnswersTheKeyHasTheSettingWhateverItsRevision() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.bufferingQualityRevision - 2
+        harness.transport.alsoDefines = [.playbackBufferingQualityMode]
+        harness.transport.effective = [Self.bufferingRow(.ask)]
+        await harness.settings.refreshFromServer()
+        XCTAssertFalse(harness.settings.serverLacksBufferingQualityMode)
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .ask)
+
+        harness.transport.reset()
+        harness.settings.setBufferingQualityMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(harness.transport.writesByKey()[.playbackBufferingQualityMode]?.value, .string("never"))
+    }
+
+    /// An answer that carries a key's row serves that key, whatever revision
+    /// it reports; one without the row, from a revision before the key,
+    /// doesn't.
+    func testAResponseServesAKeyItHasARowFor() {
+        let older = SettingKey.bufferingQualityRevision - 2
+        let key = SettingKey.playbackBufferingQualityMode
+        let withRow = EffectiveSettingValuesResponse(settings: [Self.bufferingRow(.ask)], revision: older)
+        XCTAssertTrue(withRow.servesAll([key]))
+        XCTAssertFalse(EffectiveSettingValuesResponse(settings: [], revision: older).servesAll([key]))
+        XCTAssertTrue(EffectiveSettingValuesResponse(settings: [], revision: SettingKey.bufferingQualityRevision)
+            .servesAll([key]))
+    }
+
     /// An older server has no profile value to go back to, so "Use Profile
     /// Setting" leaves the contract default and sends nothing.
     func testUsingTheProfileBufferingModeOnAnOlderServerRestoresTheDefault() async throws {

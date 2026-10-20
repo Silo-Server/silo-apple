@@ -541,6 +541,9 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// Bumped by ``forgetManifestRevision()`` so a read that was already in
     /// flight for the previous server cannot record that server's revision.
     private var manifestRevisionGeneration: UInt64 = 0
+    /// Keys the server answered with a row since ``forgetManifestRevision()``:
+    /// it serves them whatever its revision, so their writes can go.
+    private var keysWithRows: Set<SettingKey> = []
 
     init(
         transport: PlayerSettingsTransport,
@@ -654,6 +657,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
         lock.withLock {
             if manifestRevisionGeneration == generation {
                 manifestRevision = response.revision
+                keysWithRows.formUnion(response.byKey.keys)
             }
         }
         return response
@@ -672,6 +676,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     func forgetManifestRevision() {
         lock.withLock {
             manifestRevision = nil
+            keysWithRows = []
             manifestRevisionGeneration &+= 1
         }
     }
@@ -1363,7 +1368,7 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 log(key, "server manifest revision not known yet", kept: true)
                 return .retryOnNextTrigger
             }
-            guard key.isServed(atRevision: revision) else {
+            guard key.isServed(atRevision: revision) || lock.withLock({ keysWithRows.contains(key) }) else {
                 // Nothing can be stored for the key there, so a clear is
                 // already true. A value stays owed on this device, which keeps
                 // using it, and goes once the server serves the key.
