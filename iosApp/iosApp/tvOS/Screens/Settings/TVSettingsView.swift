@@ -30,8 +30,8 @@ struct TVSettingsView: View {
     @State private var preferredFocusOwner: FocusOwner = .rail
     @State private var preferredRailFocus: RailItem = .category(.general)
     @State private var preferredDetailFocus: TVSettingsDetailFocus = .top
-    /// The Settings › Accounts row whose action opened a confirmation;
-    /// focus returns to it, or to the row that took its place.
+    /// The Settings › Account and Server row whose action opened a
+    /// confirmation; focus returns to it, or to the row that took its place.
     @State private var accountsReturnRow: TVAccountsSettingsRow?
     @State private var hasLoadedAccounts = false
     @FocusState private var railFocus: RailItem?
@@ -102,14 +102,14 @@ struct TVSettingsView: View {
             await diagnosticsModel.load(profile: viewModel.activeProfile)
         }
         .onChange(of: isAccountsOverlayPresented) { _, presented in
-            guard !presented, selectedCategory == .accounts,
+            guard !presented, selectedCategory == .accountAndServer,
                   let row = accountsReturnRow, accountsRows.contains(row) else { return }
             restoreDetailFocus(to: .accounts(row))
         }
         .onChange(of: accountsRows) { before, after in
             guard let row = accountsReturnRow, !after.contains(row) else { return }
             accountsReturnRow = nil
-            guard selectedCategory == .accounts,
+            guard selectedCategory == .accountAndServer,
                   let next = TVFocusNeighbor.replacement(for: row, before: before, after: after) ?? after.first else { return }
             preferredFocusOwner = .detail
             preferredDetailFocus = .accounts(next)
@@ -351,8 +351,8 @@ struct TVSettingsView: View {
         if category == .general {
             return .generalAppleTVUser
         }
-        if category == .accounts {
-            return accountsRows.first.map(TVSettingsDetailFocus.accounts) ?? .top
+        if category == .accountAndServer {
+            return accountsRows.first.map(TVSettingsDetailFocus.accounts) ?? .serverPrivacyPolicy
         }
         if category == .subtitles,
            viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance {
@@ -545,15 +545,20 @@ struct TVSettingsView: View {
                 // Account.
                 changePairedProfile: { Task { await router.accounts.changePairedProfile(router: router) } }
             )
-        case .accounts:
-            TVAccountsSettingsSection(
-                model: accountsModel,
-                phase: TVUserListPhase(directory: router.accounts.directory, hasLoaded: hasLoadedAccounts),
-                addresses: Dictionary(router.accounts.directory.accounts.map { ($0.id, $0.serverAddress) },
-                                      uniquingKeysWith: { first, _ in first }),
-                focus: $detailFocus,
-                actions: accountsActions
-            )
+        case .accountAndServer:
+            // The accounts sit in the pane itself, like every other setting
+            // here, with the open account's server and the app below them.
+            VStack(alignment: .leading, spacing: 8) {
+                TVAccountsSettingsSection(
+                    model: accountsModel,
+                    phase: TVUserListPhase(directory: router.accounts.directory, hasLoaded: hasLoadedAccounts),
+                    addresses: Dictionary(router.accounts.directory.accounts.map { ($0.id, $0.serverAddress) },
+                                          uniquingKeysWith: { first, _ in first }),
+                    focus: $detailFocus,
+                    actions: accountsActions
+                )
+                serverSections
+            }
         case .playback:
             TVPlaybackSettingsPane(
                 viewModel: viewModel,
@@ -568,16 +573,15 @@ struct TVSettingsView: View {
             )
         case .diagnostics:
             TVDiagnosticsSettingsPane(model: diagnosticsModel, detailFocus: $detailFocus)
-        case .server:
-            serverPane
         }
     }
 
-    // MARK: - Server pane
+    // MARK: - Server and app
 
-    private var serverPane: some View {
+    /// Under the accounts: the open account's server, and about this app.
+    private var serverSections: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TVSettingsSectionHeader("ACTIVE SERVER")
+            TVSettingsSectionHeader("SERVER")
 
             TVSettingsInfoRow(
                 title: "Server",
@@ -591,20 +595,6 @@ struct TVSettingsView: View {
                 TVSettingsInfoRow(title: "Address", value: viewModel.serverUrl)
             }
 
-            Button(action: showAccounts) {
-                HStack(spacing: 16) {
-                    Image(systemName: "person.2")
-                        .font(.system(size: 22, weight: .medium))
-                    Text("Manage Accounts")
-                        .font(.system(size: 26))
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 18, weight: .semibold))
-                        .opacity(0.55)
-                }
-            }
-            .buttonStyle(TVSettingsPaneRowStyle())
-            .focused($detailFocus, equals: .top)
 
             TVSettingsSectionHeader("ABOUT")
 
@@ -688,19 +678,6 @@ struct TVSettingsView: View {
         preferredDetailFocus = .accounts(row)
     }
 
-    /// Server › Manage Accounts: the Accounts pane, with focus on its first
-    /// row.
-    private func showAccounts() {
-        let target = initialDetailFocus(for: .accounts)
-        withAnimation(.easeOut(duration: SiloTheme.normalDuration)) {
-            selectedCategory = .accounts
-        }
-        preferredRailFocus = .category(.accounts)
-        preferredFocusOwner = .detail
-        preferredDetailFocus = target
-        restoreDetailFocus(to: target)
-    }
-
     // MARK: - Rail model
 
     enum RailItem: Hashable {
@@ -774,33 +751,30 @@ enum TVSettingsDetailFocus: Hashable {
 
 enum TVSettingsCategory: String, CaseIterable, Identifiable {
     case general
-    case accounts
     case playback
     case subtitles
     case diagnostics
-    case server
+    case accountAndServer
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general: return "General"
-        case .accounts: return "Accounts"
         case .playback: return "Playback"
         case .subtitles: return "Subtitles"
         case .diagnostics: return "Diagnostics"
-        case .server: return "Server"
+        case .accountAndServer: return "Account and Server"
         }
     }
 
     var icon: String {
         switch self {
         case .general: return "gearshape"
-        case .accounts: return "person.2"
         case .playback: return "play.rectangle"
         case .subtitles: return "captions.bubble"
         case .diagnostics: return "stethoscope"
-        case .server: return "server.rack"
+        case .accountAndServer: return "person.2"
         }
     }
 
@@ -808,27 +782,24 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
         switch self {
         case .general:
             return "App-level options for this Apple TV."
-        case .accounts:
-            return TVAccountsSettingsSection.blurb
         case .playback:
             return "Streaming quality and episode behavior for this Apple TV."
         case .subtitles:
             return "Language, behavior, and on-screen appearance."
         case .diagnostics:
             return "Review and send diagnostics to this Silo server."
-        case .server:
-            return "The server of the account open now, and this app's version."
+        case .accountAndServer:
+            return "Silo accounts on this Apple TV, the server of the one open now, and this app's version."
         }
     }
 
     var railDescription: String {
         switch self {
         case .general: return "App and navigation"
-        case .accounts: return "Silo accounts and sign-ins"
         case .playback: return "Quality and episodes"
         case .subtitles: return "Language and appearance"
         case .diagnostics: return "Reports and support"
-        case .server: return "Connection and version"
+        case .accountAndServer: return "Accounts, server, and version"
         }
     }
 

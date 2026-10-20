@@ -1,7 +1,7 @@
 #if os(tvOS)
 import SwiftUI
 
-/// A focusable row of Settings › Accounts.
+/// A focusable row of Settings › Account and Server.
 enum TVAccountsSettingsRow: Hashable {
     /// Sign Out of the account, or Sign In Again once it expired.
     case account(SiloAccountRef)
@@ -9,8 +9,9 @@ enum TVAccountsSettingsRow: Hashable {
     case addAccount
 }
 
-/// The rows of Settings › Accounts: each account with Sign Out (or Sign In
-/// Again) and Remove from This Apple TV; then Add Account.
+/// The account rows of Settings › Account and Server: each account with
+/// Sign Out (or Sign In Again) and Remove from This Apple TV; then Add
+/// Account.
 ///
 /// Focus: native settings rows in one column; the owner seeds and restores
 /// focus through `focus` with `TVSettingsDetailFocus.accounts`.
@@ -24,7 +25,6 @@ struct TVAccountsSettingsSection: View {
         var addAccount: () -> Void
     }
 
-    static let blurb = "Silo accounts on this Apple TV, each signed in to one server."
     static let footer = "Accounts are shared by everyone on this Apple TV. Profiles and watch history stay on the servers."
 
     let model: AccountsSettingsViewModel

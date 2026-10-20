@@ -73,7 +73,7 @@ struct TVUserStatusBadge: View {
     enum Kind {
         /// This Apple TV user's account (Choose an Account).
         case lastUsed
-        /// The account open now (Settings › Accounts).
+        /// The account open now (Settings › Account and Server).
         case current
         /// The saved sign-in expired.
         case signInAgain

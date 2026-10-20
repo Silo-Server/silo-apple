@@ -40,7 +40,8 @@ struct UserFlowDestination: View {
             SignInTargetScreen(router: router, context: context, isRoot: isRoot)
             #endif
         #if !os(tvOS)
-        // Apple TV shows its accounts in Settings › Accounts (`TVSettingsView`).
+        // Apple TV shows its accounts in Settings › Account and Server
+        // (`TVSettingsView`).
         case .manageAccounts:
             ManageAccountsView(router: router)
         #endif
