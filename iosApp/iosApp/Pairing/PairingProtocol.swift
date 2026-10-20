@@ -12,15 +12,9 @@ enum PairingProtocol {
     /// advertises `st=login`. Both phone apps must accept `login` TVs before
     /// either TV advertises one; a phone that predates them offers a
     /// sign-in TV the setup chooser and pushes servers without an identity.
-    /// On in Debug builds for development; turn it on for release once the
-    /// iOS and Android phone apps that handle `login` have shipped.
-    static let advertisesSignInTVs: Bool = {
-        #if DEBUG
-        return true
-        #else
-        return false
-        #endif
-    }()
+    /// On in every build: the iOS and Android phone apps that handle `login`
+    /// have shipped.
+    static let advertisesSignInTVs = true
 
     /// TXT keys. `st` is the receiver state; `srv` is the deployment
     /// identity of a `login` TV's server (absent for `setup`).
