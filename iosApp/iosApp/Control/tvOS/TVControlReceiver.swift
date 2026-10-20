@@ -792,7 +792,7 @@ final class TVControlReceiver {
     }
 
     private func handleControl(_ command: SiloControlCommand, from controller: Controller) {
-        // .stop dismisses the player, so it bypasses the view model.
+        // .stop goes through the receiver, so it also clears a title still loading (no player registered yet).
         if command.name == .stop {
             stopRemotePlayback()
             return
@@ -859,7 +859,11 @@ final class TVControlReceiver {
         }
     }
 
+    /// Stops what is on screen. The player is torn down here rather than from
+    /// its view's disappearance: a title started from a TV detail page is a
+    /// pushed route, which clearing `presentedPlayer` never dismisses.
     private func stopRemotePlayback() {
+        playerViewModel?.stopAndClose()
         playerViewModel = nil
         playerContentId = nil
         stateTask?.cancel()

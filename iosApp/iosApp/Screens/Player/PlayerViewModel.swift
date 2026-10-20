@@ -8720,6 +8720,16 @@ class PlayerViewModel {
         requestRemoteDismiss(after: 0.8)
     }
 
+    /// Stops playback and its server session now, then asks the view to
+    /// close however it was shown: a cover, or on tvOS a pushed route that
+    /// clearing `presentedPlayer` doesn't reach. The TV's remote receiver
+    /// uses this, so a phone taking over never leaves the outgoing title
+    /// playing under the next one.
+    func stopAndClose() {
+        cleanup()
+        requestRemoteDismiss()
+    }
+
     private func requestRemoteDismiss(after delay: TimeInterval = 0) {
         noticeDismissTask?.cancel()
         remoteDismissTask?.cancel()
