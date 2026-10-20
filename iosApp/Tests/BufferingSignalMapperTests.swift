@@ -424,6 +424,44 @@ final class BufferingQualityPlayerTests: XCTestCase {
         XCTAssertEqual(model.bufferingPill?.kind, .prompt, "its timer did not run out unseen")
     }
 
+    /// A sheet over the player hides its pills the same way.
+    func testASheetOverThePlayerHoldsTheBufferingPill() async throws {
+        let clock = ManualBufferingQualityClock()
+        let model = PlayerViewModel(bufferingQualityClock: clock)
+        defer { model.cleanup() }
+        try showPrompt(on: model, clock: clock)
+
+        model.playerSheetCoversPlayer(true)
+        await eventually { model.bufferingPill == nil }
+        XCTAssertNil(model.bufferingPill)
+        clock.advance(to: 60_000)
+
+        model.playerSheetCoversPlayer(false)
+        await eventually { model.bufferingPill != nil }
+        XCTAssertEqual(model.bufferingPill?.kind, .prompt, "its timer did not run out unseen")
+    }
+
+    /// A buffering notice is information. It waits while another notice
+    /// holds the slot or the player can't show it, then shows.
+    func testABufferingNoticeWaitsForTheSlot() async {
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        let other = PlayerNotice(title: "Other", message: "", tone: .warning)
+        model.activeNotice = other
+        model.playerSheetCoversPlayer(true)
+        model.bufferingQuality.onOutput?(.notice(.cantLower))
+        XCTAssertEqual(model.presentedNotice, other)
+
+        model.activeNotice = nil
+        await eventually { model.presentedNotice != nil }
+        XCTAssertNil(model.presentedNotice, "the sheet still covers the player")
+
+        model.playerSheetCoversPlayer(false)
+        await eventually { model.presentedNotice != nil }
+        XCTAssertEqual(model.presentedNotice?.title, BufferingQualityController.cantLowerNotice)
+        XCTAssertEqual(model.presentedNotice?.tone, .info)
+    }
+
     private let backgroundNotification = UIApplication.didEnterBackgroundNotification
     private let foregroundNotification = UIApplication.willEnterForegroundNotification
 

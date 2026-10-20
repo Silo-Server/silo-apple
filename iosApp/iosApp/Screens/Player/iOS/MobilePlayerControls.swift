@@ -21,6 +21,7 @@ struct MobilePlayerControls: View {
     let onDismiss: () -> Void
 
     @State private var activeSheet: PlayerSheet?
+    @State private var tracksDetent: PresentationDetent = .medium
     /// Trailing time label mode: remaining ("−12:34") when true, total
     /// duration otherwise. Tap the label to flip — the native player idiom.
     @State private var showsRemainingTime = true
@@ -109,7 +110,7 @@ struct MobilePlayerControls: View {
             switch sheet {
             case .tracks:
                 TrackSelectionSheet(viewModel: viewModel) { activeSheet = nil }
-                    .presentationDetents([.medium, .large])
+                    .presentationDetents([.medium, .large], selection: $tracksDetent)
                     .presentationDragIndicator(.visible)
             case .settings:
                 PlayerSettingsSheet(
@@ -135,7 +136,12 @@ struct MobilePlayerControls: View {
                 viewModel.pinControlsVisible()
             } else {
                 viewModel.resumeAutoHide()
+                tracksDetent = .medium
             }
+            viewModel.playerSheetCoversPlayer(sheetCoversPlayer)
+        }
+        .onChange(of: tracksDetent) { _, _ in
+            viewModel.playerSheetCoversPlayer(sheetCoversPlayer)
         }
     }
 
@@ -659,6 +665,16 @@ struct MobilePlayerControls: View {
     }
 
     // MARK: - Sheet identifier
+
+    /// A full-height sheet covers the top of the player, where the buffering
+    /// pill and notices show; the tracks sheet at half height does not.
+    private var sheetCoversPlayer: Bool {
+        switch activeSheet {
+        case .settings: true
+        case .tracks: tracksDetent == .large
+        case nil: false
+        }
+    }
 
     private enum PlayerSheet: Identifiable {
         case tracks, settings

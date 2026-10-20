@@ -117,23 +117,25 @@ private struct MacPlayerScreen: View {
                     PlayerBufferingCapsule()
                 }
 
-                if let notice = viewModel.presentedNotice {
-                    PlayerNoticeOverlay(notice: notice)
-                        .padding(.top, 72)
+                // The notice position, below the window's title bar. The
+                // buffering pill shares it, below any notice.
+                PlayerNoticeStack {
+                    if let notice = viewModel.presentedNotice {
+                        PlayerNoticeOverlay(notice: notice)
+                    }
+                    if let pill = viewModel.bufferingPill {
+                        MacBufferingQualityPill(
+                            pill: pill,
+                            onPrimary: { viewModel.selectBufferingPrimary() },
+                            onSecondary: { viewModel.selectBufferingKeep() }
+                        )
+                        .padding(.horizontal, SiloTheme.safePadding)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .playerNoticeStackPill()
+                    }
                 }
-
-                if let pill = viewModel.bufferingPill {
-                    MacBufferingQualityPill(
-                        pill: pill,
-                        onPrimary: { viewModel.selectBufferingPrimary() },
-                        onSecondary: { viewModel.selectBufferingKeep() }
-                    )
-                    .padding(.horizontal, SiloTheme.safePadding)
-                    // Below the window's title bar, like the notice's inset.
-                    .padding(.top, 72 + SiloTheme.safePadding)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                }
+                .padding(.top, 72)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 if let notice = viewModel.subtitleSync.notice {
                     SubtitleSyncIndicator(notice: notice) {
@@ -180,6 +182,8 @@ private struct MacPlayerScreen: View {
         .onDisappear {
             viewModel.cleanup()
         }
+        // Pills and notices wait while this window can't be seen.
+        .background(MacWindowVisibilityReader { viewModel.playerWindowVisibilityChanged($0) })
         .preferredColorScheme(.dark)
         // One header: the window's title bar carries what is playing and its
         // format beside the back button.

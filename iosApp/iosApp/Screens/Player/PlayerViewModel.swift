@@ -524,9 +524,14 @@ class PlayerViewModel {
     /// A **Restore quality** the player could not send while another replan
     /// was in flight; sent when that one settles.
     @ObservationIgnored private var deferredBufferingRestore: BufferingQualityController.ReplanRequest?
-    /// The app is in the background, or the Mac's player window is minimized
-    /// or hidden: the player cannot show its pills.
+    /// The app is in the background, or the Mac's player window can't be
+    /// seen: the player cannot show its pills.
     private(set) var isPlayerSurfaceHidden = false
+    /// A sheet covers the player where its pills show (iPhone and iPad).
+    private(set) var isPlayerCoveredBySheet = false
+    /// A buffering notice waiting for the notice slot: it shows once the
+    /// player can show it and no other notice holds the slot.
+    @ObservationIgnored private var pendingBufferingNotice: BufferingQualityController.Notice?
     @ObservationIgnored private var surfaceVisibilityObservers: [NSObjectProtocol] = []
     #if os(macOS)
     /// Resigning active keeps the plan's running summary; quitting ends it.
@@ -10498,6 +10503,7 @@ extension PlayerViewModel {
         mediaRequestFailureExpiry = nil
         lastMediaRequestFailureAt = nil
         deferredBufferingRestore = nil
+        pendingBufferingNotice = nil
         bufferingPlans = [:]
         bufferingPlanId = nil
         bufferingAdoptedStreamLoadGeneration = nil
@@ -10518,7 +10524,8 @@ extension PlayerViewModel {
             Self.logger.info("[CMP-BUFFERING] pill shown kind=\(kind == .prompt ? "prompt" : "undo", privacy: .public)")
         case .notice(let notice):
             Self.logger.info("[CMP-BUFFERING] notice \(notice == .lowered ? "lowered" : "cant_lower", privacy: .public)")
-            showNotice(title: notice.text, message: "", tone: notice == .lowered ? .info : .warning, duration: 5)
+            pendingBufferingNotice = notice
+            showPendingBufferingNotice()
         case .planSummary(let summary):
             reportBufferingPlanSummary(summary)
         }
@@ -10605,28 +10612,58 @@ extension PlayerViewModel {
         guard !isDisposed else { return }
         withObservationTracking {
             _ = bufferingHostInputs
+            _ = presentedNotice
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in self?.observeBufferingHostInputs() }
         }
         syncBufferingHostInputs()
+        showPendingBufferingNotice()
     }
 
     /// A higher-priority pill, or a player that cannot show pills at all,
     /// holds a buffering pill with its remaining timer.
     private var bufferingHostInputs: (mode: BufferingQualityMode, suspended: Bool, competingPill: Bool) {
-        var pillHidden = showIntroSkip || showSegmentSkip || showNextUpScreen || isPlayerSurfaceHidden
-        #if os(iOS)
-        pillHidden = pillHidden || PictureInPictureCoordinator.shared.isEngaged
+        #if os(macOS)
+        // The Mac player draws the intro pill, but neither segment skip nor
+        // Next Up.
+        let competingPill = showIntroSkip
+        #else
+        let competingPill = showIntroSkip || showSegmentSkip || showNextUpScreen
         #endif
-        return (settings.bufferingQualityMode, isWatchPartyPlayback, pillHidden)
+        return (settings.bufferingQualityMode, isWatchPartyPlayback, competingPill || !canShowPlayerOverlays)
+    }
+
+    /// Whether anything drawn over the picture can be seen: not in the
+    /// background, picture in picture or under a sheet, nor in a Mac player
+    /// window that can't be seen.
+    private var canShowPlayerOverlays: Bool {
+        var hidden = isPlayerSurfaceHidden || isPlayerCoveredBySheet
+        #if os(iOS)
+        hidden = hidden || PictureInPictureCoordinator.shared.isEngaged
+        #endif
+        return !hidden
+    }
+
+    /// The sheet over the iPhone and iPad player opened or closed.
+    func playerSheetCoversPlayer(_ covers: Bool) {
+        isPlayerCoveredBySheet = covers
+    }
+
+    /// Shows the waiting buffering notice in the information tone for 5
+    /// seconds, once the player can show it and no other notice holds the
+    /// slot. Checked again whenever either changes.
+    private func showPendingBufferingNotice() {
+        guard let notice = pendingBufferingNotice, presentedNotice == nil, canShowPlayerOverlays else { return }
+        pendingBufferingNotice = nil
+        showNotice(title: notice.text, message: "", tone: .info, duration: 5)
     }
 
     /// Follows whether the player can show its pills: not while the app is in
-    /// the background, nor on a Mac while the app is hidden or every window it
-    /// could play in is minimized.
+    /// the background. On a Mac the player's window reports itself
+    /// (``playerWindowVisibilityChanged(_:)``).
     private func observeBufferingSurfaceVisibility() {
-        let center = NotificationCenter.default
         #if os(iOS) || os(tvOS)
+        let center = NotificationCenter.default
         let edges: [(Notification.Name, Bool)] = [
             (UIApplication.didEnterBackgroundNotification, true),
             (UIApplication.willEnterForegroundNotification, false),
@@ -10636,14 +10673,17 @@ extension PlayerViewModel {
                 Task { @MainActor [weak self] in self?.isPlayerSurfaceHidden = hidden }
             })
         }
-        #elseif os(macOS)
-        for name in MacAppVisibility.changeNotifications {
-            surfaceVisibilityObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor [weak self] in self?.isPlayerSurfaceHidden = MacAppVisibility.isHidden }
-            })
-        }
         #endif
     }
+
+    #if os(macOS)
+    /// The Mac player's own window can or can't be seen: minimized, hidden
+    /// with the app, on another Space or covered, whatever other Silo
+    /// windows show.
+    func playerWindowVisibilityChanged(_ visible: Bool) {
+        isPlayerSurfaceHidden = !visible
+    }
+    #endif
 
     private func syncBufferingHostInputs() {
         let inputs = bufferingHostInputs
