@@ -301,6 +301,82 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         XCTAssertEqual(f.socket.sent.filter { $0.requestId == original.requestId }.count, 1)
     }
 
+    func testLateRefusalOfSupersededDispatchedIntentCannotAuthorizeReplay() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.play))
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+        let original = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        XCTAssertTrue(playback.request(.pause))
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+        f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: original.requestId,
+            retryAfterMilliseconds: 250, workStarted: false)))
+        f.socket.emit(.error(.init(code: "synthetic_marker", message: "late refusal processed")))
+        await waitUntil { f.session.errorMessage == "late refusal processed" }
+        f.clock.advance(0.5)
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), [.play, .pause])
+    }
+
+    func testLateRefusalCannotReplayAfterNewerPlayOrSeek() async throws {
+        for seek in [false, true] {
+            let (f, playback) = try await playingFixture()
+            XCTAssertTrue(playback.request(seek ? .play : .pause))
+            await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+            let original = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+            XCTAssertTrue(playback.request(seek ? .seek(70) : .play))
+            if !seek { await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 } }
+            f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: original.requestId,
+                retryAfterMilliseconds: 250, workStarted: false)))
+            f.socket.emit(.error(.init(code: "synthetic_marker", message: "late refusal processed")))
+            await waitUntil { f.session.errorMessage == "late refusal processed" }
+            XCTAssertTrue(f.session.workStatusMessage?.contains("not applied") == true, "The older refused intent is visibly discarded")
+            if seek {
+                await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+                f.clock.advance(0.25)
+                await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+                XCTAssertEqual(f.socket.sent.last { $0.type == "transport_request" }?.positionSeconds, 70)
+                f.clock.advance(0.25)
+            } else { f.clock.advance(0.5) }
+            await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+            XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), seek ? [.play, .seek] : [.pause, .play])
+            XCTAssertEqual(f.socket.sent.filter { $0.requestId == original.requestId }.count, 1)
+        }
+    }
+
+    func testUnchangedIntentRetriesSameRequestOnceAndStillHonorsIdentityAndExpiry() async throws {
+        for invalidation in ["none", "session", "expiry"] {
+            let (f, playback) = try await playingFixture()
+            XCTAssertTrue(playback.request(.pause))
+            await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+            let original = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+            f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: original.requestId,
+                retryAfterMilliseconds: 1000, workStarted: false)))
+            await waitUntil { f.session.workStatusMessage?.contains("delayed") == true }
+            if invalidation == "session" { playback.replaceSession() }
+            f.clock.advance(invalidation == "expiry" ? 5 : 0.5)
+            await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+            XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1)
+            if invalidation == "none" {
+                f.clock.advance(0.5)
+                await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 && f.clock.hasDeadline(f.clock.now + 0.5) }
+                let retry = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+                let originalJSON = try JSONSerialization.jsonObject(with: Data(original.encoded().utf8)) as? NSDictionary
+                let retryJSON = try JSONSerialization.jsonObject(with: Data(retry.encoded().utf8)) as? NSDictionary
+                XCTAssertEqual(retryJSON, originalJSON, "The sole retry retains request ID and payload")
+                f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy again", requestId: retry.requestId,
+                    retryAfterMilliseconds: 250, workStarted: false)))
+                await waitUntil { f.session.workStatusMessage?.contains("not applied") == true }
+                f.clock.advance(0.5)
+                await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+                XCTAssertEqual(f.socket.sent.filter { $0.requestId == original.requestId }.count, 2)
+            } else {
+                f.clock.advance(0.5)
+                await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+                XCTAssertEqual(f.socket.sent.filter { $0.requestId == original.requestId }.count, 1)
+            }
+        }
+    }
+
     func testNewIntentCancelsSelectedRetryAcrossValidationWithoutDroppingNewControl() async throws {
         let gate = ValidationGate()
         let (f, playback) = try await playingFixture(validationGate: gate)

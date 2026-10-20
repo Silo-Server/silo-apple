@@ -42,6 +42,60 @@ final class WatchPartyWorkRecoveryTests: XCTestCase {
         }
     }
 
+    func testNewIntentPermanentlyRevokesRetryButRetainsDispatchedOutcomeTracking() {
+        let owner = identity()
+        for outcome in ["applied", "downstream", "disconnect", "expiry"] {
+            var recovery = WatchPartyWorkRecovery()
+            let original = recovery.track(.init(type: "transport_request", action: .play), identity: owner, at: 0)
+            XCTAssertFalse(recovery.supersedeTransportRetries(), "An in-flight write is not known unsent")
+            XCTAssertEqual(recovery.transport.count, 1)
+            switch outcome {
+            case "applied":
+                var committed = owner; committed.generation += 1; committed.command = "own-command"
+                XCTAssertTrue(recovery.applied(requestId: original.requestId, action: "transport_request", identity: committed, at: 0.2))
+            case "downstream":
+                XCTAssertEqual(recovery.failed(requestId: original.requestId), .transport)
+            case "disconnect":
+                XCTAssertTrue(recovery.disconnected())
+                XCTAssertFalse(recovery.discardedUnsentTransport)
+            default:
+                XCTAssertTrue(recovery.expire(identity: owner, at: 5))
+                XCTAssertFalse(recovery.discardedUnsentTransport)
+            }
+            XCTAssertTrue(recovery.transport.isEmpty)
+            XCTAssertTrue(recovery.takeTransportRetries(identity: owner, at: 5).messages.isEmpty)
+        }
+        for selected in [false, true] {
+            var recovery = WatchPartyWorkRecovery()
+            let original = recovery.track(.init(type: "transport_request", action: .play), identity: owner, at: 0)
+            _ = recovery.refuse(refusal(original.requestId), at: 0, jitter: 0)
+            if selected { XCTAssertEqual(recovery.takeTransportRetries(identity: owner, at: 0.3).messages.count, 1) }
+            XCTAssertTrue(recovery.supersedeTransportRetries())
+            XCTAssertFalse(recovery.beginTransportRetry(original.requestId, identity: owner, at: 0.4))
+            XCTAssertFalse(recovery.disconnected())
+        }
+    }
+
+    func testLateRefusalCannotAuthorizeRetryAfterSupersession() {
+        let owner = identity()
+        let actions: [(WatchPartyTransportAction, WatchPartyTransportAction)] = [(.play, .pause), (.pause, .play), (.play, .seek)]
+        for (older, newer) in actions {
+            var recovery = WatchPartyWorkRecovery()
+            let original = recovery.track(.init(type: "transport_request", action: older), identity: owner, at: 0)
+            _ = recovery.supersedeTransportRetries()
+            let current = recovery.track(.init(type: "transport_request", action: newer, positionSeconds: 70), identity: owner, at: 0.1)
+            // A newer no-op can finish without changing generation or authority.
+            XCTAssertTrue(recovery.applied(requestId: current.requestId, action: "transport_request", identity: owner, at: 0.2))
+            guard case .discardedTransport = recovery.refuse(refusal(original.requestId), at: 0.3, jitter: 0) else {
+                XCTFail("A late refusal cannot restore superseded retry permission")
+                continue
+            }
+            XCTAssertTrue(recovery.transport.isEmpty)
+            XCTAssertTrue(recovery.takeTransportRetries(identity: owner, at: 0.6).messages.isEmpty)
+            XCTAssertFalse(recovery.beginTransportRetry(original.requestId, identity: owner, at: 0.6))
+        }
+    }
+
     func testEveryIdentityAxisInvalidatesExplicitRetry() {
         let original = identity()
         var changed: [WatchPartyWorkRecovery.Identity] = []

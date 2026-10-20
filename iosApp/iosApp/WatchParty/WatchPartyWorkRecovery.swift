@@ -39,6 +39,7 @@ struct WatchPartyWorkRecovery {
         let sequence: UInt64
         var retryAt: TimeInterval?
         var retried = false
+        var allowsAutomaticRetry = true
         var delivery: Delivery = .dispatched
     }
 
@@ -99,7 +100,7 @@ struct WatchPartyWorkRecovery {
         else { recoveryFloor = max(recoveryFloor, deadline); if unavailable { recoveryOutages += 1 } }
         if kind == nil && !isTransport { actionFloor = max(actionFloor, deadline) }
         if let id, var pending = transport[id] {
-            guard !pending.retried, pending.delivery != .selected, deadline <= pending.started + 5 else {
+            guard pending.allowsAutomaticRetry, !pending.retried, pending.delivery != .selected, deadline <= pending.started + 5 else {
                 transport.removeValue(forKey: id)
                 return .discardedTransport
             }
@@ -192,13 +193,17 @@ struct WatchPartyWorkRecovery {
     }
 
     /// New explicit input supersedes known-unsent retries synchronously.
-    /// Dispatched work retains its original result/uncertainty bookkeeping.
+    /// Dispatched work retains result/uncertainty tracking, but a later refusal
+    /// cannot restore its retry permission after newer explicit user input.
     mutating func supersedeTransportRetries() -> Bool {
         var discarded = false
-        for (id, pending) in transport {
+        for (id, var pending) in transport {
             if pending.delivery != .dispatched {
                 transport.removeValue(forKey: id)
                 discarded = true
+            } else {
+                pending.allowsAutomaticRetry = false
+                transport[id] = pending
             }
         }
         return discarded
