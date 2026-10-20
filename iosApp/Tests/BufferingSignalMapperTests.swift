@@ -387,6 +387,29 @@ final class BufferingQualityPlayerTests: XCTestCase {
         XCTAssertNil(model.bufferingQuality.keptEstimateKbps)
     }
 
+    /// Which replans repeat the kept estimate: the player's own, never the
+    /// controller's or a quality change.
+    func testOnlyThePlayersOwnReplansRepeatTheKeptEstimate() throws {
+        let clock = ManualBufferingQualityClock()
+        let model = PlayerViewModel(bufferingQualityClock: clock)
+        defer { model.cleanup() }
+        model.adoptBufferingPlan(try preparedPlan(), sessionId: "session", activeQualityId: "auto")
+        model.bufferingQuality.mode = .always
+        model.bufferingQuality.playing()
+        clock.advance(to: 20_000)
+        model.bufferingQuality.waiting(cause: .network)
+        clock.advance(to: 26_000)
+        let kept = { (operation: String, controllers: Bool) in
+            PlayerViewModel.keptReplanEstimateKbps(
+                operation: operation, issuedByBufferingQuality: controllers, controller: model.bufferingQuality
+            )
+        }
+        XCTAssertEqual(kept(PlaybackProtocolV3.ReplanOperation.seekReanchor, false), 5_600)
+        XCTAssertEqual(kept(PlaybackProtocolV3.ReplanOperation.trackChange, false), 5_600)
+        XCTAssertNil(kept(PlaybackProtocolV3.ReplanOperation.qualityChange, false))
+        XCTAssertNil(kept(PlaybackProtocolV3.ReplanOperation.seekReanchor, true))
+    }
+
     func testAnotherPillHoldsTheBufferingPillUntilItHides() async throws {
         let clock = ManualBufferingQualityClock()
         let model = PlayerViewModel(bufferingQualityClock: clock)

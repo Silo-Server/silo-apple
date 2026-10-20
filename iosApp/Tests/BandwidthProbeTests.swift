@@ -21,7 +21,10 @@ final class BandwidthProbeMeterTests: XCTestCase {
             switch probeCase["mode"] as? String {
             case "quick": mode = .quick(targetKbps: probeCase["target_kbps"] as? Int)
             case "accurate": mode = .accurate
-            case let other: return XCTFail("\(name): mode \(String(describing: other))")
+            case let other:
+                // The rest of the cases still run.
+                XCTFail("\(name): mode \(String(describing: other))")
+                continue
             }
             var meter = BandwidthProbeMeter(mode: mode)
             for chunk in try XCTUnwrap(probeCase["chunks"] as? [[Int]]) {
@@ -169,6 +172,42 @@ final class BandwidthProbeDownloadTests: XCTestCase {
         XCTAssertEqual(BandwidthProbeDownload.describe(error), "NSURLErrorDomain -1202")
     }
 
+    /// Windows close on the download's clock, not only when data arrives: a
+    /// transfer that goes silent still stops at the test's limit, with what
+    /// the arithmetic makes of the bytes so far.
+    func testWindowsCloseOnTheClockWhileNoDataArrives() async throws {
+        final class Clock: @unchecked Sendable {
+            private let lock = NSLock()
+            private var ms = 0
+            var now: Int {
+                get { lock.withLock { ms } }
+                set { lock.withLock { ms = newValue } }
+            }
+        }
+        let clock = Clock()
+        StubProbeProtocol.respond { _ in .init(status: 200, body: Data(count: 2_000_000), staysOpen: true) }
+        let configuration = BandwidthProbeDownload.defaultConfiguration()
+        configuration.protocolClasses = [StubProbeProtocol.self]
+        let probe = BandwidthProbeDownload(mode: .quick(targetKbps: nil), configuration: configuration) { clock.now }
+        let task = Task { try await probe.measure(request()) }
+        while StubProbeProtocol.requests.isEmpty { await Task.yield() }
+        // Let the first bytes land at 0, then move the clock past the limit
+        // with nothing more arriving.
+        try await Task.sleep(for: .milliseconds(200))
+        clock.now = BandwidthProbe.quickMaxMs + 1_000
+        let result = try await task.value
+
+        // Without the clock it would wait for the session's idle timeout and
+        // fail as a network error.
+        var expected = BandwidthProbeMeter(mode: .quick(targetKbps: nil))
+        expected.receive(2_000_000, at: 0)
+        expected.advance(to: BandwidthProbe.quickMaxMs)
+        let expectedResult: BandwidthProbeResult = expected.result.map {
+            .measured(kbps: $0.kbps, bytes: $0.bytes, durationMs: $0.durationMs, lowerBound: $0.lowerBound)
+        } ?? .tooLittleData
+        XCTAssertEqual(result, expectedResult)
+    }
+
     func testCancellingTheCallerCancelsTheProbe() async throws {
         StubProbeProtocol.respond { _ in .init(status: 200, hangs: true) }
         let probe = download()
@@ -191,6 +230,8 @@ final class StubProbeProtocol: URLProtocol {
         var redirect: URL?
         /// Sends the headers, then nothing.
         var hangs = false
+        /// Sends the body, then neither more data nor the end.
+        var staysOpen = false
     }
 
     private static let lock = NSLock()
@@ -231,6 +272,7 @@ final class StubProbeProtocol: URLProtocol {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         guard !answer.hangs else { return }
         if !answer.body.isEmpty { client?.urlProtocol(self, didLoad: answer.body) }
+        guard !answer.staysOpen else { return }
         client?.urlProtocolDidFinishLoading(self)
     }
 

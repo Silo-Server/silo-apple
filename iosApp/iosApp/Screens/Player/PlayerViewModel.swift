@@ -2636,14 +2636,11 @@ class PlayerViewModel {
         // failed transport is torn down, and that pause is not theirs.
         let resolvedOperation = operation
             ?? PlaybackSessionBridge.replanOperation(forClassification: classification)
-        // The player's own replans on Auto repeat the kept step-down estimate,
-        // so a lowering holds where no learned limit applies. The buffering
-        // controller's replans carry their own fields.
-        // A quality change the controller did not send discards the estimate,
-        // so it never carries it.
-        let keptEstimateKbps = bandwidthEstimateKbps == nil && !issuedByBufferingQuality
-            && resolvedOperation != PlaybackProtocolV3.ReplanOperation.qualityChange
-            ? bufferingQuality.clientReplan(operation: resolvedOperation)?.bandwidthEstimateKbps
+        let keptEstimateKbps = bandwidthEstimateKbps == nil
+            ? Self.keptReplanEstimateKbps(
+                operation: resolvedOperation, issuedByBufferingQuality: issuedByBufferingQuality,
+                controller: bufferingQuality
+            )
             : nil
         if let keptEstimateKbps {
             Self.logger.info(
@@ -10397,6 +10394,22 @@ extension PlayerViewModel {
             requestedEstimateKbps: requestedEstimateKbps,
             controllerInitiated: controllerInitiated
         )
+    }
+
+    /// The kept step-down estimate a replan with no estimate of its own
+    /// repeats, so a lowering holds where no learned limit applies. Only the
+    /// player's own replans on Auto carry it: the buffering controller's
+    /// replans carry their own fields, and a quality change the controller
+    /// did not send discards the estimate. Internal for tests.
+    static func keptReplanEstimateKbps(
+        operation: String,
+        issuedByBufferingQuality: Bool,
+        controller: BufferingQualityController
+    ) -> Int? {
+        guard !issuedByBufferingQuality, operation != PlaybackProtocolV3.ReplanOperation.qualityChange else {
+            return nil
+        }
+        return controller.clientReplan(operation: operation)?.bandwidthEstimateKbps
     }
 
     /// Internal for tests: the state of a title playing a v3 plan.
