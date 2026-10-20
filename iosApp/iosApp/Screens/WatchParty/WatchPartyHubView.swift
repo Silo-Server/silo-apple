@@ -537,7 +537,7 @@ struct WatchPartyLobbyView: View {
 
     @ViewBuilder
     private func statusBanner(_ room: WatchPartyRoom) -> some View {
-        if let message = session.workStatusMessage ?? session.errorMessage {
+        if let message = session.errorMessage ?? session.workStatusMessage {
             WatchPartyBanner(message: message, tone: .warning)
         } else if session.selectedItemUnavailable {
             WatchPartyBanner(message: room.selfCanManageRoom

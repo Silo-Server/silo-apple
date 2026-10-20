@@ -105,7 +105,15 @@ final class WatchPartySession {
     @ObservationIgnored private var workRecovery = WatchPartyWorkRecovery()
     @ObservationIgnored private var seekTask: Task<Void, Never>?
     @ObservationIgnored private var seekWindow = WatchPartySeekWindow()
-    @ObservationIgnored private var seekFollowingControls: [WatchPartyClientMessage] = []
+    @ObservationIgnored private var seekFollowingControls: [TransportIntent] = []
+    @ObservationIgnored private var latestTransportInputID = UUID()
+    @ObservationIgnored private var seekInputID: UUID?
+    @ObservationIgnored private var heldSeekInputID: UUID?
+
+    private struct TransportIntent {
+        let message: WatchPartyClientMessage
+        let inputID: UUID?
+    }
     @ObservationIgnored private var transportSendTask: Task<Void, Never>?
     @ObservationIgnored private var transportDispatch: TransportDispatch?
 
@@ -434,6 +442,7 @@ final class WatchPartySession {
         playbackContext = nil
         commands = WatchPartyCommandState()
         connection = .ended
+        workStatusMessage = nil
         errorMessage = message
         roomToken = ""
     }
@@ -454,7 +463,7 @@ final class WatchPartySession {
         isLoadingMemberState = false
         socket?.close(); socket = nil
         adapter?.cancelCorrection()
-        adapter?.releaseHeldSeek()
+        releaseHeldSeek()
         attachmentConfirmed = false
         applyingCommand = nil
     }
@@ -464,7 +473,7 @@ final class WatchPartySession {
     private func resetCommandState() {
         if seekWindow.message != nil { workStatusMessage = "The pending seek was not sent because the party changed. Try again." }
         cancelPendingSeek()
-        adapter?.releaseHeldSeek()
+        releaseHeldSeek()
         commandTask?.cancel()
         commandTask = nil
         applyingCommand = nil
@@ -564,7 +573,7 @@ final class WatchPartySession {
                 self.commandTask?.cancel()
                 self.adapter?.cancelCorrection()
                 // The room's seek for a held request may never arrive now.
-                self.adapter?.releaseHeldSeek()
+                self.releaseHeldSeek()
                 self.attachmentConfirmed = false
                 let delay: TimeInterval
                 if self.usesWorkAdmission || ticketFloor > 0 {
@@ -656,10 +665,11 @@ final class WatchPartySession {
             let code = failure.code
             let message = failure.message
             if usesWorkAdmission, failure.isPreWorkRefusal {
+                let refusedInput = failure.requestId.flatMap { workRecovery.transport[$0]?.inputID }
                 switch workRecovery.refuse(failure, at: workNow(), jitter: retryJitter()) {
                 case .desired(.buffering): stall.refused()
                 case .discardedTransport:
-                    transportDiscarded("The control was not applied. Try again when the party is available.")
+                    transportDiscarded("The control was not applied. Try again when the party is available.", inputID: refusedInput)
                     return
                 default: break
                 }
@@ -670,8 +680,10 @@ final class WatchPartySession {
                 let ownsLobbyFailure = lobbyReadyAttempt.map {
                     $0.request == failure.requestId && $0.desire == lobbyReadyDesireID
                 } == true
+                let failedInput = failure.requestId.flatMap { workRecovery.transport[$0]?.inputID }
                 switch workRecovery.failed(requestId: failure.requestId) {
                 case .some(.transport):
+                    releaseHeldSeek(ownedBy: failedInput)
                     transportUncertain()
                 case .some(.lobby):
                     // Remove the old request's bookkeeping without letting its
@@ -764,8 +776,9 @@ final class WatchPartySession {
             }
             let discardedSeek = seekWindow.message != nil && seekWindow.identity != identity
             if discardedSeek {
+                let inputID = seekInputID
                 cancelPendingSeek()
-                transportDiscarded("The pending seek was not sent because the party changed. Try again.")
+                transportDiscarded("The pending seek was not sent because the party changed. Try again.", inputID: inputID)
             }
             if acknowledged, !discardedSeek, !discardedTransport, !controlUncertain, lobbyReadyDesired == nil,
                workRecovery.canSend(.attach, at: workNow()), workRecovery.canSend(.transport, at: workNow()) {
@@ -803,9 +816,10 @@ final class WatchPartySession {
             self.stall.reset()
             self.lastAttach = .distantPast
             if self.seekWindow.message != nil {
-                self.transportDiscarded("The pending seek was not sent because the playback session changed. Try again.")
+                self.transportDiscarded("The pending seek was not sent because the playback session changed. Try again.", inputID: self.seekInputID)
             }
             self.cancelPendingSeek()
+            self.releaseHeldSeek(ownedBy: self.heldSeekInputID)
             if let identity = self.workIdentity() { self.expireTransport(identity: identity) }
             // A nudge belongs to the stream it measured, not the new session.
             adapter?.cancelCorrection()
@@ -857,11 +871,20 @@ final class WatchPartySession {
         case .pause: wire = .pause; target = position
         case .seek(let value): wire = .seek; target = value
         }
+        // Input ownership starts here, before the seek window, ordered queue
+        // or auth validation can suspend. It limits retry, never first dispatch.
+        let inputID = UUID()
+        latestTransportInputID = inputID
+        let supersededSeek = workRecovery.transport.values.first {
+            $0.inputID == heldSeekInputID && heldSeekInputID != nil && $0.delivery != .dispatched
+        }?.inputID
         if usesWorkAdmission, workRecovery.supersedeTransportRetries() {
-            transportDiscarded("The earlier control was not sent because a newer control replaced its retry.")
+            transportDiscarded("The earlier control was not sent because a newer control replaced its retry.", inputID: supersededSeek)
         }
+        if wire == .seek { heldSeekInputID = inputID }
         let message = WatchPartyClientMessage(type: "transport_request", action: wire, positionSeconds: target, isPaused: paused)
         if usesWorkAdmission, wire == .seek, let identity = workIdentity() {
+            seekInputID = inputID
             seekWindow.submit(message, identity: identity, at: workNow())
             // Keep the first window's deadline while replacing only its
             // absolute target. The player already holds that target visibly.
@@ -873,12 +896,16 @@ final class WatchPartySession {
                     self.seekTask = nil
                     let following = self.seekFollowingControls
                     self.seekFollowingControls.removeAll()
+                    let inputID = self.seekInputID
+                    self.seekInputID = nil
                     guard let message = self.seekWindow.take(identity: self.workIdentity(), at: self.workNow()) else {
-                        self.transportDiscarded("The pending seek was not sent because the party changed. Try again.")
+                        self.transportDiscarded("The pending seek was not sent because the party changed. Try again.", inputID: inputID)
                         return
                     }
-                    let messages = [message] + following
-                    if !self.send(messages) { self.transportDiscarded("The controls were not sent. Try again when the party is available.") }
+                    let messages = [TransportIntent(message: message, inputID: inputID)] + following
+                    if !self.send(messages) {
+                        self.transportDiscarded("The controls were not sent. Try again when the party is available.", inputID: inputID)
+                    }
                 }
             }
             return true
@@ -886,10 +913,10 @@ final class WatchPartySession {
         if usesWorkAdmission, seekWindow.message != nil {
             // Distinct controls follow the seek at its original deadline. They
             // must not flush it early or be merged into the latest seek target.
-            seekFollowingControls.append(message)
+            seekFollowingControls.append(TransportIntent(message: message, inputID: inputID))
             return true
         }
-        return send(message)
+        return send(message, inputID: inputID)
     }
 
     private func applyPendingCommand() {
@@ -1090,18 +1117,21 @@ final class WatchPartySession {
     /// Returns false when this intent cannot be queued. A true result is
     /// local acceptance, never proof of server completion.
     @discardableResult
-    private func send(_ message: WatchPartyClientMessage) -> Bool { send([message]) }
+    private func send(_ message: WatchPartyClientMessage, inputID: UUID? = nil) -> Bool {
+        send([TransportIntent(message: message, inputID: inputID)])
+    }
 
-    private func send(_ messages: [WatchPartyClientMessage]) -> Bool {
+    private func send(_ messages: [TransportIntent]) -> Bool {
         let owner = engagement
         let socketID = connectionID
-        guard let socket, let room, let first = messages.first else { return false }
+        guard let socket, let room, let first = messages.first?.message else { return false }
+        let seekOwner = messages.first { $0.message.action == .seek }?.inputID
         let sessionId = adapter?.snapshot.sessionId
         let expected = workIdentity()
         if usesWorkAdmission, let kind = WatchPartyWorkRecovery.Kind(rawValue: first.type),
            !workRecovery.canSend(kind, at: workNow()) {
             workStatusMessage = "Party controls are temporarily busy. Try again shortly."
-            adapter?.releaseHeldSeek()
+            releaseHeldSeek(ownedBy: seekOwner)
             return false
         }
         let orderedTransport = usesWorkAdmission && first.type == "transport_request"
@@ -1120,7 +1150,8 @@ final class WatchPartySession {
                     self.transportDispatch = dispatch
                 }
             }
-            for message in messages {
+            for intent in messages {
+                let message = intent.message
                 while true {
                     guard !Task.isCancelled, await self.validateIdentity(),
                           owner == self.engagement, socketID == self.connectionID, !Task.isCancelled,
@@ -1139,7 +1170,7 @@ final class WatchPartySession {
                         }
                         self.transportDiscarded(self.controlUncertain
                             ? "The earlier control could not be confirmed. Later controls were not sent. Check the party before trying again."
-                            : "The queued controls were not sent because the party changed. Try again.")
+                            : "The queued controls were not sent because the party changed. Try again.", inputID: seekOwner)
                         return
                     }
                     break
@@ -1147,7 +1178,7 @@ final class WatchPartySession {
                 if self.usesWorkAdmission, let kind = WatchPartyWorkRecovery.Kind(rawValue: message.type),
                    !self.workRecovery.canSend(kind, at: self.workNow()) {
                     self.workStatusMessage = "Party controls are temporarily busy. Try again shortly."
-                    self.adapter?.releaseHeldSeek()
+                    self.releaseHeldSeek(ownedBy: seekOwner)
                     return
                 }
                 if message.type == "transport_request" {
@@ -1155,7 +1186,8 @@ final class WatchPartySession {
                 }
                 var wire = message
                 if self.usesWorkAdmission, let expected = dispatch?.identity ?? expected {
-                    wire = self.workRecovery.track(message, identity: expected, at: self.workNow())
+                    wire = self.workRecovery.track(message, identity: expected, at: self.workNow(), inputID: intent.inputID,
+                        allowsAutomaticRetry: intent.inputID == self.latestTransportInputID)
                     if let requestID = wire.requestId { dispatch?.requests.insert(requestID) }
                 }
                 do { try await socket.send(wire) }
@@ -1163,7 +1195,10 @@ final class WatchPartySession {
                     if owner == self.engagement, socketID == self.connectionID {
                         // Reconnect performs the authoritative room read. A send
                         // failure cannot authorize replay of this intent.
-                        if self.workRecovery.failed(requestId: wire.requestId) == .transport { self.transportUncertain(reconcileImmediately: false) }
+                        if self.workRecovery.failed(requestId: wire.requestId) == .transport {
+                            self.releaseHeldSeek(ownedBy: intent.inputID)
+                            self.transportUncertain(reconcileImmediately: false)
+                        }
                         socket.close()
                     }
                     return
@@ -1198,6 +1233,7 @@ final class WatchPartySession {
     private func cancelPendingSeek() {
         seekTask?.cancel(); seekTask = nil
         seekWindow.cancel()
+        seekInputID = nil
         seekFollowingControls.removeAll()
     }
 
@@ -1216,13 +1252,18 @@ final class WatchPartySession {
             controlUncertain = true
             controlUncertaintyID = UUID()
             workStatusMessage = "The control could not be confirmed. Check the party before trying again."
-            adapter?.releaseHeldSeek()
+            releaseHeldSeek()
         } else if workRecovery.discardedUnsentTransport { transportDiscarded() }
     }
 
     private func expireTransport(identity: WatchPartyWorkRecovery.Identity) {
         defer { resumeTransportDispatchIfPossible() }
-        if workRecovery.expire(identity: identity, at: workNow()) { transportUncertain() }
+        let heldRequest = workRecovery.transport.first { $0.value.inputID == heldSeekInputID && heldSeekInputID != nil }
+        let uncertain = workRecovery.expire(identity: identity, at: workNow())
+        if let heldRequest, workRecovery.transport[heldRequest.key] == nil {
+            releaseHeldSeek(ownedBy: heldRequest.value.inputID)
+        }
+        if uncertain { transportUncertain() }
         else if workRecovery.discardedUnsentTransport { transportDiscarded() }
     }
 
@@ -1239,9 +1280,20 @@ final class WatchPartySession {
         }
     }
 
-    private func transportDiscarded(_ message: String = "The control was not sent before the party changed. Try again.") {
-        workStatusMessage = message
+    private func releaseHeldSeek() {
+        heldSeekInputID = nil
         adapter?.releaseHeldSeek()
+    }
+
+    private func releaseHeldSeek(ownedBy inputID: UUID?) {
+        guard let inputID, heldSeekInputID == inputID else { return }
+        releaseHeldSeek()
+    }
+
+    private func transportDiscarded(_ message: String = "The control was not sent before the party changed. Try again.",
+                                    inputID: UUID? = nil) {
+        workStatusMessage = message
+        releaseHeldSeek(ownedBy: inputID)
     }
 
     private func transportUncertain(_ message: String = "The control could not be confirmed. Check the party before trying again.",
@@ -1249,7 +1301,6 @@ final class WatchPartySession {
         controlUncertain = true
         controlUncertaintyID = UUID()
         workStatusMessage = message
-        adapter?.releaseHeldSeek()
         if reconcileImmediately { reconcileRoom() }
     }
 

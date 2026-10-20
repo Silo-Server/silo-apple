@@ -230,6 +230,127 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         return (f, playback)
     }
 
+    private func refuseAllAndAdvance(_ f: Fixture, messages: [WatchPartyClientMessage]) async {
+        for message in messages {
+            f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: message.requestId,
+                retryAfterMilliseconds: 250, workStarted: false)))
+        }
+        f.socket.emit(.error(.init(code: "synthetic_marker", message: "queued refusals processed")))
+        await waitUntil { f.session.errorMessage == "queued refusals processed" }
+        f.clock.advance(0.5)
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+    }
+
+    func testNewInputBeforeFirstValidationCompletesRevokesOnlyOlderRetry() async throws {
+        let gate = ValidationGate()
+        let (f, playback) = try await playingFixture(validationGate: gate)
+        gate.holding = true
+        XCTAssertTrue(playback.request(.play))
+        await waitUntil { gate.waiters.count == 1 }
+        XCTAssertTrue(playback.request(.pause))
+        XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
+        gate.release()
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+        let first = f.socket.sent.filter { $0.type == "transport_request" }
+        XCTAssertEqual(first.map(\.action), [.play, .pause], "Supersession must preserve original first sends")
+        await refuseAllAndAdvance(f, messages: first)
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), [.play, .pause, .pause])
+        XCTAssertEqual(f.socket.sent.filter { $0.requestId == first[0].requestId }.count, 1)
+        XCTAssertEqual(f.socket.sent.filter { $0.requestId == first[1].requestId }.count, 2)
+    }
+
+    func testSeekAndPauseInOneWindowOnlyNewestInputMayRetry() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.seek(70)))
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+        f.clock.advance(0.1)
+        XCTAssertTrue(playback.request(.pause))
+        f.clock.advance(0.149)
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
+        f.clock.advance(0.001)
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+        let first = f.socket.sent.filter { $0.type == "transport_request" }
+        XCTAssertEqual(first.map(\.action), [.seek, .pause])
+        XCTAssertEqual(first[0].positionSeconds, 70)
+        await refuseAllAndAdvance(f, messages: first)
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), [.seek, .pause, .pause])
+        XCTAssertEqual(f.socket.sent.filter { $0.requestId == first[0].requestId }.count, 1)
+        XCTAssertEqual(f.socket.sent.filter { $0.requestId == first[1].requestId }.count, 2)
+    }
+
+    func testNewInputDuringSuspendedSeekBatchRevokesQueuedFollowingRetry() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.seek(70)))
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+        f.clock.advance(0.1)
+        XCTAssertTrue(playback.request(.pause))
+        f.socket.holdTransportSend = true
+        f.clock.advance(0.15)
+        await waitUntil { f.socket.transportWaiters.count == 1 }
+        XCTAssertTrue(playback.request(.play))
+        f.socket.holdTransportSend = false
+        f.socket.transportWaiters.removeFirst().resume()
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 3 }
+        let first = f.socket.sent.filter { $0.type == "transport_request" }
+        XCTAssertEqual(first.map(\.action), [.seek, .pause, .play])
+        await refuseAllAndAdvance(f, messages: first)
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), [.seek, .pause, .play, .play])
+        XCTAssertEqual(f.socket.sent.filter { $0.requestId == first[1].requestId }.count, 1)
+        XCTAssertEqual(f.socket.sent.filter { $0.requestId == first[2].requestId }.count, 2)
+    }
+
+    func testOlderControlDiscardCannotReleaseNewerQueuedSeekHold() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.play))
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+        let old = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        XCTAssertTrue(playback.request(.seek(70)))
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.25) }
+        let releases = playback.releases
+        XCTAssertEqual(playback.heldTarget, 70)
+        f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: old.requestId,
+            retryAfterMilliseconds: 250, workStarted: false)))
+        await waitUntil { f.session.workStatusMessage?.contains("not applied") == true }
+        XCTAssertEqual(playback.heldTarget, 70, "An older play refusal does not own the newer seek hold")
+        XCTAssertEqual(playback.releases, releases)
+        // Invalidation of that seek itself still releases its target, with no replay.
+        playback.replaceSession()
+        XCTAssertNil(playback.heldTarget)
+        XCTAssertEqual(playback.releases, releases + 1)
+        f.clock.advance(0.5)
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), [.play])
+    }
+
+    func testTerminalPartyErrorReplacesPendingRecoveryFeedback() async throws {
+        for replaced in [false, true] {
+            let f = try await fixture()
+            f.session.setLobbyReady(true)
+            await waitUntil { f.socket.sent.contains { $0.type == "lobby_ready" } }
+            XCTAssertNotNil(f.session.workStatusMessage)
+            XCTAssertNil(f.session.errorMessage)
+            f.socket.emit(replaced ? .connectionReplaced(reason: nil) : .closed("synthetic"))
+            await waitUntil { f.session.connection == .ended }
+            XCTAssertNil(f.session.workStatusMessage, "Obsolete recovery feedback must not cover the terminal error")
+            XCTAssertNil(f.session.lobbyReadyDesired)
+            XCTAssertTrue(f.session.errorMessage?.contains(replaced ? "another device" : "ended") == true)
+        }
+    }
+
+    func testCurrentSocketErrorAndPendingReadinessRemainDistinct() async throws {
+        let f = try await fixture()
+        f.session.setLobbyReady(true)
+        await waitUntil { f.socket.sent.contains { $0.type == "lobby_ready" } }
+        let pending = f.session.workStatusMessage
+        XCTAssertNotNil(pending)
+        XCTAssertNil(f.session.errorMessage)
+        f.socket.emit(.error(.init(code: "operation_failed", message: "Synthetic current socket error")))
+        await waitUntil { f.session.errorMessage == "Synthetic current socket error" }
+        XCTAssertEqual(f.session.workStatusMessage, pending, "Desired feedback survives for when the error is cleared")
+        XCTAssertEqual(f.session.lobbyReadyDesired, true)
+    }
+
     func testQuietHealthyLifetimeResetsOutageBeforeFreshTransportRefusal() async throws {
         let (f, playback) = try await playingFixture()
         XCTAssertTrue(playback.request(.play))

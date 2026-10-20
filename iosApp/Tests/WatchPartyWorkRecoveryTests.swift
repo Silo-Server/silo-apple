@@ -14,6 +14,40 @@ final class WatchPartyWorkRecoveryTests: XCTestCase {
               retryAfterMilliseconds: milliseconds, workStarted: started)
     }
 
+    func testQueuedInputProvenanceDeniesRetryButRetainsEveryDispatchedOutcome() throws {
+        let owner = identity()
+        let inputID = UUID()
+        for outcome in ["refused", "applied", "downstream", "disconnect", "expiry"] {
+            var recovery = WatchPartyWorkRecovery()
+            let original = recovery.track(.init(type: "transport_request", action: .seek, positionSeconds: 70),
+                identity: owner, at: 0, inputID: inputID, allowsAutomaticRetry: false)
+            XCTAssertEqual(recovery.transport[try XCTUnwrap(original.requestId)]?.inputID, inputID)
+            switch outcome {
+            case "refused":
+                guard case .discardedTransport = recovery.refuse(refusal(original.requestId), at: 0.1, jitter: 0) else {
+                    XCTFail("An input superseded before track cannot obtain retry permission")
+                    continue
+                }
+            case "applied":
+                var committed = owner; committed.generation += 1; committed.command = "own-command"
+                XCTAssertTrue(recovery.applied(requestId: original.requestId, action: "transport_request", identity: committed, at: 0.2))
+            case "downstream": XCTAssertEqual(recovery.failed(requestId: original.requestId), .transport)
+            case "disconnect": XCTAssertTrue(recovery.disconnected())
+            default: XCTAssertTrue(recovery.expire(identity: owner, at: 5))
+            }
+            XCTAssertTrue(recovery.transport.isEmpty)
+            XCTAssertTrue(recovery.takeTransportRetries(identity: owner, at: 5).messages.isEmpty)
+        }
+        // The current input still receives only the original ID's one retry.
+        var current = WatchPartyWorkRecovery()
+        let message = current.track(.init(type: "transport_request", action: .pause), identity: owner, at: 0,
+            inputID: UUID(), allowsAutomaticRetry: true)
+        _ = current.refuse(refusal(message.requestId), at: 0, jitter: 0)
+        XCTAssertEqual(current.takeTransportRetries(identity: owner, at: 0.3).messages.map(\.requestId), [message.requestId])
+        XCTAssertTrue(current.beginTransportRetry(message.requestId, identity: owner, at: 0.3))
+        XCTAssertFalse(current.beginTransportRetry(message.requestId, identity: owner, at: 0.3))
+    }
+
     func testCorrelatedPreWorkTransportRetriesOnceWithOriginalIDAfterFloor() throws {
         var recovery = WatchPartyWorkRecovery()
         let owner = identity()

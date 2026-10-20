@@ -37,6 +37,7 @@ struct WatchPartyWorkRecovery {
         let identity: Identity
         let started: TimeInterval
         let sequence: UInt64
+        let inputID: UUID?
         var retryAt: TimeInterval?
         var retried = false
         var allowsAutomaticRetry = true
@@ -68,12 +69,14 @@ struct WatchPartyWorkRecovery {
         max(0, (kind.isAction ? actionFloor : recoveryFloor) - now)
     }
 
-    mutating func track(_ message: WatchPartyClientMessage, identity: Identity, at now: TimeInterval) -> WatchPartyClientMessage {
+    mutating func track(_ message: WatchPartyClientMessage, identity: Identity, at now: TimeInterval,
+                        inputID: UUID? = nil, allowsAutomaticRetry: Bool = true) -> WatchPartyClientMessage {
         guard let kind = Kind(rawValue: message.type) else { return message }
         var message = message
         message.requestId = UUID().uuidString.lowercased()
         nextSequence += 1
-        let pending = Pending(message: message, identity: identity, started: now, sequence: nextSequence)
+        let pending = Pending(message: message, identity: identity, started: now, sequence: nextSequence,
+                              inputID: inputID, allowsAutomaticRetry: allowsAutomaticRetry)
         if kind == .transport { transport[message.requestId!] = pending }
         else { desired[kind] = pending }
         return message
