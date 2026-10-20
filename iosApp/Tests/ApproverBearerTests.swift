@@ -347,6 +347,29 @@ final class ApproverBearerTests: XCTestCase {
         XCTAssertEqual(refreshes.count, 1, "refresh-1 was sent once")
     }
 
+    /// Two servers can issue the same refresh-token text: each renews its
+    /// own session, and neither joins the other's renewal.
+    func testTheSameRefreshTokenOnTwoServersRenewsTwice() async throws {
+        let (http, tokens) = try await harness(access: Self.token("other", expiresIn: -60))
+        let current = SignInKey.make(Self.active, "1")
+        // The other server's session already uses refresh-1; this one too.
+        try await signIn(account: "2", access: Self.token("old", expiresIn: -60), refresh: "refresh-1",
+                         origin: "https://active.example", in: tokens)
+        await tokens.select(serverID: Self.active, credential: .signIn(current))
+        stub.reply(path: Self.refreshPath, 200, Self.refreshed(Self.token("rotated", expiresIn: 3600)))
+        stub.hold(path: Self.refreshPath)
+        let active = Task { await http.freshAccessToken(for: .signIn(SignInKey.make(Self.active, "2"))) }
+        await stub.waitUntilHeld()
+        let other = Task { await http.freshAccessToken(serverId: Self.other) }
+        for _ in 0..<300 where refreshes.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        stub.release()
+        _ = await active.value
+        _ = await other.value
+
+        XCTAssertEqual(Set(refreshes.compactMap { $0.url?.host }), ["active.example", "other.example"],
+                       "each server got its own refresh")
+    }
+
     /// The harness plus a second account on the active server, expired,
     /// with the first account selected again.
     private func twoAccountsOnTheActiveServer() async throws -> (HTTPClient, TokenStore, SignInKey, SignInKey) {
