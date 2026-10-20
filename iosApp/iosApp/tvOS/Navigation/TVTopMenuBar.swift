@@ -1112,7 +1112,6 @@ private enum TVProfileAction: Hashable {
     case history
     case watchParty
     case settings
-    case switchAccount
     case signOut
 }
 
@@ -1142,7 +1141,6 @@ struct TVProfileDropdown: View {
     let onHistory: () -> Void
     let onWatchParty: () -> Void
     let onSettings: () -> Void
-    let onSwitchAccount: () -> Void
     let onSignOut: () -> Void
 
     @FocusState private var focusedAction: TVProfileAction?
@@ -1189,9 +1187,7 @@ struct TVProfileDropdown: View {
             divider
 
             actionButton("Settings", systemImage: "gearshape.fill", id: .settings, action: onSettings)
-            // Other accounts, on this server or another (spec §5.8).
-            actionButton("Switch Account", systemImage: "person.crop.circle", id: .switchAccount,
-                         action: onSwitchAccount)
+            // Other accounts are reached from Who's Watching (Switch Profile).
             actionButton("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", id: .signOut, isDestructive: true, action: onSignOut)
         }
         .padding(SiloTheme.Skyline.dropdownPadding)

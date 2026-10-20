@@ -765,8 +765,6 @@ struct TVMainTabView: View {
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
-            // Choose an Account (spec §5.8).
-            onSwitchAccount: { closePanel(then: { Task { await router.accounts.beginSwitchAccount(router: router) } }) },
             onSignOut: { closePanel(then: { Task { await presentSignOutConfirmation() } }) }
         )
     }
