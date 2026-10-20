@@ -271,6 +271,139 @@ final class BufferingQualityControllerTests: XCTestCase {
         XCTAssertFalse(h.controller.back())
     }
 
+    // MARK: - Cross-platform rulings the vectors do not pin
+
+    /// A stall still running when a replan's plan replaces its plan ends with
+    /// that plan and counts there.
+    func testAStallInProgressWhenItsPlanIsReplacedCounts() {
+        let h = Harness(mode: .always)
+        h.lowerAutomatically()
+        XCTAssertEqual(h.summaries.first, Controller.PlanSummary(
+            planId: "p1", playedMs: 125_000, stallCount: 1, stallTotalMs: 9_000, stallLongestMs: 9_000,
+            deliveredKbps: 63_000, mode: .always, action: .lowered, bandwidthEstimateKbps: nil
+        ))
+    }
+
+    /// A stall that runs into an outage drops its time so far; only the part
+    /// after the outage counts.
+    func testAnOutageDropsTheStallTimeBeforeIt() {
+        let h = Harness(mode: .never)
+        h.startPlaying(Self.plan("p1"))
+        h.at(30_000) { $0.waiting() }
+        h.at(33_000) { $0.transportTroubleChanged(true) }
+        h.at(40_000) { $0.transportTroubleChanged(false) }
+        h.at(42_000) { $0.playing() }
+        h.at(50_000) { $0.planEnded() }
+        XCTAssertEqual(h.summaries.map(\.stallCount), [1])
+        XCTAssertEqual(h.summaries.map(\.stallTotalMs), [2_000])
+    }
+
+    /// Leaving a Watch Party room starts trigger history fresh, with the grace
+    /// over.
+    func testLeavingARoomStartsTriggerHistoryFresh() {
+        let h = Harness(mode: .always)
+        h.controller.isSuspended = true
+        h.startPlaying(Self.plan("p1"))
+        h.at(30_000) { $0.waiting() }
+        h.at(31_500) { $0.playing() }
+        h.at(90_000) { $0.waiting() }
+        h.at(91_200) { $0.playing() }
+        h.at(100_000) { $0.isSuspended = false }
+        h.at(110_000) { $0.waiting() }
+        h.at(111_500) { $0.playing() }
+        XCTAssertEqual(h.shown, [], "the room's stalls are not this history's")
+        h.at(150_000) { $0.waiting() }
+        h.at(151_200) { $0.playing() }
+        XCTAssertEqual(h.shown, [.init(151_200, .replan(Self.autoLowering(44_100)))])
+    }
+
+    /// Back on the undo pill hides it as its timer ending does, so a long
+    /// stall in progress is evaluated at once.
+    func testBackOnTheUndoPillEvaluatesALongStallInProgress() {
+        let h = Harness(mode: .always)
+        h.lowerAutomatically()
+        h.at(136_000) { $0.setCompetingPillVisible(true) }
+        h.at(145_000) { $0.waiting() }
+        h.clock.advance(to: 152_000)
+        h.at(160_000) { $0.setCompetingPillVisible(false) }
+        XCTAssertEqual(h.controller.pill?.kind, .undo)
+        h.at(161_000) { _ = $0.back() }
+        XCTAssertEqual(h.shown.last, .init(161_000, .replan(Self.autoLowering(22_120))))
+    }
+
+    /// A plan opened with a wait keeps its grace anchored there when its first
+    /// frame follows.
+    func testStartupGraceStaysAnchoredAtTheFirstWait() {
+        let h = Harness(mode: .always)
+        h.at(0) { $0.planAdopted(Self.plan("p1")) }
+        h.at(0) { $0.waiting() }
+        h.at(4_000) { $0.playing() }
+        h.at(12_000) { $0.waiting() }
+        h.at(14_000) { $0.playing() }
+        h.at(60_000) { $0.waiting() }
+        h.at(61_500) { $0.playing() }
+        XCTAssertEqual(h.shown, [.init(61_500, .replan(Self.autoLowering(44_100)))])
+    }
+
+    /// A wait the host noticed late (a frozen software playhead) is timed from
+    /// when it began.
+    func testABackdatedWaitIsTimedFromWhenItBegan() {
+        let h = Harness(mode: .never)
+        h.startPlaying(Self.plan("p1"))
+        h.at(30_000) { $0.waiting(cause: .network, startedAgoMs: 1_000) }
+        h.at(30_500) { $0.playing() }
+        h.at(40_000) { $0.planEnded() }
+        XCTAssertEqual(h.summaries.map(\.stallCount), [1])
+        XCTAssertEqual(h.summaries.map(\.stallTotalMs), [1_500])
+        XCTAssertEqual(h.summaries.map(\.playedMs), [29_000 + 9_500])
+    }
+
+    /// Only a prompt that timed out starts the re-offer wait; one answered with
+    /// Lower quality does not.
+    func testAnAcceptedLoweringStartsNoReofferWait() {
+        let h = Harness(mode: .ask)
+        h.startPlaying(Self.plan("p1"))
+        h.at(125_000) { $0.waiting() }
+        h.clock.advance(to: 131_000)
+        h.at(132_000) { $0.selectLower() }
+        h.at(134_000) {
+            $0.planAdopted(Self.plan("p2", delivered: 31_600))
+            $0.playing()
+        }
+        h.at(200_000) { $0.waiting() }
+        h.clock.advance(to: 206_000)
+        XCTAssertEqual(h.shown.last, .init(206_000, .pillShown(.prompt)))
+    }
+
+    /// A lowering whose plan reports no delivered bitrate came back lower.
+    func testALoweringResultWithoutADeliveredBitrateIsLower() {
+        let h = Harness(mode: .always)
+        h.startPlaying(Self.plan("p1"))
+        h.at(125_000) { $0.waiting() }
+        h.at(134_000) {
+            $0.planAdopted(Self.plan("p2", delivered: nil))
+            $0.playing()
+        }
+        XCTAssertEqual(h.shown.last, .init(134_000, .pillShown(.undo)))
+    }
+
+    /// The failure notice after a no-lower result uses up the title's
+    /// once-per-title "Can't lower quality" notice.
+    func testAFailureNoticeSpendsTheOncePerTitleNotice() {
+        let h = Harness(mode: .always)
+        h.startPlaying(Self.plan("p1"))
+        h.at(125_000) { $0.waiting() }
+        h.at(134_000) {
+            $0.planAdopted(Self.plan("p2", delivered: 63_000))
+            $0.playing()
+        }
+        h.at(140_000) { $0.planAdopted(Self.plan("p3", rungs: []), controllerInitiated: false) }
+        h.at(200_000) { $0.waiting() }
+        h.clock.advance(to: 210_000)
+        XCTAssertEqual(h.shown.filter { if case .notice = $0.output { return true } else { return false } },
+                       [.init(134_000, .notice(.cantLower))])
+    }
+
     // MARK: - Replay
 
     private func assertReplay(_ vectorCase: VectorCase, sendsBufferingQualityFields: Bool) {

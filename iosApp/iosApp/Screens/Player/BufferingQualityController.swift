@@ -17,22 +17,24 @@ import Foundation
 ///
 /// The trigger is evaluated when a stall ends (``playing()``) and when a stall
 /// in progress reaches `LONG_STALL_MS`. While that long stall continues, it is
-/// evaluated again when a time-based suppression (cooldown, re-offer, an undo
-/// pill's timer) expires. Starting a wait never evaluates old history, and a
-/// suppression that expires while playing offers nothing.
+/// evaluated again when a time-based suppression (cooldown, re-offer) expires
+/// or the undo pill leaves the screen (its timer or Back). Starting a wait
+/// never evaluates old history, and a suppression that expires while playing
+/// offers nothing.
 ///
 /// ### Timing
 ///
-/// Arithmetic is in integer milliseconds of the clock, so the vectors' times
-/// compare exactly. A pill's timer is wall-clock time that a pause or a
-/// competing pill freezes.
+/// Arithmetic is in integer milliseconds of the clock's elapsed real time
+/// (``PlayerPromptClock/elapsedMs``), so the vectors' times compare exactly and
+/// a change of the wall clock moves nothing. A pill's timer runs on the same
+/// clock, and a pause or a competing pill freezes it.
 @MainActor
 @Observable
 final class BufferingQualityController {
     // MARK: - Spec constants
 
-    /// `STARTUP_GRACE_MS`, from a plan's first frame, or its first wait when no
-    /// frame has appeared yet.
+    /// `STARTUP_GRACE_MS`, from a plan's first wait or, when none came before
+    /// it, its first frame (when playback first runs).
     nonisolated static let startupGraceMs = 10_000
     /// `STALL_MIN_MS`: a shorter stall is not a counted stall.
     nonisolated static let stallMinMs = 1_000
@@ -223,9 +225,13 @@ final class BufferingQualityController {
     /// the same, minus `bandwidth_estimate_source` and `learned_limit`.
     @ObservationIgnored var sendsBufferingQualityFields = false
     /// Inside a Watch Party room the room's own offer applies: no trigger acts
-    /// and no pill shows, while stall stats are still recorded.
+    /// and no pill shows, while stall stats are still recorded. Leaving the
+    /// room starts trigger history fresh, with the grace over.
     @ObservationIgnored var isSuspended = false {
-        didSet { if isSuspended { withdrawPill() } }
+        didSet {
+            guard isSuspended != oldValue else { return }
+            if isSuspended { withdrawPill() } else { clearHistory(at: nowMs) }
+        }
     }
     @ObservationIgnored var onOutput: ((Output) -> Void)?
 
@@ -252,6 +258,8 @@ final class BufferingQualityController {
     // The title, across plans.
     @ObservationIgnored private var answered = false
     @ObservationIgnored private var noLowerRungNoticeShown = false
+    /// When a prompt that timed out first reached the screen. Only a timeout
+    /// starts the re-offer wait; a quality change or new content ends it.
     @ObservationIgnored private var lastOfferAt: Int?
     /// The replan this controller sent, until the next plan settles it.
     @ObservationIgnored private var pendingReplan: PendingReplan?
@@ -349,9 +357,15 @@ final class BufferingQualityController {
     /// ends a stall in progress without counting it. A `.network` or
     /// `.renderer` wait means playback wants to run, so a paused pill's timer
     /// resumes.
-    func waiting(cause: WaitCause = .network) {
+    ///
+    /// `startedAgoMs` back-dates a wait the host noticed late, such as a
+    /// frozen playhead it sees only after a threshold. It never reaches back
+    /// past the start of the current playing state.
+    func waiting(cause: WaitCause = .network, startedAgoMs: Int = 0) {
         let now = nowMs
-        leavePlaying(at: now)
+        var began = now - max(0, startedAgoMs)
+        if let playingSince { began = max(began, playingSince) }
+        leavePlaying(at: began)
         guard cause == .network else {
             endStall(at: now, resumed: false)
             if cause == .renderer {
@@ -361,7 +375,7 @@ final class BufferingQualityController {
             return
         }
         isPaused = false
-        if current != nil, current?.stall == nil { beginStall(at: now) }
+        if current != nil, current?.stall == nil { beginStall(at: began) }
         refreshPill()
     }
 
@@ -377,16 +391,17 @@ final class BufferingQualityController {
         endStall(at: nowMs, resumed: false)
     }
 
-    /// Media requests are failing or the device is offline. Stall time during
-    /// trouble never counts; a stall still in progress when it ends is timed
-    /// from then.
+    /// Media requests are failing or the device is offline. A stall that runs
+    /// into trouble drops its time so far, and stall time during trouble never
+    /// counts; a stall still in progress when the trouble ends is timed from
+    /// then.
     func transportTroubleChanged(_ trouble: Bool) {
         guard trouble != transportTrouble else { return }
         transportTrouble = trouble
         let now = nowMs
         guard let state = current, var stall = state.stall else { return }
         if trouble {
-            stall.measuredMs = stall.measured(at: now)
+            stall.measuredMs = 0
             stall.measuredFrom = nil
             stall.timedFrom = nil
             cancelStallTimers()
@@ -450,8 +465,9 @@ final class BufferingQualityController {
     }
 
     /// Back / Menu / Escape. On the prompt it answers like Keep; on the undo pill
-    /// it only hides it. True when a visible pill consumed the press, so a
-    /// second Back behaves normally.
+    /// it only hides it, as its timer ending does, so a stall in progress that
+    /// has reached `LONG_STALL_MS` is evaluated at once. True when a visible
+    /// pill consumed the press, so a second Back behaves normally.
     @discardableResult
     func back() -> Bool {
         switch pill?.kind {
@@ -460,6 +476,7 @@ final class BufferingQualityController {
             return true
         case .undo:
             withdrawPill()
+            evaluateLongStall()
             return true
         case nil:
             return false
@@ -480,9 +497,10 @@ final class BufferingQualityController {
     /// A quality change this controller did not send: the viewer's pick, or
     /// the switch between the Wi-Fi and cellular qualities. Any pill hides,
     /// history clears, the title is no longer answered, and the kept estimate
-    /// goes. The re-offer wait restarts with it, since the next offer would be
+    /// goes. The re-offer wait ends with it, since the next offer would be
     /// about a different quality, and a pending controller replan is dropped
-    /// so the new plan is not read as its result.
+    /// so the new plan is not read as its result. Call it only once the
+    /// player has accepted the change.
     func qualityChanged() {
         keptEstimateKbps = nil
         answered = false
@@ -662,10 +680,11 @@ final class BufferingQualityController {
         let lower: Bool
         if plan.qualityReductionUnavailable {
             lower = false
-        } else if let delivered = plan.deliveredKbps, let from = pending.fromKbps {
-            lower = delivered < from
+        } else if let from = pending.fromKbps {
+            // A result with no delivered bitrate counts as lower, as the
+            // vectors' `delivered_kbps: 0` encodes it.
+            lower = (plan.deliveredKbps ?? 0) < from
         } else {
-            // Neither outcome can be told truthfully without both bitrates.
             return
         }
         if lower {
@@ -678,6 +697,8 @@ final class BufferingQualityController {
             current?.cooldownUntil = now + Self.noLowerCooldownMs
             guard !isSuspended else { return }
             current?.action = .cantLower
+            // The viewer has now seen this copy for the title.
+            noLowerRungNoticeShown = true
             notify(.cantLower)
         }
     }
@@ -738,8 +759,8 @@ final class BufferingQualityController {
 
     private func longStallTimerFired() {
         guard let from = current?.stall?.timedFrom else { return }
-        // The timer sleeps on a monotonic clock while `now` is wall-clock; if
-        // `now` lags, wait out the rest rather than miss the threshold.
+        // A timer can fire a little early against the clock; wait out the
+        // rest rather than miss the threshold.
         guard nowMs - from >= Self.longStallMs else {
             scheduleLongStallTimer()
             return
@@ -769,7 +790,12 @@ final class BufferingQualityController {
             playingSince = now
         }
         if let stall = state.stall {
+            // A stall still running when its plan ends ends with it, and it
+            // counts if it reached STALL_MIN_MS outside trouble.
             state.recordStall(measuredMs: stall.measured(at: now))
+            if !transportTrouble, let from = stall.timedFrom, now - from >= Self.stallMinMs {
+                state.stallCount += 1
+            }
             state.stall = nil
         }
         current = nil
@@ -828,15 +854,12 @@ final class BufferingQualityController {
             pillTimer = schedule(at: deadline) { $0.pillExpired() }
         }
         let appearing = visible && !shown.isOnScreen
-        if appearing, !shown.hasShown {
-            shown.hasShown = true
-            if shown.kind == .prompt { lastOfferAt = now }
-        }
+        if appearing, shown.firstShownAt == nil { shown.firstShownAt = now }
         shown.isOnScreen = visible
         presented = shown
         let next = visible ? Pill(
             kind: shown.kind,
-            deadline: shown.deadlineMs.map(Self.date),
+            deadline: shown.deadlineMs.map(date),
             remaining: TimeInterval(shown.remainingMs) / 1000,
             total: Self.promptSeconds
         ) : nil
@@ -844,8 +867,9 @@ final class BufferingQualityController {
         if appearing { emit(.pillShown(shown.kind)) }
     }
 
-    /// The prompt's timeout leaves the title unanswered and clears history; the
-    /// undo's only hides it, the lower plan playing on.
+    /// The prompt's timeout leaves the title unanswered, clears history and
+    /// starts the re-offer wait; the undo's only hides it, the lower plan
+    /// playing on.
     private func pillExpired() {
         pillTimer = nil
         guard let expired = presented else { return }
@@ -853,6 +877,8 @@ final class BufferingQualityController {
         switch expired.kind {
         case .prompt:
             current?.action = .timedOut
+            // The re-offer wait counts from the prompt's first display.
+            lastOfferAt = expired.firstShownAt
             clearHistory(at: nowMs)
         case .undo:
             evaluateLongStall()
@@ -861,12 +887,12 @@ final class BufferingQualityController {
 
     // MARK: - Helpers
 
-    private var nowMs: Int {
-        Int((clock.now.timeIntervalSinceReferenceDate * 1000).rounded())
-    }
+    private var nowMs: Int { clock.elapsedMs }
 
-    private nonisolated static func date(_ ms: Int) -> Date {
-        Date(timeIntervalSinceReferenceDate: TimeInterval(ms) / 1000)
+    /// The wall-clock date of `ms` on the elapsed clock, for drawing a pill's
+    /// progress against the display's own date.
+    private func date(_ ms: Int) -> Date {
+        clock.now.addingTimeInterval(TimeInterval(ms - nowMs) / 1000)
     }
 
     private func schedule(
@@ -912,7 +938,7 @@ final class BufferingQualityController {
 
         func graceEnd(defaultingTo now: Int) -> Int {
             if let graceOverAt { return graceOverAt }
-            return (firstFrameAt ?? firstWaitAt ?? now) + BufferingQualityController.startupGraceMs
+            return (firstWaitAt ?? firstFrameAt ?? now) + BufferingQualityController.startupGraceMs
         }
 
         mutating func recordStall(measuredMs: Int) {
@@ -963,7 +989,8 @@ final class BufferingQualityController {
         var remainingMs: Int
         /// Set while the timer runs.
         var deadlineMs: Int?
-        var hasShown = false
+        /// When it first reached the screen.
+        var firstShownAt: Int?
         var isOnScreen = false
     }
 }
