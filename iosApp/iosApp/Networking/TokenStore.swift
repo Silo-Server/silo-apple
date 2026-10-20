@@ -1713,16 +1713,29 @@ actor TokenStore {
         return true
     }
 
-    /// Store a rotated token pair for a saved sign-in that is not selected
+    /// Store a rotated token pair for a saved sign-in that was not selected
     /// (`backgroundSignInSession(for:)`), on the same terms as
     /// `saveInactiveServerRefresh`: only while the sign-in still holds
     /// exactly the session the refresh was sent with.
+    ///
+    /// The sign-in may have been selected while the refresh ran. The server
+    /// has spent the old refresh token either way, so while the stored item
+    /// is unchanged the pair goes through the selected sign-in's own save,
+    /// which also updates the credentials this process holds for it.
     func saveBackgroundSignInRefresh(
         accessToken: String,
         refreshToken: String,
         replacing captured: CanonicalAccountSession,
         for key: SignInKey
     ) -> Bool {
+        if selection == .signIn(key), !accessToken.isEmpty, !refreshToken.isEmpty {
+            ensureLoaded()
+            guard let stored = try? savedSignIns.loadSignIn(key), Self.storedSession(of: stored) == captured else {
+                recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: "inactiveSlotChanged")
+                return false
+            }
+            return saveRefreshedSignIn(key, accessValue: accessToken, refreshValue: refreshToken)
+        }
         guard !accessToken.isEmpty, !refreshToken.isEmpty,
               backgroundSignInSession(for: key) == captured else {
             recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: "inactiveSlotChanged")

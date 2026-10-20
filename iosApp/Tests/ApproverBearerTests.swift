@@ -302,6 +302,25 @@ final class ApproverBearerTests: XCTestCase {
         XCTAssertEqual(stored?.refreshToken, "refresh-newer")
     }
 
+    /// The account was selected while its renewal ran: the server spent the
+    /// old refresh token, so the rotated pair is kept, for the stored item
+    /// and for the credentials the app now uses.
+    func testARenewalThatFinishesAfterTheAccountIsSelectedIsKept() async throws {
+        let (http, tokens, _, second) = try await twoAccountsOnTheActiveServer()
+        let rotated = Self.token("rotated", expiresIn: 3600)
+        stub.reply(path: Self.refreshPath, 200, Self.refreshed(rotated))
+        stub.hold(path: Self.refreshPath)
+        let pending = Task { await http.freshAccessToken(for: .signIn(second)) }
+        await stub.waitUntilHeld()
+        await tokens.select(serverID: Self.active, credential: .signIn(second))
+        stub.release()
+
+        let bearer = await pending.value
+        XCTAssertEqual(bearer, .token(rotated))
+        let active = await tokens.getAccessToken(for: Self.active)
+        XCTAssertEqual(active, rotated)
+    }
+
     /// The harness plus a second account on the active server, expired,
     /// with the first account selected again.
     private func twoAccountsOnTheActiveServer() async throws -> (HTTPClient, TokenStore, SignInKey, SignInKey) {

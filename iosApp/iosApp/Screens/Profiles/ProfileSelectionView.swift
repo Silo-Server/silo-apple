@@ -481,6 +481,11 @@ struct ProfileSelectionView: View {
         let profileID = returnFocusProfileID
         Task {
             await Task.yield()
+            // Only while that profile is still the one to return to and the
+            // picker can take focus.
+            guard let profileID, returnFocusProfileID == profileID,
+                  viewModel.profiles.contains(where: { $0.id == profileID }),
+                  !isPINEntryPresented, !showSignOutConfirm else { return }
             focusedProfileID = profileID
         }
         #endif

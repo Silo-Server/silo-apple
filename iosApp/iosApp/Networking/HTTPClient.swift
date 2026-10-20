@@ -140,15 +140,12 @@ actor HTTPClient {
     private var inFlightRefreshes: [RefreshAccountIdentity: RefreshFlight] = [:]
     private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
-    /// Approver-bearer renewals of saved servers that are not active
-    /// (`freshAccessToken(serverId:)`), keyed by server. A caller holding the
-    /// same refresh token joins the renewal in flight instead of sending that
-    /// token a second time.
-    private var inactiveServerRenewals: [String: (refreshToken: String, task: Task<ApproverBearer, Never>)] = [:]
-    /// The same for saved sign-ins that are not selected and that no
-    /// server's renewal above serves (`freshAccessToken(for:)`), keyed by
-    /// `SignInKey.storageKey`.
-    private var signInRenewals: [String: (refreshToken: String, task: Task<ApproverBearer, Never>)] = [:]
+    /// Approver-bearer renewals of stored sessions that are not selected:
+    /// an inactive server's (`freshAccessToken(serverId:)`) or any saved
+    /// sign-in's (`freshAccessToken(for:)`), keyed by the refresh token they
+    /// send. A caller holding the same refresh token, on either path, joins
+    /// the renewal in flight instead of sending that token a second time.
+    private var storedSessionRenewals: [String: Task<ApproverBearer, Never>] = [:]
     /// The profile proof the last `.siloProfileVerificationRequired` was
     /// posted for (access token dropped), with the `TokenStore` selection
     /// generation it was installed under. A burst of rejected requests posts
@@ -2578,20 +2575,26 @@ actor HTTPClient {
             return await storedBearer(serverId: serverId)
         }
         guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
-        if let flight = inactiveServerRenewals[serverId], flight.refreshToken == refresh {
-            return await flight.task.value
-        }
-        let task = Task {
-            await renewStoredSession(access: access, refresh: refresh, origin: origin) { [tokenStore] tokens in
+        let tokenStore = tokenStore
+        return await renewOnce(refresh) {
+            await self.renewStoredSession(access: access, refresh: refresh, origin: origin) { [tokenStore] tokens in
                 await tokenStore.saveInactiveServerRefresh(accessToken: tokens.accessToken,
                     refreshToken: tokens.refreshToken, replacing: stored, for: serverId)
             }
         }
-        inactiveServerRenewals[serverId] = (refresh, task)
-        let bearer = await task.value
-        if inactiveServerRenewals[serverId]?.refreshToken == refresh {
-            inactiveServerRenewals[serverId] = nil
+    }
+
+    /// Runs `renewal` unless one sending `refresh` is already in flight,
+    /// which the caller joins instead (`storedSessionRenewals`).
+    private func renewOnce(_ refresh: String,
+                           _ renewal: @escaping @Sendable () async -> ApproverBearer) async -> ApproverBearer {
+        if let flight = storedSessionRenewals[refresh] {
+            return await flight.value
         }
+        let task = Task { await renewal() }
+        storedSessionRenewals[refresh] = task
+        let bearer = await task.value
+        storedSessionRenewals[refresh] = nil
         return bearer
     }
 
@@ -2603,8 +2606,8 @@ actor HTTPClient {
     /// not active, renew through `freshAccessToken(serverId:)` and share its
     /// flights. Any other saved sign-in renews its own item once,
     /// compare-and-set against the session the refresh was sent with
-    /// (`TokenStore.saveBackgroundSignInRefresh`), and callers holding the
-    /// same refresh token wait for that renewal. A pending legacy account
+    /// (`TokenStore.saveBackgroundSignInRefresh`); a caller on either path
+    /// holding the same refresh token waits for that renewal. A pending legacy account
     /// has no session of its own outside those two paths: `.rejected`.
     ///
     /// The server's path serves whichever account holds that server's
@@ -2622,22 +2625,13 @@ actor HTTPClient {
             return .rejected
         }
         guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
-        let slot = key.storageKey
-        if let flight = signInRenewals[slot], flight.refreshToken == refresh {
-            return await flight.task.value
-        }
-        let task = Task {
-            await renewStoredSession(access: access, refresh: refresh, origin: origin) { [tokenStore] tokens in
+        let tokenStore = tokenStore
+        return await renewOnce(refresh) {
+            await self.renewStoredSession(access: access, refresh: refresh, origin: origin) { [tokenStore] tokens in
                 await tokenStore.saveBackgroundSignInRefresh(accessToken: tokens.accessToken,
                     refreshToken: tokens.refreshToken, replacing: stored, for: key)
             }
         }
-        signInRenewals[slot] = (refresh, task)
-        let bearer = await task.value
-        if signInRenewals[slot]?.refreshToken == refresh {
-            signInRenewals[slot] = nil
-        }
-        return bearer
     }
 
     /// Whether `freshAccessToken(serverId:)` reads `account`'s credential:
