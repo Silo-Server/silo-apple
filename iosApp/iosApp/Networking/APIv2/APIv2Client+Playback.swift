@@ -35,9 +35,12 @@ extension APIv2Client {
     /// `POST /api/v2/playback/route-events`, answered with 202 and a receipt
     /// that must echo this event's id. Route events are diagnostics and
     /// `non_retryable`: the caller never sends one again, and a 429 drops it.
+    /// The exception is a `plan_summary` kept on the device and sent again
+    /// after the app ended (``PlanSummaryJournal``): it keeps its `eventID`,
+    /// and the server takes it once.
     func reportPlaybackRouteEvent(_ event: PlaybackV3RouteEvent, installationID: String,
+                                  eventID: String = UUID().uuidString.lowercased(),
                                   auth: CapturedOrdinaryRequestAuth) async throws {
-        let eventID = UUID().uuidString.lowercased()
         let body = try Self.playbackBody(APIv2PlaybackRouteEventBody(installationID: installationID,
             eventID: eventID, event: event))
         let raw = try await playbackRequest(method: "POST", suffix: "/route-events", body: body, auth: auth)

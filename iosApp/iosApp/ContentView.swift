@@ -385,7 +385,7 @@ struct ContentView: View {
         // seconds for the first screen to settle. The server task below also
         // hands over each server it commits.
         .task(id: router.authState == .authenticated) {
-            await followSignedInServerForBandwidthProbe()
+            await handOffSignedInSession()
         }
         // Work that can prompt the user, or that competes with the first
         // screen for bandwidth, waits until the splash has lifted.
@@ -441,7 +441,7 @@ struct ContentView: View {
             // A restored session can reach `.authenticated` before this
             // commit, and a server switch can stay `.authenticated` across
             // it, so the speed scheduler follows the committed server here.
-            await followSignedInServerForBandwidthProbe()
+            await handOffSignedInSession()
             Task { await AuthService.shared.refreshActiveServerName() }
             if router.authState == .authenticated {
                 // Nothing below reads title art, and surfaces show its cached
@@ -631,7 +631,9 @@ struct ContentView: View {
         #endif
     }
 
-    private func followSignedInServerForBandwidthProbe() async {
+    /// Hands the signed-in session to the speed scheduler, and sends the plan
+    /// summaries an earlier run kept for it.
+    private func handOffSignedInSession() async {
         let scheduler = BandwidthProbeScheduler.shared
         // Video players register themselves when their playback starts.
         scheduler.isMediaActive = { [audioStore] in audioStore.player.isPlaying }
@@ -652,6 +654,9 @@ struct ContentView: View {
                 profileId: $0.profileId
             )
         })
+        // Plan summaries an earlier run kept for this server and profile,
+        // because the app ended before their plans did.
+        if let auth { await PlanSummaryJournal.shared.replay(as: auth) }
     }
 
     /// Background audio and PiP are still active use of the selected profile,
@@ -1358,7 +1363,7 @@ struct ContentView: View {
             router.resetToHome()
             // A re-login while already authenticated flips no auth state, so
             // nothing else hands the new session over.
-            await followSignedInServerForBandwidthProbe()
+            await handOffSignedInSession()
             print("[DebugAutoLogin] signed in and selected profile")
         } catch {
             print("[DebugAutoLogin] failed: \(error)")

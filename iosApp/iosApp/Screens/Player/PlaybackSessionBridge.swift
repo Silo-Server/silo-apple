@@ -183,8 +183,6 @@ actor PlaybackV3CapabilityGate {
         /// `buffering_quality_v1`: starts opt in, and the connection endpoints
         /// exist. Each decision's `server_features` says the same for replans.
         var bufferingQuality = false
-        /// `playback_plan_summary_v1`: the server accepts `plan_summary`.
-        var planSummary = false
         /// `connection_speed_v1`: the server serves a bandwidth probe on the
         /// media path, takes probe results, and reports the probe and the
         /// Auto budget on the connection endpoint.
@@ -232,7 +230,6 @@ actor PlaybackV3CapabilityGate {
                             PlaybackProtocolV3.authorizedMediaOriginsFeature
                         ),
                         bufferingQuality: capabilities.features.contains(PlaybackProtocolV3.bufferingQualityFeature),
-                        planSummary: capabilities.features.contains(PlaybackProtocolV3.planSummaryFeature),
                         connectionSpeed: capabilities.features.contains(PlaybackProtocolV3.connectionSpeedFeature)
                     )
                 } catch {
@@ -1900,20 +1897,28 @@ actor PlaybackSessionBridge {
         )
     }
 
-    /// Reports `summary` for `prepared`'s plan when the server advertises
-    /// `playback_plan_summary_v1`. Best effort, like every route event.
-    func reportProtocolV3PlanSummary(
+    /// `summary` for `prepared`'s plan as the device keeps and sends it, and
+    /// the session owner that sends it. Nil when the server does not
+    /// advertise `playback_plan_summary_v1`.
+    func protocolV3PlanSummaryEntry(
         _ summary: PlaybackV3PlanSummary,
         for prepared: PreparedPlaybackV3,
-        sessionId: String
-    ) async {
-        guard prepared.advertisesPlanSummary, let authority else { return }
-        let event = Self.planSummaryRouteEvent(summary, for: prepared, sessionId: sessionId)
-        do {
-            try await authority.reportRouteEvent(event)
-        } catch {
-            logger.warning("Protocol V3 route event \(event.event, privacy: .public) failed: \(MediaLogRedactor.sanitize(error), privacy: .public)")
+        sessionId: String,
+        eventId: String,
+        planStartedAt: Date
+    ) -> (entry: PlanSummaryJournal.Entry, owner: CapturedOrdinaryRequestAuth)? {
+        guard prepared.advertisesPlanSummary, let authority, let profileId = authority.owner.profileId else {
+            return nil
         }
+        let entry = PlanSummaryJournal.Entry(
+            eventId: eventId,
+            installationID: authority.installationID,
+            serverId: authority.owner.account.serverId,
+            profileId: profileId,
+            planStartedAt: planStartedAt,
+            event: Self.planSummaryRouteEvent(summary, for: prepared, sessionId: sessionId)
+        )
+        return (entry, authority.owner)
     }
 
     private func emitProtocolV3Event(

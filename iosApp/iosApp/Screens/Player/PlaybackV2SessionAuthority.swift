@@ -42,7 +42,8 @@ struct PlaybackV2SessionAuthority: Sendable {
     /// Route events are diagnostics and `non_retryable`: sent once, never
     /// resent, and a 429 simply drops the event.
     func reportRouteEvent(_ event: PlaybackV3RouteEvent,
+                          eventID: String = UUID().uuidString.lowercased(),
                           api: APIv2Client = SiloAPI.shared.apiV2Client) async throws {
-        try await api.reportPlaybackRouteEvent(event, installationID: installationID, auth: owner)
+        try await api.reportPlaybackRouteEvent(event, installationID: installationID, eventID: eventID, auth: owner)
     }
 }

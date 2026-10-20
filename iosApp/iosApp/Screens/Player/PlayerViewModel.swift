@@ -490,9 +490,18 @@ class PlayerViewModel {
     /// Numbers each adopted plan, so a replan that comes back with the same
     /// server `plan_id` is still a new plan to the controller.
     @ObservationIgnored private var bufferingPlanRevision: UInt64 = 0
+    /// An adopted plan a `plan_summary` can still name.
+    private struct BufferingPlanEntry {
+        let prepared: PreparedPlaybackV3
+        let sessionId: String
+        /// Its summary's `event_id`, the same for every copy the device
+        /// keeps and sends, so the server takes it once.
+        let summaryEventId = UUID().uuidString.lowercased()
+        let adoptedAt = Date()
+    }
     /// The adopted plans a `plan_summary` can still name: the current one,
     /// and the one it replaced until its summary is sent.
-    @ObservationIgnored private var bufferingPlans: [String: (prepared: PreparedPlaybackV3, sessionId: String)] = [:]
+    @ObservationIgnored private var bufferingPlans: [String: BufferingPlanEntry] = [:]
     /// The controller's id for the current plan. Read by tests.
     @ObservationIgnored private(set) var bufferingPlanId: String?
     /// `streamLoadGeneration` when the current plan was adopted. A replan or
@@ -519,6 +528,10 @@ class PlayerViewModel {
     /// or hidden: the player cannot show its pills.
     private(set) var isPlayerSurfaceHidden = false
     @ObservationIgnored private var surfaceVisibilityObservers: [NSObjectProtocol] = []
+    #if os(macOS)
+    /// Resigning active keeps the plan's running summary; quitting ends it.
+    @ObservationIgnored private var macBufferingSummaryObservers: [NSObjectProtocol] = []
+    #endif
     var selectedAudioId: Int64?
     var selectedSubtitleId: Int64? {
         didSet {
@@ -1565,8 +1578,27 @@ class PlayerViewModel {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.flushPlaybackProgressNow(reason: "foreground_exit")
+                #if os(iOS) || os(tvOS)
+                self?.keepRunningBufferingPlanSummary()
+                #endif
             }
         }
+        #if os(macOS)
+        // A Mac app leaves the foreground when it resigns active; one that
+        // quits ends the plan, and the app waits briefly for its summary.
+        macBufferingSummaryObservers = [
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.keepRunningBufferingPlanSummary() }
+            },
+            NotificationCenter.default.addObserver(
+                forName: PlanSummaryJournal.appWillQuit, object: nil, queue: nil
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.endBufferingPlan() }
+            },
+        ]
+        #endif
         settingsRefreshTask = Task { @MainActor [weak self] in
             await self?.refreshSettingsFromServer()
         }
@@ -8555,6 +8587,10 @@ class PlayerViewModel {
         }
         surfaceVisibilityObservers.forEach(NotificationCenter.default.removeObserver)
         surfaceVisibilityObservers = []
+        #if os(macOS)
+        macBufferingSummaryObservers.forEach(NotificationCenter.default.removeObserver)
+        macBufferingSummaryObservers = []
+        #endif
         nextUpLookupTask?.cancel()
         nextUpOnDeckTask?.cancel()
         nextUpCountdownTask?.cancel()
@@ -10376,7 +10412,7 @@ extension PlayerViewModel {
         bufferingPlanRevision &+= 1
         let id = "\(bufferingPlanRevision):\(v3.plan.planId)"
         bufferingPlans = bufferingPlans.filter { $0.key == bufferingPlanId }
-        bufferingPlans[id] = (v3, sessionId)
+        bufferingPlans[id] = BufferingPlanEntry(prepared: v3, sessionId: sessionId)
         bufferingPlanId = id
         bufferingAdoptedStreamLoadGeneration = streamLoadGeneration
         bufferingReloadEpoch = nil
@@ -10524,6 +10560,26 @@ extension PlayerViewModel {
 
     private func reportBufferingPlanSummary(_ summary: BufferingQualityController.PlanSummary) {
         guard let entry = bufferingPlans.removeValue(forKey: summary.planId) else { return }
+        Self.logger.info(
+            "[CMP-BUFFERING] plan summary id=\(summary.planId, privacy: .public) played_ms=\(summary.playedMs, privacy: .public) stalls=\(summary.stallCount, privacy: .public) stall_ms=\(summary.stallTotalMs, privacy: .public) action=\(summary.action.rawValue, privacy: .public) sent=\(entry.prepared.advertisesPlanSummary, privacy: .public)"
+        )
+        recordBufferingPlanSummary(summary, of: entry, sending: true)
+    }
+
+    /// The playing plan's summary so far, kept on the device in case the app
+    /// ends before the plan does: a suspended app that is killed hears
+    /// nothing. Updated each time the app leaves the foreground.
+    private func keepRunningBufferingPlanSummary() {
+        guard let summary = bufferingQuality.runningSummary,
+              let entry = bufferingPlans[summary.planId] else { return }
+        recordBufferingPlanSummary(summary, of: entry, sending: false)
+    }
+
+    private func recordBufferingPlanSummary(
+        _ summary: BufferingQualityController.PlanSummary,
+        of entry: BufferingPlanEntry,
+        sending: Bool
+    ) {
         let report = PlaybackV3PlanSummary(
             playedMs: summary.playedMs,
             stallCount: summary.stallCount,
@@ -10534,11 +10590,11 @@ extension PlayerViewModel {
             bufferingAction: summary.action.rawValue,
             bandwidthEstimateKbps: summary.bandwidthEstimateKbps
         )
-        Self.logger.info(
-            "[CMP-BUFFERING] plan summary id=\(summary.planId, privacy: .public) played_ms=\(summary.playedMs, privacy: .public) stalls=\(summary.stallCount, privacy: .public) stall_ms=\(summary.stallTotalMs, privacy: .public) action=\(summary.action.rawValue, privacy: .public) sent=\(entry.prepared.advertisesPlanSummary, privacy: .public)"
-        )
-        Task { [sessionBridge] in
-            await sessionBridge.reportProtocolV3PlanSummary(report, for: entry.prepared, sessionId: entry.sessionId)
+        PlanSummaryJournal.shared.record(sending: sending) { [sessionBridge] in
+            await sessionBridge.protocolV3PlanSummaryEntry(
+                report, for: entry.prepared, sessionId: entry.sessionId,
+                eventId: entry.summaryEventId, planStartedAt: entry.adoptedAt
+            )
         }
     }
 

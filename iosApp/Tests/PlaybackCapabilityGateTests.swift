@@ -96,7 +96,6 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         plainStub.reply(200, try available(dropping: optional))
         let without = try await plain.requireNeutralProtocolV3()
         XCTAssertFalse(without.bufferingQuality)
-        XCTAssertFalse(without.planSummary)
         XCTAssertFalse(without.connectionSpeed)
         let plainAdvertises = await plain.advertisesBufferingQuality()
         XCTAssertFalse(plainAdvertises)
@@ -106,7 +105,6 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         stub.reply(200, try available())
         let with = try await gate.requireNeutralProtocolV3()
         XCTAssertTrue(with.bufferingQuality)
-        XCTAssertTrue(with.planSummary)
         XCTAssertTrue(with.connectionSpeed)
         let advertises = await gate.advertisesBufferingQuality()
         XCTAssertTrue(advertises)
@@ -146,6 +144,23 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths, [path, path], "a refusal is re-probed; availability is not")
         XCTAssertEqual(stub.methods, ["GET", "GET"])
         XCTAssertEqual(stub.requests.last?.headers["x-profile-id"], "profile-one")
+    }
+
+    /// Settings reads past the cache, so a feature the server withdraws
+    /// while the app runs hides on the next visit; the fresh answer is
+    /// cached for playback too.
+    func testAFreshReadSkipsTheCache() async throws {
+        let (gate, stub) = try await makeGate()
+        stub.sequence([.json(200, try available()),
+                       .json(200, try available(dropping: [PlaybackProtocolV3.connectionSpeedFeature]))])
+
+        let cached = try await gate.requireNeutralProtocolV3()
+        XCTAssertTrue(cached.connectionSpeed)
+        let fresh = try await gate.requireNeutralProtocolV3(fresh: true)
+        XCTAssertFalse(fresh.connectionSpeed)
+        let afterwards = try await gate.requireNeutralProtocolV3()
+        XCTAssertEqual(afterwards, fresh)
+        XCTAssertEqual(stub.requestedPaths, [path, path])
     }
 
     func testGateMapsServerRefusalsToTerminalFailures() async throws {

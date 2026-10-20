@@ -324,6 +324,12 @@ final class BufferingQualityController {
         if let pending { settle(pending, at: now) }
     }
 
+    /// The playing plan's summary as if it ended now, without ending it: what
+    /// the player keeps on the device in case the app never gets to end it.
+    var runningSummary: PlanSummary? {
+        current.map { summary(closing: $0, at: nowMs) }
+    }
+
     /// The plan stopped or failed with no successor: emits its summary.
     func planEnded() {
         endPlan(at: nowMs)
@@ -808,10 +814,22 @@ final class BufferingQualityController {
     /// Closes the playing plan's books, takes down its pill and timers, and
     /// emits its summary.
     private func endPlan(at now: Int) {
-        guard var state = current else { return }
+        guard let state = current else { return }
+        let summary = summary(closing: state, at: now)
+        if playingSince != nil { playingSince = now }
+        current = nil
+        cancelStallTimers()
+        rearmTimer?.cancel()
+        rearmTimer = nil
+        withdrawPill()
+        emit(.planSummary(summary))
+    }
+
+    /// `state`'s books closed at `now`.
+    private func summary(closing state: PlanState, at now: Int) -> PlanSummary {
+        var state = state
         if let since = playingSince {
             state.playedMs += now - since
-            playingSince = now
         }
         if let stall = state.stall {
             // A stall still running when its plan ends ends with it, and it
@@ -820,14 +838,8 @@ final class BufferingQualityController {
             if !transportTrouble, let from = stall.timedFrom, now - from >= Self.stallMinMs {
                 state.stallCount += 1
             }
-            state.stall = nil
         }
-        current = nil
-        cancelStallTimers()
-        rearmTimer?.cancel()
-        rearmTimer = nil
-        withdrawPill()
-        emit(.planSummary(PlanSummary(
+        return PlanSummary(
             planId: state.plan.id,
             playedMs: state.playedMs,
             stallCount: state.stallCount,
@@ -837,7 +849,7 @@ final class BufferingQualityController {
             mode: mode,
             action: state.action,
             bandwidthEstimateKbps: state.requestedEstimateKbps
-        )))
+        )
     }
 
     // MARK: - Pill

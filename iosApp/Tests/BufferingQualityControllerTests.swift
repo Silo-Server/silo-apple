@@ -284,6 +284,22 @@ final class BufferingQualityControllerTests: XCTestCase {
         ))
     }
 
+    /// The running summary is the plan's summary as if it ended now, kept on
+    /// the device in case the app ends first. The plan plays on.
+    func testTheRunningSummaryLeavesThePlanPlaying() {
+        let h = Harness(mode: .never)
+        h.startPlaying(Self.plan("p1"))
+        h.at(30_000) { $0.waiting() }
+        h.at(36_000) { $0.playing() }
+        h.at(40_000) { $0.waiting() }
+        var running: [Controller.PlanSummary?] = []
+        h.at(45_000) { running = [$0.runningSummary, $0.runningSummary] }
+        XCTAssertTrue(h.summaries.isEmpty, "nothing is sent")
+        XCTAssertEqual(running[0], running[1])
+        h.at(45_000) { $0.planEnded() }
+        XCTAssertEqual(h.summaries, [running[0]].compactMap { $0 }, "including the stall still running")
+    }
+
     /// A stall that runs into an outage drops its time so far; only the part
     /// after the outage counts.
     func testAnOutageDropsTheStallTimeBeforeIt() {

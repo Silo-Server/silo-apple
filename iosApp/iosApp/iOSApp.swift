@@ -4,6 +4,8 @@ import SwiftUI
 struct SiloApp: App {
     #if os(iOS)
     @UIApplicationDelegateAdaptor(SiloAppDelegate.self) private var appDelegate
+    #elseif os(macOS)
+    @NSApplicationDelegateAdaptor(SiloMacAppDelegate.self) private var appDelegate
     #endif
 
     init() {
