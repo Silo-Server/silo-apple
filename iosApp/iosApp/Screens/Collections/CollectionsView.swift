@@ -517,6 +517,7 @@ struct LibraryCollectionsView: View {
     @State private var viewModel = LibraryCollectionsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
+    @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.verticalSizeClass) private var vSize
 
@@ -580,15 +581,17 @@ struct LibraryCollectionsView: View {
             }
             LazyVGrid(columns: columns, spacing: 16) {
                 ForEach(section.collections) { collection in
-                    NavigationLink(
-                        value: Route.libraryCollection(
+                    // Through the router, not NavigationLink(value:), so the
+                    // Mac sidebar's route mirror sees the push.
+                    Button {
+                        router.navigate(to: .libraryCollection(
                             libraryId: libraryId,
                             collectionId: collection.id,
                             title: collection.name,
                             kind: collection.kind,
                             mediaScope: mediaScope
-                        )
-                    ) {
+                        ))
+                    } label: {
                         LibraryCollectionCard(
                             collection: collection,
                             cardWidthOverride: libraryCollectionCardWidthOverride,
