@@ -142,9 +142,10 @@ actor HTTPClient {
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
     /// Approver-bearer renewals of stored sessions that are not selected:
     /// an inactive server's (`freshAccessToken(serverId:)`) or any saved
-    /// sign-in's (`freshAccessToken(for:)`), keyed by the refresh token they
-    /// send. A caller holding the same refresh token, on either path, joins
-    /// the renewal in flight instead of sending that token a second time.
+    /// sign-in's (`freshAccessToken(for:)`), keyed by the server and refresh
+    /// token they send (`renewalKey`). A caller holding the same refresh
+    /// token for the same server, on either path, joins the renewal in
+    /// flight instead of sending that token a second time.
     private var storedSessionRenewals: [String: Task<ApproverBearer, Never>] = [:]
     /// The profile proof the last `.siloProfileVerificationRequired` was
     /// posted for (access token dropped), with the `TokenStore` selection
@@ -2365,7 +2366,7 @@ actor HTTPClient {
         // for it rather than send the token again: its save rotates the
         // selected sign-in too (`TokenStore.saveBackgroundSignInRefresh`).
         if let credential = await tokenStore.captureRefreshCredential(expected: key),
-           let renewal = storedSessionRenewals[credential.refreshToken] {
+           let renewal = storedSessionRenewals[Self.renewalKey(origin: key.serverURL, refresh: credential.refreshToken)] {
             refreshFlightJoinObserver?(.ordinary)
             _ = await renewal.value
             return await rotatedAuth(since: expected)
@@ -2586,7 +2587,7 @@ actor HTTPClient {
         }
         guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
         let tokenStore = tokenStore
-        return await renewOnce(refresh) {
+        return await renewOnce(origin: origin, refresh: refresh) {
             await self.renewStoredSession(access: access, refresh: refresh, origin: origin) { [tokenStore] tokens in
                 await tokenStore.saveInactiveServerRefresh(accessToken: tokens.accessToken,
                     refreshToken: tokens.refreshToken, replacing: stored, for: serverId)
@@ -2594,18 +2595,25 @@ actor HTTPClient {
         }
     }
 
-    /// Runs `renewal` unless one sending `refresh` is already in flight,
-    /// which the caller joins instead (`storedSessionRenewals`).
-    private func renewOnce(_ refresh: String,
+    /// Runs `renewal` unless one sending `refresh` to `origin` is already in
+    /// flight, which the caller joins instead (`storedSessionRenewals`).
+    private func renewOnce(origin: String, refresh: String,
                            _ renewal: @escaping @Sendable () async -> ApproverBearer) async -> ApproverBearer {
-        if let flight = storedSessionRenewals[refresh] {
+        let key = Self.renewalKey(origin: origin, refresh: refresh)
+        if let flight = storedSessionRenewals[key] {
             return await flight.value
         }
         let task = Task { await renewal() }
-        storedSessionRenewals[refresh] = task
+        storedSessionRenewals[key] = task
         let bearer = await task.value
-        storedSessionRenewals[refresh] = nil
+        storedSessionRenewals[key] = nil
         return bearer
+    }
+
+    /// A renewal is the refresh token and the server it is sent to: two
+    /// servers may issue the same token text.
+    private static func renewalKey(origin: String, refresh: String) -> String {
+        "\(ServerRegistry.normalize(url: origin))\n\(refresh)"
     }
 
     /// A bearer for one saved account, on the same terms as
@@ -2636,7 +2644,7 @@ actor HTTPClient {
         }
         guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
         let tokenStore = tokenStore
-        return await renewOnce(refresh) {
+        return await renewOnce(origin: origin, refresh: refresh) {
             await self.renewStoredSession(access: access, refresh: refresh, origin: origin) { [tokenStore] tokens in
                 await tokenStore.saveBackgroundSignInRefresh(accessToken: tokens.accessToken,
                     refreshToken: tokens.refreshToken, replacing: stored, for: key)
