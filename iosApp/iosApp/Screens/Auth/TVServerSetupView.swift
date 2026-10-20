@@ -62,8 +62,9 @@ struct TVServerSetupView: View {
         ZStack {
             if isPairing {
                 TVPairingReceiverView(coordinator: coordinator, advance: {
-                    router.skipsSingleProfilePicker = true
-                    router.showProfileSelection()
+                    var signedIn = 0
+                    if case .completed(let names) = coordinator.state { signedIn = names.count }
+                    router.accounts.finishPhoneSetup(signedInCount: signedIn, router: router)
                 })
                     .transition(.opacity)
             } else if isEnteringAddress {

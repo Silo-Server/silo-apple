@@ -867,6 +867,17 @@ final class SiloAccountCoordinator {
         return true
     }
 
+    /// After a phone set this TV up: one sign-in opens its Who's Watching;
+    /// several show Choose an Account, so the person picks rather than
+    /// landing in whichever account the phone sent last.
+    func finishPhoneSetup(signedInCount: Int, router: AppRouter) {
+        if signedInCount >= 2 {
+            router.showAccountChooser(focus: directory.currentAccountID)
+        } else {
+            showSignedIn(router: router)
+        }
+    }
+
     // MARK: - Sign out and remove (spec §5.6)
 
     /// The confirmation for `target` (spec §5.6 copy).

@@ -255,13 +255,13 @@ struct TVPairingReceiverView: View {
             .focused($focused, equals: control)
     }
 
-    /// Two accounts on one server name it once.
+    /// One name per sign-in; two accounts on one server name it once.
+    /// Several sign-ins go on to Choose an Account.
     private func completedSummary(_ names: [String]) -> String {
         var seen = Set<String>()
         let servers = names.filter { seen.insert($0).inserted }
-        return servers.isEmpty
-            ? "Taking you to your profiles…"
-            : "Signed in to \(servers.joined(separator: ", ")). Taking you to your profiles…"
+        let next = names.count >= 2 ? "Choose an account to start." : "Taking you to your profiles…"
+        return servers.isEmpty ? next : "Signed in to \(servers.joined(separator: ", ")). \(next)"
     }
 
     /// The host of an address, for a button label. Falls back to the

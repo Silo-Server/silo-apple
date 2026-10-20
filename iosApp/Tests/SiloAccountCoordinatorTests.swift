@@ -1255,6 +1255,24 @@ final class SiloAccountCoordinatorTests: XCTestCase {
         XCTAssertEqual(selection, .signIn(friendPaired))
         XCTAssertEqual(d.router.authState, setup)
         XCTAssertTrue(d.revokedAccessTokens().isEmpty)
+
+        // Two sign-ins from the phone: the TV asks which account to open.
+        d.accounts.finishPhoneSetup(signedInCount: 2, router: d.router)
+        XCTAssertEqual(d.router.authState, .needsAccount(focus: .signIn(friendPaired)))
+    }
+
+    /// One sign-in from the phone opens its Who's Watching.
+    func testPhoneSetupWithOneSignInOpensItsProfiles() async throws {
+        let d = try Device(self)
+        d.router.resetToServerSetup(context: .firstRun)
+        let saved = await d.accounts.completePairing(
+            ReceiverPairingCoordinator.PersistedPairing(
+                url: F.homeURL, fetchedName: "Home Silo", verifiedServerId: nil,
+                accessToken: "paired-home", refreshToken: "r", accountID: "12"),
+            router: d.router)
+        XCTAssertTrue(saved)
+        d.accounts.finishPhoneSetup(signedInCount: 1, router: d.router)
+        XCTAssertEqual(d.router.authState, .needsProfile)
     }
 
     /// A pairing that stops before anything keeps its session (here,
