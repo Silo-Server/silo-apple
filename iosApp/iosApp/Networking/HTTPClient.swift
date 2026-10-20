@@ -2360,6 +2360,16 @@ actor HTTPClient {
             if let failure = await existing.task.value { throw failure.error }
             return await rotatedAuth(since: expected)
         }
+        // An approver renewal started before this account was selected may
+        // be spending the same refresh token (`storedSessionRenewals`). Wait
+        // for it rather than send the token again: its save rotates the
+        // selected sign-in too (`TokenStore.saveBackgroundSignInRefresh`).
+        if let credential = await tokenStore.captureRefreshCredential(expected: key),
+           let renewal = storedSessionRenewals[credential.refreshToken] {
+            refreshFlightJoinObserver?(.ordinary)
+            _ = await renewal.value
+            return await rotatedAuth(since: expected)
+        }
 
         let task = Task<RefreshFlightFailure?, Never> { [tokenStore, session, decoder, encoder] in
             await Self.performRefresh(

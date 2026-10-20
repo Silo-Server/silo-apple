@@ -321,6 +321,32 @@ final class ApproverBearerTests: XCTestCase {
         XCTAssertEqual(active, rotated)
     }
 
+    /// The selected account's own refresh doesn't send a token an approver
+    /// renewal started before the switch is already spending: it waits for
+    /// that renewal and uses its rotated pair.
+    func testTheSelectedRefreshJoinsAnApproverRenewalOfTheSameToken() async throws {
+        let (_, tokens, _, second) = try await twoAccountsOnTheActiveServer()
+        let joins = JoinRecorder()
+        let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens,
+                              refreshFlightJoinObserver: { joins.record($0) })
+        let rotated = Self.token("rotated", expiresIn: 3600)
+        stub.reply(path: Self.refreshPath, 200, Self.refreshed(rotated))
+        stub.hold(path: Self.refreshPath)
+        let approver = Task { await http.freshAccessToken(for: .signIn(second)) }
+        await stub.waitUntilHeld()
+        await tokens.select(serverID: Self.active, credential: .signIn(second))
+        let selected = Task { await http.freshAccessToken(serverId: Self.active) }
+        for _ in 0..<300 where joins.count == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(joins.count, 1, "the selected refresh joined the approver renewal")
+        stub.release()
+
+        let approverBearer = await approver.value
+        let selectedBearer = await selected.value
+        XCTAssertEqual(approverBearer, .token(rotated))
+        XCTAssertEqual(selectedBearer, .token(rotated))
+        XCTAssertEqual(refreshes.count, 1, "refresh-1 was sent once")
+    }
+
     /// The harness plus a second account on the active server, expired,
     /// with the first account selected again.
     private func twoAccountsOnTheActiveServer() async throws -> (HTTPClient, TokenStore, SignInKey, SignInKey) {
@@ -356,5 +382,17 @@ final class ApproverBearerTests: XCTestCase {
         let activeAccess = await tokens.getAccessToken(for: Self.active)
         XCTAssertNil(activeAccess)
         XCTAssertTrue(refreshes.isEmpty, "nothing was sent anywhere")
+    }
+}
+
+/// Counts refresh-flight joins (`HTTPClient.refreshFlightJoinObserver`).
+private final class JoinRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var joins = 0
+
+    var count: Int { lock.withLock { joins } }
+
+    func record(_ kind: RefreshFlightJoinKind) {
+        lock.withLock { joins += 1 }
     }
 }
