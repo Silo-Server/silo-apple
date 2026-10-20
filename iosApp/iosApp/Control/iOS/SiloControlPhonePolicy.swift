@@ -49,6 +49,26 @@ struct SiloControlPendingReplace: Equatable {
     }
 }
 
+/// The handoff offer's display-only `title`, in the wording silo-android
+/// sends so every TV shows the same thing: an episode as "Series · S1 · E2",
+/// anything else by its own title.
+enum SiloControlOfferTitle {
+    static func make(type: String, title: String, seriesTitle: String?, seasonNumber: Int?, episodeNumber: Int?) -> String? {
+        func blank(_ text: String) -> Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if type == "episode", let series = seriesTitle, !blank(series) {
+            return [series, seasonNumber.map { "S\($0)" }, episodeNumber.map { "E\($0)" }]
+                .compactMap { $0 }
+                .joined(separator: " · ")
+        }
+        return blank(title) ? nil : title
+    }
+
+    static func make(for detail: ItemDetail) -> String? {
+        make(type: detail.type, title: detail.title, seriesTitle: detail.seriesTitle,
+             seasonNumber: detail.seasonNumber, episodeNumber: detail.episodeNumber)
+    }
+}
+
 /// Resume tokens the TVs issued this phone, held in memory only. A token
 /// lets a later connection to the same TV reuse the profile it already
 /// holds for this phone without a new approval, as after a Wi-Fi change.

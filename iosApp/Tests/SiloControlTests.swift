@@ -318,6 +318,39 @@ final class SiloControlPhoneMultiControllerTests: XCTestCase {
         XCTAssertEqual(tokens.token(tvId: "tv1", serverId: "srv", profileId: "alex"), "tok")
     }
 
+    /// The same words silo-android's phone sends, so either TV shows the same "Starting" line.
+    func testOfferTitleNamesAnEpisodeBySeriesAndNumber() {
+        XCTAssertEqual(
+            SiloControlOfferTitle.make(type: "episode", title: "Pilot", seriesTitle: "Severance", seasonNumber: 1, episodeNumber: 2),
+            "Severance · S1 · E2"
+        )
+        XCTAssertEqual(
+            SiloControlOfferTitle.make(type: "episode", title: "Pilot", seriesTitle: " ", seasonNumber: 1, episodeNumber: 2),
+            "Pilot"
+        )
+        XCTAssertEqual(
+            SiloControlOfferTitle.make(type: "movie", title: "Oak Street", seriesTitle: "Ignored", seasonNumber: nil, episodeNumber: nil),
+            "Oak Street"
+        )
+        XCTAssertNil(SiloControlOfferTitle.make(type: "movie", title: "  ", seriesTitle: nil, seasonNumber: nil, episodeNumber: nil))
+    }
+
+    func testOfferTitleTravelsOnTheWireOnlyWhenSet() throws {
+        let offer = SiloControlHandoffOffer(
+            requestId: "r", serverId: "s", serverURL: "https://silo.example",
+            serverName: nil, profileId: "p", profileName: nil, title: "Oak Street"
+        )
+        let data = try JSONEncoder().encode(SiloControlMessage.handoffOffer(offer))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual((json["handoffOffer"] as? [String: Any])?["title"] as? String, "Oak Street")
+
+        var untitled = offer
+        untitled.title = nil
+        let bare = try JSONEncoder().encode(SiloControlMessage.handoffOffer(untitled))
+        let bareJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: bare) as? [String: Any])
+        XCTAssertNil((bareJSON["handoffOffer"] as? [String: Any])?["title"])
+    }
+
     @MainActor func testHandshakeRecordsTheTVsFeatures() {
         let handshake = SiloControlHandshake()
         XCTAssertFalse(handshake.tvSupports(SiloControlFeature.presence))

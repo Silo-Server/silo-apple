@@ -114,6 +114,9 @@ struct SiloControlHandoffOffer: Codable, Equatable, Sendable {
     let profileId: String
     /// Display-only label for the verified profile ID. Older peers omit it.
     let profileName: String?
+    /// Display-only: what the phone is about to launch, for a TV that shows
+    /// it while the handoff runs. Older peers omit and ignore it.
+    var title: String? = nil
     /// The deployment identity the phone verified at `serverURL`. When
     /// present the TV may reach the server through any candidate address
     /// that reports the same identity. Absent from older phones, in which

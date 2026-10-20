@@ -121,6 +121,8 @@ final class SiloControlClient {
     /// How long a launch waits for each of the TV's handoff replies. Identity
     /// probing on the TV can precede its challenge.
     private static let handoffReplyWait: Duration = .seconds(30)
+    /// How long the offer waits for its display title; silo-android waits as long.
+    private static let offerTitleWait: Duration = .milliseconds(300)
     private static let persistedTargetKey = "silocontrol.lastTarget"
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
@@ -300,6 +302,7 @@ final class SiloControlClient {
                 server: activeServer,
                 profileId: profileId,
                 profileName: profileName,
+                contentId: request.contentId,
                 replaceConsent: replaceConsent,
                 session: session,
                 handshake: handshake
@@ -349,6 +352,7 @@ final class SiloControlClient {
         server: ServerEntry,
         profileId: String,
         profileName: String?,
+        contentId: String,
         replaceConsent: SiloControlReplaceConsent?,
         session: SiloControlSession,
         handshake: SiloControlHandshake
@@ -358,6 +362,7 @@ final class SiloControlClient {
         // phone's URL still prepare the profile. Best effort: without them
         // the TV uses `serverURL` as-is. Fetched while the version settles.
         async let endpointsFetch = Self.offeredEndpoints(for: server)
+        async let titleFetch = Self.offerTitle(contentId: contentId)
         guard let version = try await handshake.negotiatedVersion(within: Self.helloWait), version >= 2 else {
             throw SiloControlHandoffError.updateRequired
         }
@@ -376,6 +381,7 @@ final class SiloControlClient {
         handshake.beginHandoff(requestId: requestId)
 
         let endpoints = await endpointsFetch
+        let title = await titleFetch
         try ensureActiveIdentity(serverId: server.id, profileId: profileId)
         try await session.send(.handoffOffer(SiloControlHandoffOffer(
             requestId: requestId,
@@ -384,6 +390,7 @@ final class SiloControlClient {
             serverName: server.displayName,
             profileId: profileId,
             profileName: profileName,
+            title: title,
             serverIdentity: server.verifiedServerId,
             serverEndpoints: endpoints,
             resumeToken: tvId.flatMap { resumeTokens.token(tvId: $0, serverId: server.id, profileId: profileId) },
@@ -461,6 +468,28 @@ final class SiloControlClient {
         }
         let endpoints = document.usableEndpoints
         return endpoints.isEmpty ? nil : endpoints
+    }
+
+    /// What the TV may show while the handoff runs. Display-only, so a
+    /// lookup slower than `offerTitleWait` is dropped instead of holding
+    /// up the offer.
+    private static func offerTitle(contentId: String) async -> String? {
+        if let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(contentId)) {
+            return SiloControlOfferTitle.make(for: cached)
+        }
+        let wait = offerTitleWait
+        return await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                (try? await SiloAPI.shared.itemDetail(contentId: contentId)).flatMap(SiloControlOfferTitle.make(for:))
+            }
+            group.addTask {
+                try? await Task.sleep(for: wait)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 
     private func ensureActiveIdentity(serverId: String, profileId: String) throws {
