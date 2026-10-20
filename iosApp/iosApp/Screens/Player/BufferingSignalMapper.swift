@@ -61,6 +61,9 @@ struct BufferingSignalMapper {
     /// `AVPlayerItem.playbackStalledNotification` arrived since playback last
     /// ran.
     private var itemStalledSincePlaying = false
+    /// A seek, playing or paused, since playback last ran: the buffering that
+    /// follows belongs to it until playback runs.
+    private var seekSincePlaying = false
 
     /// The current item posted `playbackStalledNotification`.
     mutating func noteItemStalled() {
@@ -81,12 +84,18 @@ struct BufferingSignalMapper {
             transportTrouble = trouble
             calls.append(.transportTroubleChanged(trouble))
         }
+        if snapshot.seekInFlight || snapshot.phase == .seeking { seekSincePlaying = true }
+        // A torn-down item (the app went to the background) stalls no more.
+        if snapshot.nativeTransport?.hasItem == false { itemStalledSincePlaying = false }
         var next = mediaState(snapshot)
-        // Buffering a seek began stays the seek's until playback runs, even
-        // once the seek has landed, as on Android.
-        if next == .waiting(.network), state == .waiting(.seek) { next = .waiting(.seek) }
+        // Buffering after a seek stays the seek's until playback runs, even
+        // once the seek has landed, and for a seek made while paused.
+        if next == .waiting(.network), seekSincePlaying { next = .waiting(.seek) }
         if next == .waiting(.network) { next = classifyWait(bufferedAheadMs: snapshot.bufferedAheadMs) }
-        if next == .playing { itemStalledSincePlaying = false }
+        if next == .playing {
+            itemStalledSincePlaying = false
+            seekSincePlaying = false
+        }
         guard next != state else { return calls }
         if next == .waiting(.seek), state == .playing || state == .paused {
             calls.append(.seeked)
@@ -124,6 +133,9 @@ struct BufferingSignalMapper {
             ? s.nativeTransport?.waitingReason
             : nil
         if s.reloadInProgress || reason == .noItemToPlay { return .waiting(.reload) }
+        // The engine tore the video down, as it does when the app leaves the
+        // foreground: playback stopped, so a stall in progress ends uncounted.
+        if s.nativeTransport?.hasItem == false { return .paused }
         if reason == .waitingForCoordinatedPlayback || reason == .interstitialEvent { return .waiting(.pause) }
         if s.nativeTransport?.status == .waitingToPlayAtSpecifiedRate || itemStalledSincePlaying {
             return .waiting(.network)

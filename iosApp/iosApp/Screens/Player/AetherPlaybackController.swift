@@ -54,6 +54,9 @@ final class AetherPlaybackController {
         case nativeTransportChanged
         /// The current AVPlayerItem posted `playbackStalledNotification`.
         case itemStalled
+        /// The current AVPlayerItem logged a failed media request
+        /// (`newErrorLogEntryNotification`).
+        case itemMediaRequestFailed
         /// ``shouldPlayWhenReady`` or ``isRestoringTransport`` changed. The
         /// engine can stay in `.loading` across a Play or Pause, so no state
         /// event follows.
@@ -65,6 +68,12 @@ final class AetherPlaybackController {
         let status: AVPlayer.TimeControlStatus
         /// Nil unless `status` is `.waitingToPlayAtSpecifiedRate`.
         let waitingReason: AVPlayer.WaitingReason?
+        /// The player holds an item. Aether removes it when it tears the video
+        /// down for the background.
+        var hasItem = true
+        /// Media AVPlayer has loaded past its playhead, in seconds, from the
+        /// item's own loaded ranges; nil when it reports none.
+        var loadedAheadSeconds: Double? = nil
     }
 
     struct ScopedEvent {
@@ -161,13 +170,33 @@ final class AetherPlaybackController {
     private var observedTransportPlayer: AVPlayer?
     private var transportObservations: [NSKeyValueObservation] = []
     private var itemStallSubscription: AnyCancellable?
+    private var itemErrorSubscription: AnyCancellable?
 
     /// The native route's AVPlayer transport; nil on the software route or
     /// without a player.
     var nativeTransport: NativeTransport? {
         observedTransportPlayer.map {
-            NativeTransport(status: $0.timeControlStatus, waitingReason: $0.reasonForWaitingToPlay)
+            NativeTransport(
+                status: $0.timeControlStatus,
+                waitingReason: $0.reasonForWaitingToPlay,
+                hasItem: $0.currentItem != nil,
+                loadedAheadSeconds: $0.currentItem.flatMap(Self.loadedAheadSeconds)
+            )
         }
+    }
+
+    /// The end of the loaded range that holds the item's playhead, less the
+    /// playhead.
+    private static func loadedAheadSeconds(of item: AVPlayerItem) -> Double? {
+        let time = item.currentTime()
+        guard time.isNumeric else { return nil }
+        for value in item.loadedTimeRanges {
+            let range = value.timeRangeValue
+            guard range.containsTime(time) || range.end == time else { continue }
+            let ahead = (range.end - time).seconds
+            return ahead.isFinite ? max(0, ahead) : nil
+        }
+        return nil
     }
     /// Watch Party resumes only through a current room command.
     var requiresExplicitTransportResume = false
@@ -1080,6 +1109,7 @@ final class AetherPlaybackController {
         transportObservations = [
             player.observe(\.timeControlStatus, options: [.new]) { player, _ in changed(player) },
             player.observe(\.reasonForWaitingToPlay, options: [.new]) { player, _ in changed(player) },
+            player.observe(\.currentItem, options: [.new]) { player, _ in changed(player) },
         ]
     }
 
@@ -1088,6 +1118,12 @@ final class AetherPlaybackController {
             NotificationCenter.default.publisher(for: AVPlayerItem.playbackStalledNotification, object: item)
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in self?.publish(.itemStalled) }
+        }
+        // AVPlayer logs its failed playlist and segment requests here.
+        itemErrorSubscription = item.map { item in
+            NotificationCenter.default.publisher(for: AVPlayerItem.newErrorLogEntryNotification, object: item)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.publish(.itemMediaRequestFailed) }
         }
     }
 

@@ -144,6 +144,37 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(software.update(Self.snapshot()), [.playing])
     }
 
+    /// A seek that lands while paused owns the buffering after Play until
+    /// playback runs.
+    func testBufferingAfterASeekMadeWhilePausedIsTheSeeks() {
+        var mapper = BufferingSignalMapper()
+        XCTAssertEqual(mapper.update(Self.snapshot(play: false, phase: .paused, native: Self.avPaused)), [.paused])
+        XCTAssertEqual(mapper.update(Self.snapshot(play: false, phase: .paused, native: Self.avPaused, seek: true)), [])
+        XCTAssertEqual(mapper.update(Self.snapshot(play: false, phase: .paused, native: Self.avPaused)), [])
+        XCTAssertEqual(
+            mapper.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls))),
+            [.seeked, .waiting(.seek)],
+            "Play after the landing waits on the seek"
+        )
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls))), [.waiting(.network)])
+    }
+
+    /// Aether tears the video down when the app leaves the foreground: a stall
+    /// in progress ends as a pause, even after the item reported a stall.
+    func testATornDownItemEndsAStallAsAPause() {
+        var mapper = BufferingSignalMapper()
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
+        mapper.noteItemStalled()
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPaused)), [.waiting(.network)])
+        let tornDown = Transport(status: .paused, waitingReason: nil, hasItem: false)
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .paused, native: tornDown)), [.paused])
+        XCTAssertEqual(
+            mapper.update(Self.snapshot(native: Self.avPaused)), [],
+            "the old item's stall does not carry over to the rebuilt one"
+        )
+    }
+
     func testAnItemStallCountsUntilPlaybackRuns() {
         var mapper = BufferingSignalMapper()
         let held = Self.snapshot(phase: .playing, native: Self.avPaused)

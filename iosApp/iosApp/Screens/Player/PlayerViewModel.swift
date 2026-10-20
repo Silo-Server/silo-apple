@@ -505,6 +505,9 @@ class PlayerViewModel {
     /// wait's buffer draining into a stall, and the software route's clock
     /// stopping.
     @ObservationIgnored private var bufferingSignalPoll: Task<Void, Never>?
+    /// When the native route last logged a failed media request.
+    @ObservationIgnored private var lastMediaRequestFailureAt: ContinuousClock.Instant?
+    @ObservationIgnored private var mediaRequestFailureExpiry: Task<Void, Never>?
     /// The app is in the background, or the Mac's player window is minimized
     /// or hidden: the player cannot show its pills.
     private(set) var isPlayerSurfaceHidden = false
@@ -1822,7 +1825,7 @@ class PlayerViewModel {
             // terminal wall. `handlePlaybackError` still finalizes the cases
             // that genuinely have nowhere left to go.
             handlePlaybackError(message)
-        case .nativeTransportChanged, .itemStalled, .transportIntentChanged:
+        case .nativeTransportChanged, .itemStalled, .itemMediaRequestFailed, .transportIntentChanged:
             break // noteBufferingTransportEvent
         }
     }
@@ -10148,7 +10151,10 @@ extension PlayerViewModel {
                 bufferingQuality.playing()
             case .waiting(let cause):
                 Self.logger.debug("[CMP-BUFFERING] waiting cause=\(String(describing: cause), privacy: .public)")
-                bufferingQuality.waiting(cause: cause)
+                // The software route's stall is seen only once its playhead has
+                // been still for a while; it began when the playhead stopped.
+                let startedAgoMs = cause == .network ? softwarePlayheadFrozenMs ?? 0 : 0
+                bufferingQuality.waiting(cause: cause, startedAgoMs: startedAgoMs)
             case .paused:
                 bufferingQuality.paused()
             }
@@ -10171,12 +10177,35 @@ extension PlayerViewModel {
                 || aetherPlaybackController.isRestoringTransport
                 || (activeAetherLoadEpoch != nil && bufferingReloadEpoch == activeAetherLoadEpoch),
             reachedEnd: hasReachedEndOfFile,
+            // Media trouble only: a failed API call is not a media request.
             connectionTrouble: connectionState != .connected
                 || !monitor.isDeviceOnline
-                || monitor.serverStatus == .unreachable,
+                || recentMediaRequestFailure,
             bufferedAheadMs: engineBufferedAheadMs,
-            playheadFrozen: softwarePlayheadFrozen
+            playheadFrozen: softwarePlayheadFrozenMs != nil
         )
+    }
+
+    /// How long a failed media request (playlist or segment) counts as an
+    /// outage.
+    static let mediaRequestFailureWindow: Duration = .seconds(15)
+
+    /// The native route's AVPlayer logged a failed media request within
+    /// ``mediaRequestFailureWindow``.
+    private var recentMediaRequestFailure: Bool {
+        guard let at = lastMediaRequestFailureAt else { return false }
+        return at.duration(to: .now) < Self.mediaRequestFailureWindow
+    }
+
+    private func noteMediaRequestFailure() {
+        lastMediaRequestFailureAt = .now
+        mediaRequestFailureExpiry?.cancel()
+        mediaRequestFailureExpiry = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.mediaRequestFailureWindow)
+            guard let self, !Task.isCancelled else { return }
+            self.mediaRequestFailureExpiry = nil
+            self.syncBufferingQualitySignals()
+        }
     }
 
     /// A video load the engine plays on its software route, which reports
@@ -10189,10 +10218,14 @@ extension PlayerViewModel {
     /// moved for `PlayerStallPresentation.frozenPlayheadThreshold` while the
     /// viewer wants to play: it is rebuffering. The renderer-wait rule then
     /// tells a starved network from a slow decoder by what is buffered.
-    private var softwarePlayheadFrozen: Bool {
+    /// How long the frozen playhead has been still, in milliseconds, or nil
+    /// while it moves.
+    private var softwarePlayheadFrozenMs: Int? {
         guard isSoftwareVideoRoute, aetherPhase == .playing, aetherPlaybackController.shouldPlayWhenReady,
-              let movedAt = playheadSample?.movedAt else { return false }
-        return movedAt.duration(to: .now) >= PlayerStallPresentation.frozenPlayheadThreshold
+              let movedAt = playheadSample?.movedAt else { return nil }
+        let still = movedAt.duration(to: .now)
+        guard still >= PlayerStallPresentation.frozenPlayheadThreshold else { return nil }
+        return still.wholeMilliseconds
     }
 
     private var needsBufferingSignalPoll: Bool {
@@ -10205,12 +10238,16 @@ extension PlayerViewModel {
 
     /// Media the engine holds past its clock: on the native route what
     /// AVPlayer and the segment cache hold, on the software route the newest
-    /// demuxed packet. Nil for an audio-only load, whose buffered position
-    /// mirrors the clock.
+    /// demuxed packet. On server HLS, where the engine tracks no buffered
+    /// position, it is what AVPlayer has loaded. Nil for an audio-only load,
+    /// whose buffered position mirrors the clock.
     private var engineBufferedAheadMs: Int? {
         guard !isAudioOnlyAetherLoad else { return nil }
         let engine = aetherPlaybackController.engine
-        let ahead = engine.bufferedPosition - engine.currentTime
+        var ahead = engine.bufferedPosition - engine.currentTime
+        if let loaded = aetherPlaybackController.nativeTransport?.loadedAheadSeconds {
+            ahead = ahead.isFinite ? max(ahead, loaded) : loaded
+        }
         return ahead.isFinite ? Int((ahead * 1000).rounded()) : nil
     }
 
@@ -10233,6 +10270,9 @@ extension PlayerViewModel {
             return true
         case .itemStalled:
             bufferingSignals.noteItemStalled()
+            return true
+        case .itemMediaRequestFailed:
+            noteMediaRequestFailure()
             return true
         case .transportIntentChanged:
             if aetherPlaybackController.isRestoringTransport { bufferingReloadEpoch = scopedEvent.epoch }
@@ -10340,6 +10380,9 @@ extension PlayerViewModel {
     private func clearBufferingPlanState() {
         bufferingSignalPoll?.cancel()
         bufferingSignalPoll = nil
+        mediaRequestFailureExpiry?.cancel()
+        mediaRequestFailureExpiry = nil
+        lastMediaRequestFailureAt = nil
         bufferingPlans = [:]
         bufferingPlanId = nil
         bufferingAdoptedStreamLoadGeneration = nil
