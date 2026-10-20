@@ -62,6 +62,16 @@ final class BandwidthProbeMeterTests: XCTestCase {
         ], "a new constant needs a counterpart")
     }
 
+    /// A target under 100 kbps is reported as 100, a value the server takes.
+    func testTheQuickTestNeverReportsATargetUnder100() {
+        var meter = BandwidthProbeMeter(mode: .quick(targetKbps: 40))
+        meter.receive(10_000, at: 0)
+        meter.receive(10_000, at: 600)
+        meter.advance(to: 1_000)
+        XCTAssertEqual(meter.result?.kbps, 100)
+        XCTAssertEqual(meter.result?.lowerBound, true)
+    }
+
     func testEachModeAsksForItsOwnSize() throws {
         XCTAssertEqual(BandwidthProbeMeter(mode: .quick(targetKbps: nil)).requestedBytes, 100_000_000)
         XCTAssertEqual(BandwidthProbeMeter(mode: .accurate).requestedBytes, 1_000_000_000)
@@ -108,6 +118,12 @@ final class BandwidthProbeDownloadTests: XCTestCase {
         request.setValue("p-1", forHTTPHeaderField: "X-Profile-Id")
         request.setValue("device-1", forHTTPHeaderField: "X-Silo-Device-Id")
         return request
+    }
+
+    func testARateLimitWithoutRetryAfterWaits30Seconds() async throws {
+        StubProbeProtocol.respond { _ in .init(status: 429) }
+        let result = try await download().measure(request())
+        XCTAssertEqual(result, .rateLimited(retryAfterSeconds: 30))
     }
 
     func testARateLimitIsTypedWithItsRetryAfter() async throws {
@@ -243,6 +259,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         clock = ManualBufferingQualityClock()
         server = FakeProbeServer()
         scheduler = BandwidthProbeScheduler(server: server, clock: clock)
+        scheduler.setForeground(true)
     }
 
     private func advance(seconds: TimeInterval) async {
@@ -319,6 +336,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         let slow = FakeProbeServer()
         slow.stored.playbackSample = sample(kbps: 51_200, ageDays: 1)
         let other = BandwidthProbeScheduler(server: slow, clock: clock)
+        other.setForeground(true)
         other.networkChanged(Self.wifi)
         other.setActiveServer("server")
         await advance(seconds: 5)
@@ -575,10 +593,116 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.freshEstimateKbps(), 48_000)
 
         server.stored.probe = probe(kbps: 300_000, ageDays: 1)
+        server.serverId = "other"
         scheduler.setActiveServer("other")
         XCTAssertNil(scheduler.freshEstimateKbps(), "it belonged to the other server")
         await advance(seconds: 0)
         XCTAssertEqual(scheduler.freshEstimateKbps(), 300_000)
+    }
+
+    /// A failed connection read changes nothing held and runs no test.
+    func testAFailedReadChangesNothingAndRunsNoTest() async {
+        server.stored.playbackSample = sample(kbps: 120_000, ageDays: 1)
+        await signIn()
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 120_000)
+        server.stored = .none
+        server.readsFail = true
+        scheduler.setForeground(false)
+        scheduler.setForeground(true)
+        await advance(seconds: 5)
+        XCTAssertEqual(scheduler.freshEstimateKbps(), 120_000, "the sample it held stays")
+        XCTAssertEqual(server.modes, [], "and no test runs on a read that failed")
+    }
+
+    /// Nothing is current until the server's reading lifetime is known.
+    func testNoReadingIsCurrentBeforeTheLifetimeIsKnown() async {
+        server.stored.probe = probe(kbps: 48_000, ageDays: 1)
+        server.targetFails = true
+        await signIn()
+        XCTAssertNil(scheduler.freshEstimateKbps())
+        XCTAssertEqual(server.modes, [])
+    }
+
+    /// Every sign-in is a check, even to the same server; the same session
+    /// signing in again is not.
+    func testASignInToTheSameServerIsACheck() async {
+        let first = BandwidthProbeSession(serverId: "server", credentialGeneration: UUID(), profileId: "p-1")
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveSession(first)
+        await advance(seconds: 0)
+        XCTAssertEqual(server.storedCount, 1)
+        scheduler.setActiveSession(first)
+        await advance(seconds: 0)
+        XCTAssertEqual(server.storedCount, 1, "the same session is not signed in again")
+        scheduler.setActiveSession(BandwidthProbeSession(serverId: "server", credentialGeneration: UUID(), profileId: "p-1"))
+        await advance(seconds: 0)
+        XCTAssertEqual(server.storedCount, 2, "a new sign-in reads again")
+    }
+
+    /// Test speed's 429 holds automatic tests on that server, across a
+    /// sign-out and sign-in.
+    func testATestSpeedRateLimitHoldsAutomaticTestsAcrossSignIns() async {
+        server.result = .rateLimited(retryAfterSeconds: 600)
+        server.hasTarget = true
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        server.automatic = false
+        await advance(seconds: 5)
+        let outcome = await scheduler.runNow()
+        XCTAssertEqual(outcome, .rateLimited(retryAfterSeconds: 600))
+        server.automatic = true
+        server.result = .measured(kbps: 48_000, bytes: 6_000_000, durationMs: 1_000, lowerBound: false)
+        scheduler.setActiveServer(nil)
+        scheduler.setActiveServer("server")
+        await advance(seconds: 5)
+        XCTAssertEqual(server.modes, [.accurate], "held until its Retry-After")
+    }
+
+    /// A result the server refuses is not kept; one whose report never got
+    /// an answer is.
+    func testOnlyAResultTheServerDidNotRefuseIsKept() async {
+        server.automatic = false
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        await advance(seconds: 5)
+        server.reportResult = .refused
+        if case .notSaved = await scheduler.runNow() {} else { XCTFail("a refused result is not saved") }
+        XCTAssertNil(scheduler.probeReading)
+        server.reportResult = .failed
+        if case .notSaved = await scheduler.runNow() {} else { XCTFail("a failed report is not saved") }
+        XCTAssertEqual(scheduler.probeReading?.kbps, 115_000, "but it still describes this connection")
+    }
+
+    /// A paused video player does not hold Test speed off; one that plays or
+    /// loads does.
+    func testAPausedPlayerDoesNotHoldTestSpeedOff() async {
+        let player = NSObject()
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        scheduler.playbackStarting(by: player)
+        let playing = await scheduler.runNow()
+        XCTAssertEqual(playing, .playbackActive)
+        scheduler.videoPlayer(player, isActive: false)
+        if case .measured = await scheduler.runNow() {} else { XCTFail("a paused player holds nothing off") }
+        withExtendedLifetime(player) {}
+    }
+
+    /// A start sends only a reading of its own server, taken over the route
+    /// its media takes.
+    func testAStartSendsOnlyAReadingOfItsServerAndRoute() async {
+        server.stored.probe = probe(kbps: 48_000, ageDays: 1)
+        await signIn()
+        XCTAssertEqual(scheduler.freshEstimateKbps(forServer: "server", overLocalRoute: false), 48_000)
+        XCTAssertNil(scheduler.freshEstimateKbps(forServer: "elsewhere", overLocalRoute: false), "another server's start")
+        XCTAssertNil(scheduler.freshEstimateKbps(forServer: "server", overLocalRoute: true), "media on the local route")
+
+        // The local route coming up is a new connection: read again over it.
+        scheduler.localRouteServerId = { "server" }
+        scheduler.localRouteChanged()
+        await advance(seconds: 0)
+        XCTAssertEqual(server.storedCount, 2, "one read at sign-in, one over the route")
+        XCTAssertEqual(scheduler.freshEstimateKbps(forServer: "server", overLocalRoute: true), 48_000)
+        XCTAssertNil(scheduler.freshEstimateKbps(forServer: "server", overLocalRoute: false))
     }
 
     func testSigningOutForgetsTheReadings() async {
@@ -601,14 +725,23 @@ private final class FakeProbeServer: BandwidthProbeServer {
     var targetKbps: Int? = 115_000
     var automatic = true
     var maxAge: TimeInterval = 7 * 24 * 60 * 60
+    /// The server the speed test belongs to.
+    var serverId = "server"
     var stored = BandwidthStoredReadings.none
     private(set) var storedCount = 0
     private(set) var targetCount = 0
     private(set) var modes: [BandwidthProbeMeter.Mode] = []
     private(set) var reports: [BandwidthMeasurement] = []
 
+    struct ReadFailed: Error {}
+    /// The capability read throws.
+    var targetFails = false
+    /// The connection read throws.
+    var readsFail = false
+
     func target() async throws -> BandwidthProbeTarget? {
         targetCount += 1
+        if targetFails { throw ReadFailed() }
         guard hasTarget else { return nil }
         return BandwidthProbeTarget(
             url: URL(string: "https://silo.example/api/v2/playback/bandwidth-probe")!,
@@ -616,9 +749,9 @@ private final class FakeProbeServer: BandwidthProbeServer {
             automatic: automatic,
             maxAge: maxAge,
             auth: CapturedOrdinaryRequestAuth(
-                account: RefreshAccountIdentity(serverId: "server", serverURL: "https://silo.example",
+                account: RefreshAccountIdentity(serverId: serverId, serverURL: "https://silo.example",
                                                 credentialGenerationID: UUID()),
-                credentialOwner: .persistentServer(serverId: "server"),
+                credentialOwner: .persistentServer(serverId: serverId),
                 accessToken: "token", profileId: "p-1", profileToken: nil
             )
         )
@@ -637,6 +770,7 @@ private final class FakeProbeServer: BandwidthProbeServer {
     func storedReadings() async throws -> BandwidthStoredReadings {
         storedCount += 1
         if holdsReads { await withCheckedContinuation { heldReads.append($0) } }
+        if readsFail { throw ReadFailed() }
         return stored
     }
 
@@ -646,10 +780,12 @@ private final class FakeProbeServer: BandwidthProbeServer {
         return result
     }
 
-    func report(_ measurement: BandwidthMeasurement, to target: BandwidthProbeTarget) async -> Bool {
+    var reportResult = BandwidthReportResult.stored
+
+    func report(_ measurement: BandwidthMeasurement, to target: BandwidthProbeTarget) async -> BandwidthReportResult {
         reports.append(measurement)
-        stored.probe = measurement.reading
-        return true
+        if reportResult == .stored { stored.probe = measurement.reading }
+        return reportResult
     }
 }
 

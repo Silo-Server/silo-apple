@@ -96,6 +96,12 @@ struct BandwidthProbeMeter {
     }
 
     let mode: Mode
+    /// The quick test's target, held to 100..1,000,000 kbps so a reported
+    /// target is always a value the server accepts.
+    private var target: Int? {
+        guard case .quick(let target?) = mode else { return nil }
+        return min(max(target, BandwidthProbe.minKbps), BandwidthProbe.maxKbps)
+    }
     /// `size=` for the request.
     let requestedBytes: Int
     /// The test stops this long after the first byte.
@@ -139,7 +145,7 @@ struct BandwidthProbeMeter {
         while (closedWindows + 1) * BandwidthProbe.windowMs <= now {
             let window = closedWindows
             closedWindows += 1
-            if window > 0, case .quick(let target?) = mode, rate(of: window) >= target {
+            if window > 0, let target, rate(of: window) >= target {
                 targetWindow = window
                 stoppedAt = closedWindows * BandwidthProbe.windowMs
                 return true
@@ -173,7 +179,7 @@ struct BandwidthProbeMeter {
     /// What the test measured once it stopped; nil when it measured nothing.
     var result: Measurement? {
         guard stoppedAt != nil else { return nil }
-        if let targetWindow, case .quick(let target?) = mode {
+        if let targetWindow, let target {
             return Measurement(
                 kbps: target, lowerBound: true,
                 bytes: bytes(of: targetWindow), durationMs: BandwidthProbe.windowMs
@@ -199,7 +205,7 @@ struct BandwidthProbeMeter {
             return nil
         }
         let kbps = receivedBytes * 8 / durationMs
-        if case .quick(let target?) = mode, kbps >= target {
+        if let target, kbps >= target {
             return Measurement(kbps: target, lowerBound: true, bytes: receivedBytes, durationMs: durationMs)
         }
         return Measurement(
@@ -350,7 +356,8 @@ final class BandwidthProbeDownload: NSObject, URLSessionDataDelegate, @unchecked
                 .value(forHTTPHeaderField: "Retry-After")
                 .flatMap { Int($0.trimmingCharacters(in: .whitespaces)) }
             completionHandler(.cancel)
-            finish(.rateLimited(retryAfterSeconds: max(retryAfter ?? 60, 1)))
+            // A missing or unreadable header counts as 30 s, one under 1 s as 1 s.
+            finish(.rateLimited(retryAfterSeconds: max(retryAfter ?? 30, 1)))
         default:
             completionHandler(.cancel)
             finish(.unavailable(status: status))

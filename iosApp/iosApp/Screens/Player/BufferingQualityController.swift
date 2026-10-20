@@ -94,6 +94,11 @@ final class BufferingQualityController {
         var deliveredKbps: Int?
         /// `auto`, or the label of the rung the viewer picked.
         var quality: String
+        /// Whether `quality` is the `available_qualities` rung this plan
+        /// delivers. False when the host cannot confirm it, such as a saved
+        /// resolution whose name a server rung shares: the delivered bitrate
+        /// is then the baseline for a lower rung.
+        var qualityNamesARung = true
         var availableQualities: [QualityRung]
         /// `degradation_warnings` contains `quality_reduction_unavailable`.
         var qualityReductionUnavailable: Bool
@@ -129,6 +134,12 @@ final class BufferingQualityController {
         var bandwidthEstimateSource: String? = nil
         /// `clear`. Only sent to a server that advertises `buffering_quality_v1`.
         var learnedLimit: String? = nil
+
+        /// **Restore quality**: Auto with no estimate. Every lowering on Auto
+        /// carries an estimate, and one on a picked quality names a rung.
+        var isRestore: Bool {
+            qualityPreference == BufferingQualityController.autoQuality && bandwidthEstimateKbps == nil
+        }
 
         /// The request body: `operation` and every present field, snake_case.
         var wireBody: [String: Any] {
@@ -420,6 +431,16 @@ final class BufferingQualityController {
         pendingReplan = nil
     }
 
+    /// The player could not send this controller's replan at all. It fails
+    /// and rearms like ``replanFailed()``, and a lowering it never sent leaves
+    /// no kept estimate: the one from before it stays.
+    func replanRefused() {
+        if let pending = pendingReplan, pending.kind != .restore {
+            keptEstimateKbps = pending.priorKeptEstimateKbps
+        }
+        pendingReplan = nil
+    }
+
     // MARK: - Pill answers
 
     /// **Lower quality** on the prompt.
@@ -633,7 +654,7 @@ final class BufferingQualityController {
     }
 
     private nonisolated static func activeBitrate(of plan: Plan) -> Int? {
-        if !plan.isAuto,
+        if !plan.isAuto, plan.qualityNamesARung,
            let picked = plan.availableQualities.first(where: { $0.label == plan.quality && $0.bitrateKbps > 0 }) {
             return picked.bitrateKbps
         }
@@ -656,8 +677,11 @@ final class BufferingQualityController {
             request.learnedLimit = learnedLimit
         }
         // Only an Auto lowering sends an estimate; the next one replaces it.
+        let priorKept = keptEstimateKbps
         if let estimateKbps { keptEstimateKbps = estimateKbps }
-        pendingReplan = PendingReplan(kind: kind, fromKbps: fromKbps, estimateKbps: estimateKbps)
+        pendingReplan = PendingReplan(
+            kind: kind, fromKbps: fromKbps, estimateKbps: estimateKbps, priorKeptEstimateKbps: priorKept
+        )
         // Triggers on this plan wait for the adoption, or for the rearm if the
         // replan fails or its plan never arrives.
         current?.rearmAt = now + Self.rearmAfterUnadoptedMs
@@ -981,6 +1005,8 @@ final class BufferingQualityController {
         /// The delivered bitrate the replan left; a lower result is below it.
         let fromKbps: Int?
         let estimateKbps: Int?
+        /// The kept estimate before this replan, for one the player refuses.
+        let priorKeptEstimateKbps: Int?
     }
 
     private struct PresentedPill {

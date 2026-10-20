@@ -488,6 +488,12 @@ struct ContentView: View {
 
     var body: some View {
         sessionTaskContent
+        // The speed scheduler starts out in the background and follows the
+        // scene from its first phase, so a launch into the background reads
+        // and tests nothing.
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .active { BandwidthProbeScheduler.shared.setForeground(true) }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             #if os(iOS) || os(tvOS)
             // Single funnel for every scene edge. `LaunchTimeline` decides the
@@ -635,7 +641,17 @@ struct ContentView: View {
         }
         // Captures only a committed identity, never one mid-transition.
         guard await HTTPClient.shared.waitForRequestDispatchOpen(), !Task.isCancelled else { return }
-        scheduler.setActiveServer(await TokenStore.shared.captureOrdinaryRequestAuth()?.account.serverId)
+        let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
+        // The session may have ended while this hand-off waited: a sign-out
+        // handed over meanwhile must not be undone by a stale sign-in.
+        guard !Task.isCancelled, router.authState == .authenticated else { return }
+        scheduler.setActiveSession(auth.map {
+            BandwidthProbeSession(
+                serverId: $0.account.serverId,
+                credentialGeneration: $0.account.credentialGenerationID,
+                profileId: $0.profileId
+            )
+        })
     }
 
     /// Background audio and PiP are still active use of the selected profile,
@@ -1340,6 +1356,9 @@ struct ContentView: View {
             StartupContentPrefetcher.prefetchAuthenticatedContent()
             await PlayerSettings.shared.refreshFromServer()
             router.resetToHome()
+            // A re-login while already authenticated flips no auth state, so
+            // nothing else hands the new session over.
+            await followSignedInServerForBandwidthProbe()
             print("[DebugAutoLogin] signed in and selected profile")
         } catch {
             print("[DebugAutoLogin] failed: \(error)")

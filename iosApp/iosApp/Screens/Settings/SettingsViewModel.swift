@@ -497,6 +497,8 @@ final class SettingsViewModel {
     static let notMeasuredText = "Not measured yet"
     static let stopPlaybackToTestMessage = "Stop playback before testing, then try again."
     static let speedTestFailedMessage = "Couldn't measure the connection speed. Try again."
+    /// The test measured, but the server did not store the result.
+    static let speedTestNotSavedMessage = "Couldn't save the speed test result. Try again."
 
     /// "48 Mbps · measured 3 minutes ago on Wi-Fi", or "Faster than 115 Mbps
     /// · …" for a lower bound: the newer of the server's speed test and this
@@ -551,6 +553,9 @@ final class SettingsViewModel {
         defer { isTestingConnectionSpeed = false }
         switch await BandwidthProbeScheduler.shared.runNow() {
         case .measured:
+            await loadPlaybackConnection()
+        case .notSaved:
+            connectionSpeedMessage = Self.speedTestNotSavedMessage
             await loadPlaybackConnection()
         case .rateLimited(let seconds):
             connectionSpeedMessage = "Try again in \(seconds) \(seconds == 1 ? "second" : "seconds")"

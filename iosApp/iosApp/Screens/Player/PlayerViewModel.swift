@@ -505,9 +505,16 @@ class PlayerViewModel {
     /// wait's buffer draining into a stall, and the software route's clock
     /// stopping.
     @ObservationIgnored private var bufferingSignalPoll: Task<Void, Never>?
+    /// The stream load whose source swap has begun.
+    @ObservationIgnored private var bufferingSourceSwapGeneration: UInt64?
+    /// Whether this player last told the speed scheduler it loads or plays.
+    @ObservationIgnored private var speedTestHoldActive = true
     /// When the native route last logged a failed media request.
     @ObservationIgnored private var lastMediaRequestFailureAt: ContinuousClock.Instant?
     @ObservationIgnored private var mediaRequestFailureExpiry: Task<Void, Never>?
+    /// A **Restore quality** the player could not send while another replan
+    /// was in flight; sent when that one settles.
+    @ObservationIgnored private var deferredBufferingRestore: BufferingQualityController.ReplanRequest?
     /// The app is in the background, or the Mac's player window is minimized
     /// or hidden: the player cannot show its pills.
     private(set) var isPlayerSurfaceHidden = false
@@ -1594,8 +1601,6 @@ class PlayerViewModel {
         // load is still starting waits and is checked again, not dropped.
         guard protocolV3ReplanTask == nil, !isLoading, !isQualitySwitching else { return .busy }
         guard activePreparedProtocolV3 != nil else { return .unavailable }
-        // A quality change the buffering controller did not send.
-        bufferingQuality.qualityChanged()
         let issued = attemptProtocolV3Replan(
             position: currentTime.isFinite ? max(0, currentTime) : 0,
             classification: "quality_changed",
@@ -1603,6 +1608,9 @@ class PlayerViewModel {
             operation: PlaybackProtocolV3.ReplanOperation.qualityChange,
             qualityAxes: axes
         )
+        // A quality change the buffering controller did not send, once the
+        // player has taken it.
+        if issued { bufferingQuality.qualityChanged() }
         return issued ? .issued : .busy
     }
 
@@ -2594,7 +2602,10 @@ class PlayerViewModel {
         // The player's own replans on Auto repeat the kept step-down estimate,
         // so a lowering holds where no learned limit applies. The buffering
         // controller's replans carry their own fields.
+        // A quality change the controller did not send discards the estimate,
+        // so it never carries it.
         let keptEstimateKbps = bandwidthEstimateKbps == nil && !issuedByBufferingQuality
+            && resolvedOperation != PlaybackProtocolV3.ReplanOperation.qualityChange
             ? bufferingQuality.clientReplan(operation: resolvedOperation)?.bandwidthEstimateKbps
             : nil
         if let keptEstimateKbps {
@@ -2710,6 +2721,9 @@ class PlayerViewModel {
                         classification: recovery.classification,
                         message: recovery.message
                     )
+                } else if let restore = self.deferredBufferingRestore {
+                    self.deferredBufferingRestore = nil
+                    self.issueBufferingReplan(restore)
                 } else if let queuedTrackChange = self.pendingProtocolV3TrackChange {
                     // Drained before the queued seek: this replan will pick
                     // up any still-pending reanchor in its own defer, so both
@@ -3971,6 +3985,9 @@ class PlayerViewModel {
         reselectsPlanSubtitle: Bool = false,
         shouldPlayWhenReady: Bool
     ) async throws {
+        // From here the outgoing plan's source is being replaced: its waits
+        // are a source reload, not stalls.
+        bufferingSourceSwapGeneration = expectedStreamLoadGeneration
         do {
             try await loadAetherSource(
                 prepared: prepared, streamRequest: streamRequest,
@@ -5574,6 +5591,9 @@ class PlayerViewModel {
                     )
                     preparedOfflineArtworkURL = offline.posterFileURL
                     prepared = offline.prepared
+                    // A download playing is media playing: speed tests wait
+                    // for it. It sends no estimate.
+                    BandwidthProbeScheduler.shared.playbackStarting(by: self)
                 } else {
                     // Bound the start-session call when the load was triggered
                     // by autoplay or interruption recovery. A user-initiated load
@@ -5583,7 +5603,16 @@ class PlayerViewModel {
                     // with no obvious way out).
                     // The start carries a fresh bandwidth probe result, and a
                     // running probe stops so it cannot slow the start.
-                    probeEstimateKbps = BandwidthProbeScheduler.shared.freshEstimateKbps()
+                    // Only a reading of the server this start goes to (a TV
+                    // can start for another one), taken over the route its
+                    // media takes: a Watch Party's media keeps the saved
+                    // address.
+                    let startServerId = await TokenStore.shared.captureOrdinaryRequestAuth()?.account.serverId
+                    probeEstimateKbps = BandwidthProbeScheduler.shared.freshEstimateKbps(
+                        forServer: startServerId,
+                        overLocalRoute: !self.isWatchPartyPlayback && startServerId != nil
+                            && LocalRoute.active?.serverID == startServerId
+                    )
                     BandwidthProbeScheduler.shared.playbackStarting(by: self)
                     prepared = try await self.runStartSession(
                         request: request,
@@ -6374,6 +6403,12 @@ class PlayerViewModel {
         if let shuffle {
             shuffleState = PlayerShuffleState(shuffle: shuffle)
         }
+        // Another version of the title playing now is a quality change the
+        // viewer chose: it clears the answer, history and re-offer wait.
+        if let preferredFileId, lastLoadRequest?.contentId == contentId,
+           let playing = currentSelectedVersion?.fileId, playing != preferredFileId {
+            bufferingQuality.qualityChanged()
+        }
         var request = LoadRequest(
             contentId: contentId,
             preferredFileId: preferredFileId,
@@ -6477,14 +6512,15 @@ class PlayerViewModel {
         qualitySwitchError = nil
         showControls = true
         hideControlsTask?.cancel()
-        bufferingQuality.qualityChanged()
 
         if activePreparedProtocolV3 != nil {
             // A rejected replan already cleared `isQualitySwitching`, but
             // without a message the sheet just silently snapped back to the
             // old quality with no explanation. The pick is recorded once the
-            // replan commits.
-            if !attemptProtocolV3Replan(
+            // replan commits. Only a switch the player accepted is a quality
+            // change to the buffering controller: a refused one must not drop
+            // a lowering in flight.
+            let issued = attemptProtocolV3Replan(
                 position: target,
                 classification: "quality_changed",
                 message: "User selected playback quality \(resolvedQualityId).",
@@ -6493,12 +6529,16 @@ class PlayerViewModel {
                 // Auto keeps the saved cap for the connection.
                 autoBandwidthCapKbps: settings.playbackQualityAxes(onMeteredNetwork: onMeteredNetwork).bitrateKbps,
                 qualitySwitchOnMeteredNetwork: onMeteredNetwork
-            ) {
+            )
+            if issued {
+                bufferingQuality.qualityChanged()
+            } else {
                 isQualitySwitching = false
                 qualitySwitchError = "Couldn't change quality right now. Try again."
             }
             return
         }
+        bufferingQuality.qualityChanged()
 
         guard var request = lastLoadRequest,
               request.offlineDownloadId == nil else {
@@ -10132,6 +10172,7 @@ extension PlayerViewModel {
     /// connection or the play intent moves.
     private func syncBufferingQualitySignals() {
         guard !isDisposed else { return }
+        syncSpeedTestHold()
         let calls = bufferingSignals.update(bufferingSignalSnapshot)
         if bufferingSignals.state == .playing { bufferingReloadEpoch = nil }
         if needsBufferingSignalPoll {
@@ -10161,9 +10202,23 @@ extension PlayerViewModel {
         }
     }
 
+    /// Speed tests wait while this player loads or plays; a paused one does
+    /// not hold them off, and resuming stops a running test.
+    private func syncSpeedTestHold() {
+        let active = activeAetherLoadEpoch != nil
+            && (aetherPlaybackController.shouldPlayWhenReady || isLoading)
+        guard active != speedTestHoldActive else { return }
+        speedTestHoldActive = active
+        BandwidthProbeScheduler.shared.videoPlayer(self, isActive: active)
+    }
+
     private var bufferingSignalSnapshot: BufferingSignalMapper.Snapshot {
         let monitor = ConnectionMonitor.shared
+        // A replan or start in flight leaves the playing source alone until
+        // the client swaps it; only then do the old plan's waits stop being
+        // its stalls.
         let replacementPending = (protocolV3ReplanTask != nil || freshLoadTask != nil)
+            && bufferingSourceSwapGeneration == streamLoadGeneration
             && streamLoadGeneration != bufferingAdoptedStreamLoadGeneration
         return BufferingSignalMapper.Snapshot(
             hasActiveLoad: activeAetherLoadEpoch != nil && aetherPlaybackController.hasActiveLoad,
@@ -10327,7 +10382,9 @@ extension PlayerViewModel {
         bufferingReloadEpoch = nil
         bufferingQuality.mode = settings.bufferingQualityMode
         bufferingQuality.sendsBufferingQualityFields = v3.advertisesBufferingQuality
-        var plan = Self.bufferingPlan(id: id, prepared: v3, activeQualityId: activeQualityId)
+        var plan = Self.bufferingPlan(
+            id: id, prepared: v3, activeQualityId: activeQualityId, viewerPickId: explicitQualityPick?.qualityId
+        )
         plan.requestedBandwidthEstimateKbps = requestedEstimateKbps
         Self.logger.info(
             "[CMP-BUFFERING] plan adopted id=\(id, privacy: .public) delivered=\(plan.deliveredKbps.map(String.init) ?? "unknown", privacy: .public) quality=\(plan.quality, privacy: .public) cant_reduce=\(plan.qualityReductionUnavailable, privacy: .public)"
@@ -10340,21 +10397,42 @@ extension PlayerViewModel {
 
     /// What the controller reads from an adopted plan. The quality is Auto,
     /// or the server's label for the rung in effect.
+    ///
+    /// A fixed quality's rung is the one the server says the plan delivers
+    /// (`active_quality`), or on an older server the rung the viewer picked
+    /// in the player. A saved Settings resolution names Apple's own tier,
+    /// which can share a name but not a bitrate with a server rung, so it
+    /// names no rung and the delivered bitrate is the baseline.
     static func bufferingPlan(
         id: String,
         prepared: PreparedPlaybackV3,
-        activeQualityId: String
+        activeQualityId: String,
+        viewerPickId: String? = nil
     ) -> BufferingQualityController.Plan {
         let plan = prepared.plan
         let active = ApplePlaybackQuality.protocolV3QualityId(activeQualityId)
-        let quality = active == ApplePlaybackQuality.autoId
-            ? BufferingQualityController.autoQuality
-            : plan.availableQualities.first { ApplePlaybackQuality.protocolV3QualityId($0.label) == active }?.label
-                ?? active
+        var quality = BufferingQualityController.autoQuality
+        var namesARung = true
+        if active != ApplePlaybackQuality.autoId {
+            let rung: String?
+            if prepared.serverFeatures.contains(PlaybackProtocolV3.planActiveQualityFeature) {
+                rung = plan.activeQuality
+            } else {
+                rung = viewerPickId.map(ApplePlaybackQuality.protocolV3QualityId) == active ? active : nil
+            }
+            let label = rung.flatMap { rung in
+                plan.availableQualities.first {
+                    ApplePlaybackQuality.protocolV3QualityId($0.label) == ApplePlaybackQuality.protocolV3QualityId(rung)
+                }?.label
+            }
+            quality = label ?? active
+            namesARung = label != nil
+        }
         return BufferingQualityController.Plan(
             id: id,
             deliveredKbps: plan.effectiveRecipe.bitrateKbps ?? plan.source.bitrateKbps,
             quality: quality,
+            qualityNamesARung: namesARung,
             availableQualities: plan.availableQualities.map {
                 .init(label: $0.label, bitrateKbps: $0.bitrateKbps, preservesSource: $0.preservesSource)
             },
@@ -10383,6 +10461,7 @@ extension PlayerViewModel {
         mediaRequestFailureExpiry?.cancel()
         mediaRequestFailureExpiry = nil
         lastMediaRequestFailureAt = nil
+        deferredBufferingRestore = nil
         bufferingPlans = [:]
         bufferingPlanId = nil
         bufferingAdoptedStreamLoadGeneration = nil
@@ -10429,8 +10508,15 @@ extension PlayerViewModel {
                   learnedLimit: request.learnedLimit,
                   issuedByBufferingQuality: true
               ) else {
+            // Restore quality is the viewer's answer: it goes out once the
+            // replan in flight settles rather than being lost.
+            if request.isRestore, protocolV3ReplanTask != nil, !isDisposed, !isWatchPartyPlayback {
+                Self.logger.info("[CMP-BUFFERING] restore waits for the replan in flight")
+                deferredBufferingRestore = request
+                return
+            }
             Self.logger.info("[CMP-BUFFERING] replan not issued: player busy or unavailable")
-            bufferingQuality.replanFailed()
+            bufferingQuality.replanRefused()
             return
         }
         Self.logger.info("[CMP-BUFFERING] replan issued quality=\(qualityId, privacy: .public)")

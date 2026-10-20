@@ -313,9 +313,35 @@ final class BufferingQualityPlayerTests: XCTestCase {
         XCTAssertTrue(auto.qualityReductionUnavailable)
         XCTAssertEqual(auto.availableQualities.map(\.label), ["original", "1080p-high", "720p-high"])
 
-        let picked = PlayerViewModel.bufferingPlan(id: "1:p", prepared: try preparedPlan(), activeQualityId: "1080P-High")
+        let picked = PlayerViewModel.bufferingPlan(
+            id: "1:p", prepared: try preparedPlan(), activeQualityId: "1080P-High", viewerPickId: "1080p-high"
+        )
         XCTAssertEqual(picked.quality, "1080p-high", "the server's label for the rung in effect")
+        XCTAssertTrue(picked.qualityNamesARung)
         XCTAssertFalse(picked.qualityReductionUnavailable)
+    }
+
+    /// A saved Settings resolution names Apple's tier, which shares a name
+    /// but not a bitrate with the server's rung: no rung is the baseline, so
+    /// Lower quality goes to the rung below what plays, not below the
+    /// same-named rung.
+    func testASavedResolutionNamesNoServerRung() throws {
+        let saved = PlayerViewModel.bufferingPlan(id: "1:p", prepared: try preparedPlan(), activeQualityId: "1080p-high")
+        XCTAssertFalse(saved.qualityNamesARung)
+        XCTAssertEqual(BufferingQualityController.lowerRung(in: saved)?.label, "1080p-high", "the rung below 8000")
+
+        let base = try preparedPlan()
+        var plan = base.plan
+        plan.activeQuality = "720p-high"
+        let reported = PreparedPlaybackV3(
+            playbackAttemptId: base.playbackAttemptId, planAttemptId: base.planAttemptId,
+            planAttemptKey: base.planAttemptKey, outputContextId: base.outputContextId,
+            serverFeatures: base.serverFeatures + [PlaybackProtocolV3.planActiveQualityFeature],
+            plan: plan
+        )
+        let confirmed = PlayerViewModel.bufferingPlan(id: "1:p", prepared: reported, activeQualityId: "1080p-high")
+        XCTAssertEqual(confirmed.quality, "720p-high", "the server's word on the rung it delivers")
+        XCTAssertTrue(confirmed.qualityNamesARung)
     }
 
     /// A picked quality is asked about even in `always`: shows the prompt.
