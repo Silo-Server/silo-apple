@@ -775,11 +775,15 @@ final class TVControlReceiver {
         let state = playerViewModel?.makeSiloControlPlaybackState(contentId: playerContentId)
         let identity = RemotePlaybackIdentityManager.shared.activeIdentity
         let startedByPhone = identity != nil && playerHandoffGeneration == identity?.generationID
+        // Under a borrowed identity only its own name is right. Phones that
+        // don't send one (Android today) leave it nil, and the prompt then
+        // says "Someone" rather than naming the TV's own profile.
+        let profileName = identity.map(\.profileName) ?? CurrentProfileStore.shared.profile?.name
         return SiloControlNowPlayingSummary(
             contentId: state?.contentId ?? playerContentId,
             title: state?.title ?? "a title",
             subtitle: state?.subtitle,
-            profileName: identity?.profileName ?? CurrentProfileStore.shared.profile?.name,
+            profileName: profileName,
             controllerName: startedByPhone ? identity?.controllerDeviceName : nil
         )
     }
