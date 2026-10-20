@@ -31,6 +31,10 @@ enum PlaybackProtocolV3 {
     /// hardware-only strict-tier behavior.
     static let softwareVideoDecodeFeature = "software_video_decode_v1"
     static let planSourceDurationFeature = "plan_source_duration_v1"
+    /// The plan names the `available_qualities` entry it delivers in
+    /// `active_quality`, so an absent field means "no entry" rather than "a
+    /// server that predates the field". API v2 only.
+    static let planActiveQualityFeature = "plan_active_quality_v1"
     /// Scoped to `original_http`: the Aether executor accepts the declared
     /// source dynamic range and resolves HDR/Dolby Vision presentation against
     /// the live output after delivery. It is not a promise that packaged
@@ -537,6 +541,9 @@ struct PlaybackV3Plan: Codable, Equatable {
     let subtitleFidelityPolicy: String
     /// Quality rungs the server will honour for a `quality_change` replan.
     let availableQualities: [PlaybackV3AvailableQuality]
+    /// The `availableQualities` label this plan delivers, when the server
+    /// advertises `plan_active_quality_v1`; nil when it delivers none.
+    var activeQuality: String? = nil
 }
 
 extension PlaybackV3Plan {

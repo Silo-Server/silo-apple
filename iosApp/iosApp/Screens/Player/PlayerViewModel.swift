@@ -3528,16 +3528,37 @@ class PlayerViewModel {
         explicitQualityPick.map { $0.contentId == contentId } ?? false
     }
 
-    /// The in-player menu row to light. Auto only while the session's
-    /// preference is auto; a fixed rung only when the viewer picked it for
-    /// this title. A fixed saved resolution (1080p, say) lights nothing, even
-    /// when a rung shares its name, so Auto stays a choice the viewer can make.
+    /// The in-player menu row to light; see
+    /// `ApplePlaybackQuality.highlightedOptionId`.
     var highlightedQualityOptionId: String? {
-        let active = ApplePlaybackQuality.protocolV3QualityId(activeQualityId)
-        if active == ApplePlaybackQuality.autoId { return ApplePlaybackQuality.autoId }
-        guard let pick = explicitQualityPick,
-              ApplePlaybackQuality.protocolV3QualityId(pick.qualityId) == active else { return nil }
-        return active
+        ApplePlaybackQuality.highlightedOptionId(
+            sessionQualityId: activeQualityId,
+            viewerPickId: explicitQualityPick?.qualityId,
+            planActiveQuality: activePreparedProtocolV3?.plan.activeQuality,
+            planReportsActiveQuality: activePreparedProtocolV3?.serverFeatures
+                .contains(PlaybackProtocolV3.planActiveQualityFeature) ?? false,
+            options: qualityOptions
+        )
+    }
+
+    /// The lit menu row, which names the quality the pill and labels show.
+    /// Without one they fall back to the session's own preference.
+    var activeQualityOption: ApplePlaybackQualityOption? {
+        highlightedQualityOptionId.flatMap { id in qualityOptions.first { $0.id == id } }
+    }
+
+    /// The quality SiloRemote checks and reads out: the lit row, or with none
+    /// the session's resolution. The remote checks whichever row matches, so
+    /// a resolution a row is named after (or a server rung id Settings can't
+    /// split) goes as its display name instead.
+    private var remoteActiveQualityId: String {
+        if let lit = highlightedQualityOptionId { return lit }
+        let resolution = AppleQualityAxes.split(activeQualityId).resolution
+        guard resolution != ApplePlaybackQuality.autoId,
+              !qualityOptions.contains(where: { $0.id == resolution }) else {
+            return ApplePlaybackQuality.displayName(for: activeQualityId)
+        }
+        return resolution
     }
 
     func playOnDeckItemNow(_ item: PlayerOnDeckItem) {
@@ -6298,9 +6319,15 @@ class PlayerViewModel {
         let resolvedQualityId = activePreparedProtocolV3 == nil
             ? ApplePlaybackQuality.normalizeStoredId(qualityId)
             : ApplePlaybackQuality.protocolV3QualityId(qualityId)
-        // Compared with the lit row, not the session preference: a fixed
-        // saved resolution lights nothing, so its rung stays a real pick.
-        guard resolvedQualityId != highlightedQualityOptionId || qualitySwitchError != nil else { return }
+        // Only Auto, or the viewer's own pick, is already in force. A row lit
+        // because the saved settings landed on it is still a real pick: it
+        // holds that rung for this title over connection changes.
+        let isAlreadyPicked = resolvedQualityId == highlightedQualityOptionId
+            && (resolvedQualityId == ApplePlaybackQuality.autoId
+                || explicitQualityPick.map {
+                    ApplePlaybackQuality.protocolV3QualityId($0.qualityId) == resolvedQualityId
+                } == true)
+        guard !isAlreadyPicked || qualitySwitchError != nil else { return }
 
         let target = currentTime.isFinite ? max(0, currentTime) : 0
         // Read once: the request and the pick's record must agree on which
@@ -9886,7 +9913,7 @@ extension PlayerViewModel {
             selectedAudioTrackId: selectedAudioId,
             selectedSubtitleTrackId: selectedSubtitleId,
             qualityOptions: hasQualityChoice ? qualityOptions.map(makeSiloControlOption) : [],
-            activeQualityId: activeQualityId,
+            activeQualityId: remoteActiveQualityId,
             isQualitySwitching: isQualitySwitching,
             playbackSpeed: effectivePlaybackSpeed,
             videoGravity: settings.videoGravity.rawValue,

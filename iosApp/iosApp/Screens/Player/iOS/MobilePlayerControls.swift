@@ -465,11 +465,10 @@ struct MobilePlayerControls: View {
     /// than the full "Up to 1080p HD (High)" menu label. A fixed saved
     /// resolution the menu has no row for still reads as that resolution.
     private var qualityValueText: String {
-        let activeId = viewModel.activeQualityId
-        if let active = viewModel.qualityOptions.first(where: { $0.id == activeId }) {
+        if let active = viewModel.activeQualityOption {
             return active.isAuto || active.resolution.isEmpty ? "Auto" : active.resolution
         }
-        return SiloQualityPresets.resolutionLabel(AppleQualityAxes.split(activeId).resolution)
+        return SiloQualityPresets.resolutionLabel(AppleQualityAxes.split(viewModel.activeQualityId).resolution)
     }
 
     // MARK: - Audio & Subtitles sheet
