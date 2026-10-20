@@ -234,12 +234,40 @@ final class WatchPartyWorkRecoveryTests: XCTestCase {
         XCTAssertEqual(recovery.reconnectDelay(shield: true, at: 70), 5)
     }
 
-    func testIdleAcceptedSamplesDoNotCountAsThirtySecondsOfUsefulActivity() {
+    func testAcceptedHealthyLifetimeDoesNotRequireRepeatedFrames() {
         var recovery = WatchPartyWorkRecovery()
         XCTAssertEqual(recovery.reconnectDelay(shield: false, at: 0), 1)
         recovery.accepted(at: 1)
-        recovery.accepted(at: 40)
-        XCTAssertEqual(recovery.reconnectDelay(shield: false, at: 40), 2)
+        XCTAssertEqual(recovery.reconnectDelay(shield: false, at: 31), 0)
+    }
+
+    func testRefusalInterruptsHealthyLifetimeAndTimeAloneCannotResetIt() {
+        var recovery = WatchPartyWorkRecovery()
+        recovery.accepted(at: 0)
+        _ = recovery.refuse(refusal(nil), at: 20, jitter: 0)
+        XCTAssertEqual(recovery.reconnectDelay(shield: false, at: 300), 1)
+        recovery.accepted(at: 301)
+        XCTAssertEqual(recovery.reconnectDelay(shield: false, at: 330), 2)
+        recovery.accepted(at: 331)
+        XCTAssertEqual(recovery.reconnectDelay(shield: false, at: 361), 0)
+        _ = recovery.disconnected()
+        XCTAssertEqual(recovery.reconnectDelay(shield: false, at: 700), 1, "A closed connection's lifetime cannot carry into an open-only connection")
+    }
+
+    func testDeferredSelectionKeepsOriginalFiveSecondDeadlineAndOneDispatch() throws {
+        var recovery = WatchPartyWorkRecovery()
+        let owner = identity()
+        let original = recovery.track(.init(type: "transport_request", action: .pause), identity: owner, at: 0)
+        _ = recovery.refuse(refusal(original.requestId), at: 0, jitter: 0)
+        XCTAssertEqual(recovery.takeTransportRetries(identity: owner, at: 0.3).messages.count, 1)
+        _ = recovery.refuse(refusal(nil, milliseconds: 1000), at: 0.3, jitter: 0)
+        XCTAssertFalse(recovery.beginTransportRetry(original.requestId, identity: owner, at: 0.31))
+        XCTAssertTrue(recovery.takeTransportRetries(identity: owner, at: 1.29).messages.isEmpty)
+        XCTAssertEqual(recovery.takeTransportRetries(identity: owner, at: 1.3).messages.count, 1)
+        XCTAssertTrue(recovery.beginTransportRetry(original.requestId, identity: owner, at: 1.3))
+        XCTAssertFalse(recovery.beginTransportRetry(original.requestId, identity: owner, at: 1.3))
+        XCTAssertTrue(recovery.expire(identity: owner, at: 5))
+        XCTAssertTrue(recovery.transport.isEmpty)
     }
 
     func testAbsoluteSeekWindowKeepsLatestTargetAndOriginalDeadline() throws {

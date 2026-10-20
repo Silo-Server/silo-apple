@@ -57,7 +57,6 @@ struct WatchPartyWorkRecovery {
     private var opaqueFailures = 0
     private var shieldFailures = 0
     private var usefulSince: TimeInterval?
-    private var lastUseful: TimeInterval?
     private(set) var hadRefusal = false
 
     func canSend(_ kind: Kind, at now: TimeInterval) -> Bool {
@@ -99,7 +98,7 @@ struct WatchPartyWorkRecovery {
         else { recoveryFloor = max(recoveryFloor, deadline); if unavailable { recoveryOutages += 1 } }
         if kind == nil && !isTransport { actionFloor = max(actionFloor, deadline) }
         if let id, var pending = transport[id] {
-            guard !pending.retried, deadline <= pending.started + 5 else {
+            guard !pending.retried, pending.delivery != .selected, deadline <= pending.started + 5 else {
                 transport.removeValue(forKey: id)
                 return .discardedTransport
             }
@@ -156,7 +155,6 @@ struct WatchPartyWorkRecovery {
                 discarded = true
             } else if let deadline = pending.retryAt, now >= deadline, canSend(.transport, at: now) {
                 pending.retryAt = nil
-                pending.retried = true
                 pending.delivery = .selected
                 transport[id] = pending
                 messages.append(pending.message)
@@ -169,16 +167,40 @@ struct WatchPartyWorkRecovery {
     /// An intervening result, error, or refusal must still cancel that dispatch.
     func canDispatchTransportRetry(_ requestId: String?, identity: Identity, at now: TimeInterval) -> Bool {
         guard let requestId, let pending = transport[requestId] else { return false }
-        return pending.retried && pending.retryAt == nil && pending.identity == identity
+        return !pending.retried && pending.retryAt == nil && pending.identity == identity
             && pending.delivery == .selected && now < pending.started + 5 && canSend(.transport, at: now)
     }
 
     /// Selection is still known unsent. Cross this boundary only after the
     /// caller's final suspension and authority checks, immediately before send.
     mutating func beginTransportRetry(_ requestId: String?, identity: Identity, at now: TimeInterval) -> Bool {
-        guard canDispatchTransportRetry(requestId, identity: identity, at: now), let requestId else { return false }
-        transport[requestId]?.delivery = .dispatched
+        guard let requestId, var pending = transport[requestId], pending.delivery == .selected,
+              pending.identity == identity, !pending.retried, now < pending.started + 5 else { return false }
+        guard canSend(.transport, at: now) else {
+            // A different refusal may advance the floor while validation is
+            // suspended. Selection did not consume the one permitted retry.
+            pending.retryAt = actionFloor
+            pending.delivery = .refused
+            transport[requestId] = pending
+            return false
+        }
+        pending.retried = true
+        pending.delivery = .dispatched
+        transport[requestId] = pending
         return true
+    }
+
+    /// New explicit input supersedes known-unsent retries synchronously.
+    /// Dispatched work retains its original result/uncertainty bookkeeping.
+    mutating func supersedeTransportRetries() -> Bool {
+        var discarded = false
+        for (id, pending) in transport {
+            if pending.delivery != .dispatched {
+                transport.removeValue(forKey: id)
+                discarded = true
+            }
+        }
+        return discarded
     }
 
     mutating func expire(identity: Identity, at now: TimeInterval) -> Bool {
@@ -203,13 +225,17 @@ struct WatchPartyWorkRecovery {
         transport.removeAll()
         desired.removeAll()
         usefulSince = nil
-        lastUseful = nil
         return uncertain
     }
 
     mutating func accepted(at now: TimeInterval) {
-        if usefulSince == nil || lastUseful.map({ now - $0 > 5 }) == true { usefulSince = now }
-        lastUseful = now
+        // A valid initial snapshot or operation echo establishes useful work.
+        // Its healthy lifetime can mature without a second unsolicited frame.
+        if usefulSince == nil { usefulSince = now }
+        resetBackoffAfterHealthyLifetime(at: now)
+    }
+
+    private mutating func resetBackoffAfterHealthyLifetime(at now: TimeInterval) {
         if let usefulSince, now - usefulSince >= 30 {
             opaqueFailures = 0; shieldFailures = 0
             recoveryOutages = 0; actionOutages = 0
@@ -218,12 +244,12 @@ struct WatchPartyWorkRecovery {
     }
 
     mutating func reconnectDelay(shield: Bool, at now: TimeInterval) -> TimeInterval {
-        // Merely opening a socket, pongs, and the age of an idle socket do
-        // not prove useful admitted activity or replenish the backoff.
-        if !shield, !hadRefusal, let usefulSince, let lastUseful,
-           now - usefulSince >= 30, now - lastUseful <= 5 { return 0 }
+        // Open/pongs alone do not establish useful work. A refusal interrupts
+        // the lifetime; another accepted snapshot/operation must start it again.
+        resetBackoffAfterHealthyLifetime(at: now)
+        let healthy = usefulSince.map { now - $0 >= 30 } == true
         usefulSince = nil
-        lastUseful = nil
+        if !shield, !hadRefusal, healthy { return 0 }
         if shield {
             let delay = [5.0, 10, 20, 30][min(shieldFailures, 3)]
             shieldFailures += 1

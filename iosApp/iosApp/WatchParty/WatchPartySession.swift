@@ -125,6 +125,7 @@ final class WatchPartySession {
     @ObservationIgnored private var lobbyReadyDesireID = UUID()
     @ObservationIgnored private var lobbyReadyAttempt: (id: UUID, desire: UUID, request: String)?
     @ObservationIgnored private var controlUncertain = false
+    @ObservationIgnored private var controlUncertaintyID = UUID()
     private var usesWorkAdmission: Bool { capabilities?.supportsWorkAdmission == true }
 
     init(api: APIv2Client = SiloAPI.shared.apiV2Client, tokenStore: TokenStore = .shared,
@@ -495,10 +496,18 @@ final class WatchPartySession {
                 var openedAt: Date?
                 do {
                     let receipt = self.state.receipt
+                    let uncertainID = self.controlUncertaintyID
+                    let uncertainNotice = self.workStatusMessage
+                    let initialIdentity = self.workIdentity()
                     let response = try await self.api.watchPartyRoom(id: room.roomId, token: self.roomToken, auth: auth)
                     guard await self.ownsCurrentIdentity(), owner == self.engagement, socketID == self.connectionID else { return }
                     self.roomToken = response.roomAccessToken
-                    self.accept(response.room, requestReceipt: receipt)
+                    let initialAuthorityCurrent = initialIdentity.flatMap { expected in self.workIdentity().map { expected.canAcknowledge($0) } } == true
+                    let acceptedInitialRoom = self.accept(response.room, requestReceipt: receipt)
+                    let acceptedInitialIdentity = acceptedInitialRoom ? self.workIdentity() : nil
+                    if acceptedInitialRoom, initialAuthorityCurrent, let initialIdentity {
+                        self.settleControlUncertainty(uncertainID, identity: initialIdentity, notice: uncertainNotice)
+                    }
                     guard self.isEngaged else { return }
                     let ticket = try await self.api.watchPartySocketTicket(roomId: room.roomId, token: self.roomToken, auth: auth)
                     guard await self.ownsCurrentIdentity(), owner == self.engagement, socketID == self.connectionID else { return }
@@ -510,6 +519,10 @@ final class WatchPartySession {
                         case .opened:
                             openedAt = Date()
                             self.connection = .connected
+                            if self.usesWorkAdmission, let acceptedInitialIdentity,
+                               let current = self.workIdentity(), acceptedInitialIdentity.canAcknowledge(current) {
+                                self.workRecovery.accepted(at: self.workNow())
+                            }
                             self.errorMessage = nil
                             if !self.controlUncertain, self.lobbyReadyDesired == nil,
                                self.workRecovery.canSend(.attach, at: self.workNow()),
@@ -654,14 +667,21 @@ final class WatchPartySession {
                 return
             }
             if usesWorkAdmission {
+                let ownsLobbyFailure = lobbyReadyAttempt.map {
+                    $0.request == failure.requestId && $0.desire == lobbyReadyDesireID
+                } == true
                 switch workRecovery.failed(requestId: failure.requestId) {
                 case .some(.transport):
                     transportUncertain()
                 case .some(.lobby):
-                    lobbyReadyDesired = nil
-                    lobbyReadyIdentity = nil
-                    workStatusMessage = "Readiness could not be confirmed. Check the party and try again."
-                    reconcileRoom()
+                    // Remove the old request's bookkeeping without letting its
+                    // failure own a newer toggle, even a toggle back to true.
+                    if ownsLobbyFailure {
+                        lobbyReadyDesired = nil
+                        lobbyReadyIdentity = nil
+                        workStatusMessage = "Readiness could not be confirmed. Check the party and try again."
+                        reconcileRoom()
+                    } else if code != "connection_replaced" { return }
                 default: break
                 }
             }
@@ -680,12 +700,13 @@ final class WatchPartySession {
         }
     }
 
-    private func accept(_ incoming: WatchPartyRoom, requestReceipt: UInt64? = nil) {
+    @discardableResult
+    private func accept(_ incoming: WatchPartyRoom, requestReceipt: UInt64? = nil) -> Bool {
         let old = room
-        guard state.accept(incoming, requestReceipt: requestReceipt) else { return }
+        guard state.accept(incoming, requestReceipt: requestReceipt) else { return false }
         if old?.generation != incoming.generation, let dispatch = transportDispatch { dispatch.snapshotChanges += 1 }
         roomReceivedAt = Date()
-        if incoming.phase == .ended { terminate("This party has ended.", canRejoin: false); return }
+        if incoming.phase == .ended { terminate("This party has ended.", canRejoin: false); return false }
         if let auth {
             recentAuth = auth
             recentRoom = WatchPartyRecentRoom(roomId: incoming.roomId, code: incoming.code,
@@ -751,6 +772,7 @@ final class WatchPartySession {
                 workStatusMessage = nil
             }
         }
+        return true
     }
 
     /// Snapshots report the anchor already projected to when the server built
@@ -834,6 +856,9 @@ final class WatchPartySession {
         case .play: wire = .play; target = position
         case .pause: wire = .pause; target = position
         case .seek(let value): wire = .seek; target = value
+        }
+        if usesWorkAdmission, workRecovery.supersedeTransportRetries() {
+            transportDiscarded("The earlier control was not sent because a newer control replaced its retry.")
         }
         let message = WatchPartyClientMessage(type: "transport_request", action: wire, positionSeconds: target, isPaused: paused)
         if usesWorkAdmission, wire == .seek, let identity = workIdentity() {
@@ -1189,6 +1214,7 @@ final class WatchPartySession {
         lobbyReadyIdentity = nil
         if workRecovery.disconnected() {
             controlUncertain = true
+            controlUncertaintyID = UUID()
             workStatusMessage = "The control could not be confirmed. Check the party before trying again."
             adapter?.releaseHeldSeek()
         } else if workRecovery.discardedUnsentTransport { transportDiscarded() }
@@ -1221,6 +1247,7 @@ final class WatchPartySession {
     private func transportUncertain(_ message: String = "The control could not be confirmed. Check the party before trying again.",
                                     reconcileImmediately: Bool = true) {
         controlUncertain = true
+        controlUncertaintyID = UUID()
         workStatusMessage = message
         adapter?.releaseHeldSeek()
         if reconcileImmediately { reconcileRoom() }
@@ -1232,16 +1259,36 @@ final class WatchPartySession {
         let owner = engagement
         let socketID = connectionID
         let receipt = state.receipt
+        let uncertainID = controlUncertaintyID
+        let uncertainNotice = workStatusMessage
+        let identity = workIdentity()
         reconciliationTask = Task { [weak self] in
             guard let self else { return }
-            defer { if owner == self.engagement, socketID == self.connectionID { self.reconciliationTask = nil } }
+            defer {
+                if owner == self.engagement, socketID == self.connectionID {
+                    self.reconciliationTask = nil
+                    if self.controlUncertain, uncertainID != self.controlUncertaintyID { self.reconcileRoom() }
+                }
+            }
             do {
                 let response = try await self.api.watchPartyRoom(id: room.roomId, token: self.roomToken, auth: auth)
                 guard await self.validateIdentity(), owner == self.engagement, socketID == self.connectionID,
                       !Task.isCancelled else { return }
-                self.accept(response.room, requestReceipt: receipt)
+                let stillCurrent = identity.flatMap { expected in self.workIdentity().map { expected.canAcknowledge($0) } } == true
+                if self.accept(response.room, requestReceipt: receipt), stillCurrent, let identity {
+                    self.settleControlUncertainty(uncertainID, identity: identity, notice: uncertainNotice)
+                }
             } catch { /* Keep the uncertainty visible; a read failure cannot authorize replay. */ }
         }
+    }
+
+    /// An authoritative read settles the UI question, not the old write. Only
+    /// the uncertainty and authority that started this read may be settled.
+    private func settleControlUncertainty(_ id: UUID, identity: WatchPartyWorkRecovery.Identity, notice: String?) {
+        guard controlUncertain, controlUncertaintyID == id, let current = workIdentity(),
+              identity.canAcknowledge(current) else { return }
+        controlUncertain = false
+        if workStatusMessage == notice { workStatusMessage = nil }
     }
 
     private func reportLobbyReady() async {

@@ -230,6 +230,178 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         return (f, playback)
     }
 
+    func testQuietAcceptedRoomRenewsWithoutEscalatingOpaqueBackoff() async throws {
+        let f = try await fixture()
+        for connection in 1...3 {
+            f.clock.advance(300)
+            f.socket.finish(WatchPartySocketError.closed)
+            await waitUntil { f.session.connection == .reconnecting && f.clock.pendingCount > 0 }
+            XCTAssertTrue(f.clock.hasDeadline(f.clock.now), "A valid initial snapshot and healthy lifetime qualify without another frame")
+            f.clock.advance(0)
+            await waitUntil { f.socket.connections == connection + 1 && f.session.connection == .connected }
+        }
+    }
+
+    func testNewTransportIntentDiscardsOlderRefusedRetryBeforeReportTick() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.play))
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+        let original = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: original.requestId,
+            retryAfterMilliseconds: 250, workStarted: false)))
+        await waitUntil { f.session.workStatusMessage?.contains("delayed") == true }
+        f.clock.advance(0.3)
+        XCTAssertTrue(playback.request(.pause))
+        XCTAssertTrue(f.session.workStatusMessage?.contains("not sent") == true, "Discard is visible before the new send can suspend")
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+        f.clock.advance(0.2)
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), [.play, .pause])
+        XCTAssertEqual(f.socket.sent.filter { $0.requestId == original.requestId }.count, 1)
+    }
+
+    func testNewIntentCancelsSelectedRetryAcrossValidationWithoutDroppingNewControl() async throws {
+        let gate = ValidationGate()
+        let (f, playback) = try await playingFixture(validationGate: gate)
+        XCTAssertTrue(playback.request(.play))
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+        let original = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: original.requestId,
+            retryAfterMilliseconds: 250, workStarted: false)))
+        await waitUntil { f.session.workStatusMessage?.contains("delayed") == true }
+        gate.holding = true
+        f.clock.advance(0.5)
+        await waitUntil { gate.waiters.count == 1 }
+        gate.resumeFirst()
+        await waitUntil { gate.waiters.count == 1 }
+        XCTAssertTrue(playback.request(.pause))
+        XCTAssertTrue(f.session.workStatusMessage?.contains("not sent") == true)
+        gate.release()
+        await waitUntil { f.socket.sent.contains { $0.action == .pause } && f.clock.hasDeadline(f.clock.now + 0.5) }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.action), [.play, .pause])
+    }
+
+    func testSelectedRetryDefersWhenAnotherRefusalAdvancesFloorDuringValidation() async throws {
+        let gate = ValidationGate()
+        let (f, playback) = try await playingFixture(validationGate: gate)
+        XCTAssertTrue(playback.request(.pause))
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+        let original = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: original.requestId,
+            retryAfterMilliseconds: 250, workStarted: false)))
+        await waitUntil { f.session.workStatusMessage?.contains("delayed") == true }
+        gate.holding = true
+        f.clock.advance(0.5)
+        await waitUntil { gate.waiters.count == 1 }
+        gate.resumeFirst()
+        await waitUntil { gate.waiters.count == 1 }
+        f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Another refusal", requestId: "unrelated",
+            retryAfterMilliseconds: 1000, workStarted: false)))
+        await waitUntil { gate.waiters.count == 2 }
+        gate.waiters.removeLast().resume() // Receive the new floor while retry validation remains suspended.
+        f.socket.emit(.error(.init(code: "synthetic_marker", message: "floor advanced")))
+        await waitUntil { gate.waiters.count == 2 }
+        gate.waiters.removeLast().resume()
+        await waitUntil { f.session.errorMessage == "floor advanced" }
+        gate.release()
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1)
+        f.clock.advance(0.5)
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1)
+        f.clock.advance(0.5)
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.map(\.requestId), [original.requestId, original.requestId])
+    }
+
+    func testOldDownstreamLobbyErrorPreservesUniqueReplacementDesire() async throws {
+        for replacement in [false, true] {
+            let f = try await fixture()
+            f.session.setLobbyReady(true)
+            await waitUntil { f.socket.sent.contains { $0.type == "lobby_ready" } }
+            let original = try XCTUnwrap(f.socket.sent.last { $0.type == "lobby_ready" })
+            f.session.setLobbyReady(false)
+            if replacement { f.session.setLobbyReady(true) }
+            let notice = f.session.workStatusMessage
+            f.socket.emit(.error(.init(code: "bad_request", message: "Old downstream failure", requestId: original.requestId, workStarted: true)))
+            f.socket.emit(.error(.init(code: "synthetic_marker", message: "old failure processed")))
+            await waitUntil { f.session.errorMessage == "old failure processed" }
+            XCTAssertEqual(f.session.lobbyReadyDesired, replacement)
+            XCTAssertEqual(f.session.workStatusMessage, notice)
+            f.clock.advance(0.5)
+            await waitUntil { f.socket.sent.filter { $0.type == "lobby_ready" }.count == 2 }
+            let current = try XCTUnwrap(f.socket.sent.last { $0.type == "lobby_ready" })
+            XCTAssertEqual(current.ready, replacement)
+            f.socket.emit(.actionResult(requestId: current.requestId, action: "lobby_ready", status: "applied"))
+            await waitUntil { f.session.lobbyReadyDesired == nil }
+        }
+    }
+
+    func testCurrentReconciliationSettlesUncertaintyWithoutAcknowledgingOrReplayingWrite() async throws {
+        let (f, playback) = try await playingFixture()
+        let path = "/api/v2/watch-together/rooms/synthetic-room"
+        f.stub.hold(path: path)
+        XCTAssertTrue(playback.request(.pause))
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+        let original = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        f.socket.emit(.error(.init(code: "bad_request", message: "Synthetic failure", requestId: original.requestId, workStarted: true)))
+        await f.stub.waitUntilHeld()
+        XCTAssertTrue(f.session.workStatusMessage?.contains("could not be confirmed") == true)
+        f.stub.release()
+        await waitUntil { f.session.workStatusMessage == nil }
+        XCTAssertEqual(f.session.room?.playbackState, .paused)
+        f.clock.advance(1)
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1)
+    }
+
+    func testOlderReconciliationCannotClearNewerUncertaintyAndStartsItsOwnRead() async throws {
+        let (f, playback) = try await playingFixture()
+        let path = "/api/v2/watch-together/rooms/synthetic-room"
+        let reads = f.stub.requests.filter { $0.path == path }.count
+        f.stub.hold(path: path)
+        XCTAssertTrue(playback.request(.pause))
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+        let first = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        f.socket.emit(.error(.init(code: "operation_failed", message: "First failure", requestId: first.requestId, workStarted: true)))
+        await f.stub.waitUntilHeld()
+        XCTAssertTrue(playback.request(.play))
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+        let second = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        f.socket.emit(.error(.init(code: "operation_failed", message: "Second failure", requestId: second.requestId, workStarted: true)))
+        f.socket.emit(.error(.init(code: "synthetic_marker", message: "second failure processed")))
+        await waitUntil { f.session.errorMessage == "second failure processed" }
+        f.stub.reply(path: path, 503, "{}") // Only the newer reconciliation fails; the held old read succeeds.
+        f.stub.release()
+        await waitUntil { f.stub.requests.filter { $0.path == path }.count == reads + 2 }
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertTrue(f.session.workStatusMessage?.contains("could not be confirmed") == true)
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 2)
+    }
+
+    func testFailedOrObsoleteReconciliationKeepsUncertaintyVisible() async throws {
+        for obsolete in [false, true] {
+            let (f, playback) = try await playingFixture()
+            let path = "/api/v2/watch-together/rooms/synthetic-room"
+            if !obsolete { f.stub.reply(path: path, 503, "{}") }
+            f.stub.hold(path: path)
+            XCTAssertTrue(playback.request(.pause))
+            await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+            let original = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+            f.socket.emit(.error(.init(code: "bad_request", message: "Synthetic failure", requestId: original.requestId, workStarted: true)))
+            await f.stub.waitUntilHeld()
+            if obsolete {
+                var room = try XCTUnwrap(f.session.room); room.generation += 1; room.selfCanControlTransport = false
+                f.socket.emit(.snapshot(room))
+                await waitUntil { f.session.room?.selfCanControlTransport == false }
+            }
+            f.stub.release()
+            for _ in 0..<100 { await Task.yield() }
+            XCTAssertTrue(f.session.workStatusMessage?.contains("could not be confirmed") == true)
+            XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 1)
+        }
+    }
+
     func testQueuedSeekPrecedesLaterPauseWithoutShorteningItsWindow() async throws {
         let (f, playback) = try await playingFixture()
         playback.snapshot.isPlaying = true
@@ -688,6 +860,7 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         f.clock.advance(1)
         await waitUntil { f.socket.connections == 2 && f.session.connection == .connected }
         XCTAssertEqual(f.stub.requests.filter { $0.path == path }.count, initialReads + 1)
+        XCTAssertNil(f.session.workStatusMessage, "The current reconnect read settles uncertainty without replay")
         XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
     }
 
