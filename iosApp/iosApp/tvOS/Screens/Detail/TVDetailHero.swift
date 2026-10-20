@@ -16,6 +16,13 @@ enum TVDetailLayout {
     static let bodySectionSpacing: CGFloat = 64
     static let sectionHeaderSpacing: CGFloat = 14
     static let pageBottomPadding: CGFloat = 140
+
+    /// At the Large card size the Series episode rail's two-line caption runs
+    /// past the bottom of the pinned first screen, so the Series hero gives up
+    /// this much of its empty top inset and the season row and rail move up.
+    static func seriesHeroLift(for posterSize: CardPosterSize) -> CGFloat {
+        posterSize == .large ? 32 : 0
+    }
 }
 
 /// Fully opaque page surface sampled from the title artwork. The base tint is
@@ -100,6 +107,9 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
     /// coupled, which is the default behavior for every other detail page.
     var backdropHeight: CGFloat? = nil
     var heroHeight: CGFloat = TVDetailLayout.heroHeight
+    /// Space above the title block. Series trims it at the Large card size so
+    /// its taller episode rail stays on the first screen.
+    var topInset: CGFloat = TVDetailLayout.heroTopInset
     /// Episode mode narrows only the editorial column. The logo keeps the
     /// same leading/top anchor while long episode copy wraps before it reaches
     /// the backdrop subject.
@@ -203,7 +213,7 @@ struct TVDetailHero<Actions: View, BelowSynopsis: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .focusSection()
         }
-        .padding(.top, TVDetailLayout.heroTopInset)
+        .padding(.top, topInset)
         .padding(.horizontal, TVDetailLayout.horizontalInset)
         .frame(
             maxWidth: .infinity,

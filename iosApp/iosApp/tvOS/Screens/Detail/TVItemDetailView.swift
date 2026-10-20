@@ -72,7 +72,7 @@ struct TVItemDetailView: View {
             // seeds the season. Otherwise cached detail paints at once while
             // `.task` refreshes it.
             if !hasStartedDetailLoad, navigationContext?.seriesContentId == contentId {
-                TVItemDetailLoadingView(seed: seed)
+                TVItemDetailLoadingView(seed: seed, isSeriesRoute: true)
             } else if let detail = viewModel.detail {
                 content(for: detail)
             } else if let error = viewModel.error {
