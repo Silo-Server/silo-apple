@@ -73,7 +73,7 @@ struct MarqueeWaitingDots: View {
 struct MarqueeTVSetupSteps: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 30) {
-            step(1, "Open Silo on your phone") { SetupAppIcon() }
+            step(1, "Open Silo on your phone") { MarqueeTVAppIcon() }
             step(2, "Tap Set Up") { SetupCardPicture() }
             step(3, "Finish on your phone") { SetupDonePicture() }
         }
@@ -110,20 +110,25 @@ struct MarqueeTVSetupSteps: View {
     }
 }
 
-/// The Silo app icon: the mark on the deep blue field.
-private struct SetupAppIcon: View {
+/// The Silo app icon: the mark on the deep blue field. Shown where a phone
+/// running Silo can do the work, as in the setup steps.
+struct MarqueeTVAppIcon: View {
+    var size: CGFloat = 92
+
     var body: some View {
+        let corner = size * 22 / 92
         // The icon draws the mark at 84% of its height.
         Image("SiloMark")
             .resizable()
             .scaledToFit()
-            .frame(height: 77)
-            .frame(width: 92, height: 92)
-            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Color.siloIconField))
+            .frame(height: size * 0.84)
+            .frame(width: size, height: size)
+            .background(RoundedRectangle(cornerRadius: corner, style: .continuous).fill(Color.siloIconField))
             .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
             )
+            .accessibilityHidden(true)
     }
 }
 

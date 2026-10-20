@@ -168,7 +168,9 @@ struct TVLoginView: View {
         MarqueeTVScreen {
             sessionExpiredChip
             serverCard
-            headline("Sign in to \(server.serverName)")
+            // Smaller than other headlines: a server's name can be long, and
+            // the ways in below matter more than the title.
+            headline("Sign in to \(server.serverName)", size: Self.codeHeadlineFont)
                 .padding(.top, 44)
             if let provider = networkProvider {
                 networkSignInButton(provider)
@@ -180,11 +182,10 @@ struct TVLoginView: View {
             }
             MarqueeTVBody(codeLead)
                 .padding(.top, networkProvider == nil ? 26 : 12)
-            Label(TVSignInPresentation.nearbyHint, systemImage: "iphone.gen3")
-                .font(.system(size: 22))
-                .foregroundStyle(Color.siloOnSurface.opacity(0.4))
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 24)
+            if PairingProtocol.advertisesSignInTVs {
+                nearbyHint
+                    .padding(.top, 28)
+            }
             codeActions
                 .padding(.top, 48)
             contextActions
@@ -194,6 +195,22 @@ struct TVLoginView: View {
         }
         .defaultFocus($focusedField, defaultCodeScreenFocus, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, defaultCodeScreenFocus)
+    }
+
+    private static let codeHeadlineFont: CGFloat = 64
+
+    /// Silo on a nearby phone can sign this TV in: the app's icon, as the
+    /// setup screen shows it, beside the hint. Only while the screen
+    /// advertises itself to phones.
+    private var nearbyHint: some View {
+        HStack(spacing: 22) {
+            MarqueeTVAppIcon(size: 64)
+            Text(TVSignInPresentation.nearbyHint)
+                .font(.system(size: 26, weight: .medium))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.72))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     /// Where focus enters the code screen: "Continue as …" when this TV can
@@ -566,7 +583,9 @@ struct TVLoginView: View {
         MarqueeTVScreen {
             sessionExpiredChip
             serverCard
-            headline("Sign in to \(server.serverName)")
+            // Smaller than other headlines: a server's name can be long, and
+            // the ways in below matter more than the title.
+            headline("Sign in to \(server.serverName)", size: Self.codeHeadlineFont)
                 .padding(.top, 44)
             if let provider = networkProvider {
                 networkSignInButton(provider)
@@ -635,9 +654,9 @@ struct TVLoginView: View {
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    private func headline(_ text: String) -> some View {
+    private func headline(_ text: String, size: CGFloat = MarqueeMetrics.heroFont) -> some View {
         Text(text)
-            .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))
+            .font(.system(size: size, weight: .heavy))
             .kerning(-2)
             .foregroundStyle(Color.siloOnSurface)
             .lineLimit(3)
