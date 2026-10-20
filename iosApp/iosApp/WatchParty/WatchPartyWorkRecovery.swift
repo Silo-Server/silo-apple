@@ -80,6 +80,7 @@ struct WatchPartyWorkRecovery {
 
     mutating func refuse(_ error: WatchPartyWorkError, at now: TimeInterval, jitter: TimeInterval) -> Refusal {
         guard error.isPreWorkRefusal else { return .ignored }
+        resetBackoffAfterHealthyLifetime(at: now)
         hadRefusal = true
         usefulSince = nil
         let unavailable = error.code == "realtime_unavailable"

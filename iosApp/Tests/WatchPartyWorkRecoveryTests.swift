@@ -241,6 +241,35 @@ final class WatchPartyWorkRecoveryTests: XCTestCase {
         XCTAssertEqual(recovery.reconnectDelay(shield: false, at: 31), 0)
     }
 
+    func testHealthyLifetimeMaturesBeforeNextRefusalAtThirtySecondBoundary() {
+        for acceptedAge: TimeInterval in [29.999, 30] {
+            var recovery = WatchPartyWorkRecovery()
+            let owner = identity()
+            for index in 0..<5 {
+                let time = Double(index * 10)
+                let message = recovery.track(.init(type: "lobby_ready", ready: true), identity: owner, at: time)
+                _ = recovery.refuse(refusal(message.requestId, code: "realtime_unavailable", milliseconds: 2000), at: time, jitter: 0)
+                _ = recovery.reconnectDelay(shield: true, at: time)
+                _ = recovery.reconnectDelay(shield: false, at: time)
+            }
+            recovery.accepted(at: 100)
+            let now = 100 + acceptedAge
+            let fresh = recovery.track(.init(type: "transport_request", action: .pause), identity: owner, at: now)
+            let decision = recovery.refuse(refusal(fresh.requestId, code: "realtime_unavailable", milliseconds: 2000), at: now, jitter: 0)
+            if acceptedAge == 30 {
+                guard case .retryTransport = decision else { return XCTFail("Mature accepted health must reset before refusal erases its timestamp") }
+                XCTAssertEqual(recovery.remainingDelay(.transport, at: now), 2)
+                XCTAssertEqual(recovery.reconnectDelay(shield: true, at: now), 5)
+                XCTAssertEqual(recovery.reconnectDelay(shield: false, at: now), 1)
+            } else {
+                guard case .discardedTransport = decision else { return XCTFail("An incomplete healthy lifetime cannot reset counters") }
+                XCTAssertEqual(recovery.remainingDelay(.transport, at: now), 30)
+                XCTAssertEqual(recovery.reconnectDelay(shield: true, at: now), 30)
+                XCTAssertEqual(recovery.reconnectDelay(shield: false, at: now), 30)
+            }
+        }
+    }
+
     func testRefusalInterruptsHealthyLifetimeAndTimeAloneCannotResetIt() {
         var recovery = WatchPartyWorkRecovery()
         recovery.accepted(at: 0)

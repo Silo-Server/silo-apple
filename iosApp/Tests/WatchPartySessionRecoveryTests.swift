@@ -230,6 +230,47 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         return (f, playback)
     }
 
+    func testQuietHealthyLifetimeResetsOutageBeforeFreshTransportRefusal() async throws {
+        let (f, playback) = try await playingFixture()
+        XCTAssertTrue(playback.request(.play))
+        await waitUntil { f.socket.sent.contains { $0.type == "transport_request" } }
+        let first = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        f.socket.emit(.error(.init(code: "realtime_unavailable", message: "Synthetic outage", requestId: first.requestId,
+            retryAfterMilliseconds: 2000, workStarted: false)))
+        await waitUntil { f.session.workStatusMessage?.contains("delayed") == true }
+        f.clock.advance(2.1)
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+        f.socket.emit(.error(.init(code: "realtime_unavailable", message: "Second synthetic outage", requestId: first.requestId,
+            retryAfterMilliseconds: 2000, workStarted: false)))
+        await waitUntil { f.session.workStatusMessage?.contains("not applied") == true }
+        f.clock.advance(4.1)
+        XCTAssertTrue(playback.request(.pause))
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 3 }
+        let accepted = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        // Current room is already paused: this is an accepted no-op, not a
+        // fabricated command or a reason to replay either refused operation.
+        f.socket.emit(.actionResult(requestId: accepted.requestId, action: "transport_request", status: "applied"))
+        await waitUntil { f.session.workStatusMessage == nil }
+        f.clock.advance(30) // No incoming frames during the accepted healthy lifetime.
+        XCTAssertTrue(playback.request(.play))
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 4 }
+        let fresh = try XCTUnwrap(f.socket.sent.last { $0.type == "transport_request" })
+        f.socket.emit(.error(.init(code: "realtime_unavailable", message: "Fresh synthetic outage", requestId: fresh.requestId,
+            retryAfterMilliseconds: 2000, workStarted: false)))
+        f.socket.emit(.error(.init(code: "synthetic_marker", message: "fresh refusal processed")))
+        await waitUntil { f.session.errorMessage == "fresh refusal processed" }
+        XCTAssertTrue(f.session.workStatusMessage?.contains("delayed") == true, "The reset two-second floor keeps this fresh intent within five seconds")
+        f.clock.advance(2.1)
+        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 5 }
+        XCTAssertEqual(f.socket.sent.last { $0.type == "transport_request" }?.requestId, fresh.requestId)
+        f.socket.emit(.error(.init(code: "realtime_unavailable", message: "Retry refused", requestId: fresh.requestId,
+            retryAfterMilliseconds: 2000, workStarted: false)))
+        await waitUntil { f.session.workStatusMessage?.contains("not applied") == true }
+        f.clock.advance(4.1)
+        await waitUntil { f.clock.hasDeadline(f.clock.now + 0.5) }
+        XCTAssertEqual(f.socket.sent.filter { $0.type == "transport_request" }.count, 5)
+    }
+
     func testQuietAcceptedRoomRenewsWithoutEscalatingOpaqueBackoff() async throws {
         let f = try await fixture()
         for connection in 1...3 {
