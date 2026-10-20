@@ -897,25 +897,27 @@ final class WatchPartySessionRecoveryTests: XCTestCase {
         XCTAssertTrue(f.socket.sent.filter { $0.type == "transport_request" }.isEmpty)
     }
 
-    func testDistinctRefusedTransportsDispatchRetriesInOriginalOrder() async throws {
-        let (f, playback) = try await playingFixture()
-        XCTAssertTrue(playback.request(.play))
-        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 1 }
-        XCTAssertTrue(playback.request(.pause))
-        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
-        let originals = f.socket.sent.filter { $0.type == "transport_request" }
-        for message in originals.reversed() {
-            f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: message.requestId,
-                retryAfterMilliseconds: 250, workStarted: false)))
+    func testLateRefusalsRetryOnlyNewestDispatchedIntentInEitherRefusalOrder() async throws {
+        for reversed in [false, true] {
+            let (f, playback) = try await playingFixture()
+            XCTAssertTrue(playback.request(.play))
+            await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 1 }
+            XCTAssertTrue(playback.request(.pause))
+            await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 2 }
+            let originals = f.socket.sent.filter { $0.type == "transport_request" }
+            for message in reversed ? Array(originals.reversed()) : originals {
+                f.socket.emit(.error(.init(code: "realtime_rate_limited", message: "Synthetic busy", requestId: message.requestId,
+                    retryAfterMilliseconds: 250, workStarted: false)))
+            }
+            // An ordered stream marker proves both preceding refusals were handled.
+            f.socket.emit(.error(.init(code: "synthetic_marker", message: "refusals processed")))
+            await waitUntil { f.session.errorMessage == "refusals processed" }
+            f.clock.advance(0.5)
+            await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 3 && f.clock.hasDeadline(f.clock.now + 0.5) }
+            let sent = f.socket.sent.filter { $0.type == "transport_request" }
+            XCTAssertEqual(sent.map(\.action), [.play, .pause, .pause])
+            XCTAssertEqual(sent.map(\.requestId), [originals[0].requestId, originals[1].requestId, originals[1].requestId])
         }
-        // An ordered stream marker proves both preceding refusals were handled.
-        f.socket.emit(.error(.init(code: "synthetic_marker", message: "refusals processed")))
-        await waitUntil { f.session.errorMessage == "refusals processed" }
-        f.clock.advance(0.5)
-        await waitUntil { f.socket.sent.filter { $0.type == "transport_request" }.count == 4 }
-        let retries = Array(f.socket.sent.filter { $0.type == "transport_request" }.suffix(2))
-        XCTAssertEqual(retries.map(\.action), [.play, .pause])
-        XCTAssertEqual(retries.map(\.requestId), originals.map(\.requestId))
     }
 
     func testDisconnectWhileSelectedRetryValidatesShowsNotSentAndDoesNotReplay() async throws {
