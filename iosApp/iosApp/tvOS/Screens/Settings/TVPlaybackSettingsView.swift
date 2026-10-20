@@ -76,11 +76,13 @@ struct TVPlaybackSettingsPane: View {
         ) { showPicker(.maxBitrate) }
         .focused(detailFocus, equals: .playbackMaxBitrate)
 
-        TVSettingsPickerRow(
-            title: SettingsViewModel.bufferingQualityTitle,
-            value: viewModel.bufferingQualityMode.label
-        ) { showPicker(.bufferingQualityMode) }
-        .focused(detailFocus, equals: .playbackBufferingQualityMode)
+        if viewModel.showsBufferingQualityMode {
+            TVSettingsPickerRow(
+                title: SettingsViewModel.bufferingQualityTitle,
+                value: viewModel.bufferingQualityMode.label
+            ) { showPicker(.bufferingQualityMode) }
+            .focused(detailFocus, equals: .playbackBufferingQualityMode)
+        }
 
         if let limit = viewModel.learnedConnectionLimitText {
             Button {
@@ -100,19 +102,25 @@ struct TVPlaybackSettingsPane: View {
             .focused(detailFocus, equals: .playbackLearnedLimitReset)
         }
 
-        TVSettingsFooter("\(viewModel.qualityFooterText) \(SettingsViewModel.bufferingQualityDescription)")
+        TVSettingsFooter(
+            viewModel.showsBufferingQualityMode
+                ? "\(viewModel.qualityFooterText) \(SettingsViewModel.bufferingQualityDescription)"
+                : viewModel.qualityFooterText
+        )
         if let error = viewModel.learnedLimitResetError {
             TVSettingsWarningFooter(error)
         }
     }
 
     /// Resets the limit. The row then disappears, so focus moves up to the
-    /// buffering row instead of being left on nothing.
+    /// row above instead of being left on nothing.
     private func resetLearnedLimit() async {
         await viewModel.resetLearnedConnectionLimit()
         if viewModel.learnedConnectionLimit == nil,
            detailFocus.wrappedValue == .playbackLearnedLimitReset {
-            detailFocus.wrappedValue = .playbackBufferingQualityMode
+            detailFocus.wrappedValue = viewModel.showsBufferingQualityMode
+                ? .playbackBufferingQualityMode
+                : .playbackMaxBitrate
         }
     }
 
@@ -131,11 +139,14 @@ struct TVPlaybackSettingsPane: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(SettingsViewModel.connectionSpeedTitle)
                         .font(.system(size: 26))
-                    Text(viewModel.connectionSpeedText)
-                        .font(.system(size: 22))
-                        .opacity(0.7)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                    // "measured 3 minutes ago" moves on while the page is open.
+                    TimelineView(.everyMinute) { context in
+                        Text(viewModel.connectionSpeedLine(at: context.date))
+                            .font(.system(size: 22))
+                            .opacity(0.7)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
                 }
                 Spacer(minLength: 16)
                 if viewModel.connectionSpeedSkippedText == nil {
@@ -150,8 +161,8 @@ struct TVPlaybackSettingsPane: View {
         .disabled(viewModel.connectionSpeedSkippedText != nil)
         .focused(detailFocus, equals: .playbackConnectionSpeedTest)
 
-        if let footer = viewModel.connectionSpeedSkippedText ?? viewModel.autoBudgetText {
-            TVSettingsFooter(footer)
+        if let budget = viewModel.autoBudgetText {
+            TVSettingsFooter(budget)
         }
         if let message = viewModel.connectionSpeedMessage {
             TVSettingsWarningFooter(message)

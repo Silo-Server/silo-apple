@@ -174,7 +174,7 @@ extension SettingKey {
     ]
 
     /// `playback.buffering_quality_mode`, read in a batch of its own like the
-    /// cellular pair: it arrived in manifest revision 21.
+    /// cellular pair: it arrived in manifest revision 23.
     static let playerBufferingQualitySettings: [SettingKey] = [.playbackBufferingQualityMode]
 }
 
@@ -405,8 +405,8 @@ final class PlayerSettings {
     var autoSkipIntro: Bool { introSkipMode.legacyAutoSkip }
 
     /// What the player does on Auto when playback keeps buffering —
-    /// `playback.buffering_quality_mode`. On a server older than manifest
-    /// revision 21 it is kept on this device only, and still applied.
+    /// `playback.buffering_quality_mode`. On a server without the setting it
+    /// is the contract default (see ``serverLacksBufferingQualityMode``).
     private(set) var bufferingQualityMode: BufferingQualityMode {
         didSet {
             guard !isLoadingCache else { return }
@@ -826,6 +826,13 @@ final class PlayerSettings {
     /// scope was active), or nil when no revision is known.
     private var manifestRevisionScopeID: String?
 
+    /// The server's settings answered that `playback.buffering_quality_mode`
+    /// is not a key they define. Such a server plays `always`, so the player
+    /// uses the default and Settings hides the row. Decided by the key, not
+    /// the manifest revision; false until a read says so, and again for a new
+    /// scope.
+    private(set) var serverLacksBufferingQualityMode = false
+
     /// Whether to offer the subtitle text opacity control. Hidden only when the
     /// server is known to predate the member: such a server never receives it,
     /// so the choice would not survive the next refresh.
@@ -855,6 +862,7 @@ final class PlayerSettings {
             flusher.forgetManifestRevision()
             knownManifestRevision = nil
             manifestRevisionScopeID = nil
+            serverLacksBufferingQualityMode = false
         }
 
         // Capture the pre-contract values before applying the normalized cache
@@ -886,13 +894,13 @@ final class PlayerSettings {
             // A failed cellular or buffering read keeps this device's values
             // for those keys.
             let cellular = (try? await cellularQualityValues(atRevision: response.revision)) ?? [:]
-            let buffering = (try? await bufferingQualityValues(atRevision: response.revision)) ?? [:]
+            let buffering = await bufferingQualityValues()
             // Applying caches under the scope active now. If it changed while
             // any read awaited, no response belongs to it, so nothing is
             // adopted; that scope's own refresh paints its values.
             guard (scopeIdentifier() ?? "") == refreshScopeID else { return .unavailable }
             effectiveByKey.merge(cellular) { _, cellularValue in cellularValue }
-            effectiveByKey.merge(buffering) { _, bufferingValue in bufferingValue }
+            effectiveByKey.merge(adopt(buffering) ?? [:]) { _, bufferingValue in bufferingValue }
             applyEffectiveSettings(overlayingUnsettledValues(on: effectiveByKey))
 
             if let scopeID, !isMigrationComplete(for: scopeID) {
@@ -942,16 +950,48 @@ final class PlayerSettings {
         return try await flusher.effectiveValues(keys: keys).byKey.filter { keys.contains($0.key) }
     }
 
-    /// `playback.buffering_quality_mode`'s row, or none when the server
-    /// predates revision 21. A missing row keeps this device's own value.
-    /// Read in its own batch for the same reason as the cellular pair.
+    /// What reading `playback.buffering_quality_mode` found.
+    private enum BufferingQualityRead {
+        /// The server defines the key; its row, if it sent one.
+        case served([SettingKey: EffectiveSettingValue])
+        /// The server's settings do not define the key.
+        case notDefined
+        /// The read failed for another reason, which says nothing either way.
+        case unread
+    }
+
+    /// `playback.buffering_quality_mode`'s row, read in its own batch for the
+    /// same reason as the cellular pair. Asked of every server rather than
+    /// gated on the manifest revision: whether the server has the setting is
+    /// decided by whether it knows the key. A missing row keeps this device's
+    /// own value.
     @MainActor
-    private func bufferingQualityValues(atRevision revision: Int) async throws -> [SettingKey: EffectiveSettingValue] {
+    private func bufferingQualityValues() async -> BufferingQualityRead {
         let keys = SettingKey.playerBufferingQualitySettings
-        guard keys.allSatisfy({ $0.isServed(atRevision: revision) }) else {
-            return [:]
+        do {
+            return .served(try await flusher.effectiveValues(keys: keys).byKey.filter { keys.contains($0.key) })
+        } catch SettingsAPIError.unknownSetting, SettingsAPIError.serverUpgradeRequired {
+            // A 422 at the key, or an answer from a contract without it.
+            return .notDefined
+        } catch {
+            return .unread
         }
-        return try await flusher.effectiveValues(keys: keys).byKey.filter { keys.contains($0.key) }
+    }
+
+    /// Records whether the server has the setting, and returns its rows to
+    /// apply: none where it has no setting, nil when the read failed.
+    @MainActor
+    private func adopt(_ read: BufferingQualityRead) -> [SettingKey: EffectiveSettingValue]? {
+        switch read {
+        case .served(let rows):
+            serverLacksBufferingQualityMode = false
+            return rows
+        case .notDefined:
+            serverLacksBufferingQualityMode = true
+            return [:]
+        case .unread:
+            return nil
+        }
     }
 
     /// Set the quality from a shared preset; the settings screens set each
@@ -1017,9 +1057,8 @@ final class PlayerSettings {
         enqueueDeviceValue(.introSkipMode, value: .string(mode.wireValue))
     }
 
-    /// Saved for this device like ``setIntroSkipMode(_:)``. Against a server
-    /// older than revision 21 the flusher keeps it on this device until the
-    /// server serves the key.
+    /// Saved for this device like ``setIntroSkipMode(_:)``. Settings offers it
+    /// only where the server has the setting.
     func setBufferingQualityMode(_ mode: BufferingQualityMode) {
         bufferingQualityMode = mode
         enqueueDeviceValue(.bufferingQualityMode, value: .string(mode.wireValue))
@@ -1341,10 +1380,9 @@ final class PlayerSettings {
         cellularMaxBitrateKbps = Self.defaultCellularQuality.bitrateKbps
     }
 
-    /// The same for `playback.buffering_quality_mode` below revision 21.
+    /// The same for `playback.buffering_quality_mode` on a server without it.
     private func resetBufferingQualityModeWhereNotServed() {
-        guard let knownManifestRevision,
-              knownManifestRevision < SettingKey.bufferingQualityRevision else { return }
+        guard serverLacksBufferingQualityMode else { return }
         bufferingQualityMode = .default
     }
 
@@ -1513,9 +1551,11 @@ final class PlayerSettings {
         }
         guard scopeIdentifier() == discardScopeID else { return false }
         knownManifestRevision = flusher.knownManifestRevision
-        guard let cellular = try? await cellularQualityValues(atRevision: response.revision),
-              let buffering = try? await bufferingQualityValues(atRevision: response.revision),
-              scopeIdentifier() == discardScopeID else {
+        guard let cellular = try? await cellularQualityValues(atRevision: response.revision) else {
+            return false
+        }
+        let bufferingRead = await bufferingQualityValues()
+        guard scopeIdentifier() == discardScopeID, let buffering = adopt(bufferingRead) else {
             return false
         }
         flusher.discardHeldChanges()
@@ -1608,8 +1648,11 @@ final class PlayerSettings {
             wireValue: effectiveByKey[.introSkipMode]?.value.stringValue
         ) ?? .default
         // Like the cellular pair: a row only from its own read or an owed
-        // change, and without one this device keeps its value.
-        if let entry = effectiveByKey[.bufferingQualityMode] {
+        // change, and without one this device keeps its value. A server
+        // without the setting plays the default.
+        if serverLacksBufferingQualityMode {
+            bufferingQualityMode = .default
+        } else if let entry = effectiveByKey[.bufferingQualityMode] {
             bufferingQualityMode = BufferingQualityMode(wireValue: entry.value.stringValue) ?? .default
         }
         autoSkipCredits = effectiveBool(.autoSkipCredits, in: effectiveByKey, default: false)

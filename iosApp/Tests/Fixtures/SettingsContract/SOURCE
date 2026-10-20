@@ -1,6 +1,6 @@
 repository=https://github.com/Silo-Server/silo-server
 path=contracts/settings/v1
-manifest_revision=21
+manifest_revision=23
 fixture_version=1
 
 Both files are byte-identical copies of the server's canonical settings
@@ -14,13 +14,13 @@ vendored manifest's revision, and the generated SettingKey.revision stop
 agreeing, which is the whole point of carrying the pair rather than the
 fixture alone.
 
-conformance.json commit=dc49fd7dcfe120b9a67a3d02258e382cd645b825
-manifest.json    commit=857655f4f5786235dba6cc9f24c844e65ea33cb1
-copied from      commit=dc49fd7dcfe120b9a67a3d02258e382cd645b825
-generated with   commit=857655f4f5786235dba6cc9f24c844e65ea33cb1 (cmd/settingsgen -lang swift)
+conformance.json commit=5d8e25b2b9b01f75b18add9ded776febece968c6
+manifest.json    commit=5d8e25b2b9b01f75b18add9ded776febece968c6
+copied from      commit=4ab2b8e95bacfcec27f266de4c5c1823ea7f8b2e
+generated with   commit=4ab2b8e95bacfcec27f266de4c5c1823ea7f8b2e (cmd/settingsgen -lang swift)
 
-The manifest and generated bindings are unchanged between those commits;
-dc49fd7dc only bumped conformance.json to revision 21.
+5d8e25b2b merged the server's main (revision 22) into the buffering-quality
+branch, which moved playback.buffering_quality_mode to revision 23.
 
 manifest.json is vendored whole, including the maintainer `notes` the server
 strips before serving /api/v1/settings/contract. Keeping it byte-identical is
@@ -35,4 +35,4 @@ contract rather than by a hand-copied table.
 
 Android vendors the same pair at
 shared/src/commonTest/resources/settings/v1/ in silo-android; the two SOURCE
-notes are meant to stay in step. This copy is revision 21.
+notes are meant to stay in step. This copy is revision 23.

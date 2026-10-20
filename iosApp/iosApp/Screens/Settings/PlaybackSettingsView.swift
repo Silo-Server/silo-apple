@@ -69,12 +69,14 @@ struct PlaybackSettingsView: View {
             choiceRow("Maximum Bitrate", .maxBitrate, value: viewModel.maxBitrateLabel, options: maxBitrateChoices)
 
             // Three-way (labels fixed by the contract).
-            choiceRow(
-                SettingsViewModel.bufferingQualityTitle,
-                .bufferingQualityMode,
-                value: viewModel.bufferingQualityMode.label,
-                options: BufferingQualityMode.allCases.map { SettingsChoice(id: $0.wireValue, label: $0.label) }
-            )
+            if viewModel.showsBufferingQualityMode {
+                choiceRow(
+                    SettingsViewModel.bufferingQualityTitle,
+                    .bufferingQualityMode,
+                    value: viewModel.bufferingQualityMode.label,
+                    options: BufferingQualityMode.allCases.map { SettingsChoice(id: $0.wireValue, label: $0.label) }
+                )
+            }
 
             // The sentence wraps, so Reset takes its own row rather than
             // sitting under it inside the same cell.
@@ -98,7 +100,10 @@ struct PlaybackSettingsView: View {
     /// The quality note, the buffering description, then a failed Reset, one
     /// line each.
     private var qualityFooterText: String {
-        var lines = [viewModel.qualityFooterText, SettingsViewModel.bufferingQualityDescription]
+        var lines = [viewModel.qualityFooterText]
+        if viewModel.showsBufferingQualityMode {
+            lines.append(SettingsViewModel.bufferingQualityDescription)
+        }
         if let error = viewModel.learnedLimitResetError {
             lines.append(error)
         }
@@ -114,9 +119,12 @@ struct PlaybackSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(SettingsViewModel.connectionSpeedTitle)
                     .foregroundStyle(Color.siloOnSurface)
-                Text(viewModel.connectionSpeedText)
-                    .font(.footnote)
-                    .foregroundStyle(Color.siloSecondaryText)
+                // "measured 3 minutes ago" moves on while the page is open.
+                TimelineView(.everyMinute) { context in
+                    Text(viewModel.connectionSpeedLine(at: context.date))
+                        .font(.footnote)
+                        .foregroundStyle(Color.siloSecondaryText)
+                }
             }
             if viewModel.connectionSpeedSkippedText == nil {
                 Button {
@@ -140,13 +148,9 @@ struct PlaybackSettingsView: View {
         .listRowBackground(Color.siloGroupedCell)
     }
 
-    /// The budget or why speed tests are skipped, then the last test's
-    /// answer, one line each.
+    /// The budget, then the last test's answer, one line each.
     private var connectionFooterText: String? {
-        let lines = [
-            viewModel.connectionSpeedSkippedText ?? viewModel.autoBudgetText,
-            viewModel.connectionSpeedMessage,
-        ].compactMap { $0 }
+        let lines = [viewModel.autoBudgetText, viewModel.connectionSpeedMessage].compactMap { $0 }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 

@@ -2663,6 +2663,10 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         let reportedRevision = revision
         lock.unlock()
         if let error { throw error }
+        // Like the server, refuse a batch naming a key its revision lacks.
+        if let undefined = keys.first(where: { !$0.isServed(atRevision: reportedRevision) }) {
+            throw SettingsAPIError.unknownSetting(key: undefined.rawValue)
+        }
         return EffectiveSettingValuesResponse(settings: settings, revision: reportedRevision)
     }
 

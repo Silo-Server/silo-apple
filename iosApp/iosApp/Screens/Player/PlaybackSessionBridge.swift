@@ -206,13 +206,16 @@ actor PlaybackV3CapabilityGate {
         self.fetch = fetch
     }
 
+    /// The active server's capability. `fresh` skips the cached one, for a
+    /// surface that must follow a feature the server adds or withdraws while
+    /// the app runs (Settings); a probe already on its way is fresh enough.
     @discardableResult
-    func requireNeutralProtocolV3() async throws -> NeutralProtocolV3Capability {
+    func requireNeutralProtocolV3(fresh: Bool = false) async throws -> NeutralProtocolV3Capability {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else {
             throw HTTPError.requestIdentityChanged
         }
         let serverId = auth.account.serverId
-        if let cached = availabilityByServerId[serverId] {
+        if !fresh, let cached = availabilityByServerId[serverId] {
             return cached
         }
         let probe: Task<NeutralProtocolV3Capability, Error>

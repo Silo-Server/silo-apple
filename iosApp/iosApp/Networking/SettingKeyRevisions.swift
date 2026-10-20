@@ -100,7 +100,7 @@ extension SettingKey {
     static let cellularQualityRevision = 20
 
     /// The manifest revision that added `playback.buffering_quality_mode`.
-    static let bufferingQualityRevision = 21
+    static let bufferingQualityRevision = 23
 
     /// Whether sending this key depends on the server's manifest revision
     /// because the key is newer than ``minimumServerRevision``: an older

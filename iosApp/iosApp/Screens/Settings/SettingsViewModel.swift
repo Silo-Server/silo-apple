@@ -77,6 +77,10 @@ final class SettingsViewModel {
         set { PlayerSettings.shared.setBufferingQualityMode(newValue) }
     }
 
+    /// Hidden where the server's settings don't define
+    /// `playback.buffering_quality_mode`; the player then plays `always`.
+    var showsBufferingQualityMode: Bool { !PlayerSettings.shared.serverLacksBufferingQualityMode }
+
     /// The manifest's label and description for `playback.buffering_quality_mode`.
     static let bufferingQualityTitle = "Lower quality when buffering"
     static let bufferingQualityDescription =
@@ -422,8 +426,9 @@ final class SettingsViewModel {
         learnedConnectionLimit.map { Self.learnedLimitText($0) }
     }
 
-    /// "Limited to 44.1 Mbps after buffering on Oct 17": the date of the most
-    /// recent lowering, as month and day in the viewer's locale.
+    /// "Limited to 44 Mbps after buffering on Oct 17": the rate as Settings
+    /// shows rates, and the date of the most recent lowering, as month and
+    /// day in the viewer's locale.
     static func learnedLimitText(
         _ limit: APIv2PlaybackConnection.LearnedLimit,
         locale: Locale = .autoupdatingCurrent,
@@ -431,8 +436,7 @@ final class SettingsViewModel {
     ) -> String {
         var style = Date.FormatStyle.dateTime.month(.abbreviated).day().locale(locale)
         style.timeZone = timeZone
-        let bitrate = ApplePlaybackQuality.formatBitrate(kbps: limit.kbps)
-        return "Limited to \(bitrate) after buffering on \(limit.observedAt.formatted(style))"
+        return "Limited to \(connectionRateText(kbps: limit.kbps)) after buffering on \(limit.observedAt.formatted(style))"
     }
 
     /// Reads `GET /api/v2/playback/connection` for the learned-limit row and,
@@ -440,7 +444,9 @@ final class SettingsViewModel {
     @MainActor
     func loadPlaybackConnection() async {
         learnedLimitResetError = nil
-        let capability = try? await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3()
+        // Fresh, so a feature the server adds or withdraws while the app runs
+        // shows or hides its rows on the next visit.
+        let capability = try? await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3(fresh: true)
         let showsLearnedLimit = capability?.bufferingQuality ?? false
         showsConnectionGroup = capability?.connectionSpeed ?? false
         guard showsLearnedLimit || showsConnectionGroup,
@@ -487,8 +493,13 @@ final class SettingsViewModel {
     /// `auto_budget_kbps`, computed by the server; nil hides the line.
     private(set) var autoBudgetKbps: Int?
     private(set) var isTestingConnectionSpeed = false
-    /// The answer to the last **Test speed**, until the next one.
+    /// The answer to the last **Test speed**, until the next one. "Try again
+    /// in N seconds" clears itself once the N seconds have passed.
     private(set) var connectionSpeedMessage: String?
+    @ObservationIgnored private var connectionSpeedMessageExpiry: Task<Void, Never>?
+    /// When the measurement the server didn't save was taken. Settings keeps
+    /// showing the server's reading rather than that one.
+    @ObservationIgnored private var unsavedMeasurementAt: Date?
 
     static let connectionSectionTitle = "Connection"
     static let connectionSpeedTitle = "Connection speed"
@@ -500,28 +511,36 @@ final class SettingsViewModel {
     /// The test measured, but the server did not store the result.
     static let speedTestNotSavedMessage = "Couldn't save the speed test result. Try again."
 
+    /// The Connection speed row's line as of `now`: why speed tests are
+    /// skipped on this network, which replaces the speed, or the speed.
+    @MainActor
+    func connectionSpeedLine(at now: Date) -> String {
+        connectionSpeedSkippedText ?? connectionSpeedText(at: now)
+    }
+
     /// "48 Mbps · measured 3 minutes ago on Wi-Fi", or "Faster than 115 Mbps
     /// · …" for a lower bound: the newer of the server's speed test and this
-    /// device's own. Without one, the playback sample: "Faster than 51 Mbps ·
-    /// seen during playback 2 hours ago". Else "Not measured yet".
+    /// device's own, unless the server didn't save this device's. Without
+    /// one, the playback sample: "Faster than 51 Mbps · seen during playback
+    /// 2 hours ago". Else "Not measured yet".
     @MainActor
-    var connectionSpeedText: String {
+    func connectionSpeedText(at now: Date) -> String {
         let own = BandwidthProbeScheduler.shared.probeReading
         let server = connectionProbe
-        if let own, case .probe(let transport) = own.source,
+        if let own, case .probe(let transport) = own.source, own.measuredAt != unsavedMeasurementAt,
            server.map({ own.measuredAt >= $0.measuredAt }) ?? true {
             return Self.connectionSpeedText(
-                kbps: own.kbps, lowerBound: own.lowerBound, measuredAt: own.measuredAt, transport: transport
+                kbps: own.kbps, lowerBound: own.lowerBound, measuredAt: own.measuredAt, transport: transport, now: now
             )
         }
         if let server {
             return Self.connectionSpeedText(
                 kbps: server.kbps, lowerBound: server.lowerBound, measuredAt: server.measuredAt,
-                transport: server.transport
+                transport: server.transport, now: now
             )
         }
         if let sample = connectionSample {
-            return Self.playbackSampleText(kbps: sample.kbps, measuredAt: sample.measuredAt)
+            return Self.playbackSampleText(kbps: sample.kbps, measuredAt: sample.measuredAt, now: now)
         }
         return Self.notMeasuredText
     }
@@ -549,23 +568,44 @@ final class SettingsViewModel {
     func testConnectionSpeed() async {
         guard !isTestingConnectionSpeed else { return }
         isTestingConnectionSpeed = true
-        connectionSpeedMessage = nil
+        setConnectionSpeedMessage(nil)
         defer { isTestingConnectionSpeed = false }
         switch await BandwidthProbeScheduler.shared.runNow() {
         case .measured:
+            unsavedMeasurementAt = nil
             await loadPlaybackConnection()
-        case .notSaved:
-            connectionSpeedMessage = Self.speedTestNotSavedMessage
+        case .notSaved(let measurement):
+            unsavedMeasurementAt = measurement.reading.measuredAt
+            setConnectionSpeedMessage(Self.speedTestNotSavedMessage)
             await loadPlaybackConnection()
         case .rateLimited(let seconds):
-            connectionSpeedMessage = "Try again in \(seconds) \(seconds == 1 ? "second" : "seconds")"
+            setConnectionSpeedMessage(Self.tryAgainMessage(seconds: seconds), for: .seconds(seconds))
         case .playbackActive:
-            connectionSpeedMessage = Self.stopPlaybackToTestMessage
+            setConnectionSpeedMessage(Self.stopPlaybackToTestMessage)
         case .metered:
             // The row already says speed tests are skipped here.
             break
         case .unavailable, .tooLittleData, .networkError, .offline, .notSupported, .interrupted:
-            connectionSpeedMessage = Self.speedTestFailedMessage
+            setConnectionSpeedMessage(Self.speedTestFailedMessage)
+        }
+    }
+
+    /// "Try again in 12 seconds", "1 second" at one.
+    static func tryAgainMessage(seconds: Int) -> String {
+        "Try again in \(seconds) \(seconds == 1 ? "second" : "seconds")"
+    }
+
+    /// Shows `message`, for `lifetime` when one is given.
+    @MainActor
+    private func setConnectionSpeedMessage(_ message: String?, for lifetime: Duration? = nil) {
+        connectionSpeedMessageExpiry?.cancel()
+        connectionSpeedMessageExpiry = nil
+        connectionSpeedMessage = message
+        guard let lifetime else { return }
+        connectionSpeedMessageExpiry = Task { [weak self] in
+            try? await Task.sleep(for: lifetime)
+            guard !Task.isCancelled else { return }
+            self?.connectionSpeedMessage = nil
         }
     }
 
@@ -611,11 +651,16 @@ final class SettingsViewModel {
         }
     }
 
-    /// A speed in whole megabits per second, rounded to the nearest, or in
-    /// kbps when that rounds to 0. Server figures read the same way.
+    /// A rate as Settings shows it, rounded down so a lower bound or the
+    /// budget never overstates the link: kbps below 1 Mbps, one decimal
+    /// below 10 Mbps ("4.5 Mbps", "4 Mbps" for a whole one), whole Mbps from
+    /// 10, with no digit grouping.
     static func connectionRateText(kbps: Int) -> String {
-        let mbps = (Double(kbps) / 1000).rounded()
-        return mbps > 0 ? "\(Int(mbps)) Mbps" : "\(max(kbps, 0)) kbps"
+        let kbps = max(kbps, 0)
+        if kbps < 1_000 { return "\(kbps) kbps" }
+        if kbps >= 10_000 { return "\(kbps / 1_000) Mbps" }
+        let tenths = kbps / 100
+        return tenths % 10 == 0 ? "\(tenths / 10) Mbps" : "\(tenths / 10).\(tenths % 10) Mbps"
     }
 
     static func connectionSpeedSkippedText(network: BandwidthProbeNetwork, cellularQualityApplies: Bool) -> String? {

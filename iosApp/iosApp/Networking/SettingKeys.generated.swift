@@ -174,7 +174,7 @@ public enum SettingKey: String, CaseIterable, Sendable {
 }
 
 public extension SettingKey {
-    static let revision = 21
+    static let revision = 23
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [

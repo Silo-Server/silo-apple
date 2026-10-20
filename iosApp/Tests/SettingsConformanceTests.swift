@@ -392,7 +392,7 @@ final class SettingsConformanceTests: XCTestCase {
         XCTAssertEqual(SettingKey.cellularQualityRevision, SettingKey.playbackCellularPreferredQuality.introducedIn)
     }
 
-    /// On a server older than revision 21 the local default is the only mode
+    /// On a server without the key the contract default is the only mode
     /// there is, and the settings rows show the contract's choices and copy.
     func testTheBufferingQualityModeMatchesTheVendoredManifest() throws {
         let definition = try XCTUnwrap(try rawDefinitions()[SettingKey.playbackBufferingQualityMode.rawValue])

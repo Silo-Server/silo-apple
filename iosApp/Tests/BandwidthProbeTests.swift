@@ -822,10 +822,33 @@ final class ConnectionSpeedTextTests: XCTestCase {
         )
     }
 
-    func testRatesReadInWholeMegabits() {
-        XCTAssertEqual(VM.connectionRateText(kbps: 35_280), "35 Mbps")
-        XCTAssertEqual(VM.connectionRateText(kbps: 35_500), "36 Mbps")
-        XCTAssertEqual(VM.connectionRateText(kbps: 499), "499 kbps")
+    /// Rounded down, so a lower bound or the budget never overstates the
+    /// link.
+    func testRatesRoundDown() {
+        XCTAssertEqual(VM.connectionRateText(kbps: 114_600), "114 Mbps")
+        XCTAssertEqual(VM.connectionRateText(kbps: 10_000), "10 Mbps")
+        XCTAssertEqual(VM.connectionRateText(kbps: 9_990), "9.9 Mbps")
+        XCTAssertEqual(VM.connectionRateText(kbps: 4_000), "4 Mbps")
+        XCTAssertEqual(VM.connectionRateText(kbps: 1_050), "1 Mbps")
+        XCTAssertEqual(VM.connectionRateText(kbps: 999), "999 kbps")
+        XCTAssertEqual(VM.connectionRateText(kbps: 1_000_000), "1000 Mbps", "no digit grouping")
+    }
+
+    /// The limit row reads rates the same way as the speed and the budget.
+    func testTheLimitRowSaysTheRateAndTheDay() throws {
+        let observed = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-17T12:00:00Z"))
+        let limit = APIv2PlaybackConnection.LearnedLimit(
+            kbps: 44_100, observedAt: observed, expiresAt: observed.addingTimeInterval(7 * 86_400)
+        )
+        XCTAssertEqual(
+            VM.learnedLimitText(limit, locale: Locale(identifier: "en_US"), timeZone: TimeZone(identifier: "UTC")!),
+            "Limited to 44 Mbps after buffering on Oct 17"
+        )
+    }
+
+    func testTryAgainSaysOneSecondAtOne() {
+        XCTAssertEqual(VM.tryAgainMessage(seconds: 1), "Try again in 1 second")
+        XCTAssertEqual(VM.tryAgainMessage(seconds: 30), "Try again in 30 seconds")
     }
 
     func testSpeedTestsAreSkippedOnMeteredNetworks() {

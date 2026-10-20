@@ -1,7 +1,7 @@
 import Foundation
 
 /// What Silo does when playback keeps buffering —
-/// `playback.buffering_quality_mode`, settings contract revision 21.
+/// `playback.buffering_quality_mode`, settings contract revision 23.
 ///
 /// The spec is the server repo's `docs/design/2026-10-17-buffering-quality.md`.
 /// Web and Android implement the same modes.
