@@ -14,6 +14,8 @@ enum SiloControlReceiverPolicy {
         let sequence: Int
         let didReceiveHello: Bool
         let passive: Bool
+        var isAuthorized = true
+        var isHandingOff = false
     }
 
     enum Admission: Equatable {
@@ -24,14 +26,19 @@ enum SiloControlReceiverPolicy {
     }
 
     /// Whether a new connection fits. At the cap, a connection that never
-    /// said hello goes first (likely half-open or a port scan), then the
-    /// oldest passive controller. Active controllers are never evicted by a
-    /// stranger; the newcomer is refused instead.
+    /// said hello goes first (likely half-open or a port scan), then a
+    /// cross-server controller that isn't handing off (it can do nothing
+    /// else, and nothing else times it out), then the oldest passive
+    /// controller. Active controllers are never evicted by a stranger; the
+    /// newcomer is refused instead.
     static func admission(existing: [ControllerSummary]) -> Admission {
         guard existing.count >= maxControllers else { return .admit }
         let byAge = existing.sorted { $0.sequence < $1.sequence }
         if let silent = byAge.first(where: { !$0.didReceiveHello }) {
             return .admitEvicting(silent.id)
+        }
+        if let idle = byAge.first(where: { !$0.isAuthorized && !$0.isHandingOff }) {
+            return .admitEvicting(idle.id)
         }
         if let passive = byAge.first(where: { $0.passive }) {
             return .admitEvicting(passive.id)
@@ -92,6 +99,16 @@ enum SiloControlReceiverPolicy {
         controllerCanConfirm: Bool
     ) -> Bool {
         titleOnScreen && !playingUnderOfferedProfile && !replaceConfirmed && controllerCanConfirm
+    }
+
+    /// A confirmation covers only the title the user agreed to replace. If
+    /// another one started while they decided, the TV asks again.
+    static func confirmationCovers(
+        onScreenContentId: String?,
+        replaceConfirmed: Bool,
+        replacingContentId: String?
+    ) -> Bool {
+        replaceConfirmed && replacingContentId == onScreenContentId
     }
 
     static func makeResumeToken() -> String {

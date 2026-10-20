@@ -128,6 +128,10 @@ struct SiloControlHandoffOffer: Codable, Equatable, Sendable {
     /// The user agreed to replace a title another profile started, after the
     /// TV answered `replace_confirmation_required`.
     var replaceConfirmed: Bool? = nil
+    /// With `replaceConfirmed`: the `contentId` of the title the user agreed
+    /// to replace. The TV honors the confirmation only while that title is
+    /// still the one on screen.
+    var replacingContentId: String? = nil
 
     /// Whether `serverId` is the registry key of `serverURL`
     /// (`ServerRegistry.serverId(for:)`). A TV refuses an offer that fails
@@ -182,6 +186,13 @@ struct SiloControlNowPlayingSummary: Codable, Equatable, Sendable {
     let subtitle: String?
     let profileName: String?
     let controllerName: String?
+}
+
+/// The user's agreement to replace one particular title on the TV, carried
+/// from the prompt to the offer's `replacingContentId`.
+struct SiloControlReplaceConsent: Equatable, Sendable {
+    /// The title the user saw when agreeing; nil when the TV didn't say.
+    let contentId: String?
 }
 
 /// A controller's `passive` flag after hello. Sent only to receivers that

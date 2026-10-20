@@ -99,10 +99,10 @@ final class RemotePlaybackRoutingTests: XCTestCase {
     func testPlayingADifferentTitleAsksBeforeReplacingWhatTheTVIsPlaying() async {
         let router = AppRouter()
         var sent: [String] = []
-        var confirmed: [Bool] = []
-        router.remotePlaybackInterceptor = { request, replaceConfirmed in
+        var consents: [SiloControlReplaceConsent?] = []
+        router.remotePlaybackInterceptor = { request, replaceConsent in
             sent.append(request.contentId)
-            confirmed.append(replaceConfirmed)
+            consents.append(replaceConsent)
             return true
         }
         router.remotePlaybackCurrentTitle = { (title: "Oak Street", contentId: "oak", targetName: "Living Room") }
@@ -116,7 +116,8 @@ final class RemotePlaybackRoutingTests: XCTestCase {
         router.confirmReplaceRemotePlayback()
         await expectEventually("sent after confirmation") { sent == ["miasma"] }
         XCTAssertNil(router.pendingReplaceRemotePlayback)
-        XCTAssertEqual(confirmed, [true], "the TV must not ask again after the user confirmed here")
+        XCTAssertEqual(consents, [SiloControlReplaceConsent(contentId: "oak")],
+                       "the TV must not ask again after the user agreed here to replace Oak Street")
     }
 
     /// Same title, so nothing asked here; the TV still asks when another
@@ -124,10 +125,10 @@ final class RemotePlaybackRoutingTests: XCTestCase {
     func testResumingTheSameTitleDoesNotAsk() async {
         let router = AppRouter()
         var sent: [String] = []
-        var confirmed: [Bool] = []
-        router.remotePlaybackInterceptor = { request, replaceConfirmed in
+        var consents: [SiloControlReplaceConsent?] = []
+        router.remotePlaybackInterceptor = { request, replaceConsent in
             sent.append(request.contentId)
-            confirmed.append(replaceConfirmed)
+            consents.append(replaceConsent)
             return true
         }
         router.remotePlaybackCurrentTitle = { (title: "Oak Street", contentId: "oak", targetName: "Living Room") }
@@ -135,7 +136,7 @@ final class RemotePlaybackRoutingTests: XCTestCase {
         router.presentPlayer(contentId: "oak", resumePosition: 90)
         await expectEventually("sent without a prompt") { sent == ["oak"] }
         XCTAssertNil(router.pendingReplaceRemotePlayback)
-        XCTAssertEqual(confirmed, [false])
+        XCTAssertEqual(consents, [nil])
     }
 
     func testIdleTVDoesNotAsk() async {

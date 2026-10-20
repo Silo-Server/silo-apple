@@ -306,9 +306,9 @@ final class AppRouter {
     /// page, home rail badge, deep links, restored alerts) routes through one
     /// decision instead of each call site re-checking the remote session.
     /// Returns true when the request was taken by an engaged TV.
-    /// `replaceConfirmed` is true once the user agreed to replace what the TV
+    /// `replaceConsent` is set once the user agreed to replace what the TV
     /// is playing, so the TV doesn't ask them a second time.
-    var remotePlaybackInterceptor: ((_ request: SiloControlPlaybackRequest, _ replaceConfirmed: Bool) async -> Bool)?
+    var remotePlaybackInterceptor: ((_ request: SiloControlPlaybackRequest, _ replaceConsent: SiloControlReplaceConsent?) async -> Bool)?
     /// Whether a TV is engaged right now, for sites that must not open the
     /// local player at all (a PiP restore) rather than route a request.
     var isRemotePlaybackEngaged: (() -> Bool)?
@@ -334,6 +334,7 @@ final class AppRouter {
         let id = UUID()
         let request: SiloControlPlaybackRequest
         let currentTitle: String
+        let currentContentId: String?
         let targetName: String
     }
     var pendingReplaceRemotePlayback: ReplaceRemotePlaybackChoice?
@@ -347,7 +348,8 @@ final class AppRouter {
         guard let choice = pendingReplaceRemotePlayback else { return }
         pendingReplaceRemotePlayback = nil
         guard let remotePlaybackInterceptor else { return }
-        Task { _ = await remotePlaybackInterceptor(choice.request, true) }
+        let consent = SiloControlReplaceConsent(contentId: choice.currentContentId)
+        Task { _ = await remotePlaybackInterceptor(choice.request, consent) }
     }
 
     /// User chose the phone for a pending offline play.
@@ -363,7 +365,7 @@ final class AppRouter {
         guard let choice = pendingOfflinePlayChoice else { return }
         pendingOfflinePlayChoice = nil
         guard let remotePlaybackInterceptor else { return }
-        Task { _ = await remotePlaybackInterceptor(choice.request, false) }
+        Task { _ = await remotePlaybackInterceptor(choice.request, nil) }
     }
     #endif
 
@@ -484,6 +486,7 @@ final class AppRouter {
                 pendingReplaceRemotePlayback = ReplaceRemotePlaybackChoice(
                     request: request,
                     currentTitle: now.title,
+                    currentContentId: now.contentId,
                     targetName: now.targetName
                 )
                 return
@@ -491,7 +494,7 @@ final class AppRouter {
             isRoutingRemotePlayback = true
             Task {
                 defer { isRoutingRemotePlayback = false }
-                if await remotePlaybackInterceptor(request, false) { return }
+                if await remotePlaybackInterceptor(request, nil) { return }
                 presentedPlayer = presentation
             }
             return

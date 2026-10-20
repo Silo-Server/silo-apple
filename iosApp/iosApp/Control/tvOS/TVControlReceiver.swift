@@ -48,8 +48,9 @@ final class TVControlReceiver {
             features.contains(feature)
         }
 
-        var summary: SiloControlReceiverPolicy.ControllerSummary {
-            .init(id: id, sequence: sequence, didReceiveHello: didReceiveHello, passive: passive)
+        func summary(isHandingOff: Bool) -> SiloControlReceiverPolicy.ControllerSummary {
+            .init(id: id, sequence: sequence, didReceiveHello: didReceiveHello, passive: passive,
+                  isAuthorized: isAuthorized, isHandingOff: isHandingOff)
         }
     }
 
@@ -283,7 +284,7 @@ final class TVControlReceiver {
         playerHandoffGeneration = pendingPlayerHandoffGeneration
         pendingPlayerHandoffGeneration = nil
         refreshStandbyState()
-        startStateUpdates()
+        updateStateTicks()
         broadcastState()
         setPlaybackAdvertised(true)
     }
@@ -321,7 +322,8 @@ final class TVControlReceiver {
 
     private func accept(_ connection: NWConnection) async {
         let session = SiloControlSession(connection: connection)
-        switch SiloControlReceiverPolicy.admission(existing: controllers.values.map(\.summary)) {
+        let existing = controllers.values.map { $0.summary(isHandingOff: pendingHandoff?.controllerId == $0.id) }
+        switch SiloControlReceiverPolicy.admission(existing: existing) {
         case .admit:
             break
         case .admitEvicting(let id):
@@ -335,7 +337,10 @@ final class TVControlReceiver {
                 code: "too_many_controllers",
                 message: "Too many devices are controlling this Apple TV. Disconnect one and try again."
             )))
-            await session.closeGracefully()
+            // The peer's features aren't known yet, but every shipped decoder
+            // ignores the `close` payload. Without the reason, a phone that
+            // saw `multi_controller` in the hello would forget this TV.
+            await session.closeGracefully(reason: SiloControlCloseReason.tooManyControllers)
             withExtendedLifetime(stream) {}
             return
         }
@@ -467,7 +472,22 @@ final class TVControlReceiver {
         controller.serverIdentity = ServerIdentity.usable(hello.serverIdentity)
         controller.passive = hello.passive == true
 
-        // The device's older sockets are ones it has abandoned.
+        let matchesServer = RemotePlaybackIdentityManager.shared.controllerMatchesEffectiveServer(
+            serverId: serverId,
+            serverIdentity: controller.serverIdentity
+        )
+        // A v2 cross-server controller may stay connected, unauthorized,
+        // to complete server-mediated identity handoff.
+        guard matchesServer || version >= 2 else {
+            sendError(code: "server_mismatch",
+                      message: "This Apple TV is connected to a different Silo server.", to: controller)
+            closeController(controller.id, reason: SiloControlCloseReason.unauthorized)
+            return
+        }
+
+        // The device's older sockets are ones it has abandoned. Only a
+        // connection the TV keeps replaces them, so a refused hello can't
+        // knock out a working one.
         let replaced = SiloControlReceiverPolicy.connectionsReplaced(
             byHelloFrom: hello.deviceId,
             on: controller.id,
@@ -477,22 +497,11 @@ final class TVControlReceiver {
             closeController(id, reason: SiloControlCloseReason.replaced)
         }
 
-        if RemotePlaybackIdentityManager.shared.controllerMatchesEffectiveServer(
-            serverId: serverId,
-            serverIdentity: controller.serverIdentity
-        ) {
-            controller.isAuthorized = true
-            refreshStandbyState()
-            sendState(to: controller)
-        } else if version >= 2 {
-            // A v2 cross-server controller may stay connected only long
-            // enough to complete server-mediated identity handoff.
-            controller.isAuthorized = false
-        } else {
-            sendError(code: "server_mismatch",
-                      message: "This Apple TV is connected to a different Silo server.", to: controller)
-            closeController(controller.id, reason: SiloControlCloseReason.unauthorized)
-        }
+        controller.isAuthorized = matchesServer
+        guard matchesServer else { return }
+        refreshStandbyState()
+        updateStateTicks()
+        sendState(to: controller)
     }
 
     // MARK: - Handoff
@@ -505,13 +514,17 @@ final class TVControlReceiver {
         let manager = RemotePlaybackIdentityManager.shared
         // A handoff stops what is on screen before the swap, so consent is
         // asked here, not at launch.
+        let nowPlaying = nowPlayingSummary()
         if SiloControlReceiverPolicy.needsReplaceConfirmation(
             titleOnScreen: isTitleOnScreen,
             playingUnderOfferedProfile: isPlaying(underProfileOf: offer),
-            replaceConfirmed: offer.replaceConfirmed == true,
+            replaceConfirmed: SiloControlReceiverPolicy.confirmationCovers(
+                onScreenContentId: nowPlaying.contentId,
+                replaceConfirmed: offer.replaceConfirmed == true,
+                replacingContentId: offer.replacingContentId
+            ),
             controllerCanConfirm: controller.supports(SiloControlFeature.replaceConfirmation)
         ) {
-            let nowPlaying = nowPlayingSummary()
             let who = nowPlaying.profileName ?? "Someone"
             sendHandoffCancel(
                 offer.requestId,
@@ -820,6 +833,7 @@ final class TVControlReceiver {
             issuedIdentity?.connectionId = nil
         }
         refreshStandbyState()
+        updateStateTicks()
 
         let session = controller.session
         let read = controller.readTask
@@ -874,6 +888,10 @@ final class TVControlReceiver {
         let manager = RemotePlaybackIdentityManager.shared
         let activeGeneration = manager.activeIdentity?.generationID
         for controller in controllers.values {
+            // Its own identity ended (title over, ready timeout, expiry);
+            // another controller's handoff clears readiness before this runs.
+            let ownIdentityEnded = controller.readyGeneration != nil
+                && controller.readyGeneration != activeGeneration
             if controller.readyGeneration != activeGeneration {
                 controller.readyGeneration = nil
             }
@@ -885,13 +903,14 @@ final class TVControlReceiver {
             ) || (activeGeneration != nil && controller.readyGeneration == activeGeneration)
             if controller.isAuthorized, !wasAuthorized {
                 sendState(to: controller)
-            } else if !controller.isAuthorized, wasAuthorized {
+            } else if !controller.isAuthorized, wasAuthorized, !ownIdentityEnded {
                 sendError(code: "server_mismatch",
                           message: "This Apple TV is now playing from a different Silo server.",
                           to: controller)
             }
         }
         refreshStandbyState()
+        updateStateTicks()
     }
 
     private func startHeartbeat(_ controller: Controller) {
@@ -925,8 +944,15 @@ final class TVControlReceiver {
 
     // MARK: - Outbound
 
-    private func startStateUpdates() {
-        stateTask?.cancel()
+    /// Ticks state out only while a title plays and an authorized controller
+    /// is listening, so ordinary TV playback runs no timer.
+    private func updateStateTicks() {
+        guard playerViewModel != nil, controllers.values.contains(where: \.isAuthorized) else {
+            stateTask?.cancel()
+            stateTask = nil
+            return
+        }
+        guard stateTask == nil else { return }
         stateTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))

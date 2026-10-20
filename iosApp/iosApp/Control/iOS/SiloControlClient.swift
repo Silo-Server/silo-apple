@@ -150,7 +150,10 @@ final class SiloControlClient {
     /// Never falls through to local playback on its own: once the user has a
     /// TV engaged, a failed launch is reported on the remote cover instead.
     @discardableResult
-    func launchOnEngagedTV(_ request: SiloControlPlaybackRequest, replaceConfirmed: Bool = false) async -> Bool {
+    func launchOnEngagedTV(
+        _ request: SiloControlPlaybackRequest,
+        replaceConsent: SiloControlReplaceConsent? = nil
+    ) async -> Bool {
         guard remotePlaybackEngaged else { return false }
         if isReconnecting {
             isShowingRemoteControl = true
@@ -166,7 +169,7 @@ final class SiloControlClient {
                 return true
             }
         }
-        await launch(request, replaceConfirmed: replaceConfirmed)
+        await launch(request, replaceConsent: replaceConsent)
         return true
     }
 
@@ -261,7 +264,7 @@ final class SiloControlClient {
         await launch(request)
     }
 
-    func launch(_ request: SiloControlPlaybackRequest, replaceConfirmed: Bool = false) async {
+    func launch(_ request: SiloControlPlaybackRequest, replaceConsent: SiloControlReplaceConsent? = nil) async {
         guard let activeServer = ServerRegistry.shared.activeServer,
               let profileId = ServerRegistry.shared.activeProfileId,
               !profileId.isEmpty else {
@@ -282,6 +285,9 @@ final class SiloControlClient {
         errorMessage = nil
         pendingReplace = nil
         isShowingRemoteControl = true
+        // Sending a title is engaging with the TV, even on a session that
+        // attached silently; the TV hears it through `presence`.
+        sessionIsAutoResumed = false
 
         let connectionId = self.connectionId
         let handshake = self.handshake
@@ -294,7 +300,7 @@ final class SiloControlClient {
                 server: activeServer,
                 profileId: profileId,
                 profileName: profileName,
-                replaceConfirmed: replaceConfirmed,
+                replaceConsent: replaceConsent,
                 session: session,
                 handshake: handshake
             )
@@ -314,6 +320,14 @@ final class SiloControlClient {
                 request: request, nowPlaying: nowPlaying,
                 tvName: activeTarget?.name ?? "the TV", fallbackMessage: message
             )
+        } catch SiloControlHandoffError.cancelled(let message)
+                    where handshake.tvSupports(SiloControlFeature.multiController) {
+            // A TV that keeps several controllers keeps this one too when it
+            // turns a handoff down, e.g. because another device's play
+            // superseded it. Report it; the session stays.
+            guard self.connectionId == connectionId else { return }
+            isConnecting = false
+            errorMessage = message
         } catch {
             fail(error.localizedDescription, connectionId: connectionId)
         }
@@ -323,7 +337,8 @@ final class SiloControlClient {
     func confirmReplace() {
         guard let pending = pendingReplace else { return }
         pendingReplace = nil
-        Task { await launch(pending.request, replaceConfirmed: true) }
+        let consent = SiloControlReplaceConsent(contentId: pending.nowPlaying?.contentId)
+        Task { await launch(pending.request, replaceConsent: consent) }
     }
 
     func cancelReplace() {
@@ -334,7 +349,7 @@ final class SiloControlClient {
         server: ServerEntry,
         profileId: String,
         profileName: String?,
-        replaceConfirmed: Bool,
+        replaceConsent: SiloControlReplaceConsent?,
         session: SiloControlSession,
         handshake: SiloControlHandshake
     ) async throws -> SiloControlHandoffReady {
@@ -372,7 +387,8 @@ final class SiloControlClient {
             serverIdentity: server.verifiedServerId,
             serverEndpoints: endpoints,
             resumeToken: tvId.flatMap { resumeTokens.token(tvId: $0, serverId: server.id, profileId: profileId) },
-            replaceConfirmed: replaceConfirmed ? true : nil
+            replaceConfirmed: replaceConsent != nil ? true : nil,
+            replacingContentId: replaceConsent?.contentId
         )))
         func remember(_ ready: SiloControlHandoffReady) {
             guard let tvId else { return }

@@ -32,6 +32,23 @@ final class SiloControlMultiControllerTests: XCTestCase {
         XCTAssertEqual(Policy.admission(existing: existing), .admitEvicting(passiveOld.id))
     }
 
+    /// A cross-server controller that isn't handing off can do nothing
+    /// else, and nothing times it out, so it goes before passive ones.
+    func testAtTheCapEvictsAnIdleCrossServerControllerBeforeAPassiveOne() {
+        var existing = (0..<Policy.maxControllers).map { summary(sequence: $0, passive: true) }
+        let idle = summary(sequence: 40, authorized: false)
+        let handingOff = summary(sequence: 10, authorized: false, handingOff: true)
+        existing[2] = idle
+        existing[4] = handingOff
+        XCTAssertEqual(Policy.admission(existing: existing), .admitEvicting(idle.id))
+    }
+
+    func testAtTheCapNeverEvictsAControllerMidHandoff() {
+        var existing = (0..<Policy.maxControllers).map { summary(sequence: $0) }
+        existing[0] = summary(sequence: 0, authorized: false, handingOff: true)
+        XCTAssertEqual(Policy.admission(existing: existing), .refuse)
+    }
+
     /// A stranger never pushes off someone actively using the remote.
     func testAtTheCapRefusesWhenEveryControllerIsActive() {
         let existing = (0..<Policy.maxControllers).map { summary(sequence: $0) }
@@ -141,6 +158,20 @@ final class SiloControlMultiControllerTests: XCTestCase {
         XCTAssertFalse(Policy.needsReplaceConfirmation(
             titleOnScreen: true, playingUnderOfferedProfile: false,
             replaceConfirmed: true, controllerCanConfirm: true
+        ))
+    }
+
+    /// Consent names the title the user saw. If someone started another
+    /// one while they decided, the TV asks again.
+    func testConfirmationCoversOnlyTheTitleTheUserAgreedToReplace() {
+        XCTAssertTrue(Policy.confirmationCovers(
+            onScreenContentId: "oak", replaceConfirmed: true, replacingContentId: "oak"
+        ))
+        XCTAssertFalse(Policy.confirmationCovers(
+            onScreenContentId: "bobs-film", replaceConfirmed: true, replacingContentId: "oak"
+        ))
+        XCTAssertFalse(Policy.confirmationCovers(
+            onScreenContentId: "oak", replaceConfirmed: false, replacingContentId: "oak"
         ))
     }
 
@@ -264,7 +295,7 @@ final class SiloControlMultiControllerTests: XCTestCase {
         let offer = SiloControlHandoffOffer(
             requestId: "r2", serverId: "s", serverURL: "https://silo.example", serverName: nil,
             profileId: "p", profileName: "Alex",
-            resumeToken: "tok", replaceConfirmed: true
+            resumeToken: "tok", replaceConfirmed: true, replacingContentId: "oak"
         )
         XCTAssertEqual(try roundTrip(.handoffOffer(offer)), .handoffOffer(offer))
     }
@@ -287,8 +318,12 @@ final class SiloControlMultiControllerTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func summary(sequence: Int, hello: Bool = true, passive: Bool = false) -> Policy.ControllerSummary {
-        Policy.ControllerSummary(id: UUID(), sequence: sequence, didReceiveHello: hello, passive: passive)
+    private func summary(
+        sequence: Int, hello: Bool = true, passive: Bool = false,
+        authorized: Bool = true, handingOff: Bool = false
+    ) -> Policy.ControllerSummary {
+        Policy.ControllerSummary(id: UUID(), sequence: sequence, didReceiveHello: hello, passive: passive,
+                                 isAuthorized: authorized, isHandingOff: handingOff)
     }
 
     private func roundTrip(_ message: SiloControlMessage) throws -> SiloControlMessage {
