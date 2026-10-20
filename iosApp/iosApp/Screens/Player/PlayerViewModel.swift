@@ -5552,6 +5552,9 @@ class PlayerViewModel {
         freshLoadOwnsFailureHandling = true
         freshLoadTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
+            // The load holds speed tests off from here, before its start
+            // request registers it.
+            self.syncSpeedTestHold()
             var uncommittedPrepared: PreparedPlayback?
             defer {
                 if self.freshLoadGeneration == currentFreshLoadGeneration {
@@ -10240,11 +10243,12 @@ extension PlayerViewModel {
         }
     }
 
-    /// Speed tests wait while this player loads or plays; a paused one does
-    /// not hold them off, and resuming stops a running test.
+    /// Speed tests wait while this player loads or plays, including while a
+    /// fresh load prepares its replacement; a paused one does not hold them
+    /// off, and resuming stops a running test.
     private func syncSpeedTestHold() {
-        let active = activeAetherLoadEpoch != nil
-            && (aetherPlaybackController.shouldPlayWhenReady || isLoading)
+        let active = freshLoadTask != nil
+            || (activeAetherLoadEpoch != nil && (aetherPlaybackController.shouldPlayWhenReady || isLoading))
         guard active != speedTestHoldActive else { return }
         speedTestHoldActive = active
         BandwidthProbeScheduler.shared.videoPlayer(self, isActive: active)

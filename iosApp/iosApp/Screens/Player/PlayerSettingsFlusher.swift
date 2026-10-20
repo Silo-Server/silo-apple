@@ -541,8 +541,10 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// Bumped by ``forgetManifestRevision()`` so a read that was already in
     /// flight for the previous server cannot record that server's revision.
     private var manifestRevisionGeneration: UInt64 = 0
-    /// Keys the server answered with a row since ``forgetManifestRevision()``:
-    /// it serves them whatever its revision, so their writes can go.
+    /// Keys whose latest read since ``forgetManifestRevision()`` came back
+    /// with a row: the server serves them whatever its revision, so their
+    /// writes can go. A later read without the row, or one refused for the
+    /// key, takes it out again.
     private var keysWithRows: Set<SettingKey> = []
 
     init(
@@ -653,10 +655,19 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
     /// may carry.
     func effectiveValues(keys: [SettingKey]) async throws -> EffectiveSettingValuesResponse {
         let generation = lock.withLock { manifestRevisionGeneration }
-        let response = try await transport.effectiveValues(keys: keys)
+        let response: EffectiveSettingValuesResponse
+        do {
+            response = try await transport.effectiveValues(keys: keys)
+        } catch let error as SettingsAPIError where error.isUnknownKeyAnswer {
+            lock.withLock {
+                if manifestRevisionGeneration == generation { keysWithRows.subtract(keys) }
+            }
+            throw error
+        }
         lock.withLock {
             if manifestRevisionGeneration == generation {
                 manifestRevision = response.revision
+                keysWithRows.subtract(keys)
                 keysWithRows.formUnion(response.byKey.keys)
             }
         }

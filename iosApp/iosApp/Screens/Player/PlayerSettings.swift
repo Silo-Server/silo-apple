@@ -732,6 +732,7 @@ final class PlayerSettings {
         audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
         introSkipMode = Self.cachedIntroSkipMode(defaults)
         bufferingQualityMode = Self.cachedBufferingQualityMode(defaults)
+        serverLacksBufferingQualityMode = defaults.bool(forKey: Self.cacheKey(Keys.bufferingQualityModeUndefined))
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
         autoSkipRecap = Self.cachedBool(defaults, key: Keys.autoSkipRecap, defaultValue: false)
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
@@ -829,9 +830,15 @@ final class PlayerSettings {
     /// The server's settings answered that `playback.buffering_quality_mode`
     /// is not a key they define. Such a server plays `always`, so the player
     /// uses the default and Settings hides the row. Decided by the key, not
-    /// the manifest revision; false until a read says so, and again for a new
-    /// scope.
-    private(set) var serverLacksBufferingQualityMode = false
+    /// the manifest revision, and kept per scope until a read answers the key,
+    /// so a switch back to that server or profile, or a launch offline,
+    /// remembers it.
+    private(set) var serverLacksBufferingQualityMode = false {
+        didSet {
+            guard !isLoadingCache else { return }
+            defaults.set(serverLacksBufferingQualityMode, forKey: Self.cacheKey(Keys.bufferingQualityModeUndefined))
+        }
+    }
 
     /// Whether to offer the subtitle text opacity control. Hidden only when the
     /// server is known to predate the member: such a server never receives it,
@@ -862,7 +869,6 @@ final class PlayerSettings {
             flusher.forgetManifestRevision()
             knownManifestRevision = nil
             manifestRevisionScopeID = nil
-            serverLacksBufferingQualityMode = false
         }
 
         // Capture the pre-contract values before applying the normalized cache
@@ -970,8 +976,7 @@ final class PlayerSettings {
         let keys = SettingKey.playerBufferingQualitySettings
         do {
             return .served(try await flusher.effectiveValues(keys: keys).byKey.filter { keys.contains($0.key) })
-        } catch SettingsAPIError.unknownSetting, SettingsAPIError.serverUpgradeRequired {
-            // A 422 at the key, or an answer from a contract without it.
+        } catch let error as SettingsAPIError where error.isUnknownKeyAnswer {
             return .notDefined
         } catch {
             return .unread
@@ -1682,9 +1687,13 @@ final class PlayerSettings {
         // therefore still shows the device value being removed.
         let clearing = flusher.unsettledClears
         // A cellular or buffering key with no row keeps what this device last
-        // knew, like its value above.
-        let unreadGated = Set(SettingKey.playerCellularQualitySettings + SettingKey.playerBufferingQualitySettings)
+        // knew, like its value above, unless the server doesn't define it:
+        // then this device has no value of its own there.
+        var unreadGated = Set(SettingKey.playerCellularQualitySettings + SettingKey.playerBufferingQualitySettings)
             .subtracting(effectiveByKey.keys)
+        if serverLacksBufferingQualityMode {
+            unreadGated.subtract(SettingKey.playerBufferingQualitySettings)
+        }
         deviceOverriddenKeys = Set(
             effectiveByKey.compactMap { key, entry in
                 entry.scope == .profileDevice && !clearing.contains(key) ? key : nil
@@ -1863,6 +1872,7 @@ final class PlayerSettings {
         audioLanguage = defaults.string(forKey: Self.cacheKey(Keys.audioLanguage)) ?? ""
         introSkipMode = Self.cachedIntroSkipMode(defaults)
         bufferingQualityMode = Self.cachedBufferingQualityMode(defaults)
+        serverLacksBufferingQualityMode = defaults.bool(forKey: Self.cacheKey(Keys.bufferingQualityModeUndefined))
         autoSkipCredits = Self.cachedBool(defaults, key: Keys.autoSkipCredits, defaultValue: false)
         autoSkipRecap = Self.cachedBool(defaults, key: Keys.autoSkipRecap, defaultValue: false)
         autoPlayNextEpisode = Self.cachedBool(
@@ -2250,6 +2260,7 @@ final class PlayerSettings {
         static let autoSkipIntro = "skipIntros"
         static let introSkipMode = "player.introSkipMode"
         static let bufferingQualityMode = "playback.bufferingQualityMode"
+        static let bufferingQualityModeUndefined = "playback.bufferingQualityModeUndefined"
         static let autoSkipCredits = "skipCredits"
         static let autoSkipRecap = "player.autoSkipRecap"
         static let hdrEnabled = "player.hdrEnabled"

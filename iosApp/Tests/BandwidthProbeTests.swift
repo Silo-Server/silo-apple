@@ -715,6 +715,20 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.probeReading?.kbps, 115_000, "but it still describes this connection")
     }
 
+    /// A report still waiting when the network changes keeps nothing for the
+    /// network it measured: the new network's readings stay as they are.
+    func testAReportThatOutlivesItsNetworkKeepsNothing() async {
+        server.automatic = false
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        await advance(seconds: 5)
+        server.reportResult = .failed
+        let scheduler = scheduler!
+        server.duringReport = { scheduler.networkChanged(Self.otherWifi) }
+        _ = await scheduler.runNow()
+        XCTAssertNil(scheduler.probeReading)
+    }
+
     /// A paused video player does not hold Test speed off; one that plays or
     /// loads does.
     func testAPausedPlayerDoesNotHoldTestSpeedOff() async {
@@ -823,9 +837,12 @@ private final class FakeProbeServer: BandwidthProbeServer {
     }
 
     var reportResult = BandwidthReportResult.stored
+    /// Runs while the report waits for its answer.
+    var duringReport: (@MainActor () -> Void)?
 
     func report(_ measurement: BandwidthMeasurement, to target: BandwidthProbeTarget) async -> BandwidthReportResult {
         reports.append(measurement)
+        if let duringReport { await duringReport() }
         if reportResult == .stored { stored.probe = measurement.reading }
         return reportResult
     }

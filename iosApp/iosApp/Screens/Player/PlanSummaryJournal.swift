@@ -56,6 +56,9 @@ final class PlanSummaryJournal {
     private static let storageKey = "playback.planSummaryJournal"
     /// Work from ``record(sending:_:)`` that has not finished.
     private var inFlight: [UUID: Task<Void, Never>] = [:]
+    /// Running summaries this run kept. Their plans may still be playing,
+    /// so a replay leaves them; a plan's final summary may be replayed.
+    private var runningThisRun: Set<String> = []
     private static let logger = Logger(subsystem: "org.siloserver.silo", category: "PlanSummary")
 
     init(
@@ -91,16 +94,21 @@ final class PlanSummaryJournal {
     func record(sending: Bool, _ build: @escaping Build) {
         let id = UUID()
         #if os(iOS) || os(tvOS)
-        let background = UIApplication.shared.beginBackgroundTask(withName: "SiloPlanSummary")
+        let background = BackgroundWork(name: "SiloPlanSummary")
         #endif
         inFlight[id] = Task { [weak self] in
             if let built = await build(), let self {
+                if sending {
+                    runningThisRun.remove(built.entry.eventId)
+                } else {
+                    runningThisRun.insert(built.entry.eventId)
+                }
                 keep(built.entry)
                 if sending { await deliver(built.entry, as: built.owner) }
             }
             self?.inFlight[id] = nil
             #if os(iOS) || os(tvOS)
-            if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
+            background.end()
             #endif
         }
     }
@@ -111,23 +119,30 @@ final class PlanSummaryJournal {
         let current = entries.filter { now.timeIntervalSince($0.planStartedAt) < Self.attemptLifetime }
         if current.count != entries.count { store(current) }
         for entry in current
-        where entry.serverId == owner.account.serverId && entry.profileId == owner.profileId {
+        where entry.serverId == owner.account.serverId && entry.profileId == owner.profileId
+            && !runningThisRun.contains(entry.eventId) {
             await deliver(entry, as: owner)
         }
     }
 
     /// Waits for the work in flight, at most `limit`: a Mac that quits holds
-    /// its termination this long.
+    /// its termination this long. Work still running then goes on, and what
+    /// it kept is sent at the next launch.
     func waitForWork(upTo limit: Duration) async {
-        let sends = Array(inFlight.values)
-        guard !sends.isEmpty else { return }
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                for send in sends { await send.value }
+        let work = Array(inFlight.values)
+        guard !work.isEmpty else { return }
+        // Waiting on a task's value ignores cancellation, so the two waits
+        // race to resume once rather than being joined.
+        let done = Once()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Task { @MainActor in
+                for task in work { await task.value }
+                if done.claim() { continuation.resume() }
             }
-            group.addTask { try? await Task.sleep(for: limit) }
-            await group.next()
-            group.cancelAll()
+            Task { @MainActor in
+                try? await Task.sleep(for: limit)
+                if done.claim() { continuation.resume() }
+            }
         }
     }
 
@@ -158,6 +173,38 @@ final class PlanSummaryJournal {
             return true
         }
     }
+
+    /// Claimed once, by whichever caller gets there first.
+    @MainActor
+    private final class Once {
+        private var claimed = false
+
+        func claim() -> Bool {
+            defer { claimed = true }
+            return !claimed
+        }
+    }
+
+    #if os(iOS) || os(tvOS)
+    /// A background task that ends once, when the work does or when the
+    /// system's time for it runs out.
+    @MainActor
+    private final class BackgroundWork {
+        private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+        init(name: String) {
+            identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+                MainActor.assumeIsolated { self?.end() }
+            }
+        }
+
+        func end() {
+            guard identifier != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(identifier)
+            identifier = .invalid
+        }
+    }
+    #endif
 
     private func store(_ entries: [Entry]) {
         if entries.isEmpty {

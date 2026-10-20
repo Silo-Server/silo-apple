@@ -9,6 +9,8 @@ final class PlanSummaryJournalTests: XCTestCase {
         private let lock = NSLock()
         private var values: [(eventId: String, profileId: String?)] = []
         var failure: Error?
+        /// How long each send waits before it answers.
+        var delay: Duration?
 
         func append(_ entry: PlanSummaryJournal.Entry, _ owner: CapturedOrdinaryRequestAuth) throws {
             try lock.withLock {
@@ -29,7 +31,10 @@ final class PlanSummaryJournalTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
         let sent = sent
-        journal = PlanSummaryJournal(defaults: defaults) { entry, owner in try sent.append(entry, owner) }
+        journal = PlanSummaryJournal(defaults: defaults) { entry, owner in
+            if let delay = sent.delay { try await Task.sleep(for: delay) }
+            try sent.append(entry, owner)
+        }
     }
 
     private func entry(_ eventId: String, server: String = "server", profile: String = "profile",
@@ -89,6 +94,36 @@ final class PlanSummaryJournalTests: XCTestCase {
         await journal.replay(as: owner(), now: now)
         XCTAssertTrue(journal.entries.isEmpty)
         XCTAssertEqual(sent.eventIds, ["a", "a"], "the same event_id both times")
+    }
+
+    /// A quitting Mac waits no longer than its limit, even for a send that
+    /// is still waiting on the server; that summary stays kept.
+    func testTheQuitWaitEndsAtItsLimit() async {
+        sent.delay = .seconds(5)
+        let auth = owner()
+        let slow = entry("slow")
+        journal.record(sending: true) { (slow, auth) }
+        let clock = ContinuousClock()
+        let started = clock.now
+        await journal.waitForWork(upTo: .milliseconds(200))
+        XCTAssertLessThan(started.duration(to: clock.now), .seconds(2))
+        XCTAssertTrue(journal.hasWorkInFlight)
+        XCTAssertEqual(journal.entries.map(\.eventId), ["slow"])
+    }
+
+    /// A summary this run kept belongs to a plan that may still be playing:
+    /// a sign-in during the run replays only what earlier runs kept.
+    func testAReplayLeavesThisRunsSummaries() async {
+        let auth = owner()
+        let running = entry("running")
+        journal.record(sending: false) { (running, auth) }
+        await journal.waitForWork(upTo: .seconds(5))
+        journal.keep(entry("earlier run"))
+
+        await journal.replay(as: auth, now: now)
+
+        XCTAssertEqual(sent.eventIds, ["earlier run"])
+        XCTAssertEqual(journal.entries.map(\.eventId), ["running"])
     }
 
     /// A summary sent live is kept until the server has it, so a quit or kill

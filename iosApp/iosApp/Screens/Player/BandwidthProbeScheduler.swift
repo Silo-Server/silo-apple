@@ -803,8 +803,8 @@ final class BandwidthProbeScheduler {
             "speed test: \(measurement.kbps, privacy: .public) kbps\(measurement.lowerBound ? " or faster" : "", privacy: .public) over \(measurement.durationMs, privacy: .public) ms on \(measurement.transport, privacy: .public), \(String(describing: report), privacy: .public)"
         )
         // A result the server refused is not kept; one it never heard about
-        // still describes this connection.
-        if report != .refused, session?.serverId == target.serverId {
+        // still describes this connection, while it is still the one in use.
+        if report != .refused, session?.serverId == target.serverId, currentConnection == measuredOver {
             let key = ReadingsKey(serverId: target.serverId, connection: measuredOver)
             if readingsKey != key { playbackSample = nil }
             readingsKey = key

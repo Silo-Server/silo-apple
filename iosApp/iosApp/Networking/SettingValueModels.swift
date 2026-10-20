@@ -658,6 +658,15 @@ enum SettingsAPIError: Error, Equatable, Sendable {
     /// The request never reached the server, or the response did not parse.
     case transport(description: String)
 
+    /// The server answered that it doesn't serve a requested key: a 422 at
+    /// the key, or an answer from a contract without it.
+    var isUnknownKeyAnswer: Bool {
+        switch self {
+        case .unknownSetting, .serverUpgradeRequired: true
+        default: false
+        }
+    }
+
     /// Maps an error from the settings calls onto the contract's vocabulary.
     ///
     /// Every settings route is `/api/v2`, so a failure arrives as an

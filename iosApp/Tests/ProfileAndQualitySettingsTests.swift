@@ -706,6 +706,9 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
             flusher: PlayerSettingsFlusher(transport: harness.transport)
         )
         XCTAssertEqual(relaunched.bufferingQualityMode, .always, "offline at the next launch too")
+        XCTAssertTrue(relaunched.serverLacksBufferingQualityMode, "and the row stays hidden")
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode),
+                       "the device value it had is not one this server keeps")
 
         harness.transport.revision = SettingKey.bufferingQualityRevision
         harness.transport.effective = [Self.bufferingRow(.ask)]
@@ -743,6 +746,24 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         harness.settings.setBufferingQualityMode(.never)
         await harness.settings.flushPendingDeviceSettings()
         XCTAssertEqual(harness.transport.writesByKey()[.playbackBufferingQualityMode]?.value, .string("never"))
+    }
+
+    /// A server that stops answering the key no longer takes writes to it,
+    /// though an earlier read had its row.
+    func testAServerThatDropsTheKeyTakesNoWrites() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.bufferingQualityRevision - 2
+        harness.transport.alsoDefines = [.playbackBufferingQualityMode]
+        harness.transport.effective = [Self.bufferingRow(.ask)]
+        await harness.settings.refreshFromServer()
+
+        harness.transport.alsoDefines = []
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.serverLacksBufferingQualityMode)
+        harness.transport.reset()
+        harness.settings.setBufferingQualityMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertTrue(harness.transport.writes().isEmpty)
     }
 
     /// An answer that carries a key's row serves that key, whatever revision
