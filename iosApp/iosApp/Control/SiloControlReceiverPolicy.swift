@@ -29,8 +29,8 @@ enum SiloControlReceiverPolicy {
     /// said hello goes first (likely half-open or a port scan), then a
     /// cross-server controller that isn't handing off (it can do nothing
     /// else, and nothing else times it out), then the oldest passive
-    /// controller. Active controllers are never evicted by a stranger; the
-    /// newcomer is refused instead.
+    /// controller. A controller mid-handoff and an active one are never
+    /// evicted by a stranger; the newcomer is refused instead.
     static func admission(existing: [ControllerSummary]) -> Admission {
         guard existing.count >= maxControllers else { return .admit }
         let byAge = existing.sorted { $0.sequence < $1.sequence }
@@ -40,7 +40,7 @@ enum SiloControlReceiverPolicy {
         if let idle = byAge.first(where: { !$0.isAuthorized && !$0.isHandingOff }) {
             return .admitEvicting(idle.id)
         }
-        if let passive = byAge.first(where: { $0.passive }) {
+        if let passive = byAge.first(where: { $0.passive && !$0.isHandingOff }) {
             return .admitEvicting(passive.id)
         }
         return .refuse

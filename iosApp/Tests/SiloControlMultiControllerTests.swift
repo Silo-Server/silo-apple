@@ -46,6 +46,7 @@ final class SiloControlMultiControllerTests: XCTestCase {
     func testAtTheCapNeverEvictsAControllerMidHandoff() {
         var existing = (0..<Policy.maxControllers).map { summary(sequence: $0) }
         existing[0] = summary(sequence: 0, authorized: false, handingOff: true)
+        existing[1] = summary(sequence: 1, passive: true, handingOff: true)
         XCTAssertEqual(Policy.admission(existing: existing), .refuse)
     }
 

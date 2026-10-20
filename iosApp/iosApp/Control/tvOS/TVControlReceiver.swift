@@ -517,26 +517,10 @@ final class TVControlReceiver {
     ) {
         let manager = RemotePlaybackIdentityManager.shared
         // A handoff stops what is on screen before the swap, so consent is
-        // asked here, not at launch.
-        let nowPlaying = nowPlayingSummary()
-        if SiloControlReceiverPolicy.needsReplaceConfirmation(
-            titleOnScreen: isTitleOnScreen,
-            playingUnderOfferedProfile: isPlaying(underProfileOf: offer),
-            replaceConfirmed: SiloControlReceiverPolicy.confirmationCovers(
-                onScreenContentId: nowPlaying.contentId,
-                replaceConfirmed: offer.replaceConfirmed == true,
-                replacingContentId: offer.replacingContentId
-            ),
-            controllerCanConfirm: controller.supports(SiloControlFeature.replaceConfirmation)
-        ) {
-            let who = nowPlaying.profileName ?? "Someone"
-            sendHandoffCancel(
-                offer.requestId,
-                reason: SiloControlHandoffCancelReason.replaceConfirmationRequired,
-                message: "\(who) is watching \(nowPlaying.title) on this TV.",
-                nowPlaying: nowPlaying,
-                to: controller
-            )
+        // asked here, not at launch, and checked again before the stop.
+        let canConfirm = controller.supports(SiloControlFeature.replaceConfirmation)
+        if let nowPlaying = titleNeedingConsent(for: offer, canConfirm: canConfirm) {
+            sendReplaceConfirmationRequired(offer.requestId, nowPlaying: nowPlaying, to: controller)
             return
         }
 
@@ -574,7 +558,13 @@ final class TVControlReceiver {
                     controllerDeviceName: controllerName,
                     allowReuse: allowReuse,
                     beforeActivation: { [weak self] in
-                        try await self?.stopPlaybackBeforeIdentitySwap()
+                        guard let self else { return }
+                        // Another controller may have started a title while
+                        // the server approved this one.
+                        if let nowPlaying = self.titleNeedingConsent(for: offer, canConfirm: canConfirm) {
+                            throw ReplaceConfirmationRequired(nowPlaying: nowPlaying)
+                        }
+                        try await self.stopPlaybackBeforeIdentitySwap()
                     }
                 ) { [weak self] challenge in
                     guard let self,
@@ -606,13 +596,17 @@ final class TVControlReceiver {
                 return
             } catch {
                 guard let controller = self.controllers[controllerId] else { return }
-                self.sendHandoffCancel(
-                    offer.requestId,
-                    reason: (error as? RemotePlaybackIdentityManager.HandoffError)?.cancelReason
-                        ?? "handoff_failed",
-                    message: error.localizedDescription,
-                    to: controller
-                )
+                if let refusal = error as? ReplaceConfirmationRequired {
+                    self.sendReplaceConfirmationRequired(offer.requestId, nowPlaying: refusal.nowPlaying, to: controller)
+                } else {
+                    self.sendHandoffCancel(
+                        offer.requestId,
+                        reason: (error as? RemotePlaybackIdentityManager.HandoffError)?.cancelReason
+                            ?? "handoff_failed",
+                        message: error.localizedDescription,
+                        to: controller
+                    )
+                }
                 if self.pendingHandoff == pending {
                     self.pendingHandoff = nil
                     self.handoffTask = nil
@@ -682,6 +676,44 @@ final class TVControlReceiver {
 
     private struct PlaybackStartedDuringHandoff: LocalizedError {
         var errorDescription: String? { "The TV started playing something else. Try again." }
+    }
+
+    private struct ReplaceConfirmationRequired: Error {
+        let nowPlaying: SiloControlNowPlayingSummary
+    }
+
+    /// What `offer` would replace without its user's consent, or nil when
+    /// the handoff may go ahead.
+    private func titleNeedingConsent(
+        for offer: SiloControlHandoffOffer,
+        canConfirm: Bool
+    ) -> SiloControlNowPlayingSummary? {
+        let nowPlaying = nowPlayingSummary()
+        let needsConsent = SiloControlReceiverPolicy.needsReplaceConfirmation(
+            titleOnScreen: isTitleOnScreen,
+            playingUnderOfferedProfile: isPlaying(underProfileOf: offer),
+            replaceConfirmed: SiloControlReceiverPolicy.confirmationCovers(
+                onScreenContentId: nowPlaying.contentId,
+                replaceConfirmed: offer.replaceConfirmed == true,
+                replacingContentId: offer.replacingContentId
+            ),
+            controllerCanConfirm: canConfirm
+        )
+        return needsConsent ? nowPlaying : nil
+    }
+
+    private func sendReplaceConfirmationRequired(
+        _ requestId: String,
+        nowPlaying: SiloControlNowPlayingSummary,
+        to controller: Controller
+    ) {
+        sendHandoffCancel(
+            requestId,
+            reason: SiloControlHandoffCancelReason.replaceConfirmationRequired,
+            message: "\(nowPlaying.profileName ?? "Someone") is watching \(nowPlaying.title) on this TV.",
+            nowPlaying: nowPlaying,
+            to: controller
+        )
     }
 
     /// Hands back an identity nobody launched under. Runs whether or not the
