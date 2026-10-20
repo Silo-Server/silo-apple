@@ -226,6 +226,22 @@ extension View {
         }
     }
 
+    /// Moves focus to `value` when a page replaces another in place, as the
+    /// password sign-in replaces the code screen. Focus still belongs to the
+    /// page fading out, so a request made with the switch is dropped, and
+    /// `marqueeTVSeedFocus` leaves a held focus alone. Keep asking until
+    /// `value` holds focus, for about a second and a half.
+    func marqueeTVClaimFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, _ value: F) -> some View {
+        task {
+            await Task.yield()
+            for _ in 0..<15 {
+                guard focus.wrappedValue != value else { return }
+                focus.wrappedValue = value
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            }
+        }
+    }
+
     /// Moves focus after Done on the system keyboard. Each field's
     /// `onSubmit` sets `pending` to where focus goes next. While the keyboard
     /// is up nothing in the page has focus; closing it hands focus back to a

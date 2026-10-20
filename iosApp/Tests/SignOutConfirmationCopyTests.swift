@@ -47,7 +47,6 @@ final class SignOutConfirmationCopyTests: XCTestCase {
     func testDeviceWordingComesFromTheCaller() {
         let signOut = SignOutConfirmationCopy.signOut(accountName: "alex", serverName: "Home Silo", device: phone)
         XCTAssertFalse(text(signOut).contains("Apple TV"))
-        assertNames(signOut, ["device"])
         let remove = SignOutConfirmationCopy.removeAccount(accountName: "alex", serverName: "Home Silo", device: phone)
         XCTAssertFalse(text(remove).contains("Apple TV"))
         assertNames(remove, ["device"])
@@ -55,5 +54,18 @@ final class SignOutConfirmationCopyTests: XCTestCase {
         XCTAssertTrue(SignOutConfirmationCopy.removeFromDeviceTitle(device: tv).contains("Apple TV"))
         XCTAssertTrue(SignOutConfirmationCopy.removeFromDeviceTitle(device: phone).contains("Device"))
         XCTAssertEqual(SignOutConfirmationCopy.Device(noun: "iPhone").titleNoun, "iPhone")
+    }
+
+    /// Only a shared device's copy speaks for other people: one person uses
+    /// an iPhone, so its sign-out doesn't mention "everyone".
+    func testOnlySharedDevicesSayEveryoneIsAffected() {
+        for copy in [SignOutConfirmationCopy.signOut(accountName: "alex", serverName: "Home Silo", device: phone),
+                     SignOutConfirmationCopy.removeAccount(accountName: "alex", serverName: "Home Silo", device: phone)] {
+            XCTAssertFalse(text(copy).localizedCaseInsensitiveContains("everyone"), text(copy))
+        }
+        for copy in [SignOutConfirmationCopy.signOut(accountName: "alex", serverName: "Home Silo", device: tv),
+                     SignOutConfirmationCopy.removeAccount(accountName: "alex", serverName: "Home Silo", device: tv)] {
+            XCTAssertTrue(text(copy).localizedCaseInsensitiveContains("everyone"), text(copy))
+        }
     }
 }

@@ -14,9 +14,9 @@ struct ConfirmationCopy: Equatable, Sendable {
     var additionalDestructiveTitle: String? = nil
 }
 
-/// Copy for signing out of and removing accounts (spec §5.6). Saved
-/// accounts are shared by everyone on the device, so the copy names the
-/// device.
+/// Copy for signing out of and removing accounts (spec §5.6). The copy
+/// names the device. On Apple TV, saved accounts are shared by every Apple
+/// TV user, so it also says who is affected.
 enum SignOutConfirmationCopy {
     /// How the copy names the device. iOS, iPadOS, and macOS pass their own.
     struct Device: Equatable, Sendable {
@@ -24,13 +24,17 @@ enum SignOutConfirmationCopy {
         let noun: String
         /// After "This" in titles and buttons: "Apple TV", "iPhone", "Device".
         let titleNoun: String
+        /// Whether several people share the device's accounts: Apple TV
+        /// users do; one person uses an iPhone, iPad, or Mac.
+        let isShared: Bool
 
-        init(noun: String, titleNoun: String? = nil) {
+        init(noun: String, titleNoun: String? = nil, isShared: Bool = false) {
             self.noun = noun
             self.titleNoun = titleNoun ?? noun
+            self.isShared = isShared
         }
 
-        static let appleTV = Device(noun: "Apple TV")
+        static let appleTV = Device(noun: "Apple TV", isShared: true)
     }
 
     static let signOutTitle = "Sign Out"
@@ -48,7 +52,9 @@ enum SignOutConfirmationCopy {
                         offersRemove: Bool = false) -> ConfirmationCopy {
         ConfirmationCopy(
             title: "Sign out of \(accountName)?",
-            message: "Everyone on this \(device.noun) will need to sign in again to use \(accountName) on \(serverName).",
+            message: device.isShared
+                ? "Everyone on this \(device.noun) will need to sign in again to use \(accountName) on \(serverName)."
+                : "You'll need to sign in again to use \(accountName) on \(serverName).",
             confirmTitle: signOutTitle,
             confirmIsDestructive: true,
             additionalDestructiveTitle: offersRemove ? removeAccountTitle : nil
@@ -60,7 +66,7 @@ enum SignOutConfirmationCopy {
     static func removeAccount(accountName: String, serverName: String, device: Device) -> ConfirmationCopy {
         ConfirmationCopy(
             title: "Remove \(accountName) from this \(device.noun)?",
-            message: "\(accountName) will be signed out of \(serverName) for everyone on this \(device.noun). Profiles and watch history stay on the server.",
+            message: "\(accountName) will be signed out of \(serverName) \(device.isShared ? "for everyone on" : "on") this \(device.noun). Profiles and watch history stay on the server.",
             confirmTitle: removeTitle,
             confirmIsDestructive: true
         )

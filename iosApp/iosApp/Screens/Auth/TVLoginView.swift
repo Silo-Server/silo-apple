@@ -502,7 +502,9 @@ struct TVLoginView: View {
             TVTypeOnPhoneCard()
         }
         .defaultFocus($focusedField, passwordScreenFocus, priority: .userInitiated)
-        .marqueeTVSeedFocus($focusedField, passwordScreenFocus)
+        // Opened from the code screen, focus is still on its password
+        // button as it fades out, which drops a plain request.
+        .marqueeTVClaimFocus($focusedField, passwordScreenFocus)
         .marqueeTVFocusAfterKeyboard($focusedField, pending: $focusAfterKeyboard)
         // Menu returns to the code screen; on a password-only server there is
         // none, so Menu keeps its system meaning.
