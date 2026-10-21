@@ -40,6 +40,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             case status(Int)
             case problem(Int, String)
             case transportFailure
+            /// Waits for the gate, then answers with the given status.
+            case gated(StubURLProtocol.Gate, status: Int)
         }
 
         let handler = StubURLProtocol.Handler()
@@ -82,7 +84,11 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                 }
             }
             handler.route(StubURLProtocol.method("POST", path: ApplePushOrderedRegistrationTests.retirementPath)) { [self] request in
-                let reply = lock.withLock { retirementReplies.isEmpty ? RetirementReply.retired : retirementReplies.removeFirst() }
+                var reply = lock.withLock { retirementReplies.isEmpty ? RetirementReply.retired : retirementReplies.removeFirst() }
+                if case .gated(let gate, let status) = reply {
+                    await gate.wait()
+                    reply = .status(status)
+                }
                 switch reply {
                 case .retired:
                     let generation = request.header("X-Push-Generation") ?? ""
@@ -92,7 +98,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                 case .problem(let status, let type):
                     return .json(#"{"type":"https://silo.example/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#,
                         status: status, headers: ["Content-Type": "application/problem+json"])
-                case .transportFailure:
+                case .transportFailure, .gated:
                     throw URLError(.networkConnectionLost)
                 }
             }
@@ -672,16 +678,17 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let owner = try await h.owner()
         _ = await registrar.register(Self.body(), owner: owner)
         h.server.enqueueRetirement(.transportFailure)
+        h.server.enqueue(.transportFailure)
         let retired = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
-        guard case .retirement(.kept) = retired else { return XCTFail("unexpected \(retired)") }
+        XCTAssertEqual(retired, .uncertain)
 
         let restored = await registrar.restore(serverID: Self.serverID)
 
         XCTAssertEqual(restored, Self.accepted)
         let sends = h.server.registrations
-        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3"])
-        XCTAssertEqual(sends.map { $0.bodyString?.contains(#""push_mode":"off""#) }, [false, false])
-        XCTAssertEqual(sends[0].body, sends[1].body)
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3", "5"])
+        XCTAssertEqual(sends.map { $0.bodyString?.contains(#""push_mode":"off""#) }, [false, true, false])
+        XCTAssertEqual(sends[0].body, sends[2].body)
         XCTAssertEqual(h.targets.targets(), [Self.target()])
         await registrar.retirements.retryDue(afterPush: true)
         XCTAssertEqual(h.server.retirements.count, 1)
@@ -803,23 +810,26 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let owner = try await h.owner()
         _ = await registrar.register(Self.body(), owner: owner)
         h.server.enqueueRetirement(.transportFailure)
+        h.server.enqueue(.transportFailure)
         let first = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
-        guard case .retirement(.kept) = first else { return XCTFail("unexpected \(first)") }
+        XCTAssertEqual(first, .uncertain)
         await h.tokens.deleteTokens(for: Self.serverID)
         let queued = try h.retirementStore.load()
-        XCTAssertEqual(queued.map(\.generation), [2])
+        XCTAssertEqual(queued.map(\.generation), [4])
 
+        h.server.enqueueRetirement(.transportFailure)
         await registrar.retirements.retryDue()
-        XCTAssertEqual(h.server.retirements.count, 1, "a retry inside the back-off sends nothing")
+        await registrar.retirements.retryDue()
+        XCTAssertEqual(h.server.retirements.count, 2, "a retry inside the back-off sends nothing")
 
         let relaunched = h.registrar(clock: clock)
         await relaunched.retirements.retryDue()
 
         let sends = h.server.retirements
-        XCTAssertEqual(sends.count, 2)
-        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["2", "2"])
-        XCTAssertEqual(sends[0].header("X-Push-Installation-Key"), sends[1].header("X-Push-Installation-Key"))
-        XCTAssertEqual(sends[0].body, sends[1].body)
+        XCTAssertEqual(sends.count, 3)
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["2", "4", "4"])
+        XCTAssertEqual(sends[1].header("X-Push-Installation-Key"), sends[2].header("X-Push-Installation-Key"))
+        XCTAssertEqual(sends[1].body, sends[2].body)
         let pending = try h.retirementStore.load()
         XCTAssertEqual(pending, [])
     }
@@ -840,6 +850,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             let owner = try await h.owner()
             _ = await registrar.register(Self.body(), owner: owner)
             h.server.enqueueRetirement(reply)
+            h.server.enqueue(.transportFailure)
 
             let result = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
 
@@ -848,8 +859,10 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                 XCTAssertEqual(result, .retirement(expected))
                 XCTAssertEqual(pending, [], "\(reply)")
             } else {
-                XCTAssertEqual(result, .retirement(.kept(reason: "http_503")))
-                XCTAssertEqual(pending.map(\.generation), [2], "\(reply)")
+                // Unanswered: the session `off` is tried too, and when it is
+                // lost as well, a retirement above it stays queued.
+                XCTAssertEqual(result, .uncertain)
+                XCTAssertEqual(pending.map(\.generation), [4], "\(reply)")
             }
         }
     }
@@ -898,6 +911,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let owner = try await h.owner()
         _ = await registrar.register(Self.body(), owner: owner)
         h.server.enqueueRetirement(.transportFailure)
+        h.server.enqueue(.transportFailure)
         _ = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
         await h.tokens.deleteTokens(for: Self.serverID)
         try await h.signInAgain()
@@ -906,8 +920,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
 
         XCTAssertEqual(result, Self.accepted)
         let sends = h.server.registrations
-        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3"])
-        XCTAssertEqual(sends[0].body, sends[1].body)
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3", "5"])
+        XCTAssertEqual(sends[0].body, sends[2].body)
         let pending = try h.retirementStore.load()
         XCTAssertEqual(pending, [])
         await registrar.retirements.retryDue(afterPush: true)
@@ -923,6 +937,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let owner = try await h.owner()
         _ = await registrar.register(Self.body(), owner: owner)
         h.server.enqueueRetirement(.transportFailure)
+        h.server.enqueue(.transportFailure)
         _ = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
         h.server.setCapability(#"{"allowed":true,"registration_available":false,"revision":"r2","state":"not_configured"}"#)
         let restored = await registrar.restore(serverID: Self.serverID)
@@ -932,7 +947,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let result = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
 
         XCTAssertEqual(result, .retirement(.retired))
-        XCTAssertEqual(h.server.retirements.map { $0.header("X-Push-Generation") }, ["2", "2"])
+        XCTAssertEqual(h.server.retirements.map { $0.header("X-Push-Generation") }, ["2", "4"])
         XCTAssertEqual(try h.retirementStore.load(), [])
     }
 
@@ -958,6 +973,30 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let sends = h.server.registrations
         XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3", "5"])
         XCTAssertEqual(sends.last?.bodyString?.contains(#""push_mode":"off""#), true)
+        XCTAssertEqual(try h.retirementStore.load(), [])
+    }
+
+    /// A retirement answered only after the sign-out gave up waiting and
+    /// `restore` turned pushes back on must not then turn them off or queue
+    /// another retirement.
+    func testLateRetirementAnswerAfterRestoreLeavesPushesOn() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar()
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        let gate = StubURLProtocol.Gate()
+        h.server.enqueueRetirement(.gated(gate, status: 404))
+        let teardown = Task { await registrar.unregister(serverID: Self.serverID, activeOwner: owner) }
+        try await h.server.handler.waitForRequest(where: StubURLProtocol.method("POST", path: Self.retirementPath))
+
+        let restored = await registrar.restore(serverID: Self.serverID)
+        XCTAssertEqual(restored, Self.accepted)
+        await gate.open()
+        _ = await teardown.value
+
+        let sends = h.server.registrations
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3"])
+        XCTAssertEqual(sends.map { $0.bodyString?.contains(#""push_mode":"off""#) }, [false, false])
         XCTAssertEqual(try h.retirementStore.load(), [])
     }
 

@@ -217,6 +217,10 @@ actor ApplePushRegistrar {
     /// the fence, so a registration already waiting cannot turn pushes back
     /// on. A later sign-in has a new account epoch and is not held back.
     private var departing: [String: (accountID: String, epoch: UUID)] = [:]
+    /// Per server, the `unregister` still running. `restore` and a newer
+    /// registration end it, so a fallback that finishes after them cannot
+    /// turn off or retire what they registered.
+    private var teardowns: [String: UUID] = [:]
     private var isRegistering = false
     private var queued: [CheckedContinuation<Void, Never>] = []
 
@@ -284,11 +288,12 @@ actor ApplePushRegistrar {
     /// `retirements`, and it is sent at once. A retirement needs only the
     /// installation key, which outlives the credentials, so one the server
     /// does not answer now is sent again on a later launch, foreground or
-    /// push. Only a server without the retirement endpoint is turned `off`
-    /// with a session: the active one when `activeOwner` belongs to that
-    /// server, otherwise the server's stored session under its journal's
-    /// owner. Unless that `off` is accepted, a retirement at the next
-    /// generation stays queued for when the server is updated.
+    /// push. A server that has no retirement endpoint, or did not answer, is
+    /// also turned `off` with a session while one still exists, which can
+    /// reach the server over its verified local route: the active one when
+    /// `activeOwner` belongs to that server, otherwise the server's stored
+    /// session under its journal's owner. Unless that `off` is accepted, a
+    /// retirement at the next generation stays queued.
     ///
     /// Nothing is sent for a server that never registered, or whose
     /// registration the server already disabled or removed. It goes ahead of
@@ -307,10 +312,20 @@ actor ApplePushRegistrar {
         // registration never allocated, or a queue write that failed), and a
         // server without the endpoint still needs the `off` below.
         let deviceID = latest.intent.body.deviceId
-        if let retirement = await allocateRetirement(serverID: serverID, deviceID: deviceID) {
-            let outcome = await retirements.submit(retirement) ?? .kept(reason: "in_flight")
-            guard outcome == .unsupported else { return .retirement(outcome) }
+        let teardown = UUID()
+        teardowns[serverID] = teardown
+        var retirement: ApplePushRetirementQueue.Outcome?
+        if let entry = await allocateRetirement(serverID: serverID, deviceID: deviceID, teardown: teardown) {
+            let outcome = await retirements.submit(entry) ?? .kept(reason: "in_flight")
+            switch outcome {
+            case .retired, .dropped:
+                return .retirement(outcome)
+            case .unsupported, .kept:
+                retirement = outcome
+            }
         }
+        // A `restore` or a new sign-in owns the server's pushes now.
+        guard teardowns[serverID] == teardown else { return retirement.map(Result.retirement) ?? .unchanged }
         let channel: ApplePushRegistrationChannel?
         if let activeOwner, usesActiveSession {
             channel = activeChannel(for: activeOwner)
@@ -323,9 +338,10 @@ actor ApplePushRegistrar {
         if case .registered = result {
             // The receipt names `off`, so the server has stopped pushing.
             await retirements.cancel(serverID: serverID, reason: "turned_off")
-        } else if let retirement = await allocateRetirement(serverID: serverID, deviceID: deviceID) {
+        } else if let retirement = await allocateRetirement(serverID: serverID, deviceID: deviceID,
+                                                            teardown: teardown) {
             // The `off` may not have landed; the retirement takes over above
-            // its generation, for when the server is updated.
+            // its generation and is retried after the credentials are gone.
             await retirements.enqueue(retirement)
         }
         return result
@@ -334,12 +350,14 @@ actor ApplePushRegistrar {
     /// The retirement for the journal's next generation, persisted to the
     /// journal before it is returned, or the one that already holds the
     /// current generation. `nil` when the server never registered, its
-    /// address is unknown, or the journal cannot be read or written; nothing
-    /// may then be sent as a retirement.
-    private func allocateRetirement(serverID: String, deviceID: String) async -> ApplePushRetirement? {
+    /// address is unknown, `teardown` has ended, or the journal cannot be
+    /// read or written; nothing may then be sent as a retirement.
+    private func allocateRetirement(serverID: String, deviceID: String,
+                                    teardown: UUID) async -> ApplePushRetirement? {
         guard let serverURL = ServerRegistry.url(forServerId: serverID) else { return nil }
         await waitForTurn(ahead: true)
         defer { finishTurn() }
+        guard teardowns[serverID] == teardown else { return nil }
         do {
             guard let record = try journal.load(serverID: serverID),
                   let retiring = try ApplePushInstallationJournal.retiring(record) else { return nil }
@@ -360,6 +378,7 @@ actor ApplePushRegistrar {
     /// server that stays saved and signed in is not left silent. A
     /// retirement already in flight then loses to that generation.
     func restore(serverID: String) async -> Result {
+        teardowns[serverID] = nil
         guard departing.removeValue(forKey: serverID) != nil,
               let latest = try? journal.load(serverID: serverID)?.latest else { return .unchanged }
         await retirements.cancel(serverID: serverID, reason: "restored")
@@ -442,6 +461,7 @@ actor ApplePushRegistrar {
             // A server added again, or signed in to again, registers above
             // its pending retirement, which the server would now refuse.
             if body.pushMode != ApplePushRegistrationWire.offPushMode {
+                teardowns[serverID] = nil
                 await retirements.cancel(serverID: serverID, before: command.generation, reason: "registered")
             }
         }
@@ -787,8 +807,9 @@ final class ApplePushRegistrationCoordinator {
 
     /// Stops a saved server's (`ServerEntry.id`) pushes before its
     /// credentials are cleared: retires this installation on the server,
-    /// or, for a server without the retirement endpoint, turns pushes off
-    /// with its session while the credentials still exist.
+    /// and, when the server lacks the retirement endpoint or does not
+    /// answer, turns pushes off with its session while the credentials
+    /// still exist.
     func unregister(serverID: String) async {
         // Turning a server off outranks keeping registrations current. The
         // running pass stops at its next request, no new one starts until
