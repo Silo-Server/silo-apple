@@ -84,11 +84,10 @@ final class BufferingQualityController {
 
     /// What the controller reads from an adopted playback plan.
     struct Plan: Equatable {
-        /// The adoption's identity: a different id is a new plan; the same id is
-        /// an in-place update. Give every adopted replan a new id, as web's
-        /// `planRevision` does. The server's `plan_id` is a hash of the route,
-        /// so a lowering that comes back unchanged repeats it, and keying on it
-        /// would read that result as an in-place update instead of no lower.
+        /// The adoption's identity: every adoption is a new plan, so the host
+        /// gives each one a new id, as web's `planRevision` does. The server's
+        /// `plan_id` is a hash of the route, so a lowering that comes back
+        /// unchanged repeats it, and keying on it would hide that result.
         var id: String
         /// `effective_recipe.bitrate_kbps`, else `source.bitrate_kbps`.
         var deliveredKbps: Int?
@@ -290,9 +289,8 @@ final class BufferingQualityController {
 
     /// A plan became the playing plan.
     ///
-    /// The same id is an in-place update and keeps its history. A different id
-    /// ends the outgoing plan (emitting its summary), takes down any pill, and
-    /// starts fresh history. A plan that answers this controller's pending
+    /// It ends the outgoing plan (emitting its summary), takes down any pill,
+    /// and starts fresh history. A plan that answers this controller's pending
     /// replan settles it: a lower plan shows the undo pill (automatic) or the
     /// lowered notice (accepted); one that is no lower, or carries
     /// `quality_reduction_unavailable`, shows the can't-lower notice and starts
@@ -300,10 +298,6 @@ final class BufferingQualityController {
     /// that answers a replan the controller did not send; it settles nothing.
     func planAdopted(_ plan: Plan, controllerInitiated: Bool = true) {
         let now = nowMs
-        if current?.plan.id == plan.id {
-            current?.plan = plan
-            return
-        }
         // A stall in progress carries over as the new plan's first wait, under
         // its own grace, so a plan that never starts is still caught.
         let wasStalled = current?.stall != nil
