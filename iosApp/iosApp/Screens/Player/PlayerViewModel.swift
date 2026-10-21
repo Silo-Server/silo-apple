@@ -492,6 +492,8 @@ class PlayerViewModel {
     @ObservationIgnored private var bufferingPlanRevision: UInt64 = 0
     /// An adopted plan a `plan_summary` can still name.
     private struct BufferingPlanEntry {
+        /// The controller's id for it.
+        let id: String
         let prepared: PreparedPlaybackV3
         let sessionId: String
         /// Its summary's `event_id`, the same for every copy the device
@@ -499,11 +501,10 @@ class PlayerViewModel {
         let summaryEventId = UUID().uuidString.lowercased()
         let adoptedAt = Date()
     }
-    /// The adopted plans a `plan_summary` can still name: the current one,
-    /// and the one it replaced until its summary is sent.
-    @ObservationIgnored private var bufferingPlans: [String: BufferingPlanEntry] = [:]
+    /// The playing plan, which its `plan_summary` names.
+    @ObservationIgnored private var bufferingPlan: BufferingPlanEntry?
     /// The controller's id for the current plan. Read by tests.
-    @ObservationIgnored private(set) var bufferingPlanId: String?
+    var bufferingPlanId: String? { bufferingPlan?.id }
     /// `streamLoadGeneration` when the current plan was adopted. A replan or
     /// load started since then is a reload until its own plan is adopted.
     @ObservationIgnored private var bufferingAdoptedStreamLoadGeneration: UInt64?
@@ -10431,9 +10432,7 @@ extension PlayerViewModel {
         guard !isAudioOnlyAetherLoad else { return }
         bufferingPlanRevision &+= 1
         let id = "\(bufferingPlanRevision):\(v3.plan.planId)"
-        bufferingPlans = bufferingPlans.filter { $0.key == bufferingPlanId }
-        bufferingPlans[id] = BufferingPlanEntry(prepared: v3, sessionId: sessionId)
-        bufferingPlanId = id
+        let entry = BufferingPlanEntry(id: id, prepared: v3, sessionId: sessionId)
         bufferingAdoptedStreamLoadGeneration = streamLoadGeneration
         bufferingReloadEpoch = nil
         bufferingQuality.mode = settings.bufferingQualityMode
@@ -10446,6 +10445,9 @@ extension PlayerViewModel {
             "[CMP-BUFFERING] plan adopted id=\(id, privacy: .public) delivered=\(plan.deliveredKbps.map(String.init) ?? "unknown", privacy: .public) quality=\(plan.quality, privacy: .public) cant_reduce=\(plan.qualityReductionUnavailable, privacy: .public)"
         )
         bufferingQuality.planAdopted(plan, controllerInitiated: controllerInitiated)
+        // Only now: the outgoing plan's summary, sent during the adoption,
+        // still names the entry this replaces.
+        bufferingPlan = entry
         // The new plan hears whether playback is already waiting.
         bufferingSignals.invalidate()
         syncBufferingQualitySignals()
@@ -10519,8 +10521,7 @@ extension PlayerViewModel {
         lastMediaRequestFailureAt = nil
         deferredBufferingRestore = nil
         pendingBufferingNotice = nil
-        bufferingPlans = [:]
-        bufferingPlanId = nil
+        bufferingPlan = nil
         bufferingAdoptedStreamLoadGeneration = nil
         bufferingReloadEpoch = nil
         bufferingSignals.invalidate()
@@ -10581,7 +10582,8 @@ extension PlayerViewModel {
     }
 
     private func reportBufferingPlanSummary(_ summary: BufferingQualityController.PlanSummary) {
-        guard let entry = bufferingPlans.removeValue(forKey: summary.planId) else { return }
+        guard let entry = bufferingPlan, entry.id == summary.planId else { return }
+        bufferingPlan = nil
         Self.logger.info(
             "[CMP-BUFFERING] plan summary id=\(summary.planId, privacy: .public) played_ms=\(summary.playedMs, privacy: .public) stalls=\(summary.stallCount, privacy: .public) stall_ms=\(summary.stallTotalMs, privacy: .public) action=\(summary.action.rawValue, privacy: .public) sent=\(entry.prepared.advertisesPlanSummary, privacy: .public)"
         )
@@ -10593,7 +10595,7 @@ extension PlayerViewModel {
     /// nothing. Updated each time the app leaves the foreground.
     private func keepRunningBufferingPlanSummary() {
         guard let summary = bufferingQuality.runningSummary,
-              let entry = bufferingPlans[summary.planId] else { return }
+              let entry = bufferingPlan, entry.id == summary.planId else { return }
         recordBufferingPlanSummary(summary, of: entry, sending: false)
     }
 
