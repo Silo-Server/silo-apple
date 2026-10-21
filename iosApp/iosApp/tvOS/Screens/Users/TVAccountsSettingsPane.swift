@@ -33,6 +33,8 @@ struct TVAccountsSettingsSection: View {
     var addresses: [SiloAccountRef: String] = [:]
     let focus: FocusState<TVSettingsDetailFocus?>.Binding
     let actions: Actions
+    /// Each server's logo, by address.
+    @State private var marks: [String: URL] = [:]
 
     /// Every focusable row, top to bottom.
     static func rows(in model: AccountsSettingsViewModel) -> [TVAccountsSettingsRow] {
@@ -79,6 +81,16 @@ struct TVAccountsSettingsSection: View {
                 TVSettingsFooter(Self.footer)
             }
         }
+        // Restarted, and the earlier load cancelled, when the servers change.
+        .task(id: serverAddresses) {
+            marks = ServerBrandingLoader.cachedMarks(for: serverAddresses)
+            await ServerBrandingLoader.loadCurrentMarks(for: serverAddresses) { marks[$0] = $1 }
+        }
+    }
+
+    /// Each account's server, once.
+    private var serverAddresses: [String] {
+        Array(Set(addresses.values.filter { !$0.isEmpty })).sorted()
     }
 
     @ViewBuilder
@@ -121,7 +133,7 @@ struct TVAccountsSettingsSection: View {
         let title = row.detailLines.last ?? row.name
         let detail = row.detailLines.dropLast().first
         let label = HStack(spacing: 16) {
-            MarqueeServerMark(name: title, imageURL: ServerBrandingCache.branding(for: address)?.markURL, size: 44)
+            MarqueeServerMark(imageURL: marks[address], size: 44)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
                     .font(.system(size: 26))

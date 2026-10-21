@@ -36,7 +36,7 @@ struct DiscoveredServerList: View {
                     select(server)
                 } label: {
                     HStack(spacing: 18) {
-                        MarqueeServerMark(name: server.name, size: 52)
+                        MarqueeServerMark(size: 52)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(server.name)
                                 .font(.system(size: 28, weight: .semibold))
@@ -79,7 +79,6 @@ struct DiscoveredServerList: View {
             ServerPickerList(Array(servers.prefix(4))) { server in
                 ServerPickerRow(
                     name: server.name,
-                    markName: server.name,
                     detail: server.detail,
                     isConnecting: connectingID == server.id
                 ) {
@@ -122,11 +121,7 @@ struct ServerPickerList<Item: Identifiable, Row: View>: View {
 /// One server in a `ServerPickerList`: its mark, name and address.
 struct ServerPickerRow: View {
     let name: String
-    /// What the mark's initial comes from; nil shows the generic mark.
-    let markName: String?
     var markURL: URL?
-    /// Without a logo, the Silo app icon instead of the initial.
-    var fallsBackToAppIcon = false
     let detail: String
     var isConnecting = false
     let action: () -> Void
@@ -134,7 +129,7 @@ struct ServerPickerRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                MarqueeServerMark(name: markName, imageURL: markURL, size: 40, fallsBackToAppIcon: fallsBackToAppIcon)
+                MarqueeServerMark(imageURL: markURL, size: 40)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
                         .font(.system(size: 16, weight: .semibold))

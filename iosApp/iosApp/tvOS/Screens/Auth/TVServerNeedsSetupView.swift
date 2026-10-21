@@ -20,7 +20,6 @@ struct TVServerNeedsSetupView: View {
             MarqueeServerCard(
                 name: hostLabel,
                 address: AuthService.shared.serverUrl,
-                showsInitial: false,
                 badge: .init(text: "Setup needed", systemImage: "clock", tone: .warning)
             )
             .fixedSize(horizontal: true, vertical: false)

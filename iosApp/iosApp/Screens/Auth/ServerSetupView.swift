@@ -240,7 +240,6 @@ struct ServerSetupView: View {
         ServerPickerList(recentServers) { server in
             ServerPickerRow(
                 name: server.displayName,
-                markName: server.fetchedName,
                 markURL: ServerBrandingCache.branding(for: server.url)?.markURL,
                 detail: ServerBranding.hostLabel(server.url)
             ) {

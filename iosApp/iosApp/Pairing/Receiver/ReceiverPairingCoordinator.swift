@@ -163,7 +163,11 @@ final class ReceiverPairingCoordinator {
     /// Watching follows for the account it saves.
     @ObservationIgnored var persist: @MainActor (PersistedPairing) async -> Bool
     private var signedInNames: [String] = []
-    private var consented = false
+    /// The TV user allowed this session's pushes.
+    private(set) var consented = false
+    /// The address the phone pushed last, for its server's logo on the
+    /// pairing screens.
+    private(set) var pushedServerURL: String?
     private var pendingPush: PushedServer?
     /// The TV user's pending choice while `state` is `.unreachable`.
     private var alternateDecision: CheckedContinuation<AlternateChoice, Never>?
@@ -201,6 +205,7 @@ final class ReceiverPairingCoordinator {
         signedInNames = []
         consented = false
         pendingPush = nil
+        pushedServerURL = nil
         activeSession = session
         let device = AppleDeviceIdentity.current
         do {
@@ -229,6 +234,7 @@ final class ReceiverPairingCoordinator {
                         serverIdentity: ServerIdentity.usable(serverIdentity),
                         endpoints: endpoints ?? []
                     )
+                    pushedServerURL = push.serverURL
                     if consented {
                         beginAttempt(push, session: session)
                     } else {

@@ -261,7 +261,7 @@ struct TVServerRowLabel: View {
 
     var body: some View {
         HStack(spacing: 22) {
-            MarqueeServerMark(imageURL: markURL, size: 64, fallsBackToAppIcon: true)
+            MarqueeServerMark(imageURL: markURL, size: 64)
             VStack(alignment: .leading, spacing: 4) {
                 Text(name)
                     .font(.system(size: 30, weight: .semibold))

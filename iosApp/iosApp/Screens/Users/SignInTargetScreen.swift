@@ -33,9 +33,7 @@ struct SignInTargetScreen: View {
                         if index > 0 { UserFlowRowDivider() }
                         ServerPickerRow(
                             name: row.name,
-                            markName: row.name,
                             markURL: marks[row.address],
-                            fallsBackToAppIcon: true,
                             detail: ServerBranding.hostLabel(row.address),
                             isConnecting: busyItemID == row.id
                         ) {

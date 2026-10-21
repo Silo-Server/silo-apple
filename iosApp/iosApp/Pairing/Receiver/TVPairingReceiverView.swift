@@ -19,6 +19,13 @@ struct TVPairingReceiverView: View {
 
     @FocusState private var focused: Control?
     private enum Control: Hashable { case primary, secondary, tertiary }
+    /// The pushed server's logo.
+    @State private var serverMarkURL: URL?
+
+    private struct MarkRequest: Equatable {
+        let serverURL: String?
+        let consented: Bool
+    }
 
     var body: some View {
         MarqueeTVScreen {
@@ -31,6 +38,16 @@ struct TVPairingReceiverView: View {
         // hand focus to the new state's main action. The screen also opens
         // while the sign-in screen fades out, which drops a single request.
         .marqueeTVClaimFocus($focused, .primary, id: coordinator.state)
+        // The cached logo at once; the server is read only once the person
+        // allowed the session, as nothing reaches the network before that.
+        .task(id: MarkRequest(serverURL: coordinator.pushedServerURL, consented: coordinator.consented)) {
+            guard let serverURL = coordinator.pushedServerURL else { return }
+            serverMarkURL = ServerBrandingCache.branding(for: serverURL)?.markURL
+            guard coordinator.consented,
+                  let branding = await ServerBrandingLoader().branding(serverURL: serverURL),
+                  !Task.isCancelled else { return }
+            serverMarkURL = branding.markURL
+        }
     }
 
     private var isSignIn: Bool { coordinator.mode.isSignIn }
@@ -164,7 +181,7 @@ struct TVPairingReceiverView: View {
             HStack(spacing: 26) {
                 MarqueeTVCardSymbol(systemImage: "iphone", size: 96)
                 MarqueeWaitingDots(count: 5, size: 10)
-                MarqueeServerMark(name: serverName, imageURL: nil, size: 96)
+                MarqueeServerMark(imageURL: serverMarkURL, size: 96)
             }
             cardTitle(serverName)
             cardNote("After you allow it, a code appears here to compare with your phone.")
@@ -182,7 +199,7 @@ struct TVPairingReceiverView: View {
             }
             Divider().overlay(Color.white.opacity(0.1)).padding(.vertical, 30)
             HStack(spacing: 18) {
-                MarqueeServerMark(name: serverName, imageURL: nil, size: 56)
+                MarqueeServerMark(imageURL: serverMarkURL, size: 56)
                 Text(serverName)
                     .font(.system(size: 28, weight: .semibold))
                     .lineLimit(1)
