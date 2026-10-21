@@ -69,8 +69,6 @@ final class BufferingQualityController {
 
     /// The `quality_preference` / plan quality for Auto.
     nonisolated static let autoQuality = "auto"
-    private nonisolated static let observedRebufferSource = "observed_rebuffer"
-    private nonisolated static let clearLearnedLimit = "clear"
     private nonisolated static let promptMs = Int(promptSeconds * 1000)
 
     // MARK: - Types
@@ -466,7 +464,7 @@ final class BufferingQualityController {
         withdrawPill()
         answered = true
         keptEstimateKbps = nil
-        sendReplan(.restored, qualityPreference: Self.autoQuality, learnedLimit: Self.clearLearnedLimit)
+        sendReplan(.restored, qualityPreference: Self.autoQuality, learnedLimit: PlaybackProtocolV3.LearnedLimit.clear)
     }
 
     /// Back / Menu / Escape. On the prompt it answers like Keep; on the undo pill
@@ -658,7 +656,7 @@ final class BufferingQualityController {
         current?.action = action
         var request = ReplanRequest(qualityPreference: qualityPreference, bandwidthEstimateKbps: estimateKbps)
         if sendsBufferingQualityFields {
-            request.bandwidthEstimateSource = estimateKbps == nil ? nil : Self.observedRebufferSource
+            request.bandwidthEstimateSource = estimateKbps == nil ? nil : PlaybackProtocolV3.BandwidthEstimateSource.observedRebuffer
             request.learnedLimit = learnedLimit
         }
         // Only an Auto lowering sends an estimate; the next one replaces it.

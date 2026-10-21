@@ -25,7 +25,8 @@ final class BufferingQualityContractTests: XCTestCase {
     }
 
     /// The server's `validateBufferingQualityV3`: why it would refuse a body's
-    /// buffering members, or nil when it accepts them.
+    /// buffering members, or nil when it accepts them. It spells the values
+    /// as the server does, so a misspelled app constant fails here.
     private func serverRefusal(_ body: [String: Any]) -> String? {
         let source = body["bandwidth_estimate_source"] as? String
         let limit = body["learned_limit"] as? String
@@ -33,13 +34,13 @@ final class BufferingQualityContractTests: XCTestCase {
         guard (body["client_features"] as? [String] ?? []).contains(feature) else {
             return "buffering_quality_v1 is required for buffering quality fields"
         }
-        if let source, ![PlaybackProtocolV3.BandwidthEstimateSource.probe, observedRebuffer].contains(source) {
+        if let source, !["probe", "observed_rebuffer"].contains(source) {
             return "invalid bandwidth_estimate_source"
         }
         if source != nil, body["bandwidth_estimate_kbps"] == nil {
             return "bandwidth_estimate_source requires bandwidth_estimate_kbps"
         }
-        if let limit, ![PlaybackProtocolV3.LearnedLimit.ignore, PlaybackProtocolV3.LearnedLimit.clear].contains(limit) {
+        if let limit, !["ignore", "clear"].contains(limit) {
             return "invalid learned_limit"
         }
         return nil
