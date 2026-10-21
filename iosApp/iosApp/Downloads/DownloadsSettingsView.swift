@@ -8,6 +8,7 @@ struct DownloadsSettingsView: View {
     @Bindable private var settings = DownloadSettings.shared
     private var manager: DownloadManager { DownloadManager.shared }
     @State private var showDeleteAllConfirm = false
+    @State private var pendingOtherRemoval: DownloadStorageReclaim.OtherStorage?
 
     private var formats: [DownloadFormat] {
         let available = manager.availableFormats
@@ -36,6 +37,35 @@ struct DownloadsSettingsView: View {
         let count = manager.heldProgressCount
         let subject = count == 1 ? "1 offline watch position" : "\(count) offline watch positions"
         return "\(subject) may not have reached the server. Silo won't send them again. Playing the download again replaces them."
+    }
+
+    /// The server on this device the group belongs to, if any.
+    private func server(for group: DownloadStorageReclaim.OtherStorage) -> ServerEntry? {
+        ServerRegistry.shared.entry(with: group.folderName)
+    }
+
+    private func title(for group: DownloadStorageReclaim.OtherStorage) -> String {
+        server(for: group)?.displayName ?? group.serverURL ?? "Unrecognized data"
+    }
+
+    private func detail(for group: DownloadStorageReclaim.OtherStorage) -> String {
+        if group.isActiveServer { return "Other profiles on this server" }
+        if server(for: group) != nil { return "Another server you've added" }
+        return group.serverURL == nil ? "Not used by this version of Silo" : "A server no longer on this device"
+    }
+
+    /// Spells out when the data belongs to a profile or server the user can
+    /// still switch to: its downloads go, and may download again later.
+    private func removalMessage(for group: DownloadStorageReclaim.OtherStorage) -> String {
+        if group.isActiveServer {
+            return "Downloads saved for other profiles on this server will be deleted from this device. "
+                + "Switching to one of those profiles may download its items again."
+        }
+        if server(for: group) != nil {
+            return "Downloads saved for this server will be deleted from this device. "
+                + "Switching to this server may download its items again."
+        }
+        return "No server on this device uses this data."
     }
 
     var body: some View {
@@ -115,6 +145,35 @@ struct DownloadsSettingsView: View {
             }
             .listRowBackground(Color.siloGroupedCell)
 
+            if !manager.otherDownloadStorage.isEmpty {
+                Section {
+                    ForEach(manager.otherDownloadStorage) { group in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(title(for: group))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Text(detail(for: group))
+                                    .font(.caption)
+                                    .foregroundColor(.siloSecondaryText)
+                            }
+                            Spacer()
+                            Text(DownloadFormatting.bytes(group.bytes))
+                                .foregroundColor(.siloSecondaryText)
+                            Button("Remove", role: .destructive) {
+                                pendingOtherRemoval = group
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                } header: {
+                    Text("Other Download Data")
+                } footer: {
+                    Text("Saved for other servers, other profiles, or by other versions of Silo. It doesn't appear in Downloads for this profile.")
+                }
+                .listRowBackground(Color.siloGroupedCell)
+            }
+
             if manager.heldProgressCount > 0 {
                 Section {
                     Button("Discard held change", role: .destructive) {
@@ -130,6 +189,7 @@ struct DownloadsSettingsView: View {
         }
         .navigationTitle("Downloads")
         .task {
+            await manager.refreshOtherDownloadStorage()
             // The quality picker is hidden when the cached capability only
             // offers one preset; re-fetch so permission changes show up here
             // without waiting for the next app foreground.
@@ -150,6 +210,21 @@ struct DownloadsSettingsView: View {
                 manager.deleteDownloads(ids: manager.records.map(\.id))
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .alert(
+            pendingOtherRemoval.map { "Remove download data for \(title(for: $0))?" } ?? "",
+            isPresented: Binding(
+                get: { pendingOtherRemoval != nil },
+                set: { if !$0 { pendingOtherRemoval = nil } }
+            ),
+            presenting: pendingOtherRemoval
+        ) { group in
+            Button("Remove", role: .destructive) {
+                Task { await manager.removeOtherDownloadStorage(group) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { group in
+            Text(removalMessage(for: group))
         }
     }
 }

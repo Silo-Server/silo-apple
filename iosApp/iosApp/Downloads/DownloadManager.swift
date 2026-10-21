@@ -80,7 +80,7 @@ final class DownloadManager {
     /// Coalesces the several legitimate app-lifecycle callers that can all ask
     /// for the same scope at launch. Without this, a late disk read can replace
     /// a newly registered in-memory download with its older empty snapshot.
-    private var scopeLoadTask: Task<DownloadStoreFile, Never>?
+    private var scopeLoadTask: Task<DownloadStoreLoad, Never>?
     private var scopeLoadToken: UUID?
     private var scopeLoadServerId = ""
     private var scopeLoadProfileId = ""
@@ -689,7 +689,7 @@ final class DownloadManager {
             scopeProfileId = profileId
         }
 
-        let loadTask: Task<DownloadStoreFile, Never>
+        let loadTask: Task<DownloadStoreLoad, Never>
         let loadToken: UUID
         if let existing = scopeLoadTask,
            scopeLoadServerId == serverId,
@@ -701,7 +701,7 @@ final class DownloadManager {
             scopeLoadTask?.cancel()
             let token = UUID()
             let task = Task {
-                await DownloadStore.shared.load(serverId: serverId, profileId: profileId)
+                await DownloadStore.shared.loadScope(serverId: serverId, profileId: profileId)
             }
             scopeLoadTask = task
             scopeLoadToken = token
@@ -711,17 +711,17 @@ final class DownloadManager {
             loadToken = token
         }
 
-        let loadedFile = await loadTask.value
+        let loaded = await loadTask.value
         guard scopeServerId == serverId, scopeProfileId == profileId else { return false }
         if scopeLoadToken == loadToken {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
-            file = loadedFile
+            file = loaded.file
             fileServerId = serverId
             fileProfileId = profileId
             adoptLegacySessionTasksIfNeeded()
             requeueOrphanedRecords()
-            startParkedSettle()
+            startParkedSettle(reclaimingUntracked: loaded.tracksScopeStorage)
             if let released = releasedProgressClaims.removeValue(forKey: Self.progressClaimKey(serverId, profileId)),
                OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
                 persist()
@@ -827,13 +827,15 @@ final class DownloadManager {
     }
 
     /// Starts settling the loaded scope's parked transfers, replacing the
-    /// settle of any earlier install.
-    private func startParkedSettle() {
+    /// settle of any earlier install. A store install that read the scope's
+    /// whole truth also reclaims the directories none of its records owns.
+    private func startParkedSettle(reclaimingUntracked: Bool = false) {
         guard let scope = loadedScope else { return }
         parkedSettle = (scope, Task { @MainActor [weak self] in
             // A later install of this scope has started its own settle.
             guard let self, self.loadedScope == scope else { return }
             await self.settleParkedTransfers(serverId: scope.serverId, profileId: scope.profileId)
+            if reclaimingUntracked { await self.reclaimUntrackedDirectories(in: scope) }
         })
     }
 
@@ -886,6 +888,83 @@ final class DownloadManager {
             }
         }
         refreshStorageUsage()
+    }
+
+    /// Removes the loaded scope's download directories that no record owns.
+    /// Nothing reads them again: they are left by a store that went missing
+    /// or was quarantined, or by a delete the process ended in. Runs inside
+    /// the install's settle, before anything can reconnect or reconcile, and
+    /// skips directories holding a parked transfer, which the settle owns.
+    /// The directories are set aside here against the current records, so a
+    /// record added later always gets a fresh directory; the slow delete
+    /// runs afterwards off the main actor.
+    private func reclaimUntrackedDirectories(in scope: ScopeKey) async {
+        let root = DownloadFilePaths.rootDirectory()
+        let scopeDirectory = DownloadFilePaths.scopeDirectory(serverId: scope.serverId, profileId: scope.profileId, root: root)
+        let candidates = await Task.detached(priority: .utility) {
+            DownloadStorageReclaim.sweepCandidates(inScope: scopeDirectory)
+        }.value
+        guard loadedScope == scope else { return }
+        let untracked = DownloadStorageReclaim.untrackedDirectories(candidates, recordIds: file.records.keys)
+        let moved = DownloadStorageReclaim.setAside(
+            untracked.map { scopeDirectory.appendingPathComponent($0, isDirectory: true) },
+            root: root
+        )
+        // Also deletes what an earlier process set aside but did not delete.
+        Task {
+            let freed = await deleteSetAsideStorage(root: root)
+            guard freed > 0 else { return }
+            Self.logger.notice("Reclaimed \(freed, privacy: .public) bytes from \(moved, privacy: .public) download directories no record owns")
+            refreshStorageUsage()
+        }
+    }
+
+    // MARK: - Download data outside the active scope
+
+    /// Download data for other servers, profiles, and folder layouts, as of
+    /// the last `refreshOtherDownloadStorage()`.
+    private(set) var otherDownloadStorage: [DownloadStorageReclaim.OtherStorage] = []
+
+    /// The active scope's folder names, or nil while a scope switch is still
+    /// loading its store, when nothing outside it may be removed.
+    private var activeScopeFolders: (server: String, profile: String)? {
+        guard let scope = loadedScope else { return nil }
+        return DownloadFilePaths.scopeFolderNames(serverId: scope.serverId, profileId: scope.profileId)
+    }
+
+    func refreshOtherDownloadStorage() async {
+        guard let active = activeScopeFolders else {
+            otherDownloadStorage = []
+            return
+        }
+        let root = DownloadFilePaths.rootDirectory()
+        otherDownloadStorage = await Task.detached(priority: .utility) {
+            DownloadStorageReclaim.otherStorage(root: root, activeServerFolder: active.server,
+                activeProfileFolder: active.profile)
+        }.value
+    }
+
+    /// Deletes one group of download data outside the active scope. Its
+    /// store goes too, so a profile or server switched back to later imports
+    /// its server rows and downloads them again.
+    func removeOtherDownloadStorage(_ group: DownloadStorageReclaim.OtherStorage) async {
+        guard let active = activeScopeFolders else { return }
+        let root = DownloadFilePaths.rootDirectory()
+        // Set aside synchronously, against the scope active right now.
+        DownloadStorageReclaim.setAside(
+            DownloadStorageReclaim.removalTargets(folderName: group.folderName, root: root,
+                activeServerFolder: active.server, activeProfileFolder: active.profile),
+            root: root
+        )
+        let freed = await deleteSetAsideStorage(root: root)
+        Self.logger.notice("Removed \(freed, privacy: .public) bytes of download data outside the active scope")
+        await refreshOtherDownloadStorage()
+    }
+
+    private func deleteSetAsideStorage(root: URL) async -> Int64 {
+        await Task.detached(priority: .utility) {
+            DownloadStorageReclaim.deleteSetAside(root: root)
+        }.value
     }
 
     private func removeLegacyDownloadsIfNeeded() async {

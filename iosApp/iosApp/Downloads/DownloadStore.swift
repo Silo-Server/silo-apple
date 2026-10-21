@@ -30,12 +30,17 @@ actor DownloadStore {
     /// scope has no store yet. A store that can't be decoded is renamed
     /// aside first, so the empty blob never overwrites it.
     func load(serverId: String, profileId: String) -> DownloadStoreFile {
-        guard !serverId.isEmpty, !profileId.isEmpty else { return .empty }
+        loadScope(serverId: serverId, profileId: profileId).file
+    }
+
+    /// `load`, plus what the load found on disk.
+    func loadScope(serverId: String, profileId: String) -> DownloadStoreLoad {
+        guard !serverId.isEmpty, !profileId.isEmpty else { return DownloadStoreLoad(file: .empty, outcome: .missing) }
         let scope = scopeKey(serverId: serverId, profileId: profileId)
         let url = storeFileURL(serverId: serverId, profileId: profileId)
         guard FileManager.default.fileExists(atPath: url.path) else {
             unsavableScopes.remove(scope)
-            return .empty
+            return DownloadStoreLoad(file: .empty, outcome: .missing)
         }
         let data: Data
         do {
@@ -45,20 +50,20 @@ actor DownloadStore {
             // before first unlock). The contents may be fine, so leave them.
             Self.logger.error("Download store read failed; not saving this scope: \(String(describing: error), privacy: .public)")
             unsavableScopes.insert(scope)
-            return .empty
+            return DownloadStoreLoad(file: .empty, outcome: .unreadable)
         }
         do {
             let file = try decoder.decode(DownloadStoreFile.self, from: data)
             unsavableScopes.remove(scope)
-            return file
+            return DownloadStoreLoad(file: file, outcome: .loaded)
         } catch {
             Self.logger.error("Download store decode failed: \(String(describing: error), privacy: .public)")
             if quarantine(url) {
                 unsavableScopes.remove(scope)
-            } else {
-                unsavableScopes.insert(scope)
+                return DownloadStoreLoad(file: .empty, outcome: .quarantined)
             }
-            return .empty
+            unsavableScopes.insert(scope)
+            return DownloadStoreLoad(file: .empty, outcome: .unreadable)
         }
     }
 
@@ -147,4 +152,29 @@ actor DownloadStore {
             return false
         }
     }
+}
+
+/// A scope's store as `DownloadStore.loadScope` found it.
+struct DownloadStoreLoad: Sendable {
+    enum Outcome: Equatable, Sendable {
+        /// The store was read and decoded.
+        case loaded
+        /// The scope has no store file.
+        case missing
+        /// The store could not be decoded and was renamed aside.
+        case quarantined
+        /// The store is present but could not be read, or could not be
+        /// renamed aside after a failed decode. Its contents may be fine.
+        case unreadable
+    }
+
+    var file: DownloadStoreFile
+    var outcome: Outcome
+
+    /// Whether the loaded file is the scope's whole truth, so a download
+    /// directory none of its records owns can be deleted. A missing or
+    /// quarantined store counts: nothing in this version can read the
+    /// directories it owned again, and the server's rows download afresh.
+    /// An unreadable store may still own them.
+    var tracksScopeStorage: Bool { outcome != .unreadable }
 }
