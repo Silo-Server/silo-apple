@@ -1876,7 +1876,7 @@ actor PlaybackSessionBridge {
     /// that plan rather than the active one: a summary is sent as its plan is
     /// replaced, so the bridge may already hold the next.
     nonisolated static func planSummaryRouteEvent(
-        _ summary: PlaybackV3PlanSummary,
+        _ summary: BufferingQualityController.PlanSummary,
         for prepared: PreparedPlaybackV3,
         sessionId: String
     ) -> PlaybackV3RouteEvent {
@@ -1893,7 +1893,7 @@ actor PlaybackSessionBridge {
             appliedQuirkIds: prepared.plan.appliedQuirks.map(\.id),
             quirkRegistryRevision: prepared.plan.appliedQuirks.first?.registryRevision,
             outputContextId: prepared.outputContextId,
-            diagnostics: summary.diagnostics
+            diagnostics: summary.routeEventDiagnostics
         )
     }
 
@@ -1901,7 +1901,7 @@ actor PlaybackSessionBridge {
     /// the session owner that sends it. Nil when the server does not
     /// advertise `playback_plan_summary_v1`.
     func protocolV3PlanSummaryEntry(
-        _ summary: PlaybackV3PlanSummary,
+        _ summary: BufferingQualityController.PlanSummary,
         for prepared: PreparedPlaybackV3,
         sessionId: String,
         eventId: String,

@@ -75,7 +75,7 @@ enum PlaybackProtocolV3 {
 
     enum RouteEvent {
         /// Sent when a plan stops being the playing plan; see
-        /// ``PlaybackV3PlanSummary``.
+        /// ``BufferingQualityController/PlanSummary/routeEventDiagnostics``.
         static let planSummary = "plan_summary"
     }
 
@@ -479,35 +479,20 @@ struct PlaybackV3RouteEvent: Codable, Equatable {
     let diagnostics: [String: String]
 }
 
-/// What one plan did while it was the playing plan: the `plan_summary` route
-/// event, sent when the plan is replaced, stopped or fails, and only to a
-/// server that advertises `playback_plan_summary_v1`.
-struct PlaybackV3PlanSummary: Equatable, Sendable {
-    let playedMs: Int
-    /// Counted stalls.
-    let stallCount: Int
-    /// Startup grace excluded.
-    let stallTotalMs: Int
-    let stallLongestMs: Int
-    /// `effective_recipe.bitrate_kbps`, else `source.bitrate_kbps`.
-    let deliveredKbps: Int?
-    let bufferingMode: BufferingQualityMode
-    /// The last buffering action on this plan: `none`, `ignored`, `lowered`,
-    /// `restored`, `accepted`, `kept`, `timed_out` or `cant_lower`.
-    let bufferingAction: String
-    /// The estimate the plan was requested with.
-    let bandwidthEstimateKbps: Int?
-
+/// What one plan did while it was the playing plan, as the `plan_summary`
+/// route event carries it: sent when the plan is replaced, stopped or fails,
+/// and only to a server that advertises `playback_plan_summary_v1`.
+extension BufferingQualityController.PlanSummary {
     /// The event's diagnostics. Every value is a string, and an unknown
     /// estimate or bitrate is left out rather than sent as zero.
-    var diagnostics: [String: String] {
+    var routeEventDiagnostics: [String: String] {
         var values = [
             "played_ms": String(max(0, playedMs)),
             "stall_count": String(max(0, stallCount)),
             "stall_total_ms": String(max(0, stallTotalMs)),
             "stall_longest_ms": String(max(0, stallLongestMs)),
-            "buffering_mode": bufferingMode.wireValue,
-            "buffering_action": bufferingAction,
+            "buffering_mode": mode.wireValue,
+            "buffering_action": action.rawValue,
         ]
         values["delivered_kbps"] = deliveredKbps.map(String.init)
         values["bandwidth_estimate_kbps"] = bandwidthEstimateKbps.map(String.init)

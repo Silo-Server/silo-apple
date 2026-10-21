@@ -10602,19 +10602,9 @@ extension PlayerViewModel {
         of entry: BufferingPlanEntry,
         sending: Bool
     ) {
-        let report = PlaybackV3PlanSummary(
-            playedMs: summary.playedMs,
-            stallCount: summary.stallCount,
-            stallTotalMs: summary.stallTotalMs,
-            stallLongestMs: summary.stallLongestMs,
-            deliveredKbps: summary.deliveredKbps,
-            bufferingMode: summary.mode,
-            bufferingAction: summary.action.rawValue,
-            bandwidthEstimateKbps: summary.bandwidthEstimateKbps
-        )
         PlanSummaryJournal.shared.record(sending: sending) { [sessionBridge] in
             await sessionBridge.protocolV3PlanSummaryEntry(
-                report, for: entry.prepared, sessionId: entry.sessionId,
+                summary, for: entry.prepared, sessionId: entry.sessionId,
                 eventId: entry.summaryEventId, planStartedAt: entry.adoptedAt
             )
         }

@@ -181,7 +181,7 @@ final class BufferingQualityController {
     }
 
     /// `buffering_action`: the last action on a plan.
-    enum Action: String, Equatable {
+    enum Action: String, Equatable, Sendable {
         case none
         /// A trigger in `never`.
         case ignored
@@ -196,7 +196,7 @@ final class BufferingQualityController {
 
     /// The `plan_summary` route event, for a plan that stopped being the
     /// playing plan.
-    struct PlanSummary: Equatable {
+    struct PlanSummary: Equatable, Sendable {
         var planId: String
         var playedMs: Int
         var stallCount: Int

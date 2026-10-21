@@ -361,9 +361,10 @@ final class BufferingQualityContractTests: XCTestCase {
             plan: plan)
         XCTAssertTrue(prepared.advertisesPlanSummary)
         XCTAssertFalse(prepared.advertisesBufferingQuality)
-        let summary = PlaybackV3PlanSummary(
-            playedMs: 600_000, stallCount: 2, stallTotalMs: 8_000, stallLongestMs: 6_000, deliveredKbps: 63_000,
-            bufferingMode: .always, bufferingAction: "lowered", bandwidthEstimateKbps: nil)
+        // The controller's own plan id never goes on the wire.
+        let summary = BufferingQualityController.PlanSummary(
+            planId: "local:summary", playedMs: 600_000, stallCount: 2, stallTotalMs: 8_000, stallLongestMs: 6_000,
+            deliveredKbps: 63_000, mode: .always, action: .lowered, bandwidthEstimateKbps: nil)
         let event = PlaybackSessionBridge.planSummaryRouteEvent(
             summary, for: prepared, sessionId: try XCTUnwrap(fixture["session_id"] as? String))
 
@@ -374,10 +375,10 @@ final class BufferingQualityContractTests: XCTestCase {
         XCTAssertEqual(body.removeValue(forKey: "applied_quirk_ids") as? [String], [])
         XCTAssertEqual(body as NSDictionary, fixture as NSDictionary)
 
-        let estimated = PlaybackV3PlanSummary(
-            playedMs: 1, stallCount: 0, stallTotalMs: 0, stallLongestMs: 0, deliveredKbps: nil,
-            bufferingMode: .never, bufferingAction: "ignored", bandwidthEstimateKbps: 44_100)
-        XCTAssertEqual(estimated.diagnostics["bandwidth_estimate_kbps"], "44100")
-        XCTAssertNil(estimated.diagnostics["delivered_kbps"], "an unknown bitrate is left out")
+        let estimated = BufferingQualityController.PlanSummary(
+            planId: "local:estimated", playedMs: 1, stallCount: 0, stallTotalMs: 0, stallLongestMs: 0,
+            deliveredKbps: nil, mode: .never, action: .ignored, bandwidthEstimateKbps: 44_100)
+        XCTAssertEqual(estimated.routeEventDiagnostics["bandwidth_estimate_kbps"], "44100")
+        XCTAssertNil(estimated.routeEventDiagnostics["delivered_kbps"], "an unknown bitrate is left out")
     }
 }
