@@ -465,7 +465,7 @@ final class BandwidthProbeScheduler {
     /// and joins a running **Test speed**.
     func runNow() async -> Outcome {
         if let refused = gate(automatic: false) { return refused }
-        return await probeOnce(mode: .accurate)
+        return await probeOnce(testSpeed: true)
     }
 
     // MARK: - App inputs
@@ -680,9 +680,8 @@ final class BandwidthProbeScheduler {
         guard await checkRead?.value == true, self.session == session else { return }
         guard testIsDue(for: session) else { return }
         // The stored readings may have changed since the check.
-        guard await read(for: session), self.session == session, testIsDue(for: session),
-              let target = lastTarget else { return }
-        _ = await probeOnce(mode: .quick(targetKbps: target.targetKbps))
+        guard await read(for: session), self.session == session, testIsDue(for: session) else { return }
+        _ = await probeOnce(testSpeed: false)
     }
 
     private func testIsDue(for session: BandwidthProbeSession) -> Bool {
@@ -713,20 +712,21 @@ final class BandwidthProbeScheduler {
         Task { await look() }
     }
 
-    /// Runs `mode`, or joins the test already running. **Test speed**
-    /// replaces a running automatic test, so it always measures accurately.
-    private func probeOnce(mode: BandwidthProbeMeter.Mode) async -> Outcome {
+    /// Runs **Test speed**'s accurate test (`testSpeed`) or an automatic quick
+    /// one, or joins the test already running. **Test speed** replaces a
+    /// running automatic test, so it always measures accurately.
+    private func probeOnce(testSpeed: Bool) async -> Outcome {
         while let running = inFlight, let task = running.task {
-            guard mode == .accurate, !running.isTestSpeed else { return await task.value }
+            guard testSpeed, !running.isTestSpeed else { return await task.value }
             cancelInFlight(.interrupted)
             _ = await task.value
         }
-        let run = Run(isTestSpeed: mode == .accurate)
+        let run = Run(isTestSpeed: testSpeed)
         inFlight = run
         isProbing = true
         let task = Task { [weak self] () -> Outcome in
             guard let self else { return .interrupted }
-            let outcome = await self.measureAndReport(run, mode: mode)
+            let outcome = await self.measureAndReport(run)
             if self.inFlight === run {
                 self.inFlight = nil
                 self.isProbing = false
@@ -738,7 +738,7 @@ final class BandwidthProbeScheduler {
         return await task.value
     }
 
-    private func measureAndReport(_ run: Run, mode: BandwidthProbeMeter.Mode) async -> Outcome {
+    private func measureAndReport(_ run: Run) async -> Outcome {
         let target: BandwidthProbeTarget
         do {
             guard let found = try await server.target() else { return run.cancelledFor ?? .notSupported }
@@ -747,11 +747,11 @@ final class BandwidthProbeScheduler {
             return run.cancelledFor ?? .networkError
         }
         if let reason = run.cancelledFor { return reason }
-        if let refused = gate(automatic: mode != .accurate) { return refused }
+        if let refused = gate(automatic: !run.isTestSpeed) { return refused }
         guard target.serverId == session?.serverId else { return .interrupted }
         lastTarget = target
         // A quick test proves the target the server sends now.
-        let mode: BandwidthProbeMeter.Mode = if case .quick = mode { .quick(targetKbps: target.targetKbps) } else { mode }
+        let mode: BandwidthProbeMeter.Mode = run.isTestSpeed ? .accurate : .quick(targetKbps: target.targetKbps)
         let measuredOn = network
         let measuredOver = currentConnection
         let result: BandwidthProbeResult
