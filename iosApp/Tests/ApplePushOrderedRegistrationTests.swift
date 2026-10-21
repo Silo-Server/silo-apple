@@ -914,6 +914,53 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(h.server.retirements.count, 1)
     }
 
+    /// A refused sign-out whose `restore` could not register leaves the
+    /// journal retired with nothing queued. The next sign-out retires the
+    /// installation again at the same generation instead of sending nothing.
+    func testSignOutAfterAFailedRestoreRetiresAgain() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar()
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        h.server.enqueueRetirement(.transportFailure)
+        _ = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+        h.server.setCapability(#"{"allowed":true,"registration_available":false,"revision":"r2","state":"not_configured"}"#)
+        let restored = await registrar.restore(serverID: Self.serverID)
+        XCTAssertEqual(restored, .unavailable)
+        XCTAssertEqual(try h.retirementStore.load(), [])
+
+        let result = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+
+        XCTAssertEqual(result, .retirement(.retired))
+        XCTAssertEqual(h.server.retirements.map { $0.header("X-Push-Generation") }, ["2", "2"])
+        XCTAssertEqual(try h.retirementStore.load(), [])
+    }
+
+    /// The same, on a server without the endpoint: the next sign-out still
+    /// has its session, so it turns pushes off rather than only queueing a
+    /// retirement the server cannot answer.
+    func testSignOutAfterAFailedRestoreTurnsOffAServerWithoutTheEndpoint() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar()
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        h.server.enqueueRetirement(.status(404))
+        h.server.enqueue(.transportFailure)
+        _ = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+        h.server.setCapability(#"{"allowed":true,"registration_available":false,"revision":"r2","state":"not_configured"}"#)
+        _ = await registrar.restore(serverID: Self.serverID)
+        XCTAssertEqual(try h.retirementStore.load(), [])
+        h.server.setCapability(#"{"allowed":true,"registration_available":true,"revision":"r3","state":"available"}"#)
+        h.server.enqueueRetirement(.status(404))
+
+        _ = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+
+        let sends = h.server.registrations
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3", "5"])
+        XCTAssertEqual(sends.last?.bodyString?.contains(#""push_mode":"off""#), true)
+        XCTAssertEqual(try h.retirementStore.load(), [])
+    }
+
     // MARK: - Journal
 
     func testInstallationKeyFormat() throws {

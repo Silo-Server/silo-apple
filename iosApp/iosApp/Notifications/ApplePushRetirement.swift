@@ -191,13 +191,6 @@ actor ApplePushRetirementQueue {
         return await attempt(stored ?? entry)
     }
 
-    /// Sends the server's pending retirement now, whatever its back-off.
-    /// `nil` when none is pending or one is already in flight.
-    func send(serverID: String) async -> Outcome? {
-        guard let entry = pending().first(where: { $0.serverID == serverID }) else { return nil }
-        return await attempt(entry)
-    }
-
     /// Sends every pending retirement whose back-off has passed, a few at a
     /// time. `afterPush` skips the back-off: a push from a server that should
     /// have stopped is the moment to try again.

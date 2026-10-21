@@ -301,16 +301,11 @@ actor ApplePushRegistrar {
             departing[serverID] = (owner.accountID, owner.accountEpoch)
         }
         guard let latest else { return .unchanged }
-        switch latest.outcome {
-        case .accepted(let registration) where !registration.isActive:
-            return .unchanged
-        case .retired:
-            // Retired by an earlier sign-out. Send it again if it is still
-            // pending.
-            return await retirements.send(serverID: serverID).map(Result.retirement) ?? .unchanged
-        default:
-            break
-        }
+        if case .accepted(let registration) = latest.outcome, !registration.isActive { return .unchanged }
+        // A server already retired by an earlier sign-out is retired again at
+        // the same generation: its entry may be gone (a `restore` whose
+        // registration never allocated, or a queue write that failed), and a
+        // server without the endpoint still needs the `off` below.
         let deviceID = latest.intent.body.deviceId
         if let retirement = await allocateRetirement(serverID: serverID, deviceID: deviceID) {
             let outcome = await retirements.submit(retirement) ?? .kept(reason: "in_flight")
