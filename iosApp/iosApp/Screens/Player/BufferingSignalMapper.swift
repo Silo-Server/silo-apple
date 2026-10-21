@@ -42,7 +42,6 @@ struct BufferingSignalMapper {
 
     enum Call: Equatable {
         case transportTroubleChanged(Bool)
-        case seeked
         case playing
         case waiting(BufferingQualityController.WaitCause)
         case paused
@@ -97,9 +96,6 @@ struct BufferingSignalMapper {
             seekSincePlaying = false
         }
         guard next != state else { return calls }
-        if next == .waiting(.seek), state == .playing || state == .paused {
-            calls.append(.seeked)
-        }
         state = next
         switch next {
         case .playing: calls.append(.playing)

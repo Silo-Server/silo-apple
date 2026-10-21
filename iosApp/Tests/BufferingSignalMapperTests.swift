@@ -117,7 +117,7 @@ final class BufferingSignalMapperTests: XCTestCase {
     func testASeekThatStartsWhileNotWaitingDiscardsAnyStall() {
         var mapper = BufferingSignalMapper()
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
-        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying, seek: true)), [.seeked, .waiting(.seek)])
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying, seek: true)), [.waiting(.seek)])
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), seek: true)), [])
 
         // From a network wait the seek wait itself ends the stall.
@@ -153,7 +153,7 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(mapper.update(Self.snapshot(play: false, phase: .paused, native: Self.avPaused)), [])
         XCTAssertEqual(
             mapper.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls))),
-            [.seeked, .waiting(.seek)],
+            [.waiting(.seek)],
             "Play after the landing waits on the seek"
         )
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])

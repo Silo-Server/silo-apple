@@ -10227,8 +10227,6 @@ extension PlayerViewModel {
             case .transportTroubleChanged(let trouble):
                 Self.logger.info("[CMP-BUFFERING] transport trouble=\(trouble, privacy: .public)")
                 bufferingQuality.transportTroubleChanged(trouble)
-            case .seeked:
-                bufferingQuality.seeked()
             case .playing:
                 bufferingQuality.playing()
             case .waiting(let cause):
