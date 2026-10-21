@@ -23,11 +23,6 @@ protocol PlayerPromptTimer: AnyObject {
     func cancel()
 }
 
-extension PlayerPromptClock {
-    /// For a clock whose `now` only moves forward, as a test's does.
-    var elapsedMs: Int { Int((now.timeIntervalSinceReferenceDate * 1000).rounded()) }
-}
-
 /// The production clock: wall-clock time, `ContinuousClock` elapsed time and
 /// main-actor tasks.
 @MainActor

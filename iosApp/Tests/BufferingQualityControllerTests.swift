@@ -598,6 +598,7 @@ final class ManualBufferingQualityClock: PlayerPromptClock {
     private var scheduled = 0
 
     var now: Date { Date(timeIntervalSinceReferenceDate: TimeInterval(nowMs) / 1000) }
+    var elapsedMs: Int { nowMs }
 
     func schedule(
         after delay: TimeInterval,

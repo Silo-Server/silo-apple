@@ -462,6 +462,7 @@ final class ManualIntroSkipClock: IntroSkipPromptClock {
     }
 
     private(set) var now = Date(timeIntervalSinceReferenceDate: 0)
+    var elapsedMs: Int { Int((now.timeIntervalSinceReferenceDate * 1000).rounded()) }
     private var timers: [Timer] = []
 
     func schedule(
