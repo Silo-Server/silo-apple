@@ -313,6 +313,7 @@ final class BufferingQualityController {
     /// estimate belonged to the one that lowered.
     func newAttempt() {
         keptEstimateKbps = nil
+        pendingReplan?.priorKeptEstimateKbps = nil
     }
 
     /// New content: emits the current plan's summary and forgets every
@@ -352,8 +353,9 @@ final class BufferingQualityController {
     /// past the start of the current playing state.
     func waiting(cause: WaitCause = .network, startedAgoMs: Int = 0) {
         let now = nowMs
-        var began = now - max(0, startedAgoMs)
-        if let playingSince { began = max(began, playingSince) }
+        // Backdated no further than playback last ran: a wait noticed late
+        // after a pause began when playback resumed, not inside the pause.
+        let began = playingSince.map { max($0, now - max(0, startedAgoMs)) } ?? now
         leavePlaying(at: began)
         guard cause == .network else {
             endStall(at: now, resumed: false)
@@ -969,7 +971,8 @@ final class BufferingQualityController {
         /// The delivered bitrate the replan left; a lower result is below it.
         let fromKbps: Int?
         /// The kept estimate before this replan, for one the player refuses.
-        let priorKeptEstimateKbps: Int?
+        /// A new attempt discards it with the kept estimate.
+        var priorKeptEstimateKbps: Int?
     }
 
     private struct PresentedPill {

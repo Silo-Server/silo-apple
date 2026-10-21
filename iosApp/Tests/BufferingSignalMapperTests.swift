@@ -157,6 +157,19 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.transportTroubleChanged(false), .playing])
     }
 
+    /// A seek made while paused in one title doesn't make the next title's
+    /// start read as the seek's.
+    func testASeekLatchEndsWithItsPlan() {
+        var mapper = BufferingSignalMapper()
+        mapper.planAdopted()
+        XCTAssertEqual(mapper.update(Self.snapshot()), [.playing])
+        XCTAssertEqual(mapper.update(Self.snapshot(play: false, phase: .paused)), [.paused])
+        XCTAssertEqual(mapper.update(Self.snapshot(play: false, phase: .paused, seek: true)), [])
+        XCTAssertEqual(mapper.update(Self.snapshot(play: false, phase: .paused)), [])
+        mapper.planAdopted()
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading)), [.waiting(.network)], "the next title's start")
+    }
+
     /// An adopted plan starts with no outage, even while the one before it
     /// still waited for data; an outage still signalled begins again.
     func testAnAdoptedPlanStartsWithNoOutage() {
@@ -568,6 +581,24 @@ final class BufferingQualityPlayerTests: XCTestCase {
         XCTAssertNil(model.bufferingPill)
     }
 
+    /// On the legacy path too, a pick the player can't take (nothing to
+    /// reload) is not a quality change: the prompt stays.
+    func testALegacyPickThePlayerCannotTakeKeepsTheBufferingPill() throws {
+        let clock = ManualBufferingQualityClock()
+        let model = PlayerViewModel(bufferingQualityClock: clock)
+        defer { model.cleanup() }
+        model.adoptBufferingPlan(try preparedPlan(), sessionId: "session", activeQualityId: "1080p-high")
+        model.bufferingQuality.mode = .always
+        model.bufferingQuality.playing()
+        clock.advance(to: 20_000)
+        model.bufferingQuality.waiting(cause: .network)
+        clock.advance(to: 26_000)
+        XCTAssertEqual(model.bufferingPill?.kind, .prompt)
+        model.switchQuality("720p")
+        XCTAssertNotNil(model.qualitySwitchError, "the player refused the pick")
+        XCTAssertEqual(model.bufferingPill?.kind, .prompt)
+    }
+
     /// A pick the player refuses, here because a replan is already in
     /// flight, is not a quality change: the prompt stays.
     func testARefusedQualityPickKeepsTheBufferingPill() throws {
@@ -672,6 +703,7 @@ final class BufferingQualityPlayerTests: XCTestCase {
         let model = PlayerViewModel(bufferingQualityClock: clock)
         defer { model.cleanup() }
         try showPrompt(on: model, clock: clock)
+        model.isLoading = false
 
         model.playerSheetCoversPlayer(true)
         await eventually { model.bufferingPill == nil }
@@ -683,11 +715,30 @@ final class BufferingQualityPlayerTests: XCTestCase {
         XCTAssertEqual(model.bufferingPill?.kind, .prompt, "its timer did not run out unseen")
     }
 
+    /// A sheet goes away with the controls when a load, Next Up or an error
+    /// replaces them, so it no longer holds the pill, even before the
+    /// controls come back to say so.
+    func testASheetThatLeftWithTheControlsHoldsNothing() async throws {
+        let clock = ManualBufferingQualityClock()
+        let model = PlayerViewModel(bufferingQualityClock: clock)
+        defer { model.cleanup() }
+        try showPrompt(on: model, clock: clock)
+        model.isLoading = false
+        model.playerSheetCoversPlayer(true)
+        await eventually { model.bufferingPill == nil }
+        XCTAssertNil(model.bufferingPill)
+
+        model.isLoading = true
+        await eventually { model.bufferingPill != nil }
+        XCTAssertEqual(model.bufferingPill?.kind, .prompt)
+    }
+
     /// A buffering notice is information. It waits while another notice
     /// holds the slot or the player can't show it, then shows.
     func testABufferingNoticeWaitsForTheSlot() async {
         let model = PlayerViewModel()
         defer { model.cleanup() }
+        model.isLoading = false
         let other = PlayerNotice(title: "Other", message: "", tone: .warning)
         model.activeNotice = other
         model.playerSheetCoversPlayer(true)

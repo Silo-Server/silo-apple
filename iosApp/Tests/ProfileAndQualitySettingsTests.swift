@@ -712,6 +712,21 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(harness.settings.bufferingQualityMode, .ask)
     }
 
+    /// Once the server is known to lack the setting, a picker still open
+    /// stores nothing: playback stays on Automatically.
+    func testAServerWithoutTheBufferingSettingTakesNoChoice() async throws {
+        let harness = try PlayerSettingsHarness()
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn - 1
+        await harness.settings.refreshFromServer()
+        XCTAssertTrue(harness.settings.serverLacksBufferingQualityMode)
+        harness.transport.reset()
+        harness.settings.setBufferingQualityMode(.never)
+        await harness.settings.flushPendingDeviceSettings()
+        XCTAssertEqual(harness.settings.bufferingQualityMode, .always)
+        XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode))
+        XCTAssertTrue(harness.transport.writes().isEmpty)
+    }
+
     /// The setting is found by its key, not by the manifest revision: a
     /// server that answers the key has it.
     func testTheBufferingSettingIsFoundByItsKey() async throws {

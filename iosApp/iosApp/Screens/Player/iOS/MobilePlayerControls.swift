@@ -138,10 +138,11 @@ struct MobilePlayerControls: View {
                 viewModel.resumeAutoHide()
                 tracksDetent = .medium
             }
-            viewModel.playerSheetCoversPlayer(sheetCoversPlayer)
         }
-        .onChange(of: tracksDetent) { _, _ in
-            viewModel.playerSheetCoversPlayer(sheetCoversPlayer)
+        // Initial too: controls that mount again say whether their sheet
+        // came back with them.
+        .onChange(of: sheetCoversPlayer, initial: true) { _, covers in
+            viewModel.playerSheetCoversPlayer(covers)
         }
     }
 

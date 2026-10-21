@@ -104,6 +104,9 @@ struct BufferingSignalMapper {
         state = nil
         startPending = true
         planHasRun = false
+        // Until it plays, a seek doesn't end the new plan's start, nor does one
+        // made under the plan before it, in this title or the last.
+        seekSincePlaying = false
         outageAwaitsDataAboveMs = nil
         mediaRequestFailed = false
     }

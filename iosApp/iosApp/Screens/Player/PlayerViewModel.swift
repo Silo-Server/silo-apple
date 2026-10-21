@@ -6584,14 +6584,14 @@ class PlayerViewModel {
             }
             return
         }
-        bufferingQuality.qualityChanged()
-
         guard var request = lastLoadRequest,
               request.offlineDownloadId == nil else {
             isQualitySwitching = false
             qualitySwitchError = "Quality selection is unavailable for offline playback."
             return
         }
+        // A switch the player takes is a quality change; a refused one isn't.
+        bufferingQuality.qualityChanged()
         request = request.copyForRecovery(
             preferredFileId: request.preferredFileId,
             preferredAudioTrackIndex: resolvedAudioTrackIndexForResume(),
@@ -10625,11 +10625,18 @@ extension PlayerViewModel {
     /// background, picture in picture or under a sheet, nor in a Mac player
     /// window that can't be seen.
     private var canShowPlayerOverlays: Bool {
-        var hidden = isPlayerSurfaceHidden || isPlayerCoveredBySheet
+        var hidden = isPlayerSurfaceHidden || (isPlayerCoveredBySheet && playerControlsAreMounted)
         #if os(iOS)
         hidden = hidden || PictureInPictureCoordinator.shared.isEngaged
         #endif
         return !hidden
+    }
+
+    /// The iPhone and iPad controls, and the sheets they present, are on
+    /// screen: not while a load, Next Up or an error replaces them. A sheet
+    /// that went away with them covers nothing.
+    private var playerControlsAreMounted: Bool {
+        !isLoading && !showNextUpScreen && error == nil
     }
 
     /// The sheet over the iPhone and iPad player opened or closed.

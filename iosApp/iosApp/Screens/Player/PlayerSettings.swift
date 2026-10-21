@@ -1065,6 +1065,8 @@ final class PlayerSettings {
     /// Saved for this device like ``setIntroSkipMode(_:)``. Settings offers it
     /// only where the server has the setting.
     func setBufferingQualityMode(_ mode: BufferingQualityMode) {
+        // A picker opened before the read that found no setting stores nothing.
+        guard !serverLacksBufferingQualityMode else { return }
         bufferingQualityMode = mode
         enqueueDeviceValue(.bufferingQualityMode, value: .string(mode.wireValue))
     }
@@ -1368,9 +1370,6 @@ final class PlayerSettings {
         if setting == .cellularQuality {
             resetCellularQualityWhereNotServed()
         }
-        if setting == .bufferingQualityMode {
-            resetBufferingQualityModeWhereNotServed()
-        }
         await flushPendingDeviceSettings()
         await refreshFromServer()
     }
@@ -1383,12 +1382,6 @@ final class PlayerSettings {
               knownManifestRevision < SettingKey.cellularQualityRevision else { return }
         cellularQualityResolution = Self.defaultCellularQuality.resolution
         cellularMaxBitrateKbps = Self.defaultCellularQuality.bitrateKbps
-    }
-
-    /// The same for `playback.buffering_quality_mode` on a server without it.
-    private func resetBufferingQualityModeWhereNotServed() {
-        guard serverLacksBufferingQualityMode else { return }
-        bufferingQualityMode = .default
     }
 
     /// Queue this device's own value for `key`.
@@ -1470,7 +1463,6 @@ final class PlayerSettings {
         for key in SettingKey.playerBufferingQualitySettings {
             enqueueDeviceClear(key)
         }
-        resetBufferingQualityModeWhereNotServed()
         await flushPendingDeviceSettings()
         if await refreshFromServer() == .serverUpgradeRequired {
             // A pre-contract server has no inherited canonical rows to read

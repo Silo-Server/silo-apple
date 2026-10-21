@@ -636,7 +636,10 @@ struct ContentView: View {
     private func handOffSignedInSession() async {
         let scheduler = BandwidthProbeScheduler.shared
         // Video players register themselves when their playback starts.
-        scheduler.isMediaActive = { [audioStore] in audioStore.player.isPlaying }
+        // An audiobook loading holds tests off as well as one playing.
+        scheduler.isMediaActive = { [audioStore] in
+            audioStore.player.isPlaying || audioStore.player.isLoading || audioStore.player.engineState == .loading
+        }
         guard router.authState == .authenticated else {
             scheduler.setActiveServer(nil)
             return

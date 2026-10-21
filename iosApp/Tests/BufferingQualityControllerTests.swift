@@ -352,6 +352,34 @@ final class BufferingQualityControllerTests: XCTestCase {
         XCTAssertEqual(h.summaries.map(\.playedMs), [29_000 + 9_500])
     }
 
+    /// A new attempt between a lowering and the player refusing to send it
+    /// discards the kept estimate for good: the refusal restores nothing.
+    func testARefusedLoweringAfterANewAttemptRestoresNoEstimate() {
+        let h = Harness(mode: .always)
+        h.lowerAutomatically()
+        XCTAssertEqual(h.controller.keptEstimateKbps, 44_100)
+        h.at(200_000) { $0.waiting() }
+        h.at(207_000) { _ in }
+        XCTAssertEqual(h.controller.keptEstimateKbps, 22_120, "the second lowering's estimate")
+        h.at(207_000) {
+            $0.newAttempt()
+            $0.replanRefused()
+        }
+        XCTAssertNil(h.controller.keptEstimateKbps)
+    }
+
+    /// A wait noticed late after a pause is not backdated into the pause.
+    func testABackdatedWaitStaysOutOfAPause() {
+        let h = Harness(mode: .never)
+        h.startPlaying(Self.plan("p1"))
+        h.at(30_000) { $0.paused() }
+        h.at(40_000) { $0.waiting(cause: .network, startedAgoMs: 12_000) }
+        h.at(41_000) { $0.playing() }
+        h.at(50_000) { $0.planEnded() }
+        XCTAssertEqual(h.summaries.map(\.stallTotalMs), [1_000], "timed from 40000, not from inside the pause")
+        XCTAssertEqual(h.summaries.map(\.playedMs), [30_000 + 9_000])
+    }
+
     /// Only a prompt that timed out starts the re-offer wait; one answered with
     /// Lower quality does not.
     func testAnAcceptedLoweringStartsNoReofferWait() {

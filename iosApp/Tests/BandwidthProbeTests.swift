@@ -665,6 +665,71 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertNil(scheduler.probeReading)
     }
 
+    /// A report still waiting when a new session signs in to the same server
+    /// keeps nothing for the new session.
+    func testAReportThatOutlivesItsSessionKeepsNothing() async {
+        server.automatic = false
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveSession(BandwidthProbeSession(serverId: "server", credentialGeneration: UUID(), profileId: "p-1"))
+        await advance(seconds: 5)
+        server.reportResult = .failed
+        let scheduler = scheduler!
+        server.duringReport = {
+            scheduler.setActiveSession(BandwidthProbeSession(serverId: "server", credentialGeneration: UUID(), profileId: "p-1"))
+        }
+        _ = await scheduler.runNow()
+        XCTAssertNil(scheduler.probeReading)
+    }
+
+    /// The app hiding while the look reads the server again starts no test.
+    func testAnAutomaticTestDoesNotStartAfterTheAppHidDuringItsRead() async {
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        for _ in 0..<50 { await Task.yield() }
+        server.holdsReads = true
+        await advance(seconds: 5)
+        scheduler.setForeground(false)
+        server.releaseReads()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertTrue(server.modes.isEmpty, "no test in the background")
+    }
+
+    /// Settings reads the connection again whenever it changes, including
+    /// when the local route to the server comes or goes on the same network.
+    func testTheConnectionRevisionMovesWithTheRoute() async {
+        var local: String? = nil
+        scheduler.localRouteServerId = { local }
+        scheduler.networkChanged(Self.wifi)
+        scheduler.setActiveServer("server")
+        let before = scheduler.connectionRevision
+        local = "server"
+        scheduler.localRouteChanged()
+        XCTAssertEqual(scheduler.connectionRevision, before + 1)
+        scheduler.networkChanged(Self.otherWifi)
+        XCTAssertEqual(scheduler.connectionRevision, before + 2)
+    }
+
+    /// A report the server answered without storing is refused; one that got
+    /// no answer failed.
+    func testAReportTheServerAnsweredIsRefused() throws {
+        let problem = try HTTPClient.makeJSONDecoder().decode(
+            APIv2Problem.self,
+            from: Data(#"{"type":"about:blank","title":"Unprocessable","status":422,"detail":"kbps out of range"}"#.utf8))
+        let refused: [Error] = [
+            APIv2Error.problem(problem), APIv2Error.httpStatus(500), PlaybackSequencedError.invalidResponse,
+        ]
+        for error in refused {
+            XCTAssertEqual(LiveBandwidthProbeServer.reportResult(for: error), .refused, "\(error)")
+        }
+        let failed: [Error] = [
+            HTTPError.network(underlying: URLError(.timedOut)), CancellationError(),
+            HTTPError.requestIdentityChanged, APIv2Error.serverUpdateRequired,
+        ]
+        for error in failed {
+            XCTAssertEqual(LiveBandwidthProbeServer.reportResult(for: error), .failed, "\(error)")
+        }
+    }
+
     /// Test speed waits for the automatic test it replaced to stop. The
     /// network changing, or the app hiding, while it waits stops it too.
     func testTestSpeedStopsForWhatHappensWhileItWaits() async {

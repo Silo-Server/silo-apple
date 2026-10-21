@@ -270,6 +270,11 @@ struct TVPlayerControls: View {
         .onChange(of: focusedTransportButton) { _, target in
             if target != nil { rearmAutoHideOnFocusMove() }
         }
+        // The buffering pill's buttons too: controls that hid with focus on
+        // Keep quality would let the next Select send Lower quality.
+        .onChange(of: bufferingPillFocus.wrappedValue) { _, target in
+            if target != nil { rearmAutoHideOnFocusMove() }
+        }
         // TV sleep discards the app's focus state, and the background-suspend
         // path keeps `showControls` true — so on wake the idle overlay is
         // already mounted, its `onAppear` seed never re-fires, and nothing is

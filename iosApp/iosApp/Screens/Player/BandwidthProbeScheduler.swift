@@ -218,9 +218,25 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
                 auth: target.auth
             )
             return .stored
-        } catch PlaybackSequencedError.invalidResponse {
-            return .refused
         } catch {
+            return Self.reportResult(for: error)
+        }
+    }
+
+    /// A report the server answered without storing it is refused, so the
+    /// result is never kept or sent as an estimate. One that never got an
+    /// answer (transport, cancellation, an owner that changed, or the
+    /// pre-send v1 verdict) failed.
+    static func reportResult(for error: Error) -> BandwidthReportResult {
+        switch error {
+        case PlaybackSequencedError.invalidResponse, HTTPError.http:
+            return .refused
+        case let error as APIv2Error:
+            switch error {
+            case .problem, .httpStatus: return .refused
+            default: return .failed
+            }
+        default:
             return .failed
         }
     }
@@ -322,6 +338,10 @@ final class BandwidthProbeScheduler {
     private(set) var playbackSample: BandwidthReading?
     /// The network in use.
     private(set) var network: BandwidthProbeNetwork = .offline
+    /// Moves on with every change of connection: another network, metering,
+    /// or the local route to the server coming or going. Settings reads the
+    /// connection again on each.
+    private(set) var connectionRevision: UInt64 = 0
     private(set) var isProbing = false
 
     /// Whether other media plays, such as audio. The app sets it; video
@@ -535,6 +555,7 @@ final class BandwidthProbeScheduler {
     private var currentConnection: String { connection(local: routeIsLocal) }
 
     private func connectionChanged() {
+        connectionRevision &+= 1
         forget()
         cancelInFlight(.interrupted)
         check()
@@ -671,7 +692,8 @@ final class BandwidthProbeScheduler {
     }
 
     private func testIsDue(for session: BandwidthProbeSession) -> Bool {
-        guard let target = lastTarget, target.automatic, !linkIsProven else { return false }
+        // Checked after every read too: the app can hide while one waits.
+        guard isActive, let target = lastTarget, target.automatic, !linkIsProven else { return false }
         if let until = rateLimits[session.serverId], clock.now < until { return false }
         return gate(automatic: true) == nil
     }
@@ -744,6 +766,7 @@ final class BandwidthProbeScheduler {
         let mode: BandwidthProbeMeter.Mode = run.isTestSpeed ? .accurate : .quick(targetKbps: target.targetKbps)
         let measuredOn = network
         let measuredOver = currentConnection
+        let measuredFor = session
         let result: BandwidthProbeResult
         do {
             result = try await server.measure(target, mode: mode)
@@ -775,7 +798,7 @@ final class BandwidthProbeScheduler {
             return .tooLittleData
         }
         // A change mid-test cancels it; this catches one that raced its end.
-        guard network.key == measuredOn.key, session?.serverId == target.serverId,
+        guard network.key == measuredOn.key, session == measuredFor,
               currentConnection == measuredOver else { return .interrupted }
         let measurement = BandwidthMeasurement(
             kbps: rate.kbps,
@@ -793,8 +816,9 @@ final class BandwidthProbeScheduler {
             "speed test: \(measurement.kbps, privacy: .public) kbps\(measurement.lowerBound ? " or faster" : "", privacy: .public) over \(measurement.durationMs, privacy: .public) ms on \(measurement.transport, privacy: .public), \(String(describing: report), privacy: .public)"
         )
         // A result the server refused is not kept; one it never heard about
-        // still describes this connection, while it is still the one in use.
-        if report != .refused, session?.serverId == target.serverId, currentConnection == measuredOver {
+        // still describes this connection, while it and the session it was
+        // measured for are still the ones in use.
+        if report != .refused, session == measuredFor, currentConnection == measuredOver {
             let key = ReadingsKey(serverId: target.serverId, connection: measuredOver)
             if readingsKey != key { playbackSample = nil }
             readingsKey = key

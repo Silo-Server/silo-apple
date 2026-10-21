@@ -41,7 +41,7 @@ struct TVPlaybackSettingsPane: View {
         .task { await seekIntervals.refresh() }
         .task { await spoilers.refresh() }
         // Reloads on another network, whose speed and limit differ.
-        .task(id: BandwidthProbeScheduler.shared.network.key) { await viewModel.loadPlaybackConnection() }
+        .task(id: BandwidthProbeScheduler.shared.connectionRevision) { await viewModel.loadPlaybackConnection() }
         .alert(
             SettingsViewModel.useProfileSettingsTitle,
             isPresented: $showUseProfileSettingsConfirmation

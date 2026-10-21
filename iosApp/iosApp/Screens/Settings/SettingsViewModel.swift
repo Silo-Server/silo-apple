@@ -419,6 +419,7 @@ final class SettingsViewModel {
 
     /// Set when Reset failed, until the next Reset or load.
     private(set) var learnedLimitResetError: String?
+    @ObservationIgnored private var connectionReadGeneration: UInt64 = 0
 
     static let learnedLimitResetFailedMessage = "Couldn't reset the limit. Try again."
 
@@ -444,14 +445,27 @@ final class SettingsViewModel {
     @MainActor
     func loadPlaybackConnection() async {
         learnedLimitResetError = nil
+        // Only the latest read publishes: a cancelled one, or one a newer
+        // read overtook, changes nothing.
+        connectionReadGeneration &+= 1
+        let generation = connectionReadGeneration
+        func isLatest() -> Bool { generation == connectionReadGeneration && !Task.isCancelled }
         // Fresh, so a feature the server adds or withdraws while the app runs
         // shows or hides its rows on the next visit.
         let capability = try? await PlaybackV3CapabilityGate.shared.requireNeutralProtocolV3(fresh: true)
+        guard isLatest() else { return }
         let showsLearnedLimit = capability?.bufferingQuality ?? false
         showsConnectionGroup = capability?.connectionSpeed ?? false
-        guard showsLearnedLimit || showsConnectionGroup,
-              let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
-              let connection = try? await SiloAPI.shared.apiV2Client.playbackConnection(auth: auth) else {
+        let auth = showsLearnedLimit || showsConnectionGroup
+            ? await TokenStore.shared.captureOrdinaryRequestAuth()
+            : nil
+        let connection: APIv2PlaybackConnection? = if let auth {
+            try? await SiloAPI.shared.apiV2Client.playbackConnection(auth: auth)
+        } else {
+            nil
+        }
+        guard isLatest() else { return }
+        guard let connection else {
             learnedConnectionLimit = nil
             connectionProbe = nil
             connectionSample = nil
@@ -473,8 +487,9 @@ final class SettingsViewModel {
             }
             try await SiloAPI.shared.apiV2Client.resetPlaybackLearnedLimit(auth: auth)
             learnedConnectionLimit = nil
-            // The server's Auto budget counted the limit.
-            if showsConnectionGroup { await loadPlaybackConnection() }
+            // The server's Auto budget counted the limit. Not awaited, so the
+            // caller can move focus off the Reset row before it can vanish.
+            if showsConnectionGroup { Task { await loadPlaybackConnection() } }
         } catch {
             learnedLimitResetError = Self.learnedLimitResetFailedMessage
         }
