@@ -104,7 +104,8 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         XCTAssertTrue(with.connectionSpeed)
     }
 
-    /// With `connection_speed_v1` the document names the media-path probe.
+    /// With `connection_speed_v1` the document names the media-path probe
+    /// and its schedule.
     func testTheCapabilityDecodesTheBandwidthProbeURL() throws {
         let capabilities = try HTTPClient.makeJSONDecoder().decode(
             APIv2PlaybackCapabilities.self,
@@ -114,6 +115,9 @@ final class PlaybackCapabilityGateTests: XCTestCase {
             capabilities.bandwidthProbeUrl,
             "http://api.example.test/api/v2/playback/bandwidth-probe?media_path=true"
         )
+        XCTAssertEqual(capabilities.bandwidthProbeTargetKbps, 113_750)
+        XCTAssertEqual(capabilities.bandwidthProbeAutomatic, true)
+        XCTAssertEqual(capabilities.bandwidthProbeMaxAgeSeconds, 604_800)
     }
 
     // MARK: Caching

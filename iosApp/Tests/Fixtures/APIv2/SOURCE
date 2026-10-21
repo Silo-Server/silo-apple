@@ -13,9 +13,11 @@ per-slot widths and `slot_width_params`), after the commit above. The next run
 of the script vendors every file from one commit and drops this note.
 
 Newer file: playback_capability_available.json is read with git show from server
-branch feat/buffering-quality at fd09d6a6bc0555a86082298a919709ac8e7fd63d (fd09d6a6b,
-`bandwidth_probe_url` and the buffering_quality_v1, playback_plan_summary_v1 and
-connection_speed_v1 features). Its index.json entry is unchanged.
+branch feat/buffering-quality at 4ab2b8e95bacfcec27f266de4c5c1823ea7f8b2e (4ab2b8e95,
+`bandwidth_probe_url`, the `bandwidth_probe_target_kbps`, `bandwidth_probe_automatic`
+and `bandwidth_probe_max_age_seconds` schedule fields, and the buffering_quality_v1,
+playback_plan_summary_v1 and connection_speed_v1 features). Its index.json entry is
+unchanged.
 
 Vendored from the server, 64 files: the SELECTED bodies in the script,
 index.json filtered to those entries, and fixtures.schema.json.
