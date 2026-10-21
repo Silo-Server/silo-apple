@@ -103,7 +103,7 @@ final class BufferingQualityController {
         /// `degradation_warnings` contains `quality_reduction_unavailable`.
         var qualityReductionUnavailable: Bool
         /// The estimate the plan was requested with, for `plan_summary`, when
-        /// the host knows it. A replan this controller sent supplies its own.
+        /// the host knows it.
         var requestedBandwidthEstimateKbps: Int? = nil
 
         var isAuto: Bool { quality == BufferingQualityController.autoQuality }
@@ -310,10 +310,7 @@ final class BufferingQualityController {
         endPlan(at: now)
         let pending = controllerInitiated ? pendingReplan : nil
         pendingReplan = nil
-        var state = PlanState(
-            plan: plan,
-            requestedEstimateKbps: pending?.estimateKbps ?? plan.requestedBandwidthEstimateKbps
-        )
+        var state = PlanState(plan: plan)
         // A plan adopted while playing has its first frame now, and its
         // startup grace counts from there.
         if playingSince != nil {
@@ -441,7 +438,7 @@ final class BufferingQualityController {
     /// and rearms like ``replanFailed()``, and a lowering it never sent leaves
     /// no kept estimate: the one from before it stays.
     func replanRefused() {
-        if let pending = pendingReplan, pending.kind != .restore {
+        if let pending = pendingReplan {
             keptEstimateKbps = pending.priorKeptEstimateKbps
         }
         pendingReplan = nil
@@ -459,11 +456,9 @@ final class BufferingQualityController {
                 cantLower()
                 return
             }
-            current?.action = .accepted
             sendReplan(.accepted, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: plan.deliveredKbps)
         } else {
             // This playback only: the saved preference does not change.
-            current?.action = .accepted
             sendReplan(
                 .accepted,
                 qualityPreference: rung.label,
@@ -483,12 +478,11 @@ final class BufferingQualityController {
     /// **Restore quality** on the undo pill: answers the title and clears the
     /// learned limit.
     func selectRestore() {
-        guard pill?.kind == .undo, let plan = current?.plan else { return }
+        guard pill?.kind == .undo, current != nil else { return }
         withdrawPill()
         answered = true
         keptEstimateKbps = nil
-        current?.action = .restored
-        sendReplan(.restore, qualityPreference: Self.autoQuality, learnedLimit: Self.clearLearnedLimit, fromKbps: plan.deliveredKbps)
+        sendReplan(.restored, qualityPreference: Self.autoQuality, learnedLimit: Self.clearLearnedLimit)
     }
 
     /// Back / Menu / Escape. On the prompt it answers like Keep; on the undo pill
@@ -594,8 +588,7 @@ final class BufferingQualityController {
                 return
             }
             if mode == .always {
-                current?.action = .lowered
-                sendReplan(.automatic, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: plan.deliveredKbps)
+                sendReplan(.lowered, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: plan.deliveredKbps)
                 return
             }
         }
@@ -668,14 +661,17 @@ final class BufferingQualityController {
 
     // MARK: - Replans
 
+    /// Sends the replan for `action`, which becomes the plan's
+    /// `buffering_action`.
     private func sendReplan(
-        _ kind: PendingReplan.Kind,
+        _ action: Action,
         qualityPreference: String,
         estimateKbps: Int? = nil,
         learnedLimit: String? = nil,
-        fromKbps: Int?
+        fromKbps: Int? = nil
     ) {
         let now = nowMs
+        current?.action = action
         var request = ReplanRequest(qualityPreference: qualityPreference, bandwidthEstimateKbps: estimateKbps)
         if sendsBufferingQualityFields {
             request.bandwidthEstimateSource = estimateKbps == nil ? nil : Self.observedRebufferSource
@@ -684,8 +680,9 @@ final class BufferingQualityController {
         // Only an Auto lowering sends an estimate; the next one replaces it.
         let priorKept = keptEstimateKbps
         if let estimateKbps { keptEstimateKbps = estimateKbps }
-        pendingReplan = PendingReplan(
-            kind: kind, fromKbps: fromKbps, estimateKbps: estimateKbps, priorKeptEstimateKbps: priorKept
+        // A Restore's plan settles nothing.
+        pendingReplan = action == .restored ? nil : PendingReplan(
+            automatic: action == .lowered, fromKbps: fromKbps, priorKeptEstimateKbps: priorKept
         )
         // Triggers on this plan wait for the adoption, or for the rearm if the
         // replan fails or its plan never arrives.
@@ -703,7 +700,7 @@ final class BufferingQualityController {
     }
 
     private func settle(_ pending: PendingReplan, at now: Int) {
-        guard pending.kind != .restore, let plan = current?.plan else { return }
+        guard let plan = current?.plan else { return }
         let lower: Bool
         if plan.qualityReductionUnavailable {
             lower = false
@@ -715,11 +712,7 @@ final class BufferingQualityController {
             return
         }
         if lower {
-            switch pending.kind {
-            case .automatic: present(.undo)
-            case .accepted: notify(.lowered)
-            case .restore: break
-            }
+            if pending.automatic { present(.undo) } else { notify(.lowered) }
         } else {
             current?.cooldownUntil = now + Self.noLowerCooldownMs
             guard !isSuspended else { return }
@@ -846,7 +839,7 @@ final class BufferingQualityController {
             deliveredKbps: state.plan.deliveredKbps,
             mode: mode,
             action: state.action,
-            bandwidthEstimateKbps: state.requestedEstimateKbps
+            bandwidthEstimateKbps: state.plan.requestedBandwidthEstimateKbps
         )
     }
 
@@ -952,7 +945,6 @@ final class BufferingQualityController {
 
     private struct PlanState {
         var plan: Plan
-        var requestedEstimateKbps: Int?
         var action: Action = .none
 
         /// When startup grace ends: `STARTUP_GRACE_MS` after the plan's first
@@ -995,19 +987,11 @@ final class BufferingQualityController {
     }
 
     private struct PendingReplan {
-        enum Kind {
-            /// `always` on Auto.
-            case automatic
-            /// **Lower quality** on the prompt.
-            case accepted
-            /// **Restore quality**.
-            case restore
-        }
-
-        let kind: Kind
+        /// `always` on Auto, whose lower result shows the undo pill; otherwise
+        /// **Lower quality** on the prompt, whose lower result is a notice.
+        let automatic: Bool
         /// The delivered bitrate the replan left; a lower result is below it.
         let fromKbps: Int?
-        let estimateKbps: Int?
         /// The kept estimate before this replan, for one the player refuses.
         let priorKeptEstimateKbps: Int?
     }
