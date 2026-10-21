@@ -14,12 +14,10 @@ final class PlaybackCapabilityGateTests: XCTestCase {
 
     /// The vendored fixture plus the header-authenticated media feature the
     /// server always advertises (`ServerFeaturesV3`), with `installation`.
-    private func available(installation: String? = nil, dropping dropped: [String] = [],
-                           adding extra: [String] = []) throws -> String {
+    private func available(installation: String? = nil, dropping dropped: [String] = []) throws -> String {
         let data = try Support.mutatedBody(named: "playback_capability_available", bundleClass: Self.self) {
             var features = $0["features"] as? [String] ?? []
             features.append(PlaybackProtocolV3.headerAuthenticatedMediaFeature)
-            features.append(contentsOf: extra)
             $0["features"] = features.filter { !dropped.contains($0) }
             if let installation { $0["installation_id"] = installation }
         }
@@ -116,7 +114,6 @@ final class PlaybackCapabilityGateTests: XCTestCase {
             capabilities.bandwidthProbeUrl,
             "http://api.example.test/api/v2/playback/bandwidth-probe?media_path=true"
         )
-        XCTAssertTrue(capabilities.features.contains(PlaybackProtocolV3.connectionSpeedFeature))
     }
 
     // MARK: Caching

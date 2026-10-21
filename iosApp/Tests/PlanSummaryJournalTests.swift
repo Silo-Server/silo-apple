@@ -7,19 +7,19 @@ import XCTest
 final class PlanSummaryJournalTests: XCTestCase {
     private final class Sent: @unchecked Sendable {
         private let lock = NSLock()
-        private var values: [(eventId: String, profileId: String?)] = []
+        private var values: [String] = []
         var failure: Error?
         /// How long each send waits before it answers.
         var delay: Duration?
 
-        func append(_ entry: PlanSummaryJournal.Entry, _ owner: CapturedOrdinaryRequestAuth) throws {
+        func append(_ entry: PlanSummaryJournal.Entry) throws {
             try lock.withLock {
-                values.append((entry.eventId, owner.profileId))
+                values.append(entry.eventId)
                 if let failure { throw failure }
             }
         }
 
-        var eventIds: [String] { lock.withLock { values.map(\.eventId) } }
+        var eventIds: [String] { lock.withLock { values } }
     }
 
     private var sent = Sent()
@@ -31,9 +31,9 @@ final class PlanSummaryJournalTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
         let sent = sent
-        journal = PlanSummaryJournal(defaults: defaults) { entry, owner in
+        journal = PlanSummaryJournal(defaults: defaults) { entry, _ in
             if let delay = sent.delay { try await Task.sleep(for: delay) }
-            try sent.append(entry, owner)
+            try sent.append(entry)
         }
     }
 

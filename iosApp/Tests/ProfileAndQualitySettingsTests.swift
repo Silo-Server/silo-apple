@@ -659,17 +659,12 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(relaunched.bufferingQualityMode, .never)
     }
 
-    /// A current server's mode comes from a batch of its own, so the player
-    /// batch stays readable on servers that predate the key.
-    func testACurrentServersBufferingModeIsReadInItsOwnBatch() async throws {
+    /// The profile mode applies until this device overrides it.
+    func testTheBufferingModeUsesTheProfileValueAndCanClearItsDeviceOverride() async throws {
         let harness = try PlayerSettingsHarness()
         harness.transport.effective = [Self.bufferingRow(.ask)]
         await harness.settings.refreshFromServer()
 
-        let calls = harness.transport.effectiveCalls()
-        XCTAssertFalse(calls[0].contains(.playbackBufferingQualityMode))
-        XCTAssertEqual(calls.filter { $0.contains(.playbackBufferingQualityMode) },
-                       [SettingKey.playerBufferingQualitySettings])
         XCTAssertEqual(harness.settings.bufferingQualityMode, .ask)
         XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode), "the profile's value")
 

@@ -326,7 +326,6 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
     }
 
     func testAStartSendsTheHighestCurrentReading() async {
-        server.result = .measured(.init(kbps: 48_000, lowerBound: false, bytes: 6_000_000, durationMs: 1_000))
         server.stored.playbackSample = sample(kbps: 60_000, ageDays: 1)
         server.stored.probe = probe(kbps: 30_000, ageDays: 1)
         await signIn()
@@ -623,7 +622,6 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
     /// sign-out and sign-in.
     func testATestSpeedRateLimitHoldsAutomaticTestsAcrossSignIns() async {
         server.result = .rateLimited(retryAfterSeconds: 600)
-        server.hasTarget = true
         scheduler.networkChanged(Self.wifi)
         scheduler.setActiveServer("server")
         server.automatic = false
