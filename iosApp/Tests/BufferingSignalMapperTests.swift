@@ -291,6 +291,28 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(software.update(Self.snapshot()), [.playing])
     }
 
+    /// AetherEngine's software host lands a seek into media it hasn't loaded
+    /// as a frozen `.playing`, its clock on the target. Until that clock
+    /// moves on, the route reads as frozen and the wait stays the seek's.
+    func testASoftwareSeekIntoUnloadedMediaIsTheSeeksUntilItsClockMoves() {
+        var landing = SoftwareSeekLanding()
+        var mapper = BufferingSignalMapper()
+        func update(seek: Bool = false, clock: Double) -> [BufferingSignalMapper.Call] {
+            landing.note(seekInFlight: seek, clock: clock)
+            return mapper.update(Self.snapshot(seek: seek, frozen: landing.awaitsAdvance))
+        }
+        XCTAssertEqual(update(clock: 244), [.playing])
+        XCTAssertEqual(update(seek: true, clock: 244), [.waiting(.seek)])
+        XCTAssertEqual(update(clock: 424), [], "landed, the clock on the target")
+        XCTAssertEqual(update(clock: 424), [])
+        XCTAssertEqual(update(clock: 424.25), [.playing])
+
+        // A backward seek lands below where it started.
+        XCTAssertEqual(update(seek: true, clock: 424.25), [.waiting(.seek)])
+        XCTAssertEqual(update(clock: 100), [])
+        XCTAssertEqual(update(clock: 100.25), [.playing])
+    }
+
     /// A seek that lands while paused owns the buffering after Play until
     /// playback runs.
     func testBufferingAfterASeekMadeWhilePausedIsTheSeeks() {

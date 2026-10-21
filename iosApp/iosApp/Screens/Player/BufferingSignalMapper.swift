@@ -36,8 +36,9 @@ struct BufferingSignalMapper {
         /// unknown, which counts as nothing buffered.
         var bufferedAheadMs: Int? = nil
         /// The software route reports playing, but its clock has not moved
-        /// for a second while the viewer wants to play. AetherEngine's
-        /// software host pauses its clock to rebuffer without reporting it.
+        /// for a second while the viewer wants to play, or not past where the
+        /// last seek landed (``SoftwareSeekLanding``). AetherEngine's software
+        /// host pauses its clock to rebuffer without reporting it.
         var playheadFrozen = false
     }
 
@@ -213,6 +214,37 @@ struct BufferingSignalMapper {
         case .idle, .playing, .paused, .seeking, .ended, .error:
             return .paused
         }
+    }
+}
+
+/// Where the software route's last seek landed, until its clock moves past
+/// it. AetherEngine's software host lands a seek into media it has not
+/// loaded as a frozen `.playing`, its clock already on the target, so
+/// playback has run again only once the clock moves on from there.
+struct SoftwareSeekLanding {
+    private enum Landing: Equatable {
+        case inFlight
+        case at(Double)
+    }
+
+    private var landing: Landing?
+
+    /// The clock has not moved past the last seek's landing yet.
+    var awaitsAdvance: Bool { landing != nil }
+
+    /// Takes the route's current facts: a seek still out, and the clock.
+    mutating func note(seekInFlight: Bool, clock: Double) {
+        if seekInFlight {
+            landing = .inFlight
+        } else if landing == .inFlight {
+            landing = clock.isFinite ? .at(clock) : nil
+        } else if case .at(let landed)? = landing, clock > landed {
+            landing = nil
+        }
+    }
+
+    mutating func reset() {
+        landing = nil
     }
 }
 

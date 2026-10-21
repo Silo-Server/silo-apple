@@ -397,6 +397,9 @@ class PlayerViewModel {
     /// When the playhead last moved, on any load.
     @ObservationIgnored
     private var playheadSample: (seconds: Double, movedAt: ContinuousClock.Instant)?
+    /// Where the software route's last seek landed, until its clock moves on.
+    @ObservationIgnored
+    private var softwareSeekLanding = SoftwareSeekLanding()
     /// Since when the engine has held no media ahead of its clock, sampled
     /// while the source is stalled. nil while media is buffered ahead.
     @ObservationIgnored
@@ -10246,6 +10249,14 @@ extension PlayerViewModel {
     private func syncBufferingQualitySignals() {
         guard !isDisposed else { return }
         syncSpeedTestHold()
+        if isSoftwareVideoRoute {
+            softwareSeekLanding.note(
+                seekInFlight: bufferingSeekInFlight || aetherPhase == .seeking,
+                clock: aetherPlaybackController.engine.currentTime
+            )
+        } else {
+            softwareSeekLanding.reset()
+        }
         let calls = bufferingSignals.update(bufferingSignalSnapshot)
         if bufferingSignals.state == .playing { bufferingReloadEpoch = nil }
         if needsBufferingSignalPoll {
@@ -10301,7 +10312,7 @@ extension PlayerViewModel {
             phase: aetherPhase,
             engineBuffering: isBuffering,
             nativeTransport: aetherPlaybackController.nativeTransport,
-            seekInFlight: seekTargetTime != nil || seekReplanTask != nil || isHoldSeeking,
+            seekInFlight: bufferingSeekInFlight,
             reloadInProgress: replacementPending
                 || reconnectCycle.isHandingOff
                 || aetherPlaybackController.isRestoringTransport
@@ -10310,8 +10321,13 @@ extension PlayerViewModel {
             // Media trouble only: a failed API call is not a media request.
             connectionTrouble: connectionState != .connected || !monitor.isDeviceOnline,
             bufferedAheadMs: engineBufferedAheadMs,
-            playheadFrozen: softwarePlayheadFrozenMs != nil
+            playheadFrozen: softwarePlayheadFrozenMs != nil || softwareSeekLanding.awaitsAdvance
         )
+    }
+
+    /// A seek, scrub commit or hold-seek has not landed yet.
+    private var bufferingSeekInFlight: Bool {
+        seekTargetTime != nil || seekReplanTask != nil || isHoldSeeking
     }
 
     /// A video load the engine plays on its software route, which reports
@@ -10470,6 +10486,7 @@ extension PlayerViewModel {
         bufferingPlan = entry
         // The new plan hears whether playback is already waiting.
         bufferingSignals.planAdopted()
+        softwareSeekLanding.reset()
         syncBufferingQualitySignals()
     }
 
