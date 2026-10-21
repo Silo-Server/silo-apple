@@ -523,7 +523,7 @@ class PlayerViewModel {
     /// Whether this player last told the speed scheduler it loads or plays.
     @ObservationIgnored private var speedTestHoldActive = true
     /// A **Restore quality** the player could not send while another replan
-    /// was in flight; sent when that one settles.
+    /// or a start was in flight; sent when that one settles.
     @ObservationIgnored private var deferredBufferingRestore: BufferingQualityController.ReplanRequest?
     /// The deferred Restore's `learned_limit: "clear"`, until a request
     /// carries it: the Restore itself, or the start or replan that replaces
@@ -5586,6 +5586,7 @@ class PlayerViewModel {
             // request registers it.
             self.syncSpeedTestHold()
             var uncommittedPrepared: PreparedPlayback?
+            var adoptedBufferingPlan = false
             defer {
                 self.settleViewerQualityChange(qualityChange, adopted: false)
                 if self.freshLoadGeneration == currentFreshLoadGeneration {
@@ -5593,6 +5594,14 @@ class PlayerViewModel {
                     _ = self.reconnectCycle.finishHandoff()
                     self.freshLoadTask = nil
                     self.freshLoadOwnsFailureHandling = false
+                    // A Restore answered while this start was out, and not
+                    // carried by it, goes out now that its plan plays. With
+                    // no plan, the Restore's clear stays owed to the next
+                    // request.
+                    if let restore = self.deferredBufferingRestore {
+                        self.deferredBufferingRestore = nil
+                        if adoptedBufferingPlan { self.issueBufferingReplan(restore) }
+                    }
                     self.syncBufferingQualitySignals()
                     self.publishWatchPartySnapshot()
                 }
@@ -5813,6 +5822,7 @@ class PlayerViewModel {
                         requestedEstimateKbps: probeEstimateKbps,
                         controllerInitiated: false
                     )
+                    adoptedBufferingPlan = true
                     // The realtime channel is a server websocket keyed by the
                     // committed session. Binding before Aether accepts the
                     // candidate can leave commands attached to a rolled-back
@@ -10609,9 +10619,10 @@ extension PlayerViewModel {
                   issuedByBufferingQuality: true
               ) else {
             // Restore quality is the viewer's answer: it goes out once the
-            // replan in flight settles rather than being lost.
-            if request.isRestore, protocolV3ReplanTask != nil, !isDisposed, !isWatchPartyPlayback {
-                Self.logger.info("[CMP-BUFFERING] restore waits for the replan in flight")
+            // replan or start in flight settles rather than being lost.
+            if request.isRestore, protocolV3ReplanTask != nil || freshLoadTask != nil,
+               !isDisposed, !isWatchPartyPlayback {
+                Self.logger.info("[CMP-BUFFERING] restore waits for the replan or start in flight")
                 deferredBufferingRestore = request
                 if request.learnedLimit == PlaybackProtocolV3.LearnedLimit.clear {
                     owesBufferingLearnedLimitClear = true

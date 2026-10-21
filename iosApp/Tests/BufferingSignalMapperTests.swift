@@ -491,6 +491,19 @@ final class BufferingQualityPlayerTests: XCTestCase {
         XCTAssertFalse(controller.isAudioSessionInterrupted, "the viewer played")
     }
 
+    /// A Restore answered while a start is out owes its clear to that start,
+    /// or to the request after it.
+    func testARestoreDuringAStartOwesItsClear() throws {
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        try play(try preparedPlan(), on: model, quality: "auto")
+        model.loadAndPlay(contentId: "movie-1", startFromBeginning: false)
+        var restore = BufferingQualityController.ReplanRequest(qualityPreference: "auto")
+        restore.learnedLimit = PlaybackProtocolV3.LearnedLimit.clear
+        model.issueBufferingReplan(restore)
+        XCTAssertTrue(model.owesBufferingLearnedLimitClear)
+    }
+
     /// A Restore that arrives while a replan is in flight owes its clear
     /// until it goes out after that replan, then owes nothing.
     func testADeferredRestoreOwesItsClearOnce() async throws {
