@@ -68,12 +68,23 @@ struct BufferingSignalMapper {
     /// start the viewer means to play is the plan's wait, whatever reloads
     /// its transport.
     private var startPending = false
+    /// The adopted plan has run. Until it does, a seek, the player applying
+    /// the start position included, does not end the start's wait.
+    private var planHasRun = true
+    /// A media request failed since the last update: an outage begins.
+    private var mediaRequestFailed = false
     /// Once the outage's inputs clear, the media buffered past the playhead
     /// then. The outage lasts until that rises or playback runs.
     private var outageAwaitsDataAboveMs: Int?
 
     /// The outage's inputs cleared, but no media data has arrived since.
     var outageAwaitsData: Bool { outageAwaitsDataAboveMs != nil }
+
+    /// The player logged a failed media request (a playlist, segment or
+    /// range request, never a subtitle).
+    mutating func noteMediaRequestFailed() {
+        mediaRequestFailed = true
+    }
 
     /// The current item posted `playbackStalledNotification`.
     mutating func noteItemStalled() {
@@ -86,16 +97,20 @@ struct BufferingSignalMapper {
         state = nil
     }
 
-    /// A plan was adopted: it hears whether playback is already waiting, and
-    /// its start is timed until it first runs or pauses.
+    /// A plan was adopted: it hears whether playback is already waiting, its
+    /// start is timed until it first runs or pauses, and it starts with no
+    /// outage. One still signalled begins again at the next update.
     mutating func planAdopted() {
         state = nil
         startPending = true
+        planHasRun = false
+        outageAwaitsDataAboveMs = nil
+        mediaRequestFailed = false
     }
 
     mutating func update(_ snapshot: Snapshot) -> [Call] {
         var calls: [Call] = []
-        if snapshot.seekInFlight || snapshot.phase == .seeking { seekSincePlaying = true }
+        if planHasRun, snapshot.seekInFlight || snapshot.phase == .seeking { seekSincePlaying = true }
         // A torn-down item (the app went to the background) stalls no more.
         if snapshot.nativeTransport?.hasItem == false { itemStalledSincePlaying = false }
         // The viewer pausing, or the engine tearing the video down outside a
@@ -112,6 +127,7 @@ struct BufferingSignalMapper {
             itemStalledSincePlaying = false
             seekSincePlaying = false
             startPending = false
+            planHasRun = true
         }
         let trouble = outageGoesOn(snapshot, playing: next == .playing)
         if trouble != transportTrouble {
@@ -139,13 +155,15 @@ struct BufferingSignalMapper {
         return buffered ? .waiting(.renderer) : .waiting(.network)
     }
 
-    /// An outage is signalled while media requests fail, the device is
-    /// offline or the player reconnects. Once those clear it lasts until the
-    /// plan's media data arrives again, as the media buffered past the
-    /// playhead rising, or playback runs.
+    /// An outage begins when a media request fails, and is signalled while
+    /// the device is offline, the player reconnects or the engine's reader
+    /// does. It lasts until the plan's media data arrives again, as the media
+    /// buffered past the playhead rising, or playback runs. No timer, and no
+    /// network or API recovering on its own, ends it.
     private mutating func outageGoesOn(_ s: Snapshot, playing: Bool) -> Bool {
         let buffered = s.bufferedAheadMs ?? 0
-        if s.connectionTrouble || s.phase.isSourceStalled {
+        if s.connectionTrouble || s.phase.isSourceStalled || mediaRequestFailed {
+            mediaRequestFailed = false
             outageAwaitsDataAboveMs = buffered
             return true
         }
@@ -165,7 +183,7 @@ struct BufferingSignalMapper {
     private func mediaState(_ s: Snapshot) -> MediaState {
         guard s.hasActiveLoad else { return s.wantsToPlay ? reloadWait : .paused }
         if s.reachedEnd || s.phase == .ended || !s.wantsToPlay { return .paused }
-        if s.seekInFlight || s.phase == .seeking { return .waiting(.seek) }
+        if s.seekInFlight || s.phase == .seeking { return planHasRun ? .waiting(.seek) : .waiting(.network) }
         if let native = s.nativeTransport {
             if native.status == .playing { return .playing }
         } else if s.phase == .playing, !s.engineBuffering, !s.playheadFrozen {

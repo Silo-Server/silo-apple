@@ -199,6 +199,12 @@ final class AetherPlaybackController {
     /// Watch Party resumes only through a current room command.
     var requiresExplicitTransportResume = false
     private var audioInterrupted = false
+    /// An audio-session interruption (a call, Siri) stopped playback and it
+    /// has not resumed: from its start until it ends with a resume, or the
+    /// viewer plays.
+    private(set) var isAudioSessionInterrupted = false {
+        didSet { if isAudioSessionInterrupted != oldValue { publish(.transportIntentChanged) } }
+    }
     private var applicationBackgrounded = false
     var isTransportInterrupted: Bool { audioInterrupted || applicationBackgrounded }
     var permitsExternalPlayback = true {
@@ -420,6 +426,7 @@ final class AetherPlaybackController {
 
     func play() {
         shouldPlayWhenReady = true
+        isAudioSessionInterrupted = false
         // `beginLoad` installs spec/epoch before `engine.load` returns, and
         // that window looks identical to a background teardown: route `.none`,
         // session not ready. Reloading here would start a second `engine.load`
@@ -1034,8 +1041,16 @@ final class AetherPlaybackController {
             .store(in: &subscriptions)
         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .sink { [weak self] notification in
-                guard let self, requiresExplicitTransportResume else { return }
+                guard let self else { return }
                 let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+                if raw == AVAudioSession.InterruptionType.began.rawValue {
+                    isAudioSessionInterrupted = true
+                } else if let options = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt,
+                          AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume) {
+                    // The engine resumes; without that the viewer plays again.
+                    isAudioSessionInterrupted = false
+                }
+                guard requiresExplicitTransportResume else { return }
                 let wasInterrupted = isTransportInterrupted
                 audioInterrupted = raw == AVAudioSession.InterruptionType.began.rawValue
                 // Aether handles this notification asynchronously. Clearing

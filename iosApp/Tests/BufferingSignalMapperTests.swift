@@ -141,6 +141,61 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertFalse(mapper.outageAwaitsData)
     }
 
+    /// A failed media request starts an outage that no timer ends: only media
+    /// data arriving or playback running does.
+    func testAFailedMediaRequestStartsAnOutageThatDataEnds() {
+        var mapper = BufferingSignalMapper()
+        let starved = { (ms: Int) in Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), bufferedMs: ms) }
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
+        mapper.noteMediaRequestFailed()
+        XCTAssertEqual(mapper.update(starved(300)), [.transportTroubleChanged(true), .waiting(.network)])
+        XCTAssertEqual(mapper.update(starved(300)), [], "still no data")
+        XCTAssertEqual(mapper.update(starved(900)), [.transportTroubleChanged(false)])
+
+        mapper.noteMediaRequestFailed()
+        XCTAssertEqual(mapper.update(starved(900)), [.transportTroubleChanged(true)])
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.transportTroubleChanged(false), .playing])
+    }
+
+    /// An adopted plan starts with no outage, even while the one before it
+    /// still waited for data; an outage still signalled begins again.
+    func testAnAdoptedPlanStartsWithNoOutage() {
+        var mapper = BufferingSignalMapper()
+        let starved = Self.snapshot(native: Self.avWaiting(.toMinimizeStalls))
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
+        mapper.noteMediaRequestFailed()
+        XCTAssertEqual(mapper.update(starved), [.transportTroubleChanged(true), .waiting(.network)])
+        mapper.planAdopted()
+        XCTAssertEqual(mapper.update(starved), [.transportTroubleChanged(false), .waiting(.network)])
+
+        mapper.planAdopted()
+        XCTAssertEqual(
+            mapper.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), trouble: true)),
+            [.transportTroubleChanged(true), .waiting(.network)],
+            "the device is still offline"
+        )
+    }
+
+    /// Until a plan first runs, a seek, the start position included, leaves
+    /// the start's wait running; the paused-seek rule applies only after.
+    func testASeekBeforeTheFirstFrameStaysTheStartsWait() {
+        var mapper = BufferingSignalMapper()
+        mapper.planAdopted()
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading)), [.waiting(.network)])
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .seeking)), [], "the engine seeking to the start")
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading, seek: true)), [], "the viewer seeking")
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading)), [])
+        XCTAssertEqual(mapper.update(Self.snapshot()), [.playing])
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .seeking)), [.waiting(.seek)])
+
+        // A plan opened paused has not run: a seek then is not the seek's.
+        var paused = BufferingSignalMapper()
+        paused.planAdopted()
+        XCTAssertEqual(paused.update(Self.snapshot(play: false, phase: .paused)), [.paused])
+        XCTAssertEqual(paused.update(Self.snapshot(play: false, phase: .paused, seek: true)), [])
+        XCTAssertEqual(paused.update(Self.snapshot(phase: .loading)), [.waiting(.network)])
+    }
+
     /// A subtitle rendition's failed request is not a media failure: it
     /// starts no outage. The video's playlists and segments are.
     func testASubtitleRenditionFailureIsNotAMediaFailure() {
@@ -372,6 +427,29 @@ final class BufferingQualityPlayerTests: XCTestCase {
         }
         XCTAssertNil(model.error)
         XCTAssertFalse(model.isLoading)
+    }
+
+    /// An audio-session interruption pauses playback for the controller on
+    /// every route, until it ends with a resume or the viewer plays.
+    func testAnAudioInterruptionIsAPause() throws {
+        let controller = try AetherPlaybackController()
+        let center = NotificationCenter.default
+        let began = AVAudioSession.InterruptionType.began.rawValue
+        let ended = AVAudioSession.InterruptionType.ended.rawValue
+        center.post(name: AVAudioSession.interruptionNotification, object: nil,
+                    userInfo: [AVAudioSessionInterruptionTypeKey: began])
+        XCTAssertTrue(controller.isAudioSessionInterrupted)
+        center.post(name: AVAudioSession.interruptionNotification, object: nil,
+                    userInfo: [AVAudioSessionInterruptionTypeKey: ended, AVAudioSessionInterruptionOptionKey: UInt(0)])
+        XCTAssertTrue(controller.isAudioSessionInterrupted, "ended without a resume: still stopped")
+        center.post(name: AVAudioSession.interruptionNotification, object: nil,
+                    userInfo: [AVAudioSessionInterruptionTypeKey: ended,
+                               AVAudioSessionInterruptionOptionKey: AVAudioSession.InterruptionOptions.shouldResume.rawValue])
+        XCTAssertFalse(controller.isAudioSessionInterrupted)
+        center.post(name: AVAudioSession.interruptionNotification, object: nil,
+                    userInfo: [AVAudioSessionInterruptionTypeKey: began])
+        controller.play()
+        XCTAssertFalse(controller.isAudioSessionInterrupted, "the viewer played")
     }
 
     /// A Restore that arrives while a replan is in flight owes its clear

@@ -519,9 +519,6 @@ class PlayerViewModel {
     @ObservationIgnored private var bufferingSourceSwapGeneration: UInt64?
     /// Whether this player last told the speed scheduler it loads or plays.
     @ObservationIgnored private var speedTestHoldActive = true
-    /// When the native route last logged a failed media request.
-    @ObservationIgnored private var lastMediaRequestFailureAt: ContinuousClock.Instant?
-    @ObservationIgnored private var mediaRequestFailureExpiry: Task<Void, Never>?
     /// A **Restore quality** the player could not send while another replan
     /// was in flight; sent when that one settles.
     @ObservationIgnored private var deferredBufferingRestore: BufferingQualityController.ReplanRequest?
@@ -10274,7 +10271,10 @@ extension PlayerViewModel {
             && streamLoadGeneration != bufferingAdoptedStreamLoadGeneration
         return BufferingSignalMapper.Snapshot(
             hasActiveLoad: activeAetherLoadEpoch != nil && aetherPlaybackController.hasActiveLoad,
-            wantsToPlay: aetherPlaybackController.shouldPlayWhenReady,
+            // An audio interruption (a call, Siri) pauses playback until it
+            // resumes, on every route.
+            wantsToPlay: aetherPlaybackController.shouldPlayWhenReady
+                && !aetherPlaybackController.isAudioSessionInterrupted,
             phase: aetherPhase,
             engineBuffering: isBuffering,
             nativeTransport: aetherPlaybackController.nativeTransport,
@@ -10285,34 +10285,10 @@ extension PlayerViewModel {
                 || (activeAetherLoadEpoch != nil && bufferingReloadEpoch == activeAetherLoadEpoch),
             reachedEnd: hasReachedEndOfFile,
             // Media trouble only: a failed API call is not a media request.
-            connectionTrouble: connectionState != .connected
-                || !monitor.isDeviceOnline
-                || recentMediaRequestFailure,
+            connectionTrouble: connectionState != .connected || !monitor.isDeviceOnline,
             bufferedAheadMs: engineBufferedAheadMs,
             playheadFrozen: softwarePlayheadFrozenMs != nil
         )
-    }
-
-    /// How long a failed media request (playlist or segment) counts as an
-    /// outage.
-    static let mediaRequestFailureWindow: Duration = .seconds(15)
-
-    /// The native route's AVPlayer logged a failed media request within
-    /// ``mediaRequestFailureWindow``.
-    private var recentMediaRequestFailure: Bool {
-        guard let at = lastMediaRequestFailureAt else { return false }
-        return at.duration(to: .now) < Self.mediaRequestFailureWindow
-    }
-
-    private func noteMediaRequestFailure() {
-        lastMediaRequestFailureAt = .now
-        mediaRequestFailureExpiry?.cancel()
-        mediaRequestFailureExpiry = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.mediaRequestFailureWindow)
-            guard let self, !Task.isCancelled else { return }
-            self.mediaRequestFailureExpiry = nil
-            self.syncBufferingQualitySignals()
-        }
     }
 
     /// A video load the engine plays on its software route, which reports
@@ -10381,7 +10357,8 @@ extension PlayerViewModel {
             bufferingSignals.noteItemStalled()
             return true
         case .itemMediaRequestFailed:
-            noteMediaRequestFailure()
+            // An outage, until media data arrives again or playback runs.
+            bufferingSignals.noteMediaRequestFailed()
             return true
         case .transportIntentChanged:
             if aetherPlaybackController.isRestoringTransport { bufferingReloadEpoch = scopedEvent.epoch }
@@ -10538,9 +10515,6 @@ extension PlayerViewModel {
     private func clearBufferingPlanState() {
         bufferingSignalPoll?.cancel()
         bufferingSignalPoll = nil
-        mediaRequestFailureExpiry?.cancel()
-        mediaRequestFailureExpiry = nil
-        lastMediaRequestFailureAt = nil
         deferredBufferingRestore = nil
         pendingBufferingNotice = nil
         bufferingPlan = nil
