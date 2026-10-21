@@ -23,11 +23,13 @@ Refresh these files together from the server, then regenerate Silo.xcodeproj wit
 
 Buffering quality
 Source: silo-server docs/design/schemas/playback-v3/v3/fixtures
-Server commit: 893d809f2e376e0b6ef7c9aed288c0a6c87dbbe7
-Vendored: 2026-10-19
+Server commit: 064e8b334017c2664b8f600880248a51156025a0
+Vendored: 2026-10-21
 
-Eight files, copied byte for byte with their names unchanged. The spec is
-docs/design/2026-10-17-buffering-quality.md at the same commit.
+Eight files, copied byte for byte with their names unchanged. The four valid
+ones are server-generated since 064e8b334; the four invalid ones are unchanged
+since 893d809f2. The spec is docs/design/2026-10-17-buffering-quality.md at the
+same commit.
 
 From fixtures/valid:
   buffering-start_request.json

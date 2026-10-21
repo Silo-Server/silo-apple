@@ -364,13 +364,17 @@ final class BufferingSignalMapperTests: XCTestCase {
 /// viewer's own quality pick, Watch Party and the other pills.
 @MainActor
 final class BufferingQualityPlayerTests: XCTestCase {
-    /// The learned-limit fixture's plan, with a ladder below its 8000 kbps
-    /// and the given warnings.
+    /// The learned-limit fixture's plan, delivering 8000 kbps with no rung
+    /// named, so these tests set their own ladder and rung.
     private func preparedPlan(warnings: [String] = []) throws -> PreparedPlaybackV3 {
         var object = try APIv2FixtureTestSupport.jsonObject(
             APIv2FixtureTestSupport.data(named: "learned-limit-decision_response", bundleClass: Self.self)
         )
         var plan = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        var recipe = try XCTUnwrap(plan["effective_recipe"] as? [String: Any])
+        recipe["bitrate_kbps"] = 8_000
+        plan["effective_recipe"] = recipe
+        plan.removeValue(forKey: "active_quality")
         plan["available_qualities"] = [
             ["label": "original", "height": 1080, "bitrate_kbps": 8_000, "preserves_source": true],
             ["label": "1080p-high", "height": 1080, "bitrate_kbps": 6_000, "preserves_source": false],

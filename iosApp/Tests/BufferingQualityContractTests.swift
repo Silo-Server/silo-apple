@@ -180,12 +180,15 @@ final class BufferingQualityContractTests: XCTestCase {
         let replanBody = try wireObject(APIv2PlaybackReplanBody(installationID: installation, request: replanRequest(buffering)))
 
         for (fixture, body) in [(startFixture, startBody), (replanFixture, replanBody)] {
-            for key in ["client_features", "bandwidth_estimate_kbps", "bandwidth_estimate_source", "learned_limit"] {
+            for key in ["client_features", "bandwidth_estimate_kbps", "bandwidth_estimate_source"] {
                 let expected = try XCTUnwrap(fixture[key] as? NSObject, key)
                 XCTAssertEqual(body[key] as? NSObject, expected, key)
             }
+            // Present on the start (`ignore`), absent on the lowering.
+            XCTAssertEqual(body["learned_limit"] as? String, fixture["learned_limit"] as? String)
             XCTAssertNil(serverRefusal(body))
         }
+        XCTAssertEqual(startFixture["learned_limit"] as? String, PlaybackProtocolV3.LearnedLimit.ignore)
     }
 
     /// The published invalid requests carry members the server refuses. Fed
@@ -222,8 +225,8 @@ final class BufferingQualityContractTests: XCTestCase {
     func testTheLearnedLimitDecodesOnBothSurfacesAndLabelsAuto() throws {
         let domain = try PlaybackV3FixtureTestSupport.decode(
             PlaybackV3DecisionResponse.self, named: "learned-limit-decision_response", bundleClass: Self.self)
-        // The limit lowered the plan: file 41 was asked for, version 42 plays.
-        let expected = PlaybackV3BandwidthLimit(kbps: 10_500, source: observedRebuffer, expiresAt: "2026-10-24T16:21:40Z")
+        // A 5000 kbps limit lowered an Auto start to a 720p transcode.
+        let expected = PlaybackV3BandwidthLimit(kbps: 5_000, source: observedRebuffer, expiresAt: "2030-01-07T23:55:00Z")
         XCTAssertEqual(domain.playbackPlan?.bandwidthLimit, expected)
 
         // The v2 surface spells file ids as opaque strings.
@@ -232,7 +235,7 @@ final class BufferingQualityContractTests: XCTestCase {
         var source = try XCTUnwrap(plan["source"] as? [String: Any])
         source["media_file_id"] = "42"
         plan["source"] = source
-        plan["requested_media_file_id"] = "41"
+        plan["requested_media_file_id"] = "42"
         plan["effective_media_file_id"] = "42"
         object["playback_plan"] = plan
         let limited = try XCTUnwrap(PlaybackV3FixtureTestSupport.v2Decision(object).playbackPlan)
@@ -358,13 +361,19 @@ final class BufferingQualityContractTests: XCTestCase {
 
     func testAPlanSummaryEncodesAsThePublishedRouteEvent() throws {
         let fixture = try fixtureObject("plan-summary-route_event")
-        let decision = try PlaybackV3FixtureTestSupport.decode(
-            PlaybackV3DecisionResponse.self, named: "learned-limit-decision_response", bundleClass: Self.self)
+        // The event is a lowered plan's summary: the decision fixture's plan,
+        // under the plan id the event names.
+        var object = try fixtureObject("learned-limit-decision_response")
+        var lowered = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        lowered["plan_id"] = try XCTUnwrap(fixture["plan_id"] as? String)
+        object["playback_plan"] = lowered
+        let decision = try PlaybackV3FixtureTestSupport.decoder.decode(
+            PlaybackV3DecisionResponse.self, from: JSONSerialization.data(withJSONObject: object))
         let plan = try XCTUnwrap(decision.playbackPlan)
         let prepared = PreparedPlaybackV3(
             playbackAttemptId: try XCTUnwrap(fixture["playback_attempt_id"] as? String),
             planAttemptId: try XCTUnwrap(fixture["plan_attempt_id"] as? String),
-            planAttemptKey: plan.planAttemptKey,
+            planAttemptKey: try XCTUnwrap(fixture["plan_attempt_key"] as? String),
             outputContextId: fixture["output_context_id"] as? String,
             serverFeatures: [PlaybackProtocolV3.planSummaryFeature],
             plan: plan)
@@ -373,7 +382,7 @@ final class BufferingQualityContractTests: XCTestCase {
         // The controller's own plan id never goes on the wire.
         let summary = BufferingQualityController.PlanSummary(
             planId: "local:summary", playedMs: 600_000, stallCount: 2, stallTotalMs: 8_000, stallLongestMs: 6_000,
-            deliveredKbps: 63_000, mode: .always, action: .lowered, bandwidthEstimateKbps: nil)
+            deliveredKbps: 8_000, mode: .always, action: .lowered, bandwidthEstimateKbps: nil)
         let event = PlaybackSessionBridge.planSummaryRouteEvent(
             summary, for: prepared, sessionId: try XCTUnwrap(fixture["session_id"] as? String))
 
@@ -382,7 +391,14 @@ final class BufferingQualityContractTests: XCTestCase {
         body.removeValue(forKey: "event_id")
         // Schema-optional, and empty for a plan with no quirks.
         XCTAssertEqual(body.removeValue(forKey: "applied_quirk_ids") as? [String], [])
-        XCTAssertEqual(body as NSDictionary, fixture as NSDictionary)
+        // Apple has no upstream meter, so it omits throughput_kbps, as the
+        // spec allows; the rest matches the published event.
+        var published = fixture
+        var diagnostics = try XCTUnwrap(published["diagnostics"] as? [String: Any])
+        XCTAssertNotNil(diagnostics.removeValue(forKey: "throughput_kbps"))
+        published["diagnostics"] = diagnostics
+        XCTAssertNil((body["diagnostics"] as? [String: Any])?["throughput_kbps"])
+        XCTAssertEqual(body as NSDictionary, published as NSDictionary)
 
         let estimated = BufferingQualityController.PlanSummary(
             planId: "local:estimated", playedMs: 1, stallCount: 0, stallTotalMs: 0, stallLongestMs: 0,
