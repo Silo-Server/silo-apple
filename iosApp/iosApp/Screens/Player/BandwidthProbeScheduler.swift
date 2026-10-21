@@ -1,9 +1,6 @@
 import Foundation
 import Network
 import os
-#if os(macOS)
-import AppKit
-#endif
 
 /// The network in use, as the bandwidth probe sees it.
 struct BandwidthProbeNetwork: Equatable, Sendable {
@@ -804,33 +801,3 @@ final class BandwidthProbeScheduler {
         return report == .stored ? .measured(measurement) : .notSaved(measurement)
     }
 }
-
-#if os(macOS)
-/// Whether a Mac app can be seen: not while it is hidden, nor while every
-/// window it could play in is minimized.
-enum MacAppVisibility {
-    /// The notifications after which ``isHidden`` can have changed.
-    static let changeNotifications = [
-        NSApplication.didHideNotification, NSApplication.didUnhideNotification,
-        NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
-    ]
-
-    @MainActor
-    static var isHidden: Bool {
-        let app = NSApplication.shared
-        return app.isHidden || app.windows.filter(\.canBecomeMain).allSatisfy { $0.isMiniaturized || !$0.isVisible }
-    }
-}
-
-extension BandwidthProbeScheduler {
-    /// Treats a hidden or minimized Silo as in the background. Called once at
-    /// launch; the scheduler lives as long as the app.
-    func followMacVisibility() {
-        for name in MacAppVisibility.changeNotifications {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.setHidden(MacAppVisibility.isHidden) }
-            }
-        }
-    }
-}
-#endif
