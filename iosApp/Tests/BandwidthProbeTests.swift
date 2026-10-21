@@ -100,15 +100,11 @@ final class BandwidthProbeMeterTests: XCTestCase {
 /// refusals, and the redirect to a proxy.
 final class BandwidthProbeDownloadTests: XCTestCase {
     private let probeURL = URL(string: "https://silo.example/api/v2/playback/bandwidth-probe?media_path=true&size=40000000")!
-
-    override func tearDown() {
-        StubProbeProtocol.reset()
-        super.tearDown()
-    }
+    private let stub = StubURLProtocol.Handler()
 
     private func download() -> BandwidthProbeDownload {
         let configuration = BandwidthProbeDownload.defaultConfiguration()
-        configuration.protocolClasses = [StubProbeProtocol.self]
+        stub.install(into: configuration)
         return BandwidthProbeDownload(mode: .quick(targetKbps: 115_000), configuration: configuration)
     }
 
@@ -121,26 +117,26 @@ final class BandwidthProbeDownloadTests: XCTestCase {
     }
 
     func testARateLimitWithoutRetryAfterWaits30Seconds() async throws {
-        StubProbeProtocol.respond { _ in .init(status: 429) }
+        stub.route(StubURLProtocol.any) { _ in .status(429) }
         let result = try await download().measure(request())
         XCTAssertEqual(result, .rateLimited(retryAfterSeconds: 30))
     }
 
     func testARateLimitIsTypedWithItsRetryAfter() async throws {
-        StubProbeProtocol.respond { _ in .init(status: 429, headers: ["Retry-After": "42"]) }
+        stub.route(StubURLProtocol.any) { _ in .init(status: 429, headers: ["Retry-After": "42"]) }
         let result = try await download().measure(request())
         XCTAssertEqual(result, .rateLimited(retryAfterSeconds: 42))
     }
 
     func testARefusalIsUnavailableAndNeverAnotherPath() async throws {
-        StubProbeProtocol.respond { _ in .init(status: 503) }
+        stub.route(StubURLProtocol.any) { _ in .status(503) }
         let result = try await download().measure(request())
         XCTAssertEqual(result, .unavailable(status: 503))
-        XCTAssertEqual(StubProbeProtocol.requests.map(\.url), [probeURL])
+        XCTAssertEqual(stub.requests.map(\.url), [probeURL])
     }
 
     func testAShortBodyIsTooLittleData() async throws {
-        StubProbeProtocol.respond { _ in .init(status: 200, body: Data(count: 1_024)) }
+        stub.route(StubURLProtocol.any) { _ in .init(status: 200, body: Data(count: 1_024)) }
         let result = try await download().measure(request())
         XCTAssertEqual(result, .tooLittleData)
     }
@@ -149,15 +145,14 @@ final class BandwidthProbeDownloadTests: XCTestCase {
     /// credentials stay with the API.
     func testTheRedirectToTheProxyDropsTheCredentials() async throws {
         let proxy = URL(string: "https://proxy.example/stream/bandwidth-probe/token?size=40000000")!
-        StubProbeProtocol.respond { request in
-            request.url == proxy ? .init(status: 200, body: Data(count: 1_024)) : .init(status: 307, redirect: proxy)
-        }
+        stub.route({ $0.url == proxy }) { _ in .init(status: 200, body: Data(count: 1_024)) }
+        stub.route(StubURLProtocol.any) { _ in .init(status: 307, redirect: proxy) }
         _ = try await download().measure(request())
-        let proxied = try XCTUnwrap(StubProbeProtocol.requests.last)
-        XCTAssertEqual(proxied.url, proxy)
-        XCTAssertNil(proxied.value(forHTTPHeaderField: "Authorization"))
-        XCTAssertNil(proxied.value(forHTTPHeaderField: "X-Profile-Id"))
-        XCTAssertEqual(proxied.value(forHTTPHeaderField: "X-Silo-Device-Id"), "device-1")
+        XCTAssertEqual(stub.requests.map(\.url), [probeURL, proxy])
+        let proxied = try XCTUnwrap(stub.requests.last)
+        XCTAssertNil(proxied.header("Authorization"))
+        XCTAssertNil(proxied.header("X-Profile-Id"))
+        XCTAssertEqual(proxied.header("X-Silo-Device-Id"), "device-1")
     }
 
     /// Failures are logged publicly, so they never carry the host.
@@ -182,12 +177,12 @@ final class BandwidthProbeDownloadTests: XCTestCase {
             }
         }
         let clock = Clock()
-        StubProbeProtocol.respond { _ in .init(status: 200, body: Data(count: 2_000_000), staysOpen: true) }
+        stub.route(StubURLProtocol.any) { _ in .init(status: 200, body: Data(count: 2_000_000), finishes: false) }
         let configuration = BandwidthProbeDownload.defaultConfiguration()
-        configuration.protocolClasses = [StubProbeProtocol.self]
+        stub.install(into: configuration)
         let probe = BandwidthProbeDownload(mode: .quick(targetKbps: nil), configuration: configuration) { clock.now }
         let task = Task { try await probe.measure(request()) }
-        while StubProbeProtocol.requests.isEmpty { await Task.yield() }
+        while stub.requests.isEmpty { await Task.yield() }
         // Let the first bytes land at 0, then move the clock past the limit
         // with nothing more arriving.
         try await Task.sleep(for: .milliseconds(200))
@@ -204,74 +199,17 @@ final class BandwidthProbeDownloadTests: XCTestCase {
     }
 
     func testCancellingTheCallerCancelsTheProbe() async throws {
-        StubProbeProtocol.respond { _ in .init(status: 200, hangs: true) }
+        stub.route(StubURLProtocol.any) { _ in .init(status: 200, finishes: false) }
         let probe = download()
         let task = Task { try await probe.measure(request()) }
-        while StubProbeProtocol.requests.isEmpty { await Task.yield() }
+        defer { task.cancel() }
+        try await stub.waitForRequest { _ in true }
         task.cancel()
         do {
             _ = try await task.value
             XCTFail("a cancelled probe has no result")
         } catch is CancellationError {}
     }
-}
-
-/// Serves canned probe answers to the download's session.
-final class StubProbeProtocol: URLProtocol {
-    struct Answer {
-        var status: Int
-        var headers: [String: String] = [:]
-        var body = Data()
-        var redirect: URL?
-        /// Sends the headers, then nothing.
-        var hangs = false
-        /// Sends the body, then neither more data nor the end.
-        var staysOpen = false
-    }
-
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var answer: ((URLRequest) -> Answer)?
-    nonisolated(unsafe) private static var seen: [URLRequest] = []
-
-    static var requests: [URLRequest] { lock.withLock { seen } }
-
-    static func respond(_ answer: @escaping (URLRequest) -> Answer) {
-        lock.withLock { self.answer = answer }
-    }
-
-    static func reset() {
-        lock.withLock {
-            answer = nil
-            seen = []
-        }
-    }
-
-    override class func canInit(with request: URLRequest) -> Bool { true }
-    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-
-    override func startLoading() {
-        let answer = Self.lock.withLock { () -> Answer? in
-            Self.seen.append(request)
-            return Self.answer?(request)
-        } ?? Answer(status: 500)
-        let url = request.url!
-        var headers = answer.headers
-        if let redirect = answer.redirect { headers["Location"] = redirect.absoluteString }
-        let response = HTTPURLResponse(url: url, statusCode: answer.status, httpVersion: "HTTP/1.1", headerFields: headers)!
-        if let redirect = answer.redirect {
-            var next = request
-            next.url = redirect
-            client?.urlProtocol(self, wasRedirectedTo: next, redirectResponse: response)
-            return
-        }
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        guard !answer.hangs else { return }
-        if !answer.body.isEmpty { client?.urlProtocol(self, didLoad: answer.body) }
-        guard !answer.staysOpen else { return }
-        client?.urlProtocolDidFinishLoading(self)
-    }
-
-    override func stopLoading() {}
 }
 
 /// When the probe runs, what it keeps, and what stops it.

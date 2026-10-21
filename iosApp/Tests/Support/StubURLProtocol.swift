@@ -27,7 +27,8 @@ import Foundation
 //   wins exactly once.
 // - A reply returns `Response(status:headers:body:)` or throws. A thrown
 //   `URLError` (or any error) reaches the caller as a transport failure, the
-//   way a dropped connection would.
+//   way a dropped connection would. A response can instead redirect to
+//   another URL, or never finish: headers and body, then silence.
 // - Replies are `async`. To stall a response until the test says so, await
 //   a `StubURLProtocol.Gate` inside the reply and `open()` it from the test.
 //   No `DispatchSemaphore`, no blocked loader thread.
@@ -102,11 +103,21 @@ final class StubURLProtocol: URLProtocol {
         var status: Int
         var headers: [String: String]
         var body: Data
+        /// Redirects to this URL, with `status`, instead of sending a body.
+        var redirect: URL?
+        /// False sends the headers and body, then neither more data nor the
+        /// end, until the request is cancelled.
+        var finishes: Bool
 
-        init(status: Int, headers: [String: String] = [:], body: Data = Data()) {
+        init(
+            status: Int, headers: [String: String] = [:], body: Data = Data(),
+            redirect: URL? = nil, finishes: Bool = true
+        ) {
             self.status = status
             self.headers = headers
             self.body = body
+            self.redirect = redirect
+            self.finishes = finishes
         }
 
         static func json(_ body: String, status: Int = 200, headers: [String: String] = [:]) -> Response {
@@ -435,20 +446,34 @@ final class StubURLProtocol: URLProtocol {
     }
 
     private func deliver(_ response: Response, url: URL, client: URLProtocolClient) {
+        var headers = response.headers
+        if let redirect = response.redirect {
+            headers["Location"] = redirect.absoluteString
+        }
         guard let httpResponse = HTTPURLResponse(
             url: url,
             statusCode: response.status,
             httpVersion: "HTTP/1.1",
-            headerFields: response.headers
+            headerFields: headers
         ) else {
             client.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        if let redirect = response.redirect {
+            // The raw request keeps the handler marker, so the same handler
+            // answers the redirected request.
+            var next = request
+            next.url = redirect
+            client.urlProtocol(self, wasRedirectedTo: next, redirectResponse: httpResponse)
             return
         }
         client.urlProtocol(self, didReceive: httpResponse, cacheStoragePolicy: .notAllowed)
         if !response.body.isEmpty {
             client.urlProtocol(self, didLoad: response.body)
         }
-        client.urlProtocolDidFinishLoading(self)
+        if response.finishes {
+            client.urlProtocolDidFinishLoading(self)
+        }
     }
 
     /// URLSession hands outgoing bodies to a protocol as a stream, not
