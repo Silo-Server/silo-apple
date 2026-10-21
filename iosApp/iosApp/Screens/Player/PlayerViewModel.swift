@@ -10490,7 +10490,7 @@ extension PlayerViewModel {
             quality: quality,
             qualityNamesARung: namesARung,
             availableQualities: plan.availableQualities.map {
-                .init(label: $0.label, bitrateKbps: $0.bitrateKbps, preservesSource: $0.preservesSource)
+                .init(label: $0.label, bitrateKbps: $0.bitrateKbps)
             },
             qualityReductionUnavailable: plan.degradationWarnings.contains {
                 $0.code == qualityReductionUnavailableWarning

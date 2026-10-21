@@ -202,8 +202,8 @@ final class BufferingQualityControllerTests: XCTestCase {
     func testAutoWithoutAUsableEstimateShowsCantLowerOncePerTitle() {
         let h = Harness(mode: .always)
         let rungs = [
-            Controller.QualityRung(label: "original", bitrateKbps: 140, preservesSource: true),
-            Controller.QualityRung(label: "low", bitrateKbps: 120, preservesSource: false),
+            Controller.QualityRung(label: "original", bitrateKbps: 140),
+            Controller.QualityRung(label: "low", bitrateKbps: 120),
         ]
         // 0.7 × 140 = 98, under MIN_ESTIMATE_KBPS, although a lower rung exists.
         h.startPlaying(Self.plan("p1", delivered: 140, rungs: rungs))
@@ -452,10 +452,10 @@ final class BufferingQualityControllerTests: XCTestCase {
     // MARK: - Fixtures
 
     private static let ladder: [Controller.QualityRung] = [
-        .init(label: "original", bitrateKbps: 63_000, preservesSource: true),
-        .init(label: "1080p-high", bitrateKbps: 10_000, preservesSource: false),
-        .init(label: "1080p-medium", bitrateKbps: 6_000, preservesSource: false),
-        .init(label: "720p-high", bitrateKbps: 4_000, preservesSource: false),
+        .init(label: "original", bitrateKbps: 63_000),
+        .init(label: "1080p-high", bitrateKbps: 10_000),
+        .init(label: "1080p-medium", bitrateKbps: 6_000),
+        .init(label: "720p-high", bitrateKbps: 4_000),
     ]
 
     private static func plan(
@@ -558,14 +558,14 @@ private final class Harness {
     func lowerAutomatically() {
         startPlaying(.init(
             id: "p1", deliveredKbps: 63_000, quality: "auto",
-            availableQualities: [.init(label: "1080p-high", bitrateKbps: 10_000, preservesSource: false)],
+            availableQualities: [.init(label: "1080p-high", bitrateKbps: 10_000)],
             qualityReductionUnavailable: false
         ))
         at(125_000) { $0.waiting() }
         at(134_000) {
             $0.planAdopted(.init(
                 id: "p2", deliveredKbps: 31_600, quality: "auto",
-                availableQualities: [.init(label: "1080p-high", bitrateKbps: 10_000, preservesSource: false)],
+                availableQualities: [.init(label: "1080p-high", bitrateKbps: 10_000)],
                 qualityReductionUnavailable: false
             ))
             $0.playing()
@@ -831,11 +831,7 @@ private struct VectorEvent {
                       let bitrate = rung["bitrate_kbps"] as? Int else {
                     throw VectorError.malformed("\(caseName): quality keys")
                 }
-                return .init(
-                    label: label,
-                    bitrateKbps: bitrate,
-                    preservesSource: rung["preserves_source"] as? Bool ?? false
-                )
+                return .init(label: label, bitrateKbps: bitrate)
             },
             qualityReductionUnavailable: warnings.contains("quality_reduction_unavailable")
         )
@@ -919,5 +915,17 @@ private struct VectorOutput: Equatable, CustomStringConvertible {
             parts.append(json)
         }
         return parts.joined(separator: " ")
+    }
+}
+
+private extension BufferingQualityController.ReplanRequest {
+    /// The request body as the vectors write it: `operation` and every
+    /// present field, snake_case.
+    var wireBody: [String: Any] {
+        var body: [String: Any] = ["operation": operation, "quality_preference": qualityPreference]
+        if let bandwidthEstimateKbps { body["bandwidth_estimate_kbps"] = bandwidthEstimateKbps }
+        if let bandwidthEstimateSource { body["bandwidth_estimate_source"] = bandwidthEstimateSource }
+        if let learnedLimit { body["learned_limit"] = learnedLimit }
+        return body
     }
 }

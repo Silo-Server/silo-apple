@@ -79,7 +79,6 @@ final class BufferingQualityController {
     struct QualityRung: Equatable {
         var label: String
         var bitrateKbps: Int
-        var preservesSource: Bool
     }
 
     /// What the controller reads from an adopted playback plan.
@@ -138,15 +137,6 @@ final class BufferingQualityController {
         /// carries an estimate, and one on a picked quality names a rung.
         var isRestore: Bool {
             qualityPreference == BufferingQualityController.autoQuality && bandwidthEstimateKbps == nil
-        }
-
-        /// The request body: `operation` and every present field, snake_case.
-        var wireBody: [String: Any] {
-            var body: [String: Any] = ["operation": operation, "quality_preference": qualityPreference]
-            if let bandwidthEstimateKbps { body["bandwidth_estimate_kbps"] = bandwidthEstimateKbps }
-            if let bandwidthEstimateSource { body["bandwidth_estimate_source"] = bandwidthEstimateSource }
-            if let learnedLimit { body["learned_limit"] = learnedLimit }
-            return body
         }
     }
 
