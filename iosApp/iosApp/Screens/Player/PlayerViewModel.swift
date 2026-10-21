@@ -4539,7 +4539,12 @@ class PlayerViewModel {
     func applySettingsToPlayer() {
         // Aether starts a paused player on any rate; a party member's rate is
         // the room's to set, and only while it plays.
-        if isWatchPartyPlayback { syncWatchPartyRate() } else { aetherPlaybackController.setSpeed(effectivePlaybackSpeed) }
+        // A held 2× keeps its rate; releasing the hold restores the speed.
+        if isWatchPartyPlayback {
+            syncWatchPartyRate()
+        } else if !isHoldFastForwarding {
+            aetherPlaybackController.setSpeed(effectivePlaybackSpeed)
+        }
         aetherPlaybackController.engine.videoGravity = settings.videoGravity.avGravity
     }
 
