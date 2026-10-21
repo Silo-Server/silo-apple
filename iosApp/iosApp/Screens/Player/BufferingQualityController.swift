@@ -418,7 +418,6 @@ final class BufferingQualityController {
         let now = nowMs
         guard let state = current, var stall = state.stall else { return }
         if trouble {
-            stall.measuredMs = 0
             stall.measuredFrom = nil
             stall.timedFrom = nil
             cancelStallTimers()
@@ -535,7 +534,6 @@ final class BufferingQualityController {
         pendingReplan = nil
         rearmTimer?.cancel()
         rearmTimer = nil
-        current?.rearmAt = nil
         withdrawPill()
         clearHistory(at: nowMs)
     }
@@ -575,7 +573,7 @@ final class BufferingQualityController {
         guard Self.triggered(state, at: now) else { return }
 
         // A suppressed trigger leaves history intact for a later evaluation.
-        if answered || state.rearmAt != nil || presented != nil { return }
+        if answered || rearmTimer != nil || presented != nil { return }
         if let until = state.cooldownUntil, now < until {
             watchStall(until: until)
             return
@@ -690,7 +688,6 @@ final class BufferingQualityController {
         )
         // Triggers on this plan wait for the adoption, or for the rearm if the
         // replan fails or its plan never arrives.
-        current?.rearmAt = now + Self.rearmAfterUnadoptedMs
         suppressionTimer?.cancel()
         suppressionTimer = nil
         rearmTimer?.cancel()
@@ -701,7 +698,6 @@ final class BufferingQualityController {
     private func rearm() {
         rearmTimer = nil
         pendingReplan = nil
-        current?.rearmAt = nil
         clearHistory(at: nowMs)
     }
 
@@ -816,7 +812,6 @@ final class BufferingQualityController {
     private func endPlan(at now: Int) {
         guard let state = current else { return }
         let summary = summary(closing: state, at: now)
-        if playingSince != nil { playingSince = now }
         current = nil
         cancelStallTimers()
         rearmTimer?.cancel()
@@ -965,7 +960,6 @@ final class BufferingQualityController {
         var endedStalls: [EndedStall] = []
 
         var cooldownUntil: Int?
-        var rearmAt: Int?
 
         var playedMs = 0
         var stallCount = 0
@@ -991,10 +985,9 @@ final class BufferingQualityController {
         /// The summary's timing, which a history clear does not re-time:
         /// the start of the current segment outside grace and trouble.
         var measuredFrom: Int?
-        var measuredMs = 0
 
         func measured(at now: Int) -> Int {
-            measuredMs + (measuredFrom.map { max(0, now - $0) } ?? 0)
+            measuredFrom.map { max(0, now - $0) } ?? 0
         }
     }
 
