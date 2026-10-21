@@ -49,10 +49,17 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         private var capability = #"{"allowed":true,"registration_available":true,"revision":"r1","state":"available"}"#
         private var replies: [Reply] = []
         private var retirementReplies: [RetirementReply] = []
+        private var capabilityGate: StubURLProtocol.Gate?
 
         init() {
             handler.route(StubURLProtocol.method("GET", path: ApplePushOrderedRegistrationTests.capabilityPath)) { [self] _ in
-                .json(lock.withLock { capability })
+                if let gate = lock.withLock({ () -> StubURLProtocol.Gate? in
+                    defer { capabilityGate = nil }
+                    return capabilityGate
+                }) {
+                    await gate.wait()
+                }
+                return .json(lock.withLock { capability })
             }
             handler.route(StubURLProtocol.method("POST", path: ApplePushOrderedRegistrationTests.registrationPath)) { [self] request in
                 var reply = lock.withLock { replies.isEmpty ? Reply.receipt() : replies.removeFirst() }
@@ -105,6 +112,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         }
 
         func setCapability(_ json: String) { lock.withLock { capability = json } }
+        /// Holds the next capability answer until `gate` opens.
+        func gateCapability(_ gate: StubURLProtocol.Gate) { lock.withLock { capabilityGate = gate } }
         func enqueue(_ reply: Reply) { lock.withLock { replies.append(reply) } }
         func enqueueRetirement(_ reply: RetirementReply) { lock.withLock { retirementReplies.append(reply) } }
 
@@ -136,7 +145,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let retirementStore: ApplePushRetirementStore
 
         /// A new registrar is a new process: only the Keychain carries over.
-        func registrar(clock: Clock? = nil, savedServerIdentity: String? = nil) -> ApplePushRegistrar {
+        func registrar(clock: Clock? = nil, savedServerIdentity: String? = nil,
+                       retirementBudget: Duration = .seconds(2)) -> ApplePushRegistrar {
             let now: @Sendable () -> Date = clock.map { clock in { clock.now } } ?? { Date() }
             let session = server.handler.makeSession()
             let retirements = ApplePushRetirementQueue(store: retirementStore, journal: journal, now: now) {
@@ -146,7 +156,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             return ApplePushRegistrar(api: api, tokenStore: tokens, journal: journal, displayTargets: targets,
                 savedServers: ApplePushSavedServerClient(http: http, tokenStore: tokens,
                     session: session),
-                savedServerIdentity: { _ in savedServerIdentity }, retirements: retirements, now: now)
+                savedServerIdentity: { _ in savedServerIdentity }, retirements: retirements,
+                retirementBudget: retirementBudget, now: now)
         }
 
         /// Signs in to the server again after its credentials were deleted:
@@ -972,6 +983,55 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
 
         let sends = h.server.registrations
         XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3", "5"])
+        XCTAssertEqual(sends.last?.bodyString?.contains(#""push_mode":"off""#), true)
+        XCTAssertEqual(try h.retirementStore.load(), [])
+    }
+
+    /// A registration the departing account started before the sign-out,
+    /// and that allocates only once the sign-out is waiting for its turn, is
+    /// retired above rather than ending the teardown.
+    func testRegistrationAlreadyRunningAtSignOutIsRetiredAbove() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar()
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        let gate = StubURLProtocol.Gate()
+        h.server.gateCapability(gate)
+        let running = Task { await registrar.register(Self.body(token: Self.tokenB), owner: owner) }
+        let capabilityChecks = { h.server.handler.requests.filter { $0.path == Self.capabilityPath }.count }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while capabilityChecks() < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(capabilityChecks(), 2)
+        let teardown = Task { await registrar.unregister(serverID: Self.serverID, activeOwner: owner) }
+        try await Task.sleep(for: .milliseconds(200))
+
+        await gate.open()
+        _ = await running.value
+        let result = await teardown.value
+
+        XCTAssertEqual(result, .retirement(.retired))
+        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "2"])
+        XCTAssertEqual(h.server.retirements.map { $0.header("X-Push-Generation") }, ["3"])
+    }
+
+    /// A retirement that does not answer in time does not hold up the
+    /// session `off`, which has to land before the credentials are deleted.
+    func testSlowRetirementDoesNotHoldUpTheOff() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar(retirementBudget: .milliseconds(100))
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        let gate = StubURLProtocol.Gate()
+        h.server.enqueueRetirement(.gated(gate, status: 503))
+        let teardown = Task { await registrar.unregister(serverID: Self.serverID, activeOwner: owner) }
+        try await Task.sleep(for: .milliseconds(800))
+
+        let sends = h.server.registrations
+        await gate.open()
+        _ = await teardown.value
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3"])
         XCTAssertEqual(sends.last?.bodyString?.contains(#""push_mode":"off""#), true)
         XCTAssertEqual(try h.retirementStore.load(), [])
     }

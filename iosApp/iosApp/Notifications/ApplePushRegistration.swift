@@ -208,6 +208,10 @@ actor ApplePushRegistrar {
     /// receipt that does not name one.
     private let savedServerIdentity: @Sendable (String) async -> String?
     private let now: @Sendable () -> Date
+    /// How long `unregister` waits for the retirement before it also sends
+    /// the session `off`, which needs the credentials the caller deletes
+    /// after `ApplePushRegistrationCoordinator.unregisterDeadline`.
+    private let retirementBudget: Duration
     /// The retirements of servers whose credentials are gone.
     nonisolated let retirements: ApplePushRetirementQueue
     /// Per server: the generation not to send again until the interval ends.
@@ -233,9 +237,11 @@ actor ApplePushRegistrar {
              await MainActor.run { ServerRegistry.shared.entry(with: serverID)?.verifiedServerId }
          },
          retirements: ApplePushRetirementQueue = .shared,
+         retirementBudget: Duration = .seconds(2),
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.api = api
         self.retirements = retirements
+        self.retirementBudget = retirementBudget
         self.tokenStore = tokenStore
         self.journal = journal
         self.displayTargets = displayTargets
@@ -316,7 +322,11 @@ actor ApplePushRegistrar {
         teardowns[serverID] = teardown
         var retirement: ApplePushRetirementQueue.Outcome?
         if let entry = await allocateRetirement(serverID: serverID, deviceID: deviceID, teardown: teardown) {
-            let outcome = await retirements.submit(entry) ?? .kept(reason: "in_flight")
+            let retirements = self.retirements
+            let submitting = Task { await retirements.submit(entry) }
+            // An unanswered retirement keeps going while the `off` is sent.
+            let answer = await Self.value(of: submitting, within: retirementBudget)
+            let outcome = answer.flatMap { $0 } ?? .kept(reason: answer == nil ? "unanswered" : "in_flight")
             switch outcome {
             case .retired, .dropped:
                 return .retirement(outcome)
@@ -345,6 +355,19 @@ actor ApplePushRegistrar {
             await retirements.enqueue(retirement)
         }
         return result
+    }
+
+    /// `task`'s value, or `nil` once `limit` passes first. The task runs on.
+    private nonisolated static func value<Value: Sendable>(of task: Task<Value, Never>,
+                                                           within limit: Duration) async -> Value? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Value?, Never>) in
+            let once = ResumeOnce(continuation)
+            Task { once.resume(returning: await task.value) }
+            Task {
+                try? await Task.sleep(for: limit)
+                once.resume(returning: nil)
+            }
+        }
     }
 
     /// The retirement for the journal's next generation, persisted to the
@@ -461,7 +484,9 @@ actor ApplePushRegistrar {
             // A server added again, or signed in to again, registers above
             // its pending retirement, which the server would now refuse.
             if body.pushMode != ApplePushRegistrationWire.offPushMode {
-                teardowns[serverID] = nil
+                // Only a registration by someone else ends the teardown: one
+                // the departing account started before it is retired above.
+                if !isDeparting(intentOwner) { teardowns[serverID] = nil }
                 await retirements.cancel(serverID: serverID, before: command.generation, reason: "registered")
             }
         }
@@ -858,11 +883,11 @@ final class ApplePushRegistrationCoordinator {
             let once = ResumeOnce(continuation)
             Task {
                 await operation()
-                once.resume()
+                once.resume(returning: ())
             }
             Task {
                 try? await Task.sleep(for: limit)
-                once.resume()
+                once.resume(returning: ())
             }
         }
     }
@@ -878,19 +903,19 @@ final class ApplePushRegistrationCoordinator {
     }
 }
 
-private final class ResumeOnce: Sendable {
-    private let continuation: Mutex<CheckedContinuation<Void, Never>?>
+private final class ResumeOnce<Value: Sendable>: Sendable {
+    private let continuation: Mutex<CheckedContinuation<Value, Never>?>
 
-    init(_ continuation: CheckedContinuation<Void, Never>) {
+    init(_ continuation: CheckedContinuation<Value, Never>) {
         self.continuation = Mutex(continuation)
     }
 
-    func resume() {
-        let pending = continuation.withLock { slot -> CheckedContinuation<Void, Never>? in
+    func resume(returning value: Value) {
+        let pending = continuation.withLock { slot -> CheckedContinuation<Value, Never>? in
             defer { slot = nil }
             return slot
         }
-        pending?.resume()
+        pending?.resume(returning: value)
     }
 }
 #endif
