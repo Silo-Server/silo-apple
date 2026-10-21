@@ -10693,9 +10693,7 @@ extension PlayerViewModel {
     private func syncBufferingHostInputs() {
         let inputs = bufferingHostInputs
         bufferingQuality.mode = inputs.mode
-        if bufferingQuality.isSuspended != inputs.suspended {
-            bufferingQuality.isSuspended = inputs.suspended
-        }
+        bufferingQuality.isSuspended = inputs.suspended
         bufferingQuality.setCompetingPillVisible(inputs.competingPill)
     }
 
