@@ -592,17 +592,6 @@ final class BandwidthProbeScheduler {
         run.task?.cancel()
     }
 
-    private func schedule(after delay: TimeInterval) {
-        timer?.cancel()
-        timer = nil
-        guard isActive else { return }
-        timer = clock.schedule(after: max(delay, 0)) { [weak self] in
-            guard let self else { return }
-            self.timer = nil
-            Task { await self.look() }
-        }
-    }
-
     /// Reads the server's settings and readings now, so a start in the first
     /// seconds sends one, and looks once the first screen has settled.
     private func check() {
@@ -613,7 +602,12 @@ final class BandwidthProbeScheduler {
         checkedConnection = currentConnection
         checkRead?.cancel()
         checkRead = Task { await read(for: session) }
-        schedule(after: Self.startDelay)
+        timer?.cancel()
+        timer = clock.schedule(after: Self.startDelay) { [weak self] in
+            guard let self else { return }
+            self.timer = nil
+            Task { await self.look() }
+        }
     }
 
     /// Reads the speed-test settings and, if the server has a speed test,
