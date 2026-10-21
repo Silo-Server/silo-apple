@@ -38,7 +38,12 @@ struct AccountsSettingsViewModel: Equatable {
         }
     }
 
+    /// Only a shared device (Apple TV) says everyone on it shares them, as
+    /// the sign-out copy does.
     static func footer(device: SignOutConfirmationCopy.Device) -> String {
-        "Everyone who uses Silo on this \(device.noun) shares these accounts. Signing out of or removing an account affects everyone here."
+        guard device.isShared else {
+            return "Signing out keeps an account here so you can sign in again. Removing it forgets it on this \(device.noun)."
+        }
+        return "Everyone who uses Silo on this \(device.noun) shares these accounts. Signing out of or removing an account affects everyone here."
     }
 }

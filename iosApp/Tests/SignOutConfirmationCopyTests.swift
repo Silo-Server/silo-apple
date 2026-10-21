@@ -67,5 +67,7 @@ final class SignOutConfirmationCopyTests: XCTestCase {
                      SignOutConfirmationCopy.removeAccount(accountName: "alex", serverName: "Home Silo", device: tv)] {
             XCTAssertTrue(text(copy).localizedCaseInsensitiveContains("everyone"), text(copy))
         }
+        XCTAssertFalse(AccountsSettingsViewModel.footer(device: phone).localizedCaseInsensitiveContains("everyone"))
+        XCTAssertTrue(AccountsSettingsViewModel.footer(device: tv).localizedCaseInsensitiveContains("everyone"))
     }
 }
