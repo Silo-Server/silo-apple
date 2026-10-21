@@ -253,6 +253,8 @@ final class BufferingQualityController {
     @ObservationIgnored private var lastOfferAt: Int?
     /// The replan this controller sent, until the next plan settles it.
     @ObservationIgnored private var pendingReplan: PendingReplan?
+    /// The viewer's quality pick is sent and its plan not yet adopted.
+    @ObservationIgnored private var pickPending = false
 
     @ObservationIgnored private var presented: PresentedPill?
 
@@ -274,7 +276,8 @@ final class BufferingQualityController {
     /// replan settles it: a lower plan shows the undo pill (automatic) or the
     /// lowered notice (accepted); one that is no lower, or carries
     /// `quality_reduction_unavailable`, shows the can't-lower notice and starts
-    /// `NO_LOWER_COOLDOWN_MS`. Pass `controllerInitiated: false` for a plan
+    /// `NO_LOWER_COOLDOWN_MS`. While the viewer's pick is pending, neither
+    /// pill nor notice shows. Pass `controllerInitiated: false` for a plan
     /// that answers a replan the controller did not send; it settles nothing.
     func planAdopted(_ plan: Plan, controllerInitiated: Bool = true) {
         let now = nowMs
@@ -327,6 +330,7 @@ final class BufferingQualityController {
         answered = false
         noLowerRungNoticeShown = false
         lastOfferAt = nil
+        pickPending = false
     }
 
     // MARK: - Media events
@@ -497,8 +501,10 @@ final class BufferingQualityController {
     /// goes. The re-offer wait ends with it, since the next offer would be
     /// about a different quality, and a pending controller replan is dropped
     /// so the new plan is not read as its result. Call it only once the
-    /// player has accepted the change.
+    /// player has accepted the change; for a pick, as its plan is adopted,
+    /// just before ``planAdopted(_:controllerInitiated:)``.
     func qualityChanged() {
+        pickPending = false
         keptEstimateKbps = nil
         answered = false
         lastOfferAt = nil
@@ -507,6 +513,24 @@ final class BufferingQualityController {
         rearmTimer = nil
         withdrawPill()
         clearHistory(at: nowMs)
+    }
+
+    /// The viewer picked a quality from the menu and the player sent it. Any
+    /// pill hides, and nothing prompts or lowers while the pick is pending.
+    /// The answer, history and kept estimate change only when its plan is
+    /// adopted (``qualityChanged()``), and not at all if it is refused
+    /// (``pickRefused()``).
+    func pickSent() {
+        pickPending = true
+        withdrawPill()
+    }
+
+    /// The pick from ``pickSent()`` never became a plan. Nothing else
+    /// changes, and a long stall in progress is evaluated at once.
+    func pickRefused() {
+        guard pickPending else { return }
+        pickPending = false
+        evaluateLongStall()
     }
 
     /// A replan the player sends for its own reasons: a track change, seek
@@ -544,7 +568,7 @@ final class BufferingQualityController {
         guard Self.triggered(state, at: now) else { return }
 
         // A suppressed trigger leaves history intact for a later evaluation.
-        if answered || rearmTimer != nil || presented != nil { return }
+        if answered || pickPending || rearmTimer != nil || presented != nil { return }
         if let until = state.cooldownUntil, now < until {
             watchStall(until: until)
             return
@@ -689,12 +713,16 @@ final class BufferingQualityController {
         } else {
             return
         }
+        // The viewer's pending pick replaces this plan, so its result shows
+        // nothing; its action and cooldown still stand.
         if lower {
+            guard !pickPending else { return }
             if pending.automatic { present(.undo) } else { notify(.lowered) }
         } else {
             current?.cooldownUntil = now + Self.noLowerCooldownMs
             guard !isSuspended else { return }
             current?.action = .cantLower
+            guard !pickPending else { return }
             // The viewer has now seen this copy for the title.
             noLowerRungNoticeShown = true
             notify(.cantLower)

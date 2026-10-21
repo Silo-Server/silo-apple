@@ -183,6 +183,27 @@ final class BufferingQualityControllerTests: XCTestCase {
         ], "history cleared: the stall that was in progress counts only from the change")
     }
 
+    /// The vectors' pending pick sees no evaluation until it is refused;
+    /// here playback resumes from the long stall while the pick is pending.
+    func testNothingPromptsWhileAPickIsPending() {
+        let h = Harness(mode: .ask)
+        h.startPlaying(Self.plan("p1"))
+        h.at(125_000) { $0.waiting() }
+        h.clock.advance(to: 131_000)
+        h.at(133_000) { $0.pickSent() }
+        h.at(134_000) { $0.playing() }
+        XCTAssertNil(h.controller.pill)
+
+        // Refused: the long stall still counts, and the next evaluation asks.
+        h.at(135_000) { $0.pickRefused() }
+        h.at(140_000) { $0.waiting() }
+        h.at(142_000) { $0.playing() }
+        XCTAssertEqual(h.shown, [
+            .init(131_000, .pillShown(.prompt)),
+            .init(142_000, .pillShown(.prompt)),
+        ])
+    }
+
     func testAdoptingAPlanTheControllerDidNotRequestHidesTheUndoPill() {
         let h = Harness(mode: .always)
         h.lowerAutomatically()
@@ -706,13 +727,16 @@ private struct VectorEvent {
         /// The player sends a replan for its own reasons.
         case clientReplan(operation: String)
         case qualityChanged
+        /// The viewer's quality pick is sent, or the player refuses it.
+        case pickSent, pickRefused
         case newAttempt
     }
 
     static let knownTypes = [
         "plan_adopted", "playing", "waiting", "pause", "seek", "transport_error_start",
         "transport_error_end", "replan_failed", "select_lower", "select_keep", "select_restore", "back",
-        "pill_obscured", "pill_unobscured", "client_replan", "quality_changed", "new_attempt",
+        "pill_obscured", "pill_unobscured", "client_replan", "quality_changed", "pick_sent", "pick_refused",
+        "new_attempt",
     ]
 
     /// The operations a `client_replan` may carry.
@@ -767,6 +791,8 @@ private struct VectorEvent {
             }
             kind = .clientReplan(operation: operation)
         case "quality_changed": kind = .qualityChanged
+        case "pick_sent": kind = .pickSent
+        case "pick_refused": kind = .pickRefused
         case "new_attempt": kind = .newAttempt
         default: throw VectorError.malformed("\(caseName): unknown event type \(type)")
         }
@@ -795,6 +821,8 @@ private struct VectorEvent {
         case .clientReplan(let operation):
             return controller.clientReplan(operation: operation).map(BufferingQualityController.Output.replan)
         case .qualityChanged: controller.qualityChanged()
+        case .pickSent: controller.pickSent()
+        case .pickRefused: controller.pickRefused()
         case .newAttempt: controller.newAttempt()
         }
         return nil

@@ -577,8 +577,57 @@ final class BufferingQualityPlayerTests: XCTestCase {
         defer { model.cleanup() }
         try showPrompt(on: model, clock: clock)
         model.switchQuality("720p")
-        XCTAssertNil(model.qualitySwitchError, "the player took the pick")
+        XCTAssertNil(model.qualitySwitchError, "the player sent the pick")
         XCTAssertNil(model.bufferingPill)
+    }
+
+    /// A pick that gets no plan is refused: it holds the controller no
+    /// longer, so the next plan's long stall asks.
+    func testAQualityPickThatGetsNoPlanIsRefused() async throws {
+        let clock = ManualBufferingQualityClock()
+        let model = PlayerViewModel(bufferingQualityClock: clock)
+        defer { model.cleanup() }
+        try showPrompt(on: model, clock: clock)
+        model.switchQuality("720p")
+        XCTAssertNil(model.bufferingPill, "the pick hides the prompt as it is sent")
+        // The bridge holds no session, so the replan comes back without a plan.
+        for _ in 0..<200 where model.isQualitySwitching {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(model.isQualitySwitching)
+
+        try play(try preparedPlan(), on: model, quality: "1080p-high")
+        model.bufferingQuality.playing()
+        clock.advance(to: 60_000)
+        model.bufferingQuality.waiting(cause: .network)
+        clock.advance(to: 66_000)
+        XCTAssertEqual(model.bufferingPill?.kind, .prompt)
+    }
+
+    /// The move to the other connection's quality is the viewer's quality
+    /// change too, pending until its plan is adopted: the kept estimate stays.
+    func testTheMoveToTheOtherConnectionsQualityIsPendingUntilAdopted() async throws {
+        let clock = ManualBufferingQualityClock()
+        let model = PlayerViewModel(bufferingQualityClock: clock)
+        defer { model.cleanup() }
+        try play(try preparedPlan(), on: model, quality: "auto")
+        model.bufferingQuality.mode = .always
+        model.bufferingQuality.playing()
+        clock.advance(to: 20_000)
+        model.bufferingQuality.waiting(cause: .network)
+        clock.advance(to: 26_000)
+        // The bridge holds no session, so the lowering's replan fails and the
+        // plan plays on with its estimate kept.
+        for _ in 0..<200 where model.isLoading {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(model.bufferingQuality.keptEstimateKbps, 5_600)
+
+        XCTAssertEqual(
+            model.replanForConnectionChange(AppleQualityAxes(resolution: "720p", bitrateKbps: 2_000)),
+            .issued
+        )
+        XCTAssertEqual(model.bufferingQuality.keptEstimateKbps, 5_600, "its plan isn't adopted yet")
     }
 
     /// On the legacy path too, a pick the player can't take (nothing to
@@ -614,8 +663,8 @@ final class BufferingQualityPlayerTests: XCTestCase {
     }
 
     /// A lowering's estimate rides on the player's own Auto replans until the
-    /// viewer picks a quality.
-    func testTheViewersQualityPickDropsTheKeptEstimate() throws {
+    /// viewer's pick is adopted: a pick only sent keeps it.
+    func testTheViewersPendingQualityPickKeepsTheKeptEstimate() throws {
         let clock = ManualBufferingQualityClock()
         let model = PlayerViewModel(bufferingQualityClock: clock)
         defer { model.cleanup() }
@@ -633,8 +682,8 @@ final class BufferingQualityPlayerTests: XCTestCase {
         )
 
         model.switchQuality("720p")
-        XCTAssertNil(model.qualitySwitchError, "the player took the pick")
-        XCTAssertNil(model.bufferingQuality.keptEstimateKbps)
+        XCTAssertNil(model.qualitySwitchError, "the player sent the pick")
+        XCTAssertEqual(model.bufferingQuality.keptEstimateKbps, 5_600, "the pick's plan isn't adopted yet")
     }
 
     /// Which replans repeat the kept estimate: the player's own, never the

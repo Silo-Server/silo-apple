@@ -526,6 +526,11 @@ class PlayerViewModel {
     /// carries it: the Restore itself, or the start or replan that replaces
     /// it. It goes out once. Read by tests.
     @ObservationIgnored private(set) var owesBufferingLearnedLimitClear = false
+    /// The viewer's quality change on its way: a pick, a version switch or
+    /// the move to the other connection's quality, sent and not yet adopted
+    /// or refused. A newer one supersedes it.
+    @ObservationIgnored private var pendingViewerQualityChange: UInt64?
+    @ObservationIgnored private var viewerQualityChangeSerial: UInt64 = 0
     /// The app is in the background, or the Mac's player window can't be
     /// seen: the player cannot show its pills.
     private(set) var isPlayerSurfaceHidden = false
@@ -1645,11 +1650,9 @@ class PlayerViewModel {
             classification: "quality_changed",
             message: "The connection changed between mobile data and Wi-Fi.",
             operation: PlaybackProtocolV3.ReplanOperation.qualityChange,
-            qualityAxes: axes
+            qualityAxes: axes,
+            viewerQualityChange: true
         )
-        // A quality change the buffering controller did not send, once the
-        // player has taken it.
-        if issued { bufferingQuality.qualityChanged() }
         return issued ? .issued : .busy
     }
 
@@ -2550,7 +2553,10 @@ class PlayerViewModel {
         bandwidthEstimateSource: String? = nil,
         learnedLimit: String? = nil,
         // The buffering controller's replan, which hears when it fails.
-        issuedByBufferingQuality: Bool = false
+        issuedByBufferingQuality: Bool = false,
+        // The viewer's quality change: pending from the send until its plan
+        // is adopted, refused if it never is.
+        viewerQualityChange: Bool = false
     ) -> Bool {
         // One classification of the user's target. A track change must have a
         // stable server ordinal before it is queued or issued: falling back to
@@ -2672,6 +2678,7 @@ class PlayerViewModel {
         syncIntroSkipPrompt()
         streamLoadGeneration &+= 1
         let currentStreamLoadGeneration = streamLoadGeneration
+        let qualityChange = viewerQualityChange ? sendViewerQualityChange() : nil
         protocolV3ReplanTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
             let priorActivePlaybackSessionId = self.activePlaybackSessionId
@@ -2746,6 +2753,8 @@ class PlayerViewModel {
                     Self.logger.info("[CMP-BUFFERING] replan failed or was not adopted")
                     self.bufferingQuality.replanFailed()
                 }
+                // Settled already if it owns the session; otherwise refused.
+                self.settleViewerQualityChange(qualityChange, adopted: false)
                 self.syncBufferingQualitySignals()
                 defer { self.publishWatchPartySnapshot() }
                 if qualitySwitchOnMeteredNetwork != nil { self.isQualitySwitching = false }
@@ -2920,6 +2929,7 @@ class PlayerViewModel {
                 }
                 self.markProtocolV3AetherLoadCommitted()
                 uncommittedPrepared = nil
+                self.settleViewerQualityChange(qualityChange, adopted: true)
                 self.adoptBufferingPlan(
                     prepared,
                     requestedEstimateKbps: requestedEstimateKbps,
@@ -2986,6 +2996,7 @@ class PlayerViewModel {
                             }
                             // The new quality now owns the session, so a
                             // viewer's switch counts as their pick.
+                            self.settleViewerQualityChange(qualityChange, adopted: true)
                             if let onMeteredNetwork = qualitySwitchOnMeteredNetwork {
                                 self.recordViewerQualityPick(
                                     uncommittedPrepared.activeQualityId,
@@ -5458,7 +5469,10 @@ class PlayerViewModel {
         finalizeCurrentSession: Bool = false,
         resumePositionOverride: Double? = nil,
         allowNearEndResume: Bool = false,
-        origin: LoadOrigin = .userInitiated
+        origin: LoadOrigin = .userInitiated,
+        // A version switch the viewer chose: a quality change once its plan
+        // is adopted, not a new attempt.
+        viewerQualityChange: Bool = false
     ) {
         guard !isDisposed else { return }
         // A renewal still waiting on its progress sync belongs to the load
@@ -5478,8 +5492,16 @@ class PlayerViewModel {
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
-        // Every start is a new attempt, which drops a kept step-down estimate.
-        bufferingQuality.newAttempt()
+        // Every other start is a new attempt, which drops a kept step-down
+        // estimate, and ends a quality change still on its way.
+        let qualityChange: UInt64?
+        if viewerQualityChange {
+            qualityChange = sendViewerQualityChange()
+        } else {
+            qualityChange = nil
+            settleViewerQualityChange(pendingViewerQualityChange, adopted: false)
+            bufferingQuality.newAttempt()
+        }
         // Intro and recap decisions belong to the content, not to one stream
         // of it. A retry or a reload that lands a seek keeps them, so a viewer
         // who skipped or dismissed an intro is not asked again, `always`
@@ -5562,6 +5584,7 @@ class PlayerViewModel {
             self.syncSpeedTestHold()
             var uncommittedPrepared: PreparedPlayback?
             defer {
+                self.settleViewerQualityChange(qualityChange, adopted: false)
                 if self.freshLoadGeneration == currentFreshLoadGeneration {
                     // A reconnect handoff this load began but never installed.
                     _ = self.reconnectCycle.finishHandoff()
@@ -5781,6 +5804,7 @@ class PlayerViewModel {
                     }
                     self.markProtocolV3AetherLoadCommitted()
                     uncommittedPrepared = nil
+                    self.settleViewerQualityChange(qualityChange, adopted: true)
                     self.adoptBufferingPlan(
                         prepared,
                         requestedEstimateKbps: probeEstimateKbps,
@@ -6450,10 +6474,11 @@ class PlayerViewModel {
             shuffleState = PlayerShuffleState(shuffle: shuffle)
         }
         // Another version of the title playing now is a quality change the
-        // viewer chose: it clears the answer, history and re-offer wait.
+        // viewer chose.
+        var switchesVersion = false
         if let preferredFileId, lastLoadRequest?.contentId == contentId,
            let playing = currentSelectedVersion?.fileId, playing != preferredFileId {
-            bufferingQuality.qualityChanged()
+            switchesVersion = true
         }
         var request = LoadRequest(
             contentId: contentId,
@@ -6470,7 +6495,8 @@ class PlayerViewModel {
         beginFreshLoad(
             request: request,
             progressPosition: currentTime,
-            resumePositionOverride: resumePositionOverride
+            resumePositionOverride: resumePositionOverride,
+            viewerQualityChange: switchesVersion
         )
     }
 
@@ -6563,9 +6589,7 @@ class PlayerViewModel {
             // A rejected replan already cleared `isQualitySwitching`, but
             // without a message the sheet just silently snapped back to the
             // old quality with no explanation. The pick is recorded once the
-            // replan commits. Only a switch the player accepted is a quality
-            // change to the buffering controller: a refused one must not drop
-            // a lowering in flight.
+            // replan commits.
             let issued = attemptProtocolV3Replan(
                 position: target,
                 classification: "quality_changed",
@@ -6574,11 +6598,10 @@ class PlayerViewModel {
                 qualityPreference: resolvedQualityId,
                 // Auto keeps the saved cap for the connection.
                 autoBandwidthCapKbps: settings.playbackQualityAxes(onMeteredNetwork: onMeteredNetwork).bitrateKbps,
-                qualitySwitchOnMeteredNetwork: onMeteredNetwork
+                qualitySwitchOnMeteredNetwork: onMeteredNetwork,
+                viewerQualityChange: true
             )
-            if issued {
-                bufferingQuality.qualityChanged()
-            } else {
+            if !issued {
                 isQualitySwitching = false
                 qualitySwitchError = "Couldn't change quality right now. Try again."
             }
@@ -10491,7 +10514,30 @@ extension PlayerViewModel {
     /// Other content: every decision about buffering starts over.
     private func resetBufferingQuality() {
         bufferingQuality.reset()
+        pendingViewerQualityChange = nil
         clearBufferingPlanState()
+    }
+
+    /// The viewer's quality change is sent: any buffering pill hides, and
+    /// nothing prompts or lowers until it settles.
+    private func sendViewerQualityChange() -> UInt64 {
+        viewerQualityChangeSerial &+= 1
+        pendingViewerQualityChange = viewerQualityChangeSerial
+        bufferingQuality.pickSent()
+        return viewerQualityChangeSerial
+    }
+
+    /// The viewer's quality change `id` was adopted, and counts as a quality
+    /// change, or it was refused and changes nothing. A superseded or
+    /// settled one, or none, is ignored.
+    private func settleViewerQualityChange(_ id: UInt64?, adopted: Bool) {
+        guard let id, pendingViewerQualityChange == id else { return }
+        pendingViewerQualityChange = nil
+        if adopted {
+            bufferingQuality.qualityChanged()
+        } else {
+            bufferingQuality.pickRefused()
+        }
     }
 
     private func clearBufferingPlanState() {
