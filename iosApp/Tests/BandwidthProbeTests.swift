@@ -165,37 +165,44 @@ final class BandwidthProbeDownloadTests: XCTestCase {
     }
 
     /// Windows close on the download's clock, not only when data arrives: a
-    /// transfer that goes silent still stops at the test's limit, with what
-    /// the arithmetic makes of the bytes so far.
+    /// transfer that goes silent still stops at the test's limit, and the
+    /// silent windows after the ramp-up measure nothing.
     func testWindowsCloseOnTheClockWhileNoDataArrives() async throws {
         final class Clock: @unchecked Sendable {
             private let lock = NSLock()
             private var ms = 0
-            var now: Int {
-                get { lock.withLock { ms } }
-                set { lock.withLock { ms = newValue } }
+            private var readCount = 0
+            var reads: Int { lock.withLock { readCount } }
+            func read() -> Int {
+                lock.withLock {
+                    readCount += 1
+                    return ms
+                }
             }
+            func set(_ value: Int) { lock.withLock { ms = value } }
         }
         let clock = Clock()
-        stub.route(StubURLProtocol.any) { _ in .init(status: 200, body: Data(count: 2_000_000), finishes: false) }
+        stub.route(StubURLProtocol.any) { _ in
+            .init(status: 200, body: Data(count: 2_000_000), finishes: false)
+        }
         let configuration = BandwidthProbeDownload.defaultConfiguration()
         stub.install(into: configuration)
-        let probe = BandwidthProbeDownload(mode: .quick(targetKbps: nil), configuration: configuration) { clock.now }
+        let probe = BandwidthProbeDownload(
+            mode: .quick(targetKbps: nil), configuration: configuration
+        ) { clock.read() }
         let task = Task { try await probe.measure(request()) }
-        while stub.requests.isEmpty { await Task.yield() }
-        // Let the first bytes land at 0, then move the clock past the limit
-        // with nothing more arriving.
-        try await Task.sleep(for: .milliseconds(200))
-        clock.now = BandwidthProbe.quickMaxMs + 1_000
+        defer { task.cancel() }
+        // The first read stamps the first bytes at 0 and the second times
+        // them; then the clock passes the limit with nothing more arriving.
+        guard await eventually({ clock.reads >= 2 }) else {
+            XCTFail("the first bytes did not land at 0")
+            return
+        }
+        clock.set(BandwidthProbe.quickMaxMs + 1_000)
         let result = try await task.value
-
         // Without the clock it would wait for the session's idle timeout and
         // fail as a network error.
-        var expected = BandwidthProbeMeter(mode: .quick(targetKbps: nil))
-        expected.receive(2_000_000, at: 0)
-        expected.advance(to: BandwidthProbe.quickMaxMs)
-        let expectedResult = expected.result.map(BandwidthProbeResult.measured) ?? .tooLittleData
-        XCTAssertEqual(result, expectedResult)
+        XCTAssertEqual(result, .tooLittleData)
     }
 
     func testCancellingTheCallerCancelsTheProbe() async throws {
