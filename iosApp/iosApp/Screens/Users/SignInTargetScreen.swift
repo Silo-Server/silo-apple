@@ -13,6 +13,8 @@ struct SignInTargetScreen: View {
     /// The row whose action is running (a server's sign-in, or Cancel), so
     /// a second tap doesn't start another.
     @State private var busyItemID: String?
+    /// Each listed server's logo, by address.
+    @State private var marks: [String: URL] = [:]
 
     private var accounts: SiloAccountCoordinator { router.accounts }
 
@@ -32,7 +34,8 @@ struct SignInTargetScreen: View {
                         ServerPickerRow(
                             name: row.name,
                             markName: row.name,
-                            markURL: ServerBrandingCache.branding(for: row.address)?.markURL,
+                            markURL: marks[row.address],
+                            fallsBackToAppIcon: true,
                             detail: ServerBranding.hostLabel(row.address),
                             isConnecting: busyItemID == row.id
                         ) {
@@ -60,6 +63,11 @@ struct SignInTargetScreen: View {
             router.signInContext = context
             MarqueeScene.shared.showGeneric()
             await accounts.reloadDirectory()
+        }
+        .task {
+            let addresses = accounts.auth.serverRegistry.sortedEntries.map(\.url)
+            marks = ServerBrandingLoader.cachedMarks(for: addresses)
+            marks = await ServerBrandingLoader.currentMarks(for: addresses)
         }
     }
 

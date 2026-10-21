@@ -125,6 +125,8 @@ struct ServerPickerRow: View {
     /// What the mark's initial comes from; nil shows the generic mark.
     let markName: String?
     var markURL: URL?
+    /// Without a logo, the Silo app icon instead of the initial.
+    var fallsBackToAppIcon = false
     let detail: String
     var isConnecting = false
     let action: () -> Void
@@ -132,7 +134,7 @@ struct ServerPickerRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                MarqueeServerMark(name: markName, imageURL: markURL, size: 40)
+                MarqueeServerMark(name: markName, imageURL: markURL, size: 40, fallsBackToAppIcon: fallsBackToAppIcon)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
                         .font(.system(size: 16, weight: .semibold))

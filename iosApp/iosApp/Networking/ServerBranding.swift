@@ -86,6 +86,36 @@ struct ServerBrandingLoader {
         ServerBrandingCache.store(branding, for: serverURL)
         return branding
     }
+
+    /// Each server's logo as it reads now, in parallel: a server without
+    /// one has no entry, and one that doesn't answer keeps its cached logo.
+    /// "Sign in to…" lists servers this device may never have read.
+    static func currentMarks(for serverURLs: [String]) async -> [String: URL] {
+        await withTaskGroup(of: (String, URL?).self) { group in
+            for serverURL in serverURLs {
+                group.addTask {
+                    guard let branding = await ServerBrandingLoader().branding(serverURL: serverURL) else {
+                        return (serverURL, ServerBrandingCache.branding(for: serverURL)?.markURL)
+                    }
+                    return (serverURL, branding.markURL)
+                }
+            }
+            var marks: [String: URL] = [:]
+            for await (serverURL, mark) in group {
+                marks[serverURL] = mark
+            }
+            return marks
+        }
+    }
+
+    /// The logos cached for `serverURLs`, to show before `currentMarks`.
+    static func cachedMarks(for serverURLs: [String]) -> [String: URL] {
+        var marks: [String: URL] = [:]
+        for serverURL in serverURLs {
+            marks[serverURL] = ServerBrandingCache.branding(for: serverURL)?.markURL
+        }
+        return marks
+    }
 }
 
 /// The last branding each server showed, so relaunching into sign-in or

@@ -334,6 +334,8 @@ struct MarqueeServerMark: View {
     var name: String?
     var imageURL: URL?
     var size: CGFloat = 48
+    /// Without a logo, the Silo app icon instead of the name's initial.
+    var fallsBackToAppIcon = false
 
     private static let initialGradient = [Color(hex: "#EAA65C"), Color(hex: "#A8521D"), Color(hex: "#5E290D")]
     private static let initialInk = Color(hex: "#FFF6EA")
@@ -364,7 +366,11 @@ struct MarqueeServerMark: View {
 
     @ViewBuilder
     private var fallback: some View {
-        if let initial = name?.trimmingCharacters(in: .whitespaces).first {
+        if fallsBackToAppIcon {
+            // The app icon draws the mark at 84% of its height.
+            Color.siloIconField
+                .overlay(Image("SiloMark").resizable().scaledToFit().frame(height: size * 0.84))
+        } else if let initial = name?.trimmingCharacters(in: .whitespaces).first {
             LinearGradient(
                 colors: Self.initialGradient,
                 startPoint: .topLeading, endPoint: .bottomTrailing

@@ -48,23 +48,11 @@ struct TVSignInTargetScreen: View {
         .task { await loadMarks() }
     }
 
-    /// The cached logos at once, then each server's current branding: a
-    /// server added from a phone was never read here.
+    /// The cached logos at once, then each server's current one.
     private func loadMarks() async {
         let addresses = registry.sortedEntries.map(\.url)
-        for address in addresses {
-            if let mark = ServerBrandingCache.branding(for: address)?.markURL { marks[address] = mark }
-        }
-        await withTaskGroup(of: (String, ServerBranding?).self) { group in
-            for address in addresses {
-                group.addTask { (address, await ServerBrandingLoader().branding(serverURL: address)) }
-            }
-            for await (address, branding) in group {
-                // An unreachable server keeps its cached logo.
-                guard let branding else { continue }
-                marks[address] = branding.markURL
-            }
-        }
+        marks = ServerBrandingLoader.cachedMarks(for: addresses)
+        marks = await ServerBrandingLoader.currentMarks(for: addresses)
     }
 
     private func pick(_ serverID: String) {

@@ -259,11 +259,9 @@ struct TVServerRowLabel: View {
     let markURL: URL?
     var badge: TVUserStatusBadge.Kind?
 
-    private static let markSize: CGFloat = 64
-
     var body: some View {
         HStack(spacing: 22) {
-            mark
+            MarqueeServerMark(imageURL: markURL, size: 64, fallsBackToAppIcon: true)
             VStack(alignment: .leading, spacing: 4) {
                 Text(name)
                     .font(.system(size: 30, weight: .semibold))
@@ -282,27 +280,6 @@ struct TVServerRowLabel: View {
             }
         }
         .padding(.vertical, 18)
-    }
-
-    @ViewBuilder
-    private var mark: some View {
-        if let markURL {
-            AsyncImage(url: markURL) { phase in
-                if let image = phase.image {
-                    let shape = RoundedRectangle(cornerRadius: Self.markSize * 0.25, style: .continuous)
-                    image.resizable().scaledToFill()
-                        .frame(width: Self.markSize, height: Self.markSize)
-                        .clipShape(shape)
-                        .overlay(shape.strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
-                } else {
-                    MarqueeTVAppIcon(size: Self.markSize)
-                }
-            }
-            .frame(width: Self.markSize, height: Self.markSize)
-            .accessibilityHidden(true)
-        } else {
-            MarqueeTVAppIcon(size: Self.markSize)
-        }
     }
 }
 
