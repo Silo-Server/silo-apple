@@ -5431,7 +5431,12 @@ class PlayerViewModel {
                 // play — the init request is already in flight and its
                 // result is what we want anyway. If the task already
                 // finished, this returns immediately.
-                await self.settingsRefreshTask?.value
+                // A download plays on the cached settings instead: with a
+                // network but no answering server, the refresh only ends at
+                // the request timeout. It still applies when it finishes.
+                if request.offlineDownloadId == nil {
+                    await self.settingsRefreshTask?.value
+                }
                 try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                 guard currentFreshLoadGeneration == self.freshLoadGeneration else {
                     throw CancellationError()
