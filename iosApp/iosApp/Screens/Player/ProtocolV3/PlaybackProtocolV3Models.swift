@@ -435,20 +435,6 @@ struct PlaybackV3BufferingQualityRequest: Equatable, Sendable {
     }
 }
 
-extension PlaybackV3StartRequest {
-    /// This request with only the buffering-quality members the server accepts.
-    var withPermittedBufferingQualityMembers: PlaybackV3StartRequest {
-        var request = self
-        (request.bandwidthEstimateSource, request.learnedLimit) = PlaybackV3BufferingQualityRequest.permittedMembers(
-            clientFeatures: clientFeatures,
-            bandwidthEstimateKbps: bandwidthEstimateKbps,
-            bandwidthEstimateSource: bandwidthEstimateSource,
-            learnedLimit: learnedLimit
-        )
-        return request
-    }
-}
-
 extension PlaybackV3ReplanRequest {
     /// This request with only the buffering-quality members the server accepts.
     var withPermittedBufferingQualityMembers: PlaybackV3ReplanRequest {

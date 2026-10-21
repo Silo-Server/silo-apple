@@ -28,7 +28,6 @@ struct APIv2PlaybackStartBody: Encodable {
     let learnedLimit: String?
 
     init(_ request: PlaybackV3StartRequest, installationID: String) {
-        let request = request.withPermittedBufferingQualityMembers
         installationId = installationID
         protocolVersion = request.protocolVersion
         clientFeatures = request.clientFeatures
@@ -49,8 +48,15 @@ struct APIv2PlaybackStartBody: Encodable {
         clientCapabilities = request.clientCapabilities
         clientPlaybackContext = request.clientPlaybackContext
         allowAlternateVersions = request.allowAlternateVersions
-        bandwidthEstimateSource = request.bandwidthEstimateSource
-        learnedLimit = request.learnedLimit
+        // Only the buffering-quality members the server accepts.
+        let permitted = PlaybackV3BufferingQualityRequest.permittedMembers(
+            clientFeatures: request.clientFeatures,
+            bandwidthEstimateKbps: request.bandwidthEstimateKbps,
+            bandwidthEstimateSource: request.bandwidthEstimateSource,
+            learnedLimit: request.learnedLimit
+        )
+        bandwidthEstimateSource = permitted.bandwidthEstimateSource
+        learnedLimit = permitted.learnedLimit
     }
 }
 
