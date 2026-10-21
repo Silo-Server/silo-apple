@@ -258,26 +258,32 @@ final class BufferingQualityPlayerTests: XCTestCase {
         for _ in 0..<100 where !condition() { await Task.yield() }
     }
 
+    private static func watchDetail() throws -> WatchDetail {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let version = try decoder.decode(FileVersion.self, from: Data(#"{"file_id":42}"#.utf8))
+        return WatchDetail(
+            contentId: "movie-1", type: "movie", title: "Movie", year: nil, overview: nil,
+            versions: [version], subtitles: nil, intro: nil, credits: nil, userData: nil,
+            seriesId: nil, seriesTitle: nil, seasonNumber: nil, episodeNumber: nil,
+            effectiveSubtitleLanguage: nil, effectiveSubtitleMode: nil,
+            effectiveShowForcedSubtitles: nil, effectiveSubtitleTrackSignature: nil
+        )
+    }
+
+    /// `prepared` as the playing v3 plan, adopted by the buffering controller,
+    /// so a quality pick takes `switchQuality`'s v3 path as in playback.
+    private func play(_ prepared: PreparedPlaybackV3, on model: PlayerViewModel, quality: String) throws {
+        model.installPlayingProtocolV3(watchDetail: try Self.watchDetail(), prepared: prepared)
+        model.adoptBufferingPlan(prepared, sessionId: "session", activeQualityId: quality)
+    }
+
     /// A lowering the server never answers keeps the current plan playing;
     /// it must not end playback the way a failed viewer switch does.
     func testAFailedLoweringKeepsPlaying() async throws {
         let model = PlayerViewModel()
         defer { model.cleanup() }
-        let prepared = try preparedPlan()
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let version = try decoder.decode(FileVersion.self, from: Data(#"{"file_id":42}"#.utf8))
-        model.installPlayingProtocolV3(
-            watchDetail: WatchDetail(
-                contentId: "movie-1", type: "movie", title: "Movie", year: nil, overview: nil,
-                versions: [version], subtitles: nil, intro: nil, credits: nil, userData: nil,
-                seriesId: nil, seriesTitle: nil, seasonNumber: nil, episodeNumber: nil,
-                effectiveSubtitleLanguage: nil, effectiveSubtitleMode: nil,
-                effectiveShowForcedSubtitles: nil, effectiveSubtitleTrackSignature: nil
-            ),
-            prepared: prepared
-        )
-        model.adoptBufferingPlan(prepared, sessionId: "session", activeQualityId: "auto")
+        try play(try preparedPlan(), on: model, quality: "auto")
 
         // The bridge holds no session, so the replan comes back without a plan.
         model.issueBufferingReplan(.init(qualityPreference: "auto", bandwidthEstimateKbps: 5_600))
@@ -346,7 +352,7 @@ final class BufferingQualityPlayerTests: XCTestCase {
 
     /// A picked quality is asked about even in `always`: shows the prompt.
     private func showPrompt(on model: PlayerViewModel, clock: ManualBufferingQualityClock) throws {
-        model.adoptBufferingPlan(try preparedPlan(), sessionId: "session", activeQualityId: "1080p-high")
+        try play(try preparedPlan(), on: model, quality: "1080p-high")
         model.bufferingQuality.mode = .always
         model.bufferingQuality.playing()
         clock.advance(to: 20_000)
@@ -361,7 +367,22 @@ final class BufferingQualityPlayerTests: XCTestCase {
         defer { model.cleanup() }
         try showPrompt(on: model, clock: clock)
         model.switchQuality("720p")
+        XCTAssertNil(model.qualitySwitchError, "the player took the pick")
         XCTAssertNil(model.bufferingPill)
+    }
+
+    /// A pick the player refuses, here because a replan is already in
+    /// flight, is not a quality change: the prompt stays.
+    func testARefusedQualityPickKeepsTheBufferingPill() throws {
+        let clock = ManualBufferingQualityClock()
+        let model = PlayerViewModel(bufferingQualityClock: clock)
+        defer { model.cleanup() }
+        try showPrompt(on: model, clock: clock)
+        model.issueBufferingReplan(.init(qualityPreference: "auto", bandwidthEstimateKbps: 5_600))
+        XCTAssertTrue(model.isLoading, "a replan is in flight")
+        model.switchQuality("720p")
+        XCTAssertNotNil(model.qualitySwitchError, "the player refused the pick")
+        XCTAssertEqual(model.bufferingPill?.kind, .prompt)
     }
 
     /// A lowering's estimate rides on the player's own Auto replans until the
@@ -370,7 +391,7 @@ final class BufferingQualityPlayerTests: XCTestCase {
         let clock = ManualBufferingQualityClock()
         let model = PlayerViewModel(bufferingQualityClock: clock)
         defer { model.cleanup() }
-        model.adoptBufferingPlan(try preparedPlan(), sessionId: "session", activeQualityId: "auto")
+        try play(try preparedPlan(), on: model, quality: "auto")
         model.bufferingQuality.mode = .always
         model.bufferingQuality.playing()
         clock.advance(to: 20_000)
@@ -384,6 +405,7 @@ final class BufferingQualityPlayerTests: XCTestCase {
         )
 
         model.switchQuality("720p")
+        XCTAssertNil(model.qualitySwitchError, "the player took the pick")
         XCTAssertNil(model.bufferingQuality.keptEstimateKbps)
     }
 
