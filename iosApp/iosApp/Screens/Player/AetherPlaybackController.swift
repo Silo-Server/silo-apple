@@ -166,8 +166,6 @@ final class AetherPlaybackController {
     private(set) var isRestoringTransport = false {
         didSet { if isRestoringTransport != oldValue { publish(.transportIntentChanged) } }
     }
-    /// The native route's AVPlayer, observed for ``nativeTransport``.
-    private var observedTransportPlayer: AVPlayer?
     private var transportObservations: [NSKeyValueObservation] = []
     private var itemStallSubscription: AnyCancellable?
     private var itemErrorSubscription: AnyCancellable?
@@ -175,7 +173,7 @@ final class AetherPlaybackController {
     /// The native route's AVPlayer transport; nil on the software route or
     /// without a player.
     var nativeTransport: NativeTransport? {
-        observedTransportPlayer.map {
+        observedPlayer.map {
             NativeTransport(
                 status: $0.timeControlStatus,
                 waitingReason: $0.reasonForWaitingToPlay,
@@ -218,7 +216,9 @@ final class AetherPlaybackController {
     private var externalSubtitleSources: [Int64: ExternalSubtitleSource] = [:]
     private var isRegisteringExternalSubtitle = false
     private var externalPlaybackObservation: NSKeyValueObservation?
-    private var observedExternalPlaybackPlayer: AVPlayer?
+    /// The native route's AVPlayer, observed for external playback and for
+    /// ``nativeTransport``.
+    private var observedPlayer: AVPlayer?
     private var externalPlaybackPolicyTask: Task<Void, Never>?
     private lazy var externalPlaybackPolicyGuard = ExternalPlaybackPolicyGuard { [weak self] player in
         self?.externalPlaybackPolicy(for: player)
@@ -758,7 +758,7 @@ final class AetherPlaybackController {
         cueHold.releaseAll()
         assSubtitles.stop()
         replacementExternalPlaybackPolicy = preservingExternalPlaybackPolicy
-            ? observedExternalPlaybackPlayer?.allowsExternalPlayback
+            ? observedPlayer?.allowsExternalPlayback
             : nil
         generation &+= 1
         transportIntentGeneration &+= 1
@@ -1072,7 +1072,7 @@ final class AetherPlaybackController {
         externalPlaybackPolicyTask = nil
         externalPlaybackObservation?.invalidate()
         externalPlaybackObservation = nil
-        observedExternalPlaybackPlayer = player
+        observedPlayer = player
         externalPlaybackPolicyGuard.bind(to: player)
         configureExternalPlaybackPolicy()
 
@@ -1086,7 +1086,7 @@ final class AetherPlaybackController {
         ) { [weak self, weak player] _, _ in
             Task { @MainActor [weak self, weak player] in
                 guard let self, let player,
-                      self.observedExternalPlaybackPlayer === player,
+                      self.observedPlayer === player,
                       self.engine.currentAVPlayer === player else { return }
                 self.refreshExternalPlaybackState()
             }
@@ -1097,12 +1097,11 @@ final class AetherPlaybackController {
     private func bindNativeTransport(to player: AVPlayer?) {
         transportObservations.forEach { $0.invalidate() }
         transportObservations = []
-        observedTransportPlayer = player
         defer { publish(.nativeTransportChanged) }
         guard let player else { return }
         let changed: (AVPlayer) -> Void = { [weak self] player in
             Task { @MainActor [weak self, weak player] in
-                guard let self, let player, self.observedTransportPlayer === player else { return }
+                guard let self, let player, self.observedPlayer === player else { return }
                 self.publish(.nativeTransportChanged)
             }
         }
@@ -1128,7 +1127,7 @@ final class AetherPlaybackController {
     }
 
     private func configureExternalPlaybackPolicy() {
-        guard let player = observedExternalPlaybackPlayer,
+        guard let player = observedPlayer,
               engine.currentAVPlayer === player else { return }
         externalPlaybackPolicyGuard.apply()
 
@@ -1141,7 +1140,7 @@ final class AetherPlaybackController {
             await Task.yield()
             guard !Task.isCancelled,
                   let self, let player,
-                  self.observedExternalPlaybackPlayer === player,
+                  self.observedPlayer === player,
                   self.engine.currentAVPlayer === player else { return }
             self.externalPlaybackPolicyGuard.apply()
             self.refreshExternalPlaybackState()
@@ -1153,7 +1152,7 @@ final class AetherPlaybackController {
     /// when the controller does not own `player`: it is not both the observed
     /// player and the one the engine currently publishes.
     private func externalPlaybackPolicy(for player: AVPlayer) -> Bool? {
-        guard observedExternalPlaybackPlayer === player,
+        guard observedPlayer === player,
               engine.currentAVPlayer === player else { return nil }
         return permitsExternalPlayback && Self.externalPlaybackAllowed(
             activePolicy: externalPlaybackIsReceiverFetchable,
