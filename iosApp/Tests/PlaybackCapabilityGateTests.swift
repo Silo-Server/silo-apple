@@ -87,8 +87,8 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         await assertTerminal("playback_not_configured") { _ = try anonymous.requireAvailable() }
     }
 
-    /// The buffering-quality features are optional: without them playback
-    /// still starts, and the start request and Settings leave them out.
+    /// The buffering-quality features are optional: the capability decodes
+    /// with or without them and says which the server advertises.
     func testTheCapabilityCarriesTheOptionalBufferingQualityFeatures() async throws {
         let optional = [PlaybackProtocolV3.bufferingQualityFeature, PlaybackProtocolV3.planSummaryFeature,
                         PlaybackProtocolV3.connectionSpeedFeature]
@@ -97,8 +97,6 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         let without = try await plain.requireNeutralProtocolV3()
         XCTAssertFalse(without.bufferingQuality)
         XCTAssertFalse(without.connectionSpeed)
-        let plainAdvertises = await plain.advertisesBufferingQuality()
-        XCTAssertFalse(plainAdvertises)
 
         // The vendored fixture advertises all three.
         let (gate, stub) = try await makeGate()
@@ -106,13 +104,6 @@ final class PlaybackCapabilityGateTests: XCTestCase {
         let with = try await gate.requireNeutralProtocolV3()
         XCTAssertTrue(with.bufferingQuality)
         XCTAssertTrue(with.connectionSpeed)
-        let advertises = await gate.advertisesBufferingQuality()
-        XCTAssertTrue(advertises)
-
-        let (refused, refusedStub) = try await makeGate()
-        refusedStub.reply(200, try fixtureString("playback_capability_unconfigured"))
-        let refusedAdvertises = await refused.advertisesBufferingQuality()
-        XCTAssertFalse(refusedAdvertises, "Settings hides the limit when playback is unavailable")
     }
 
     /// With `connection_speed_v1` the document names the media-path probe.

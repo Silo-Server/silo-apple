@@ -253,13 +253,6 @@ actor PlaybackV3CapabilityGate {
         }
     }
 
-    /// Whether the active server advertises `buffering_quality_v1`, for
-    /// surfaces outside playback (Settings). False when playback is not
-    /// available or the probe fails.
-    func advertisesBufferingQuality() async -> Bool {
-        (try? await requireNeutralProtocolV3())?.bufferingQuality ?? false
-    }
-
     /// Drops every cached capability that still names `stale`'s installation,
     /// so the next `requireNeutralProtocolV3()` probes again. A capability a
     /// concurrent caller already refreshed is left alone.
