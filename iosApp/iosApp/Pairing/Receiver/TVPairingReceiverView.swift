@@ -38,14 +38,17 @@ struct TVPairingReceiverView: View {
         // hand focus to the new state's main action. The screen also opens
         // while the sign-in screen fades out, which drops a single request.
         .marqueeTVClaimFocus($focused, .primary, id: coordinator.state)
-        // The cached logo at once; the server is read only once the person
-        // allowed the session, as nothing reaches the network before that.
+        // Nothing reaches the network before the person allows the session,
+        // not even a saved logo's image, so until then the mark is the Silo
+        // icon. Then the saved logo shows at once and the server's current
+        // one replaces it, if the phone hasn't moved on to another server.
         .task(id: MarkRequest(serverURL: coordinator.pushedServerURL, consented: coordinator.consented)) {
-            guard let serverURL = coordinator.pushedServerURL else { return }
+            serverMarkURL = nil
+            guard coordinator.consented, let serverURL = coordinator.pushedServerURL else { return }
             serverMarkURL = ServerBrandingCache.branding(for: serverURL)?.markURL
-            guard coordinator.consented,
-                  let branding = await ServerBrandingLoader().branding(serverURL: serverURL),
-                  !Task.isCancelled else { return }
+            let branding = await ServerBrandingLoader().branding(serverURL: serverURL)
+            guard !Task.isCancelled, let branding,
+                  coordinator.pushedServerURL == serverURL, coordinator.consented else { return }
             serverMarkURL = branding.markURL
         }
     }
