@@ -3,37 +3,26 @@ import SwiftUI
 
 // MARK: - Match code
 
-/// The code a person compares between the TV and their phone. Codes are
-/// server-generated and may be longer than four characters, so tiles shrink to
-/// keep the row inside the card.
+/// The code a person compares between the TV and their phone, large enough
+/// to read from the couch. Plain monospaced text, no boxes: the space in
+/// `4821 7730` keeps the groups apart, and the monospaced zero is slashed so
+/// it can't pass for an O in older servers' letter codes. Codes are
+/// server-generated and may be longer, so the text shrinks to keep the row
+/// inside the card.
 struct MarqueeCodeTiles: View {
     let code: String
     var maxWidth: CGFloat = 520
 
     var body: some View {
-        let characters = Array(code.uppercased())
-        let gap: CGFloat = 14
-        let gaps = gap * CGFloat(max(characters.count - 1, 0))
-        let tileWidth = min(84, (maxWidth - gaps) / CGFloat(max(characters.count, 1)))
-
-        HStack(spacing: gap) {
-            ForEach(Array(characters.enumerated()), id: \.offset) { _, character in
-                let isSeparator = character == "-" || character == " "
-                Text(character == "-" ? "–" : isSeparator ? " " : String(character))
-                    .font(.system(size: tileWidth * 0.66, weight: .bold, design: .monospaced))
-                    .foregroundStyle(isSeparator ? Color.siloOnSurface.opacity(0.4) : Color.siloOnSurface)
-                    .frame(width: isSeparator ? tileWidth * 0.45 : tileWidth, height: tileWidth * 1.24)
-                    .background {
-                        if !isSeparator {
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(Color.white.opacity(0.08))
-                                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.white.opacity(0.12)))
-                        }
-                    }
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(characters.map(String.init).joined(separator: ", "))
+        Text(code.uppercased())
+            .font(.system(size: 72, weight: .bold, design: .monospaced))
+            .foregroundStyle(Color.siloOnSurface)
+            .lineLimit(1)
+            .minimumScaleFactor(0.4)
+            .frame(maxWidth: maxWidth)
+            // A code reads left to right in every locale.
+            .environment(\.layoutDirection, .leftToRight)
+            .accessibilityLabel(code.uppercased().map(String.init).joined(separator: ", "))
     }
 }
 
