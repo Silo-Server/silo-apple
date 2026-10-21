@@ -10699,12 +10699,12 @@ extension PlayerViewModel {
         bufferingQuality.setCompetingPillVisible(inputs.competingPill)
     }
 
-    /// Device and server reachability feed transport trouble.
+    /// The device going offline or online feeds transport trouble.
     private func observeBufferingConnectivity() {
         guard !isDisposed else { return }
         let monitor = ConnectionMonitor.shared
         withObservationTracking {
-            _ = (monitor.isDeviceOnline, monitor.serverStatus)
+            _ = monitor.isDeviceOnline
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 self?.observeBufferingConnectivity()

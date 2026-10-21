@@ -28,8 +28,9 @@ struct BufferingSignalMapper {
         /// reconnect hand-off or a background restore.
         var reloadInProgress: Bool
         var reachedEnd: Bool
-        /// The player is reconnecting or lost its connection, or the device
-        /// or server is offline. A `.stalled` phase adds to it.
+        /// The player is reconnecting or lost its connection, the device is
+        /// offline, or a media request failed recently. A `.stalled` phase
+        /// adds to it.
         var connectionTrouble: Bool
         /// Media buffered past the playhead, in milliseconds; nil when
         /// unknown, which counts as nothing buffered.
