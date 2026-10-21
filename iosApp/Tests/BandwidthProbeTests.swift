@@ -462,7 +462,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         await advance(seconds: 5)
         XCTAssertEqual(server.modes, [], "the first look still waits")
         server.releaseReads()
-        for _ in 0..<200 where server.modes.isEmpty { await Task.yield() }
+        await expectEventually("the second look tests") { !server.modes.isEmpty }
         XCTAssertEqual(server.modes, [.quick(targetKbps: 115_000)])
     }
 
@@ -491,8 +491,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
 
         scheduler.playbackStarting()
         // The cancelled download wakes off the main actor before it returns.
-        for _ in 0..<200 where scheduler.isProbing { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertFalse(scheduler.isProbing)
+        await expectEventually("the cancelled test ends") { !scheduler.isProbing }
         XCTAssertNil(scheduler.freshEstimateKbps())
 
         server.hangs = false
@@ -554,8 +553,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         await advance(seconds: 5)
         XCTAssertTrue(scheduler.isProbing)
         scheduler.setHidden(true)
-        for _ in 0..<200 where scheduler.isProbing { try? await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertFalse(scheduler.isProbing)
+        await expectEventually("the cancelled test ends") { !scheduler.isProbing }
         XCTAssertNil(scheduler.freshEstimateKbps(), "a cancelled test measured nothing")
     }
 
