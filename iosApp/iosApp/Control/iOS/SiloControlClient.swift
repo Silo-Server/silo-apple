@@ -1,6 +1,7 @@
 #if os(iOS)
 import Foundation
 import OSLog
+import os
 import UIKit
 
 /// Who initiated a connection attempt. Drives how failures surface (user
@@ -470,25 +471,40 @@ final class SiloControlClient {
         return endpoints.isEmpty ? nil : endpoints
     }
 
-    /// What the TV may show while the handoff runs. Display-only, so a
-    /// lookup slower than `offerTitleWait` is dropped instead of holding
-    /// up the offer.
+    /// What the TV may show while the handoff runs. Display-only, so the
+    /// offer waits at most `offerTitleWait`; a slower lookup is cancelled and
+    /// not awaited (a task group would wait for it to finish).
     private static func offerTitle(contentId: String) async -> String? {
         if let cached: ItemDetail = ResponseCache.shared.get(CacheKey.itemDetail(contentId)) {
             return SiloControlOfferTitle.make(for: cached)
         }
         let wait = offerTitleWait
-        return await withTaskGroup(of: String?.self) { group in
-            group.addTask {
-                (try? await SiloAPI.shared.itemDetail(contentId: contentId)).flatMap(SiloControlOfferTitle.make(for:))
+        return await withCheckedContinuation { continuation in
+            let first = FirstResult(continuation)
+            let lookup = Task {
+                first.resume((try? await SiloAPI.shared.itemDetail(contentId: contentId)).flatMap(SiloControlOfferTitle.make(for:)))
             }
-            group.addTask {
+            Task {
                 try? await Task.sleep(for: wait)
-                return nil
+                lookup.cancel()
+                first.resume(nil)
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+        }
+    }
+
+    /// Resumes a continuation with whichever result arrives first.
+    private final class FirstResult: Sendable {
+        private let continuation: OSAllocatedUnfairLock<CheckedContinuation<String?, Never>?>
+
+        init(_ continuation: CheckedContinuation<String?, Never>) {
+            self.continuation = OSAllocatedUnfairLock(initialState: continuation)
+        }
+
+        func resume(_ value: String?) {
+            continuation.withLock { pending in
+                pending?.resume(returning: value)
+                pending = nil
+            }
         }
     }
 
