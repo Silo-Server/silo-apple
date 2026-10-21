@@ -20,6 +20,7 @@ struct TVServerSetupView: View {
     @State private var advertiser = TVPairingAdvertiser()
     @State private var coordinator = ReceiverPairingCoordinator()
     @State private var discovery = ServerDiscovery()
+    @State private var registry = ServerRegistry.shared
     @State private var isEnteringAddress = false
     @FocusState private var focusedField: Field?
     /// Where focus goes once the system keyboard closes after Done.
@@ -27,6 +28,7 @@ struct TVServerSetupView: View {
 
     private enum Field: Hashable {
         case enterAddress
+        case savedServers
         case host
         case advanced
         case scheme(ServerSetupScheme)
@@ -102,11 +104,21 @@ struct TVServerSetupView: View {
         .serverInsecurePromptAlert(viewModel, router: router)
     }
 
+    /// Add Account says so, as "Sign in to…" does; otherwise this TV's name.
+    @ViewBuilder
+    private var headerChip: some View {
+        if case .addAccount = router.signInContext {
+            MarqueeTVStatusChip(text: ChooseAccountViewModel.addAccountTitle, systemImage: "person.badge.plus")
+        } else {
+            MarqueeTVStatusChip(text: Self.tvName, systemImage: "appletv")
+        }
+    }
+
     // MARK: - Set up with a phone (default)
 
     private var phoneFirst: some View {
         MarqueeTVScreen {
-            MarqueeTVStatusChip(text: Self.tvName, systemImage: "appletv")
+            headerChip
         } copy: {
             MarqueeTVStatusChip(text: "Looking for a phone or tablet…", showsSpinner: true)
                 .padding(.bottom, 36)
@@ -149,6 +161,19 @@ struct TVServerSetupView: View {
                 .buttonStyle(.marquee(.glass, fullWidth: false))
                 .focused($focusedField, equals: .enterAddress)
 
+                // Add Account starts here even with servers saved; "Sign in
+                // to…" lists them.
+                if !registry.sortedEntries.isEmpty {
+                    Button {
+                        guard !viewModel.isLoading else { return }
+                        router.navigate(to: .signInTarget(router.signInContext))
+                    } label: {
+                        Label("Saved servers", systemImage: "server.rack")
+                    }
+                    .buttonStyle(.marquee(.glass, fullWidth: false))
+                    .focused($focusedField, equals: .savedServers)
+                }
+
                 if cancelsSignIn {
                     Button(ConfirmationCopy.cancelTitle, action: cancelSignIn)
                         .buttonStyle(.marquee(.plain, fullWidth: false))
@@ -174,7 +199,7 @@ struct TVServerSetupView: View {
 
     private var manualEntry: some View {
         MarqueeTVScreen {
-            MarqueeTVStatusChip(text: Self.tvName, systemImage: "appletv")
+            headerChip
         } copy: {
             Text("Enter your\nserver address")
                 .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))

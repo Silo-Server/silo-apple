@@ -61,7 +61,7 @@ final class SiloAccountCoordinatorTests: XCTestCase {
 
         /// `migrated: false` leaves the device before sign-in migration, with
         /// no accounts index yet.
-        init(_ test: XCTestCase, migrated: Bool = true) throws {
+        init(_ test: XCTestCase, migrated: Bool = true, serverStepOpensOnSetup: Bool = false) throws {
             f = try F.make(test)
             if migrated { try f.startAccountModel() }
             f.defaults.set(true, forKey: ServerRegistry.migratedKey)
@@ -98,7 +98,8 @@ final class SiloAccountCoordinatorTests: XCTestCase {
                 auth: auth,
                 now: { knobs.now },
                 endTemporaryIdentity: { knobs.allowsEndingTemporaryIdentity },
-                device: .appleTV
+                device: .appleTV,
+                serverStepOpensOnSetup: serverStepOpensOnSetup
             )
             router = AppRouter()
             router.accountsOverride = accounts
@@ -250,6 +251,28 @@ final class SiloAccountCoordinatorTests: XCTestCase {
     }
 
     // MARK: - The server step
+
+    /// Apple TV: Add Account opens phone setup even with servers saved, and
+    /// Back on the sign-in screen returns there. Launch with saved servers
+    /// and no account opens it too.
+    func testOnAppleTVTheServerStepOpensOnPhoneSetup() async throws {
+        let d = try Device(self, serverStepOpensOnSetup: true)
+        try await d.signIn("12", "alex", on: F.home, context: .firstRun)
+
+        await d.accounts.startAddAccount(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsServerSetup)
+        XCTAssertEqual(d.router.signInContext, .addAccount)
+        XCTAssertEqual(d.router.signInReturnPoint?.authState, .needsProfile)
+
+        await d.accounts.beginSignIn(serverID: F.friend, context: .addAccount, router: d.router)
+        XCTAssertEqual(d.router.authState, .needsLogin)
+        await d.accounts.leaveSignIn(router: d.router)
+        XCTAssertEqual(d.router.authState, .needsServerSetup)
+
+        let noAccounts = try Device(self, serverStepOpensOnSetup: true)
+        let decision = await noAccounts.accounts.resolve(.coldLaunch)
+        XCTAssertEqual(decision, .serverSetup(.firstRun))
+    }
 
     /// Add Account with saved servers shows "Sign in to…" as its own root;
     /// Back on the sign-in screen returns to it, and Cancel goes back to

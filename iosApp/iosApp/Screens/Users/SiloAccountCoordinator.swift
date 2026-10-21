@@ -61,6 +61,9 @@ final class SiloAccountCoordinator {
     @ObservationIgnored private let endTemporaryIdentity: () async -> Bool
     /// How sign-out and removal copy names this device.
     @ObservationIgnored let device: SignOutConfirmationCopy.Device
+    /// Apple TV opens every server step on phone setup, saved servers or
+    /// not; they are one press away there (Saved servers).
+    @ObservationIgnored private let serverStepOpensOnSetup: Bool
 
     /// The accounts as the screens show them. Rebuilt after every change.
     private(set) var directory = SiloAccountDirectory.empty
@@ -81,7 +84,8 @@ final class SiloAccountCoordinator {
         auth: AuthService = .shared,
         now: @escaping () -> Date = { Date() },
         endTemporaryIdentity: (() async -> Bool)? = nil,
-        device: SignOutConfirmationCopy.Device? = nil
+        device: SignOutConfirmationCopy.Device? = nil,
+        serverStepOpensOnSetup: Bool? = nil
     ) {
         self.auth = auth
         self.tokenStore = auth.tokenStore
@@ -89,6 +93,11 @@ final class SiloAccountCoordinator {
         self.preferences = auth.launchPreferences
         self.now = now
         self.device = device ?? Self.currentDevice
+        #if os(tvOS)
+        self.serverStepOpensOnSetup = serverStepOpensOnSetup ?? true
+        #else
+        self.serverStepOpensOnSetup = serverStepOpensOnSetup ?? false
+        #endif
         let tokenStore = auth.tokenStore
         self.endTemporaryIdentity = endTemporaryIdentity ?? {
             guard await tokenStore.hasTemporaryScope() else { return true }
@@ -153,7 +162,7 @@ final class SiloAccountCoordinator {
     /// uses each server's own session, as before accounts existed.
     func resolve(_ trigger: SiloLaunchTrigger) async -> SiloLaunchDecision? {
         guard let snapshot = try? await tokenStore.directory() else { return nil }
-        return SiloLaunchResolver.resolve(SiloLaunchInput(
+        let decision = SiloLaunchResolver.resolve(SiloLaunchInput(
             directory: snapshot,
             savedServerIDs: registry.sortedEntries.map(\.id),
             state: preferences.state,
@@ -161,6 +170,10 @@ final class SiloAccountCoordinator {
             trigger: trigger,
             now: now()
         ))
+        if serverStepOpensOnSetup, case .signInTarget(let context) = decision {
+            return .serverSetup(context)
+        }
+        return decision
     }
 
     /// Cold launch, with the splash up: selects what the launch rules decide
@@ -515,7 +528,7 @@ final class SiloAccountCoordinator {
     private func showServerStep(_ context: SignInContext, router: AppRouter) async {
         router.signInReturnPoint = await returnPoint(router)
         router.signInContext = context
-        let step = SignInTargetList.step(for: context, in: registry.sortedEntries.map(\.id))
+        let step = serverStep(for: context)
         if case .signIn(let serverID) = step {
             await beginSignIn(serverID: serverID, context: context, router: router)
             return
@@ -543,6 +556,14 @@ final class SiloAccountCoordinator {
         case .signIn:
             break
         }
+    }
+
+    /// The server step for `context`; "Sign in to…" becomes phone setup
+    /// where the server step opens on setup.
+    private func serverStep(for context: SignInContext) -> SignInServerStep {
+        let step = SignInTargetList.step(for: context, in: registry.sortedEntries.map(\.id))
+        if serverStepOpensOnSetup, case .list = step { return .serverSetup }
+        return step
     }
 
     /// Add Account from anywhere: a new sign-in, which refreshes the
@@ -640,7 +661,7 @@ final class SiloAccountCoordinator {
             await switchAccountFromSignIn(router: router)
             return
         }
-        switch SignInTargetList.step(for: context, in: registry.sortedEntries.map(\.id)) {
+        switch serverStep(for: context) {
         case .serverSetup, .signIn:
             router.resetToServerSetup(context: context)
         case .list:

@@ -1,8 +1,9 @@
 #if os(tvOS)
 import SwiftUI
 
-/// "Sign in to…" on Apple TV (spec §5.4): the server step of first run and
-/// Add Account. Saved servers, then Add a New Server.
+/// "Sign in to…" on Apple TV (spec §5.4): saved servers, then Add a New
+/// Server. The server step itself opens on phone setup, which pushes this
+/// screen as Saved servers.
 struct TVSignInTargetScreen: View {
     var router: AppRouter
     let context: SignInContext
@@ -24,7 +25,12 @@ struct TVSignInTargetScreen: View {
                 pick: pick,
                 addNewServer: {
                     router.signInContext = context
-                    router.navigate(to: .serverSetup)
+                    // Pushed from phone setup (Saved servers): back to it.
+                    if isRoot {
+                        router.navigate(to: .serverSetup)
+                    } else {
+                        router.goBack()
+                    }
                 },
                 cancel: cancel
             )

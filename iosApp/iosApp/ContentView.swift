@@ -102,7 +102,15 @@ struct ContentView: View {
         // Moving between first-run screens (setup, sign-in, profiles)
         // crossfades instead of cutting, while the brand light stays put
         // behind them. Entering the app itself is not animated here.
+        #if os(tvOS)
+        // On Apple TV the new screen fades in by opacity, not a transition:
+        // a screen in a transition can't take focus, and focus lost meanwhile
+        // (the old screen held it) stays lost, so the new screen would show
+        // nothing focused until a swipe.
+        .modifier(MarqueeTVFadeIn(isEnabled: router.authState.showsMarqueeBackdrop))
+        #else
         .animation(router.authState.showsMarqueeBackdrop ? .easeInOut(duration: 0.4) : nil, value: router.authState)
+        #endif
         // The first-run backdrop lives outside the re-keyed subtree so it
         // keeps drifting while screens and servers change in front of it.
         .background {
@@ -817,7 +825,14 @@ struct ContentView: View {
 
         case .needsServerSetup:
             #if os(tvOS)
-            TVServerSetupView(router: router)
+            // A stack, so setup can push "Sign in to…" (Saved servers).
+            NavigationStack(path: router.path(for: .needsServerSetup)) {
+                TVServerSetupView(router: router)
+                    .navigationDestination(for: Route.self) { route in
+                        profileFlowDestination(for: route)
+                    }
+            }
+            .environment(router)
             #else
             ServerSetupView(router: router)
             #endif
@@ -1531,6 +1546,25 @@ struct ContentView: View {
         }
     }
 }
+
+#if os(tvOS)
+/// Fades a first-run screen in when it appears.
+private struct MarqueeTVFadeIn: ViewModifier {
+    let isEnabled: Bool
+    @State private var isShown = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isShown ? 1 : 0)
+            .onAppear {
+                // A screen that appears without the fade (launch, under the
+                // splash) shows at once.
+                guard isEnabled else { isShown = true; return }
+                withAnimation(.easeInOut(duration: 0.4)) { isShown = true }
+            }
+    }
+}
+#endif
 
 func shouldPresentProfileSelectionAfterRecovery(
     isLoggedIn: Bool,
