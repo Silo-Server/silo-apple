@@ -170,6 +170,7 @@ enum APIv2MutationCatalog {
         .init("POST", "/api/v2/watch-together/rooms/{room_id}/suggestions/promote", .nonRetryable),
         // Playback
         .init("POST", "/api/v2/playback/route-events", .nonRetryable),
+        .init("POST", "/api/v2/playback/bandwidth-probe/results", .nonRetryable),
         // Clearing is idempotent, but the contract marks the reset
         // non_retryable; Settings shows the failure and the viewer resets
         // again.

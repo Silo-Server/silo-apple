@@ -346,6 +346,14 @@ final class BufferingQualityContractTests: XCTestCase {
         XCTAssertTrue(HTTPClient.shouldAttemptRefresh(path: "/api/v2/playback/connection", method: "GET"))
     }
 
+    /// A speed-test result is sent once, as the contract marks it.
+    func testAProbeResultIsANonRetryableMutation() {
+        let report = APIv2MutationCatalog.operation(method: "POST", path: "/api/v2/playback/bandwidth-probe/results")
+        XCTAssertEqual(report?.template, "/api/v2/playback/bandwidth-probe/results")
+        XCTAssertEqual(report?.retrySafety, .nonRetryable)
+        XCTAssertEqual(report?.replaysAfterRefresh, false)
+    }
+
     // MARK: plan_summary
 
     func testAPlanSummaryEncodesAsThePublishedRouteEvent() throws {
