@@ -90,11 +90,11 @@ final class BufferingQualityController {
         var deliveredKbps: Int?
         /// `auto`, or the label of the rung the viewer picked.
         var quality: String
-        /// Whether `quality` is the `available_qualities` rung this plan
-        /// delivers. False when the host cannot confirm it, such as a saved
-        /// resolution whose name a server rung shares: the delivered bitrate
-        /// is then the baseline for a lower rung.
-        var qualityNamesARung = true
+        /// The `available_qualities` label the plan names in
+        /// `active_quality` (with `plan_active_quality_v1`), or nil when it
+        /// names none. Lower quality steps from it, or from the delivered
+        /// bitrate when that is lower.
+        var activeQuality: String? = nil
         var availableQualities: [QualityRung]
         /// `degradation_warnings` contains `quality_reduction_unavailable`.
         var qualityReductionUnavailable: Bool
@@ -606,8 +606,9 @@ final class BufferingQualityController {
         notify(.cantLower)
     }
 
-    /// The spec's lower rung: the highest real rung below the active rung's
-    /// bitrate, or below the delivered bitrate on Auto or an unlisted quality.
+    /// The spec's lower rung: the highest real rung below the lower of the
+    /// named rung's bitrate and the delivered bitrate, or below the delivered
+    /// bitrate when the plan names no rung or one that matches no entry.
     /// Equal bitrates resolve to the earlier entry, as on web.
     nonisolated static func lowerRung(in plan: Plan) -> QualityRung? {
         guard let ceiling = activeBitrate(of: plan) else { return nil }
@@ -626,11 +627,12 @@ final class BufferingQualityController {
     }
 
     private nonisolated static func activeBitrate(of plan: Plan) -> Int? {
-        if !plan.isAuto, plan.qualityNamesARung,
-           let picked = plan.availableQualities.first(where: { $0.label == plan.quality && $0.bitrateKbps > 0 }) {
-            return picked.bitrateKbps
+        guard let named = plan.activeQuality,
+              let rung = plan.availableQualities.first(where: { $0.label == named && $0.bitrateKbps > 0 }) else {
+            return plan.deliveredKbps
         }
-        return plan.deliveredKbps
+        // A cap that keeps the rung's resolution can deliver below its bitrate.
+        return min(rung.bitrateKbps, plan.deliveredKbps ?? rung.bitrateKbps)
     }
 
     // MARK: - Replans

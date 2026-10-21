@@ -665,6 +665,30 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertNil(scheduler.probeReading)
     }
 
+    /// Test speed waits for the automatic test it replaced to stop. The
+    /// network changing, or the app hiding, while it waits stops it too.
+    func testTestSpeedStopsForWhatHappensWhileItWaits() async {
+        for interrupt in ["network", "hidden"] {
+            clock = ManualBufferingQualityClock()
+            server = FakeProbeServer()
+            scheduler = BandwidthProbeScheduler(server: server, clock: clock)
+            scheduler.setForeground(true)
+            scheduler.networkChanged(Self.wifi)
+            scheduler.setActiveServer("server")
+            server.holdsMeasures = true
+            await advance(seconds: 5)
+            XCTAssertEqual(server.modes.count, 1, "\(interrupt): the automatic test is running")
+            let scheduler = scheduler!
+            let testSpeed = Task { await scheduler.runNow() }
+            for _ in 0..<50 { await Task.yield() }
+            if interrupt == "network" { scheduler.networkChanged(Self.otherWifi) } else { scheduler.setForeground(false) }
+            server.releaseMeasures()
+            let outcome = await testSpeed.value
+            XCTAssertEqual(outcome, .interrupted, interrupt)
+            XCTAssertFalse(server.modes.contains(.accurate), "\(interrupt): Test speed never measured")
+        }
+    }
+
     /// A paused video player does not hold Test speed off; one that plays or
     /// loads does.
     func testAPausedPlayerDoesNotHoldTestSpeedOff() async {
@@ -766,8 +790,19 @@ private final class FakeProbeServer: BandwidthProbeServer {
         return stored
     }
 
+    /// Measurements wait, ignoring cancellation, until ``releaseMeasures()``.
+    var holdsMeasures = false
+    private var heldMeasures: [CheckedContinuation<Void, Never>] = []
+
+    func releaseMeasures() {
+        holdsMeasures = false
+        heldMeasures.forEach { $0.resume() }
+        heldMeasures = []
+    }
+
     func measure(_ target: BandwidthProbeTarget, mode: BandwidthProbeMeter.Mode) async throws -> BandwidthProbeResult {
         modes.append(mode)
+        if holdsMeasures { await withCheckedContinuation { heldMeasures.append($0) } }
         if hangs { try await Task.sleep(for: .seconds(3_600)) }
         return result
     }

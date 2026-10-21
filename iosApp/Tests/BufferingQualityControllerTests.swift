@@ -785,6 +785,7 @@ private struct VectorEvent {
             id: id,
             deliveredKbps: delivered == 0 ? nil : delivered,
             quality: quality,
+            activeQuality: object["active_quality"] as? String,
             availableQualities: try rungs.map { rung in
                 guard let label = rung["label"] as? String,
                       let bitrate = rung["bitrate_kbps"] as? Int else {

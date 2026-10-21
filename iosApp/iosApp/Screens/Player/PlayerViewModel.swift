@@ -10436,9 +10436,7 @@ extension PlayerViewModel {
         bufferingReloadEpoch = nil
         bufferingQuality.mode = settings.bufferingQualityMode
         bufferingQuality.sendsBufferingQualityFields = v3.advertisesBufferingQuality
-        var plan = Self.bufferingPlan(
-            id: id, prepared: v3, activeQualityId: activeQualityId, viewerPickId: explicitQualityPick?.qualityId
-        )
+        var plan = Self.bufferingPlan(id: id, prepared: v3, activeQualityId: activeQualityId)
         plan.requestedBandwidthEstimateKbps = requestedEstimateKbps
         Self.logger.info(
             "[CMP-BUFFERING] plan adopted id=\(id, privacy: .public) delivered=\(plan.deliveredKbps.map(String.init) ?? "unknown", privacy: .public) quality=\(plan.quality, privacy: .public) cant_reduce=\(plan.qualityReductionUnavailable, privacy: .public)"
@@ -10453,43 +10451,27 @@ extension PlayerViewModel {
     }
 
     /// What the controller reads from an adopted plan. The quality is Auto,
-    /// or the server's label for the rung in effect.
-    ///
-    /// A fixed quality's rung is the one the server says the plan delivers
-    /// (`active_quality`), or on an older server the rung the viewer picked
-    /// in the player. A saved Settings resolution names Apple's own tier,
-    /// which can share a name but not a bitrate with a server rung, so it
-    /// names no rung and the delivered bitrate is the baseline.
+    /// or the server's label for the quality the viewer asked for. The rung
+    /// Lower quality steps from is the one the server names in
+    /// `active_quality`; without one, the delivered bitrate is the baseline.
     static func bufferingPlan(
         id: String,
         prepared: PreparedPlaybackV3,
-        activeQualityId: String,
-        viewerPickId: String? = nil
+        activeQualityId: String
     ) -> BufferingQualityController.Plan {
         let plan = prepared.plan
         let active = ApplePlaybackQuality.protocolV3QualityId(activeQualityId)
-        var quality = BufferingQualityController.autoQuality
-        var namesARung = true
-        if active != ApplePlaybackQuality.autoId {
-            let rung: String?
-            if prepared.serverFeatures.contains(PlaybackProtocolV3.planActiveQualityFeature) {
-                rung = plan.activeQuality
-            } else {
-                rung = viewerPickId.map(ApplePlaybackQuality.protocolV3QualityId) == active ? active : nil
-            }
-            let label = rung.flatMap { rung in
-                plan.availableQualities.first {
-                    ApplePlaybackQuality.protocolV3QualityId($0.label) == ApplePlaybackQuality.protocolV3QualityId(rung)
-                }?.label
-            }
-            quality = label ?? active
-            namesARung = label != nil
-        }
+        let quality = active == ApplePlaybackQuality.autoId
+            ? BufferingQualityController.autoQuality
+            : plan.availableQualities.first { ApplePlaybackQuality.protocolV3QualityId($0.label) == active }?.label
+                ?? active
         return BufferingQualityController.Plan(
             id: id,
             deliveredKbps: plan.effectiveRecipe.bitrateKbps ?? plan.source.bitrateKbps,
             quality: quality,
-            qualityNamesARung: namesARung,
+            activeQuality: prepared.serverFeatures.contains(PlaybackProtocolV3.planActiveQualityFeature)
+                ? plan.activeQuality
+                : nil,
             availableQualities: plan.availableQualities.map {
                 .init(label: $0.label, bitrateKbps: $0.bitrateKbps)
             },

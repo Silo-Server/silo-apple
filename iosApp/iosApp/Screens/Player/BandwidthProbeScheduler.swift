@@ -370,6 +370,10 @@ final class BandwidthProbeScheduler {
     @ObservationIgnored private var isLooking = false
     /// A look came while an earlier look or test was finishing.
     @ObservationIgnored private var looksAgain = false
+    /// Every event that stops a test, counted with the latest reason, even
+    /// with no test running: a Test speed waiting for the test it replaced
+    /// has no run of its own to cancel yet.
+    @ObservationIgnored private var interruption = (count: 0, reason: Outcome.interrupted)
     /// The check's read; the look that follows waits for it.
     @ObservationIgnored private var checkRead: Task<Bool, Never>?
     @ObservationIgnored private var pathMonitor: NWPathMonitor?
@@ -587,6 +591,7 @@ final class BandwidthProbeScheduler {
     }
 
     private func cancelInFlight(_ reason: Outcome) {
+        interruption = (interruption.count + 1, reason)
         guard let run = inFlight, run.cancelledFor == nil else { return }
         run.cancelledFor = reason
         run.task?.cancel()
@@ -700,7 +705,11 @@ final class BandwidthProbeScheduler {
         while let running = inFlight, let task = running.task {
             guard testSpeed, !running.isTestSpeed else { return await task.value }
             cancelInFlight(.interrupted)
+            // The app hiding, the network changing or playback starting while
+            // this waits stops it too.
+            let waitedFrom = interruption.count
             _ = await task.value
+            if interruption.count != waitedFrom { return interruption.reason }
         }
         let run = Run(isTestSpeed: testSpeed)
         inFlight = run
