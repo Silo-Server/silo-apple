@@ -696,7 +696,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertEqual(harness.settings.bufferingQualityMode, .never)
         XCTAssertFalse(harness.settings.serverLacksBufferingQualityMode)
 
-        harness.transport.revision = SettingKey.bufferingQualityRevision - 1
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn - 1
         let result = await harness.settings.refreshFromServer()
         XCTAssertEqual(result, .refreshed, "the player batch still refreshes")
         XCTAssertTrue(harness.settings.serverLacksBufferingQualityMode)
@@ -710,7 +710,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         XCTAssertFalse(harness.settings.hasDeviceOverride(.bufferingQualityMode),
                        "the device value it had is not one this server keeps")
 
-        harness.transport.revision = SettingKey.bufferingQualityRevision
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn
         harness.transport.effective = [Self.bufferingRow(.ask)]
         await harness.settings.refreshFromServer()
         XCTAssertFalse(harness.settings.serverLacksBufferingQualityMode)
@@ -735,7 +735,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     /// is saved there.
     func testAServerThatAnswersTheKeyHasTheSettingWhateverItsRevision() async throws {
         let harness = try PlayerSettingsHarness()
-        harness.transport.revision = SettingKey.bufferingQualityRevision - 2
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn - 2
         harness.transport.alsoDefines = [.playbackBufferingQualityMode]
         harness.transport.effective = [Self.bufferingRow(.ask)]
         await harness.settings.refreshFromServer()
@@ -752,7 +752,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     /// though an earlier read had its row.
     func testAServerThatDropsTheKeyTakesNoWrites() async throws {
         let harness = try PlayerSettingsHarness()
-        harness.transport.revision = SettingKey.bufferingQualityRevision - 2
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn - 2
         harness.transport.alsoDefines = [.playbackBufferingQualityMode]
         harness.transport.effective = [Self.bufferingRow(.ask)]
         await harness.settings.refreshFromServer()
@@ -770,20 +770,19 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
     /// it reports; one without the row, from a revision before the key,
     /// doesn't.
     func testAResponseServesAKeyItHasARowFor() {
-        let older = SettingKey.bufferingQualityRevision - 2
         let key = SettingKey.playbackBufferingQualityMode
+        let older = key.introducedIn - 2
         let withRow = EffectiveSettingValuesResponse(settings: [Self.bufferingRow(.ask)], revision: older)
         XCTAssertTrue(withRow.servesAll([key]))
         XCTAssertFalse(EffectiveSettingValuesResponse(settings: [], revision: older).servesAll([key]))
-        XCTAssertTrue(EffectiveSettingValuesResponse(settings: [], revision: SettingKey.bufferingQualityRevision)
-            .servesAll([key]))
+        XCTAssertTrue(EffectiveSettingValuesResponse(settings: [], revision: key.introducedIn).servesAll([key]))
     }
 
     /// An older server has no profile value to go back to, so "Use Profile
     /// Setting" leaves the contract default and sends nothing.
     func testUsingTheProfileBufferingModeOnAnOlderServerRestoresTheDefault() async throws {
         let harness = try PlayerSettingsHarness()
-        harness.transport.revision = SettingKey.bufferingQualityRevision - 1
+        harness.transport.revision = SettingKey.playbackBufferingQualityMode.introducedIn - 1
         await harness.settings.refreshFromServer()
 
         await harness.settings.useProfileSetting(.bufferingQualityMode)

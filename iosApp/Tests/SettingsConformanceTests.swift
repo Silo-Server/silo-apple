@@ -404,7 +404,6 @@ final class SettingsConformanceTests: XCTestCase {
         XCTAssertEqual(definition["label"] as? String, SettingsViewModel.bufferingQualityTitle)
         XCTAssertEqual(definition["description"] as? String, SettingsViewModel.bufferingQualityDescription)
         XCTAssertEqual(definition["allowed_scopes"] as? [String], ["profile", "profile_device"])
-        XCTAssertEqual(SettingKey.bufferingQualityRevision, SettingKey.playbackBufferingQualityMode.introducedIn)
     }
 
     /// Every Maximum Bitrate choice is a cap the contract accepts.
