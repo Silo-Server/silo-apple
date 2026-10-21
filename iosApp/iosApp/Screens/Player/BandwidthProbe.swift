@@ -45,10 +45,9 @@ enum BandwidthProbe {
 
 /// One test download, timed: a rate, or why there is none.
 enum BandwidthProbeResult: Equatable {
-    /// `kbps` measured from `bytes` over `durationMs`, the windows the rate
-    /// came from or the whole transfer. A `lowerBound` says the link is at
-    /// least this fast.
-    case measured(kbps: Int, bytes: Int, durationMs: Int, lowerBound: Bool)
+    /// The rate, from the windows it came from or the whole transfer. A
+    /// `lowerBound` says the link is at least this fast.
+    case measured(BandwidthProbeMeter.Measurement)
     /// HTTP 429: the server allows another test after `retryAfterSeconds`.
     case rateLimited(retryAfterSeconds: Int)
     /// The server refused the download with `status`, for example a
@@ -318,14 +317,7 @@ final class BandwidthProbeDownload: NSObject, URLSessionDataDelegate, @unchecked
 
     /// The test stopped: its measurement, or why there is none.
     private func finishMeasured() {
-        guard let measurement = meter.result else {
-            finish(.tooLittleData)
-            return
-        }
-        finish(.measured(
-            kbps: measurement.kbps, bytes: measurement.bytes,
-            durationMs: measurement.durationMs, lowerBound: measurement.lowerBound
-        ))
+        finish(meter.result.map(BandwidthProbeResult.measured) ?? .tooLittleData)
     }
 
     /// Resumes the caller once, with `result` or nil for a cancellation, and

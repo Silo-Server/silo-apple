@@ -761,9 +761,9 @@ final class BandwidthProbeScheduler {
             return run.cancelledFor ?? (error is CancellationError ? .interrupted : .networkError)
         }
         if let reason = run.cancelledFor { return reason }
-        let rate: (kbps: Int, bytes: Int, durationMs: Int, lowerBound: Bool)
+        let rate: BandwidthProbeMeter.Measurement
         switch result {
-        case .measured(let kbps, let bytes, let durationMs, let lowerBound): rate = (kbps, bytes, durationMs, lowerBound)
+        case .measured(let measured): rate = measured
         case .rateLimited(let seconds):
             Self.logger.notice("speed test rate limited: retry after \(seconds, privacy: .public) s")
             // Any test's 429 holds automatic tests against that server.

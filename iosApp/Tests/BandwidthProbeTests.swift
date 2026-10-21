@@ -202,9 +202,7 @@ final class BandwidthProbeDownloadTests: XCTestCase {
         var expected = BandwidthProbeMeter(mode: .quick(targetKbps: nil))
         expected.receive(2_000_000, at: 0)
         expected.advance(to: BandwidthProbe.quickMaxMs)
-        let expectedResult: BandwidthProbeResult = expected.result.map {
-            .measured(kbps: $0.kbps, bytes: $0.bytes, durationMs: $0.durationMs, lowerBound: $0.lowerBound)
-        } ?? .tooLittleData
+        let expectedResult = expected.result.map(BandwidthProbeResult.measured) ?? .tooLittleData
         XCTAssertEqual(result, expectedResult)
     }
 
@@ -386,7 +384,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
     }
 
     func testAStartSendsTheHighestCurrentReading() async {
-        server.result = .measured(kbps: 48_000, bytes: 6_000_000, durationMs: 1_000, lowerBound: false)
+        server.result = .measured(.init(kbps: 48_000, lowerBound: false, bytes: 6_000_000, durationMs: 1_000))
         server.stored.playbackSample = sample(kbps: 60_000, ageDays: 1)
         server.stored.probe = probe(kbps: 30_000, ageDays: 1)
         await signIn()
@@ -492,7 +490,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
     func testARateLimitHoldsAcrossANetworkChange() async {
         server.result = .rateLimited(retryAfterSeconds: 600)
         await signIn()
-        server.result = .measured(kbps: 48_000, bytes: 6_000_000, durationMs: 1_000, lowerBound: false)
+        server.result = .measured(.init(kbps: 48_000, lowerBound: false, bytes: 6_000_000, durationMs: 1_000))
         scheduler.networkChanged(Self.otherWifi)
         await advance(seconds: 5)
         XCTAssertEqual(server.modes.count, 1, "still within Retry-After")
@@ -529,7 +527,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
     func testARateLimitHoldsLooksUntilItsRetryAfter() async {
         server.result = .rateLimited(retryAfterSeconds: 600)
         await signIn()
-        server.result = .measured(kbps: 48_000, bytes: 6_000_000, durationMs: 1_000, lowerBound: false)
+        server.result = .measured(.init(kbps: 48_000, lowerBound: false, bytes: 6_000_000, durationMs: 1_000))
         scheduler.setForeground(false)
         scheduler.setForeground(true)
         await advance(seconds: 5)
@@ -693,7 +691,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         let outcome = await scheduler.runNow()
         XCTAssertEqual(outcome, .rateLimited(retryAfterSeconds: 600))
         server.automatic = true
-        server.result = .measured(kbps: 48_000, bytes: 6_000_000, durationMs: 1_000, lowerBound: false)
+        server.result = .measured(.init(kbps: 48_000, lowerBound: false, bytes: 6_000_000, durationMs: 1_000))
         scheduler.setActiveServer(nil)
         scheduler.setActiveServer("server")
         await advance(seconds: 5)
@@ -774,7 +772,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
 /// the real one, it keeps the latest result it is sent.
 @MainActor
 private final class FakeProbeServer: BandwidthProbeServer {
-    var result: BandwidthProbeResult = .measured(kbps: 115_000, bytes: 7_187_500, durationMs: 500, lowerBound: true)
+    var result: BandwidthProbeResult = .measured(.init(kbps: 115_000, lowerBound: true, bytes: 7_187_500, durationMs: 500))
     /// The download never ends until cancelled.
     var hangs = false
     var hasTarget = true
