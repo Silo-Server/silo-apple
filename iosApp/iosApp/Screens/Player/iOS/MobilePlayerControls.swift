@@ -22,6 +22,7 @@ struct MobilePlayerControls: View {
 
     @State private var activeSheet: PlayerSheet?
     @State private var tracksDetent: PresentationDetent = .medium
+    @State private var tracksNestedSheetCovers = false
     /// Trailing time label mode: remaining ("−12:34") when true, total
     /// duration otherwise. Tap the label to flip — the native player idiom.
     @State private var showsRemainingTime = true
@@ -109,7 +110,9 @@ struct MobilePlayerControls: View {
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .tracks:
-                TrackSelectionSheet(viewModel: viewModel) { activeSheet = nil }
+                TrackSelectionSheet(viewModel: viewModel, nestedSheetCoversPlayer: $tracksNestedSheetCovers) {
+                    activeSheet = nil
+                }
                     .presentationDetents([.medium, .large], selection: $tracksDetent)
                     .presentationDragIndicator(.visible)
             case .settings:
@@ -137,6 +140,7 @@ struct MobilePlayerControls: View {
             } else {
                 viewModel.resumeAutoHide()
                 tracksDetent = .medium
+                tracksNestedSheetCovers = false
             }
         }
         // Initial too: controls that mount again say whether their sheet
@@ -668,11 +672,13 @@ struct MobilePlayerControls: View {
     // MARK: - Sheet identifier
 
     /// A full-height sheet covers the top of the player, where the buffering
-    /// pill and notices show; the tracks sheet at half height does not.
+    /// pill and notices show; the tracks sheet at half height does not. In
+    /// a compact height every sheet is full height, and a sheet the tracks
+    /// sheet opens can cover the player on its own.
     private var sheetCoversPlayer: Bool {
         switch activeSheet {
         case .settings: true
-        case .tracks: tracksDetent == .large
+        case .tracks: tracksDetent == .large || verticalSizeClass == .compact || tracksNestedSheetCovers
         case nil: false
         }
     }

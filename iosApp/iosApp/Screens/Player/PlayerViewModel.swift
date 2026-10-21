@@ -10704,6 +10704,9 @@ extension PlayerViewModel {
 
     /// The sheet over the iPhone and iPad player opened or closed.
     func playerSheetCoversPlayer(_ covers: Bool) {
+        if covers != isPlayerCoveredBySheet {
+            Self.logger.info("[CMP-BUFFERING] sheet covers player=\(covers, privacy: .public)")
+        }
         isPlayerCoveredBySheet = covers
     }
 

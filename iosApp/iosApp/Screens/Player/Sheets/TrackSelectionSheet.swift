@@ -6,9 +6,12 @@ import SwiftUI
 /// rows live in a `List` instead of a native `Menu`.
 struct TrackSelectionSheet: View {
     let viewModel: PlayerViewModel
+    /// A sheet this one opened covers the whole player.
+    @Binding var nestedSheetCoversPlayer: Bool
     let onDismiss: () -> Void
 
     @State private var showAITranslateMenu = false
+    @State private var translateDetent: PresentationDetent = .medium
     @State private var showSubtitleSearchMenu = false
 
     private var aiSubtitlesAvailable: Bool {
@@ -57,7 +60,7 @@ struct TrackSelectionSheet: View {
                     onDismiss()
                 }
             )
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.medium, .large], selection: $translateDetent)
         }
         .sheet(isPresented: $showSubtitleSearchMenu) {
             SubtitleSearchMenu(
@@ -70,6 +73,16 @@ struct TrackSelectionSheet: View {
             )
             .presentationDetents([.large])
         }
+        .onChange(of: showAITranslateMenu) { _, shown in
+            if !shown { translateDetent = .medium }
+        }
+        .onChange(of: nestedCovers, initial: true) { _, covers in
+            nestedSheetCoversPlayer = covers
+        }
+    }
+
+    private var nestedCovers: Bool {
+        showSubtitleSearchMenu || (showAITranslateMenu && translateDetent == .large)
     }
 
     @ViewBuilder
