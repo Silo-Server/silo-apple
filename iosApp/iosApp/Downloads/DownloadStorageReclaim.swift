@@ -54,6 +54,12 @@ enum DownloadStorageReclaim {
         for item in items {
             // Per item: a delete running elsewhere may remove the folder.
             try? fm.createDirectory(at: holding, withIntermediateDirectories: true)
+            // Outside the backup-excluded root, and it can outlive the
+            // process when the delete doesn't finish.
+            var holdingURL = holding
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? holdingURL.setResourceValues(values)
             let destination = holding.appendingPathComponent(UUID().uuidString, isDirectory: true)
             if (try? fm.moveItem(at: item, to: destination)) != nil { moved += 1 }
         }

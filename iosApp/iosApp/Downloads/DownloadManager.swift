@@ -925,30 +925,50 @@ final class DownloadManager {
     /// the last `refreshOtherDownloadStorage()`.
     private(set) var otherDownloadStorage: [DownloadStorageReclaim.OtherStorage] = []
 
-    /// The active scope's folder names, or nil while a scope switch is still
-    /// loading its store, when nothing outside it may be removed.
-    private var activeScopeFolders: (server: String, profile: String)? {
-        guard let scope = loadedScope else { return nil }
+    /// Bumped by every refresh, so only the latest scan publishes.
+    private var otherStorageRefreshGeneration = 0
+
+    /// A scope's folder names. Callers pass `loadedScope`, which is nil while
+    /// a scope switch is still loading its store, when nothing outside the
+    /// active scope may be listed or removed.
+    private func scopeFolders(_ scope: ScopeKey?) -> (server: String, profile: String)? {
+        guard let scope else { return nil }
         return DownloadFilePaths.scopeFolderNames(serverId: scope.serverId, profileId: scope.profileId)
     }
 
     func refreshOtherDownloadStorage() async {
-        guard let active = activeScopeFolders else {
+        otherStorageRefreshGeneration += 1
+        let generation = otherStorageRefreshGeneration
+        let scope = loadedScope
+        guard let active = scopeFolders(scope) else {
             otherDownloadStorage = []
             return
         }
         let root = DownloadFilePaths.rootDirectory()
-        otherDownloadStorage = await Task.detached(priority: .utility) {
+        let groups = await Task.detached(priority: .utility) {
             DownloadStorageReclaim.otherStorage(root: root, activeServerFolder: active.server,
                 activeProfileFolder: active.profile)
         }.value
+        // A scan of the scope before a switch would list the new one as
+        // other data.
+        guard generation == otherStorageRefreshGeneration, loadedScope == scope else { return }
+        otherDownloadStorage = groups
     }
 
     /// Deletes one group of download data outside the active scope. Its
     /// store goes too, so a profile or server switched back to later imports
     /// its server rows and downloads them again.
     func removeOtherDownloadStorage(_ group: DownloadStorageReclaim.OtherStorage) async {
-        guard let active = activeScopeFolders else { return }
+        let scope = loadedScope
+        guard scope != nil else { return }
+        // A save queued for the scope before a switch would write its store
+        // back after the removal, listing media that is gone. Once the
+        // queued saves land, every later one is for the loaded scope.
+        await saveChain?.value
+        guard loadedScope == scope, let active = scopeFolders(scope) else {
+            await refreshOtherDownloadStorage()
+            return
+        }
         let root = DownloadFilePaths.rootDirectory()
         // Set aside synchronously, against the scope active right now.
         DownloadStorageReclaim.setAside(

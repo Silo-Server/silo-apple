@@ -102,6 +102,8 @@ final class DownloadStorageReclaimTests: XCTestCase {
         let moved = DownloadStorageReclaim.setAside([scope.appendingPathComponent("orphan")], root: root)
 
         XCTAssertEqual(moved, 1)
+        let holdingFolder = sandbox.appendingPathComponent("SiloDownloads.reclaimed", isDirectory: true)
+        XCTAssertEqual(try holdingFolder.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup, true)
         XCTAssertEqual(try contents(of: scope), ["owned"])
         XCTAssertEqual(DownloadFilePaths.bytes(under: root), 7, "set-aside data no longer counts as the root's")
         XCTAssertEqual(DownloadStorageReclaim.deleteSetAside(root: root), 18)
