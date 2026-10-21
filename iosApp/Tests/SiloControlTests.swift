@@ -325,6 +325,10 @@ final class SiloControlPhoneMultiControllerTests: XCTestCase {
             "Severance · S1 · E2"
         )
         XCTAssertEqual(
+            SiloControlOfferTitle.make(type: "Episodes", title: "Pilot", seriesTitle: "Severance", seasonNumber: 1, episodeNumber: 2),
+            "Severance · S1 · E2"
+        )
+        XCTAssertEqual(
             SiloControlOfferTitle.make(type: "episode", title: "Pilot", seriesTitle: " ", seasonNumber: 1, episodeNumber: 2),
             "Pilot"
         )

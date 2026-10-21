@@ -927,8 +927,10 @@ private struct VideoPane: View {
         if let error = viewModel.qualitySwitchError, !error.isEmpty {
             return error
         }
-        return viewModel.qualityOptions.first(where: { $0.id == viewModel.activeQualityId })?.labelWithBitrate
-            ?? ApplePlaybackQuality.displayNameWithBitrate(for: viewModel.activeQualityId)
+        // A local Settings rung's bitrate is not the session's, so the
+        // fallback names the preference without one.
+        return viewModel.activeQualityOption?.labelWithBitrate
+            ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
     }
 
     private var qualityOptions: [HUDDropdownOption] {

@@ -55,7 +55,7 @@ struct SiloControlPendingReplace: Equatable {
 enum SiloControlOfferTitle {
     static func make(type: String, title: String, seriesTitle: String?, seasonNumber: Int?, episodeNumber: Int?) -> String? {
         func blank(_ text: String) -> Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        if type == "episode", let series = seriesTitle, !blank(series) {
+        if SiloMediaType.isEpisode(type), let series = seriesTitle, !blank(series) {
             return [series, seasonNumber.map { "S\($0)" }, episodeNumber.map { "E\($0)" }]
                 .compactMap { $0 }
                 .joined(separator: " · ")
