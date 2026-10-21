@@ -49,11 +49,6 @@ enum IntroSkipMode: String, CaseIterable, Identifiable, Sendable {
     var legacyAutoSkip: Bool { self == .always }
 }
 
-/// Timers for ``IntroSkipPrompt``: the shared player prompt clock.
-typealias IntroSkipPromptClock = PlayerPromptClock
-typealias IntroSkipPromptTimer = PlayerPromptTimer
-typealias LiveIntroSkipPromptClock = LivePlayerPromptClock
-
 /// The intro-skip pill's state machine, shared by the iOS, tvOS and macOS
 /// players.
 ///
@@ -125,7 +120,7 @@ final class IntroSkipPrompt {
 
     var isVisible: Bool { pill != nil }
 
-    @ObservationIgnored private let clock: IntroSkipPromptClock
+    @ObservationIgnored private let clock: PlayerPromptClock
     @ObservationIgnored private let duration: TimeInterval
 
     /// Intros the viewer has decided in this playback. A resolved intro never
@@ -140,14 +135,14 @@ final class IntroSkipPrompt {
     @ObservationIgnored private var activity: Activity = .paused
     /// Time left when a stall began, while its grace window runs.
     @ObservationIgnored private var remainingAtStall: TimeInterval?
-    @ObservationIgnored private var expiryTimer: IntroSkipPromptTimer?
-    @ObservationIgnored private var graceTimer: IntroSkipPromptTimer?
+    @ObservationIgnored private var expiryTimer: PlayerPromptTimer?
+    @ObservationIgnored private var graceTimer: PlayerPromptTimer?
 
     init(
-        clock: IntroSkipPromptClock? = nil,
+        clock: PlayerPromptClock? = nil,
         duration: TimeInterval = IntroSkipPrompt.promptSeconds
     ) {
-        self.clock = clock ?? LiveIntroSkipPromptClock()
+        self.clock = clock ?? LivePlayerPromptClock()
         self.duration = duration
     }
 
