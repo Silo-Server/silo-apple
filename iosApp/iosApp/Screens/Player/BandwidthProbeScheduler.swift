@@ -493,6 +493,7 @@ final class BandwidthProbeScheduler {
     func setHidden(_ hidden: Bool) {
         guard hidden != isHidden else { return }
         isHidden = hidden
+        Self.logger.notice("app \(hidden ? "hidden" : "visible", privacy: .public)")
         activityChanged()
     }
 
