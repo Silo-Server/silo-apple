@@ -1124,8 +1124,7 @@ actor PlaybackSessionBridge {
                 serverAdvertisesFeature: capability.bufferingQuality,
                 mode: bufferingQualityMode,
                 bandwidthEstimateKbps: probeEstimateKbps,
-                bandwidthEstimateSource: probeEstimateKbps == nil
-                    ? nil : PlaybackProtocolV3.BandwidthEstimateSource.probe
+                bandwidthEstimateSource: PlaybackProtocolV3.BandwidthEstimateSource.probe
             )
             let request = PlaybackV3StartRequest(
                 protocolVersion: PlaybackProtocolV3.version,

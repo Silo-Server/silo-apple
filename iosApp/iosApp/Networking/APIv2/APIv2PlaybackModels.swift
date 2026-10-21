@@ -300,10 +300,10 @@ struct APIv2PlaybackConnection: Decodable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         connection = try container.decode(String.self, forKey: .connection)
-        learnedLimit = (try? container.decodeIfPresent(LearnedLimit.self, forKey: .learnedLimit)) ?? nil
-        probe = (try? container.decodeIfPresent(Probe.self, forKey: .probe)) ?? nil
-        playbackSample = (try? container.decodeIfPresent(PlaybackSample.self, forKey: .playbackSample)) ?? nil
-        autoBudgetKbps = (try? container.decodeIfPresent(Int.self, forKey: .autoBudgetKbps)) ?? nil
+        learnedLimit = try? container.decodeIfPresent(LearnedLimit.self, forKey: .learnedLimit)
+        probe = try? container.decodeIfPresent(Probe.self, forKey: .probe)
+        playbackSample = try? container.decodeIfPresent(PlaybackSample.self, forKey: .playbackSample)
+        autoBudgetKbps = try? container.decodeIfPresent(Int.self, forKey: .autoBudgetKbps)
     }
 }
 
