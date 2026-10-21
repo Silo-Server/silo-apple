@@ -2,7 +2,8 @@
 import Foundation
 
 // Wire models for ordered Apple push registration
-// (`registerApplePushDevice`, `getApplePushRegistrationCapabilities`).
+// (`registerApplePushDevice`, `getApplePushRegistrationCapabilities`,
+// `retireApplePushInstallation`).
 
 /// `POST /api/v2/devices/push/apple` body (`ApplePushRegistrationBody`).
 ///
@@ -35,6 +36,20 @@ struct APIv2ApplePushRegistrationReceipt: Decodable, Equatable, Sendable {
     /// The deployment identity (`GET /api/v2/system/identity`) pushes for
     /// this registration name. Omitted by older servers.
     let serverId: String?
+}
+
+/// `POST /api/v2/devices/push/apple/retire` body
+/// (`retireApplePushInstallation`).
+struct APIv2ApplePushRetirementBody: Encodable, Equatable, Sendable {
+    let deviceId: String
+}
+
+/// `POST /api/v2/devices/push/apple/retire` response. `removed` is true
+/// whether or not the server still held a registration for the device.
+struct APIv2ApplePushRetirementReceipt: Decodable, Equatable, Sendable {
+    /// The generation the server applied, as a decimal string.
+    let generation: String
+    let removed: Bool
 }
 
 /// `GET /api/v2/devices/push/apple/capabilities`.

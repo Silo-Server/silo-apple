@@ -62,6 +62,11 @@ enum ApplePushIntentOutcome: Codable, Equatable, Sendable {
     /// intent would be refused again, so it is not resent; a changed intent
     /// takes the next generation.
     case refused(reason: String)
+    /// The generation went to a retirement (`ApplePushRetirementQueue`): the
+    /// server was, or will be, told to drop this device's registration. The
+    /// intent is kept only so a server that stays saved can register it again,
+    /// which takes the next generation; it is never replayed at this one.
+    case retired
 }
 
 /// One server's installation state, stored as a single Keychain item.
@@ -76,7 +81,8 @@ struct ApplePushInstallationRecord: Codable, Equatable, Sendable {
     let installationKey: String
     /// The highest generation ever allocated; 0 before the first intent.
     var generation: Int64
-    /// The intent that holds `generation`.
+    /// The intent that holds `generation`, or, when its outcome is
+    /// `retired`, the last intent before the retirement that holds it.
     var latest: Latest?
 }
 
@@ -115,6 +121,10 @@ struct ApplePushRegistrationCommand: Equatable, Sendable {
 /// overwritten and nothing is sent for that server, and the
 /// Notification Service extension falls back to the access token. Recovery
 /// needs the server to drop this device's installation.
+///
+/// Removing a server or signing out of it deletes its credentials but not
+/// this record: the retirement that stops the server's pushes afterwards
+/// proves itself with this key alone.
 struct ApplePushInstallationJournal: Sendable {
     let keychain: SharedKeychain
     let makeInstallationKey: @Sendable () -> String?
@@ -179,8 +189,9 @@ struct ApplePushInstallationJournal: Sendable {
     ///   `renewDisplayToken` is set; otherwise nothing to send.
     /// - The same intent, accepted but disabled or removed, or refused:
     ///   nothing to send.
-    /// - Any other intent: allocate the next generation. `allocated` tells the
-    ///   caller to persist the returned record before sending.
+    /// - Any other intent, or any intent after a retirement: allocate the
+    ///   next generation. `allocated` tells the caller to persist the returned
+    ///   record before sending.
     static func plan(_ record: ApplePushInstallationRecord, desired: ApplePushInstallationIntent,
                      renewDisplayToken: Bool) throws
         -> (record: ApplePushInstallationRecord, command: ApplePushRegistrationCommand?, allocated: Bool) {
@@ -194,6 +205,10 @@ struct ApplePushInstallationJournal: Sendable {
                 return (record, renewDisplayToken && registration.isActive ? replay : nil, false)
             case .refused:
                 return (record, nil, false)
+            case .retired:
+                // The retirement holds this generation, so the intent comes
+                // back only under a newer one, which supersedes it.
+                break
             }
         }
         guard record.generation < Int64.max else { throw JournalError.generationExhausted }
@@ -203,6 +218,23 @@ struct ApplePushInstallationJournal: Sendable {
         let command = ApplePushRegistrationCommand(installationKey: next.installationKey,
             generation: next.generation, intent: desired, isRenewal: false)
         return (next, command, true)
+    }
+
+    /// `record` with the next generation allocated to a retirement, or
+    /// unchanged when a retirement already holds its generation. `nil` when
+    /// no intent was ever allocated: the server holds nothing to retire.
+    /// `allocated` tells the caller to persist the record before the
+    /// retirement is sent.
+    static func retiring(_ record: ApplePushInstallationRecord) throws
+        -> (record: ApplePushInstallationRecord, allocated: Bool)? {
+        guard var latest = record.latest else { return nil }
+        if latest.outcome == .retired { return (record, false) }
+        guard record.generation < Int64.max else { throw JournalError.generationExhausted }
+        latest.outcome = .retired
+        var next = record
+        next.generation += 1
+        next.latest = latest
+        return (next, true)
     }
 
     /// `record` with `outcome` applied to `command`, or `nil` when the record

@@ -18,6 +18,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     private static let renewalDue = ISO8601DateFormatter().date(from: tokenExpiry)!.addingTimeInterval(-86_400)
     private static let capabilityPath = "/api/v2/devices/push/apple/capabilities"
     private static let registrationPath = "/api/v2/devices/push/apple"
+    private static let retirementPath = "/api/v2/devices/push/apple/retire"
     private static let tokenA = String(repeating: "ab", count: 32)
     private static let tokenB = String(repeating: "cd", count: 32)
 
@@ -32,10 +33,20 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             case gated(StubURLProtocol.Gate)
         }
 
+        /// Answers to `retireApplePushInstallation`; `retired` echoes the
+        /// generation it was sent.
+        enum RetirementReply {
+            case retired
+            case status(Int)
+            case problem(Int, String)
+            case transportFailure
+        }
+
         let handler = StubURLProtocol.Handler()
         private let lock = NSLock()
         private var capability = #"{"allowed":true,"registration_available":true,"revision":"r1","state":"available"}"#
         private var replies: [Reply] = []
+        private var retirementReplies: [RetirementReply] = []
 
         init() {
             handler.route(StubURLProtocol.method("GET", path: ApplePushOrderedRegistrationTests.capabilityPath)) { [self] _ in
@@ -70,10 +81,30 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                     throw URLError(.networkConnectionLost)
                 }
             }
+            handler.route(StubURLProtocol.method("POST", path: ApplePushOrderedRegistrationTests.retirementPath)) { [self] request in
+                let reply = lock.withLock { retirementReplies.isEmpty ? RetirementReply.retired : retirementReplies.removeFirst() }
+                switch reply {
+                case .retired:
+                    let generation = request.header("X-Push-Generation") ?? ""
+                    return .json(#"{"generation":"\#(generation)","removed":true}"#)
+                case .status(let status):
+                    return .status(status)
+                case .problem(let status, let type):
+                    return .json(#"{"type":"https://silo.example/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#,
+                        status: status, headers: ["Content-Type": "application/problem+json"])
+                case .transportFailure:
+                    throw URLError(.networkConnectionLost)
+                }
+            }
         }
 
         func setCapability(_ json: String) { lock.withLock { capability = json } }
         func enqueue(_ reply: Reply) { lock.withLock { replies.append(reply) } }
+        func enqueueRetirement(_ reply: RetirementReply) { lock.withLock { retirementReplies.append(reply) } }
+
+        var retirements: [StubURLProtocol.Request] {
+            handler.requests.filter { $0.method == "POST" && $0.path == ApplePushOrderedRegistrationTests.retirementPath }
+        }
 
         var registrations: [StubURLProtocol.Request] {
             handler.requests.filter { $0.method == "POST" && $0.path == ApplePushOrderedRegistrationTests.registrationPath }
@@ -96,13 +127,32 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let http: HTTPClient
         let api: APIv2Client
         let defaults: SharedDefaults
+        let retirementStore: ApplePushRetirementStore
 
+        /// A new registrar is a new process: only the Keychain carries over.
         func registrar(clock: Clock? = nil, savedServerIdentity: String? = nil) -> ApplePushRegistrar {
             let now: @Sendable () -> Date = clock.map { clock in { clock.now } } ?? { Date() }
+            let session = server.handler.makeSession()
+            let retirements = ApplePushRetirementQueue(store: retirementStore, journal: journal, now: now) {
+                try await APIv2Client.retireApplePushInstallation(serverURL: $0, deviceID: $1, installationKey: $2,
+                    generation: $3, session: session)
+            }
             return ApplePushRegistrar(api: api, tokenStore: tokens, journal: journal, displayTargets: targets,
                 savedServers: ApplePushSavedServerClient(http: http, tokenStore: tokens,
-                    session: server.handler.makeSession()),
-                savedServerIdentity: { _ in savedServerIdentity }, now: now)
+                    session: session),
+                savedServerIdentity: { _ in savedServerIdentity }, retirements: retirements, now: now)
+        }
+
+        /// Signs in to the server again after its credentials were deleted:
+        /// a new account epoch for the same registry id.
+        func signInAgain() async throws {
+            let saved = await tokens.saveTokens(accessToken: "access-2", refreshToken: "refresh-2")
+            XCTAssertTrue(saved)
+            await tokens.setProfileId("profile-a")
+            let proofStored = await tokens.setProfileToken("proof-a")
+            XCTAssertTrue(proofStored)
+            let captured = await tokens.captureOrdinaryRequestAuth()
+            try await tokens.bindVerifiedAccount("12", expected: XCTUnwrap(captured))
         }
 
         /// Signs in to a second saved server, which becomes the active one.
@@ -146,6 +196,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                 SharedStorage.mirroredProfileTokenAccount,
                 SharedStorage.applePushDisplayTokenAccount,
                 SharedStorage.applePushDisplayTargetsAccount,
+                ApplePushRetirementStore.account,
             ] {
                 keychain.withAudience(.userIndependent).delete(key)
                 keychain.withAudience(.currentUser).delete(key)
@@ -170,7 +221,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let api = APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false })
         let targets = ApplePushDisplayTargetStore(keychain: keychain.withAudience(.currentUser))
         return Harness(tokens: tokens, server: server, journal: journal, targets: targets, http: http, api: api,
-            defaults: defaults)
+            defaults: defaults,
+            retirementStore: ApplePushRetirementStore(keychain: keychain.withAudience(.userIndependent)))
     }
 
     private static func target(profileID: String = "profile-a", token: String = "display-1",
@@ -511,9 +563,11 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
 
     // MARK: - Saved servers
 
-    /// A server the person is not using keeps its display token current,
-    /// and removing it turns its pushes off, each through that server's own
-    /// stored session, installation key and next generation.
+    /// A server the person is not using keeps its display token current
+    /// through that server's own stored session. Removing it, when the
+    /// server predates the retirement endpoint, turns its pushes off the same
+    /// way, with the same installation key, above the generation the refused
+    /// retirement took.
     func testSavedServerRenewsAndTurnsOffWithItsOwnStoredSession() async throws {
         let h = try await makeHarness()
         let clock = Clock()
@@ -536,17 +590,22 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(renewal.header("X-Push-Generation"), "1")
         XCTAssertEqual(renewal.body, h.server.registrations.first?.body)
         XCTAssertEqual(h.targets.targets(), [Self.target(token: "display-2")])
+        h.server.enqueueRetirement(.status(404))
 
         let off = await registrar.unregister(serverID: Self.serverID, activeOwner: otherOwner)
 
         guard case .registered = off else { return XCTFail("unexpected \(off)") }
+        XCTAssertEqual(h.server.retirements.map { $0.header("X-Push-Generation") }, ["2"])
         let request = try XCTUnwrap(h.server.registrations.last)
         XCTAssertEqual(request.url?.host, "silo.example")
         XCTAssertEqual(request.header("Authorization"), "Bearer access")
-        XCTAssertEqual(request.header("X-Push-Generation"), "2")
+        XCTAssertEqual(request.header("X-Push-Generation"), "3")
         XCTAssertEqual(request.header("X-Push-Installation-Key"), renewal.header("X-Push-Installation-Key"))
         XCTAssertTrue(request.bodyString?.contains(#""push_mode":"off""#) ?? false)
         XCTAssertEqual(h.targets.targets(), [])
+        // The server took the `off`; nothing is left to retire.
+        let pending = try h.retirementStore.load()
+        XCTAssertEqual(pending, [])
     }
 
     /// A profile switch whose answer was lost leaves the old profile's
@@ -577,10 +636,10 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(h.targets.targets(), [Self.target(profileID: "profile-b")])
     }
 
-    /// Sign-out waits only briefly for a server to turn pushes off before
-    /// deleting the credentials the request needs, so the off goes ahead of
-    /// registrations already waiting for their turn, and none of those for
-    /// the departing account runs afterwards to turn pushes back on.
+    /// Sign-out waits only briefly for a server to stop pushing before
+    /// deleting the credentials, so the retirement takes its generation ahead
+    /// of registrations already waiting for their turn, and none of those
+    /// for the departing account runs afterwards to turn pushes back on.
     func testUnregisterGoesAheadOfQueuedRegistrationsAndHoldsThemBack() async throws {
         let h = try await makeHarness()
         let registrar = h.registrar()
@@ -599,29 +658,33 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let heldBack = await queued.value
 
         XCTAssertEqual(heldBack, .notSent(reason: "departing"))
-        let sends = h.server.registrations
-        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "2"])
-        XCTAssertEqual(sends.map { $0.bodyString?.contains(#""push_mode":"off""#) }, [false, true])
+        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1"])
+        XCTAssertEqual(h.server.retirements.map { $0.header("X-Push-Generation") }, ["2"])
     }
 
-    /// A sign-out or removal that fails after turning a server off leaves it
-    /// saved and signed in, so its pushes come back on, and its target with
-    /// them.
+    /// A sign-out or removal that fails after retiring a server leaves it
+    /// saved and signed in, so its pushes come back on above the retired
+    /// generation, and a retirement still pending is dropped rather than
+    /// sent later.
     func testRestoreTurnsPushesBackOnAfterATeardownThatDidNotHappen() async throws {
         let h = try await makeHarness()
         let registrar = h.registrar()
         let owner = try await h.owner()
         _ = await registrar.register(Self.body(), owner: owner)
-        _ = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
-        XCTAssertEqual(h.targets.targets(), [])
+        h.server.enqueueRetirement(.transportFailure)
+        let retired = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+        guard case .retirement(.kept) = retired else { return XCTFail("unexpected \(retired)") }
 
         let restored = await registrar.restore(serverID: Self.serverID)
 
         XCTAssertEqual(restored, Self.accepted)
         let sends = h.server.registrations
-        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "2", "3"])
-        XCTAssertEqual(sends.map { $0.bodyString?.contains(#""push_mode":"off""#) }, [false, true, false])
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3"])
+        XCTAssertEqual(sends.map { $0.bodyString?.contains(#""push_mode":"off""#) }, [false, false])
+        XCTAssertEqual(sends[0].body, sends[1].body)
         XCTAssertEqual(h.targets.targets(), [Self.target()])
+        await registrar.retirements.retryDue(afterPush: true)
+        XCTAssertEqual(h.server.retirements.count, 1)
     }
 
     /// A deployment identity is self-asserted. A saved server claiming
@@ -698,6 +761,157 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(store.targets(), [Self.target()])
         XCTAssertNil(keychain.get(SharedStorage.applePushDisplayTokenAccount))
         XCTAssertNil(defaults.string(forKey: SharedStorage.applePushDisplayTokenServerIdKey))
+    }
+
+    // MARK: - Retirement
+
+    /// Removing a server retires this installation there with the journal's
+    /// next generation and key and no session, so it still works once the
+    /// credentials are gone.
+    func testRemovalRetiresTheInstallationWithoutASession() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar()
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+
+        let result = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+
+        XCTAssertEqual(result, .retirement(.retired))
+        let retirement = try XCTUnwrap(h.server.retirements.first)
+        XCTAssertEqual(h.server.retirements.count, 1)
+        XCTAssertEqual(retirement.url?.host, "silo.example")
+        XCTAssertEqual(retirement.header("X-Push-Generation"), "2")
+        XCTAssertEqual(retirement.header("X-Push-Installation-Key"), try h.record()?.installationKey)
+        XCTAssertNil(retirement.header("Authorization"))
+        XCTAssertNil(retirement.header("X-Profile-Id"))
+        XCTAssertNil(retirement.header("X-Profile-Token"))
+        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(retirement.body)) as? [String: String])
+        XCTAssertEqual(sent, ["device_id": "device-1"])
+        // Nothing went through a session after the first registration.
+        XCTAssertEqual(h.server.registrations.count, 1)
+        let pending = try h.retirementStore.load()
+        XCTAssertEqual(pending, [])
+    }
+
+    /// An unanswered retirement stays queued with its generation and is sent
+    /// again, byte for byte, by a later process after the credentials are
+    /// gone, once its back-off has passed.
+    func testUnansweredRetirementIsSentAgainWithTheSameGeneration() async throws {
+        let h = try await makeHarness()
+        let clock = Clock()
+        let registrar = h.registrar(clock: clock)
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        h.server.enqueueRetirement(.transportFailure)
+        let first = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+        guard case .retirement(.kept) = first else { return XCTFail("unexpected \(first)") }
+        await h.tokens.deleteTokens(for: Self.serverID)
+        let queued = try h.retirementStore.load()
+        XCTAssertEqual(queued.map(\.generation), [2])
+
+        await registrar.retirements.retryDue()
+        XCTAssertEqual(h.server.retirements.count, 1, "a retry inside the back-off sends nothing")
+
+        let relaunched = h.registrar(clock: clock)
+        await relaunched.retirements.retryDue()
+
+        let sends = h.server.retirements
+        XCTAssertEqual(sends.count, 2)
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["2", "2"])
+        XCTAssertEqual(sends[0].header("X-Push-Installation-Key"), sends[1].header("X-Push-Installation-Key"))
+        XCTAssertEqual(sends[0].body, sends[1].body)
+        let pending = try h.retirementStore.load()
+        XCTAssertEqual(pending, [])
+    }
+
+    /// 200, 403 (the key no longer matches) and 409 (the server holds a
+    /// newer registration) each settle the retirement for good; a server
+    /// error does not.
+    func testOnlyAFinalAnswerDropsTheRetirement() async throws {
+        let cases: [(PushServer.RetirementReply, ApplePushRetirementQueue.Outcome?)] = [
+            (.retired, .retired),
+            (.problem(403, "forbidden"), .dropped(reason: "http_403_forbidden")),
+            (.problem(409, "conflict"), .dropped(reason: "http_409_conflict")),
+            (.status(503), nil),
+        ]
+        for (reply, expected) in cases {
+            let h = try await makeHarness()
+            let registrar = h.registrar()
+            let owner = try await h.owner()
+            _ = await registrar.register(Self.body(), owner: owner)
+            h.server.enqueueRetirement(reply)
+
+            let result = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+
+            let pending = try h.retirementStore.load()
+            if let expected {
+                XCTAssertEqual(result, .retirement(expected))
+                XCTAssertEqual(pending, [], "\(reply)")
+            } else {
+                XCTAssertEqual(result, .retirement(.kept(reason: "http_503")))
+                XCTAssertEqual(pending.map(\.generation), [2], "\(reply)")
+            }
+        }
+    }
+
+    /// A server without the endpoint is turned off with its session. When
+    /// that answer is lost too, a retirement above the `off`'s generation
+    /// waits for the server to be updated, counted from the first queueing,
+    /// and is given up 30 days on.
+    func testRetirementOnAServerWithoutTheEndpointIsGivenUpAfterThirtyDays() async throws {
+        let h = try await makeHarness()
+        let clock = Clock()
+        let registrar = h.registrar(clock: clock)
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        h.server.enqueueRetirement(.status(404))
+        h.server.enqueue(.transportFailure)
+
+        let result = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+
+        XCTAssertEqual(result, .uncertain)
+        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "3"])
+        var pending = try h.retirementStore.load()
+        XCTAssertEqual(pending.map(\.generation), [4])
+        XCTAssertEqual(pending.first?.queuedAt, clock.now)
+
+        clock.advance(by: 29 * 24 * 60 * 60)
+        h.server.enqueueRetirement(.status(405))
+        await registrar.retirements.retryDue()
+        pending = try h.retirementStore.load()
+        XCTAssertEqual(pending.map(\.generation), [4])
+
+        clock.advance(by: 2 * 24 * 60 * 60)
+        h.server.enqueueRetirement(.status(404))
+        await registrar.retirements.retryDue()
+        pending = try h.retirementStore.load()
+        XCTAssertEqual(pending, [])
+        XCTAssertEqual(h.server.retirements.map { $0.header("X-Push-Generation") }, ["2", "4", "4"])
+    }
+
+    /// Adding the server again and signing in registers above the retired
+    /// generation, never replaying the old intent at it, and the stale
+    /// retirement is not sent again.
+    func testReaddingTheServerDropsItsRetirementAndRegistersAboveIt() async throws {
+        let h = try await makeHarness()
+        let registrar = h.registrar()
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        h.server.enqueueRetirement(.transportFailure)
+        _ = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+        await h.tokens.deleteTokens(for: Self.serverID)
+        try await h.signInAgain()
+
+        let result = await registrar.register(Self.body(), owner: try await h.owner())
+
+        XCTAssertEqual(result, Self.accepted)
+        let sends = h.server.registrations
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["1", "3"])
+        XCTAssertEqual(sends[0].body, sends[1].body)
+        let pending = try h.retirementStore.load()
+        XCTAssertEqual(pending, [])
+        await registrar.retirements.retryDue(afterPush: true)
+        XCTAssertEqual(h.server.retirements.count, 1)
     }
 
     // MARK: - Journal

@@ -1254,6 +1254,71 @@ struct APIv2Client: Sendable {
 
     static let applePushCapabilityPath = "/api/v2/devices/push/apple/capabilities"
     static let applePushRegistrationPath = "/api/v2/devices/push/apple"
+    static let applePushRetirementPath = "/api/v2/devices/push/apple/retire"
+
+    /// Its own session: a retirement goes to a server that may no longer be
+    /// saved, outside `HTTPClient`'s identity gate and credentials.
+    static let applePushRetirementSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 15
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }()
+
+    /// Tells `serverURL` to drop this device's Apple push registration
+    /// (`retireApplePushInstallation`). No session: the installation key
+    /// proves the device, and `generation`, allocated by
+    /// `ApplePushInstallationJournal` and persisted before this is called,
+    /// orders the retirement against registrations. Replaying the same
+    /// generation is safe.
+    ///
+    /// Returns on 200, including when the server held no registration.
+    /// Throws `APIv2Error` for any other status, as the registration
+    /// transports do, and `ApplePushRegistrationError.invalidReceipt` for a
+    /// 200 that does not describe this generation.
+    static func retireApplePushInstallation(serverURL: String, deviceID: String, installationKey: String,
+                                            generation: Int64,
+                                            session: URLSession = APIv2Client.applePushRetirementSession) async throws {
+        let request = try applePushRetirementRequest(serverURL: serverURL, deviceID: deviceID,
+            installationKey: installationKey, generation: generation)
+        let (data, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else {
+            if let problem = try? HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: data) {
+                throw APIv2Error.problem(problem)
+            }
+            throw APIv2Error.httpStatus(status)
+        }
+        guard let receipt = try? HTTPClient.makeJSONDecoder().decode(APIv2ApplePushRetirementReceipt.self, from: data),
+              receipt.generation == String(generation), receipt.removed else {
+            throw ApplePushRegistrationError.invalidReceipt
+        }
+    }
+
+    /// The retirement request: installation headers, device identity and a
+    /// sorted-keys body, and no `Authorization` or profile headers.
+    static func applePushRetirementRequest(serverURL: String, deviceID: String, installationKey: String,
+                                           generation: Int64) throws -> URLRequest {
+        let headers = try applePushInstallationHeaders(installationKey: installationKey, generation: generation)
+        let base = ServerRegistry.normalize(url: serverURL)
+        guard !deviceID.isEmpty, let url = URL(string: base + applePushRetirementPath) else {
+            throw ApplePushRegistrationError.invalidInstallation
+        }
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.outputFormatting = .sortedKeys
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        AppleDeviceIdentity.current.applyHeaders(to: &request)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        request.httpBody = try encoder.encode(APIv2ApplePushRetirementBody(deviceId: deviceID))
+        return request
+    }
 
     /// The ordered-registration headers, refused before anything is sent
     /// when the journal handed over a value outside the contract.
