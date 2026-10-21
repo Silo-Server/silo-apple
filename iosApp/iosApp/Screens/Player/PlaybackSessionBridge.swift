@@ -805,6 +805,8 @@ actor PlaybackSessionBridge {
         bufferingQualityMode: BufferingQualityMode,
         // A fresh bandwidth probe result, sent with source `probe`.
         probeEstimateKbps: Int? = nil,
+        // `clear` that a displaced Restore quality left for this start.
+        learnedLimit: String? = nil,
         allowAlternateVersions: Bool? = nil,
         startsAtFirstPart: Bool = false
     ) async throws -> PreparedPlayback {
@@ -918,6 +920,7 @@ actor PlaybackSessionBridge {
             subtitleCombinedIndex: subtitleIntent.combinedIndex,
             bufferingQualityMode: bufferingQualityMode,
             probeEstimateKbps: probeEstimateKbps,
+            learnedLimit: learnedLimit,
             allowAlternateVersions: allowAlternateVersions
         )
     }
@@ -1041,6 +1044,7 @@ actor PlaybackSessionBridge {
         subtitleCombinedIndex: Int? = nil,
         bufferingQualityMode: BufferingQualityMode,
         probeEstimateKbps: Int? = nil,
+        learnedLimit: String? = nil,
         allowAlternateVersions: Bool? = nil
     ) async throws -> PreparedPlayback {
         let resolvedSubtitleCombinedIndex = subtitleCombinedIndex ?? subtitleTrackIndex.flatMap {
@@ -1060,6 +1064,7 @@ actor PlaybackSessionBridge {
             subtitleCombinedIndex: resolvedSubtitleCombinedIndex,
             bufferingQualityMode: bufferingQualityMode,
             probeEstimateKbps: probeEstimateKbps,
+            learnedLimit: learnedLimit,
             allowAlternateVersions: allowAlternateVersions
         )
         return adoptProtocolV3Start(staged, watchDetail: watchDetail)
@@ -1090,6 +1095,7 @@ actor PlaybackSessionBridge {
         subtitleCombinedIndex: Int?,
         bufferingQualityMode: BufferingQualityMode,
         probeEstimateKbps: Int?,
+        learnedLimit: String?,
         allowAlternateVersions: Bool?
     ) async throws -> StagedProtocolV3Start {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
@@ -1117,7 +1123,8 @@ actor PlaybackSessionBridge {
                 serverAdvertisesFeature: capability.bufferingQuality,
                 mode: bufferingQualityMode,
                 bandwidthEstimateKbps: probeEstimateKbps,
-                bandwidthEstimateSource: PlaybackProtocolV3.BandwidthEstimateSource.probe
+                bandwidthEstimateSource: PlaybackProtocolV3.BandwidthEstimateSource.probe,
+                learnedLimit: learnedLimit
             )
             let request = PlaybackV3StartRequest(
                 protocolVersion: PlaybackProtocolV3.version,

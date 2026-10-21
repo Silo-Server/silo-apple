@@ -1119,11 +1119,27 @@ final class AetherPlaybackController {
                 .sink { [weak self] _ in self?.publish(.itemStalled) }
         }
         // AVPlayer logs its failed playlist and segment requests here.
+        // Subtitle renditions are not media: their failures start no outage.
         itemErrorSubscription = item.map { item in
             NotificationCenter.default.publisher(for: AVPlayerItem.newErrorLogEntryNotification, object: item)
                 .receive(on: DispatchQueue.main)
-                .sink { [weak self] _ in self?.publish(.itemMediaRequestFailed) }
+                .sink { [weak self, weak item] _ in
+                    let uri = item?.errorLog()?.events.last?.uri
+                    guard !Self.isSubtitleRenditionRequest(uri: uri) else { return }
+                    self?.publish(.itemMediaRequestFailed)
+                }
         }
+    }
+
+    /// Whether a request AVPlayer logged is for a subtitle rendition: the
+    /// engine's `/subs_{N}.m3u8` and `/subs_{N}_{segment}.vtt`, or the
+    /// server's rendition playlist (`silo_rendition=subtitles`) and its
+    /// WebVTT segments. An unknown request counts as media.
+    nonisolated static func isSubtitleRenditionRequest(uri: String?) -> Bool {
+        guard let uri, let components = URLComponents(string: uri) else { return false }
+        let file = (components.path as NSString).lastPathComponent.lowercased()
+        if file.hasPrefix("subs_") || file.hasSuffix(".vtt") || file.hasSuffix(".webvtt") { return true }
+        return components.queryItems?.contains { $0.name == "silo_rendition" && $0.value == "subtitles" } ?? false
     }
 
     private func configureExternalPlaybackPolicy() {

@@ -525,6 +525,10 @@ class PlayerViewModel {
     /// A **Restore quality** the player could not send while another replan
     /// was in flight; sent when that one settles.
     @ObservationIgnored private var deferredBufferingRestore: BufferingQualityController.ReplanRequest?
+    /// The deferred Restore's `learned_limit: "clear"`, until a request
+    /// carries it: the Restore itself, or the start or replan that replaces
+    /// it. It goes out once. Read by tests.
+    @ObservationIgnored private(set) var owesBufferingLearnedLimitClear = false
     /// The app is in the background, or the Mac's player window can't be
     /// seen: the player cannot show its pills.
     private(set) var isPlayerSurfaceHidden = false
@@ -2637,6 +2641,9 @@ class PlayerViewModel {
         // failed transport is torn down, and that pause is not theirs.
         let resolvedOperation = operation
             ?? PlaybackSessionBridge.replanOperation(forClassification: classification)
+        // A displaced Restore's clear rides on this replan, once.
+        let learnedLimit = learnedLimit ?? takeOwedBufferingLearnedLimitClear()
+        if learnedLimit == PlaybackProtocolV3.LearnedLimit.clear { owesBufferingLearnedLimitClear = false }
         let keptEstimateKbps = bandwidthEstimateKbps == nil
             ? Self.keptReplanEstimateKbps(
                 operation: resolvedOperation, issuedByBufferingQuality: issuedByBufferingQuality,
@@ -5657,6 +5664,8 @@ class PlayerViewModel {
                         resumePosition: resumePositionOverride,
                         allowNearEndResume: allowNearEndResume,
                         probeEstimateKbps: probeEstimateKbps,
+                        // A Restore this start displaced: its clear rides here.
+                        learnedLimit: self.takeOwedBufferingLearnedLimitClear(),
                         timeout: origin == .userInitiated ? nil : Self.autoplayStartSessionTimeout
                     )
                 }
@@ -5862,6 +5871,7 @@ class PlayerViewModel {
         resumePosition: Double?,
         allowNearEndResume: Bool,
         probeEstimateKbps: Int?,
+        learnedLimit: String?,
         timeout: TimeInterval?
     ) async throws -> PreparedPlayback {
         let initialSubtitlePreferences: PlaybackSessionBridge.InitialProtocolV3SubtitlePreferences? = {
@@ -5912,6 +5922,7 @@ class PlayerViewModel {
                 onMeteredNetwork: onMeteredNetwork,
                 bufferingQualityMode: bufferingQualityMode,
                 probeEstimateKbps: probeEstimateKbps,
+                learnedLimit: learnedLimit,
                 allowAlternateVersions: request.allowAlternateVersions,
                 startsAtFirstPart: request.startsAtFirstPart
             )
@@ -10325,6 +10336,8 @@ extension PlayerViewModel {
     }
 
     private var needsBufferingSignalPoll: Bool {
+        // An outage ends once media data arrives, which nothing announces.
+        if bufferingSignals.outageAwaitsData { return true }
         switch bufferingSignals.state {
         case .waiting(.renderer): return true
         case .playing: return isSoftwareVideoRoute
@@ -10399,6 +10412,15 @@ extension PlayerViewModel {
         )
     }
 
+    /// The owed `clear` of a Restore that a later request replaces, or nil.
+    /// Taking it drops that Restore: the request it rides on stands for it.
+    private func takeOwedBufferingLearnedLimitClear() -> String? {
+        guard owesBufferingLearnedLimitClear else { return nil }
+        owesBufferingLearnedLimitClear = false
+        deferredBufferingRestore = nil
+        return PlaybackProtocolV3.LearnedLimit.clear
+    }
+
     /// The kept step-down estimate a replan with no estimate of its own
     /// repeats, so a lowering holds where no learned limit applies. Only the
     /// player's own replans on Auto carry it: the buffering controller's
@@ -10449,7 +10471,7 @@ extension PlayerViewModel {
         // still names the entry this replaces.
         bufferingPlan = entry
         // The new plan hears whether playback is already waiting.
-        bufferingSignals.invalidate()
+        bufferingSignals.planAdopted()
         syncBufferingQualitySignals()
     }
 
@@ -10572,6 +10594,9 @@ extension PlayerViewModel {
             if request.isRestore, protocolV3ReplanTask != nil, !isDisposed, !isWatchPartyPlayback {
                 Self.logger.info("[CMP-BUFFERING] restore waits for the replan in flight")
                 deferredBufferingRestore = request
+                if request.learnedLimit == PlaybackProtocolV3.LearnedLimit.clear {
+                    owesBufferingLearnedLimitClear = true
+                }
                 return
             }
             Self.logger.info("[CMP-BUFFERING] replan not issued: player busy or unavailable")

@@ -64,6 +64,16 @@ struct BufferingSignalMapper {
     /// A seek, playing or paused, since playback last ran: the buffering that
     /// follows belongs to it until playback runs.
     private var seekSincePlaying = false
+    /// The adopted plan has neither run nor paused yet. Until it does, a
+    /// start the viewer means to play is the plan's wait, whatever reloads
+    /// its transport.
+    private var startPending = false
+    /// Once the outage's inputs clear, the media buffered past the playhead
+    /// then. The outage lasts until that rises or playback runs.
+    private var outageAwaitsDataAboveMs: Int?
+
+    /// The outage's inputs cleared, but no media data has arrived since.
+    var outageAwaitsData: Bool { outageAwaitsDataAboveMs != nil }
 
     /// The current item posted `playbackStalledNotification`.
     mutating func noteItemStalled() {
@@ -71,22 +81,28 @@ struct BufferingSignalMapper {
     }
 
     /// Forgets the media state last reported, so the next update reports it
-    /// again: a newly adopted plan needs to hear whether it is already
-    /// waiting.
+    /// again.
     mutating func invalidate() {
         state = nil
     }
 
+    /// A plan was adopted: it hears whether playback is already waiting, and
+    /// its start is timed until it first runs or pauses.
+    mutating func planAdopted() {
+        state = nil
+        startPending = true
+    }
+
     mutating func update(_ snapshot: Snapshot) -> [Call] {
         var calls: [Call] = []
-        let trouble = snapshot.connectionTrouble || snapshot.phase.isSourceStalled
-        if trouble != transportTrouble {
-            transportTrouble = trouble
-            calls.append(.transportTroubleChanged(trouble))
-        }
         if snapshot.seekInFlight || snapshot.phase == .seeking { seekSincePlaying = true }
         // A torn-down item (the app went to the background) stalls no more.
         if snapshot.nativeTransport?.hasItem == false { itemStalledSincePlaying = false }
+        // The viewer pausing, or the engine tearing the video down outside a
+        // reload, ends the start as a pause does.
+        let tornDown = snapshot.hasActiveLoad && !snapshot.reloadInProgress
+            && snapshot.nativeTransport?.hasItem == false
+        if !snapshot.wantsToPlay || tornDown { startPending = false }
         var next = mediaState(snapshot)
         // Buffering after a seek stays the seek's until playback runs, even
         // once the seek has landed, and for a seek made while paused.
@@ -95,6 +111,12 @@ struct BufferingSignalMapper {
         if next == .playing {
             itemStalledSincePlaying = false
             seekSincePlaying = false
+            startPending = false
+        }
+        let trouble = outageGoesOn(snapshot, playing: next == .playing)
+        if trouble != transportTrouble {
+            transportTrouble = trouble
+            calls.append(.transportTroubleChanged(trouble))
         }
         guard next != state else { return calls }
         state = next
@@ -117,8 +139,31 @@ struct BufferingSignalMapper {
         return buffered ? .waiting(.renderer) : .waiting(.network)
     }
 
+    /// An outage is signalled while media requests fail, the device is
+    /// offline or the player reconnects. Once those clear it lasts until the
+    /// plan's media data arrives again, as the media buffered past the
+    /// playhead rising, or playback runs.
+    private mutating func outageGoesOn(_ s: Snapshot, playing: Bool) -> Bool {
+        let buffered = s.bufferedAheadMs ?? 0
+        if s.connectionTrouble || s.phase.isSourceStalled {
+            outageAwaitsDataAboveMs = buffered
+            return true
+        }
+        guard let standing = outageAwaitsDataAboveMs else { return false }
+        if playing || buffered > standing {
+            outageAwaitsDataAboveMs = nil
+            return false
+        }
+        // A seek can lower it; data arriving after that still counts.
+        outageAwaitsDataAboveMs = buffered
+        return true
+    }
+
+    /// A reload's wait, or before the plan first runs or pauses, the start's.
+    private var reloadWait: MediaState { startPending ? .waiting(.network) : .waiting(.reload) }
+
     private func mediaState(_ s: Snapshot) -> MediaState {
-        guard s.hasActiveLoad else { return s.wantsToPlay ? .waiting(.reload) : .paused }
+        guard s.hasActiveLoad else { return s.wantsToPlay ? reloadWait : .paused }
         if s.reachedEnd || s.phase == .ended || !s.wantsToPlay { return .paused }
         if s.seekInFlight || s.phase == .seeking { return .waiting(.seek) }
         if let native = s.nativeTransport {
@@ -129,7 +174,7 @@ struct BufferingSignalMapper {
         let reason = s.nativeTransport?.status == .waitingToPlayAtSpecifiedRate
             ? s.nativeTransport?.waitingReason
             : nil
-        if s.reloadInProgress || reason == .noItemToPlay { return .waiting(.reload) }
+        if s.reloadInProgress || reason == .noItemToPlay { return reloadWait }
         // The engine tore the video down, as it does when the app leaves the
         // foreground: playback stopped, so a stall in progress ends uncounted.
         if s.nativeTransport?.hasItem == false { return .paused }

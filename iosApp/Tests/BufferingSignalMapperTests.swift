@@ -105,13 +105,92 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(mapper.update(Self.snapshot(phase: .stalled(reconnecting: true), trouble: true)), [])
         XCTAssertEqual(
             mapper.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls))),
+            [],
+            "the outage lasts until media data arrives"
+        )
+        XCTAssertEqual(
+            mapper.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), bufferedMs: 500)),
             [.transportTroubleChanged(false)],
-            "the stall goes on, now timed by the controller"
+            "data arrived: the stall goes on, now timed by the controller"
         )
         XCTAssertEqual(
             mapper.update(Self.snapshot(native: Self.avPlaying, trouble: true)),
             [.transportTroubleChanged(true), .playing]
         )
+        XCTAssertEqual(
+            mapper.update(Self.snapshot(native: Self.avPlaying)),
+            [.transportTroubleChanged(false)],
+            "playback running ends it too"
+        )
+    }
+
+    /// A reconnect or a device back online does not end an outage on its own:
+    /// only media data arriving or playback running does, after a seek too.
+    func testAnOutageEndsOnlyWhenDataArrives() {
+        var mapper = BufferingSignalMapper()
+        let starved = { (ms: Int?) in Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), bufferedMs: ms) }
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
+        XCTAssertEqual(
+            mapper.update(Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), trouble: true, bufferedMs: 800)),
+            [.transportTroubleChanged(true), .waiting(.network)]
+        )
+        XCTAssertEqual(mapper.update(starved(800)), [], "no new data")
+        XCTAssertTrue(mapper.outageAwaitsData)
+        XCTAssertEqual(mapper.update(starved(0)), [], "a seek lowered it")
+        XCTAssertEqual(mapper.update(starved(400)), [.transportTroubleChanged(false)])
+        XCTAssertFalse(mapper.outageAwaitsData)
+    }
+
+    /// A subtitle rendition's failed request is not a media failure: it
+    /// starts no outage. The video's playlists and segments are.
+    func testASubtitleRenditionFailureIsNotAMediaFailure() {
+        let subtitle = [
+            "http://127.0.0.1:8080/subs_2.m3u8",
+            "http://127.0.0.1:8080/subs_2_14.vtt",
+            "https://silo.example/api/v2/stream/s/master.m3u8?silo_rendition=subtitles",
+            "https://silo.example/api/v2/stream/s/subtitles_3.vtt?token=x",
+        ]
+        let media = [
+            "https://silo.example/api/v2/stream/s/master.m3u8",
+            "https://silo.example/api/v2/stream/s/master.m3u8?silo_rendition=video",
+            "https://silo.example/api/v2/stream/s/segment_12.m4s",
+            "http://127.0.0.1:8080/stream.m3u8",
+        ]
+        for uri in subtitle {
+            XCTAssertTrue(AetherPlaybackController.isSubtitleRenditionRequest(uri: uri), uri)
+        }
+        for uri in media {
+            XCTAssertFalse(AetherPlaybackController.isSubtitleRenditionRequest(uri: uri), uri)
+        }
+        XCTAssertFalse(AetherPlaybackController.isSubtitleRenditionRequest(uri: nil), "unknown counts as media")
+    }
+
+    /// Until a plan first runs or pauses, a start the viewer means to play
+    /// is the plan's wait, through a reload of its transport. After that a
+    /// reload is a reload.
+    func testASlowStartStaysTimedThroughAReload() {
+        var mapper = BufferingSignalMapper()
+        mapper.planAdopted()
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading)), [.waiting(.network)])
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading, reload: true)), [], "still the start's wait")
+        XCTAssertEqual(mapper.update(Self.snapshot(load: false)), [])
+        XCTAssertEqual(
+            mapper.update(Self.snapshot(phase: .loading, native: Self.avWaiting(.noItemToPlay))), []
+        )
+        XCTAssertEqual(mapper.update(Self.snapshot()), [.playing])
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading, reload: true)), [.waiting(.reload)])
+
+        // A pause ends the start: a reload after it is a reload.
+        var paused = BufferingSignalMapper()
+        paused.planAdopted()
+        XCTAssertEqual(paused.update(Self.snapshot(play: false, phase: .loading)), [.paused])
+        XCTAssertEqual(paused.update(Self.snapshot(phase: .loading, reload: true)), [.waiting(.reload)])
+
+        // So does the engine tearing the video down outside a reload.
+        var background = BufferingSignalMapper()
+        background.planAdopted()
+        let torn = Transport(status: .waitingToPlayAtSpecifiedRate, waitingReason: .noItemToPlay, hasItem: false)
+        XCTAssertEqual(background.update(Self.snapshot(phase: .loading, native: torn)), [.waiting(.reload)])
     }
 
     func testASeekThatStartsWhileNotWaitingDiscardsAnyStall() {
@@ -293,6 +372,38 @@ final class BufferingQualityPlayerTests: XCTestCase {
         }
         XCTAssertNil(model.error)
         XCTAssertFalse(model.isLoading)
+    }
+
+    /// A Restore that arrives while a replan is in flight owes its clear
+    /// until it goes out after that replan, then owes nothing.
+    func testADeferredRestoreOwesItsClearOnce() async throws {
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        let prepared = try preparedPlan()
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let version = try decoder.decode(FileVersion.self, from: Data(#"{"file_id":42}"#.utf8))
+        model.installPlayingProtocolV3(
+            watchDetail: WatchDetail(
+                contentId: "movie-1", type: "movie", title: "Movie", year: nil, overview: nil,
+                versions: [version], subtitles: nil, intro: nil, credits: nil, userData: nil,
+                seriesId: nil, seriesTitle: nil, seasonNumber: nil, episodeNumber: nil,
+                effectiveSubtitleLanguage: nil, effectiveSubtitleMode: nil,
+                effectiveShowForcedSubtitles: nil, effectiveSubtitleTrackSignature: nil
+            ),
+            prepared: prepared
+        )
+        model.adoptBufferingPlan(prepared, sessionId: "session", activeQualityId: "auto")
+
+        model.issueBufferingReplan(.init(qualityPreference: "auto", bandwidthEstimateKbps: 5_600))
+        var restore = BufferingQualityController.ReplanRequest(qualityPreference: "auto")
+        restore.learnedLimit = PlaybackProtocolV3.LearnedLimit.clear
+        model.issueBufferingReplan(restore)
+        XCTAssertTrue(model.owesBufferingLearnedLimitClear, "held for the replan in flight")
+        for _ in 0..<300 where model.owesBufferingLearnedLimitClear {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(model.owesBufferingLearnedLimitClear, "sent once that replan settled")
     }
 
     /// The server's `plan_id` hashes the route, so a lowering that comes back
