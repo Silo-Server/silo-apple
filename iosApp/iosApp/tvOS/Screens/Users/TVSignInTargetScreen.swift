@@ -14,12 +14,15 @@ struct TVSignInTargetScreen: View {
     private var accounts: SiloAccountCoordinator { router.accounts }
     @State private var registry = ServerRegistry.shared
     @State private var isStarting = false
+    /// Each listed server's uploaded logo, by address.
+    @State private var marks: [String: URL] = [:]
 
     private var canCancel: Bool { router.signInReturnPoint != nil }
 
     var body: some View {
         TVSignInTargetContent(
             model: SignInTargetViewModel(context: context, servers: registry.sortedEntries),
+            marks: marks,
             canCancel: canCancel,
             actions: TVSignInTargetContent.Actions(
                 pick: pick,
@@ -41,6 +44,26 @@ struct TVSignInTargetScreen: View {
             MarqueeScene.shared.personalTint = nil
             router.signInContext = context
             await accounts.reloadDirectory()
+        }
+        .task { await loadMarks() }
+    }
+
+    /// The cached logos at once, then each server's current branding: a
+    /// server added from a phone was never read here.
+    private func loadMarks() async {
+        let addresses = registry.sortedEntries.map(\.url)
+        for address in addresses {
+            if let mark = ServerBrandingCache.branding(for: address)?.markURL { marks[address] = mark }
+        }
+        await withTaskGroup(of: (String, ServerBranding?).self) { group in
+            for address in addresses {
+                group.addTask { (address, await ServerBrandingLoader().branding(serverURL: address)) }
+            }
+            for await (address, branding) in group {
+                // An unreachable server keeps its cached logo.
+                guard let branding else { continue }
+                marks[address] = branding.markURL
+            }
         }
     }
 
@@ -86,6 +109,7 @@ struct TVSignInTargetContent: View {
     }
 
     let model: SignInTargetViewModel
+    var marks: [String: URL] = [:]
     var canCancel = false
     let actions: Actions
 
@@ -168,7 +192,7 @@ struct TVSignInTargetContent: View {
                     TVServerRowLabel(
                         name: row.name,
                         detail: ServerBranding.hostLabel(row.address),
-                        address: row.address
+                        markURL: marks[row.address]
                     )
                 }
                 .buttonStyle(TVServerRowStyle())
