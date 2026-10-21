@@ -168,14 +168,6 @@ final class BufferingQualityController {
         let remaining: TimeInterval
         /// Where a fresh timer starts, for drawing progress against it.
         let total: TimeInterval
-
-        /// How far the fill has crept, 0 when the pill appears and 1 when the
-        /// timer runs out.
-        func progress(at now: Date) -> Double {
-            guard total > 0 else { return 1 }
-            let left = deadline.map { $0.timeIntervalSince(now) } ?? remaining
-            return min(max(1 - left / total, 0), 1)
-        }
     }
 
     /// `buffering_action`: the last action on a plan.

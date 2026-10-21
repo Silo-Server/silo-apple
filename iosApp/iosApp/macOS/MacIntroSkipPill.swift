@@ -49,7 +49,7 @@ struct MacPlayerPillButton: View {
                     ZStack {
                         Capsule().fill(Color.black.opacity(isHovered ? 0.82 : 0.72))
                         if let pill {
-                            IntroSkipPillProgress(pill: pill, color: .white.opacity(0.18))
+                            PlayerPillProgress(pill: pill, color: .white.opacity(0.18))
                         }
                     }
                     .clipShape(Capsule())

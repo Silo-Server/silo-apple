@@ -68,7 +68,7 @@ private struct TVPlayerPillBody: View {
                 ZStack {
                     Capsule().fill(Color.black.opacity(0.65))
                     if let pill {
-                        IntroSkipPillProgress(pill: pill, color: fillColor)
+                        PlayerPillProgress(pill: pill, color: fillColor)
                     }
                 }
                 .clipShape(Capsule())

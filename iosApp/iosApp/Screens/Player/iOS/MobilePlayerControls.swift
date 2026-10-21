@@ -954,7 +954,7 @@ struct MobilePlayerPillButtonStyle: ButtonStyle {
                 ZStack {
                     Capsule().fill(Color.black.opacity(0.65))
                     if let pill {
-                        IntroSkipPillProgress(
+                        PlayerPillProgress(
                             pill: pill,
                             color: .white.opacity(configuration.isPressed ? 0.4 : 0.22)
                         )
