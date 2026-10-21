@@ -111,7 +111,12 @@ final class TVControlReceiver {
         category: "control.receiver"
     )
 
-    private init() {}
+    /// Poster and synopsis for the playing title, sent with its state.
+    private let nowPlayingMetadata = SiloControlNowPlayingMetadataResolver()
+
+    private init() {
+        nowPlayingMetadata.onChange = { [weak self] in self?.broadcastState() }
+    }
 
     func start(router: AppRouter) {
         self.router = router
@@ -297,6 +302,7 @@ final class TVControlReceiver {
         playerHandoffGeneration = nil
         stateTask?.cancel()
         stateTask = nil
+        nowPlayingMetadata.track(contentId: nil)
         refreshStandbyState()
         broadcastState()
         setPlaybackAdvertised(false)
@@ -994,6 +1000,8 @@ final class TVControlReceiver {
         guard playerViewModel != nil, controllers.values.contains(where: \.isAuthorized) else {
             stateTask?.cancel()
             stateTask = nil
+            // Nobody to send artwork to, so stop keeping its URL signed.
+            nowPlayingMetadata.track(contentId: nil)
             return
         }
         guard stateTask == nil else { return }
@@ -1006,10 +1014,18 @@ final class TVControlReceiver {
     }
 
     private func currentState() -> SiloControlPlaybackState {
-        if let playerViewModel {
-            return playerViewModel.makeSiloControlPlaybackState(contentId: playerContentId)
+        guard let playerViewModel else {
+            nowPlayingMetadata.track(contentId: nil)
+            return idleState()
         }
-        return idleState()
+        var state = playerViewModel.makeSiloControlPlaybackState(contentId: playerContentId)
+        // Follows the live content ID, so an autoplayed next episode drops
+        // the previous title's poster on its first tick.
+        nowPlayingMetadata.track(contentId: state.contentId)
+        let metadata = nowPlayingMetadata.metadata(for: state.contentId)
+        state.posterUrl = metadata?.posterUrl
+        state.overview = metadata?.overview
+        return state
     }
 
     /// Built once per tick and shared by every authorized controller.

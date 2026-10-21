@@ -258,6 +258,13 @@ struct SiloControlPlaybackState: Codable, Equatable, Sendable {
     let hasNextEpisode: Bool
     let nextEpisodeTitle: String?
     let error: String?
+    /// Absolute, signed poster URL for the playing title (the series poster
+    /// for an episode), so an integration can fetch artwork without its own
+    /// Silo sign-in. The TV re-signs it before it expires. Omitted when
+    /// unknown; older peers ignore it.
+    var posterUrl: String? = nil
+    /// Synopsis of the playing title. Omitted when unknown.
+    var overview: String? = nil
 }
 
 /// Thrown by `SiloControlCommand.init(from:)` for a command name this build
