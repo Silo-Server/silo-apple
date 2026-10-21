@@ -10,7 +10,7 @@ import XCTest
 /// Apple-only presentation rules the vectors do not reach.
 @MainActor
 final class BufferingQualityControllerTests: XCTestCase {
-    private typealias Controller = BufferingQualityController
+    fileprivate typealias Controller = BufferingQualityController
 
     // MARK: - Vectors
 
@@ -417,14 +417,14 @@ final class BufferingQualityControllerTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private static let ladder: [Controller.QualityRung] = [
+    fileprivate static let ladder: [Controller.QualityRung] = [
         .init(label: "original", bitrateKbps: 63_000),
         .init(label: "1080p-high", bitrateKbps: 10_000),
         .init(label: "1080p-medium", bitrateKbps: 6_000),
         .init(label: "720p-high", bitrateKbps: 4_000),
     ]
 
-    private static func plan(
+    fileprivate static func plan(
         _ id: String,
         delivered: Int? = 63_000,
         quality: String = "auto",
@@ -522,18 +522,10 @@ private final class Harness {
     /// The vectors' `undo` case: a long stall lowers Auto at 131000 and the
     /// lower plan's undo pill shows at 134000.
     func lowerAutomatically() {
-        startPlaying(.init(
-            id: "p1", deliveredKbps: 63_000, quality: "auto",
-            availableQualities: [.init(label: "1080p-high", bitrateKbps: 10_000)],
-            qualityReductionUnavailable: false
-        ))
+        startPlaying(BufferingQualityControllerTests.plan("p1"))
         at(125_000) { $0.waiting() }
         at(134_000) {
-            $0.planAdopted(.init(
-                id: "p2", deliveredKbps: 31_600, quality: "auto",
-                availableQualities: [.init(label: "1080p-high", bitrateKbps: 10_000)],
-                qualityReductionUnavailable: false
-            ))
+            $0.planAdopted(BufferingQualityControllerTests.plan("p2", delivered: 31_600))
             $0.playing()
         }
     }
