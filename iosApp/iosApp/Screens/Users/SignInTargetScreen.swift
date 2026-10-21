@@ -64,10 +64,11 @@ struct SignInTargetScreen: View {
             MarqueeScene.shared.showGeneric()
             await accounts.reloadDirectory()
         }
-        .task {
+        // Restarted, and the earlier load cancelled, when the servers change.
+        .task(id: accounts.auth.serverRegistry.sortedEntries.map(\.url)) {
             let addresses = accounts.auth.serverRegistry.sortedEntries.map(\.url)
             marks = ServerBrandingLoader.cachedMarks(for: addresses)
-            marks = await ServerBrandingLoader.currentMarks(for: addresses)
+            await ServerBrandingLoader.loadCurrentMarks(for: addresses) { marks[$0] = $1 }
         }
     }
 

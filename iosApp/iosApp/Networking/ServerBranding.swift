@@ -87,10 +87,15 @@ struct ServerBrandingLoader {
         return branding
     }
 
-    /// Each server's logo as it reads now, in parallel: a server without
-    /// one has no entry, and one that doesn't answer keeps its cached logo.
+    /// Reads each server's logo as it is now, in parallel, and publishes
+    /// each one as it arrives, so a slow server holds up only its own row.
+    /// A server without a logo publishes nil; one that doesn't answer keeps
+    /// its cached logo. Stops publishing once the calling task is cancelled.
     /// "Sign in to…" lists servers this device may never have read.
-    static func currentMarks(for serverURLs: [String]) async -> [String: URL] {
+    static func loadCurrentMarks(
+        for serverURLs: [String],
+        publish: @MainActor (_ serverURL: String, _ mark: URL?) -> Void
+    ) async {
         await withTaskGroup(of: (String, URL?).self) { group in
             for serverURL in serverURLs {
                 group.addTask {
@@ -100,15 +105,17 @@ struct ServerBrandingLoader {
                     return (serverURL, branding.markURL)
                 }
             }
-            var marks: [String: URL] = [:]
             for await (serverURL, mark) in group {
-                marks[serverURL] = mark
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                await publish(serverURL, mark)
             }
-            return marks
         }
     }
 
-    /// The logos cached for `serverURLs`, to show before `currentMarks`.
+    /// The logos cached for `serverURLs`, to show before `loadCurrentMarks`.
     static func cachedMarks(for serverURLs: [String]) -> [String: URL] {
         var marks: [String: URL] = [:]
         for serverURL in serverURLs {

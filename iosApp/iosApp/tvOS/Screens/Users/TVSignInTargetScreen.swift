@@ -45,14 +45,16 @@ struct TVSignInTargetScreen: View {
             router.signInContext = context
             await accounts.reloadDirectory()
         }
-        .task { await loadMarks() }
+        // Restarted, and the earlier load cancelled, when the servers change.
+        .task(id: registry.sortedEntries.map(\.url)) { await loadMarks() }
     }
 
-    /// The cached logos at once, then each server's current one.
+    /// The cached logos at once, then each server's current one as it
+    /// arrives.
     private func loadMarks() async {
         let addresses = registry.sortedEntries.map(\.url)
         marks = ServerBrandingLoader.cachedMarks(for: addresses)
-        marks = await ServerBrandingLoader.currentMarks(for: addresses)
+        await ServerBrandingLoader.loadCurrentMarks(for: addresses) { marks[$0] = $1 }
     }
 
     private func pick(_ serverID: String) {
