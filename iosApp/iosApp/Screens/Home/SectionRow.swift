@@ -5,6 +5,12 @@ extension ResolvedSection {
         let type = sectionType.lowercased()
         return type == "continue_watching" || type == "in_progress"
     }
+
+    /// Rows whose cards Home can dismiss: Continue Watching, and Next Up
+    /// when the profile shows it as its own row.
+    var offersHomeDismissal: Bool {
+        isContinueWatchingSection || sectionType.lowercased() == "next_up"
+    }
 }
 
 /// A single section row on the home screen.
@@ -154,9 +160,11 @@ struct SectionRow: View {
             focusRequest: focusRequest,
             focusRequestItemId: focusRequestItemId,
             detailReturnFocusRequest: detailReturnFocusRequest,
-            onRemoveFromContinueWatching: isContinueWatching ? onRemoveFromContinueWatching : nil,
+            onRemoveFromContinueWatching: section.offersHomeDismissal ? onRemoveFromContinueWatching : nil,
             onOpenContextDetail: nil,
             showsPlayInContextMenu: isContinueWatching,
+            // Home is the only caller with a removal handler.
+            showsSavedPlaybackMetadata: isContinueWatching && onRemoveFromContinueWatching != nil,
             onSetWatched: { item, played in
                 await setWatched(item, played: played)
             },

@@ -65,7 +65,8 @@ struct WatchPartyCommandState {
         case reset
         /// A command just ran; the rate stays until playback settles.
         case wait
-        /// Close this drift (room position minus local position) by rate.
+        /// Close this drift (room position minus local position) by rate, or
+        /// by an in-place seek where `WatchPartyCorrection.correctsByRate` is off.
         case nudge(Double)
     }
 
@@ -108,6 +109,20 @@ struct WatchPartyCommandState {
 
     /// The room's position at `serverNow`: a command carries the room's
     /// position at its execute time, and a playing room advances at 1x.
+    /// A stopped member joining a playing room seeks to where the room is,
+    /// and the room plays on for as long as that seek takes, so the member
+    /// would start that far behind (#825). Where to seek once more before it
+    /// plays, aimed ahead by the first seek's duration, or nil when it landed
+    /// within the deadband. The member is not playing yet, so this seek is
+    /// not seen.
+    static func realignFollowUp(_ command: WatchPartyTransportCommand, serverNow: Date,
+                                sourceTime: Double, seekTook: TimeInterval) -> Double? {
+        guard command.playbackState == .playing, sourceTime.isFinite, seekTook.isFinite else { return nil }
+        let room = projectedPosition(command, serverNow: serverNow)
+        guard abs(room - sourceTime) > WatchPartyCorrection.deadband else { return nil }
+        return room + min(WatchPartyInPlaceCatchup.maxLead, max(0, seekTook))
+    }
+
     static func projectedPosition(_ command: WatchPartyTransportCommand, serverNow: Date) -> Double {
         command.positionSeconds + (command.playbackState == .playing ? max(0, serverNow.timeIntervalSince(command.executeAt)) : 0)
     }

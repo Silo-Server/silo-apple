@@ -2143,8 +2143,8 @@ private struct RemotePlaybackRoutingModifier: ViewModifier {
                 // One routing decision for every streaming play on iOS: an
                 // engaged TV (including one mid-reconnect) takes the request;
                 // otherwise the local player opens as before.
-                router.remotePlaybackInterceptor = { [siloControl] request in
-                    await siloControl.launchOnEngagedTV(request)
+                router.remotePlaybackInterceptor = { [siloControl] request, replaceConsent in
+                    await siloControl.launchOnEngagedTV(request, replaceConsent: replaceConsent)
                 }
                 router.isRemotePlaybackEngaged = { [siloControl] in siloControl.remotePlaybackEngaged }
                 router.remotePlaybackCurrentTitle = { [siloControl] in

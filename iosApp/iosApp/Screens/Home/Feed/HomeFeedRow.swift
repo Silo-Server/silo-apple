@@ -145,9 +145,11 @@ struct HomeFeedRow: View {
         EpisodeCardCaption.accessibilityLabel(for: item)
     }
 
-    /// Removal is only offered where it means something — a resume row.
+    /// Removal is only offered where it means something: Continue Watching
+    /// or a separate Next Up row, on a card the server can dismiss.
     private func removalAction(for item: SectionItem) -> (() -> Void)? {
-        guard isResume, let onRemoveFromContinueWatching else { return nil }
+        guard section.offersHomeDismissal, HomeDismissal(item) != nil,
+              let onRemoveFromContinueWatching else { return nil }
         return { onRemoveFromContinueWatching(item) }
     }
 

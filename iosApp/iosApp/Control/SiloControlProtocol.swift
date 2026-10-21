@@ -10,6 +10,53 @@ enum SiloControlProtocol {
     }
 }
 
+/// Optional behaviors a peer lists in its hello. Each side uses one only when
+/// the other side listed it too, so new fields, payloads and reasons never
+/// reach a build that would misread them. Peers ignore names they don't know.
+enum SiloControlFeature {
+    /// The receiver keeps other controllers connected. A `close` from it
+    /// concerns this controller alone, never a takeover.
+    static let multiController = "multi_controller"
+    /// `close` may carry a reason (`SiloControlCloseReason`).
+    static let closeReason = "close_reason"
+    /// The receiver issues `resumeToken` in `handoff_ready`; the controller
+    /// sends it back to reuse that identity from a later connection.
+    static let resumeToken = "resume_token"
+    /// The receiver refuses a handoff that would replace another profile's
+    /// title with `handoff_cancel` reason `replace_confirmation_required`,
+    /// and the controller resends with `replaceConfirmed` after asking.
+    static let replaceConfirmation = "replace_confirmation"
+    /// The receiver accepts `presence`, so a controller can change its
+    /// `passive` flag without reconnecting.
+    static let presence = "presence"
+
+    static let receiverFeatures = [multiController, closeReason, resumeToken, replaceConfirmation, presence]
+    static let phoneFeatures = [closeReason, resumeToken, replaceConfirmation]
+}
+
+/// Why a peer closed the session. Sent only to peers that list
+/// `SiloControlFeature.closeReason`.
+enum SiloControlCloseReason {
+    /// A newer connection from the same device took this one's place.
+    static let replaced = "replaced"
+    /// Someone disconnected remote control on the TV.
+    static let tvDisconnected = "tv_disconnected"
+    /// The receiver is at its controller limit.
+    static let tooManyControllers = "too_many_controllers"
+    /// The peer never sent hello, or stopped answering pings.
+    static let timeout = "timeout"
+    /// The peer can't be authorized (version or server mismatch).
+    static let unauthorized = "unauthorized"
+    /// A borrowed profile was never used and has been handed back.
+    static let launchTimeout = "launch_timeout"
+}
+
+/// Values for `SiloControlHello.clientKind`. Absent means a Silo app.
+enum SiloControlClientKind {
+    /// A home-automation or other third-party integration.
+    static let integration = "integration"
+}
+
 enum SiloControlPeerRole: String, Codable, Equatable, Sendable {
     case phone
     case tv
@@ -26,6 +73,19 @@ struct SiloControlHello: Codable, Equatable, Sendable {
     /// it. Lets a phone and a TV on different addresses of one server
     /// recognise each other. Optional on the wire: older peers omit it.
     var serverIdentity: String? = nil
+    /// `SiloControlFeature` names this peer supports. Absent from older
+    /// peers, which support none of them.
+    var features: [String]? = nil
+    /// A controller that only watches state: a phone's silent auto-resume or
+    /// an integration. It never puts up the TV's standby screen.
+    var passive: Bool? = nil
+    /// `SiloControlClientKind`. `role` stays `phone` for integrations,
+    /// because shipped receivers fail to decode any other role.
+    var clientKind: String? = nil
+
+    func supports(_ feature: String) -> Bool {
+        features?.contains(feature) == true
+    }
 }
 
 struct SiloControlPlaybackRequest: Codable, Equatable, Sendable {
@@ -54,6 +114,9 @@ struct SiloControlHandoffOffer: Codable, Equatable, Sendable {
     let profileId: String
     /// Display-only label for the verified profile ID. Older peers omit it.
     let profileName: String?
+    /// Display-only: what the phone is about to launch, for a TV that shows
+    /// it while the handoff runs. Older peers omit and ignore it.
+    var title: String? = nil
     /// The deployment identity the phone verified at `serverURL`. When
     /// present the TV may reach the server through any candidate address
     /// that reports the same identity. Absent from older phones, in which
@@ -62,6 +125,16 @@ struct SiloControlHandoffOffer: Codable, Equatable, Sendable {
     /// Other addresses the deployment offers, from its connections document.
     /// Public first, then providers. Reachability is the TV's to test.
     var serverEndpoints: [ServerEndpoint]? = nil
+    /// The token from an earlier `handoff_ready`, to reuse that identity
+    /// from a new connection without another approval.
+    var resumeToken: String? = nil
+    /// The user agreed to replace a title another profile started, after the
+    /// TV answered `replace_confirmation_required`.
+    var replaceConfirmed: Bool? = nil
+    /// With `replaceConfirmed`: the `contentId` of the title the user agreed
+    /// to replace. The TV honors the confirmation only while that title is
+    /// still the one on screen.
+    var replacingContentId: String? = nil
 
     /// Whether `serverId` is the registry key of `serverURL`
     /// (`ServerRegistry.serverId(for:)`). A TV refuses an offer that fails
@@ -85,12 +158,51 @@ struct SiloControlHandoffReady: Codable, Equatable, Sendable {
     let profileId: String
     let sessionExpiresAt: String
     let reused: Bool
+    /// Proof for reusing this identity from a later connection. Sent only to
+    /// controllers that list `SiloControlFeature.resumeToken`, over the
+    /// session's TLS channel; never shared with other controllers.
+    var resumeToken: String? = nil
 }
 
 struct SiloControlHandoffCancel: Codable, Equatable, Sendable {
     let requestId: String
     let reason: String
     let message: String?
+    /// With reason `replace_confirmation_required`: the title the handoff
+    /// would replace, so the controller can ask its user.
+    var nowPlaying: SiloControlNowPlayingSummary? = nil
+}
+
+enum SiloControlHandoffCancelReason {
+    /// A newer handoff from another controller replaced this one, or another
+    /// controller's identity is now active.
+    static let superseded = "superseded"
+    /// The handoff would replace a title another profile started. Resend the
+    /// offer with `replaceConfirmed` once the user agrees.
+    static let replaceConfirmationRequired = "replace_confirmation_required"
+}
+
+/// What a controller needs to ask "Replace what Alex is watching?".
+struct SiloControlNowPlayingSummary: Codable, Equatable, Sendable {
+    let contentId: String?
+    let title: String
+    let subtitle: String?
+    let profileName: String?
+    let controllerName: String?
+}
+
+/// The user's agreement to replace one particular title on the TV, carried
+/// from the prompt to the offer's `replacingContentId`.
+struct SiloControlReplaceConsent: Equatable, Sendable {
+    /// The title the user saw when agreeing; nil when the TV didn't say.
+    let contentId: String?
+}
+
+/// A controller's `passive` flag after hello. Sent only to receivers that
+/// list `SiloControlFeature.presence`; older receivers drop the connection
+/// on a message type they don't know.
+struct SiloControlPresence: Codable, Equatable, Sendable {
+    let passive: Bool
 }
 
 struct SiloControlTrack: Codable, Equatable, Identifiable, Sendable {
@@ -298,17 +410,30 @@ enum SiloControlMessage: Equatable, Sendable {
     /// implement — typically a v2 peer that predates the command's removal.
     /// Receivers ignore it; the connection survives.
     case unsupportedControl(name: String)
+    /// A frame whose `type` this build doesn't know — typically a newer peer
+    /// using a message added after this build shipped. Receivers ignore it;
+    /// the connection survives. A known `type` with a malformed payload is
+    /// still a decode error.
+    case unsupported(type: String)
     case state(SiloControlPlaybackState)
     case error(SiloControlErrorMessage)
+    case presence(SiloControlPresence)
     case ping
     case pong
-    case close
+    /// `reason` is a `SiloControlCloseReason`, sent only to peers that list
+    /// `SiloControlFeature.closeReason`; older peers get a bare `close`.
+    case close(reason: String?)
+}
+
+/// The optional `close` payload.
+private struct SiloControlClosePayload: Codable {
+    let reason: String
 }
 
 extension SiloControlMessage: Codable {
     private enum CodingKeys: String, CodingKey {
         case type, v
-        case hello, launch, control, state, error
+        case hello, launch, control, state, error, close, presence
         case handoffOffer, handoffChallenge, handoffReady, handoffCancel
     }
 
@@ -322,6 +447,7 @@ extension SiloControlMessage: Codable {
         case control
         case state
         case error
+        case presence
         case ping
         case pong
         case close
@@ -366,18 +492,36 @@ extension SiloControlMessage: Codable {
         case .error(let error):
             try c.encode(Kind.error, forKey: .type)
             try c.encode(error, forKey: .error)
+        case .presence(let presence):
+            try c.encode(Kind.presence, forKey: .type)
+            try c.encode(presence, forKey: .presence)
         case .ping:
             try c.encode(Kind.ping, forKey: .type)
         case .pong:
             try c.encode(Kind.pong, forKey: .type)
-        case .close:
+        case .close(let reason):
             try c.encode(Kind.close, forKey: .type)
+            if let reason {
+                try c.encode(SiloControlClosePayload(reason: reason), forKey: .close)
+            }
+        case .unsupported(let type):
+            // Re-emit the original type so the frame round-trips back to
+            // `.unsupported`. The payload is dropped: this build can't
+            // interpret it.
+            try c.encode(type, forKey: .type)
         }
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let kind = try c.decode(Kind.self, forKey: .type)
+        // Decode `type` as a raw string rather than letting the `Kind` enum
+        // reject it: `FramedJSONSession` tears the connection down on any
+        // decode error, so one frame from a newer peer would end the session.
+        let rawType = try c.decode(String.self, forKey: .type)
+        guard let kind = Kind(rawValue: rawType) else {
+            self = .unsupported(type: rawType)
+            return
+        }
         switch kind {
         case .hello:
             self = .hello(try c.decode(SiloControlHello.self, forKey: .hello))
@@ -401,12 +545,15 @@ extension SiloControlMessage: Codable {
             self = .state(try c.decode(SiloControlPlaybackState.self, forKey: .state))
         case .error:
             self = .error(try c.decode(SiloControlErrorMessage.self, forKey: .error))
+        case .presence:
+            self = .presence(try c.decode(SiloControlPresence.self, forKey: .presence))
         case .ping:
             self = .ping
         case .pong:
             self = .pong
         case .close:
-            self = .close
+            let payload = try? c.decodeIfPresent(SiloControlClosePayload.self, forKey: .close)
+            self = .close(reason: payload?.reason)
         }
     }
 }

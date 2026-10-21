@@ -594,6 +594,10 @@ struct ItemExtra: Codable, Hashable, Identifiable {
     /// `durationSeconds` and `fileId` are `omitempty` server-side: absent at zero.
     let durationSeconds: Int?
     let fileId: Int?
+    /// 16:9 card image: a sidecar beside the extra's file or a frame of the
+    /// video. Absent when the server has none yet.
+    @ArtworkURL var stillUrl: String? = nil
+    var stillThumbhash: String? = nil
     var id: String { contentId }
 
     init(
@@ -601,13 +605,17 @@ struct ItemExtra: Codable, Hashable, Identifiable {
         kind: String,
         title: String? = nil,
         durationSeconds: Int? = nil,
-        fileId: Int? = nil
+        fileId: Int? = nil,
+        stillUrl: String? = nil,
+        stillThumbhash: String? = nil
     ) {
         self.contentId = contentId
         self.kind = kind
         self.title = title
         self.durationSeconds = durationSeconds
         self.fileId = fileId
+        self.stillUrl = stillUrl
+        self.stillThumbhash = stillThumbhash
     }
 }
 

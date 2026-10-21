@@ -28,6 +28,9 @@ struct EpisodeThumbCard: View {
     var onOpenContextDetail: (() -> Void)? = nil
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
+    /// tvOS: loads the version saved with the card's progress and shows its
+    /// format pills (`TVContinueWatchingPlaybackMetadataStore`).
+    var showsSavedPlaybackMetadata = false
     /// Unscaled card width; nil keeps `SiloTheme.thumbnailCardWidth`. The
     /// Poster Size setting scales either one.
     var baseCardWidth: CGFloat? = nil
@@ -104,7 +107,7 @@ struct EpisodeThumbCard: View {
             personalState.reset()
         }
         .task(id: continueWatchingMetadataTaskId) {
-            guard onRemoveFromContinueWatching != nil else { return }
+            guard showsSavedPlaybackMetadata else { return }
             _ = await continueWatchingMetadata.load(item: item, libraryId: browseLibraryId)
         }
         #else
@@ -235,7 +238,7 @@ struct EpisodeThumbCard: View {
 
     private var resolvedOverlayData: OverlayData {
         #if os(tvOS)
-        if onRemoveFromContinueWatching != nil,
+        if showsSavedPlaybackMetadata,
            let presentation = continueWatchingMetadata.presentation(for: item.contentId, libraryId: browseLibraryId) {
             return presentation.overlayData
         }
@@ -244,7 +247,7 @@ struct EpisodeThumbCard: View {
     }
 
     private var continueWatchingMetadataTaskId: String {
-        "\(CacheKey.itemDetail(item.contentId, libraryId: browseLibraryId))#\(item.progressUpdatedAt ?? "")#\(onRemoveFromContinueWatching != nil)"
+        "\(CacheKey.itemDetail(item.contentId, libraryId: browseLibraryId))#\(item.progressUpdatedAt ?? "")#\(showsSavedPlaybackMetadata)"
     }
 
     // MARK: - Derived data
@@ -411,7 +414,7 @@ struct EpisodeThumbCard: View {
             Button(role: .destructive) {
                 onRemoveFromContinueWatching()
             } label: {
-                Label("Remove from Continue Watching", systemImage: "xmark.circle")
+                Label(HomeDismissal.menuTitle(for: item), systemImage: "xmark.circle")
             }
         }
     }

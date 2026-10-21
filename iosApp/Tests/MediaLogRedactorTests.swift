@@ -215,8 +215,11 @@ final class MediaLogRedactorTests: XCTestCase {
                 + "C -39.0/-13.0, LFE -30.3/-11.8, Ls -42.6/-24.1, Rs -41.8/-24.1, Rls -40.8/-23.1, "
                 + "Rrs -39.6/-23.9, Vhl -35.3/-16.9, Vhr -35.4/-16.8, Ltr -31.8/-11.4, Rtr -31.6/-11.5; "
                 + "objects: up to 15 active, 12 elevated",
-            "[HLSVideoEngine] TrueHD Atmos: objects rendered into 7.1.4, delivered as apac.31.03 "
-                + "(lossy; the lossless 7.1 channel presentation is not used)",
+            "[HLSVideoEngine] TrueHD Atmos: channel presentation split into 7.1.4 by the objects' energy, "
+                + "delivered as apac.31.03 (lossy)",
+            "[HLSVideoEngine] DTS:X: bed and heights routed one to one into 7.1.4, delivered as apac.31.03 (lossy)",
+            "[HLSVideoEngine] DTS-HD MA track is not DTS:X LibDTSX renders (alternate presentation); "
+                + "keeping the channel bridge",
             "[HLSVideoEngine] TrueHD Atmos with objectAudioRendering off; the channel bridge carries the 7.1 "
                 + "presentation, with the objects mixed into the floor channels",
             #"[HLSVideoEngine] master audio: codecs="avc1.640029,apac.31.03" audioRendition=no channels=none"#,

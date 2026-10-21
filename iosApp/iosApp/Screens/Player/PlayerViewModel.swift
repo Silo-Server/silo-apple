@@ -1100,6 +1100,10 @@ class PlayerViewModel {
     /// plays; a paused member picks the rate up when it next plays.
     private var watchPartyAppliedRate: Double?
     private var watchPartyReloadBudget = WatchPartyReloadBudget()
+    /// Where a member that does not correct by rate aims its next in-place
+    /// seek, and the drift loop's seek while it runs.
+    private var watchPartyInPlaceCatchup = WatchPartyInPlaceCatchup()
+    private var watchPartyInPlaceSeekTask: Task<Void, Never>?
     var isWatchPartyPlayback: Bool { watchPartyAdapter?.context != nil }
     var canRequestPlayPause: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canPlayPause == true }
     var canRequestSeek: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canSeek == true }
@@ -2080,11 +2084,16 @@ class PlayerViewModel {
     }
 
     /// Only static-header transports need replacement after API rotation.
-    /// Server HLS and direct play with video resolve the current credential
-    /// for each request; audio-only media keeps the headers it opened with.
+    /// Server HLS resolves the current credential for each request, and direct
+    /// play with video takes it pushed into the engine; audio-only media keeps
+    /// the headers it opened with.
     private func attemptProtocolV3AuthenticationReloadAfterProgress(
         _ result: PlaybackProgressReportResult
     ) async {
+        if result == .success, aetherPlaybackController.activeSpec?.requestHeaderResolver != nil {
+            aetherPlaybackController.refreshRequestHeaders()
+            return
+        }
         guard result == .success,
               protocolV3ReplanTask == nil,
               let protocolV3 = activePreparedProtocolV3,
@@ -3519,16 +3528,37 @@ class PlayerViewModel {
         explicitQualityPick.map { $0.contentId == contentId } ?? false
     }
 
-    /// The in-player menu row to light. Auto only while the session's
-    /// preference is auto; a fixed rung only when the viewer picked it for
-    /// this title. A fixed saved resolution (1080p, say) lights nothing, even
-    /// when a rung shares its name, so Auto stays a choice the viewer can make.
+    /// The in-player menu row to light; see
+    /// `ApplePlaybackQuality.highlightedOptionId`.
     var highlightedQualityOptionId: String? {
-        let active = ApplePlaybackQuality.protocolV3QualityId(activeQualityId)
-        if active == ApplePlaybackQuality.autoId { return ApplePlaybackQuality.autoId }
-        guard let pick = explicitQualityPick,
-              ApplePlaybackQuality.protocolV3QualityId(pick.qualityId) == active else { return nil }
-        return active
+        ApplePlaybackQuality.highlightedOptionId(
+            sessionQualityId: activeQualityId,
+            viewerPickId: explicitQualityPick?.qualityId,
+            planActiveQuality: activePreparedProtocolV3?.plan.activeQuality,
+            planReportsActiveQuality: activePreparedProtocolV3?.serverFeatures
+                .contains(PlaybackProtocolV3.planActiveQualityFeature) ?? false,
+            options: qualityOptions
+        )
+    }
+
+    /// The lit menu row, which names the quality the pill and labels show.
+    /// Without one they fall back to the session's own preference.
+    var activeQualityOption: ApplePlaybackQualityOption? {
+        highlightedQualityOptionId.flatMap { id in qualityOptions.first { $0.id == id } }
+    }
+
+    /// The quality SiloRemote checks and reads out: the lit row, or with none
+    /// the session's resolution. The remote checks whichever row matches, so
+    /// a resolution a row is named after (or a server rung id Settings can't
+    /// split) goes as its display name instead.
+    private var remoteActiveQualityId: String {
+        if let lit = highlightedQualityOptionId { return lit }
+        let resolution = AppleQualityAxes.split(activeQualityId).resolution
+        guard resolution != ApplePlaybackQuality.autoId,
+              !qualityOptions.contains(where: { $0.id == resolution }) else {
+            return ApplePlaybackQuality.displayName(for: activeQualityId)
+        }
+        return resolution
     }
 
     func playOnDeckItemNow(_ item: PlayerOnDeckItem) {
@@ -3885,23 +3915,20 @@ class PlayerViewModel {
         let audioBridgeMode: AudioBridgeMode = settings.losslessAudioEnabled
             ? .lossless
             : .surroundCompat
-        // TrueHD Atmos keeps its heights when the setting is on and, on Apple TV, the output reports
-        // Atmos; Aether applies it to Atmos TrueHD alone and keeps `audioBridgeMode` for the rest.
+        // TrueHD Atmos and DTS:X keep their heights when the setting is on; Aether applies it to those
+        // tracks alone and keeps `audioBridgeMode` for the rest.
         #if os(tvOS)
         let renderingMode = AVAudioSession.sharedInstance().renderingMode
-        let atmosOutput = AetherObjectAudioPolicy.currentOutput(renderingMode)
         let renderingModeField = " renderingMode=\(AetherObjectAudioPolicy.renderingModeName(renderingMode))"
         #else
-        let atmosOutput = AetherObjectAudioPolicy.Output.unknown
         let renderingModeField = ""
         #endif
         let trueHDAtmosEnabled = settings.trueHDAtmosEnabled
-        let objectAudioRendering = AetherObjectAudioPolicy.rendering(
-            enabled: trueHDAtmosEnabled, output: atmosOutput)
+        let objectAudioRendering = AetherObjectAudioPolicy.rendering(enabled: trueHDAtmosEnabled)
         // Essential tier, so a report without Debug Logging says which path
         // TrueHD Atmos was offered; the engine logs what it then built.
         cmpLog(
-            "[CMP-ATMOS] setting=\(trueHDAtmosEnabled)\(renderingModeField) output=\(atmosOutput) "
+            "[CMP-ATMOS] setting=\(trueHDAtmosEnabled)\(renderingModeField) "
                 + "rendering=\(AetherObjectAudioPolicy.diagnosticName(objectAudioRendering))"
         )
         let deinterlaceMode: DeinterlaceMode = settings.deinterlaceMode == .software
@@ -3964,12 +3991,13 @@ class PlayerViewModel {
                 audioSourceStreamIndex = nil
             }
             let requestAuthorization: HTTPRequestAuthorization?
+            let requestHeaderResolver: HTTPRequestAuthorization.Resolver?
             let subtitleRequestAuthorization: HTTPRequestAuthorization?
             if resolvesRequestCredentials {
                 guard let owner = streamRequest.capturedAuth else {
                     throw HTTPError.requestIdentityChanged
                 }
-                requestAuthorization = try PlaybackMediaAuthorization.make(
+                let resolver = try PlaybackMediaAuthorization.makeResolver(
                     sourceURL: streamRequest.url,
                     serverURL: streamRequest.serverUrl,
                     transportServerURL: streamRequest.localRoute?.localOrigin,
@@ -3978,6 +4006,8 @@ class PlayerViewModel {
                     baseHeaders: streamRequest.headers,
                     http: SiloAPI.shared.http
                 )
+                requestHeaderResolver = resolver
+                requestAuthorization = HTTPRequestAuthorization(resolver: resolver)
                 subtitleRequestAuthorization = try PlaybackMediaAuthorization.makeSubtitleAuthorization(
                     serverURL: streamRequest.serverUrl,
                     sessionID: prepared.session.sessionId,
@@ -3987,6 +4017,7 @@ class PlayerViewModel {
                 )
             } else {
                 requestAuthorization = nil
+                requestHeaderResolver = nil
                 subtitleRequestAuthorization = nil
             }
             spec = try AetherLoadSpec(
@@ -3996,6 +4027,7 @@ class PlayerViewModel {
                 sourceURLOverride: streamRequest.url,
                 requestHeaders: streamRequest.headers,
                 requestAuthorization: requestAuthorization,
+                requestHeaderResolver: requestHeaderResolver,
                 subtitleRequestAuthorization: subtitleRequestAuthorization,
                 // Subtitle artifacts, inventory sidecars and font bundles stay
                 // relative API-origin routes even when the media itself moved
@@ -6287,9 +6319,15 @@ class PlayerViewModel {
         let resolvedQualityId = activePreparedProtocolV3 == nil
             ? ApplePlaybackQuality.normalizeStoredId(qualityId)
             : ApplePlaybackQuality.protocolV3QualityId(qualityId)
-        // Compared with the lit row, not the session preference: a fixed
-        // saved resolution lights nothing, so its rung stays a real pick.
-        guard resolvedQualityId != highlightedQualityOptionId || qualitySwitchError != nil else { return }
+        // Only Auto, or the viewer's own pick, is already in force. A row lit
+        // because the saved settings landed on it is still a real pick: it
+        // holds that rung for this title over connection changes.
+        let isAlreadyPicked = resolvedQualityId == highlightedQualityOptionId
+            && (resolvedQualityId == ApplePlaybackQuality.autoId
+                || explicitQualityPick.map {
+                    ApplePlaybackQuality.protocolV3QualityId($0.qualityId) == resolvedQualityId
+                } == true)
+        guard !isAlreadyPicked || qualitySwitchError != nil else { return }
 
         let target = currentTime.isFinite ? max(0, currentTime) : 0
         // Read once: the request and the pick's record must agree on which
@@ -8709,6 +8747,16 @@ class PlayerViewModel {
         requestRemoteDismiss(after: 0.8)
     }
 
+    /// Stops playback and its server session now, then asks the view to
+    /// close however it was shown: a cover, or on tvOS a pushed route that
+    /// clearing `presentedPlayer` doesn't reach. The TV's remote receiver
+    /// uses this, so a phone taking over never leaves the outgoing title
+    /// playing under the next one.
+    func stopAndClose() {
+        cleanup()
+        requestRemoteDismiss()
+    }
+
     private func requestRemoteDismiss(after delay: TimeInterval = 0) {
         noticeDismissTask?.cancel()
         remoteDismissTask?.cancel()
@@ -9875,7 +9923,7 @@ extension PlayerViewModel {
             selectedAudioTrackId: selectedAudioId,
             selectedSubtitleTrackId: selectedSubtitleId,
             qualityOptions: hasQualityChoice ? qualityOptions.map(makeSiloControlOption) : [],
-            activeQualityId: activeQualityId,
+            activeQualityId: remoteActiveQualityId,
             isQualitySwitching: isQualitySwitching,
             playbackSpeed: effectivePlaybackSpeed,
             videoGravity: settings.videoGravity.rawValue,
@@ -9926,6 +9974,9 @@ extension PlayerViewModel {
         cancelWatchPartyCorrection()
         watchPartyAppliedRate = nil
         watchPartyReloadBudget = WatchPartyReloadBudget()
+        watchPartyInPlaceSeekTask?.cancel()
+        watchPartyInPlaceSeekTask = nil
+        watchPartyInPlaceCatchup = WatchPartyInPlaceCatchup()
         aetherPlaybackController.requiresExplicitTransportResume = true
         aetherPlaybackController.permitsExternalPlayback = false
         #if os(iOS)
@@ -10016,6 +10067,7 @@ extension PlayerViewModel {
     }
 
     func watchPartyRoomCommandStarts(seekingTo position: Double?) {
+        if position != nil { watchPartyInPlaceCatchup.forgetLanding() }
         guard watchPartyHeldSeek?.isReleased(byCommandSeekingTo: position) == true else { return }
         releaseWatchPartyHeldSeek()
     }
@@ -10047,7 +10099,8 @@ extension PlayerViewModel {
     /// Applies a room command to a playing member: drift up to `seekBand`
     /// converges by rate, larger drift seeks to media already buffered or
     /// takes a budgeted load for media that is not. Returns without waiting
-    /// for a rate nudge, so the member keeps reporting meanwhile.
+    /// for a rate nudge, so the member keeps reporting meanwhile. A member
+    /// that does not correct by rate seeks in place instead of nudging.
     func correctWatchPartyPlayback(
         to position: Double, seekBand: Double, context: WatchPartyPlaybackContext
     ) async throws -> WatchPartyPlaybackSnapshot {
@@ -10055,19 +10108,51 @@ extension PlayerViewModel {
               watchPartyAdapter?.context == context else { throw WatchPartyPlaybackError.invalidated }
         let local = watchPartyPlaybackSnapshot.sourceTime
         guard WatchPartyCorrection.seeks(drift: position - local, band: seekBand) else {
+            guard WatchPartyCorrection.correctsByRate else {
+                guard watchPartyInPlaceSeekTask == nil else { return watchPartyPlaybackSnapshot }
+                // Without rate or an in-place seek this drift would never
+                // close; the reload budget paces the rebuild, as on Android.
+                if watchPartyHeldSeek == nil, abs(position - local) > WatchPartyCorrection.inPlaceSeek,
+                   !watchPartyTargetReachableInPlace(position) {
+                    return try await loadWatchPartyCorrection(to: position, context: context)
+                }
+                return try await seekWatchPartyInPlace(drift: position - local, context: context)
+            }
             nudgeWatchPartyPlayback(drift: position - local)
             return watchPartyPlaybackSnapshot
         }
         if watchPartyTargetReachableInPlace(position) {
-            return try await applyWatchPartyTransport(.seek(position), context: context, origin: .realign)
+            guard !WatchPartyCorrection.correctsByRate else {
+                return try await applyWatchPartyTransport(.seek(position), context: context, origin: .realign)
+            }
+            // Aimed and spaced like the in-place catch-up, so this seek's own
+            // shortfall does not draw a second one from the drift loop.
+            let led = position + watchPartyInPlaceCatchup.lead
+            let target = watchPartyTargetReachableInPlace(led) ? led : position
+            let generation = watchPartyInPlaceCatchup.generation
+            defer { noteWatchPartyInPlaceSeekFinished(context: context, generation: generation) }
+            return try await applyWatchPartyTransport(.seek(target), context: context, origin: .realign)
         }
         return try await loadWatchPartyCorrection(to: position, context: context)
     }
 
     /// Converges a playing member on the room by playback rate, with the
     /// hysteresis in `WatchPartyCorrection.nudge`. It never seeks, and it
-    /// leaves a correction load in flight to land first.
+    /// leaves a correction load in flight to land first. A member that does
+    /// not correct by rate takes an in-place seek instead, without holding
+    /// up the drift loop that calls this.
     func nudgeWatchPartyPlayback(drift: Double) {
+        guard WatchPartyCorrection.correctsByRate else {
+            guard isWatchPartyPlayback, !isDisposed, watchPartyInPlaceSeekTask == nil,
+                  let context = watchPartyAdapter?.context else { return }
+            watchPartyInPlaceSeekTask = Task { [weak self] in
+                guard let self else { return }
+                _ = try? await self.seekWatchPartyInPlace(drift: drift, context: context)
+                guard !Task.isCancelled else { return }
+                self.watchPartyInPlaceSeekTask = nil
+            }
+            return
+        }
         let snapshot = watchPartyPlaybackSnapshot
         guard isWatchPartyPlayback, !isDisposed, !watchPartyReloadBudget.inFlight(at: Date()),
               snapshot.isPlaying, snapshot.isReady, !snapshot.isBuffering else { return }
@@ -10076,6 +10161,46 @@ extension PlayerViewModel {
         guard rate != watchPartyCorrectionRate else { return }
         watchPartyCorrectionRate = rate
         syncWatchPartyRate()
+    }
+
+    /// Closes a playing member's drift with one in-place seek when it does
+    /// not correct by rate, aimed by `WatchPartyInPlaceCatchup`. Drift within
+    /// `WatchPartyCorrection.inPlaceSeek` stays, and a room position outside
+    /// the buffer is left to the server's corrections.
+    private func seekWatchPartyInPlace(
+        drift: Double, context: WatchPartyPlaybackContext
+    ) async throws -> WatchPartyPlaybackSnapshot {
+        let snapshot = watchPartyPlaybackSnapshot
+        // A held skip is the room's to move; a correction load lands first.
+        guard watchPartyHeldSeek == nil, !watchPartyReloadBudget.inFlight(at: Date()),
+              snapshot.isPlaying, snapshot.isReady, !snapshot.isBuffering else { return snapshot }
+        // Within `inPlaceSeek` this member has converged: it leaves that drift.
+        if abs(drift) <= WatchPartyCorrection.inPlaceSeek { watchPartyReloadBudget.settle() }
+        guard let led = watchPartyInPlaceCatchup.step(drift: drift, local: snapshot.sourceTime, at: Date())
+        else { return snapshot }
+        // A led target outside the buffer would rebuild the stream; the room
+        // position itself may still be in it.
+        let room = max(0, snapshot.sourceTime + drift)
+        let target: Double
+        if watchPartyTargetReachableInPlace(led) {
+            target = led
+        } else if watchPartyTargetReachableInPlace(room) {
+            target = room
+        } else {
+            return snapshot
+        }
+        // A failed seek is spaced like a landed one, so it cannot repeat on
+        // every loop tick.
+        let generation = watchPartyInPlaceCatchup.generation
+        defer { noteWatchPartyInPlaceSeekFinished(context: context, generation: generation) }
+        return try await applyWatchPartyTransport(.seek(target), context: context, origin: .realign)
+    }
+
+    /// Records the end of a correction seek, landed or failed, unless a new
+    /// selection replaced the catch-up state while it ran.
+    private func noteWatchPartyInPlaceSeekFinished(context: WatchPartyPlaybackContext, generation: UInt64) {
+        guard watchPartyAdapter?.context == context else { return }
+        watchPartyInPlaceCatchup.seekFinished(at: Date(), generation: generation)
     }
 
     /// Whether a seek to `position` lands in media this member already has.

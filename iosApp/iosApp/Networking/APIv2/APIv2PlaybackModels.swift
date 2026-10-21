@@ -121,6 +121,7 @@ struct APIv2PlaybackPlan: Decodable {
     let source: APIv2PlaybackSource
     let subtitleFidelityPolicy: String
     let availableQualities: [PlaybackV3AvailableQuality]
+    let activeQuality: String?
 
     func legacy() throws -> PlaybackV3Plan {
         PlaybackV3Plan(
@@ -145,7 +146,8 @@ struct APIv2PlaybackPlan: Decodable {
             effectiveMediaFileId: try APIv2PlaybackID.legacy(effectiveMediaFileId),
             source: try source.legacy(),
             subtitleFidelityPolicy: subtitleFidelityPolicy,
-            availableQualities: availableQualities)
+            availableQualities: availableQualities,
+            activeQuality: activeQuality)
     }
 }
 

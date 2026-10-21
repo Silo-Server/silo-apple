@@ -911,7 +911,8 @@ private struct WatchPartyEpisodePicker: View {
                         .padding(.horizontal, -WatchPartyMetrics.pageInset)
                     }
                 }
-                .frame(height: 400 * 9 / 16 + 120, alignment: .top)
+                // Still, caption, and room for the focused card's lift.
+                .frame(height: 400 * 9 / 16 + TVEpisodeCardCaptionMetrics.plainHeight + 72, alignment: .top)
                 .focusSection()
             }
             .padding(.horizontal, WatchPartyMetrics.pageInset)

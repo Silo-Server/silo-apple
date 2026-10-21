@@ -144,6 +144,35 @@ enum ApplePlaybackQuality {
         return [auto] + planned
     }
 
+    /// The in-player menu row to light. Auto only while the session's
+    /// preference is auto, so a fixed preference leaves Auto a choice the
+    /// viewer can make. Otherwise the server's word on which row the plan
+    /// delivers (`planActiveQuality`), which may be none: the source playing
+    /// unchanged, or an encode between two rungs. A server that predates that
+    /// word lights only the rung the viewer picked: a saved setting's local id
+    /// names no plan row, even where the names match (Apple's local
+    /// `1080p-medium` is 12 Mbps, the server's 6 Mbps).
+    static func highlightedOptionId(
+        sessionQualityId: String,
+        viewerPickId: String?,
+        planActiveQuality: String?,
+        planReportsActiveQuality: Bool,
+        options: [ApplePlaybackQualityOption]
+    ) -> String? {
+        let session = protocolV3QualityId(sessionQualityId)
+        if session == autoId { return autoId }
+        let row: String?
+        if planReportsActiveQuality {
+            row = planActiveQuality.map(protocolV3QualityId)
+        } else if let pick = viewerPickId.map(protocolV3QualityId), pick == session {
+            row = pick
+        } else {
+            row = nil
+        }
+        guard let row, row != autoId, options.contains(where: { $0.id == row }) else { return nil }
+        return row
+    }
+
     /// Whether the plan offers a fixed quality to pick. Auto is added by the
     /// client, so a menu holding only Auto is no choice.
     static func hasChoice(among options: [ApplePlaybackQualityOption]) -> Bool {

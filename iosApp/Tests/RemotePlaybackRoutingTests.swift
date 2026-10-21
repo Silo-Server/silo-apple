@@ -13,7 +13,7 @@ final class RemotePlaybackRoutingTests: XCTestCase {
     func testEngagedTVTakesTheRequestAndNoLocalPlayerAppears() async {
         let router = AppRouter()
         var received: [SiloControlPlaybackRequest] = []
-        router.remotePlaybackInterceptor = { request in
+        router.remotePlaybackInterceptor = { request, _ in
             received.append(request)
             return true
         }
@@ -29,7 +29,7 @@ final class RemotePlaybackRoutingTests: XCTestCase {
 
     func testNoEngagedTVOpensTheLocalPlayer() async {
         let router = AppRouter()
-        router.remotePlaybackInterceptor = { _ in false }
+        router.remotePlaybackInterceptor = { _, _ in false }
 
         router.presentPlayer(contentId: "c1")
 
@@ -46,7 +46,7 @@ final class RemotePlaybackRoutingTests: XCTestCase {
         let router = AppRouter()
         var calls = 0
         let gate = AsyncGate()
-        router.remotePlaybackInterceptor = { _ in
+        router.remotePlaybackInterceptor = { _, _ in
             calls += 1
             await gate.wait()
             return true
@@ -66,7 +66,7 @@ final class RemotePlaybackRoutingTests: XCTestCase {
         let router = AppRouter()
         var sentToTV: [SiloControlPlaybackRequest] = []
         router.isRemotePlaybackEngaged = { true }
-        router.remotePlaybackInterceptor = { request in
+        router.remotePlaybackInterceptor = { request, _ in
             sentToTV.append(request)
             return true
         }
@@ -99,7 +99,12 @@ final class RemotePlaybackRoutingTests: XCTestCase {
     func testPlayingADifferentTitleAsksBeforeReplacingWhatTheTVIsPlaying() async {
         let router = AppRouter()
         var sent: [String] = []
-        router.remotePlaybackInterceptor = { request in sent.append(request.contentId); return true }
+        var consents: [SiloControlReplaceConsent?] = []
+        router.remotePlaybackInterceptor = { request, replaceConsent in
+            sent.append(request.contentId)
+            consents.append(replaceConsent)
+            return true
+        }
         router.remotePlaybackCurrentTitle = { (title: "Oak Street", contentId: "oak", targetName: "Living Room") }
 
         router.presentPlayer(contentId: "miasma")
@@ -111,23 +116,33 @@ final class RemotePlaybackRoutingTests: XCTestCase {
         router.confirmReplaceRemotePlayback()
         await expectEventually("sent after confirmation") { sent == ["miasma"] }
         XCTAssertNil(router.pendingReplaceRemotePlayback)
+        XCTAssertEqual(consents, [SiloControlReplaceConsent(contentId: "oak")],
+                       "the TV must not ask again after the user agreed here to replace Oak Street")
     }
 
+    /// Same title, so nothing asked here; the TV still asks when another
+    /// profile is the one watching it.
     func testResumingTheSameTitleDoesNotAsk() async {
         let router = AppRouter()
         var sent: [String] = []
-        router.remotePlaybackInterceptor = { request in sent.append(request.contentId); return true }
+        var consents: [SiloControlReplaceConsent?] = []
+        router.remotePlaybackInterceptor = { request, replaceConsent in
+            sent.append(request.contentId)
+            consents.append(replaceConsent)
+            return true
+        }
         router.remotePlaybackCurrentTitle = { (title: "Oak Street", contentId: "oak", targetName: "Living Room") }
 
         router.presentPlayer(contentId: "oak", resumePosition: 90)
         await expectEventually("sent without a prompt") { sent == ["oak"] }
         XCTAssertNil(router.pendingReplaceRemotePlayback)
+        XCTAssertEqual(consents, [nil])
     }
 
     func testIdleTVDoesNotAsk() async {
         let router = AppRouter()
         var sent: [String] = []
-        router.remotePlaybackInterceptor = { request in sent.append(request.contentId); return true }
+        router.remotePlaybackInterceptor = { request, _ in sent.append(request.contentId); return true }
         router.remotePlaybackCurrentTitle = { nil }
 
         router.presentPlayer(contentId: "miasma")

@@ -5,24 +5,10 @@ import XCTest
 
 @MainActor
 final class AetherPlaybackBoundaryTests: XCTestCase {
-    func testTrueHDAtmosRendersOnlyWhenAskedAndTheOutputCanCarryIt() {
-        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .atmos), .apac(.l714))
-        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .unknown), .apac(.l714),
-                       "an unreported output keeps the setting the user asked for")
-        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true, output: .channelsOnly), .off,
-                       "without Atmos downstream the lossless 7.1 bridge is the better stream")
-        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: false, output: .atmos), .off)
+    func testTrueHDAtmosHeightsFollowTheSettingAlone() {
+        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: true), .apac(.l714))
+        XCTAssertEqual(AetherObjectAudioPolicy.rendering(enabled: false), .off)
     }
-
-    #if os(tvOS)
-    func testAppleTVOutputModesMapToAtmosCapability() {
-        XCTAssertEqual(AetherObjectAudioPolicy.currentOutput(.dolbyAtmos), .atmos)
-        XCTAssertEqual(AetherObjectAudioPolicy.currentOutput(.surround), .channelsOnly)
-        XCTAssertEqual(AetherObjectAudioPolicy.currentOutput(.dolbyAudio), .channelsOnly)
-        XCTAssertEqual(AetherObjectAudioPolicy.currentOutput(.monoStereo), .channelsOnly)
-        XCTAssertEqual(AetherObjectAudioPolicy.currentOutput(.notApplicable), .unknown)
-    }
-    #endif
 
     func testExplicitV3AudioSelectionOverridesProfileLanguageForInitialLoad() {
         let languages = AetherInitialAudioPreference.languages(
@@ -616,23 +602,99 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
     }
 
     func testDirectPlayWithVideoResolvesCredentialsPerRequest() throws {
-        let authorization = HTTPRequestAuthorization { _, _ in ["Authorization": "Bearer current"] }
-        let videoSpec = try directPlaySpec(videoCodec: "h264", requestAuthorization: authorization)
+        let resolver: HTTPRequestAuthorization.Resolver = { _, _ in ["Authorization": "Bearer current"] }
+        let authorization = HTTPRequestAuthorization(resolver: resolver)
+        let videoSpec = try directPlaySpec(videoCodec: "h264", requestAuthorization: authorization,
+                                           requestHeaderResolver: resolver)
         XCTAssertFalse(videoSpec.options.nativeRemoteHLS)
         XCTAssertTrue(videoSpec.options.httpRequestAuthorization === authorization)
+        XCTAssertNotNil(videoSpec.requestHeaderResolver, "direct play takes rotated headers by push")
 
-        let audioSpec = try directPlaySpec(videoCodec: nil, requestAuthorization: authorization)
+        let audioSpec = try directPlaySpec(videoCodec: nil, requestAuthorization: authorization,
+                                           requestHeaderResolver: resolver)
         XCTAssertTrue(audioSpec.options.audioOnly)
         XCTAssertNil(audioSpec.options.httpRequestAuthorization)
+        XCTAssertNil(audioSpec.requestHeaderResolver, "audio-only keeps the reload-after-rotation path")
+
+        let hlsSpec = try directPlaySpec(videoCodec: "h264", requestAuthorization: authorization,
+                                         requestHeaderResolver: resolver,
+                                         delivery: PlaybackProtocolV3.PlanDelivery.remuxHLS)
+        XCTAssertTrue(hlsSpec.options.nativeRemoteHLS)
+        XCTAssertTrue(hlsSpec.options.httpRequestAuthorization === authorization)
+        XCTAssertNil(hlsSpec.requestHeaderResolver, "server HLS asks the resolver per request itself")
+    }
+
+    /// silo-apple#833: Aether reads direct media with the headers it holds, so
+    /// a rotated token reaches it only through the controller. A refusal hands
+    /// the refused set back to the resolver, which refreshes the token, and a
+    /// slow earlier answer never replaces a later one.
+    func testDirectPlayPushesRotatedHeadersInTheOrderAsked() async throws {
+        let resolver = ScriptedHeaderResolver()
+        let spec = try directPlaySpec(
+            videoCodec: "h264",
+            requestAuthorization: HTTPRequestAuthorization(resolver: resolver.resolve),
+            requestHeaderResolver: resolver.resolve
+        )
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        controller.beginLoad(spec, shouldPlayWhenReady: false)
+        let opened = controller.appliedRequestHeaders
+        XCTAssertEqual(opened, spec.options.httpHeaders)
+
+        controller.refreshRequestHeaders()
+        controller.refreshRequestHeaders(afterRefusal: true)
+        let bothAsked = await eventually { await resolver.pendingCount == 2 }
+        XCTAssertTrue(bothAsked)
+        let rejected = await resolver.rejected
+        XCTAssertEqual(rejected, [nil, opened], "only the refusal passes the set the engine holds")
+
+        await resolver.answer(1, with: ["Authorization": "Bearer rotated"])
+        let applied = await eventually { controller.appliedRequestHeaders["Authorization"] == "Bearer rotated" }
+        XCTAssertTrue(applied)
+        await resolver.answer(0, with: ["Authorization": "Bearer stale"])
+        let drained = await eventually { await resolver.pendingCount == 0 }
+        XCTAssertTrue(drained)
+        await Task.yield()
+        XCTAssertEqual(controller.appliedRequestHeaders["Authorization"], "Bearer rotated")
+    }
+
+    private actor ScriptedHeaderResolver {
+        private(set) var rejected: [[String: String]?] = []
+        private var pending: [Int: CheckedContinuation<[String: String], Never>] = [:]
+        var pendingCount: Int { pending.count }
+
+        nonisolated func resolve(_ url: URL, _ rejected: [String: String]?) async throws -> [String: String] {
+            await ask(rejected)
+        }
+
+        private func ask(_ rejectedHeaders: [String: String]?) async -> [String: String] {
+            let index = rejected.count
+            rejected.append(rejectedHeaders)
+            return await withCheckedContinuation { pending[index] = $0 }
+        }
+
+        func answer(_ index: Int, with headers: [String: String]) {
+            pending.removeValue(forKey: index)?.resume(returning: headers)
+        }
     }
 
     private func directPlaySpec(
         videoCodec: String?,
-        requestAuthorization: HTTPRequestAuthorization
+        requestAuthorization: HTTPRequestAuthorization,
+        requestHeaderResolver: HTTPRequestAuthorization.Resolver? = nil,
+        delivery: String = PlaybackProtocolV3.PlanDelivery.originalHTTP
     ) throws -> AetherLoadSpec {
         var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         var planObject = try XCTUnwrap(object["playback_plan"] as? [String: Any])
         XCTAssertEqual(planObject["delivery"] as? String, PlaybackProtocolV3.PlanDelivery.originalHTTP)
+        planObject["delivery"] = delivery
+        if delivery != PlaybackProtocolV3.PlanDelivery.originalHTTP {
+            var stream = try XCTUnwrap(planObject["stream"] as? [String: Any])
+            stream["protocol"] = "hls"
+            stream["container"] = "mpegts"
+            stream["mime_type"] = "application/vnd.apple.mpegurl"
+            planObject["stream"] = stream
+        }
         var recipe = try XCTUnwrap(planObject["effective_recipe"] as? [String: Any])
         recipe["video_codec"] = videoCodec ?? NSNull()
         planObject["effective_recipe"] = recipe
@@ -646,6 +708,7 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             sessionID: sessionID,
             matchContentEnabled: true,
             requestAuthorization: requestAuthorization,
+            requestHeaderResolver: requestHeaderResolver,
             resolveURL: { URL(string: $0, relativeTo: URL(string: "https://dev.example.test")) }
         )
     }

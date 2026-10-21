@@ -44,8 +44,8 @@ enum AetherDiagnosticsBridge {
     }
 
     /// The few engine lines a report needs without Debug Logging. They place a
-    /// report that TrueHD Atmos heights or the LFE are missing: which audio
-    /// path the engine built, the bed levels it handed AVPlayer, what the
+    /// report that TrueHD Atmos or DTS:X heights or the LFE are missing: which
+    /// audio path the engine built, the bed levels it handed AVPlayer, what the
     /// playlist said about the audio, the output route with its rendering mode
     /// and speaker labels, and the engine's own warning when the route has
     /// fewer channels than the track. Each is written a handful of times a
@@ -56,7 +56,8 @@ enum AetherDiagnosticsBridge {
     static func verbosity(for line: String) -> DiagnosticsVerbosity {
         if line.hasPrefix("[SpatialAudioBridge]") { return .essential }
         if line.hasPrefix("[HLSVideoEngine]") {
-            let essential = line.contains("TrueHD") || line.contains("APAC") || line.contains("master audio:")
+            let essential = line.contains("TrueHD") || line.contains("DTS:X") || line.contains("APAC")
+                || line.contains("master audio:")
             return essential ? .essential : .verbose
         }
         if line.hasPrefix("[NativeAVPlayerHost]") || line.hasPrefix("[SoftwarePlaybackHost]")

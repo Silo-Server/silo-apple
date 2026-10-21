@@ -38,6 +38,7 @@ enum DownloadFilePaths {
 
     private static let rootFolderName = "SiloDownloads"
     static let storeFileName = "store.json"
+    static let stagingFolderName = "staging"
 
     /// `<AppSupport>/SiloDownloads` as a path only; `rootDirectory()`
     /// creates it.
@@ -83,7 +84,7 @@ enum DownloadFilePaths {
     /// starts. The manager then attributes it by its request and moves it
     /// on. Keyed by task identifier.
     static func stagingFileURL(taskIdentifier: Int) -> URL {
-        let dir = rootDirectory().appendingPathComponent("staging", isDirectory: true)
+        let dir = rootDirectory().appendingPathComponent(stagingFolderName, isDirectory: true)
         ensureDirectory(dir, excludeFromBackup: true)
         return dir.appendingPathComponent("task-\(taskIdentifier).bin", isDirectory: false)
     }
@@ -92,7 +93,7 @@ enum DownloadFilePaths {
     /// within moments, so an old one was left by a process that ended in
     /// between, and nothing will claim it. Returns the bytes freed.
     static func removeStaleStagingFiles(olderThan age: TimeInterval, root: URL = rootDirectory()) -> Int64 {
-        let dir = root.appendingPathComponent("staging", isDirectory: true)
+        let dir = root.appendingPathComponent(stagingFolderName, isDirectory: true)
         let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
         guard let files = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]
@@ -169,6 +170,16 @@ enum DownloadFilePaths {
         try fm.moveItem(at: source, to: destination)
     }
 
+    /// The folder names of a scope's directory: its server's, then the path
+    /// below it (the account's level, when the account is known, and the
+    /// profile's).
+    static func scopeFolderNames(serverId: String, accountId: String?, profileId: String) -> (server: String, scope: [String]) {
+        var scope: [String] = []
+        if let accountId { scope.append(accountDirectoryPrefix + sanitize(accountId)) }
+        scope.append(sanitize(profileId))
+        return (sanitize(serverId), scope)
+    }
+
     /// The name of a download's directory inside its scope directory.
     static func directoryName(forDownloadId downloadId: String) -> String {
         sanitize(downloadId)
@@ -210,9 +221,13 @@ enum DownloadFilePaths {
 
     /// Total bytes used by all download assets in a scope.
     static func bytesUsed(serverId: String, accountId: String?, profileId: String) -> Int64 {
-        let dir = scopeDirectory(serverId: serverId, accountId: accountId, profileId: profileId)
+        bytes(under: scopeDirectory(serverId: serverId, accountId: accountId, profileId: profileId))
+    }
+
+    /// Total bytes of the regular files under a directory.
+    static func bytes(under directory: URL) -> Int64 {
         guard let enumerator = FileManager.default.enumerator(
-            at: dir,
+            at: directory,
             includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
         ) else { return 0 }
         var total: Int64 = 0

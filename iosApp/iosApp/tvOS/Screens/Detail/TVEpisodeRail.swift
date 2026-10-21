@@ -207,7 +207,6 @@ struct TVEpisodeRail: View {
             isCurrent: currentContentId == episode.contentId,
             baseCardWidth: baseCardWidth,
             posterSize: uiCustomization.cardPresentation.posterSize,
-            captionStyle: uiCustomization.cardPresentation.caption,
             onSelect: { onSelect(episode.contentId) },
             onPlay: onPlay,
             onSetWatched: onSetWatched,
@@ -366,17 +365,13 @@ struct TVEpisodeRail: View {
     }
 
     private var anchoredRailHeight: CGFloat {
-        Self.anchoredHeight(
-            cardWidth: anchoredCardWidth,
-            cardHeightRatio: cardHeightRatio,
-            showsTitle: uiCustomization.cardPresentation.caption.showsTitle
-        )
+        Self.anchoredHeight(cardWidth: anchoredCardWidth, cardHeightRatio: cardHeightRatio)
     }
 
-    /// Height of the anchored rail: still, optional caption, and vertical
-    /// padding. Series reserves the same height while a season loads.
-    static func anchoredHeight(cardWidth: CGFloat, cardHeightRatio: CGFloat, showsTitle: Bool) -> CGFloat {
-        cardWidth * cardHeightRatio + (showsTitle ? 46 : 0) + 24
+    /// Height of the anchored rail: still, caption, and vertical padding.
+    /// Series reserves the same height while a season loads.
+    static func anchoredHeight(cardWidth: CGFloat, cardHeightRatio: CGFloat) -> CGFloat {
+        cardWidth * cardHeightRatio + TVEpisodeCardCaptionMetrics.anchoredHeight + 24
     }
 
     private var episodeIdentityKey: [String] {
@@ -544,7 +539,6 @@ struct TVEpisodeCard: View {
     var isCurrent: Bool = false
     var baseCardWidth: CGFloat = 480
     var posterSize: CardPosterSize = .standard
-    var captionStyle: CardCaptionStyle = .titleMetadata
     let onSelect: () -> Void
     var onPlay: ((String) -> Void)? = nil
     var onSetWatched: ((_ contentId: String, _ played: Bool) async -> PersonalStateOutcome)? = nil
@@ -579,7 +573,6 @@ struct TVEpisodeCard: View {
                 cardWidth: cardWidth,
                 stillHeight: stillHeight,
                 stillCornerRadius: stillCornerRadius,
-                captionStyle: captionStyle,
                 usesAnchoredStyle: usesAnchoredStyle
             )
         }
@@ -626,21 +619,10 @@ struct TVEpisodeCard: View {
             seasonNumber: episode.seasonNumber,
             episodeNumber: episode.episodeNumber,
             title: episode.title,
-            metadata: episodeMetadataLine,
+            metadata: EpisodeCardCaption.railMetadata(for: episode),
             isCurrent: isCurrent,
             isPlayed: isPlayed
         )
-    }
-
-    private var episodeMetadataLine: String? {
-        var parts: [String] = []
-        if let airDate = DetailDateFormatting.abbreviatedDate(episode.airDate) {
-            parts.append(airDate)
-        }
-        if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
-            parts.append(runtime)
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ·  ")
     }
 
     @ViewBuilder
@@ -715,7 +697,6 @@ private struct EpisodeCardLabel: View {
     let cardWidth: CGFloat
     let stillHeight: CGFloat
     let stillCornerRadius: CGFloat
-    let captionStyle: CardCaptionStyle
     /// The Series carousel's look: compact caption, Home's artwork-only lift,
     /// and no focus or current outline.
     let usesAnchoredStyle: Bool
@@ -723,68 +704,56 @@ private struct EpisodeCardLabel: View {
     @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var hidesEpisodeTitle: Bool { usesAnchoredStyle }
     private var showsOutlines: Bool { !usesAnchoredStyle }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: TVEpisodeCardCaptionMetrics.gap) {
             still
-            if captionStyle.showsTitle {
-                VStack(alignment: .leading, spacing: 7) {
-                    if hidesEpisodeTitle, let compactEpisodeTitle {
-                        // Keep the compact Series caption inside the moving
-                        // control without animating its layout independently.
-                        Text(compactEpisodeTitle)
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(titleColor)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(width: cardWidth, height: 28, alignment: .topLeading)
-                            .clipped()
-                            .transaction { transaction in
-                                transaction.animation = nil
-                                transaction.disablesAnimations = true
-                            }
-                    }
-
-                    if !hidesEpisodeTitle {
-                        HStack(alignment: .firstTextBaseline, spacing: 16) {
-                            Text(episode.title ?? "Episode \(episode.episodeNumber)")
-                                .font(.system(size: 24, weight: .semibold))
-                                .foregroundStyle(titleColor)
-                                .lineLimit(1)
-                            Spacer(minLength: 8)
-                            if captionStyle.showsMetadata,
-                               let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) {
-                                Text(runtime)
-                                    .font(.system(size: 18, weight: .medium))
-                                    .foregroundStyle(Color.siloSecondaryText)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
+            // The iPhone card's caption without its description: the focused
+            // episode's synopsis is already in the hero above the rail.
+            VStack(alignment: .leading, spacing: TVEpisodeCardCaptionMetrics.lineSpacing) {
+                captionLine(
+                    EpisodeCardCaption.railTitle(for: episode),
+                    font: .system(size: usesAnchoredStyle ? 20 : 24, weight: .semibold),
+                    color: titleColor,
+                    height: usesAnchoredStyle
+                        ? TVEpisodeCardCaptionMetrics.anchoredTitleHeight
+                        : TVEpisodeCardCaptionMetrics.titleHeight
+                )
+                if let metadata = EpisodeCardCaption.railMetadata(for: episode) {
+                    captionLine(
+                        metadata,
+                        font: .system(size: usesAnchoredStyle ? 17 : 18, weight: .medium),
+                        color: .siloSecondaryText,
+                        height: TVEpisodeCardCaptionMetrics.metadataHeight
+                    )
                 }
-                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
             }
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         }
         .frame(width: cardWidth, alignment: .leading)
+    }
+
+    private func captionLine(_ text: String, font: Font, color: Color, height: CGFloat) -> some View {
+        Text(text)
+            .font(font)
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(width: cardWidth, height: height, alignment: .topLeading)
+            .clipped()
+            // The Series carousel keeps its caption inside the moving control
+            // without animating that layout independently.
+            .transaction { transaction in
+                guard usesAnchoredStyle else { return }
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
     }
 
     private var titleColor: Color {
         if isCurrent { return .siloOnSurface }
         return isFocused ? .siloOnSurface : Color.siloOnSurface.opacity(0.92)
-    }
-
-    /// "S01E02 · Pilot" — the same code Home puts on episode cards, so the
-    /// Series carousel makes each episode's position obvious at a glance.
-    private var compactEpisodeTitle: String? {
-        let code = EpisodeCardCaption.code(
-            season: episode.seasonNumber,
-            episode: episode.episodeNumber
-        )
-        guard let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !title.isEmpty else { return code }
-        return "\(code) · \(title)"
     }
 
     private var still: some View {
@@ -879,6 +848,21 @@ private struct EpisodeCardLabel: View {
     }
 }
 
+/// Caption geometry under an episode card's still: the title line, then the
+/// air date and runtime. The anchored rail reserves these heights.
+enum TVEpisodeCardCaptionMetrics {
+    static let gap: CGFloat = 18
+    static let anchoredTitleHeight: CGFloat = 28
+    static let titleHeight: CGFloat = 32
+    static let lineSpacing: CGFloat = 4
+    static let metadataHeight: CGFloat = 24
+
+    /// Still-to-caption gap plus the Series carousel's two caption lines.
+    static var anchoredHeight: CGFloat { gap + anchoredTitleHeight + lineSpacing + metadataHeight }
+    /// The same for the larger plain cards (Watch Party's episode picker).
+    static var plainHeight: CGFloat { gap + titleHeight + lineSpacing + metadataHeight }
+}
+
 /// Reserves the anchored rail's card geometry while a season loads so lower
 /// sections don't jump when real episodes arrive.
 struct TVEpisodeRailPlaceholder: View {
@@ -891,13 +875,18 @@ struct TVEpisodeRailPlaceholder: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: cardSpacing) {
                 ForEach(0..<4, id: \.self) { _ in
-                    VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: TVEpisodeCardCaptionMetrics.gap) {
                         RoundedRectangle(cornerRadius: 18)
                             .fill(Color.siloSurfaceElevated)
                             .frame(width: cardWidth, height: stillHeight)
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.white.opacity(0.22))
-                            .frame(width: 112, height: 15)
+                        VStack(alignment: .leading, spacing: 13) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.white.opacity(0.22))
+                                .frame(width: 112, height: 15)
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.white.opacity(0.16))
+                                .frame(width: 84, height: 13)
+                        }
                     }
                     .frame(width: cardWidth, alignment: .leading)
                 }

@@ -18,7 +18,7 @@ extension FramedJSONSession where Message == SiloControlMessage {
     /// Send a final `.close` ahead of the FIN. The peer must read `.close`
     /// before EOF to tell a deliberate disconnect from a dropped connection —
     /// otherwise it auto-reconnects.
-    func closeGracefully() async {
-        await closeGracefully(goodbye: .close)
+    func closeGracefully(reason: String? = nil) async {
+        await closeGracefully(goodbye: .close(reason: reason))
     }
 }

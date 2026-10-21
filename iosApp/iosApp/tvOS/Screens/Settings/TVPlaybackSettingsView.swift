@@ -129,7 +129,7 @@ struct TVPlaybackSettingsPane: View {
         }
 
         TVSettingsToggleRow(
-            title: "TrueHD Atmos",
+            title: "TrueHD Atmos and DTS:X",
             isOn: viewModel.trueHDAtmosEnabled
         ) {
             let value = !viewModel.trueHDAtmosEnabled
@@ -154,7 +154,8 @@ struct TVPlaybackSettingsPane: View {
     private var streamingFooterText: String {
         var text = SettingsViewModel.hdrFooterText
         text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
-        text += " TrueHD Atmos adds height channels but plays those tracks as compressed audio."
+        text += " With TrueHD Atmos and DTS:X on, those tracks keep their height channels but play as compressed audio."
+        text += " Turn it off if your receiver or soundbar doesn't support Dolby Atmos."
         return text
     }
 

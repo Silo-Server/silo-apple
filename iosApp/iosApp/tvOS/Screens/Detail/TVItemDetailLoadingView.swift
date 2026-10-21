@@ -8,6 +8,10 @@ import SwiftUI
 /// loaded detail view installs its own native focus graph and default owner.
 struct TVItemDetailLoadingView: View {
     let seed: TVItemDetailRouteSeed?
+    /// A series route places its title where the loaded Series hero will,
+    /// which sits higher at the Large card size.
+    var isSeriesRoute = false
+    @State private var uiCustomization = UICustomizationPreferences.shared
 
     var body: some View {
         Group {
@@ -23,6 +27,11 @@ struct TVItemDetailLoadingView: View {
     }
 
     // MARK: - Movie / series / episode
+
+    private var heroLift: CGFloat {
+        let isSeries = isSeriesRoute || seed.map { SiloMediaType.isSeries($0.mediaType) } == true
+        return isSeries ? TVDetailLayout.seriesHeroLift(for: uiCustomization.cardPresentation.posterSize) : 0
+    }
 
     /// An episode seed's backdrop is the episode still; spoiler protection
     /// applies to it and to the episode description.
@@ -101,7 +110,7 @@ struct TVItemDetailLoadingView: View {
             loadingActions
                 .padding(.top, 6)
         }
-        .padding(.top, TVDetailLayout.heroTopInset)
+        .padding(.top, TVDetailLayout.heroTopInset - heroLift)
         .padding(.horizontal, TVDetailLayout.horizontalInset)
         .frame(
             maxWidth: .infinity,

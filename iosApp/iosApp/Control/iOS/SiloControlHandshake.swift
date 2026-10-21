@@ -11,6 +11,9 @@ enum SiloControlHandoffError: LocalizedError, Equatable {
     /// The connection the handoff ran on closed, or the client moved to
     /// another one.
     case connectionClosed
+    /// The TV is playing another profile's title. Resend the offer with
+    /// `replaceConfirmed` once the user agrees.
+    case replaceConfirmationRequired(SiloControlNowPlayingSummary?, message: String)
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +29,8 @@ enum SiloControlHandoffError: LocalizedError, Equatable {
             return "The TV could not verify your playback profile."
         case .connectionClosed:
             return "Lost connection to the TV."
+        case .replaceConfirmationRequired(_, let message):
+            return message
         }
     }
 }
@@ -50,6 +55,8 @@ final class SiloControlHandshake {
     private var isClosed = false
     private var receivedHello = false
     private var helloVersion: Int?
+    /// `SiloControlFeature` names from the TV's hello.
+    private var tvFeatures: Set<String> = []
     private var handoffRequestId: String?
     private var challenge: SiloControlHandoffChallenge?
     private var ready: SiloControlHandoffReady?
@@ -65,6 +72,7 @@ final class SiloControlHandshake {
         case .hello(let hello):
             receivedHello = true
             helloVersion = SiloControlProtocol.negotiatedVersion(with: hello.supportedVersions)
+            tvFeatures = Set(hello.features ?? [])
         case .handoffChallenge(let challenge):
             guard challenge.requestId == handoffRequestId else { return }
             self.challenge = challenge
@@ -104,6 +112,11 @@ final class SiloControlHandshake {
         changes.notify()
     }
 
+    /// Whether the TV's hello listed `feature`. False until the hello arrives.
+    func tvSupports(_ feature: String) -> Bool {
+        tvFeatures.contains(feature)
+    }
+
     /// The protocol version the TV's hello agreed, or nil when the two
     /// devices share none or no hello arrives within `timeout`.
     func negotiatedVersion(within timeout: Duration) async throws -> Int? {
@@ -137,9 +150,12 @@ final class SiloControlHandshake {
     }
 
     private func throwIfCancelled(_ requestId: String) throws {
-        if let cancellation, cancellation.requestId == requestId {
-            throw SiloControlHandoffError.cancelled(cancellation.message ?? "The TV cancelled profile setup.")
+        guard let cancellation, cancellation.requestId == requestId else { return }
+        let message = cancellation.message ?? "The TV cancelled profile setup."
+        if cancellation.reason == SiloControlHandoffCancelReason.replaceConfirmationRequired {
+            throw SiloControlHandoffError.replaceConfirmationRequired(cancellation.nowPlaying, message: message)
         }
+        throw SiloControlHandoffError.cancelled(message)
     }
 
     /// Returns `value()` once it's non-nil. Each frame and `close()` wakes

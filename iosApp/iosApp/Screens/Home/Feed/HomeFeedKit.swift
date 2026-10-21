@@ -236,7 +236,7 @@ private struct HomeCardMenu: ViewModifier {
 
         if let onRemoveFromContinueWatching {
             Button(role: .destructive, action: onRemoveFromContinueWatching) {
-                Label("Remove from Continue Watching", systemImage: "xmark.circle")
+                Label(HomeDismissal.menuTitle(for: item), systemImage: "xmark.circle")
             }
         }
     }

@@ -69,6 +69,9 @@ struct MediaRow: View {
     /// Select opens detail. Other rows keep Play/Pause as a remote shortcut
     /// only, avoiding a redundant menu entry on ordinary discovery cards.
     var showsPlayInContextMenu = false
+    /// tvOS thumbnail cards show the version saved with their progress. Only
+    /// Home's Continue Watching row asks for it; see `EpisodeThumbCard`.
+    var showsSavedPlaybackMetadata = false
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     var onMoveUp: (() -> Void)? = nil
     /// tvOS-only: reports which of the row's items holds card focus —
@@ -501,6 +504,7 @@ struct MediaRow: View {
                 onOpenContextDetail: contextDetailAction(for: item),
                 onRemoveFromContinueWatching: continueWatchingRemovalAction(for: item),
                 onSetWatched: watchedToggleAction(for: item),
+                showsSavedPlaybackMetadata: showsSavedPlaybackMetadata,
                 baseCardWidth: thumbnailCardWidth
             )
         }
@@ -539,7 +543,7 @@ struct MediaRow: View {
     }
 
     private func continueWatchingRemovalAction(for item: SectionItem) -> (() -> Void)? {
-        guard let onRemoveFromContinueWatching else { return nil }
+        guard let onRemoveFromContinueWatching, HomeDismissal(item) != nil else { return nil }
         return {
             #if os(tvOS)
             preserveFocusForContextMutation(on: item)

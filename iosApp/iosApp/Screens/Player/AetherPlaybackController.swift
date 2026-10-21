@@ -93,6 +93,11 @@ final class AetherPlaybackController {
 
     private(set) var activeSpec: AetherLoadSpec?
     private(set) var activeLoadEpoch: LoadEpoch?
+    /// The headers Aether holds for the active direct-play source, and which
+    /// resolver answer installed them, so answers land in the order asked.
+    private(set) var appliedRequestHeaders: [String: String] = [:]
+    private var requestHeaderAsks: UInt64 = 0
+    private var appliedRequestHeaderAsk: UInt64 = 0
     /// The last `[CMP-AUDIO]` line's load and pipeline.
     private struct LoggedAudioPipeline: Equatable {
         let epoch: LoadEpoch?
@@ -218,6 +223,7 @@ final class AetherPlaybackController {
         activeLoadEpoch = epoch
         hasCommittedActiveLoad = false
         activeSpec = spec
+        appliedRequestHeaders = spec.options.httpHeaders
         assSubtitles.beginLoad(timelineOffset: spec.timeline.timelineOffsetSeconds)
         configureExternalPlaybackPolicy()
         refreshExternalPlaybackState()
@@ -239,6 +245,38 @@ final class AetherPlaybackController {
         didPublishFirstFrame = false
         didPublishEnd = false
         return epoch
+    }
+
+    /// Direct play reads its source with the headers Aether holds, so a
+    /// rotated access token reaches it only when pushed in (AE#792). Asked
+    /// after each successful progress report, which hands over a token the app
+    /// has already rotated, and on Aether's first refusal of a header set,
+    /// which passes the refused set so the resolver refreshes the token first.
+    /// A slow earlier answer never replaces a later one.
+    func refreshRequestHeaders(afterRefusal: Bool = false) {
+        guard let epoch = activeLoadEpoch, let spec = activeSpec,
+              let resolve = spec.requestHeaderResolver else { return }
+        requestHeaderAsks &+= 1
+        let ask = requestHeaderAsks
+        let rejected = afterRefusal ? appliedRequestHeaders : nil
+        Task { [weak self] in
+            let headers: [String: String]
+            do {
+                headers = try await resolve(spec.sourceURL, rejected)
+            } catch {
+                // A failed routine ask waits for the next progress report.
+                if afterRefusal {
+                    cmpLog("[CMP-AUTH] no current media headers after a refusal: \(type(of: error))")
+                }
+                return
+            }
+            guard let self, epoch == activeLoadEpoch, ask > appliedRequestHeaderAsk else { return }
+            appliedRequestHeaderAsk = ask
+            guard headers != appliedRequestHeaders else { return }
+            appliedRequestHeaders = headers
+            let outcome = engine.updateRequestHeaders(headers)
+            cmpLog("[CMP-AUTH] media headers replaced \(afterRefusal ? "after a refusal" : "after rotation"): \(outcome)")
+        }
     }
 
     func finishLoad(_ epoch: LoadEpoch) async throws {
@@ -841,6 +879,10 @@ final class AetherPlaybackController {
         engine.$errorInfo
             .compactMap { $0 }
             .sink { [weak self] error in self?.publish(.failure(error)) }
+            .store(in: &subscriptions)
+
+        engine.sourceAuthorizationRefused
+            .sink { [weak self] _ in self?.refreshRequestHeaders(afterRefusal: true) }
             .store(in: &subscriptions)
 
         Publishers.Merge3(

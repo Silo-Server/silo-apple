@@ -501,13 +501,14 @@ final class PlayerSettings {
         }
     }
 
-    /// Device-local: whether TrueHD Atmos tracks keep their heights. Maps to
-    /// `LoadOptions.objectAudioRendering` through ``AetherObjectAudioPolicy``:
-    /// Aether renders the Atmos objects and delivers Apple Positional Audio,
-    /// which an Atmos receiver or soundbar gets as Dolby Atmos and AirPods or
-    /// the built-in speakers render as Spatial Audio. The trade is a compressed
-    /// stream in place of lossless 7.1, which is why Apple TV only uses it when
-    /// its output reports Dolby Atmos.
+    /// Device-local: whether TrueHD Atmos and DTS:X tracks keep their heights.
+    /// Maps to `LoadOptions.objectAudioRendering` through
+    /// ``AetherObjectAudioPolicy``: Aether splits the track's own 7.1 mix into a
+    /// 7.1.4 bed by where the Atmos objects' energy lies (DTS:X: its four heights
+    /// one to one) and delivers Apple Positional Audio, which an Atmos receiver
+    /// or soundbar gets as Dolby Atmos and AirPods or the built-in speakers
+    /// render as Spatial Audio. The trade is a compressed stream in place of
+    /// lossless 7.1, so a setup without Atmos is better with it off.
     ///
     /// Never synced to the server: what this device plays into is a fact about
     /// the room or the headphones, not the profile. Default on.
@@ -1039,8 +1040,8 @@ final class PlayerSettings {
         deinterlaceMode = mode
     }
 
-    /// Choose whether TrueHD Atmos keeps its heights. Purely local — there is
-    /// no contract key to enqueue.
+    /// Choose whether TrueHD Atmos and DTS:X keep their heights. Purely local —
+    /// there is no contract key to enqueue.
     func setTrueHDAtmosEnabled(_ enabled: Bool) {
         trueHDAtmosEnabled = enabled
     }
