@@ -58,30 +58,6 @@ extension BandwidthProbeNetwork {
     }
 }
 
-/// Follows the network for ``BandwidthProbeScheduler`` on every platform.
-/// (``PlaybackNetworkMonitor`` runs only where a cellular quality applies.)
-final class BandwidthProbeNetworkMonitor: @unchecked Sendable {
-    static let shared = BandwidthProbeNetworkMonitor()
-
-    private let lock = NSLock()
-    private var monitor: NWPathMonitor?
-
-    /// Begin following the network, handing each change to `scheduler`.
-    /// Safe to call more than once.
-    func start(scheduler: BandwidthProbeScheduler) {
-        lock.withLock {
-            guard monitor == nil else { return }
-            let monitor = NWPathMonitor()
-            monitor.pathUpdateHandler = { path in
-                let network = BandwidthProbeNetwork(path)
-                Task { @MainActor in scheduler.networkChanged(network) }
-            }
-            monitor.start(queue: DispatchQueue(label: "org.siloserver.silo.bandwidth-probe-path"))
-            self.monitor = monitor
-        }
-    }
-}
-
 /// A connection speed reading for the network in use, from this device's own
 /// test or the server's store for this device and connection.
 struct BandwidthReading: Equatable, Sendable {
@@ -400,6 +376,7 @@ final class BandwidthProbeScheduler {
     @ObservationIgnored private var looksAgain = false
     /// The check's read; the look that follows waits for it.
     @ObservationIgnored private var checkRead: Task<Bool, Never>?
+    @ObservationIgnored private var pathMonitor: NWPathMonitor?
     /// Video players loading or playing. Weak, so a player that goes away
     /// without saying so cannot hold tests off.
     @ObservationIgnored private let videoPlayers = NSHashTable<AnyObject>.weakObjects()
@@ -469,6 +446,20 @@ final class BandwidthProbeScheduler {
     }
 
     // MARK: - App inputs
+
+    /// Begins following the network, on every platform
+    /// (``PlaybackNetworkMonitor`` runs only where a cellular quality
+    /// applies). Safe to call more than once.
+    func followNetwork() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let network = BandwidthProbeNetwork(path)
+            Task { @MainActor in self?.networkChanged(network) }
+        }
+        monitor.start(queue: DispatchQueue(label: "org.siloserver.silo.bandwidth-probe-path"))
+        pathMonitor = monitor
+    }
 
     /// The scene became active, or left for the background.
     func setForeground(_ foreground: Bool) {
