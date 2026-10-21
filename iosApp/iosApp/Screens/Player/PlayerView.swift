@@ -317,7 +317,7 @@ struct PlayerView: View {
                     #if os(tvOS)
                     // Below the player menu's panel while it is open, so the
                     // pill never covers its tabs.
-                    PlayerNoticeStack(pillMinY: viewModel.isHUDPresented ? 560 : SiloTheme.safePadding) {
+                    PlayerNoticeStack(pillMinY: viewModel.isHUDPresented ? Self.playerMenuPanelBottom : SiloTheme.safePadding) {
                         if let identity = remoteIdentityNotice {
                             RemotePlaybackIdentityNotice(identity: identity)
                                 .transition(.opacity)
@@ -337,7 +337,7 @@ struct PlayerView: View {
                         let portrait = proxy.size.width < proxy.size.height
                         PlayerNoticeStack(
                             pillMinY: viewModel.shouldShowMobilePlayerChrome
-                                ? (portrait ? 112 : 64)
+                                ? Self.topBarBottom(portrait: portrait)
                                 : SiloTheme.safePadding
                         ) {
                             if let notice = viewModel.presentedNotice {
@@ -823,6 +823,18 @@ struct PlayerView: View {
     }
     #endif
 
+    #if os(tvOS)
+    /// Where the open player menu's panel ends. The buffering pill and the
+    /// subtitle-sync card sit below it so they never cover its tabs.
+    private static let playerMenuPanelBottom: CGFloat = 560
+    #else
+    /// Where the top bar ends while it shows: two rows in portrait, one in
+    /// landscape. The buffering pill and the subtitle-sync card sit below it.
+    private static func topBarBottom(portrait: Bool) -> CGFloat {
+        portrait ? 112 : 64
+    }
+    #endif
+
     /// The sync card for a subtitle sync this viewer started, in the
     /// top-trailing corner. On iOS it moves below the top bar while the
     /// controls show (two rows tall in portrait, one in landscape); on tvOS
@@ -834,7 +846,7 @@ struct PlayerView: View {
             // Below the player menu's panel while it is open, so the card
             // never covers its Options column.
             SubtitleSyncIndicator(notice: notice)
-                .padding(.top, viewModel.isHUDPresented ? 560 : 60)
+                .padding(.top, viewModel.isHUDPresented ? Self.playerMenuPanelBottom : 60)
                 .padding(.trailing, 80)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 .transition(.opacity)
@@ -844,7 +856,7 @@ struct PlayerView: View {
                 SubtitleSyncIndicator(notice: notice) {
                     viewModel.subtitleSync.dismissNotice()
                 }
-                .padding(.top, viewModel.shouldShowMobilePlayerChrome ? (portrait ? 112 : 64) : 12)
+                .padding(.top, viewModel.shouldShowMobilePlayerChrome ? Self.topBarBottom(portrait: portrait) : 12)
                 .padding(.trailing, 16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 .animation(.easeOut(duration: 0.2), value: viewModel.shouldShowMobilePlayerChrome)
