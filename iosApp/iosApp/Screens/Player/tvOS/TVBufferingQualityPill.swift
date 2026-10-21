@@ -29,26 +29,20 @@ struct TVBufferingQualityPill: View {
         PlayerBufferingPillCard(kind: pill.kind) {
             HStack(spacing: SiloTheme.spacing) {
                 Button(action: onPrimary) {
-                    label(pill.kind.primaryAction)
+                    Text(pill.kind.primaryAction)
                 }
                 .buttonStyle(TVPlayerPillButtonStyle(pill: pill, isSelectTarget: isSelectTarget))
                 .focused(focus, equals: .primary)
 
                 if let secondary = pill.kind.secondaryAction {
                     Button(action: onSecondary) {
-                        label(secondary)
+                        Text(secondary)
                     }
                     .buttonStyle(TVPlayerPillButtonStyle(pill: nil))
                     .focused(focus, equals: .secondary)
                 }
             }
         }
-    }
-
-    private func label(_ title: String) -> some View {
-        Text(title)
-            .lineLimit(1)
-            .fixedSize()
     }
 }
 

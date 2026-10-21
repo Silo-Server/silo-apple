@@ -28,8 +28,6 @@ struct TVIntroSkipPill: View {
             }
             Button(action: action) {
                 Text(pill.kind.actionTitle)
-                    .lineLimit(1)
-                    .fixedSize()
             }
             .buttonStyle(TVPlayerPillButtonStyle(pill: pill, isSelectTarget: isSelectTarget))
             .accessibilityLabel(pill.kind.accessibilityLabel)
@@ -60,6 +58,8 @@ private struct TVPlayerPillBody: View {
 
     var body: some View {
         configuration.label
+            .lineLimit(1)
+            .fixedSize()
             .font(.system(size: 28, weight: .semibold))
             .foregroundStyle(isFocused ? Color.white : Color.white.opacity(0.62))
             .padding(.horizontal, 40)
