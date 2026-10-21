@@ -479,10 +479,6 @@ struct RemoteMenuModel: Equatable {
     let activeQualityId: String
     let isQualitySwitching: Bool
     let playbackSpeed: Double
-    let subtitleSyncMs: Int?
-    let subtitlePosition: String?
-    let supportsSubtitleDelay: Bool?
-    let supportsSubtitlePosition: Bool?
 
     init(state: SiloControlPlaybackState) {
         audioTracks = state.audioTracks
@@ -493,10 +489,6 @@ struct RemoteMenuModel: Equatable {
         activeQualityId = state.activeQualityId
         isQualitySwitching = state.isQualitySwitching
         playbackSpeed = state.playbackSpeed
-        subtitleSyncMs = state.subtitleSyncMs
-        subtitlePosition = state.subtitlePosition
-        supportsSubtitleDelay = state.supportsSubtitleDelay
-        supportsSubtitlePosition = state.supportsSubtitlePosition
     }
 }
 
@@ -508,7 +500,6 @@ private struct RemoteOptionMenus: View, Equatable {
     let onCommand: (SiloControlCommand) -> Void
 
     private let speedOptions: [Double] = [0.75, 1.0, 1.25, 1.5, 2.0]
-    private let subtitleDelayOptions = [-2_000, -1_500, -1_000, -500, -250, 0, 250, 500, 1_000, 1_500, 2_000]
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model == rhs.model
@@ -518,15 +509,14 @@ private struct RemoteOptionMenus: View, Equatable {
         HStack(alignment: .top, spacing: 8) {
             if !model.qualityOptions.isEmpty { qualityMenu }
             if !model.audioTracks.isEmpty { audioMenu }
-            if hasSubtitleControls { subtitleMenu }
+            // Subtitle delay and position stay on the TV's own player menu;
+            // from the couch the remote only switches the language.
+            if !model.subtitleTracks.isEmpty { subtitleMenu }
             speedMenu
         }
-    }
-
-    private var hasSubtitleControls: Bool {
-        !model.subtitleTracks.isEmpty
-            || model.supportsSubtitleDelay == true
-            || model.supportsSubtitlePosition == true
+        // These menus open upward from the bottom of the screen, where iOS
+        // would otherwise list their items in reverse.
+        .menuOrder(.fixed)
     }
 
     private var audioMenu: some View {
@@ -542,71 +532,16 @@ private struct RemoteOptionMenus: View, Equatable {
 
     private var subtitleMenu: some View {
         Menu {
-            if !model.subtitleTracks.isEmpty {
-                Section("Track") {
-                    Button { onCommand(.selectSubtitleTrack(nil)) } label: {
-                        Label("Off", systemImage: model.selectedSubtitleTrackId == nil ? "checkmark" : "captions.bubble")
-                    }
-                    ForEach(model.subtitleTracks) { track in
-                        Button { onCommand(.selectSubtitleTrack(track.trackId)) } label: {
-                            Label(track.title, systemImage: model.selectedSubtitleTrackId == track.trackId ? "checkmark" : "captions.bubble")
-                        }
-                    }
-                }
+            Button { onCommand(.selectSubtitleTrack(nil)) } label: {
+                Label("Off", systemImage: model.selectedSubtitleTrackId == nil ? "checkmark" : "captions.bubble")
             }
-
-            if model.supportsSubtitleDelay == true {
-                Section("Delay") {
-                    ForEach(subtitleDelayMenuOptions, id: \.self) { milliseconds in
-                        Button { onCommand(.setSubtitleSyncMs(milliseconds)) } label: {
-                            Label(
-                                subtitleDelayLabel(milliseconds),
-                                systemImage: subtitleDelaySelectionSystemImage(milliseconds)
-                            )
-                        }
-                    }
-                }
-            }
-
-            if model.supportsSubtitlePosition == true {
-                Section("Position") {
-                    ForEach(SubtitlePositionPreset.allCases) { position in
-                        Button { onCommand(.setSubtitlePosition(position.rawValue)) } label: {
-                            Label(
-                                position.label,
-                                systemImage: model.subtitlePosition == position.rawValue ? "checkmark" : "textformat"
-                            )
-                        }
-                    }
+            ForEach(model.subtitleTracks) { track in
+                Button { onCommand(.selectSubtitleTrack(track.trackId)) } label: {
+                    Label(track.title, systemImage: model.selectedSubtitleTrackId == track.trackId ? "checkmark" : "captions.bubble")
                 }
             }
         } label: { RemoteChipLabel(systemImage: "captions.bubble", caption: "Subtitles") }
-        .accessibilityValue(subtitleAccessibilityValue)
-    }
-
-    private var subtitleDelayMenuOptions: [Int] {
-        let current = model.subtitleSyncMs ?? 0
-        if subtitleDelayOptions.contains(current) {
-            return subtitleDelayOptions
-        }
-        return (subtitleDelayOptions + [current]).sorted()
-    }
-
-    private var subtitleAccessibilityValue: String {
-        var values: [String] = [
-            model.subtitleTracks.first(where: { $0.trackId == model.selectedSubtitleTrackId })?.title ?? "Off"
-        ]
-        if model.supportsSubtitleDelay == true {
-            values.append("Delay \(subtitleDelayLabel(model.subtitleSyncMs ?? 0))")
-        }
-        if model.supportsSubtitlePosition == true {
-            values.append(SubtitlePositionPreset(rawValue: model.subtitlePosition ?? "")?.label ?? "Bottom")
-        }
-        return values.joined(separator: ", ")
-    }
-
-    private func subtitleDelaySelectionSystemImage(_ milliseconds: Int) -> String {
-        (model.subtitleSyncMs ?? 0) == milliseconds ? "checkmark" : "timer"
+        .accessibilityValue(model.subtitleTracks.first(where: { $0.trackId == model.selectedSubtitleTrackId })?.title ?? "Off")
     }
 
     private var qualityMenu: some View {
@@ -634,12 +569,6 @@ private struct RemoteOptionMenus: View, Equatable {
 
     private func speedLabel(_ speed: Double) -> String {
         "\(speed)×"
-    }
-
-    private func subtitleDelayLabel(_ milliseconds: Int) -> String {
-        guard milliseconds != 0 else { return "0.0s" }
-        let seconds = Double(milliseconds) / 1000.0
-        return String(format: "%+.1fs", seconds)
     }
 }
 
