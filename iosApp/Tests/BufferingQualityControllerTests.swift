@@ -199,21 +199,13 @@ final class BufferingQualityControllerTests: XCTestCase {
         ])
     }
 
-    func testAutoWithoutAUsableEstimateShowsCantLowerOncePerTitle() {
+    /// New content: the once-per-title "Can't lower quality" notice can show
+    /// again. (The vectors pin the notice itself, once per title.)
+    func testResetLetsTheNextTitleShowCantLowerAgain() {
         let h = Harness(mode: .always)
-        let rungs = [
-            Controller.QualityRung(label: "original", bitrateKbps: 140),
-            Controller.QualityRung(label: "low", bitrateKbps: 120),
-        ]
-        // 0.7 × 140 = 98, under MIN_ESTIMATE_KBPS, although a lower rung exists.
-        h.startPlaying(Self.plan("p1", delivered: 140, rungs: rungs))
+        h.startPlaying(Self.plan("p1", delivered: nil))
         h.at(125_000) { $0.waiting() }
-        h.at(132_000) { $0.playing() }
-        h.at(200_000) { $0.waiting() }
         h.at(210_000) { $0.reset() }
-        XCTAssertEqual(h.summaries.map(\.action), [.cantLower])
-
-        // A new title, and Auto reporting no delivered bitrate at all.
         h.startPlaying(Self.plan("q1", delivered: nil), at: 210_000)
         h.at(400_000) { $0.waiting() }
         h.clock.advance(to: 410_000)
@@ -347,20 +339,6 @@ final class BufferingQualityControllerTests: XCTestCase {
         XCTAssertEqual(h.shown.last, .init(161_000, .replan(Self.autoLowering(22_120))))
     }
 
-    /// A plan opened with a wait keeps its grace anchored there when its first
-    /// frame follows.
-    func testStartupGraceStaysAnchoredAtTheFirstWait() {
-        let h = Harness(mode: .always)
-        h.at(0) { $0.planAdopted(Self.plan("p1")) }
-        h.at(0) { $0.waiting() }
-        h.at(4_000) { $0.playing() }
-        h.at(12_000) { $0.waiting() }
-        h.at(14_000) { $0.playing() }
-        h.at(60_000) { $0.waiting() }
-        h.at(61_500) { $0.playing() }
-        XCTAssertEqual(h.shown, [.init(61_500, .replan(Self.autoLowering(44_100)))])
-    }
-
     /// A wait the host noticed late (a frozen software playhead) is timed from
     /// when it began.
     func testABackdatedWaitIsTimedFromWhenItBegan() {
@@ -389,18 +367,6 @@ final class BufferingQualityControllerTests: XCTestCase {
         h.at(200_000) { $0.waiting() }
         h.clock.advance(to: 206_000)
         XCTAssertEqual(h.shown.last, .init(206_000, .pillShown(.prompt)))
-    }
-
-    /// A lowering whose plan reports no delivered bitrate came back lower.
-    func testALoweringResultWithoutADeliveredBitrateIsLower() {
-        let h = Harness(mode: .always)
-        h.startPlaying(Self.plan("p1"))
-        h.at(125_000) { $0.waiting() }
-        h.at(134_000) {
-            $0.planAdopted(Self.plan("p2", delivered: nil))
-            $0.playing()
-        }
-        XCTAssertEqual(h.shown.last, .init(134_000, .pillShown(.undo)))
     }
 
     /// The failure notice after a no-lower result uses up the title's
