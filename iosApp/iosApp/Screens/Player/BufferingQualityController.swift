@@ -314,10 +314,11 @@ final class BufferingQualityController {
             plan: plan,
             requestedEstimateKbps: pending?.estimateKbps ?? plan.requestedBandwidthEstimateKbps
         )
-        // A plan adopted while playing has its first frame now.
+        // A plan adopted while playing has its first frame now, and its
+        // startup grace counts from there.
         if playingSince != nil {
             playingSince = now
-            state.firstFrameAt = now
+            state.graceEndsAt = now + Self.startupGraceMs
         }
         current = state
         if wasStalled { beginStall(at: now) }
@@ -363,7 +364,7 @@ final class BufferingQualityController {
         isPaused = false
         if playingSince == nil {
             playingSince = now
-            if current != nil, current?.firstFrameAt == nil { current?.firstFrameAt = now }
+            if current != nil, current?.graceEndsAt == nil { current?.graceEndsAt = now + Self.startupGraceMs }
         }
         endStall(at: now, resumed: true)
         refreshPill()
@@ -422,7 +423,7 @@ final class BufferingQualityController {
             stall.timedFrom = nil
             cancelStallTimers()
         } else {
-            let from = max(now, state.graceEnd(defaultingTo: now))
+            let from = max(now, state.graceEndsAt ?? now)
             stall.timedFrom = from
             stall.measuredFrom = from
         }
@@ -733,11 +734,13 @@ final class BufferingQualityController {
 
     private func beginStall(at now: Int) {
         guard var state = current else { return }
-        if state.firstFrameAt == nil, state.firstWaitAt == nil { state.firstWaitAt = now }
+        // The plan's first wait, when it comes before a frame, starts the grace.
+        let graceEnd = state.graceEndsAt ?? now + Self.startupGraceMs
+        state.graceEndsAt = graceEnd
         var stall = Stall()
         if !transportTrouble {
             // A stall that begins in the grace counts from its end.
-            let from = max(now, state.graceEnd(defaultingTo: now))
+            let from = max(now, graceEnd)
             stall.timedFrom = from
             stall.measuredFrom = from
         }
@@ -766,7 +769,7 @@ final class BufferingQualityController {
     private func clearHistory(at now: Int) {
         guard current != nil else { return }
         current?.endedStalls.removeAll()
-        current?.graceOverAt = now
+        current?.graceEndsAt = now
         if current?.stall?.timedFrom != nil { current?.stall?.timedFrom = now }
         suppressionTimer?.cancel()
         suppressionTimer = nil
@@ -952,10 +955,10 @@ final class BufferingQualityController {
         var requestedEstimateKbps: Int?
         var action: Action = .none
 
-        var firstFrameAt: Int?
-        var firstWaitAt: Int?
-        /// Set when history clears: startup grace counts as over from here.
-        var graceOverAt: Int?
+        /// When startup grace ends: `STARTUP_GRACE_MS` after the plan's first
+        /// wait or, when none came before it, its first frame. A history clear
+        /// ends it then.
+        var graceEndsAt: Int?
         var stall: Stall?
         var endedStalls: [EndedStall] = []
 
@@ -965,11 +968,6 @@ final class BufferingQualityController {
         var stallCount = 0
         var stallTotalMs = 0
         var stallLongestMs = 0
-
-        func graceEnd(defaultingTo now: Int) -> Int {
-            if let graceOverAt { return graceOverAt }
-            return (firstWaitAt ?? firstFrameAt ?? now) + BufferingQualityController.startupGraceMs
-        }
 
         mutating func recordStall(measuredMs: Int) {
             guard measuredMs > 0 else { return }
