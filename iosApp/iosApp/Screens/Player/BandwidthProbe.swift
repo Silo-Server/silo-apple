@@ -28,11 +28,10 @@ enum BandwidthProbe {
     /// bound. It is also the contract's ceiling on `bandwidth_estimate_kbps`.
     static let maxKbps = 1_000_000
 
-    /// The URL a test downloads: the advertised `bandwidth_probe_url`,
-    /// resolved against `serverURL` when it is relative, asking for `bytes`.
-    static func downloadURL(serverURL: URL, advertised: String, bytes: Int) -> URL? {
-        guard let resolved = URL(string: advertised, relativeTo: serverURL)?.absoluteURL,
-              var components = URLComponents(url: resolved, resolvingAgainstBaseURL: false),
+    /// The URL a test downloads: `url`, the resolved `bandwidth_probe_url`,
+    /// asking for `bytes`.
+    static func downloadURL(_ url: URL, bytes: Int) -> URL? {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               components.scheme == "http" || components.scheme == "https" else {
             return nil
         }

@@ -78,24 +78,21 @@ final class BandwidthProbeMeterTests: XCTestCase {
     func testEachModeAsksForItsOwnSize() throws {
         XCTAssertEqual(BandwidthProbeMeter(mode: .quick(targetKbps: nil)).requestedBytes, 100_000_000)
         XCTAssertEqual(BandwidthProbeMeter(mode: .accurate).requestedBytes, 1_000_000_000)
-        let server = try XCTUnwrap(URL(string: "https://silo.example"))
         XCTAssertEqual(
             BandwidthProbe.downloadURL(
-                serverURL: server,
-                advertised: "https://silo.example/api/v2/playback/bandwidth-probe?media_path=true",
+                try XCTUnwrap(URL(string: "https://silo.example/api/v2/playback/bandwidth-probe?media_path=true")),
                 bytes: 100_000_000
             )?.absoluteString,
             "https://silo.example/api/v2/playback/bandwidth-probe?media_path=true&size=100000000"
         )
         XCTAssertEqual(
             BandwidthProbe.downloadURL(
-                serverURL: try XCTUnwrap(URL(string: "https://silo.example:8096")),
-                advertised: "/api/v2/playback/bandwidth-probe?size=5",
+                try XCTUnwrap(URL(string: "https://silo.example:8096/api/v2/playback/bandwidth-probe?size=5")),
                 bytes: 1_000_000_000
             )?.absoluteString,
             "https://silo.example:8096/api/v2/playback/bandwidth-probe?size=1000000000"
         )
-        XCTAssertNil(BandwidthProbe.downloadURL(serverURL: server, advertised: "ftp://silo.example/probe", bytes: 1))
+        XCTAssertNil(BandwidthProbe.downloadURL(try XCTUnwrap(URL(string: "ftp://silo.example/probe")), bytes: 1))
     }
 }
 
