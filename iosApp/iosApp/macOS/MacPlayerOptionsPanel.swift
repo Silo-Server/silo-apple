@@ -128,11 +128,12 @@ struct MacPlayerOptionsPanel: View {
             // server rung in plan order.
             optionList {
                 ForEach(viewModel.qualityOptions) { option in
+                    let selected = option.id == viewModel.highlightedQualityOptionId
                     trackButton(
                         title: option.label,
-                        detail: nil,
+                        detail: selected ? viewModel.qualityReasonLine : nil,
                         trailing: option.bitrateText,
-                        selected: option.id == viewModel.highlightedQualityOptionId
+                        selected: selected
                     ) {
                         viewModel.switchQuality(option.id)
                     }

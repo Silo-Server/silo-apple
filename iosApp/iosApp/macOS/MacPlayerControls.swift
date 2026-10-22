@@ -163,8 +163,10 @@ struct MacPlayerControls: View {
     }
 
     private var activeQualityLabel: String {
-        viewModel.activeQualityOption?.label
-            ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
+        guard let active = viewModel.activeQualityOption else {
+            return ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
+        }
+        return active.isAuto ? viewModel.autoQualityLabel : active.label
     }
 
     private var speedLabel: String {
