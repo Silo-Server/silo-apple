@@ -516,7 +516,8 @@ private struct HUDSettingRow: View {
         }
         .buttonStyle(HUDRowButtonStyle())
         .accessibilityLabel(label)
-        .accessibilityValue(value)
+        // The detail explains the value, so VoiceOver reads them together.
+        .accessibilityValue([value, detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
     }
 }
 
@@ -569,7 +570,8 @@ private struct HUDSettingRowLabel: View {
                     Text(detail)
                         .font(.system(size: 17))
                         .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
-                        .lineLimit(2)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 18)
@@ -587,6 +589,10 @@ private struct HUDSettingRowLabel: View {
                         .foregroundStyle(isFocused ? .black.opacity(0.55) : .white.opacity(0.45))
                 }
             }
+            // With a detail line the value keeps its full width and the
+            // detail wraps in what is left, instead of the two splitting
+            // the row and truncating the value.
+            .layoutPriority(detail == nil ? 0 : 1)
         }
         .foregroundStyle(isFocused ? Color.black : Color.white)
     }
@@ -828,7 +834,6 @@ private struct VideoPane: View {
                                     )
                                 )
                             }
-                            .accessibilityHint(viewModel.qualityReasonLine ?? "")
                             .focused($focusedField, equals: .quality)
                         }
 
@@ -1968,7 +1973,6 @@ private struct SubtitlesPane: View {
                     )
                     .disabled(true)
                     .opacity(0.35)
-                    .accessibilityHint(reason)
                     .id(Option.search)
                 } else {
                     HUDSettingRow(
