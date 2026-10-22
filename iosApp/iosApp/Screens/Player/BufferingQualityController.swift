@@ -320,11 +320,15 @@ final class BufferingQualityController {
     /// A plan adopted before any plan of the attempt played, such as a
     /// failure recovery before the first frame or a lowering made during the
     /// start wait, continues the attempt's start: it has no grace of its own
-    /// and keeps the one the start began.
+    /// and keeps the one the start began. A plan adopted after one played,
+    /// such as a lowering, a pick or a track change, replaces a source that
+    /// played: until it plays, its loading is a source reload, never a
+    /// stall, and only a missed start deadline (``startDeadlinePassed()``)
+    /// lowers it.
     func planAdopted(_ plan: Plan, controllerInitiated: Bool = true) {
         let now = nowMs
-        // A stall in progress carries over as the new plan's first wait, so a
-        // plan that never starts is still caught.
+        // During the start, a stall in progress carries over as the new
+        // plan's first wait, so a start that never begins is still caught.
         let wasStalled = current?.stall != nil
         let startGrace = attemptStage == .adopted ? current?.graceEndsAt : nil
         endPlan(at: now)
@@ -337,10 +341,12 @@ final class BufferingQualityController {
         if playingSince != nil {
             playingSince = now
             state.graceEndsAt = now + Self.startupGraceMs
+        } else {
+            state.reloading = attemptStage == .played
         }
         if attemptStage == .new { attemptStage = .adopted }
         current = state
-        if wasStalled { beginStall(at: now) }
+        if wasStalled, !state.reloading { beginStall(at: now) }
         if let pending { settle(pending, at: now) }
     }
 
@@ -388,6 +394,7 @@ final class BufferingQualityController {
         rendererWaiting = false
         // The plan ran again: a reload that ended its stall did not end it.
         current?.stallEndedByReload = false
+        current?.reloading = false
         if playingSince == nil {
             playingSince = now
             if current != nil, current?.graceEndsAt == nil { current?.graceEndsAt = now + Self.startupGraceMs }
@@ -400,10 +407,10 @@ final class BufferingQualityController {
         evaluate(at: now)
     }
 
-    /// The player is waiting. A `.network` wait is a stall; any other cause
-    /// ends a stall in progress without counting it. A `.network` or
-    /// `.renderer` wait means playback wants to run, so a paused pill's timer
-    /// resumes.
+    /// The player is waiting. A `.network` wait is a stall, except while a
+    /// replacement of a plan that played loads; any other cause ends a stall
+    /// in progress without counting it. A `.network` or `.renderer` wait
+    /// means playback wants to run, so a paused pill's timer resumes.
     ///
     /// `startedAgoMs` back-dates a wait the host noticed late, such as a
     /// frozen playhead it sees only after a threshold. It never reaches back
@@ -424,7 +431,7 @@ final class BufferingQualityController {
             return
         }
         isPaused = false
-        if current != nil, current?.stall == nil { beginStall(at: began) }
+        if let state = current, state.stall == nil, !state.reloading { beginStall(at: began) }
         refreshPill()
     }
 
@@ -1077,6 +1084,9 @@ final class BufferingQualityController {
         var endedStalls: [EndedStall] = []
 
         var cooldownUntil: Int?
+        /// Replaced a plan after the attempt had played and has not played
+        /// itself: its loading is a source reload, so a wait begins no stall.
+        var reloading = false
 
         var playedMs = 0
         var stallCount = 0

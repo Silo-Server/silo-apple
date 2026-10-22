@@ -321,10 +321,10 @@ final class BufferingQualityControllerTests: XCTestCase {
     }
 
     /// A replacement of a plan that played: its loading, from the source
-    /// swap to its adoption, is a source reload; the plan's own start wait
-    /// begins at adoption, under its grace. Gauntlet T2: an audio-track switch
-    /// on a fast link took 6 s to adoption and 11.4 s more to play. Timed
-    /// from the swap, it would have lowered at 76 s.
+    /// swap through its adoption to its first frame, is a source reload.
+    /// Gauntlet T2: an audio-track switch on a fast link took 6 s to adoption
+    /// and 11.4 s more to play. Timed from the swap, it would have lowered at
+    /// 76 s.
     func testASlowTrackChangeDoesNotLower() {
         let h = Harness(mode: .always)
         h.startPlaying(Self.plan("p1"))
@@ -336,6 +336,31 @@ final class BufferingQualityControllerTests: XCTestCase {
         h.at(77_400) { $0.playing() }
         h.clock.advance(to: 120_000)
         XCTAssertEqual(h.shown, [])
+    }
+
+    /// The lower plan of a lowering after the attempt played never starts,
+    /// its media measured arriving below its bitrate: its wait is a source
+    /// reload, so it lowers again only at its start deadline. Apple TV S2: a
+    /// lowered version's subtitle rendition answered 503 for 20-27 s, and its
+    /// wait, timed under its own grace, lowered Auto again at 16 s, rung by
+    /// rung.
+    func testALoweredPlanThatNeverStartsLowersOnlyAtItsDeadline() {
+        let h = Harness(mode: .always)
+        h.startPlaying(Self.plan("p1"))
+        h.at(125_000) { $0.waiting() }
+        h.at(133_000) { $0.waiting(cause: .reload) }
+        h.at(134_000) {
+            $0.planAdopted(Self.plan("p2", delivered: 31_600))
+            $0.waiting()
+        }
+        h.measuredKbps = 10_000
+        h.clock.advance(to: 179_000)
+        XCTAssertEqual(h.shown, [
+            .init(131_000, .replan(Self.autoLowering(44_100))),
+            .init(134_000, .pillShown(.undo)),
+        ])
+        XCTAssertTrue(h.controller.startDeadlinePassed())
+        XCTAssertEqual(h.shown.last, .init(179_000, .replan(Self.autoLowering(22_120, observed: 10_000))))
     }
 
     /// A plan adopted before any plan of the attempt played, here a failure
