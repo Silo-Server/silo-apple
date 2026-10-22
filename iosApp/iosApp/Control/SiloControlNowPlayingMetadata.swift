@@ -8,10 +8,13 @@ struct SiloControlNowPlayingMetadata: Equatable, Sendable {
     let posterUrl: String?
     let overview: String?
 
-    /// 2:3 artwork: an episode's own poster is its 16:9 still, so episodes use
-    /// the series poster and synopsis when theirs are missing.
+    /// 2:3 artwork: an episode's own poster is its 16:9 still, which spoiler
+    /// protection may hide, so episodes send only the series poster. The
+    /// synopsis falls back to the series when the episode has none.
     init(item: ItemDetail, series: ItemDetail?) {
-        posterUrl = Self.nonEmpty(series?.posterUrl) ?? Self.nonEmpty(item.posterUrl)
+        posterUrl = SiloMediaType.isEpisode(item.type)
+            ? Self.nonEmpty(series?.posterUrl)
+            : Self.nonEmpty(item.posterUrl)
         overview = Self.nonEmpty(item.overview) ?? Self.nonEmpty(series?.overview)
     }
 
@@ -157,7 +160,11 @@ final class SiloControlNowPlayingMetadataResolver {
         guard let item = await itemDetail(contentId, allowCached: allowCached) else { return nil }
         var series: ItemDetail?
         if SiloMediaType.isEpisode(item.type), let seriesId = item.seriesId, !seriesId.isEmpty {
-            series = await itemDetail(seriesId, allowCached: allowCached)
+            // A failed series lookup counts as a failed load, so the resolver
+            // retries it (or keeps the last result) instead of settling for
+            // an episode without its poster.
+            guard let fetched = await itemDetail(seriesId, allowCached: allowCached) else { return nil }
+            series = fetched
         }
         return SiloControlNowPlayingMetadata(item: item, series: series)
     }

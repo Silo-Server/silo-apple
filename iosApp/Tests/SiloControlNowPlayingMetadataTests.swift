@@ -57,13 +57,15 @@ final class SiloControlNowPlayingMetadataTests: XCTestCase {
         XCTAssertEqual(metadata.overview, "Episode plot")
     }
 
-    func testEpisodeFallsBackWhenTheSeriesHasNoPosterOrTheEpisodeNoOverview() throws {
+    /// The episode's own poster is its still, which may be a spoiler.
+    func testEpisodeNeverSendsItsStill() throws {
         let episode = try Self.item(type: "episode", poster: "https://silo.example/still.webp",
                                     overview: " ", seriesId: "series")
         let series = try Self.item(type: "series", poster: nil, overview: "Series plot")
         let metadata = SiloControlNowPlayingMetadata(item: episode, series: series)
-        XCTAssertEqual(metadata.posterUrl, "https://silo.example/still.webp")
+        XCTAssertNil(metadata.posterUrl)
         XCTAssertEqual(metadata.overview, "Series plot")
+        XCTAssertNil(SiloControlNowPlayingMetadata(item: episode, series: nil).posterUrl)
     }
 
     func testMovieUsesItsOwnPoster() throws {
@@ -196,11 +198,13 @@ final class SiloControlNowPlayingMetadataTests: XCTestCase {
 
     private static func item(type: String, poster: String?, overview: String?,
                              seriesId: String? = nil) throws -> ItemDetail {
-        var fields: [String: Any] = ["contentId": UUID().uuidString, "type": type, "title": "Title"]
-        fields["posterUrl"] = poster
+        var fields: [String: Any] = ["content_id": UUID().uuidString, "type": type, "title": "Title"]
+        fields["poster_url"] = poster
         fields["overview"] = overview
-        fields["seriesId"] = seriesId
-        return try JSONDecoder().decode(ItemDetail.self, from: JSONSerialization.data(withJSONObject: fields))
+        fields["series_id"] = seriesId
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(ItemDetail.self, from: JSONSerialization.data(withJSONObject: fields))
     }
 
     private static func decodeState(extraKeys: String) throws -> SiloControlPlaybackState {
