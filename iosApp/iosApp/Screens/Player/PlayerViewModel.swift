@@ -3793,6 +3793,24 @@ class PlayerViewModel {
         highlightedQualityOptionId.flatMap { id in qualityOptions.first { $0.id == id } }
     }
 
+    /// The playing plan's `quality_reasons`; nil from a server without
+    /// `plan_quality_reasons_v1`, which shows no reason.
+    private var qualityReasons: [PlaybackV3QualityReason]? {
+        activePreparedProtocolV3.flatMap {
+            PlaybackQualityReasons.reasons(plan: $0.plan, serverFeatures: $0.serverFeatures)
+        }
+    }
+
+    /// The line under the checked quality row.
+    var qualityReasonLine: String? {
+        qualityReasons.flatMap(PlaybackQualityReasons.menuLine)
+    }
+
+    /// The quality control's value while Auto plays (`Auto · 1080p`).
+    var autoQualityLabel: String {
+        PlaybackQualityReasons.autoLabel(plan: activePreparedProtocolV3?.plan)
+    }
+
     /// The quality SiloRemote checks and reads out: the lit row, or with none
     /// the session's resolution. The remote checks whichever row matches, so
     /// a resolution a row is named after (or a server rung id Settings can't

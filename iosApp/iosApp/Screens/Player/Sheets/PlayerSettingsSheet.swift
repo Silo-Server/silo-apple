@@ -88,14 +88,17 @@ struct PlayerSettingsSheet: View {
     }
 
     private var activeQualityLabel: String {
-        viewModel.activeQualityOption?.label
-            ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
+        guard let active = viewModel.activeQualityOption else {
+            return ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
+        }
+        return active.isAuto ? viewModel.autoQualityLabel : active.label
     }
 
     private var qualityPage: some View {
         List {
             Section {
                 ForEach(viewModel.qualityOptions) { option in
+                    let checked = option.id == viewModel.highlightedQualityOptionId
                     Button {
                         viewModel.switchQuality(option.id)
                     } label: {
@@ -108,9 +111,14 @@ struct PlayerSettingsSheet: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
+                                if checked, let reason = viewModel.qualityReasonLine {
+                                    Text(reason)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                             Spacer()
-                            if option.id == viewModel.highlightedQualityOptionId {
+                            if checked {
                                 Image(systemName: "checkmark")
                                     .fontWeight(.semibold)
                                     .foregroundStyle(.tint)

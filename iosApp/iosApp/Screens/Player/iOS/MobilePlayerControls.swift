@@ -434,16 +434,20 @@ struct MobilePlayerControls: View {
             // The menu indents only rows that carry an icon, so every row
             // gets a checkmark, invisible unless checked: the titles stay
             // in one column instead of the checked one shifting right. The
-            // bitrate goes underneath so the indented titles still fit.
+            // bitrate goes underneath so the indented titles still fit, and
+            // the checked row adds why it plays at that quality.
             ForEach(viewModel.qualityOptions) { option in
+                let checked = option.id == viewModel.highlightedQualityOptionId
                 Button {
                     viewModel.switchQuality(option.id)
                 } label: {
                     Text(option.label)
-                    if let bitrate = option.bitrateText {
-                        Text(bitrate)
+                    let detail = [option.bitrateText, checked ? viewModel.qualityReasonLine : nil]
+                        .compactMap { $0 }
+                    if !detail.isEmpty {
+                        Text(detail.joined(separator: " · "))
                     }
-                    if option.id == viewModel.highlightedQualityOptionId {
+                    if checked {
                         Image(systemName: "checkmark")
                     } else {
                         Self.clearCheckmark
@@ -489,11 +493,13 @@ struct MobilePlayerControls: View {
     }
 
     /// Short value for the pill — the tier's resolution ("1080p") rather
-    /// than the full "Up to 1080p HD (High)" menu label. A fixed saved
-    /// resolution the menu has no row for still reads as that resolution.
+    /// than the full "Up to 1080p HD (High)" menu label, and Auto with the
+    /// resolution it plays. A fixed saved resolution the menu has no row for
+    /// still reads as that resolution.
     private var qualityValueText: String {
         if let active = viewModel.activeQualityOption {
-            return active.isAuto || active.resolution.isEmpty ? "Auto" : active.resolution
+            if active.isAuto { return viewModel.autoQualityLabel }
+            return active.resolution.isEmpty ? "Auto" : active.resolution
         }
         return SiloQualityPresets.resolutionLabel(AppleQualityAxes.split(viewModel.activeQualityId).resolution)
     }
