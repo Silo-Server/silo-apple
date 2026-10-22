@@ -10442,11 +10442,8 @@ extension PlayerViewModel {
         disarmStartDeadline()
         guard let epoch = activeAetherLoadEpoch, startedAetherLoadEpoch != epoch,
               aetherPlaybackController.activeSpec?.options.nativeRemoteHLS == false else { return }
-        armedStartDeadline = .init(
-            loadEpoch: epoch,
-            deadline: PlaybackStartDeadline(atMs: bufferingClock.elapsedMs, running: viewerWantsToPlay)
-        )
-        scheduleStartDeadlineCheck()
+        armedStartDeadline = .init(loadEpoch: epoch, deadline: PlaybackStartDeadline())
+        syncStartDeadline()
     }
 
     private func disarmStartDeadline() {
@@ -10456,17 +10453,21 @@ extension PlayerViewModel {
     }
 
     /// The start deadline spends its budget only while the viewer wants to
-    /// play.
+    /// play and the buffering signals show no outage.
     private func syncStartDeadline() {
         guard var armed = armedStartDeadline else { return }
         let due = armed.deadline.dueAtMs
-        armed.deadline.setRunning(viewerWantsToPlay, atMs: bufferingClock.elapsedMs)
+        armed.deadline.update(
+            viewerWantsToPlay: viewerWantsToPlay,
+            outage: bufferingSignals.transportTrouble,
+            atMs: bufferingClock.elapsedMs
+        )
         armedStartDeadline = armed
         if armed.deadline.dueAtMs != due { scheduleStartDeadlineCheck() }
     }
 
     /// Checks the start deadline when it falls due, or `afterMs` from now;
-    /// while paused, once the viewer plays again.
+    /// while it is held, once it runs again.
     private func scheduleStartDeadlineCheck(afterMs delay: Int? = nil) {
         startDeadlineTimer?.cancel()
         startDeadlineTimer = nil

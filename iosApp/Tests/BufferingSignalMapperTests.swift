@@ -232,26 +232,39 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(shared.throughputKbps, 8_000, "1 MB over the one second the reader had alone")
     }
 
-    /// Direct play's start deadline: 45 s of the viewer wanting to play from
-    /// the plan's adoption, however the time is split by pauses.
-    func testTheStartDeadlineCountsOnlyTimeTheViewerWantsToPlay() {
-        var running = PlaybackStartDeadline(atMs: 0, running: true)
+    /// Direct play's start deadline: 45 s from the plan's adoption of the
+    /// viewer wanting to play outside an outage, however pauses and outages
+    /// split the time.
+    func testTheStartDeadlineCountsNeitherPausesNorOutages() {
+        var running = PlaybackStartDeadline()
+        running.update(viewerWantsToPlay: true, outage: false, atMs: 0)
         XCTAssertFalse(running.hasPassed(atMs: 44_999))
         XCTAssertTrue(running.hasPassed(atMs: 45_000))
-        running.setRunning(true, atMs: 30_000)
+        running.update(viewerWantsToPlay: true, outage: false, atMs: 30_000)
         XCTAssertEqual(running.dueAtMs, 45_000, "still running: nothing restarts")
 
-        var paused = PlaybackStartDeadline(atMs: 0, running: true)
-        paused.setRunning(false, atMs: 20_000)
+        var paused = PlaybackStartDeadline()
+        paused.update(viewerWantsToPlay: true, outage: false, atMs: 0)
+        paused.update(viewerWantsToPlay: false, outage: false, atMs: 20_000)
         XCTAssertNil(paused.dueAtMs)
         XCTAssertFalse(paused.hasPassed(atMs: 600_000), "paused for ten minutes")
-        paused.setRunning(true, atMs: 600_000)
+        paused.update(viewerWantsToPlay: true, outage: false, atMs: 600_000)
         XCTAssertEqual(paused.dueAtMs, 625_000, "25 s of the budget left")
 
-        var openedPaused = PlaybackStartDeadline(atMs: 0, running: false)
+        var openedPaused = PlaybackStartDeadline()
+        openedPaused.update(viewerWantsToPlay: false, outage: false, atMs: 0)
         XCTAssertFalse(openedPaused.hasPassed(atMs: 60_000))
-        openedPaused.setRunning(true, atMs: 60_000)
+        openedPaused.update(viewerWantsToPlay: true, outage: false, atMs: 60_000)
         XCTAssertEqual(openedPaused.dueAtMs, 105_000)
+
+        var heldByOutage = PlaybackStartDeadline()
+        heldByOutage.update(viewerWantsToPlay: true, outage: false, atMs: 0)
+        heldByOutage.update(viewerWantsToPlay: true, outage: true, atMs: 10_000)
+        XCTAssertFalse(heldByOutage.hasPassed(atMs: 300_000), "a five-minute outage while the viewer waits to play")
+        heldByOutage.update(viewerWantsToPlay: false, outage: false, atMs: 300_000)
+        XCTAssertNil(heldByOutage.dueAtMs, "the network is back, but the viewer paused")
+        heldByOutage.update(viewerWantsToPlay: true, outage: false, atMs: 320_000)
+        XCTAssertEqual(heldByOutage.dueAtMs, 355_000, "35 s of the budget left")
     }
 
     /// A seek made while paused in one title doesn't make the next title's
