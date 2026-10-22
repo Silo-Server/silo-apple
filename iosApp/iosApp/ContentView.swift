@@ -837,6 +837,13 @@ struct ContentView: View {
             }
             .environment(router)
 
+        case .needsPasswordChange:
+            #if os(tvOS)
+            TVPasswordChangeView(router: router)
+            #else
+            PasswordChangeView(router: router)
+            #endif
+
         case .needsProfile:
             NavigationStack(path: $router.path) {
                 ProfileSelectionView(router: router)

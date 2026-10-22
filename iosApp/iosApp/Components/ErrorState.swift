@@ -108,14 +108,22 @@ struct ErrorState: Equatable {
     /// `permission_denied` details are written for people ("Downloads are not
     /// allowed."). The other 403 problems (`profile_verification_required`,
     /// `password_change_required`) carry protocol instructions, so they get
-    /// local copy.
+    /// local copy. A temporary password is not a missing permission, and the
+    /// generic 403 copy would send the person to an admin who sees nothing
+    /// wrong.
     private static func forbiddenMessage(for problem: APIv2Problem) -> String {
         let detail = problem.detail.trimmingCharacters(in: .whitespacesAndNewlines)
         if problem.identifier == "permission_denied", !detail.isEmpty {
             return detail
         }
+        if problem.identifier == PasswordChangeModel.requiredProblem {
+            return passwordChangeRequiredMessage
+        }
         return humanize(statusCode: 403)
     }
+
+    static let passwordChangeRequiredMessage =
+        "An admin set a temporary password for this account. Sign out, then sign in again to choose your own."
 
     private static func humanize(httpError: HTTPError) -> String {
         switch httpError {

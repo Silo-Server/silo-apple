@@ -73,6 +73,9 @@ struct ProfileSelectionView: View {
             await skipPickerIfSingleProfile()
             await account
         }
+        .onChange(of: viewModel.requiresPasswordChange) { _, required in
+            if required { router.showPasswordChange() }
+        }
         .onChange(of: tintedProfileID) { _, id in
             MarqueeScene.shared.personalTint = id.map { ProfileTilePalette.tint(for: $0) }
         }
@@ -138,9 +141,11 @@ struct ProfileSelectionView: View {
 
     /// A household with one profile and no PIN doesn't need a picker after
     /// signing in: go straight to Home. A failed load keeps the request, so a
-    /// successful Retry still skips.
+    /// successful Retry still skips, and so does the picker shown after a
+    /// temporary password is replaced.
     private func skipPickerIfSingleProfile() async {
-        guard router.skipsSingleProfilePicker, viewModel.error == nil else { return }
+        guard router.skipsSingleProfilePicker, viewModel.error == nil,
+              !viewModel.requiresPasswordChange else { return }
         router.skipsSingleProfilePicker = false
         guard viewModel.profiles.count == 1, let only = viewModel.profiles.first, !only.hasPin else { return }
         await viewModel.selectProfile(only, router: router)
@@ -150,7 +155,9 @@ struct ProfileSelectionView: View {
 
     @ViewBuilder
     private var pickerContent: some View {
-        if viewModel.isLoading && viewModel.profiles.isEmpty {
+        // A temporary password hands over to the password change; until that
+        // lands, keep the loading state rather than flash a refusal.
+        if viewModel.requiresPasswordChange || (viewModel.isLoading && viewModel.profiles.isEmpty) {
             LoadingView(message: "Loading profiles...")
         } else if let error = viewModel.error, viewModel.profiles.isEmpty {
             ErrorView(state: error, onRetry: {
