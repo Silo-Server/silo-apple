@@ -18,9 +18,10 @@ struct TVBufferingQualityPill: View {
     }
 
     let pill: BufferingQualityController.Pill
-    /// Drawn lit without holding focus: with the controls hidden the player's
-    /// press capture owns the remote and sends Select to the primary action.
-    var isSelectTarget = false
+    /// The button drawn lit without holding focus: with the controls hidden
+    /// the player's press capture owns the remote, sends Select to it, and
+    /// moves it between the prompt's buttons on Left and Right.
+    var selectTarget: Action? = nil
     let focus: FocusState<Action?>.Binding
     let onPrimary: () -> Void
     let onSecondary: () -> Void
@@ -31,14 +32,14 @@ struct TVBufferingQualityPill: View {
                 Button(action: onPrimary) {
                     Text(pill.kind.primaryAction)
                 }
-                .buttonStyle(TVPlayerPillButtonStyle(pill: pill, isSelectTarget: isSelectTarget))
+                .buttonStyle(TVPlayerPillButtonStyle(pill: pill, isSelectTarget: selectTarget == .primary))
                 .focused(focus, equals: .primary)
 
                 if let secondary = pill.kind.secondaryAction {
                     Button(action: onSecondary) {
                         Text(secondary)
                     }
-                    .buttonStyle(TVPlayerPillButtonStyle(pill: nil))
+                    .buttonStyle(TVPlayerPillButtonStyle(pill: nil, isSelectTarget: selectTarget == .secondary))
                     .focused(focus, equals: .secondary)
                 }
             }
@@ -58,7 +59,7 @@ struct TVBufferingQualityPill: View {
     @Previewable @FocusState var focus: TVBufferingQualityPill.Action?
     TVBufferingQualityPill(
         pill: .preview(.undo),
-        isSelectTarget: true,
+        selectTarget: .primary,
         focus: $focus,
         onPrimary: {},
         onSecondary: {}

@@ -57,6 +57,10 @@ struct PlayerView: View {
     /// The buffering pill's buttons. Owned here because the pill is drawn at
     /// the notice position; `TVPlayerControls` applies its focus rules.
     @FocusState private var focusedBufferingAction: TVBufferingQualityPill.Action?
+    /// The prompt's button that a press capture's Select answers while the
+    /// controls are hidden. Left and Right move it between Lower quality and
+    /// Keep quality; each new pill starts on its primary action.
+    @State private var bufferingSelectTarget: TVBufferingQualityPill.Action = .primary
     /// `TVPlayerControls`' explicit timeline scrub, which takes the buffering
     /// pill out of the focus graph.
     @State private var isTimelineScrubbing = false
@@ -166,6 +170,9 @@ struct PlayerView: View {
                         // stays mounted and Select acts on the pill (the spec's
                         // root-level Select), so every other press keeps its
                         // playback meaning and the pill's timer runs on regardless.
+                        // The buffering prompt is the exception: it has two
+                        // buttons, so Left and Right move between them instead
+                        // of skipping.
                         // Never while the HUD is presented: the sink and the HUD's
                         // focus graph would be two owners for the same presses
                         // (docs/tvos-focus.md), and the sink's Down handler
@@ -181,7 +188,7 @@ struct PlayerView: View {
                                         case .right: viewModel.adjustHoldSeekRate(delta: +1)
                                         case .up, .down: break
                                         }
-                                    } else {
+                                    } else if !moveBufferingSelectTarget(direction) {
                                         switch direction {
                                         case .left:  viewModel.skipBackward()
                                         case .right: viewModel.skipForward()
@@ -218,7 +225,7 @@ struct PlayerView: View {
                                     } else if viewModel.showBufferingPill {
                                         // Never up together with the intro
                                         // pill: the controller holds one back.
-                                        viewModel.selectBufferingPrimary()
+                                        selectBufferingTarget()
                                     } else if viewModel.showIntroSkip {
                                         viewModel.selectIntroSkipPrompt()
                                     } else if viewModel.isPlaying {
@@ -236,13 +243,15 @@ struct PlayerView: View {
 
                         // A buffering pill shows during a stall, often while a
                         // load is in flight and nothing above is mounted. Give it
-                        // a sink of its own that answers Select and leaves every
-                        // other press inert, as during any load; Menu reaches
-                        // `onExitCommand` through it.
+                        // a sink of its own that answers Select, moves between
+                        // the prompt's buttons on Left and Right, and leaves
+                        // every other press inert, as during any load; Menu
+                        // reaches `onExitCommand` through it.
                         if capturesSelectForBufferingPillWhileLoading {
-                            TVPressCaptureView(onSelect: {
-                                viewModel.selectBufferingPrimary()
-                            })
+                            TVPressCaptureView(
+                                onArrowTap: { _ = moveBufferingSelectTarget($0) },
+                                onSelect: { selectBufferingTarget() }
+                            )
                             .ignoresSafeArea()
                         }
 
@@ -464,6 +473,9 @@ struct PlayerView: View {
             } else {
                 timelineTimeDisplayMode = .elapsedRemaining
             }
+        }
+        .onChange(of: viewModel.bufferingPill?.kind) { _, _ in
+            bufferingSelectTarget = .primary
         }
         #endif
         #if os(iOS)
@@ -788,12 +800,36 @@ struct PlayerView: View {
             !viewModel.isHoldSeeking && !isTimelineScrubbing
     }
 
+    /// Left or Right while the buffering prompt is the Select target: picks
+    /// Lower quality or Keep quality. True when the press was the prompt's.
+    private func moveBufferingSelectTarget(_ direction: TVPressCaptureView.ArrowDirection) -> Bool {
+        guard bufferingPillIsSelectTarget, showsBufferingPill, viewModel.bufferingPill?.kind == .prompt else {
+            return false
+        }
+        switch direction {
+        case .left: bufferingSelectTarget = .primary
+        case .right: bufferingSelectTarget = .secondary
+        case .up, .down: return false
+        }
+        return true
+    }
+
+    /// Select at the player root: the prompt's chosen button, or the pill's
+    /// primary action.
+    private func selectBufferingTarget() {
+        if bufferingSelectTarget == .secondary, viewModel.bufferingPill?.kind == .prompt {
+            viewModel.selectBufferingKeep()
+        } else {
+            viewModel.selectBufferingPrimary()
+        }
+    }
+
     @ViewBuilder
     private var tvBufferingPill: some View {
         if showsBufferingPill, let pill = viewModel.bufferingPill {
             TVBufferingQualityPill(
                 pill: pill,
-                isSelectTarget: bufferingPillIsSelectTarget,
+                selectTarget: bufferingPillIsSelectTarget ? bufferingSelectTarget : nil,
                 focus: $focusedBufferingAction,
                 onPrimary: { viewModel.selectBufferingPrimary() },
                 onSecondary: { viewModel.selectBufferingKeep() }
