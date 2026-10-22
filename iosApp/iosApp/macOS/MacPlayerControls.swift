@@ -159,7 +159,7 @@ struct MacPlayerControls: View {
         )
         .help("Quality")
         .accessibilityLabel("Playback Quality")
-        .accessibilityValue(activeQualityLabel)
+        .accessibilityValue(viewModel.qualityAccessibilityValue(activeQualityLabel))
     }
 
     private var activeQualityLabel: String {

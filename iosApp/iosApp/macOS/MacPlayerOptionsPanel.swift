@@ -127,11 +127,22 @@ struct MacPlayerOptionsPanel: View {
             // The same plan-built list iOS and tvOS offer: Auto, then each
             // server rung in plan order.
             optionList {
+                // With no row checked, the reason heads the list instead.
+                if let reason = viewModel.qualityReasonHeader {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.58))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 2)
+                }
+
                 ForEach(viewModel.qualityOptions) { option in
                     let selected = option.id == viewModel.highlightedQualityOptionId
                     trackButton(
                         title: option.label,
                         detail: selected ? viewModel.qualityReasonLine : nil,
+                        detailLineLimit: 2,
                         trailing: option.bitrateText,
                         selected: selected
                     ) {
@@ -207,6 +218,7 @@ struct MacPlayerOptionsPanel: View {
     private func trackButton(
         title: String,
         detail: String?,
+        detailLineLimit: Int = 1,
         trailing: String? = nil,
         selected: Bool,
         action: @escaping () -> Void
@@ -227,7 +239,7 @@ struct MacPlayerOptionsPanel: View {
                         Text(detail)
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.58))
-                            .lineLimit(1)
+                            .lineLimit(detailLineLimit)
                     }
                 }
 
