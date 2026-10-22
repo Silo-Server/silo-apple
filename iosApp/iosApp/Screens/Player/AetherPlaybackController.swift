@@ -172,7 +172,9 @@ final class AetherPlaybackController {
 
     /// Bytes the load's reader has pulled from the origin, as of the engine's
     /// latest 1 Hz telemetry; nil without a reader: server HLS, where AVPlayer
-    /// fetches the origin through the engine's relay, or no load.
+    /// fetches the origin through the engine's relay, an audio-only load,
+    /// whose engine reports a constant 0 that would read as silence, or no
+    /// load.
     private(set) var upstreamBytesFetched: Int64?
     /// On server HLS, the rate AVPlayer's access log reports for the item, in
     /// kbps, as of the latest telemetry: what it received from the engine's
@@ -1001,7 +1003,8 @@ final class AetherPlaybackController {
             .sink { [weak self] telemetry in
                 guard let self else { return }
                 let serverHLS = activeSpec?.options.nativeRemoteHLS == true
-                upstreamBytesFetched = serverHLS ? nil : telemetry?.demuxerBytesFetched
+                let hasReader = !serverHLS && activeSpec?.options.audioOnly != true
+                upstreamBytesFetched = hasReader ? telemetry?.demuxerBytesFetched : nil
                 relayThroughputKbps = serverHLS
                     ? telemetry?.networkThroughputMbps.flatMap { mbps in
                         // Clamped first: converting NaN or an overflow traps.
