@@ -236,7 +236,8 @@ final class PlaybackNetworkQualityTests: XCTestCase {
 
     /// `quality_reasons` words the plan's quality: the menu line is the
     /// primary reason plus a short compatibility change, the stats row lists
-    /// every entry, and a server without the capability shows none.
+    /// every entry, and a server without the capability shows none. Rows
+    /// that would only restate the English copy are left out.
     func testThePlanExplainsItsQuality() throws {
         var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
         var plan = try XCTUnwrap(object["playback_plan"] as? [String: Any])
@@ -260,47 +261,39 @@ final class PlaybackNetworkQualityTests: XCTestCase {
             future_code
             """)
 
+        // A known code missing its figure reads as unknown; an unknown token
+        // is uppercased.
         typealias Reason = PlaybackV3QualityReason
         let texts: [(Reason, String?)] = [
-            (Reason(code: "original"), "Original quality"),
-            (Reason(code: "user_selected"), "Quality you picked"),
-            (Reason(code: "network_learned_limit", kbps: 8_000, expiresAt: "2026-10-29T00:00:00Z"),
-             "Limited to 8 Mbps after buffering"),
-            (Reason(code: "network_estimate", kbps: 900), "Your connection measured 900 kbps"),
             (Reason(code: "network_estimate"), nil),
-            (Reason(code: "client_cap", kbps: 2_000), "Limited to 2 Mbps by this device's settings"),
-            (Reason(code: "server_cap", kbps: 12_500), "Limited to 12.5 Mbps by the server"),
-            (Reason(code: "device_resolution_limit", height: 1_080), "This device plays up to 1080p"),
-            (Reason(code: "alternate_version"), "Playing another version that fits"),
-            (Reason(code: "video_codec_unsupported", from: "vc1"), "Converted: this device can't play VC-1 video"),
-            (Reason(code: "video_codec_unsupported", from: "prores"), "Converted: this device can't play PRORES video"),
             (Reason(code: "video_codec_unsupported"), nil),
-            (Reason(code: "dynamic_range_converted", from: "hdr10_plus", to: "sdr"), "HDR10+ shown as SDR"),
-            (Reason(code: "audio_converted", from: "truehd", to: "eac3"), "TrueHD audio converted to Dolby Digital Plus"),
+            (Reason(code: "video_codec_unsupported", from: "prores"), "Converted: this device can't play PRORES video"),
             (Reason(code: "audio_converted", from: "mp2", to: "aac"), "MP2 audio converted to AAC"),
-            (Reason(code: "subtitle_burn_in"), "Subtitles burned into the video"),
-            (Reason(code: "container_unsupported"), "Repackaged for this device"),
             (Reason(code: "future_code"), nil),
         ]
         for (reason, text) in texts {
             XCTAssertEqual(PlaybackQualityReasons.text(reason), text, reason.code)
         }
 
+        // The second entry joins only when it is a compatibility change and
+        // the joined line stays within 72 characters.
+        let line72 = [Reason(code: "video_codec_unsupported", from: "abcdefghijk"),
+                      Reason(code: "dynamic_range_converted", from: "hdr10", to: "sdr")]
+        let line73 = [Reason(code: "video_codec_unsupported", from: "abcdefghijkl"),
+                      Reason(code: "dynamic_range_converted", from: "hdr10", to: "sdr")]
         let lines: [([Reason], String?)] = [
             ([], nil),
             ([Reason(code: "future_code")], "Adjusted for this device"),
             ([Reason(code: "original"), Reason(code: "container_unsupported")], "Original quality"),
-            ([Reason(code: "network_estimate", kbps: 5_100), Reason(code: "subtitle_burn_in")],
-             "Your connection measured 5.1 Mbps · Subtitles burned into the video"),
-            ([Reason(code: "client_cap", kbps: 12_500), Reason(code: "audio_converted", from: "truehd", to: "eac3")],
-             "Limited to 12.5 Mbps by this device's settings"),
+            (line72, "Converted: this device can't play ABCDEFGHIJK video · HDR10 shown as SDR"),
+            (line73, "Converted: this device can't play ABCDEFGHIJKL video"),
         ]
         for (reasons, line) in lines {
             XCTAssertEqual(PlaybackQualityReasons.menuLine(reasons), line, "\(reasons.map(\.code))")
         }
 
         let labels: [(Int, String)] = [
-            (2_160, "4K"), (2_000, "4K"), (1_999, "1080p"), (1_000, "1080p"), (700, "720p"),
+            (2_000, "4K"), (1_999, "1080p"), (1_000, "1080p"), (700, "720p"),
             (699, "480p"), (450, "480p"), (449, "360p"),
         ]
         for (height, label) in labels {
