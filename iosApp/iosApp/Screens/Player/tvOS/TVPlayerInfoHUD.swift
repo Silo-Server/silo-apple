@@ -569,7 +569,7 @@ private struct HUDSettingRowLabel: View {
                     Text(detail)
                         .font(.system(size: 17))
                         .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
             }
             Spacer(minLength: 18)
@@ -807,7 +807,11 @@ private struct VideoPane: View {
                 PaneColumn("Playback") {
                     VStack(spacing: 2) {
                         if viewModel.hasQualityChoice {
-                            HUDSettingRow(label: "Quality", value: qualityValue) {
+                            HUDSettingRow(
+                                label: "Quality",
+                                value: qualityValue,
+                                detail: viewModel.qualityReasonLine
+                            ) {
                                 // The row stays focusable (disabling a focused
                                 // row would move focus); it reads "Switching..."
                                 // and opens nothing until the switch lands.
@@ -824,6 +828,7 @@ private struct VideoPane: View {
                                     )
                                 )
                             }
+                            .accessibilityHint(viewModel.qualityReasonLine ?? "")
                             .focused($focusedField, equals: .quality)
                         }
 
@@ -929,8 +934,10 @@ private struct VideoPane: View {
         }
         // A local Settings rung's bitrate is not the session's, so the
         // fallback names the preference without one.
-        return viewModel.activeQualityOption?.labelWithBitrate
-            ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
+        guard let active = viewModel.activeQualityOption else {
+            return ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
+        }
+        return active.isAuto ? viewModel.autoQualityLabel : active.labelWithBitrate
     }
 
     private var qualityOptions: [HUDDropdownOption] {
