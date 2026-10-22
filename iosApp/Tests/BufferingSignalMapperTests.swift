@@ -406,9 +406,12 @@ final class BufferingSignalMapperTests: XCTestCase {
     }
 
     /// The spec's renderer wait: a wait that begins with more than a second
-    /// buffered is the decoder falling behind, until the buffer drains. One
-    /// that comes to hold more than five seconds, a start's included, is the
-    /// renderer's until playback runs (contract C11).
+    /// buffered is the decoder falling behind, until the buffer drains. On
+    /// the software route, one that comes to hold more than five seconds, a
+    /// start's included, is the renderer's until playback runs (contract
+    /// C11). AVPlayer has no such rule: on a link slightly below the bitrate
+    /// it buffers well past five seconds before it plays through, and that
+    /// wait is the network's.
     func testAWaitWithMediaBufferedIsTheRenderers() {
         var mapper = BufferingSignalMapper()
         let starved = { (ms: Int?) in Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), bufferedMs: ms) }
@@ -422,16 +425,23 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(mapper.update(starved(900)), [.waiting(.network)], "an empty buffer is a stall at once")
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
         XCTAssertEqual(mapper.update(starved(nil)), [.waiting(.network)], "an unknown buffer counts as empty")
+        XCTAssertEqual(mapper.update(starved(20_000)), [], "AVPlayer buffering to play through")
 
-        XCTAssertEqual(mapper.update(starved(5_001)), [.waiting(.renderer)], "plenty buffered: not the network")
-        XCTAssertEqual(mapper.update(starved(0)), [], "however far the buffer then falls")
-        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
-        XCTAssertEqual(mapper.update(starved(0)), [.waiting(.network)], "the next wait is judged afresh")
+        let frozen = { (ms: Int?) in Self.snapshot(bufferedMs: ms, frozen: true) }
+        XCTAssertEqual(mapper.update(Self.snapshot()), [.playing])
+        XCTAssertEqual(mapper.update(frozen(0)), [.waiting(.network)])
+        XCTAssertEqual(mapper.update(frozen(5_001)), [.waiting(.renderer)], "plenty buffered: not the network")
+        XCTAssertEqual(mapper.update(frozen(0)), [], "however far the buffer then falls")
+        XCTAssertEqual(mapper.update(Self.snapshot()), [.playing])
+        XCTAssertEqual(mapper.update(frozen(0)), [.waiting(.network)], "the next wait is judged afresh")
 
-        // A direct play that never renders (Pixel: 26 s buffered).
+        // A start that never renders (Pixel: 26 s buffered), on each route.
         mapper.planAdopted()
         XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading)), [.waiting(.network)])
         XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading, bufferedMs: 26_000)), [.waiting(.renderer)])
+        mapper.planAdopted()
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading, native: Self.avPaused)), [.waiting(.network)])
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading, native: Self.avPaused, bufferedMs: 26_000)), [])
     }
 
     /// AetherEngine's software host pauses its clock to rebuffer without

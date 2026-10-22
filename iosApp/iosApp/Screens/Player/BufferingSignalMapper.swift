@@ -76,8 +76,9 @@ struct BufferingSignalMapper {
     /// The adopted plan has run. Until it does, a seek, the player applying
     /// the start position included, does not end the start's wait.
     private var planHasRun = true
-    /// The wait in progress has held more than `RENDERER_WAIT_AMPLE_MS`
-    /// buffered: it stays the renderer's until it ends.
+    /// The wait in progress on the software route has held more than
+    /// `RENDERER_WAIT_AMPLE_MS` buffered: it stays the renderer's until it
+    /// ends.
     private var waitHeldAmpleBuffer = false
     /// A media request failed since the last update: an outage begins.
     private var mediaRequestFailed = false
@@ -144,7 +145,7 @@ struct BufferingSignalMapper {
         // once the seek has landed, and for a seek made while paused.
         if next == .waiting(.network), seekSincePlaying { next = .waiting(.seek) }
         if next == .waiting(.network) {
-            next = classifyWait(bufferedAheadMs: snapshot.bufferedAheadMs)
+            next = classifyWait(bufferedAheadMs: snapshot.bufferedAheadMs, onAVPlayer: snapshot.nativeTransport != nil)
         } else {
             waitHeldAmpleBuffer = false
         }
@@ -173,12 +174,18 @@ struct BufferingSignalMapper {
     /// `RENDERER_WAIT_BUFFER_MS` buffered past the playhead is the decoder or
     /// renderer falling behind, not the network. It becomes a stall once the
     /// buffer falls to the threshold, and a stall stays one until playback
-    /// resumes. Any wait, a start's or a stall, that comes to hold more than
+    /// resumes.
+    ///
+    /// On the software route, which resumes once a set lead is buffered, any
+    /// wait, a start's or a stall, that comes to hold more than
     /// `RENDERER_WAIT_AMPLE_MS` is the renderer's from then until it ends:
     /// with that much buffered, the network is not what playback waits for.
-    private mutating func classifyWait(bufferedAheadMs: Int?) -> MediaState {
+    /// AVPlayer has no such rule. It waits on a link slightly slower than the
+    /// bitrate until it can play through, legitimately with more than that
+    /// buffered, and the rule would stop Auto lowering exactly there.
+    private mutating func classifyWait(bufferedAheadMs: Int?, onAVPlayer: Bool) -> MediaState {
         let buffered = bufferedAheadMs ?? 0
-        if buffered > BufferingQualityController.rendererWaitAmpleMs { waitHeldAmpleBuffer = true }
+        if !onAVPlayer, buffered > BufferingQualityController.rendererWaitAmpleMs { waitHeldAmpleBuffer = true }
         if waitHeldAmpleBuffer { return .waiting(.renderer) }
         if state == .waiting(.network) { return .waiting(.network) }
         return buffered > BufferingQualityController.rendererWaitBufferMs ? .waiting(.renderer) : .waiting(.network)
