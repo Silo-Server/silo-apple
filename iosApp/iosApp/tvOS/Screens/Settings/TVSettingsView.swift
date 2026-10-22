@@ -22,6 +22,7 @@ struct TVSettingsView: View {
     @State private var showSignOutConfirm = false
     @State private var showPrivacyPolicy = false
     @State private var showOpenSourceAcknowledgements = false
+    @State private var renameTarget: ServerEntry?
     @State private var selectedCategory: TVSettingsCategory = .general
     @State private var activePicker: TVSettingsPickerRequest?
     @State private var pendingPickerFocus: TVSettingsDetailFocus?
@@ -84,6 +85,12 @@ struct TVSettingsView: View {
                 .transition(.opacity)
                 .zIndex(4)
             }
+
+            if let renameTarget {
+                TVServerRenameOverlay(entry: renameTarget, dismiss: dismissRename)
+                    .transition(.opacity)
+                    .zIndex(5)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSignOutConfirm)
@@ -131,6 +138,7 @@ struct TVSettingsView: View {
     /// A picker, confirmation, or full-screen overlay owns focus.
     private var isModalPresented: Bool {
         activePicker != nil || showSignOutConfirm || showPrivacyPolicy || showOpenSourceAcknowledgements
+            || renameTarget != nil
     }
 
     /// Settings always enters through General. Assign the concrete rail focus
@@ -362,6 +370,25 @@ struct TVSettingsView: View {
         }
     }
 
+    private func presentRename(_ server: ServerEntry) {
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .top
+        railFocus = nil
+        detailFocus = nil
+        withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
+            renameTarget = server
+        }
+    }
+
+    private func dismissRename() {
+        withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
+            renameTarget = nil
+        }
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .top
+        restoreDetailFocus(to: .top)
+    }
+
     private func presentPrivacyPolicy() {
         preferredFocusOwner = .detail
         preferredDetailFocus = .serverPrivacyPolicy
@@ -537,12 +564,19 @@ struct TVSettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             TVSettingsSectionHeader("ACTIVE SERVER")
 
-            TVSettingsInfoRow(
-                title: "Server",
-                value: viewModel.serverDisplayName.isEmpty
-                    ? "Not configured"
-                    : viewModel.serverDisplayName
-            )
+            if let server = ServerRegistry.shared.activeServer {
+                TVSettingsPickerRow(title: "Name", value: server.displayName) {
+                    presentRename(server)
+                }
+                .focused($detailFocus, equals: .top)
+                .accessibilityHint("Rename this server")
+
+                if server.nickname != nil, let serverName = server.serverName {
+                    TVSettingsInfoRow(title: "Server Name", value: serverName)
+                }
+            } else {
+                TVSettingsInfoRow(title: "Server", value: "Not configured")
+            }
 
             if !viewModel.serverUrl.isEmpty,
                viewModel.serverDisplayName != viewModel.serverUrl {
@@ -562,7 +596,7 @@ struct TVSettingsView: View {
                 }
             }
             .buttonStyle(TVSettingsPaneRowStyle())
-            .focused($detailFocus, equals: .top)
+            .focused($detailFocus, equals: ServerRegistry.shared.hasActiveServer ? .serverManage : .top)
 
             TVSettingsSectionHeader("ABOUT")
 
@@ -675,6 +709,7 @@ enum TVSettingsDetailFocus: Hashable {
     case subtitleBackgroundOpacity
     case subtitleBackgroundColor
     case subtitlePosition
+    case serverManage
     case serverPrivacyPolicy
     case serverOpenSourceLicenses
     case serverExperimental(ExperimentalFeature)
