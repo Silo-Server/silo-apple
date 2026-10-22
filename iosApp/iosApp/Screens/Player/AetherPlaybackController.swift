@@ -174,6 +174,11 @@ final class AetherPlaybackController {
     /// latest 1 Hz telemetry; nil without a reader: server HLS, where AVPlayer
     /// fetches the origin through the engine's relay, or no load.
     private(set) var upstreamBytesFetched: Int64?
+    /// On server HLS, the rate AVPlayer's access log reports for the item, in
+    /// kbps, as of the latest telemetry: what it received from the engine's
+    /// relay, which passes the origin's bytes on as they arrive. Nil on
+    /// other routes and before anything arrived.
+    private(set) var relayThroughputKbps: Int?
 
     /// The native route's AVPlayer transport; nil on the software route or
     /// without a player.
@@ -995,9 +1000,16 @@ final class AetherPlaybackController {
         engine.diagnostics.$liveTelemetry
             .sink { [weak self] telemetry in
                 guard let self else { return }
-                upstreamBytesFetched = activeSpec?.options.nativeRemoteHLS == true
-                    ? nil
-                    : telemetry?.demuxerBytesFetched
+                let serverHLS = activeSpec?.options.nativeRemoteHLS == true
+                upstreamBytesFetched = serverHLS ? nil : telemetry?.demuxerBytesFetched
+                relayThroughputKbps = serverHLS
+                    ? telemetry?.networkThroughputMbps.flatMap { mbps in
+                        // Clamped first: converting NaN or an overflow traps.
+                        mbps.isFinite
+                            ? UpstreamReadMeter.reportable(kbps: Int64(min(max(mbps, 0), 1_000_000) * 1_000))
+                            : nil
+                    }
+                    : nil
                 publish(.telemetryChanged)
             }
             .store(in: &subscriptions)

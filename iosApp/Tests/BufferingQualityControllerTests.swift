@@ -339,22 +339,38 @@ final class BufferingQualityControllerTests: XCTestCase {
     }
 
     /// On Auto in `always`, a plan that never became playable within the
-    /// player's own deadline lowers as a long stall would, the lowering's
-    /// own plan included, whose loading is a reload (gauntlet T5/A2).
-    /// Otherwise the player's failure recovery keeps it; each case would
-    /// lower without its own rule.
+    /// player's own deadline, its media measured arriving below its
+    /// delivered bitrate, lowers as a long stall would, the lowering's own
+    /// plan included, whose loading is a reload (gauntlet T5/A2). Otherwise
+    /// the player's failure recovery keeps it; each case would lower without
+    /// its own rule.
     func testAStartDeadlineLowersAutoInAlways() {
         // An outage during the lower plan's load ended `LONG_STALL_MS` before
         // the deadline: time enough for a fair run.
-        let h = Harness(mode: .always)
-        h.startPlaying(Self.plan("p1"))
-        h.at(125_000) { $0.waiting() }
-        h.at(133_000) { $0.waiting(cause: .reload) }
-        h.at(134_000) { $0.planAdopted(Self.plan("p2", delivered: 31_600)) }
-        h.at(150_000) { $0.transportTroubleChanged(true) }
-        h.at(173_000) { $0.transportTroubleChanged(false) }
-        h.at(179_000) { XCTAssertTrue($0.startDeadlinePassed()) }
-        XCTAssertEqual(h.shown.last, .init(179_000, .replan(Self.autoLowering(22_120))))
+        func lowerPlanAtItsDeadline() -> Harness {
+            let h = Harness(mode: .always)
+            h.startPlaying(Self.plan("p1"))
+            h.at(125_000) { $0.waiting() }
+            h.at(133_000) { $0.waiting(cause: .reload) }
+            h.at(134_000) { $0.planAdopted(Self.plan("p2", delivered: 31_600)) }
+            h.at(150_000) { $0.transportTroubleChanged(true) }
+            h.at(173_000) { $0.transportTroubleChanged(false) }
+            h.clock.advance(to: 179_000)
+            return h
+        }
+        let h = lowerPlanAtItsDeadline()
+        XCTAssertTrue(h.controller.startDeadlinePassed(observedThroughputKbps: 18_000))
+        var lowering = Self.autoLowering(22_120)
+        lowering.observedThroughputKbps = 18_000
+        XCTAssertEqual(h.shown.last, .init(179_000, .replan(lowering)))
+        // No evidence the link is slow: nothing measured, or media that
+        // arrived at the delivered bitrate.
+        for measured in [nil, 31_600] {
+            let h = lowerPlanAtItsDeadline()
+            let shown = h.shown.count
+            XCTAssertFalse(h.controller.startDeadlinePassed(observedThroughputKbps: measured), "\(measured as Any)")
+            XCTAssertEqual(h.shown.count, shown, "\(measured as Any)")
+        }
 
         let auto = Self.plan("p1", delivered: 6_000)
         let leftToRecovery: [(String, BufferingQualityMode, Controller.Plan, (Harness) -> Void)] = [
@@ -392,7 +408,7 @@ final class BufferingQualityControllerTests: XCTestCase {
             meanwhile(h)
             h.clock.advance(to: 45_000)
             let shown = h.shown.count
-            XCTAssertFalse(h.controller.startDeadlinePassed(), name)
+            XCTAssertFalse(h.controller.startDeadlinePassed(observedThroughputKbps: 4_000), name)
             XCTAssertEqual(h.shown.count, shown, name)
         }
 
@@ -406,7 +422,7 @@ final class BufferingQualityControllerTests: XCTestCase {
             $0.planAdopted(Self.plan("p3"))
             $0.waiting()
         }
-        restored.at(187_000) { XCTAssertFalse($0.startDeadlinePassed(), "restored") }
+        restored.at(187_000) { XCTAssertFalse($0.startDeadlinePassed(observedThroughputKbps: 4_000), "restored") }
     }
 
     /// The running summary is the plan's summary as if it ended now, kept on

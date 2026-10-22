@@ -83,7 +83,12 @@ struct UpstreamReadMeter {
     /// `MIN_ESTIMATE_KBPS`; capped at 1,000,000.
     var throughputKbps: Int? {
         guard !networkChanged, receivingMs >= Self.minReceivingMs else { return nil }
-        let kbps = receivedBytes * 8 / Int64(receivingMs)
+        return Self.reportable(kbps: receivedBytes * 8 / Int64(receivingMs))
+    }
+
+    /// A measured rate as the API takes it: nil below `MIN_ESTIMATE_KBPS`,
+    /// capped at 1,000,000.
+    static func reportable(kbps: Int64) -> Int? {
         guard kbps >= Int64(BufferingQualityController.minEstimateKbps) else { return nil }
         return Int(min(kbps, 1_000_000))
     }

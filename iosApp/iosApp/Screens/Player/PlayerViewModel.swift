@@ -2040,7 +2040,7 @@ class PlayerViewModel {
             // rather than asking for the same quality again.
             if failure.kind == .noPlayableTrackWithinBudget, !currentTransportHasShownFrame,
                protocolV3ReplanTask == nil, freshLoadTask == nil, !isWatchPartyPlayback,
-               bufferingQuality.startDeadlinePassed() {
+               bufferingQuality.startDeadlinePassed(observedThroughputKbps: startDeadlineThroughputKbps) {
                 Self.logger.info("[CMP-BUFFERING] start deadline passed: lowering instead of failure recovery")
                 return
             }
@@ -10366,6 +10366,15 @@ extension PlayerViewModel {
             && streamLoadGeneration != bufferingAdoptedStreamLoadGeneration
     }
 
+    /// What the plan's media arrived at, for the start-deadline rule: the
+    /// reader's rate where Aether reads the origin, or on server HLS the
+    /// access log's rate on the relay hop, the closest equivalent there.
+    private var startDeadlineThroughputKbps: Int? {
+        aetherPlaybackController.activeSpec?.options.nativeRemoteHLS == true
+            ? aetherPlaybackController.relayThroughputKbps
+            : upstreamMeter.throughputKbps
+    }
+
     /// One telemetry tick: what the engine's reader has received from the
     /// origin. Bytes a replacement's source receives while it loads are not
     /// the playing plan's.
@@ -10661,8 +10670,9 @@ extension PlayerViewModel {
                   bandwidthEstimateKbps: request.bandwidthEstimateKbps,
                   bandwidthEstimateSource: request.bandwidthEstimateSource,
                   learnedLimit: request.learnedLimit,
-                  // A lowering reports what the playing plan received so far.
-                  observedThroughputKbps: upstreamMeter.throughputKbps,
+                  // A lowering reports what the playing plan received so far,
+                  // or what its missed start deadline measured.
+                  observedThroughputKbps: request.observedThroughputKbps ?? upstreamMeter.throughputKbps,
                   issuedByBufferingQuality: true
               ) else {
             // Restore quality is the viewer's answer: it goes out once the

@@ -134,6 +134,10 @@ final class BufferingQualityController {
         var bandwidthEstimateSource: String? = nil
         /// `clear`. Only sent to a server that advertises `buffering_quality_v1`.
         var learnedLimit: String? = nil
+        /// What a start-deadline lowering measured the failed plan's media
+        /// arriving at, sent as `observed_throughput_kbps`. Nil on every
+        /// other replan: the player adds the playing plan's own figure.
+        var observedThroughputKbps: Int? = nil
 
         /// **Restore quality**: Auto with no estimate. Every lowering on Auto
         /// carries an estimate, and one on a picked quality names a rung.
@@ -443,25 +447,35 @@ final class BufferingQualityController {
 
     /// The plan failed before its first frame because the player's own start
     /// deadline passed: the attempt's first plan, or a replacement whose
-    /// loading is a reload and so never a stall. On Auto in `always` it
-    /// lowers as a long stall would: a `quality_change` with the step-down
-    /// estimate and `observed_rebuffer`. True when that replan was sent.
-    /// False leaves the failure to the player's usual recovery: `ask` or
-    /// `never`, a title the viewer answered (Keep or Restore), a picked
-    /// quality, a Watch Party, an outage or one that ended less than
-    /// `LONG_STALL_MS` ago (the start never had a fair run), a renderer wait,
-    /// a pick pending, a lowering pending or that no plan answered, no lower
-    /// rung, or a plan a lowering was refused for or already got back no
-    /// lower.
-    func startDeadlinePassed() -> Bool {
+    /// loading is a reload and so never a stall. On Auto in `always`, when
+    /// the plan's media measurably arrived at `observedThroughputKbps`, below
+    /// its delivered bitrate, it lowers as a long stall would: a
+    /// `quality_change` with the step-down estimate, `observed_rebuffer` and
+    /// that figure. True when that replan was sent. False leaves the failure
+    /// to the player's usual recovery, whose `failure_recovery` keeps the
+    /// server's exclusion of the failed route: no measurement (nothing
+    /// arrived, or the player cannot measure it), media that arrived at or
+    /// above the bitrate (the stream fails for another reason, such as one
+    /// the device cannot play), `ask` or `never`, a title the viewer answered
+    /// (Keep or Restore), a picked quality, a Watch Party, an outage or one
+    /// that ended less than `LONG_STALL_MS` ago (the start never had a fair
+    /// run), a renderer wait, a pick pending, a lowering pending or that no
+    /// plan answered, no lower rung, or a plan a lowering was refused for or
+    /// already got back no lower.
+    func startDeadlinePassed(observedThroughputKbps: Int?) -> Bool {
         guard mode == .always, !answered, !isSuspended, !transportTrouble,
               transportTroubleEndedAt.map({ nowMs - $0 >= Self.longStallMs }) ?? true,
               !rendererWaiting, !pickPending, rearmTimer == nil,
               let state = current, state.plan.isAuto, !state.plan.qualityReductionUnavailable,
+              let delivered = state.plan.deliveredKbps,
+              let observed = observedThroughputKbps, observed < delivered,
               state.cooldownUntil == nil, Self.lowerRung(in: state.plan) != nil,
-              let estimate = Self.stepDownEstimate(deliveredKbps: state.plan.deliveredKbps) else { return false }
+              let estimate = Self.stepDownEstimate(deliveredKbps: delivered) else { return false }
         withdrawPill()
-        sendReplan(.lowered, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: state.plan.deliveredKbps)
+        sendReplan(
+            .lowered, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: delivered,
+            observedThroughputKbps: observed
+        )
         return true
     }
 
@@ -711,7 +725,8 @@ final class BufferingQualityController {
         qualityPreference: String,
         estimateKbps: Int? = nil,
         learnedLimit: String? = nil,
-        fromKbps: Int? = nil
+        fromKbps: Int? = nil,
+        observedThroughputKbps: Int? = nil
     ) {
         let now = nowMs
         current?.action = action
@@ -719,6 +734,7 @@ final class BufferingQualityController {
         if sendsBufferingQualityFields {
             request.bandwidthEstimateSource = estimateKbps == nil ? nil : PlaybackProtocolV3.BandwidthEstimateSource.observedRebuffer
             request.learnedLimit = learnedLimit
+            request.observedThroughputKbps = observedThroughputKbps
         }
         // Only an Auto lowering sends an estimate; the next one replaces it.
         let priorKept = keptEstimateKbps
