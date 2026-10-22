@@ -134,7 +134,7 @@ struct APIv2PlaybackPlan: Decodable {
     let availableQualities: [PlaybackV3AvailableQuality]
     let bandwidthLimit: PlaybackV3BandwidthLimit?
     let activeQuality: String?
-    let qualityReasons: [PlaybackV3QualityReason]?
+    let qualityReasons: PlaybackV3QualityReasonList?
 
     func legacy() throws -> PlaybackV3Plan {
         PlaybackV3Plan(
@@ -162,7 +162,7 @@ struct APIv2PlaybackPlan: Decodable {
             availableQualities: availableQualities,
             bandwidthLimit: bandwidthLimit,
             activeQuality: activeQuality,
-            qualityReasons: qualityReasons)
+            qualityReasons: qualityReasons?.reasons)
     }
 }
 

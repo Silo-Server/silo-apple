@@ -236,7 +236,8 @@ final class PlaybackNetworkQualityTests: XCTestCase {
 
     /// `quality_reasons` words the plan's quality: the menu line is the
     /// primary reason plus a short compatibility change, the stats row lists
-    /// every entry, and a server without the capability shows none. Rows
+    /// every entry, and a server without the capability shows none. A
+    /// malformed list or entry never fails the plan. Rows
     /// that would only restate the English copy are left out.
     func testThePlanExplainsItsQuality() throws {
         var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
@@ -246,9 +247,12 @@ final class PlaybackNetworkQualityTests: XCTestCase {
             ["code": "dynamic_range_converted", "from": "dolby_vision", "to": "hdr10"],
             ["code": "alternate_version", "media_file_id": "42"],
             ["code": "future_code", "kbps": "fast"],
+            "not an object",
         ]
         object["playback_plan"] = plan
         let decoded = try XCTUnwrap(PlaybackV3FixtureTestSupport.v2Decision(object).playbackPlan)
+        plan["quality_reasons"] = "not a list"
+        XCTAssertEqual(try PlaybackV3FixtureTestSupport.v2Plan(plan).qualityReasons, [])
         XCTAssertNil(PlaybackQualityReasons.reasons(plan: decoded, serverFeatures: []))
         let reasons = try XCTUnwrap(PlaybackQualityReasons.reasons(
             plan: decoded, serverFeatures: [PlaybackProtocolV3.planQualityReasonsFeature]))

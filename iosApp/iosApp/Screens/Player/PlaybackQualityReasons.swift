@@ -31,6 +31,34 @@ extension PlaybackV3QualityReason {
     }
 }
 
+/// `playback_plan.quality_reasons` as sent, decoded so it never fails the
+/// plan: a value that is not a list reads as no reasons, and an element
+/// that is not an object is skipped.
+struct PlaybackV3QualityReasonList: Decodable {
+    let reasons: [PlaybackV3QualityReason]
+
+    init(from decoder: Decoder) throws {
+        guard var container = try? decoder.unkeyedContainer() else {
+            reasons = []
+            return
+        }
+        var reasons: [PlaybackV3QualityReason] = []
+        while !container.isAtEnd {
+            if let reason = try? container.decode(PlaybackV3QualityReason.self) {
+                reasons.append(reason)
+            } else if (try? container.decode(Skipped.self)) == nil {
+                break
+            }
+        }
+        self.reasons = reasons
+    }
+
+    /// Moves past an element without reading it.
+    private struct Skipped: Decodable {
+        init(from decoder: Decoder) {}
+    }
+}
+
 /// What the player says about the quality that plays: the `Auto · 1080p`
 /// value of the quality control, the reason line under the checked quality
 /// row, and the stats overlay's Reason row.
