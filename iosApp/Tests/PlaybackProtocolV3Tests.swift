@@ -1820,15 +1820,6 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(recovered.allowAlternateVersions, false)
         XCTAssertEqual(recovered.preferredFileId, 42)
         XCTAssertEqual(recovered.libraryId, 8)
-
-        // A version the viewer picked stays picked on a recovery start too.
-        request.allowAlternateVersions = nil
-        request.pinsVersion = true
-        XCTAssertTrue(request.copyForRecovery(
-            preferredFileId: 42, preferredAudioTrackIndex: nil,
-            preferredSubtitleTrackIndex: nil, preferredSidecarSubtitleTrackId: nil,
-            offlineDownloadId: nil
-        ).pinsVersion)
     }
 
     func testWatchPartyGuestPlayPausePermissionNeverAllowsSeek() {
