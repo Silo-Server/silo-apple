@@ -334,6 +334,32 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.freshEstimateKbps(), 60_000)
     }
 
+    /// A lower Test speed result replaces the playback sample, as on the
+    /// server, even when the read after it fails; an automatic test's result
+    /// leaves the higher sample.
+    func testOnlyATestSpeedResultReplacesThePlaybackSample() async {
+        let rows: [(name: String, testSpeed: Bool, readFails: Bool, estimate: Int)] = [
+            ("Test speed", true, false, 20_000),
+            ("Test speed, the read after it fails", true, true, 20_000),
+            ("automatic test", false, false, 60_000),
+        ]
+        for row in rows {
+            let server = FakeProbeServer()
+            server.automatic = !row.testSpeed
+            server.stored.playbackSample = sample(kbps: 60_000, ageDays: 0)
+            server.result = .measured(.init(kbps: 20_000, lowerBound: false, bytes: 7_500_000, durationMs: 3_000))
+            let scheduler = BandwidthProbeScheduler(server: server, clock: clock)
+            scheduler.setForeground(true)
+            scheduler.networkChanged(Self.wifi)
+            scheduler.setActiveServer("server")
+            await advance(seconds: 5)
+            server.readsFail = row.readFails
+            if row.testSpeed { _ = await scheduler.runNow() }
+            XCTAssertEqual(server.reports.count, 1, "\(row.name): the test ran")
+            XCTAssertEqual(scheduler.freshEstimateKbps(), row.estimate, row.name)
+        }
+    }
+
     func testReadingsOlderThanTheMaxAgeAreNotCurrent() async {
         server.maxAge = 3 * Self.day
         server.stored.probe = probe(kbps: 48_000, ageDays: 3.1)
@@ -799,7 +825,8 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
 
 /// A probe server whose answers the test sets. Main-actor isolated, so a
 /// test runs entirely on the main actor and a few yields let it finish. Like
-/// the real one, it keeps the latest result it is sent.
+/// the real one, it keeps the latest result it is sent, and a Test speed
+/// result clears its playback sample.
 @MainActor
 private final class FakeProbeServer: BandwidthProbeServer {
     var result: BandwidthProbeResult = .measured(.init(kbps: 115_000, lowerBound: true, bytes: 7_187_500, durationMs: 500))
@@ -882,7 +909,10 @@ private final class FakeProbeServer: BandwidthProbeServer {
     func report(_ measurement: BandwidthMeasurement, to target: BandwidthProbeTarget) async -> BandwidthReportResult {
         reports.append(measurement)
         if let duringReport { await duringReport() }
-        if reportResult == .stored { stored.probe = measurement.reading }
+        if reportResult == .stored {
+            stored.probe = measurement.reading
+            if measurement.manual { stored.playbackSample = nil }
+        }
         return reportResult
     }
 }

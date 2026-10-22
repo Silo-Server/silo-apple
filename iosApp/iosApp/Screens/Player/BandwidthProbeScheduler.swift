@@ -290,7 +290,8 @@ struct BandwidthProbeSession: Equatable, Sendable {
 ///   against the server that sent it until its `Retry-After`, on any network
 ///   and across sign-ins, while the app runs.
 /// - **Test speed** (``runNow()``) runs the accurate test whenever no media
-///   plays, even with automatic tests off or a current reading.
+///   plays, even with automatic tests off or a current reading. Its result
+///   replaces the playback sample; an automatic test's does not.
 /// - **Reporting**: every measurement is POSTed with the transport it was
 ///   taken on. A result the server refuses is not kept.
 @MainActor
@@ -463,10 +464,13 @@ final class BandwidthProbeScheduler {
 
     /// **Test speed**: runs the accurate test and reports it. Refuses while
     /// media plays or on a metered network; replaces a running automatic test
-    /// and joins a running **Test speed**.
+    /// and joins a running **Test speed**. A result the server stores replaces
+    /// its playback sample, so the connection is read again afterwards.
     func runNow() async -> Outcome {
         if let refused = gate(automatic: false) { return refused }
-        return await probeOnce(testSpeed: true)
+        let outcome = await probeOnce(testSpeed: true)
+        if case .measured = outcome, let session { await read(for: session) }
+        return outcome
     }
 
     // MARK: - App inputs
@@ -826,7 +830,9 @@ final class BandwidthProbeScheduler {
         // measured for are still the ones in use.
         if report != .refused, session == measuredFor, currentConnection == measuredOver {
             let key = ReadingsKey(serverId: target.serverId, connection: measuredOver)
-            if readingsKey != key { playbackSample = nil }
+            // The server clears its playback sample when it stores a Test
+            // speed result, so an older, higher sample cannot outvote it.
+            if readingsKey != key || (run.isTestSpeed && report == .stored) { playbackSample = nil }
             readingsKey = key
             probeReading = measurement.reading
         }
