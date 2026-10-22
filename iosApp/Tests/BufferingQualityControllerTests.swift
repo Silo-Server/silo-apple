@@ -297,6 +297,29 @@ final class BufferingQualityControllerTests: XCTestCase {
         ))
     }
 
+    /// The stall that triggers a lowering ends when the player swaps in the
+    /// lower plan's source; it still counts in the plan it stalled, as one in
+    /// progress at that plan's end would. A stall a reload cuts short in a
+    /// plan that then plays on stays uncounted.
+    func testAStallTheSourceSwapEndsCountsInItsPlan() {
+        let h = Harness(mode: .always)
+        h.startPlaying(Self.plan("p1"))
+        h.at(125_000) { $0.waiting() }
+        h.at(133_000) { $0.waiting(cause: .reload) }
+        h.at(134_000) {
+            $0.planAdopted(Self.plan("p2", delivered: 31_600))
+            $0.playing()
+        }
+        XCTAssertEqual(h.summaries.map(\.stallCount), [1])
+        XCTAssertEqual(h.summaries.map(\.stallTotalMs), [8_000])
+
+        h.at(200_000) { $0.waiting() }
+        h.at(202_000) { $0.waiting(cause: .reload) }
+        h.at(203_000) { $0.playing() }
+        h.at(210_000) { $0.planEnded() }
+        XCTAssertEqual(h.summaries.map(\.stallCount), [1, 0])
+    }
+
     /// The running summary is the plan's summary as if it ended now, kept on
     /// the device in case the app ends first. The plan plays on.
     func testTheRunningSummaryLeavesThePlanPlaying() {

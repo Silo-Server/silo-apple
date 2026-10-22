@@ -341,6 +341,8 @@ final class BufferingQualityController {
     func playing() {
         let now = nowMs
         isPaused = false
+        // The plan ran again: a reload that ended its stall did not end it.
+        current?.stallEndedByReload = false
         if playingSince == nil {
             playingSince = now
             if current != nil, current?.graceEndsAt == nil { current?.graceEndsAt = now + Self.startupGraceMs }
@@ -365,7 +367,7 @@ final class BufferingQualityController {
         let began = playingSince.map { max($0, now - max(0, startedAgoMs)) } ?? now
         leavePlaying(at: began)
         guard cause == .network else {
-            endStall(at: now, resumed: false)
+            endStall(at: now, resumed: false, byReload: cause == .reload)
             if cause == .renderer {
                 isPaused = false
                 refreshPill()
@@ -736,6 +738,7 @@ final class BufferingQualityController {
 
     private func beginStall(at now: Int) {
         guard var state = current else { return }
+        state.stallEndedByReload = false
         // The plan's first wait, when it comes before a frame, starts the grace.
         let graceEnd = state.graceEndsAt ?? now + Self.startupGraceMs
         state.graceEndsAt = graceEnd
@@ -753,14 +756,21 @@ final class BufferingQualityController {
 
     /// Ends a stall in progress. Only one that playback `resumed` from, outside
     /// transport trouble, can be a counted stall; its time feeds the summary
-    /// either way.
-    private func endStall(at now: Int, resumed: Bool) {
+    /// either way. One that a source reload ended `byReload` counts in the
+    /// summary as one still in progress at the plan's end would, if the plan
+    /// ends before it runs again: the swap to the plan that replaces it,
+    /// such as the lowering that stall triggered.
+    private func endStall(at now: Int, resumed: Bool, byReload: Bool = false) {
         guard var state = current, let stall = state.stall else { return }
         state.stall = nil
         state.recordStall(measuredMs: stall.measured(at: now))
-        if resumed, !transportTrouble, let from = stall.timedFrom, now - from >= Self.stallMinMs {
-            state.endedStalls.append(EndedStall(at: now, long: now - from >= Self.longStallMs))
-            state.stallCount += 1
+        if let from = stall.timedFrom, !transportTrouble, now - from >= Self.stallMinMs {
+            if resumed {
+                state.endedStalls.append(EndedStall(at: now, long: now - from >= Self.longStallMs))
+                state.stallCount += 1
+            } else if byReload {
+                state.stallEndedByReload = true
+            }
         }
         current = state
         cancelStallTimers()
@@ -838,6 +848,8 @@ final class BufferingQualityController {
             if !transportTrouble, let from = stall.timedFrom, now - from >= Self.stallMinMs {
                 state.stallCount += 1
             }
+        } else if state.stallEndedByReload {
+            state.stallCount += 1
         }
         return PlanSummary(
             planId: state.plan.id,
@@ -967,6 +979,9 @@ final class BufferingQualityController {
 
         var playedMs = 0
         var stallCount = 0
+        /// A source reload ended a stall that had reached `STALL_MIN_MS`, and
+        /// the plan has not run since.
+        var stallEndedByReload = false
         var stallTotalMs = 0
         var stallLongestMs = 0
 
