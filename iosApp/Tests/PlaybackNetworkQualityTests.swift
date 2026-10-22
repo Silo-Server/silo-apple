@@ -317,6 +317,29 @@ final class PlaybackNetworkQualityTests: XCTestCase {
             XCTAssertEqual(PlaybackQualityReasons.resolutionLabel(width: width, height: height), label,
                            "\(width)x\(height)")
         }
+
+        // The Playing line reads the delivered size and rate, each falling
+        // back to the source's, and needs a size. It is not gated.
+        let sizes: [([String: Any], [String: Any], String?)] = [
+            (["width": 1_920, "height": 800, "bitrate_kbps": 6_000], [:], "Playing 1080p · 6 Mbps"),
+            ([:], ["width": 3_840, "height": 1_600, "bitrate_kbps": 40_500], "Playing 4K · 40.5 Mbps"),
+            (["width": 1_280, "height": 536], ["bitrate_kbps": 9_000], "Playing 720p · 9 Mbps"),
+            (["height": 720], [:], "Playing 720p"),
+            (["bitrate_kbps": 6_000], [:], nil),
+        ]
+        for (recipe, source, line) in sizes {
+            var plan = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+            var planRecipe = try XCTUnwrap(plan["effective_recipe"] as? [String: Any])
+            var planSource = try XCTUnwrap(plan["source"] as? [String: Any])
+            for key in ["width", "height", "bitrate_kbps"] {
+                planRecipe[key] = recipe[key] ?? NSNull()
+                planSource[key] = source[key] ?? NSNull()
+            }
+            plan["effective_recipe"] = planRecipe
+            plan["source"] = planSource
+            XCTAssertEqual(PlaybackQualityReasons.playingLine(plan: try PlaybackV3FixtureTestSupport.v2Plan(plan)),
+                           line, "\(recipe) \(source)")
+        }
     }
 
     /// One quality switch at a time: a pick while one is in flight is ignored

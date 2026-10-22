@@ -3803,21 +3803,40 @@ class PlayerViewModel {
         }
     }
 
-    /// The line under the checked quality row.
+    /// The quality menu's reason line.
     var qualityReasonLine: String? {
         qualityReasons.flatMap(PlaybackQualityReasons.menuLine)
     }
 
-    /// The reason line when no row is checked (a fixed saved resolution
-    /// that names no row): quality menus show it once above their rows.
     var qualityReasonHeader: String? {
         highlightedQualityOptionId == nil ? qualityReasonLine : nil
     }
 
+    /// What the checked quality row says under its title, in place of its
+    /// own description: what plays (`Playing 1080p · 6 Mbps`), then why.
+    /// Empty while a quality switch is in flight, so it never names the
+    /// plan being replaced.
+    var qualityStatusLines: [String] {
+        guard !isQualitySwitching, let plan = activePreparedProtocolV3?.plan else { return [] }
+        return [PlaybackQualityReasons.playingLine(plan: plan), qualityReasonLine].compactMap { $0 }
+    }
+
+    /// `qualityStatusLines`, one per line.
+    var qualityStatus: String? {
+        let lines = qualityStatusLines
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    /// The status when no row is checked (a fixed saved resolution that
+    /// names no row): quality menus show it once above their rows.
+    var qualityStatusHeader: String? {
+        highlightedQualityOptionId == nil ? qualityStatus : nil
+    }
+
     /// What VoiceOver reads for a quality control showing `value`: the
-    /// value, then the reason that explains it.
+    /// value, then what plays and why.
     func qualityAccessibilityValue(_ value: String) -> String {
-        [value, qualityReasonLine].compactMap { $0 }.joined(separator: ", ")
+        ([value] + qualityStatusLines).joined(separator: ", ")
     }
 
     /// The quality control's value while Auto plays (`Auto · 1080p`).

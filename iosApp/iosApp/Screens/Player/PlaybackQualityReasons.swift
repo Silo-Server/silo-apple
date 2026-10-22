@@ -63,8 +63,8 @@ struct PlaybackV3QualityReasonList: Decodable {
 }
 
 /// What the player says about the quality that plays: the `Auto · 1080p`
-/// value of the quality control, the reason line under the checked quality
-/// row, and the stats overlay's Reason row.
+/// value of the quality control, the Playing and reason lines under the
+/// checked quality row, and the stats overlay's Reason row.
 enum PlaybackQualityReasons {
     /// The plan's reasons, or nil when the server does not advertise
     /// `plan_quality_reasons_v1`, which shows no reason at all.
@@ -78,15 +78,35 @@ enum PlaybackQualityReasons {
     /// The quality control's value while Auto plays: Auto and the delivered
     /// resolution, or the source's when the plan names no output size.
     static func autoLabel(plan: PlaybackV3Plan?) -> String {
-        guard let plan else { return ApplePlaybackQuality.auto.label }
+        guard let resolution = plan.flatMap(deliveredResolutionLabel) else {
+            return ApplePlaybackQuality.auto.label
+        }
+        return "\(ApplePlaybackQuality.auto.label) · \(resolution)"
+    }
+
+    /// What the plan serves (`1080p · 6 Mbps`): the delivered resolution and
+    /// bitrate, each falling back to the source's; nil without a size.
+    static func playingValue(plan: PlaybackV3Plan) -> String? {
+        guard let resolution = deliveredResolutionLabel(plan) else { return nil }
+        let kbps = [plan.effectiveRecipe.bitrateKbps, plan.source.bitrateKbps]
+            .compactMap { $0 }
+            .first { $0 > 0 }
+        return [resolution, kbps.map(ApplePlaybackQuality.formatBitrate)]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    /// The first line under the checked quality row (`Playing 1080p · 6 Mbps`).
+    static func playingLine(plan: PlaybackV3Plan) -> String? {
+        playingValue(plan: plan).map { "Playing \($0)" }
+    }
+
+    private static func deliveredResolutionLabel(_ plan: PlaybackV3Plan) -> String? {
         let sizes = [
             (plan.effectiveRecipe.width ?? 0, plan.effectiveRecipe.height ?? 0),
             (plan.source.width ?? 0, plan.source.height ?? 0),
         ]
-        guard let size = sizes.first(where: { $0.0 > 0 || $0.1 > 0 }) else {
-            return ApplePlaybackQuality.auto.label
-        }
-        return "\(ApplePlaybackQuality.auto.label) · \(resolutionLabel(width: size.0, height: size.1))"
+        return sizes.first { $0.0 > 0 || $0.1 > 0 }.map { resolutionLabel(width: $0.0, height: $0.1) }
     }
 
     /// The class a picture belongs to by either dimension, so a scope frame
