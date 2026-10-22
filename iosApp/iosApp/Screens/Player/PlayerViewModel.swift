@@ -1976,7 +1976,8 @@ class PlayerViewModel {
             secondarySubtitleLabel: secondaryLabel,
             plannedSourceDynamicRange: playbackPlan?.source.dynamicRange,
             plannedOutputDynamicRange: playbackPlan?.effectiveRecipe.dynamicRange,
-            plannedSourceDolbyVisionProfile: playbackPlan?.source.dolbyVisionProfile
+            plannedSourceDolbyVisionProfile: playbackPlan?.source.dolbyVisionProfile,
+            qualityReason: qualityReasons.flatMap(PlaybackQualityReasons.statsText)
         )
         return AetherPlaybackStatsProjection.make(
             snapshot: AetherPlaybackStatsSnapshot(engine: aetherPlaybackController.engine),

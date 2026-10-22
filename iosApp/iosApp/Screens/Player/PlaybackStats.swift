@@ -16,6 +16,8 @@ struct PlaybackStats: Equatable {
     var route: String?
     var source: String?
     var delivery: String?
+    /// The plan's `quality_reasons`, one entry per line.
+    var qualityReason: String?
     var container: String?
 
     // Static and selected media state supplied by Aether.
@@ -63,7 +65,7 @@ extension PlaybackStats {
     }
 
     private static let compactLabels: Set<String> = [
-        "Route", "Source", "Delivery", "Container",
+        "Route", "Source", "Delivery", "Reason", "Container",
         "Video", "Audio", "Dynamic range", "Subtitles",
         "Playback status", "Forward buffer", "Display cushion",
         "Dropped frames", "Instant read bitrate", "Network throughput"
@@ -76,6 +78,7 @@ extension PlaybackStats {
             ("Route", route),
             ("Source", source),
             ("Delivery", delivery),
+            ("Reason", qualityReason),
             ("Container", container)
         ])
     }

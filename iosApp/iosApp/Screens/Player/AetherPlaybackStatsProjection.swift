@@ -11,6 +11,8 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
     let plannedSourceDynamicRange: String?
     let plannedOutputDynamicRange: String?
     let plannedSourceDolbyVisionProfile: Int?
+    /// Why the plan delivers its quality, one entry per line.
+    let qualityReason: String?
 
     init(
         sourceURL: URL?,
@@ -20,7 +22,8 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
         secondarySubtitleLabel: String? = nil,
         plannedSourceDynamicRange: String? = nil,
         plannedOutputDynamicRange: String? = nil,
-        plannedSourceDolbyVisionProfile: Int? = nil
+        plannedSourceDolbyVisionProfile: Int? = nil,
+        qualityReason: String? = nil
     ) {
         source = Self.sourceLabel(for: sourceURL)
         self.delivery = Self.deliveryLabel(delivery)
@@ -30,6 +33,7 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
         self.plannedSourceDynamicRange = plannedSourceDynamicRange
         self.plannedOutputDynamicRange = plannedOutputDynamicRange
         self.plannedSourceDolbyVisionProfile = plannedSourceDolbyVisionProfile
+        self.qualityReason = qualityReason
     }
 
     private static func sourceLabel(for url: URL?) -> String? {
@@ -198,6 +202,7 @@ enum AetherPlaybackStatsProjection {
             route: routeLabel(snapshot.route),
             source: source.source,
             delivery: source.delivery,
+            qualityReason: source.qualityReason,
             container: source.container,
             video: videoStream(snapshot),
             audio: audioStream(track: activeAudio, decoder: snapshot.activeAudioDecoder),

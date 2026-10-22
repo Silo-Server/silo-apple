@@ -117,11 +117,12 @@ struct PlaybackStatsPanel: View {
                     Text(row.0)
                         .font(labelFont)
                         .foregroundStyle(.white.opacity(0.74))
+                    // A multi-line value (Reason) keeps every line.
                     Text(row.1)
                         .font(valueFont)
                         .foregroundStyle(.white)
                         .monospacedDigit()
-                        .lineLimit(1)
+                        .lineLimit(row.1.contains("\n") ? nil : 1)
                         .minimumScaleFactor(0.76)
                 }
             }
