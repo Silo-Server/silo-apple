@@ -570,7 +570,7 @@ private struct HUDSettingRowLabel: View {
                     Text(detail)
                         .font(.system(size: 17))
                         .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
-                        .lineLimit(3)
+                        .lineLimit(4)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -816,7 +816,7 @@ private struct VideoPane: View {
                             HUDSettingRow(
                                 label: "Quality",
                                 value: qualityValue,
-                                detail: viewModel.qualityReasonLine
+                                detail: viewModel.qualityStatus
                             ) {
                                 // The row stays focusable (disabling a focused
                                 // row would move focus); it reads "Switching..."
@@ -945,8 +945,15 @@ private struct VideoPane: View {
         return active.isAuto ? viewModel.autoQualityLabel : active.labelWithBitrate
     }
 
+    /// The checked option repeats what plays and why under its label.
     private var qualityOptions: [HUDDropdownOption] {
-        viewModel.qualityOptions.map { .init(id: $0.id, label: $0.labelWithBitrate) }
+        viewModel.qualityOptions.map { option in
+            .init(
+                id: option.id,
+                label: option.labelWithBitrate,
+                detail: option.id == viewModel.highlightedQualityOptionId ? viewModel.qualityStatus : nil
+            )
+        }
     }
 
     private func presentPicker(for field: Field, _ presentation: HUDPickerPresentation) {
@@ -985,6 +992,8 @@ private struct VideoPane: View {
 private struct HUDDropdownOption: Identifiable, Hashable {
     let id: String
     let label: String
+    /// Secondary lines under the label.
+    var detail: String? = nil
     var colorHex: String? = nil
 }
 
@@ -1106,7 +1115,7 @@ private struct HUDPickerOptionRow: View {
         }
         .buttonStyle(HUDRowButtonStyle(isSelected: isSelected))
         .accessibilityLabel(option.label)
-        .accessibilityValue(isSelected ? "Selected" : "")
+        .accessibilityValue([isSelected ? "Selected" : nil, option.detail].compactMap { $0 }.joined(separator: ", "))
     }
 }
 
@@ -1121,9 +1130,17 @@ private struct HUDPickerOptionLabel: View {
             if let colorHex = option.colorHex {
                 ColorSwatch(hex: colorHex)
             }
-            Text(option.label)
-                .font(.system(size: 24, weight: .medium))
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(option.label)
+                    .font(.system(size: 24, weight: .medium))
+                    .lineLimit(1)
+                if let detail = option.detail {
+                    Text(detail)
+                        .font(.system(size: 17))
+                        .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Spacer(minLength: 12)
             if isSelected {
                 Image(systemName: "checkmark")
