@@ -1653,6 +1653,7 @@ class PlayerViewModel {
         bufferingQuality.onOutput = { [weak self] output in
             self?.handleBufferingQualityOutput(output)
         }
+        bufferingQuality.measuredThroughputKbps = { [weak self] in self?.bufferingPlanArrivalKbps }
         observeBufferingHostInputs()
         observeBufferingConnectivity()
         observeBufferingSurfaceVisibility()
@@ -2049,7 +2050,7 @@ class PlayerViewModel {
             // rather than asking for the same quality again.
             if failure.kind == .noPlayableTrackWithinBudget, !currentTransportHasShownFrame,
                protocolV3ReplanTask == nil, freshLoadTask == nil, !isWatchPartyPlayback,
-               bufferingQuality.startDeadlinePassed(observedThroughputKbps: startDeadlineThroughputKbps) {
+               bufferingQuality.startDeadlinePassed() {
                 Self.logger.info("[CMP-BUFFERING] start deadline passed: lowering instead of failure recovery")
                 holdStartDeadlineFailure(
                     position: sourcePlayhead,
@@ -10384,10 +10385,13 @@ extension PlayerViewModel {
             && streamLoadGeneration != bufferingAdoptedStreamLoadGeneration
     }
 
-    /// What the plan's media arrived at, for the start-deadline rule: the
-    /// reader's rate where Aether reads the origin, or on server HLS the
-    /// access log's rate on the relay hop, the closest equivalent there.
-    private var startDeadlineThroughputKbps: Int? {
+    /// What the plan's media arrived at, the buffering controller's evidence
+    /// of a slow link: the reader's rate where Aether reads the origin, or on
+    /// server HLS the access log's rate on the relay hop, the closest
+    /// equivalent there. The meter leaves out what the reader receives while
+    /// another reader may share the link: its share is no evidence the link
+    /// is slow.
+    private var bufferingPlanArrivalKbps: Int? {
         aetherPlaybackController.activeSpec?.options.nativeRemoteHLS == true
             ? aetherPlaybackController.relayThroughputKbps
             : upstreamMeter.throughputKbps

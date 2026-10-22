@@ -343,6 +343,7 @@ final class BufferingQualityControllerTests: XCTestCase {
     /// began: its wait triggers at 16 s, not 10 s after its adoption.
     func testAReplacementBeforeAnythingPlayedKeepsTheStartsGrace() {
         let h = Harness(mode: .always)
+        h.measuredKbps = 20_000
         h.at(0) {
             $0.planAdopted(Self.plan("p1"))
             $0.waiting()
@@ -351,7 +352,78 @@ final class BufferingQualityControllerTests: XCTestCase {
         h.clock.advance(to: 15_999)
         XCTAssertEqual(h.shown, [])
         h.clock.advance(to: 16_000)
-        XCTAssertEqual(h.shown, [.init(16_000, .replan(Self.autoLowering(44_100)))])
+        XCTAssertEqual(h.shown, [.init(16_000, .replan(Self.autoLowering(44_100, observed: 20_000)))])
+    }
+
+    /// Before any plan of the attempt has played, a trigger lowers only on
+    /// evidence that the plan's media arrived below its delivered bitrate,
+    /// and the lowering carries it; without it the start runs on to the
+    /// player's deadline, and a start wait the first frame ends is no counted
+    /// stall. Gauntlet Apple TV V5: each lower plan's subtitle rendition was
+    /// refused for 20-27 s, nothing measured the link, and Auto lowered eight
+    /// times, to 125 kbps. Once the attempt has played, the stall rules need
+    /// no evidence.
+    func testBeforeAnythingPlayedOnlyASlowLinkLowers() {
+        // The start's own plan, waiting from 0: nothing measured (a subtitle
+        // reader shares the link), or media at its bitrate. Nothing triggers
+        // in any mode: no lowering, no prompt, no `ignored`.
+        for mode in [BufferingQualityMode.always, .ask, .never] {
+            for measured in [nil, 63_000] {
+                let h = Harness(mode: mode)
+                h.measuredKbps = measured
+                h.at(0) {
+                    $0.planAdopted(Self.plan("p1"))
+                    $0.waiting()
+                }
+                h.at(45_000) { $0.planEnded() }
+                XCTAssertEqual(h.shown, [], "\(mode) \(measured as Any)")
+                XCTAssertEqual(h.summaries.map(\.action), [.none], "\(mode) \(measured as Any)")
+            }
+        }
+
+        // The start's plan, lowered on evidence; its lower plan comes back
+        // 7 s later and never starts either. It lowers again only on its
+        // own evidence, once its undo pill is gone.
+        let cascade: [(measured: Int?, expected: [Harness.Recorded])] = [
+            (nil, []),
+            (10_000, []),
+            (3_000, [.init(38_000, .replan(Self.autoLowering(7_000, observed: 3_000)))]),
+        ]
+        for (measured, expected) in cascade {
+            let h = Harness(mode: .always)
+            h.measuredKbps = 20_000
+            h.at(0) {
+                $0.planAdopted(Self.plan("p1"))
+                $0.waiting()
+            }
+            h.at(23_000) { $0.planAdopted(Self.plan("p2", delivered: 10_000)) }
+            h.measuredKbps = measured
+            h.clock.advance(to: 68_000)
+            XCTAssertEqual(h.shown, [
+                .init(16_000, .replan(Self.autoLowering(44_100, observed: 20_000))),
+                .init(23_000, .pillShown(.undo)),
+            ] + expected, "\(measured as Any)")
+        }
+
+        // A slow start with no evidence: its first frame lowers nothing, and
+        // the stall after it is the plan's first counted one.
+        let slowStart = Harness(mode: .always)
+        slowStart.at(0) {
+            $0.planAdopted(Self.plan("p1"))
+            $0.waiting()
+        }
+        slowStart.at(25_000) { $0.playing() }
+        slowStart.at(60_000) { $0.waiting() }
+        slowStart.at(62_000) { $0.playing() }
+        slowStart.at(70_000) { $0.planEnded() }
+        XCTAssertEqual(slowStart.shown, [])
+        XCTAssertEqual(slowStart.summaries.map(\.stallCount), [1])
+
+        let played = Harness(mode: .always)
+        played.startPlaying(Self.plan("p1"))
+        played.at(125_000) { $0.waiting() }
+        played.clock.advance(to: 131_000)
+        XCTAssertEqual(played.shown, [.init(131_000, .replan(Self.autoLowering(44_100)))])
     }
 
     /// On Auto in `always`, a plan that never became playable within the
@@ -375,16 +447,16 @@ final class BufferingQualityControllerTests: XCTestCase {
             return h
         }
         let h = lowerPlanAtItsDeadline()
-        XCTAssertTrue(h.controller.startDeadlinePassed(observedThroughputKbps: 18_000))
-        var lowering = Self.autoLowering(22_120)
-        lowering.observedThroughputKbps = 18_000
-        XCTAssertEqual(h.shown.last, .init(179_000, .replan(lowering)))
+        h.measuredKbps = 18_000
+        XCTAssertTrue(h.controller.startDeadlinePassed())
+        XCTAssertEqual(h.shown.last, .init(179_000, .replan(Self.autoLowering(22_120, observed: 18_000))))
         // No evidence the link is slow: nothing measured, or media that
         // arrived at the delivered bitrate.
         for measured in [nil, 31_600] {
             let h = lowerPlanAtItsDeadline()
+            h.measuredKbps = measured
             let shown = h.shown.count
-            XCTAssertFalse(h.controller.startDeadlinePassed(observedThroughputKbps: measured), "\(measured as Any)")
+            XCTAssertFalse(h.controller.startDeadlinePassed(), "\(measured as Any)")
             XCTAssertEqual(h.shown.count, shown, "\(measured as Any)")
         }
 
@@ -417,6 +489,7 @@ final class BufferingQualityControllerTests: XCTestCase {
         ]
         for (name, mode, plan, meanwhile) in leftToRecovery {
             let h = Harness(mode: mode)
+            h.measuredKbps = 2_000
             h.at(0) {
                 $0.planAdopted(plan)
                 $0.waiting()
@@ -424,13 +497,14 @@ final class BufferingQualityControllerTests: XCTestCase {
             meanwhile(h)
             h.clock.advance(to: 45_000)
             let shown = h.shown.count
-            XCTAssertFalse(h.controller.startDeadlinePassed(observedThroughputKbps: 4_000), name)
+            XCTAssertFalse(h.controller.startDeadlinePassed(), name)
             XCTAssertEqual(h.shown.count, shown, name)
         }
 
         // Restore answers the title as Keep does (gauntlet T8: the restored
         // source never started on a slow link).
         let restored = Harness(mode: .always)
+        restored.measuredKbps = 2_000
         restored.lowerAutomatically()
         restored.at(140_000) { $0.selectRestore() }
         restored.at(141_000) { $0.waiting(cause: .reload) }
@@ -438,7 +512,7 @@ final class BufferingQualityControllerTests: XCTestCase {
             $0.planAdopted(Self.plan("p3"))
             $0.waiting()
         }
-        restored.at(187_000) { XCTAssertFalse($0.startDeadlinePassed(observedThroughputKbps: 4_000), "restored") }
+        restored.at(187_000) { XCTAssertFalse($0.startDeadlinePassed(), "restored") }
     }
 
     /// The running summary is the plan's summary as if it ended now, kept on
@@ -585,6 +659,9 @@ final class BufferingQualityControllerTests: XCTestCase {
         let label = "\(vectorCase.name) (buffering_quality_v1 \(sendsBufferingQualityFields ? "on" : "off"))"
         let h = Harness(mode: vectorCase.mode)
         h.controller.sendsBufferingQualityFields = sendsBufferingQualityFields
+        // The vectors' waits are a link too slow for every plan: each plan's
+        // media is measured arriving below its bitrate.
+        h.measuredKbps = 1
         var adopted: [String] = []
         for event in vectorCase.events {
             h.clock.advance(to: event.t)
@@ -626,8 +703,11 @@ final class BufferingQualityControllerTests: XCTestCase {
         .init(id: id, deliveredKbps: delivered, quality: quality, availableQualities: rungs, qualityReductionUnavailable: false)
     }
 
-    private static func autoLowering(_ estimate: Int) -> Controller.ReplanRequest {
-        .init(qualityPreference: "auto", bandwidthEstimateKbps: estimate, bandwidthEstimateSource: "observed_rebuffer")
+    private static func autoLowering(_ estimate: Int, observed: Int? = nil) -> Controller.ReplanRequest {
+        .init(
+            qualityPreference: "auto", bandwidthEstimateKbps: estimate, bandwidthEstimateSource: "observed_rebuffer",
+            observedThroughputKbps: observed
+        )
     }
 
     private static let knownActions: Set<String> = [
@@ -665,6 +745,8 @@ private final class Harness {
     let clock = ManualBufferingQualityClock()
     let controller: BufferingQualityController
     private(set) var outputs: [Recorded] = []
+    /// What the player measures the playing plan's media arriving at.
+    var measuredKbps: Int?
 
     init(mode: BufferingQualityMode) {
         controller = BufferingQualityController(clock: clock)
@@ -673,6 +755,7 @@ private final class Harness {
         controller.onOutput = { [unowned self] output in
             self.outputs.append(Recorded(self.clock.nowMs, output))
         }
+        controller.measuredThroughputKbps = { [unowned self] in self.measuredKbps }
     }
 
     /// Everything but `plan_summary`: what the vectors' `expect` lists.

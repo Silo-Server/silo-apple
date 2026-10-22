@@ -22,6 +22,16 @@ import Foundation
 /// never evaluates old history, and a suppression that expires while playing
 /// offers nothing.
 ///
+/// Until a plan of the attempt has played, the trigger acts only on evidence
+/// that the plan's media arrived more slowly than its delivered bitrate
+/// (``measuredThroughputKbps``), as a missed start deadline does, and a start
+/// wait the first frame ends is a counted stall only with it. A start that
+/// cannot begin for another reason, such as a subtitle rendition the server
+/// is still extracting, would otherwise lower Auto rung by rung while each
+/// lower plan fails the same way, and a slow one would lower at its first
+/// frame. Without evidence the start runs on to the player's deadline and
+/// failure path.
+///
 /// ### Timing
 ///
 /// Arithmetic is in integer milliseconds of the clock's elapsed real time
@@ -136,9 +146,11 @@ final class BufferingQualityController {
         var bandwidthEstimateSource: String? = nil
         /// `clear`. Only sent to a server that advertises `buffering_quality_v1`.
         var learnedLimit: String? = nil
-        /// What a start-deadline lowering measured the failed plan's media
-        /// arriving at, sent as `observed_throughput_kbps`. Nil on every
-        /// other replan: the player adds the playing plan's own figure.
+        /// What the plan's media measurably arrived at, the evidence an
+        /// automatic lowering before anything of the attempt played, or at a
+        /// missed start deadline, rested on; sent as `observed_throughput_kbps`.
+        /// Nil on every other replan: the player adds the playing plan's own
+        /// figure.
         var observedThroughputKbps: Int? = nil
 
         /// **Restore quality**: Auto with no estimate. Every lowering on Auto
@@ -237,6 +249,10 @@ final class BufferingQualityController {
         }
     }
     @ObservationIgnored var onOutput: ((Output) -> Void)?
+    /// What the playing plan's media has measurably arrived at so far, in
+    /// kbps, or nil when the player has no figure for it. Read when a
+    /// lowering needs evidence that the link is too slow for the plan.
+    @ObservationIgnored var measuredThroughputKbps: () -> Int? = { nil }
 
     /// The actionable pill on screen, or nil.
     private(set) var pill: Pill?
@@ -376,8 +392,10 @@ final class BufferingQualityController {
             playingSince = now
             if current != nil, current?.graceEndsAt == nil { current?.graceEndsAt = now + Self.startupGraceMs }
         }
+        // The start wait the first frame ends counts only on evidence.
+        let counts = attemptStage == .played || current.flatMap { slowArrivalKbps(of: $0.plan) } != nil
         if current != nil { attemptStage = .played }
-        endStall(at: now, resumed: true)
+        endStall(at: now, resumed: counts)
         refreshPill()
         evaluate(at: now)
     }
@@ -465,7 +483,7 @@ final class BufferingQualityController {
     /// The plan failed before its first frame because the player's own start
     /// deadline passed: the attempt's first plan or a replacement, even one whose
     /// loading is a source reload and so never a stall. On Auto in `always`, when
-    /// the plan's media measurably arrived at `observedThroughputKbps`, below its
+    /// ``measuredThroughputKbps`` shows the plan's media arriving below its
     /// delivered bitrate, it lowers as a long stall would: a `quality_change`
     /// with the step-down estimate, `observed_rebuffer` and that figure. True
     /// when that replan was sent. False leaves the failure to the player's usual
@@ -478,13 +496,12 @@ final class BufferingQualityController {
     /// start never had a fair run), a renderer wait, a pick pending, a lowering
     /// pending or that no plan answered, no lower rung, or a plan a lowering was
     /// refused for or already got back no lower.
-    func startDeadlinePassed(observedThroughputKbps: Int?) -> Bool {
+    func startDeadlinePassed() -> Bool {
         guard mode == .always, !answered, !isSuspended, !transportTrouble,
               transportTroubleEndedAt.map({ nowMs - $0 >= Self.longStallMs }) ?? true,
               !rendererWaiting, !pickPending, rearmTimer == nil,
               let state = current, state.plan.isAuto, !state.plan.qualityReductionUnavailable,
-              let delivered = state.plan.deliveredKbps,
-              let observed = observedThroughputKbps, observed < delivered,
+              let delivered = state.plan.deliveredKbps, let observed = slowArrivalKbps(of: state.plan),
               state.cooldownUntil == nil, Self.lowerRung(in: state.plan) != nil,
               let estimate = Self.stepDownEstimate(deliveredKbps: delivered) else { return false }
         withdrawPill()
@@ -637,6 +654,10 @@ final class BufferingQualityController {
         guard !isSuspended, !isPaused, !transportTrouble, let state = current else { return }
         current?.endedStalls.removeAll { now - $0.at >= Self.stallWindowMs }
         guard Self.triggered(state, at: now) else { return }
+        // Before anything of the attempt played, the wait is the network's
+        // only on evidence; without it, as if nothing triggered.
+        let evidenceKbps = attemptStage == .played ? nil : slowArrivalKbps(of: state.plan)
+        guard attemptStage == .played || evidenceKbps != nil else { return }
 
         // A suppressed trigger leaves history intact for a later evaluation.
         if answered || pickPending || rearmTimer != nil || presented != nil { return }
@@ -659,7 +680,10 @@ final class BufferingQualityController {
                 return
             }
             if mode == .always {
-                sendReplan(.lowered, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: plan.deliveredKbps)
+                sendReplan(
+                    .lowered, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: plan.deliveredKbps,
+                    observedThroughputKbps: evidenceKbps
+                )
                 return
             }
         }
@@ -693,6 +717,15 @@ final class BufferingQualityController {
         let now = nowMs
         guard let from = current?.stall?.timedFrom, now - from >= Self.longStallMs else { return }
         evaluate(at: now)
+    }
+
+    /// The plan's measured throughput when it is below the plan's delivered
+    /// bitrate: evidence its media arrives too slowly. None, or a figure at
+    /// or above the bitrate, is no evidence.
+    private func slowArrivalKbps(of plan: Plan) -> Int? {
+        guard let delivered = plan.deliveredKbps, let measured = measuredThroughputKbps(),
+              measured < delivered else { return nil }
+        return measured
     }
 
     /// No lower rung: the display-only notice, once per title.
