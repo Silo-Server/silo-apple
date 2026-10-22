@@ -107,13 +107,10 @@ struct PlayerSettingsSheet: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(option.label)
                                     .foregroundStyle(.primary)
-                                if let subtitle = option.subtitle {
-                                    Text(subtitle)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                                if checked, let reason = viewModel.qualityReasonLine {
-                                    Text(reason)
+                                // The checked row says what plays and why
+                                // in place of its description.
+                                if let detail = (checked ? viewModel.qualityStatus : nil) ?? option.subtitle {
+                                    Text(detail)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -130,9 +127,9 @@ struct PlayerSettingsSheet: View {
                     .disabled(viewModel.isQualitySwitching)
                 }
             } header: {
-                // With no row checked, the reason heads the list instead.
-                if let reason = viewModel.qualityReasonHeader {
-                    Text(reason)
+                // With no row checked, what plays and why head the list instead.
+                if let status = viewModel.qualityStatusHeader {
+                    Text(status)
                         .textCase(nil)
                 }
             } footer: {

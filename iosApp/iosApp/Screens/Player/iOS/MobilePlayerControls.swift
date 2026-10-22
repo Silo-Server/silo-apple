@@ -431,9 +431,9 @@ struct MobilePlayerControls: View {
 
     private func qualityMenu(compact: Bool) -> some View {
         let menu = Menu {
-            // With no row checked, the reason heads the menu instead.
-            if let reason = viewModel.qualityReasonHeader {
-                Section(reason) { qualityMenuRows }
+            // With no row checked, what plays and why head the menu instead.
+            if let status = viewModel.qualityStatusHeader {
+                Section(status) { qualityMenuRows }
             } else {
                 qualityMenuRows
             }
@@ -477,8 +477,8 @@ struct MobilePlayerControls: View {
     // The menu indents only rows that carry an icon, so every row gets a
     // checkmark, invisible unless checked: the titles stay in one column
     // instead of the checked one shifting right. The bitrate goes
-    // underneath so the indented titles still fit, and the checked row adds
-    // why it plays at that quality.
+    // underneath so the indented titles still fit; the checked row says
+    // what plays and why there instead.
     @ViewBuilder
     private var qualityMenuRows: some View {
         ForEach(viewModel.qualityOptions) { option in
@@ -487,10 +487,8 @@ struct MobilePlayerControls: View {
                 viewModel.switchQuality(option.id)
             } label: {
                 Text(option.label)
-                let detail = [option.bitrateText, checked ? viewModel.qualityReasonLine : nil]
-                    .compactMap { $0 }
-                if !detail.isEmpty {
-                    Text(detail.joined(separator: " · "))
+                if let detail = (checked ? viewModel.qualityStatus : nil) ?? option.bitrateText {
+                    Text(detail)
                 }
                 if checked {
                     Image(systemName: "checkmark")
