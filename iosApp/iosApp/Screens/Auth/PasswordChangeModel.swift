@@ -50,6 +50,11 @@ final class PasswordChangeModel {
         /// while it runs again. The form stays closed: resubmitting would
         /// send the temporary password, which no longer works.
         case refreshFailed(retrying: Bool)
+        /// The change failed and the account couldn't be read, so whether the
+        /// password changed is unknown; `checking` while the account is read
+        /// again. The form stays closed: sending it again could change the
+        /// password twice.
+        case unconfirmed(checking: Bool)
     }
 
     var currentPassword = ""
@@ -68,7 +73,9 @@ final class PasswordChangeModel {
         self.auth = auth
     }
 
-    var isBusy: Bool { phase == .saving || phase == .refreshFailed(retrying: true) }
+    var isBusy: Bool {
+        phase == .saving || phase == .refreshFailed(retrying: true) || phase == .unconfirmed(checking: true)
+    }
 
     /// The screen's lead line, naming the account once it is known.
     var lead: String {
@@ -114,17 +121,57 @@ final class PasswordChangeModel {
         do {
             try await auth.changePassword(current: currentPassword, new: newPassword)
         } catch {
-            phase = .editing
-            self.error = FormError(Self.message(for: error))
-            return false
+            // A lost response can hide a change the server saved, and sending
+            // the temporary password again then fails as incorrect. The
+            // account says whether it still holds the temporary password.
+            switch await temporaryPasswordRemains() {
+            case true?:
+                phase = .editing
+                self.error = FormError(Self.message(for: error))
+                return false
+            case nil:
+                phase = .unconfirmed(checking: false)
+                return false
+            case false?:
+                break
+            }
         }
+        await finishChange(router: router)
+        return true
+    }
+
+    /// "Try again" when the change's outcome is unknown: reads the account
+    /// again rather than resending the password.
+    func confirmChange(router: AppRouter) async {
+        guard phase == .unconfirmed(checking: false) else { return }
+        phase = .unconfirmed(checking: true)
+        switch await temporaryPasswordRemains() {
+        case true?:
+            phase = .editing
+            error = FormError("Your password wasn't changed. Try again.")
+        case nil:
+            phase = .unconfirmed(checking: false)
+        case false?:
+            phase = .refreshFailed(retrying: true)
+            await finishChange(router: router)
+        }
+    }
+
+    /// Whether the account still holds its temporary password; nil when it
+    /// can't be read. A server that doesn't report it counts as holding it.
+    private func temporaryPasswordRemains() async -> Bool? {
+        guard let account = try? await auth.currentAccount() else { return nil }
+        return account.passwordChangeRequired ?? true
+    }
+
+    /// The password changed: clears the form, then finishes signing in.
+    private func finishChange(router: AppRouter) async {
         currentPassword = ""
         newPassword = ""
         confirmation = ""
         if await !continueSignIn(router: router) {
             phase = .refreshFailed(retrying: false)
         }
-        return true
     }
 
     /// "Try again" after the password changed but the refresh failed.
