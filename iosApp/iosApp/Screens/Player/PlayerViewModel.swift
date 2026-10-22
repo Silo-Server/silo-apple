@@ -2563,6 +2563,7 @@ class PlayerViewModel {
         bandwidthEstimateKbps: Int? = nil,
         bandwidthEstimateSource: String? = nil,
         learnedLimit: String? = nil,
+        observedThroughputKbps: Int? = nil,
         // The buffering controller's replan, which hears when it fails.
         issuedByBufferingQuality: Bool = false,
         // The viewer's quality change: pending from the send until its plan
@@ -2824,7 +2825,8 @@ class PlayerViewModel {
                     bufferingQualityMode: self.settings.bufferingQualityMode,
                     bandwidthEstimateKbps: requestedEstimateKbps,
                     bandwidthEstimateSource: bandwidthEstimateSource,
-                    learnedLimit: learnedLimit
+                    learnedLimit: learnedLimit,
+                    observedThroughputKbps: observedThroughputKbps
                 ) else {
                     if self.reconnectCycle.isActive {
                         // No session left to replan: start a new one.
@@ -10517,7 +10519,7 @@ extension PlayerViewModel {
         )
         bufferingQuality.planAdopted(plan, controllerInitiated: controllerInitiated)
         // Only now: the outgoing plan's summary, sent during the adoption,
-        // still names the entry this replaces.
+        // still names the entry this replaces and carries its throughput.
         bufferingPlan = entry
         upstreamMeter.planAdopted(networkKey: BandwidthProbeScheduler.shared.network.key)
         // The new plan hears whether playback is already waiting.
@@ -10642,6 +10644,8 @@ extension PlayerViewModel {
                   bandwidthEstimateKbps: request.bandwidthEstimateKbps,
                   bandwidthEstimateSource: request.bandwidthEstimateSource,
                   learnedLimit: request.learnedLimit,
+                  // A lowering reports what the playing plan received so far.
+                  observedThroughputKbps: upstreamMeter.throughputKbps,
                   issuedByBufferingQuality: true
               ) else {
             // Restore quality is the viewer's answer: it goes out once the
@@ -10665,8 +10669,10 @@ extension PlayerViewModel {
     private func reportBufferingPlanSummary(_ summary: BufferingQualityController.PlanSummary) {
         guard let entry = bufferingPlan, entry.id == summary.planId else { return }
         bufferingPlan = nil
+        var summary = summary
+        summary.throughputKbps = upstreamMeter.throughputKbps
         Self.logger.info(
-            "[CMP-BUFFERING] plan summary id=\(summary.planId, privacy: .public) played_ms=\(summary.playedMs, privacy: .public) stalls=\(summary.stallCount, privacy: .public) stall_ms=\(summary.stallTotalMs, privacy: .public) action=\(summary.action.rawValue, privacy: .public) sent=\(entry.prepared.advertisesPlanSummary, privacy: .public)"
+            "[CMP-BUFFERING] plan summary id=\(summary.planId, privacy: .public) played_ms=\(summary.playedMs, privacy: .public) stalls=\(summary.stallCount, privacy: .public) stall_ms=\(summary.stallTotalMs, privacy: .public) action=\(summary.action.rawValue, privacy: .public) throughput=\(summary.throughputKbps.map(String.init) ?? "none", privacy: .public) sent=\(entry.prepared.advertisesPlanSummary, privacy: .public)"
         )
         recordBufferingPlanSummary(summary, of: entry, sending: true)
     }

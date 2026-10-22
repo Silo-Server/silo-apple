@@ -8,6 +8,7 @@ final class PlanSummaryJournalTests: XCTestCase {
     private final class Sent: @unchecked Sendable {
         private let lock = NSLock()
         private var values: [String] = []
+        private var samples: [String?] = []
         var failure: Error?
         /// How long each send waits before it answers.
         var delay: Duration?
@@ -15,11 +16,13 @@ final class PlanSummaryJournalTests: XCTestCase {
         func append(_ entry: PlanSummaryJournal.Entry) throws {
             try lock.withLock {
                 values.append(entry.eventId)
+                samples.append(entry.event.diagnostics["throughput_kbps"])
                 if let failure { throw failure }
             }
         }
 
         var eventIds: [String] { lock.withLock { values } }
+        var throughputs: [String?] { lock.withLock { samples } }
     }
 
     private var sent = Sent()
@@ -38,7 +41,8 @@ final class PlanSummaryJournalTests: XCTestCase {
     }
 
     private func entry(_ eventId: String, server: String = "server", profile: String = "profile",
-                       startedHoursAgo: Double = 1, playedMs: String = "1000") -> PlanSummaryJournal.Entry {
+                       startedHoursAgo: Double = 1, playedMs: String = "1000",
+                       throughputKbps: String? = nil) -> PlanSummaryJournal.Entry {
         PlanSummaryJournal.Entry(
             eventId: eventId, installationID: "installation", serverId: server, profileId: profile,
             planStartedAt: now.addingTimeInterval(-startedHoursAgo * 3_600),
@@ -46,7 +50,7 @@ final class PlanSummaryJournalTests: XCTestCase {
                 protocolVersion: 3, playbackAttemptId: "attempt", sessionId: "session", planId: "plan",
                 planAttemptId: nil, planAttemptKey: nil, event: "plan_summary", failureClassification: nil,
                 fallbackReason: nil, appliedQuirkIds: [], quirkRegistryRevision: nil, outputContextId: nil,
-                diagnostics: ["played_ms": playedMs]
+                diagnostics: ["played_ms": playedMs, "throughput_kbps": throughputKbps].compactMapValues { $0 }
             )
         )
     }
@@ -137,11 +141,13 @@ final class PlanSummaryJournalTests: XCTestCase {
         XCTAssertTrue(sent.eventIds.isEmpty)
 
         sent.failure = HTTPError.network(underlying: URLError(.timedOut))
-        let final = entry("running", playedMs: "9000")
+        let final = entry("running", playedMs: "9000", throughputKbps: "21000")
         journal.record(sending: true) { (final, auth) }
         XCTAssertTrue(journal.hasWorkInFlight, "counted from the call, before it runs")
         await journal.waitForWork(upTo: .seconds(5))
-        XCTAssertEqual(journal.entries, [final], "the final summary, for the next launch")
+        // A later launch sends no throughput: it could credit another network.
+        XCTAssertEqual(journal.entries, [entry("running", playedMs: "9000")], "the final summary, for the next launch")
+        XCTAssertEqual(sent.throughputs, ["21000"], "the live send carries it")
 
         sent.failure = nil
         journal.record(sending: true) { (final, auth) }

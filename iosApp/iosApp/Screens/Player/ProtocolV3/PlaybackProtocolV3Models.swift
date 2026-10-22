@@ -375,20 +375,29 @@ struct PlaybackV3ReplanRequest: Codable, Equatable {
     /// `buffering_quality_v1` members, as on ``PlaybackV3StartRequest``.
     var bandwidthEstimateSource: String? = nil
     var learnedLimit: String? = nil
+    /// The playing plan's throughput so far, sent only with
+    /// `observed_rebuffer` (``PlaybackV3BufferingQualityRequest``).
+    var observedThroughputKbps: Int? = nil
 }
 
 /// The client features and buffering-quality members of one start or replan.
 ///
-/// The server refuses `bandwidth_estimate_source` and `learned_limit` unless
-/// `client_features` names `buffering_quality_v1`, and refuses a source
-/// without `bandwidth_estimate_kbps`. Requests take all four values from here,
-/// and the v2 wire bodies apply ``permittedMembers`` again when they encode,
-/// so neither refused shape can be sent.
+/// The server refuses `bandwidth_estimate_source`, `learned_limit` and
+/// `observed_throughput_kbps` unless `client_features` names
+/// `buffering_quality_v1`, refuses a source without
+/// `bandwidth_estimate_kbps`, and a throughput without the
+/// `observed_rebuffer` source. Requests take these values from here, and the
+/// v2 wire bodies apply ``permittedMembers`` again when they encode, so no
+/// refused shape can be sent.
 struct PlaybackV3BufferingQualityRequest: Equatable, Sendable {
     let clientFeatures: [String]
     let bandwidthEstimateKbps: Int?
     let bandwidthEstimateSource: String?
     let learnedLimit: String?
+    /// What the playing plan received so far, measured as its
+    /// `plan_summary` `throughput_kbps`. The server plans a lowering with the
+    /// lower of this and the estimate.
+    let observedThroughputKbps: Int?
 
     /// - Parameters:
     ///   - serverAdvertisesFeature: whether the server advertises
@@ -405,7 +414,8 @@ struct PlaybackV3BufferingQualityRequest: Equatable, Sendable {
         mode: BufferingQualityMode,
         bandwidthEstimateKbps: Int? = nil,
         bandwidthEstimateSource: String? = nil,
-        learnedLimit: String? = nil
+        learnedLimit: String? = nil,
+        observedThroughputKbps: Int? = nil
     ) {
         let features = serverAdvertisesFeature && !baseFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature)
             ? baseFeatures + [PlaybackProtocolV3.bufferingQualityFeature]
@@ -414,24 +424,32 @@ struct PlaybackV3BufferingQualityRequest: Equatable, Sendable {
             clientFeatures: features,
             bandwidthEstimateKbps: bandwidthEstimateKbps,
             bandwidthEstimateSource: bandwidthEstimateSource,
-            learnedLimit: learnedLimit ?? (mode == .never ? PlaybackProtocolV3.LearnedLimit.ignore : nil)
+            learnedLimit: learnedLimit ?? (mode == .never ? PlaybackProtocolV3.LearnedLimit.ignore : nil),
+            observedThroughputKbps: observedThroughputKbps
         )
         clientFeatures = features
         self.bandwidthEstimateKbps = bandwidthEstimateKbps
         self.bandwidthEstimateSource = permitted.bandwidthEstimateSource
         self.learnedLimit = permitted.learnedLimit
+        self.observedThroughputKbps = permitted.observedThroughputKbps
     }
 
-    /// The two members a request may carry: neither without the feature in
-    /// `clientFeatures`, and no source without an estimate.
+    /// The members a request may carry: none without the feature in
+    /// `clientFeatures`, no source without an estimate, and no throughput
+    /// without the `observed_rebuffer` source.
     static func permittedMembers(
         clientFeatures: [String],
         bandwidthEstimateKbps: Int?,
         bandwidthEstimateSource: String?,
-        learnedLimit: String?
-    ) -> (bandwidthEstimateSource: String?, learnedLimit: String?) {
-        guard clientFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature) else { return (nil, nil) }
-        return (bandwidthEstimateKbps == nil ? nil : bandwidthEstimateSource, learnedLimit)
+        learnedLimit: String?,
+        observedThroughputKbps: Int? = nil
+    ) -> (bandwidthEstimateSource: String?, learnedLimit: String?, observedThroughputKbps: Int?) {
+        guard clientFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature) else { return (nil, nil, nil) }
+        let source = bandwidthEstimateKbps == nil ? nil : bandwidthEstimateSource
+        let observed = source == PlaybackProtocolV3.BandwidthEstimateSource.observedRebuffer
+            ? observedThroughputKbps
+            : nil
+        return (source, learnedLimit, observed)
     }
 }
 
@@ -439,12 +457,14 @@ extension PlaybackV3ReplanRequest {
     /// This request with only the buffering-quality members the server accepts.
     var withPermittedBufferingQualityMembers: PlaybackV3ReplanRequest {
         var request = self
-        (request.bandwidthEstimateSource, request.learnedLimit) = PlaybackV3BufferingQualityRequest.permittedMembers(
-            clientFeatures: clientFeatures,
-            bandwidthEstimateKbps: bandwidthEstimateKbps,
-            bandwidthEstimateSource: bandwidthEstimateSource,
-            learnedLimit: learnedLimit
-        )
+        (request.bandwidthEstimateSource, request.learnedLimit, request.observedThroughputKbps) =
+            PlaybackV3BufferingQualityRequest.permittedMembers(
+                clientFeatures: clientFeatures,
+                bandwidthEstimateKbps: bandwidthEstimateKbps,
+                bandwidthEstimateSource: bandwidthEstimateSource,
+                learnedLimit: learnedLimit,
+                observedThroughputKbps: observedThroughputKbps
+            )
         return request
     }
 }
@@ -482,6 +502,7 @@ extension BufferingQualityController.PlanSummary {
         ]
         values["delivered_kbps"] = deliveredKbps.map(String.init)
         values["bandwidth_estimate_kbps"] = bandwidthEstimateKbps.map(String.init)
+        values["throughput_kbps"] = throughputKbps.map(String.init)
         return values
     }
 }

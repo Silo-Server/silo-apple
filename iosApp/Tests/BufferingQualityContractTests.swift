@@ -30,7 +30,8 @@ final class BufferingQualityContractTests: XCTestCase {
     private func serverRefusal(_ body: [String: Any]) -> String? {
         let source = body["bandwidth_estimate_source"] as? String
         let limit = body["learned_limit"] as? String
-        guard source != nil || limit != nil else { return nil }
+        let observed = body["observed_throughput_kbps"]
+        guard source != nil || limit != nil || observed != nil else { return nil }
         guard (body["client_features"] as? [String] ?? []).contains(feature) else {
             return "buffering_quality_v1 is required for buffering quality fields"
         }
@@ -42,6 +43,9 @@ final class BufferingQualityContractTests: XCTestCase {
         }
         if let limit, !["ignore", "clear"].contains(limit) {
             return "invalid learned_limit"
+        }
+        if observed != nil, source != "observed_rebuffer" {
+            return "observed_throughput_kbps requires bandwidth_estimate_source observed_rebuffer"
         }
         return nil
     }
@@ -62,7 +66,8 @@ final class BufferingQualityContractTests: XCTestCase {
         clientFeatures: [String],
         bandwidthEstimateKbps: Int?,
         bandwidthEstimateSource: String?,
-        learnedLimit: String?
+        learnedLimit: String?,
+        observedThroughputKbps: Int? = nil
     ) -> PlaybackV3ReplanRequest {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         return PlaybackV3ReplanRequest(
@@ -73,12 +78,14 @@ final class BufferingQualityContractTests: XCTestCase {
             positionSeconds: 42.5, metered: false, bandwidthEstimateKbps: bandwidthEstimateKbps, bandwidthCapKbps: nil,
             selectedTracks: PlaybackV3SelectedTracks(audio: nil, subtitle: nil), failure: nil, localMutations: [],
             clientCapabilities: snapshot.capabilities, clientPlaybackContext: snapshot.context,
-            bandwidthEstimateSource: bandwidthEstimateSource, learnedLimit: learnedLimit)
+            bandwidthEstimateSource: bandwidthEstimateSource, learnedLimit: learnedLimit,
+            observedThroughputKbps: observedThroughputKbps)
     }
 
     private func replanRequest(_ buffering: PlaybackV3BufferingQualityRequest) -> PlaybackV3ReplanRequest {
         replanRequest(clientFeatures: buffering.clientFeatures, bandwidthEstimateKbps: buffering.bandwidthEstimateKbps,
-                      bandwidthEstimateSource: buffering.bandwidthEstimateSource, learnedLimit: buffering.learnedLimit)
+                      bandwidthEstimateSource: buffering.bandwidthEstimateSource, learnedLimit: buffering.learnedLimit,
+                      observedThroughputKbps: buffering.observedThroughputKbps)
     }
 
     private func stepDown(advertised: Bool, mode: BufferingQualityMode = .always) -> PlaybackV3BufferingQualityRequest {
@@ -150,6 +157,25 @@ final class BufferingQualityContractTests: XCTestCase {
             learnedLimit: PlaybackProtocolV3.LearnedLimit.clear)
         XCTAssertNil(oldServer.learnedLimit)
         XCTAssertEqual(oldServer.clientFeatures, ApplePlaybackV3Capabilities.features)
+    }
+
+    /// A lowering reports the plan's throughput with `observed_rebuffer`;
+    /// no other request may carry it.
+    func testObservedThroughputRidesOnlyOnAnObservedRebuffer() throws {
+        let cases: [(String?, Bool, Int?)] = [
+            (observedRebuffer, true, 21_000),
+            (PlaybackProtocolV3.BandwidthEstimateSource.probe, true, nil),
+            (nil, true, nil),
+            (observedRebuffer, false, nil),
+        ]
+        for (source, advertised, expected) in cases {
+            let buffering = PlaybackV3BufferingQualityRequest(
+                baseFeatures: ApplePlaybackV3Capabilities.features, serverAdvertisesFeature: advertised, mode: .always,
+                bandwidthEstimateKbps: 44_100, bandwidthEstimateSource: source, observedThroughputKbps: 21_000)
+            let body = try wireObject(APIv2PlaybackReplanBody(installationID: installation, request: replanRequest(buffering)))
+            XCTAssertEqual(body["observed_throughput_kbps"] as? Int, expected, "\(source ?? "none"), \(advertised)")
+            XCTAssertNil(serverRefusal(body))
+        }
     }
 
     func testAnEstimateSourceIsNeverSentWithoutAnEstimate() throws {
@@ -382,7 +408,8 @@ final class BufferingQualityContractTests: XCTestCase {
         // The controller's own plan id never goes on the wire.
         let summary = BufferingQualityController.PlanSummary(
             planId: "local:summary", playedMs: 600_000, stallCount: 2, stallTotalMs: 8_000, stallLongestMs: 6_000,
-            deliveredKbps: 8_000, mode: .always, action: .lowered, bandwidthEstimateKbps: nil)
+            deliveredKbps: 8_000, mode: .always, action: .lowered, bandwidthEstimateKbps: nil,
+            throughputKbps: 6_200)
         let event = PlaybackSessionBridge.planSummaryRouteEvent(
             summary, for: prepared, sessionId: try XCTUnwrap(fixture["session_id"] as? String))
 
@@ -391,14 +418,7 @@ final class BufferingQualityContractTests: XCTestCase {
         body.removeValue(forKey: "event_id")
         // Schema-optional, and empty for a plan with no quirks.
         XCTAssertEqual(body.removeValue(forKey: "applied_quirk_ids") as? [String], [])
-        // Apple has no upstream meter, so it omits throughput_kbps, as the
-        // spec allows; the rest matches the published event.
-        var published = fixture
-        var diagnostics = try XCTUnwrap(published["diagnostics"] as? [String: Any])
-        XCTAssertNotNil(diagnostics.removeValue(forKey: "throughput_kbps"))
-        published["diagnostics"] = diagnostics
-        XCTAssertNil((body["diagnostics"] as? [String: Any])?["throughput_kbps"])
-        XCTAssertEqual(body as NSDictionary, published as NSDictionary)
+        XCTAssertEqual(body as NSDictionary, fixture as NSDictionary)
 
         let estimated = BufferingQualityController.PlanSummary(
             planId: "local:estimated", playedMs: 1, stallCount: 0, stallTotalMs: 0, stallLongestMs: 0,

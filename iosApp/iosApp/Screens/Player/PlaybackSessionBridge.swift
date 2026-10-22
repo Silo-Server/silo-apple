@@ -1485,7 +1485,8 @@ actor PlaybackSessionBridge {
         bufferingQualityMode: BufferingQualityMode,
         bandwidthEstimateKbps: Int? = nil,
         bandwidthEstimateSource: String? = nil,
-        learnedLimit: String? = nil
+        learnedLimit: String? = nil,
+        observedThroughputKbps: Int? = nil
     ) async throws -> PreparedPlayback? {
         guard var active = activeProtocolV3,
               let currentSessionId = sessionId,
@@ -1620,7 +1621,8 @@ actor PlaybackSessionBridge {
             mode: bufferingQualityMode,
             bandwidthEstimateKbps: bandwidthEstimateKbps,
             bandwidthEstimateSource: bandwidthEstimateSource,
-            learnedLimit: learnedLimit
+            learnedLimit: learnedLimit,
+            observedThroughputKbps: observedThroughputKbps
         )
         let request = PlaybackV3ReplanRequest(
             protocolVersion: PlaybackProtocolV3.version,
@@ -1650,7 +1652,8 @@ actor PlaybackSessionBridge {
             clientCapabilities: active.snapshot.capabilities,
             clientPlaybackContext: active.snapshot.context,
             bandwidthEstimateSource: buffering.bandwidthEstimateSource,
-            learnedLimit: buffering.learnedLimit
+            learnedLimit: buffering.learnedLimit,
+            observedThroughputKbps: buffering.observedThroughputKbps
         )
         let response = try await SiloAPI.shared.apiV2Client.replanPlayback(
             sessionID: currentSessionId,

@@ -33,6 +33,29 @@ final class PlanSummaryJournal {
         /// old.
         let planStartedAt: Date
         var event: PlaybackV3RouteEvent
+
+        var withoutThroughput: Entry {
+            guard event.diagnostics["throughput_kbps"] != nil else { return self }
+            var entry = self
+            var diagnostics = event.diagnostics
+            diagnostics["throughput_kbps"] = nil
+            entry.event = PlaybackV3RouteEvent(
+                protocolVersion: event.protocolVersion,
+                playbackAttemptId: event.playbackAttemptId,
+                sessionId: event.sessionId,
+                planId: event.planId,
+                planAttemptId: event.planAttemptId,
+                planAttemptKey: event.planAttemptKey,
+                event: event.event,
+                failureClassification: event.failureClassification,
+                fallbackReason: event.fallbackReason,
+                appliedQuirkIds: event.appliedQuirkIds,
+                quirkRegistryRevision: event.quirkRegistryRevision,
+                outputContextId: event.outputContextId,
+                diagnostics: diagnostics
+            )
+            return entry
+        }
     }
 
     /// Sends one entry as `owner`. Throws as the route-event request does.
@@ -103,7 +126,10 @@ final class PlanSummaryJournal {
                 } else {
                     runningThisRun.insert(built.entry.eventId)
                 }
-                keep(built.entry)
+                // What is kept is what a later launch sends, and that carries
+                // no throughput: the server files a sample under the network
+                // that delivers it.
+                keep(built.entry.withoutThroughput)
                 if sending { await deliver(built.entry, as: built.owner) }
             }
             self?.inFlight[id] = nil

@@ -197,6 +197,9 @@ final class BufferingQualityController {
         var mode: BufferingQualityMode
         var action: Action
         var bandwidthEstimateKbps: Int?
+        /// The rate the plan's media requests received data, which the
+        /// player measures and adds to a summary it sends at once.
+        var throughputKbps: Int? = nil
     }
 
     enum Output: Equatable {
