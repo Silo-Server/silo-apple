@@ -40,6 +40,10 @@ struct BufferingSignalMapper {
         /// last seek landed (``SoftwareSeekLanding``). AetherEngine's software
         /// host pauses its clock to rebuffer without reporting it.
         var playheadFrozen = false
+        /// The engine's reader has received nothing from the origin for
+        /// `OUTAGE_NO_DATA_MS` (``UpstreamReadMeter``). False on server HLS,
+        /// which has no reader.
+        var upstreamSilent = false
     }
 
     enum Call: Equatable {
@@ -74,6 +78,8 @@ struct BufferingSignalMapper {
     private var planHasRun = true
     /// A media request failed since the last update: an outage begins.
     private var mediaRequestFailed = false
+    /// The engine's reader received media data since the last update.
+    private var mediaDataArrived = false
     /// Once the outage's inputs clear, the media buffered past the playhead
     /// then. The outage lasts until that rises or playback runs.
     private var outageAwaitsDataAboveMs: Int?
@@ -85,6 +91,12 @@ struct BufferingSignalMapper {
     /// range request, never a subtitle).
     mutating func noteMediaRequestFailed() {
         mediaRequestFailed = true
+    }
+
+    /// The engine's reader received bytes from the origin: the plan's media
+    /// data arrived, which ends an outage once nothing else holds it.
+    mutating func noteMediaDataArrived() {
+        mediaDataArrived = true
     }
 
     /// The current item posted `playbackStalledNotification`.
@@ -110,6 +122,7 @@ struct BufferingSignalMapper {
         seekSincePlaying = false
         outageAwaitsDataAboveMs = nil
         mediaRequestFailed = false
+        mediaDataArrived = false
     }
 
     mutating func update(_ snapshot: Snapshot) -> [Call] {
@@ -133,7 +146,7 @@ struct BufferingSignalMapper {
             startPending = false
             planHasRun = true
         }
-        let trouble = outageGoesOn(snapshot, playing: next == .playing)
+        let trouble = outageGoesOn(snapshot, next: next)
         if trouble != transportTrouble {
             transportTrouble = trouble
             calls.append(.transportTroubleChanged(trouble))
@@ -159,20 +172,27 @@ struct BufferingSignalMapper {
         return buffered ? .waiting(.renderer) : .waiting(.network)
     }
 
-    /// An outage begins when a media request fails, and is signalled while
-    /// the device is offline, the player reconnects or the engine's reader
-    /// does. It lasts until the plan's media data arrives again, as the media
-    /// buffered past the playhead rising, or playback runs. No timer, and no
-    /// network or API recovering on its own, ends it.
-    private mutating func outageGoesOn(_ s: Snapshot, playing: Bool) -> Bool {
+    /// An outage begins when a media request fails, or when playback waits
+    /// while the origin has sent nothing for `OUTAGE_NO_DATA_MS` (at once for
+    /// a wait that begins on a link already that silent). It is signalled
+    /// while the device is offline, the player reconnects or the engine's
+    /// reader does. It lasts until the plan's media data arrives again, as
+    /// bytes reaching the reader or the media buffered past the playhead
+    /// rising, or playback runs. No timer, and no network or API recovering
+    /// on its own, ends it. A request that keeps receiving, however slowly,
+    /// is no outage: that is the slow link the controller exists for.
+    private mutating func outageGoesOn(_ s: Snapshot, next: MediaState) -> Bool {
         let buffered = s.bufferedAheadMs ?? 0
-        if s.connectionTrouble || s.phase.isSourceStalled || mediaRequestFailed {
+        let dataArrived = mediaDataArrived
+        mediaDataArrived = false
+        let silentWait = s.upstreamSilent && next == .waiting(.network)
+        if s.connectionTrouble || s.phase.isSourceStalled || mediaRequestFailed || silentWait {
             mediaRequestFailed = false
             outageAwaitsDataAboveMs = buffered
             return true
         }
         guard let standing = outageAwaitsDataAboveMs else { return false }
-        if playing || buffered > standing {
+        if next == .playing || dataArrived || buffered > standing {
             outageAwaitsDataAboveMs = nil
             return false
         }

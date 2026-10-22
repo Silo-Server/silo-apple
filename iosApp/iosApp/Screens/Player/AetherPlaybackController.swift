@@ -55,7 +55,7 @@ final class AetherPlaybackController {
         /// The current AVPlayerItem posted `playbackStalledNotification`.
         case itemStalled
         /// The current AVPlayerItem logged a failed media request
-        /// (`newErrorLogEntryNotification`).
+        /// (`newErrorLogEntryNotification`) on server HLS.
         case itemMediaRequestFailed
         /// ``shouldPlayWhenReady`` or ``isRestoringTransport`` changed. The
         /// engine can stay in `.loading` across a Play or Pause, so no state
@@ -169,6 +169,11 @@ final class AetherPlaybackController {
     private var transportObservations: [NSKeyValueObservation] = []
     private var itemStallSubscription: AnyCancellable?
     private var itemErrorSubscription: AnyCancellable?
+
+    /// Bytes the load's reader has pulled from the origin, as of the engine's
+    /// latest 1 Hz telemetry; nil without a reader: server HLS, where AVPlayer
+    /// fetches the origin through the engine's relay, or no load.
+    private(set) var upstreamBytesFetched: Int64?
 
     /// The native route's AVPlayer transport; nil on the software route or
     /// without a player.
@@ -985,8 +990,16 @@ final class AetherPlaybackController {
             }
             .store(in: &subscriptions)
 
+        // `@Published` sends before the engine stores the value, so the
+        // reader's total is taken from what it sends.
         engine.diagnostics.$liveTelemetry
-            .sink { [weak self] _ in self?.publish(.telemetryChanged) }
+            .sink { [weak self] telemetry in
+                guard let self else { return }
+                upstreamBytesFetched = activeSpec?.options.nativeRemoteHLS == true
+                    ? nil
+                    : telemetry?.demuxerBytesFetched
+                publish(.telemetryChanged)
+            }
             .store(in: &subscriptions)
 
         engine.systemCaptionRequest
@@ -1133,15 +1146,22 @@ final class AetherPlaybackController {
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] _ in self?.publish(.itemStalled) }
         }
-        // AVPlayer logs its failed playlist and segment requests here.
+        // AVPlayer logs its failed playlist and segment requests here. Only
+        // on server HLS do they reach the origin: the engine's relay forwards
+        // each request and answers with what the origin sent or a failure.
+        // On direct play AVPlayer reads the engine's own server on
+        // 127.0.0.1, and its no-response timeouts there (-12889) only mean
+        // the reader behind it is slow; the reader reports the origin itself
+        // (``upstreamBytesFetched`` and the engine's `.stalled` phase).
         // Subtitle renditions are not media: their failures start no outage.
         itemErrorSubscription = item.map { item in
             NotificationCenter.default.publisher(for: AVPlayerItem.newErrorLogEntryNotification, object: item)
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self, weak item] _ in
+                    guard let self, activeSpec?.options.nativeRemoteHLS == true else { return }
                     let uri = item?.errorLog()?.events.last?.uri
                     guard !Self.isSubtitleRenditionRequest(uri: uri) else { return }
-                    self?.publish(.itemMediaRequestFailed)
+                    publish(.itemMediaRequestFailed)
                 }
         }
     }

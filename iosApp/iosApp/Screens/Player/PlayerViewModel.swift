@@ -490,6 +490,11 @@ class PlayerViewModel {
     let bufferingQuality: BufferingQualityController
     /// Turns playback facts into the controller's media events.
     @ObservationIgnored private var bufferingSignals = BufferingSignalMapper()
+    /// The buffering controller's clock, which also times the reader's ticks.
+    @ObservationIgnored private let bufferingClock: PlayerPromptClock
+    /// What the engine's reader receives from the origin: outage silence and
+    /// the plan's `throughput_kbps`.
+    @ObservationIgnored private var upstreamMeter = UpstreamReadMeter()
     /// Numbers each adopted plan, so a replan that comes back with the same
     /// server `plan_id` is still a new plan to the controller.
     @ObservationIgnored private var bufferingPlanRevision: UInt64 = 0
@@ -1450,7 +1455,9 @@ class PlayerViewModel {
     /// pass a manual one.
     init(libraryId: Int? = nil, bufferingQualityClock: PlayerPromptClock? = nil) {
         self.initialLibraryId = libraryId
-        self.bufferingQuality = BufferingQualityController(clock: bufferingQualityClock)
+        let bufferingClock = bufferingQualityClock ?? LivePlayerPromptClock()
+        self.bufferingClock = bufferingClock
+        self.bufferingQuality = BufferingQualityController(clock: bufferingClock)
         self.seriesReturnGeneration = SeriesPlaybackReturnInbox.generation
         self.cleanupBarrierGeneration = PlayerCleanupBarrier.playerCreated()
         let controller: AetherPlaybackController
@@ -1863,6 +1870,7 @@ class PlayerViewModel {
             adoptAetherInventory()
             refreshPlaybackStats(force: true)
         case .telemetryChanged:
+            noteUpstreamTelemetry()
             refreshPlaybackStats(force: true)
         case .ended:
             handleEndOfFile()
@@ -10307,12 +10315,6 @@ extension PlayerViewModel {
 
     private var bufferingSignalSnapshot: BufferingSignalMapper.Snapshot {
         let monitor = ConnectionMonitor.shared
-        // A replan or start in flight leaves the playing source alone until
-        // the client swaps it; only then do the old plan's waits stop being
-        // its stalls.
-        let replacementPending = (protocolV3ReplanTask != nil || freshLoadTask != nil)
-            && bufferingSourceSwapGeneration == streamLoadGeneration
-            && streamLoadGeneration != bufferingAdoptedStreamLoadGeneration
         return BufferingSignalMapper.Snapshot(
             hasActiveLoad: activeAetherLoadEpoch != nil && aetherPlaybackController.hasActiveLoad,
             // An audio interruption (a call, Siri) pauses playback until it
@@ -10323,7 +10325,7 @@ extension PlayerViewModel {
             engineBuffering: isBuffering,
             nativeTransport: aetherPlaybackController.nativeTransport,
             seekInFlight: bufferingSeekInFlight,
-            reloadInProgress: replacementPending
+            reloadInProgress: bufferingReplacementLoading
                 || reconnectCycle.isHandingOff
                 || aetherPlaybackController.isRestoringTransport
                 || (activeAetherLoadEpoch != nil && bufferingReloadEpoch == activeAetherLoadEpoch),
@@ -10331,8 +10333,31 @@ extension PlayerViewModel {
             // Media trouble only: a failed API call is not a media request.
             connectionTrouble: connectionState != .connected || !monitor.isDeviceOnline,
             bufferedAheadMs: engineBufferedAheadMs,
-            playheadFrozen: softwarePlayheadFrozenMs != nil || softwareSeekLanding.awaitsAdvance
+            playheadFrozen: softwarePlayheadFrozenMs != nil || softwareSeekLanding.awaitsAdvance,
+            upstreamSilent: upstreamMeter.isSilent(atMs: bufferingClock.elapsedMs)
         )
+    }
+
+    /// A replan or start in flight leaves the playing source alone until the
+    /// client swaps it; from then until its plan is adopted, the source
+    /// loading is the replacement's, not the playing plan's.
+    private var bufferingReplacementLoading: Bool {
+        (protocolV3ReplanTask != nil || freshLoadTask != nil)
+            && bufferingSourceSwapGeneration == streamLoadGeneration
+            && streamLoadGeneration != bufferingAdoptedStreamLoadGeneration
+    }
+
+    /// One telemetry tick: what the engine's reader has received from the
+    /// origin. Bytes a replacement's source receives while it loads are not
+    /// the playing plan's.
+    private func noteUpstreamTelemetry() {
+        let arrived = upstreamMeter.note(
+            totalBytes: aetherPlaybackController.upstreamBytesFetched,
+            atMs: bufferingClock.elapsedMs,
+            networkKey: BandwidthProbeScheduler.shared.network.key,
+            counts: !bufferingReplacementLoading
+        )
+        if arrived { bufferingSignals.noteMediaDataArrived() }
     }
 
     /// A seek, scrub commit or hold-seek has not landed yet.
@@ -10494,6 +10519,7 @@ extension PlayerViewModel {
         // Only now: the outgoing plan's summary, sent during the adoption,
         // still names the entry this replaces.
         bufferingPlan = entry
+        upstreamMeter.planAdopted(networkKey: BandwidthProbeScheduler.shared.network.key)
         // The new plan hears whether playback is already waiting.
         bufferingSignals.planAdopted()
         softwareSeekLanding.reset()

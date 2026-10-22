@@ -28,12 +28,14 @@ final class BufferingSignalMapperTests: XCTestCase {
         end: Bool = false,
         trouble: Bool = false,
         bufferedMs: Int? = nil,
-        frozen: Bool = false
+        frozen: Bool = false,
+        silent: Bool = false
     ) -> Snapshot {
         Snapshot(
             hasActiveLoad: load, wantsToPlay: play, phase: phase, engineBuffering: buffering,
             nativeTransport: native, seekInFlight: seek, reloadInProgress: reload, reachedEnd: end,
-            connectionTrouble: trouble, bufferedAheadMs: bufferedMs, playheadFrozen: frozen
+            connectionTrouble: trouble, bufferedAheadMs: bufferedMs, playheadFrozen: frozen,
+            upstreamSilent: silent
         )
     }
 
@@ -155,6 +157,55 @@ final class BufferingSignalMapperTests: XCTestCase {
         mapper.noteMediaRequestFailed()
         XCTAssertEqual(mapper.update(starved(900)), [.transportTroubleChanged(true)])
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.transportTroubleChanged(false), .playing])
+    }
+
+    /// Direct play reads the origin through the engine's reader. A wait while
+    /// the reader has received nothing for `OUTAGE_NO_DATA_MS` is an outage,
+    /// at once for a wait that begins that silent, and bytes reaching the
+    /// reader end it. A wait while it keeps receiving, however slowly, is a
+    /// stall, as is anything AVPlayer says about its hop to the engine.
+    func testASilentOriginIsAnOutageOnlyWhileWaiting() {
+        var mapper = BufferingSignalMapper()
+        let starved = { (silent: Bool) in Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), silent: silent) }
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying, silent: true)), [.playing],
+                       "a reader parked on a full buffer")
+        XCTAssertEqual(mapper.update(starved(true)), [.transportTroubleChanged(true), .waiting(.network)])
+        XCTAssertEqual(mapper.update(starved(true)), [])
+        mapper.noteMediaDataArrived()
+        XCTAssertEqual(mapper.update(starved(false)), [.transportTroubleChanged(false)])
+        XCTAssertEqual(mapper.update(starved(false)), [], "a slow origin that keeps sending")
+        XCTAssertEqual(mapper.update(starved(true)), [.transportTroubleChanged(true)], "silent mid-wait")
+        mapper.noteMediaDataArrived()
+        XCTAssertEqual(mapper.update(starved(false)), [.transportTroubleChanged(false)])
+    }
+
+    /// The reader's 1 Hz ticks: a plan's rate over the ticks that received,
+    /// silence counted from the last byte, and what the rate leaves out.
+    func testTheUpstreamMeterTimesTheOriginsBytes() {
+        var meter = UpstreamReadMeter()
+        meter.planAdopted(networkKey: "wifi")
+        XCTAssertFalse(meter.isSilent(atMs: 60_000), "no reader yet")
+        meter.note(totalBytes: 1_000_000, atMs: 0, networkKey: "wifi")
+        XCTAssertTrue(meter.note(totalBytes: 2_250_000, atMs: 500, networkKey: "wifi"))
+        XCTAssertNil(meter.throughputKbps, "under a second receiving")
+        meter.note(totalBytes: 4_750_000, atMs: 1_500, networkKey: "wifi")
+        XCTAssertFalse(meter.note(totalBytes: 4_750_000, atMs: 2_500, networkKey: "wifi"), "parked")
+        XCTAssertEqual(meter.throughputKbps, 20_000, "3.75 MB over the 1.5 s that received")
+        XCTAssertFalse(meter.isSilent(atMs: 5_499))
+        XCTAssertTrue(meter.isSilent(atMs: 5_500))
+
+        XCTAssertTrue(meter.note(totalBytes: 9_000_000, atMs: 3_500, networkKey: "wifi", counts: false))
+        XCTAssertEqual(meter.throughputKbps, 20_000, "a replacement's loading is not this plan's")
+        XCTAssertFalse(meter.isSilent(atMs: 7_499))
+        meter.note(totalBytes: 500_000, atMs: 4_500, networkKey: "wifi")
+        XCTAssertEqual(meter.throughputKbps, 20_000, "a new reader starts a new count")
+        meter.note(totalBytes: nil, atMs: 5_500, networkKey: "wifi")
+        XCTAssertFalse(meter.isSilent(atMs: 60_000), "the reader is gone")
+
+        meter.note(totalBytes: 600_000, atMs: 6_500, networkKey: "cellular")
+        XCTAssertNil(meter.throughputKbps, "the network changed under the plan")
+        meter.planAdopted(networkKey: "cellular")
+        XCTAssertNil(meter.throughputKbps, "a new plan's books")
     }
 
     /// A seek made while paused in one title doesn't make the next title's
