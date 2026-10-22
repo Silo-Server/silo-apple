@@ -219,6 +219,17 @@ final class BufferingSignalMapperTests: XCTestCase {
         late.note(totalBytes: 12_000_000, atMs: 13_000, networkKey: "wifi")
         late.note(totalBytes: 13_000_000, atMs: 14_000, networkKey: "wifi")
         XCTAssertEqual(late.throughputKbps, 6_315, "a tick after a gap is left out and charges nothing on")
+
+        // A second reader of the file (an embedded subtitle's prefetch) may
+        // share the link: the counted reader's share would read low.
+        var shared = UpstreamReadMeter()
+        shared.planAdopted(networkKey: "wifi")
+        shared.note(totalBytes: 0, atMs: 0, networkKey: "wifi", shared: true)
+        XCTAssertTrue(shared.note(totalBytes: 500_000, atMs: 1_000, networkKey: "wifi", shared: true))
+        shared.note(totalBytes: 1_000_000, atMs: 2_000, networkKey: "wifi")
+        XCTAssertNil(shared.throughputKbps, "it may have shared the tick after it stopped too")
+        shared.note(totalBytes: 2_000_000, atMs: 3_000, networkKey: "wifi")
+        XCTAssertEqual(shared.throughputKbps, 8_000, "1 MB over the one second the reader had alone")
     }
 
     /// A seek made while paused in one title doesn't make the next title's

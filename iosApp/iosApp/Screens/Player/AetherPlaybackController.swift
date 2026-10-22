@@ -182,6 +182,19 @@ final class AetherPlaybackController {
     /// other routes and before anything arrived.
     private(set) var relayThroughputKbps: Int?
 
+    /// Another reader of the load's source may be receiving beside the one
+    /// `upstreamBytesFetched` counts. An embedded subtitle the engine decodes
+    /// runs AetherEngine's forward subtitle prefetch, a second reader of the
+    /// same file on its own connection, whose bytes the engine does not
+    /// publish. Conservative: closed captions, which need no reader, and a
+    /// secondary subtitle from a sidecar count too.
+    var mayShareSourceLink: Bool {
+        let primaryEmbedded = engine.activeSubtitleTrackIndex.map { id in
+            engine.subtitleTracks.contains { $0.id == id && !$0.isExternal }
+        } ?? false
+        return primaryEmbedded || engine.isSecondarySubtitleActive
+    }
+
     /// The native route's AVPlayer transport; nil on the software route or
     /// without a player.
     var nativeTransport: NativeTransport? {

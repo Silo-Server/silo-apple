@@ -10419,13 +10419,15 @@ extension PlayerViewModel {
 
     /// One telemetry tick: what the engine's reader has received from the
     /// origin. Bytes a replacement's source receives while it loads are not
-    /// the playing plan's.
+    /// the playing plan's, and the reader's share of a link another reader
+    /// of the file may be using is not the link's rate.
     private func noteUpstreamTelemetry() {
         let arrived = upstreamMeter.note(
             totalBytes: aetherPlaybackController.upstreamBytesFetched,
             atMs: bufferingClock.elapsedMs,
             networkKey: BandwidthProbeScheduler.shared.network.key,
-            counts: !bufferingReplacementLoading
+            counts: !bufferingReplacementLoading,
+            shared: aetherPlaybackController.mayShareSourceLink
         )
         if arrived { bufferingSignals.noteMediaDataArrived() }
     }

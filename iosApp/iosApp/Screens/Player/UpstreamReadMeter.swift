@@ -11,6 +11,13 @@ import Foundation
 /// second. The meter takes those ticks. Server HLS has no reader, and the
 /// player feeds it nothing there.
 ///
+/// That total is the pump's alone. The spec counts all of the plan's main
+/// media reads, but a second reader of the same file, such as the engine's
+/// subtitle prefetch, shares the link without a published count, and the
+/// pump's share alone reads low (gauntlet V5: 2666 kbps learned on a 22 Mbps
+/// link). A tick that such a reader may have shared stays out of the rate,
+/// so the plan reports none rather than an under-read.
+///
 /// A tick that saw bytes counts as receiving for its whole interval, so the
 /// rate is a lower bound: a reader that filled its window in part of a second
 /// and then parked reads low, never high. The engine reads its counter before
@@ -31,8 +38,9 @@ struct UpstreamReadMeter {
     static let maxTickIntervalMs = 3_000
 
     /// The reader's total, when it was read and the interval before that
-    /// (0 for a new reader or after a gap); nil while there is no reader.
-    private var last: (bytes: Int64, atMs: Int, intervalMs: Int)?
+    /// (0 for a new reader or after a gap), and whether another reader of the
+    /// source may have been receiving; nil while there is no reader.
+    private var last: (bytes: Int64, atMs: Int, intervalMs: Int, shared: Bool)?
     /// When media data last arrived, or the reader appeared.
     private var lastDataAtMs: Int?
 
@@ -45,10 +53,18 @@ struct UpstreamReadMeter {
     /// Takes one telemetry tick: the reader's lifetime total, or nil when the
     /// load has none. A total below the last one is a new reader. Bytes
     /// count toward the plan's rate only when `counts`: the playing plan's
-    /// own source, not a replacement loading in its place. True when media
-    /// data arrived.
+    /// own source, not a replacement loading in its place; and only when
+    /// neither this tick nor the one before was `shared`, with another reader
+    /// of the source possibly receiving beside the counted one. True when
+    /// media data arrived.
     @discardableResult
-    mutating func note(totalBytes: Int64?, atMs now: Int, networkKey key: String, counts: Bool = true) -> Bool {
+    mutating func note(
+        totalBytes: Int64?,
+        atMs now: Int,
+        networkKey key: String,
+        counts: Bool = true,
+        shared: Bool = false
+    ) -> Bool {
         if networkKey != nil, key != networkKey { networkChanged = true }
         guard let totalBytes else {
             last = nil
@@ -56,17 +72,17 @@ struct UpstreamReadMeter {
             return false
         }
         guard let previous = last, totalBytes >= previous.bytes else {
-            last = (totalBytes, now, 0)
+            last = (totalBytes, now, 0, shared)
             lastDataAtMs = now
             return totalBytes > 0
         }
         let interval = max(0, now - previous.atMs)
         let inTime = interval <= Self.maxTickIntervalMs
-        last = (totalBytes, now, inTime ? interval : 0)
+        last = (totalBytes, now, inTime ? interval : 0, shared)
         let delta = totalBytes - previous.bytes
         guard delta > 0 else { return false }
         lastDataAtMs = now
-        if counts, inTime {
+        if counts, inTime, !shared, !previous.shared {
             receivedBytes += delta
             receivingMs += max(interval, previous.intervalMs)
         }
