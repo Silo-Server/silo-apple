@@ -206,6 +206,19 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertNil(meter.throughputKbps, "the network changed under the plan")
         meter.planAdopted(networkKey: "cellular")
         XCTAssertNil(meter.throughputKbps, "a new plan's books")
+
+        // A parked tick that arrives late, then one that arrives early: the
+        // early tick's second of bytes is charged the late interval.
+        var late = UpstreamReadMeter()
+        late.planAdopted(networkKey: "wifi")
+        late.note(totalBytes: 0, atMs: 0, networkKey: "wifi")
+        late.note(totalBytes: 1_000_000, atMs: 1_000, networkKey: "wifi")
+        late.note(totalBytes: 1_000_000, atMs: 2_800, networkKey: "wifi")
+        late.note(totalBytes: 2_000_000, atMs: 3_000, networkKey: "wifi")
+        XCTAssertEqual(late.throughputKbps, 5_714, "2 MB over 1 s and 1.8 s, not 1.2 s")
+        late.note(totalBytes: 12_000_000, atMs: 13_000, networkKey: "wifi")
+        late.note(totalBytes: 13_000_000, atMs: 14_000, networkKey: "wifi")
+        XCTAssertEqual(late.throughputKbps, 6_315, "a tick after a gap is left out and charges nothing on")
     }
 
     /// A seek made while paused in one title doesn't make the next title's

@@ -13,17 +13,26 @@ import Foundation
 ///
 /// A tick that saw bytes counts as receiving for its whole interval, so the
 /// rate is a lower bound: a reader that filled its window in part of a second
-/// and then parked reads low, never high. It holds no clock and performs no
-/// I/O.
+/// and then parked reads low, never high. The engine reads its counter before
+/// it publishes, so a tick can arrive late and the next one early; each tick
+/// is charged at least the interval before it, so a second's bytes are never
+/// charged to a fraction of one. It holds no clock and performs no I/O.
 struct UpstreamReadMeter {
     /// `OUTAGE_NO_DATA_MS`: a wait with no media data for this long is an
-    /// outage, counted from the last byte.
+    /// outage, counted from the tick that saw the last byte. That tick comes
+    /// up to a second after the byte, and the player checks again on each
+    /// tick, so an outage is found 4 to 6 s after the last byte arrived.
     static let outageNoDataMs = 4_000
     /// A plan's rate needs at least this much receiving time.
     static let minReceivingMs = 1_000
+    /// A tick this long after the one before, as after the app was suspended
+    /// or the main thread held up, says nothing about how long its bytes
+    /// took: it stays out of the rate.
+    static let maxTickIntervalMs = 3_000
 
-    /// The reader's total and when it was read; nil while there is no reader.
-    private var last: (bytes: Int64, atMs: Int)?
+    /// The reader's total, when it was read and the interval before that
+    /// (0 for a new reader or after a gap); nil while there is no reader.
+    private var last: (bytes: Int64, atMs: Int, intervalMs: Int)?
     /// When media data last arrived, or the reader appeared.
     private var lastDataAtMs: Int?
 
@@ -47,17 +56,19 @@ struct UpstreamReadMeter {
             return false
         }
         guard let previous = last, totalBytes >= previous.bytes else {
-            last = (totalBytes, now)
+            last = (totalBytes, now, 0)
             lastDataAtMs = now
             return totalBytes > 0
         }
-        last = (totalBytes, now)
+        let interval = max(0, now - previous.atMs)
+        let inTime = interval <= Self.maxTickIntervalMs
+        last = (totalBytes, now, inTime ? interval : 0)
         let delta = totalBytes - previous.bytes
         guard delta > 0 else { return false }
         lastDataAtMs = now
-        if counts {
+        if counts, inTime {
             receivedBytes += delta
-            receivingMs += max(0, now - previous.atMs)
+            receivingMs += max(interval, previous.intervalMs)
         }
         return true
     }
