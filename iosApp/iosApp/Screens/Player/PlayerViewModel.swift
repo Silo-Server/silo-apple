@@ -3808,6 +3808,18 @@ class PlayerViewModel {
         qualityReasons.flatMap(PlaybackQualityReasons.menuLine)
     }
 
+    /// The reason line when no row is checked (a fixed saved resolution
+    /// that names no row): quality menus show it once above their rows.
+    var qualityReasonHeader: String? {
+        highlightedQualityOptionId == nil ? qualityReasonLine : nil
+    }
+
+    /// What VoiceOver reads for a quality control showing `value`: the
+    /// value, then the reason that explains it.
+    func qualityAccessibilityValue(_ value: String) -> String {
+        [value, qualityReasonLine].compactMap { $0 }.joined(separator: ", ")
+    }
+
     /// The quality control's value while Auto plays (`Auto · 1080p`).
     var autoQualityLabel: String {
         PlaybackQualityReasons.autoLabel(plan: activePreparedProtocolV3?.plan)

@@ -69,6 +69,7 @@ struct PlayerSettingsSheet: View {
                     qualityPage
                 } label: {
                     LabeledContent("Quality", value: activeQualityLabel)
+                        .accessibilityValue(viewModel.qualityAccessibilityValue(activeQualityLabel))
                 }
             }
 
@@ -127,6 +128,12 @@ struct PlayerSettingsSheet: View {
                         .contentShape(Rectangle())
                     }
                     .disabled(viewModel.isQualitySwitching)
+                }
+            } header: {
+                // With no row checked, the reason heads the list instead.
+                if let reason = viewModel.qualityReasonHeader {
+                    Text(reason)
+                        .textCase(nil)
                 }
             } footer: {
                 if viewModel.isQualitySwitching {

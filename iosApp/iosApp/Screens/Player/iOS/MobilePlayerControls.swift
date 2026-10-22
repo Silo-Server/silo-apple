@@ -431,29 +431,11 @@ struct MobilePlayerControls: View {
 
     private func qualityMenu(compact: Bool) -> some View {
         let menu = Menu {
-            // The menu indents only rows that carry an icon, so every row
-            // gets a checkmark, invisible unless checked: the titles stay
-            // in one column instead of the checked one shifting right. The
-            // bitrate goes underneath so the indented titles still fit, and
-            // the checked row adds why it plays at that quality.
-            ForEach(viewModel.qualityOptions) { option in
-                let checked = option.id == viewModel.highlightedQualityOptionId
-                Button {
-                    viewModel.switchQuality(option.id)
-                } label: {
-                    Text(option.label)
-                    let detail = [option.bitrateText, checked ? viewModel.qualityReasonLine : nil]
-                        .compactMap { $0 }
-                    if !detail.isEmpty {
-                        Text(detail.joined(separator: " · "))
-                    }
-                    if checked {
-                        Image(systemName: "checkmark")
-                    } else {
-                        Self.clearCheckmark
-                    }
-                }
-                .disabled(viewModel.isQualitySwitching)
+            // With no row checked, the reason heads the menu instead.
+            if let reason = viewModel.qualityReasonHeader {
+                Section(reason) { qualityMenuRows }
+            } else {
+                qualityMenuRows
             }
         } label: {
             HStack(spacing: 5) {
@@ -489,7 +471,35 @@ struct MobilePlayerControls: View {
             tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : Color.white.opacity(0.22)
         ))
         .accessibilityLabel("Playback Quality")
-        .accessibilityValue(qualityValueText)
+        .accessibilityValue(viewModel.qualityAccessibilityValue(qualityValueText))
+    }
+
+    // The menu indents only rows that carry an icon, so every row gets a
+    // checkmark, invisible unless checked: the titles stay in one column
+    // instead of the checked one shifting right. The bitrate goes
+    // underneath so the indented titles still fit, and the checked row adds
+    // why it plays at that quality.
+    @ViewBuilder
+    private var qualityMenuRows: some View {
+        ForEach(viewModel.qualityOptions) { option in
+            let checked = option.id == viewModel.highlightedQualityOptionId
+            Button {
+                viewModel.switchQuality(option.id)
+            } label: {
+                Text(option.label)
+                let detail = [option.bitrateText, checked ? viewModel.qualityReasonLine : nil]
+                    .compactMap { $0 }
+                if !detail.isEmpty {
+                    Text(detail.joined(separator: " · "))
+                }
+                if checked {
+                    Image(systemName: "checkmark")
+                } else {
+                    Self.clearCheckmark
+                }
+            }
+            .disabled(viewModel.isQualitySwitching)
+        }
     }
 
     /// Short value for the pill — the tier's resolution ("1080p") rather
