@@ -161,6 +161,83 @@ final class ServerNicknameTests: XCTestCase {
         XCTAssertEqual(readded?.displayName, "Home")
     }
 
+    /// The local names belong to the iCloud account they synced with; a new
+    /// account on the device must not receive them.
+    func testAnICloudAccountChangeNeverCarriesTheOldAccountsNamesAcross() throws {
+        let cloud = CloudStorage()
+        let phone = try Device(saved: [Self.entry(Self.publicURL, name: "Silo")], cloud: cloud)
+        phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Home")
+
+        cloud.records = []
+        phone.iCloudAccountChanged()
+
+        XCTAssertEqual(phone.registry.entry(with: Self.id(Self.publicURL))?.displayName, "Silo")
+        XCTAssertTrue(cloud.records.isEmpty)
+    }
+
+    func testAnICloudAccountChangeTakesTheNewAccountsNames() throws {
+        let cloud = CloudStorage()
+        let phone = try Device(saved: [Self.entry(Self.publicURL, name: "Silo")], cloud: cloud)
+        phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Home")
+
+        cloud.records = [ServerNickname(
+            serverId: Self.id(Self.publicURL), verifiedServerId: nil, name: "Lounge", updatedAt: .distantPast
+        )]
+        phone.iCloudAccountChanged()
+
+        XCTAssertEqual(phone.registry.entry(with: Self.id(Self.publicURL))?.displayName, "Lounge")
+        XCTAssertEqual(cloud.records.map(\.name), ["Lounge"])
+    }
+
+    /// Renamed before the server reported its deployment identity: the synced
+    /// record gains the identity later, so another address of the server can
+    /// still find the name.
+    func testAnIdentityLearnedAfterARenameReachesTheServersOtherAddresses() throws {
+        let cloud = CloudStorage()
+        let phone = try Device(saved: [Self.entry(Self.publicURL, name: "Silo")], cloud: cloud)
+        phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Home")
+
+        phone.registry.updateVerifiedServerId(for: Self.id(Self.publicURL), verifiedServerId: Self.deployment)
+        let tv = try Device(saved: [Self.entry(Self.lanURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+
+        XCTAssertEqual(cloud.records.first?.verifiedServerId, Self.deployment)
+        XCTAssertEqual(tv.registry.entry(with: Self.id(Self.lanURL))?.displayName, "Home")
+    }
+
+    /// An address's own name, given while its sync was lost, survives a newer
+    /// name for another address of the server and is written back.
+    func testAnAddressesOwnNameSurvivesANewerNameForAnotherAddress() throws {
+        let cloud = CloudStorage()
+        let phone = try Device(saved: [Self.entry(Self.publicURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+        let tv = try Device(saved: [Self.entry(Self.lanURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+
+        tv.registry.rename(serverId: Self.id(Self.lanURL), to: "Home (LAN)")
+        cloud.records = []
+        phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Home")
+        tv.cloudChanged()
+        phone.cloudChanged()
+
+        XCTAssertEqual(tv.registry.entry(with: Self.id(Self.lanURL))?.displayName, "Home (LAN)")
+        XCTAssertEqual(phone.registry.entry(with: Self.id(Self.publicURL))?.displayName, "Home")
+        XCTAssertEqual(Set(cloud.records.compactMap(\.name)), ["Home (LAN)", "Home"])
+    }
+
+    /// A name copied from another address is never published as this
+    /// address's own, so the original rename keeps reaching it.
+    func testACopiedNameFollowsLaterRenamesOfTheOriginalAddress() throws {
+        let cloud = CloudStorage()
+        let phone = try Device(saved: [Self.entry(Self.publicURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+        let tv = try Device(saved: [Self.entry(Self.lanURL, name: "Silo", deployment: Self.deployment)], cloud: cloud)
+        phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Home")
+        tv.cloudChanged()
+
+        phone.registry.rename(serverId: Self.id(Self.publicURL), to: "Lounge")
+        tv.cloudChanged()
+
+        XCTAssertEqual(tv.registry.entry(with: Self.id(Self.lanURL))?.displayName, "Lounge")
+        XCTAssertEqual(cloud.records.map(\.serverId), [Self.id(Self.publicURL)])
+    }
+
     func testANameIsCutToTheLengthLimit() throws {
         let device = try Device(saved: [Self.entry(Self.publicURL, name: "Silo")])
 
@@ -208,7 +285,11 @@ final class ServerNicknameTests: XCTestCase {
         }
 
         /// Another device changed the synced copy.
-        func cloudChanged() { cloud?.onExternalChange?() }
+        func cloudChanged() { cloud?.onExternalChange?(false) }
+
+        /// The device's iCloud account changed; the store now holds the new
+        /// account's records.
+        func iCloudAccountChanged() { cloud?.onExternalChange?(true) }
 
         /// The same device after the app restarts, with no iCloud.
         func relaunched() -> ServerRegistry {
@@ -247,7 +328,7 @@ private final class CloudStorage {
 
 private final class FakeNicknameCloud: ServerNicknameCloud {
     let storage: CloudStorage
-    var onExternalChange: (() -> Void)?
+    var onExternalChange: ((_ accountChanged: Bool) -> Void)?
 
     init(storage: CloudStorage) { self.storage = storage }
 

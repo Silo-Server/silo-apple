@@ -15,6 +15,11 @@ struct ServerNickname: Codable, Equatable {
     var verifiedServerId: String?
     var name: String?
     var updatedAt: Date
+    /// Set on a local record this device copied from the record for another
+    /// address of the same deployment. A copy is never published, and a
+    /// record for this address, or a newer copy, replaces it; an explicit
+    /// name for this address never gives way to another address's name.
+    var inheritedFrom: String?
 
     /// Longest nickname kept; anything longer is cut to this.
     static let lengthLimit = 60
@@ -33,18 +38,21 @@ enum ServerNicknameSync {
     /// many servers have been named or cleared over the years.
     static let recordLimit = 100
 
-    /// The record that names `entry`: the newest one for the same address
-    /// (same origin, see ``ServerRegistry/serverIdsMatch(_:_:)``), else the
-    /// newest one for another address of the same deployment. The address
-    /// wins so that "Home (LAN)" and "Home (Remote)" can keep different names.
-    static func record(for entry: ServerEntry, in records: [ServerNickname]) -> ServerNickname? {
-        let sameAddress = records.filter { ServerRegistry.serverIdsMatch($0.serverId, entry.id) }
-        if let newest = sameAddress.max(by: { $0.updatedAt < $1.updatedAt }) {
-            return newest
-        }
+    /// The newest record for `entry`'s own address (same origin, see
+    /// ``ServerRegistry/serverIdsMatch(_:_:)``).
+    static func addressRecord(for entry: ServerEntry, in records: [ServerNickname]) -> ServerNickname? {
+        records
+            .filter { ServerRegistry.serverIdsMatch($0.serverId, entry.id) }
+            .max(by: { $0.updatedAt < $1.updatedAt })
+    }
+
+    /// The newest record for another address of `entry`'s deployment. It
+    /// names the server only where its own address has no record, so that
+    /// "Home (LAN)" and "Home (Remote)" can keep different names.
+    static func deploymentRecord(for entry: ServerEntry, in records: [ServerNickname]) -> ServerNickname? {
         guard let identity = ServerIdentity.usable(entry.verifiedServerId) else { return nil }
         return records
-            .filter { $0.verifiedServerId == identity }
+            .filter { $0.verifiedServerId == identity && !ServerRegistry.serverIdsMatch($0.serverId, entry.id) }
             .max(by: { $0.updatedAt < $1.updatedAt })
     }
 
@@ -60,8 +68,9 @@ enum ServerNicknameSync {
 protocol ServerNicknameCloud: AnyObject {
     func load() -> [ServerNickname]
     func save(_ records: [ServerNickname])
-    /// Called on the main queue after another device changes the records.
-    var onExternalChange: (() -> Void)? { get set }
+    /// Called on the main queue after another device changes the records,
+    /// with `true` when the store now belongs to a different iCloud account.
+    var onExternalChange: ((_ accountChanged: Bool) -> Void)? { get set }
 }
 
 /// iCloud key-value storage for nickname records, shared by the iPhone, iPad
@@ -76,7 +85,7 @@ protocol ServerNicknameCloud: AnyObject {
 final class UbiquitousServerNicknameCloud: ServerNicknameCloud {
     static let key = "siloServerNicknames.v1"
 
-    var onExternalChange: (() -> Void)?
+    var onExternalChange: ((_ accountChanged: Bool) -> Void)?
 
     private let store: NSUbiquitousKeyValueStore
     private var observer: NSObjectProtocol?
@@ -88,13 +97,16 @@ final class UbiquitousServerNicknameCloud: ServerNicknameCloud {
             object: store,
             queue: .main
         ) { [weak self] notification in
+            let reason = notification.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int
+            let accountChanged = reason == NSUbiquitousKeyValueStoreAccountChange
             // An account change or first sync may list no keys; only skip a
             // change that names other keys.
-            if let keys = notification.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String],
+            if !accountChanged,
+               let keys = notification.userInfo?[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String],
                !keys.contains(Self.key) {
                 return
             }
-            self?.onExternalChange?()
+            self?.onExternalChange?(accountChanged)
         }
         // Asks iCloud for changes made while the app was not running.
         store.synchronize()

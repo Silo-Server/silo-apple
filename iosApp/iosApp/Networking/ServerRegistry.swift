@@ -255,8 +255,8 @@ final class ServerRegistry {
         migrateLegacyProfileMappingsIfNeeded()
         loadNicknames()
         reconcileNicknames()
-        nicknameCloud?.onExternalChange = { [weak self] in
-            self?.reconcileNicknames()
+        nicknameCloud?.onExternalChange = { [weak self] accountChanged in
+            self?.reconcileNicknames(accountChanged: accountChanged)
         }
         let initialActiveServerId = activeServerId
         activeServerSnapshot.withLock { $0 = initialActiveServerId }
@@ -441,30 +441,56 @@ final class ServerRegistry {
         }
     }
 
-    /// Brings the local and synced nicknames together for every saved
-    /// server. A newer synced name replaces the local one; a local name the
-    /// synced copy lacks, or holds an older version of, is written back so
-    /// that two devices renaming different servers at once both keep their
-    /// change. Removing a server never touches the synced copy, so its name
-    /// comes back if it is added again.
-    private func reconcileNicknames() {
+    /// Brings the local and synced nicknames together for every saved server.
+    ///
+    /// - A synced record for the server's own address replaces a copied name,
+    ///   and replaces an explicit local name when it is newer.
+    /// - A record for another address of the same deployment names a server
+    ///   that has no name and replaces an older copy, but never an explicit
+    ///   name for this address.
+    /// - An explicit local name the synced copy lacks, or holds an older
+    ///   version of, is written back, so two devices renaming at once both
+    ///   keep their change. A deployment identity learned after the rename is
+    ///   added to that record. Copies are never written back.
+    /// - After an iCloud account change the local names belonged to the
+    ///   previous account, so they are dropped rather than written into the
+    ///   new account's store.
+    ///
+    /// Removing a server never touches the synced copy, so its name comes
+    /// back if it is added again.
+    private func reconcileNicknames(accountChanged: Bool = false) {
         guard let nicknameCloud else {
             applyNicknames()
             return
         }
         let synced = nicknameCloud.load()
-        var local = nicknameRecords
+        var local = accountChanged ? [] : nicknameRecords
         for entry in entries {
             let mine = local.first { $0.serverId == entry.id }
-            guard let theirs = ServerNicknameSync.record(for: entry, in: synced),
-                  theirs.updatedAt > (mine?.updatedAt ?? .distantPast) else { continue }
+            var adopted: ServerNickname?
+            if let theirs = ServerNicknameSync.addressRecord(for: entry, in: synced) {
+                if mine.map({ $0.inheritedFrom != nil || theirs.updatedAt > $0.updatedAt }) ?? true {
+                    adopted = ServerNickname(
+                        serverId: entry.id,
+                        verifiedServerId: entry.verifiedServerId,
+                        name: theirs.name,
+                        updatedAt: theirs.updatedAt
+                    )
+                }
+            } else if let theirs = ServerNicknameSync.deploymentRecord(for: entry, in: synced) {
+                if mine.map({ $0.inheritedFrom != nil && theirs.updatedAt > $0.updatedAt }) ?? true {
+                    adopted = ServerNickname(
+                        serverId: entry.id,
+                        verifiedServerId: entry.verifiedServerId,
+                        name: theirs.name,
+                        updatedAt: theirs.updatedAt,
+                        inheritedFrom: theirs.serverId
+                    )
+                }
+            }
+            guard let adopted, adopted != mine else { continue }
             local.removeAll { $0.serverId == entry.id }
-            local.append(ServerNickname(
-                serverId: entry.id,
-                verifiedServerId: entry.verifiedServerId,
-                name: theirs.name,
-                updatedAt: theirs.updatedAt
-            ))
+            local.append(adopted)
         }
         if local != nicknameRecords {
             _ = saveNicknames(local)
@@ -473,10 +499,19 @@ final class ServerRegistry {
 
         var published = synced
         for entry in entries {
-            guard var mine = nicknameRecords.first(where: { $0.serverId == entry.id }) else { continue }
-            let theirs = ServerNicknameSync.record(for: entry, in: published)
-            guard mine.updatedAt > (theirs?.updatedAt ?? .distantPast) else { continue }
-            mine.verifiedServerId = entry.verifiedServerId
+            guard var mine = nicknameRecords.first(where: { $0.serverId == entry.id }),
+                  mine.inheritedFrom == nil else { continue }
+            let theirs = ServerNicknameSync.addressRecord(for: entry, in: published)
+            let identity = ServerIdentity.usable(entry.verifiedServerId)
+            let isNewer = mine.updatedAt > (theirs?.updatedAt ?? .distantPast)
+            // Fills in a missing identity but never replaces one: two devices
+            // disagreeing about one address would rewrite it back and forth.
+            let addsIdentity = identity != nil
+                && theirs?.verifiedServerId == nil
+                && theirs?.updatedAt == mine.updatedAt
+                && theirs?.name == mine.name
+            guard isNewer || addsIdentity else { continue }
+            mine.verifiedServerId = identity
             published = ServerNicknameSync.publishing(mine, into: published)
         }
         if published != synced {
