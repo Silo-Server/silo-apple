@@ -20,6 +20,7 @@ struct PlayerPresentationModifier: ViewModifier {
                 contentId: presentation.contentId,
                 libraryId: presentation.libraryId,
                 preferredFileId: presentation.fileId,
+                pinsVersion: presentation.pinsVersion,
                 preferredAudioTrackIndex: presentation.audioTrackIndex,
                 preferredSubtitleTrackIndex: presentation.subtitleTrackIndex,
                 startFromBeginning: presentation.startFromBeginning,

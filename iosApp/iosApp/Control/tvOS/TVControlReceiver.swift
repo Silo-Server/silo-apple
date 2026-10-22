@@ -550,6 +550,7 @@ final class TVControlReceiver {
         router?.presentPlayer(
             contentId: playback.contentId,
             fileId: playback.fileId,
+            pinsVersion: playback.pinsVersion == true,
             audioTrackIndex: playback.audioTrackIndex,
             subtitleTrackIndex: playback.subtitleTrackIndex,
             startFromBeginning: playback.startFromBeginning,

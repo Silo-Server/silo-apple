@@ -353,6 +353,8 @@ struct TVItemDetailView: View {
                                 to: .playerWithFile(
                                     contentId: id,
                                     fileId: playbackFileId,
+                                    // `fileId` is set only by a version picked for this episode.
+                                    pinsVersion: fileId != nil,
                                     audioTrackIndex: audioTrackIndex,
                                     subtitleTrackIndex: subtitleTrackIndex,
                                     startFromBeginning: startFromBeginning,
@@ -479,6 +481,7 @@ struct TVItemDetailView: View {
                     // Version and track picks are read at the press, not
                     // after the watch-state read.
                     let fileId = playbackFileId(for: detail)
+                    let pinsVersion = preferredVersionFileId != nil
                     let audioTrackIndex = preferredAudioTrackIndex
                     let subtitleTrackIndex = preferredSubtitleTrackIndex
                     playWithFreshResumePosition(
@@ -491,6 +494,7 @@ struct TVItemDetailView: View {
                                 to: .playerWithFile(
                                     contentId: contentId,
                                     fileId: fileId,
+                                    pinsVersion: pinsVersion,
                                     audioTrackIndex: audioTrackIndex,
                                     subtitleTrackIndex: subtitleTrackIndex,
                                     startFromBeginning: startFromBeginning,

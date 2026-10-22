@@ -1225,7 +1225,11 @@ class PlayerViewModel {
         /// Continue Watching only: select the server's last-used source file
         /// before applying the profile-wide automatic quality preference.
         var prefersLastUsedVersion = false
+        /// `false` for a Watch Party room: its exact source and position.
         var allowAlternateVersions: Bool? = nil
+        /// The viewer picked `preferredFileId` in a version picker. The start
+        /// keeps that version rather than letting the server play another.
+        var pinsVersion = false
         /// A shuffle plays a multi-part item from its first part.
         var startsAtFirstPart = false
 
@@ -1268,6 +1272,7 @@ class PlayerViewModel {
             }
             request.prefersLastUsedVersion = prefersLastUsedVersion
             request.allowAlternateVersions = allowAlternateVersions
+            request.pinsVersion = pinsVersion
             return request
         }
 
@@ -5977,6 +5982,7 @@ class PlayerViewModel {
                 probeEstimateKbps: probeEstimateKbps,
                 learnedLimit: learnedLimit,
                 allowAlternateVersions: request.allowAlternateVersions,
+                pinsVersion: request.pinsVersion,
                 startsAtFirstPart: request.startsAtFirstPart
             )
         }
@@ -6493,6 +6499,7 @@ class PlayerViewModel {
     func loadAndPlay(
         contentId: String,
         preferredFileId: Int? = nil,
+        pinsVersion: Bool = false,
         preferredAudioTrackIndex: Int? = nil,
         preferredSubtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool,
@@ -6523,6 +6530,7 @@ class PlayerViewModel {
         )
         request.libraryId = initialLibraryId
         request.prefersLastUsedVersion = prefersLastUsedVersion
+        request.pinsVersion = pinsVersion
         request.startsAtFirstPart = shuffleState != nil
         beginFreshLoad(
             request: request,

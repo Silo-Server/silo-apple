@@ -807,7 +807,10 @@ actor PlaybackSessionBridge {
         probeEstimateKbps: Int? = nil,
         // `clear` that a displaced Restore quality left for this start.
         learnedLimit: String? = nil,
+        // `false` for a Watch Party room: its exact source and position.
         allowAlternateVersions: Bool? = nil,
+        // The viewer picked `preferredFileId` in a version picker.
+        pinsVersion: Bool = false,
         startsAtFirstPart: Bool = false
     ) async throws -> PreparedPlayback {
         logger.info("Fetching watch detail for \(contentId, privacy: .public)")
@@ -831,6 +834,7 @@ actor PlaybackSessionBridge {
             lastFileId: watchDetail.userData?.lastFileId,
             lastResolution: watchDetail.userData?.lastResolution,
             prefersLastUsedVersion: prefersLastUsedVersion,
+            pinsRequestedVersion: pinsVersion,
             startsAtFirstPart: startsAtFirstPart,
             preferredQualityOverride: preferredQualityOverride,
             settingsQuality: PlayerSettings.shared.playbackQualityAxes(onMeteredNetwork: onMeteredNetwork)
@@ -921,7 +925,8 @@ actor PlaybackSessionBridge {
             bufferingQualityMode: bufferingQualityMode,
             probeEstimateKbps: probeEstimateKbps,
             learnedLimit: learnedLimit,
-            allowAlternateVersions: allowAlternateVersions
+            allowAlternateVersions: start.keepsVersion ? false : allowAlternateVersions,
+            fixedSource: allowAlternateVersions == false
         )
     }
 
@@ -1045,7 +1050,8 @@ actor PlaybackSessionBridge {
         bufferingQualityMode: BufferingQualityMode,
         probeEstimateKbps: Int? = nil,
         learnedLimit: String? = nil,
-        allowAlternateVersions: Bool? = nil
+        allowAlternateVersions: Bool? = nil,
+        fixedSource: Bool = false
     ) async throws -> PreparedPlayback {
         let resolvedSubtitleCombinedIndex = subtitleCombinedIndex ?? subtitleTrackIndex.flatMap {
             ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
@@ -1065,7 +1071,8 @@ actor PlaybackSessionBridge {
             bufferingQualityMode: bufferingQualityMode,
             probeEstimateKbps: probeEstimateKbps,
             learnedLimit: learnedLimit,
-            allowAlternateVersions: allowAlternateVersions
+            allowAlternateVersions: allowAlternateVersions,
+            fixedSource: fixedSource
         )
         return adoptProtocolV3Start(staged, watchDetail: watchDetail)
     }
@@ -1096,7 +1103,8 @@ actor PlaybackSessionBridge {
         bufferingQualityMode: BufferingQualityMode,
         probeEstimateKbps: Int?,
         learnedLimit: String?,
-        allowAlternateVersions: Bool?
+        allowAlternateVersions: Bool?,
+        fixedSource: Bool
     ) async throws -> StagedProtocolV3Start {
         let snapshot = ApplePlaybackV3Capabilities.snapshot()
         cmpLog("[CMP-OUTPUT] phase=start \(snapshot.outputDiagnosticsLogFields)")
@@ -1205,7 +1213,7 @@ actor PlaybackSessionBridge {
                 retryable: false
             )
         case .playable(let plan, let resolvedSessionId):
-            if allowAlternateVersions == false, plan.effectiveMediaFileId != selectedVersion.fileId {
+            if fixedSource, plan.effectiveMediaFileId != selectedVersion.fileId {
                 await retireAbandonedSession(resolvedSessionId, reason: "room_source_changed", authority: authority)
                 throw Self.fixedSourceFailure()
             }
@@ -1266,7 +1274,7 @@ actor PlaybackSessionBridge {
                     && response.serverFeatures.contains(
                         PlaybackProtocolV3.authorizedMediaOriginsFeature
                     ),
-                fixedMediaFileId: allowAlternateVersions == false ? selectedVersion.fileId : nil,
+                fixedMediaFileId: fixedSource ? selectedVersion.fileId : nil,
                 plan: plan,
                 sessionId: resolvedSessionId,
                 selectedVersion: effectiveVersion,
@@ -2273,6 +2281,11 @@ actor PlaybackSessionBridge {
 
         let version: FileVersion
         let source: Source
+        /// The viewer picked this version and it is the one starting. The
+        /// attempt keeps it (`allow_alternate_versions` false) instead of
+        /// letting the server play another, such as a lower one that fits
+        /// Auto's budget.
+        let keepsVersion: Bool
         /// The client quality id, nil for Auto.
         let qualityPreference: String?
         let bandwidthCapKbps: Int?
@@ -2293,6 +2306,7 @@ actor PlaybackSessionBridge {
         lastFileId: Int?,
         lastResolution: String?,
         prefersLastUsedVersion: Bool,
+        pinsRequestedVersion: Bool = false,
         startsAtFirstPart: Bool,
         preferredQualityOverride: String?,
         settingsQuality: AppleQualityAxes
@@ -2331,6 +2345,7 @@ actor PlaybackSessionBridge {
         return StartSelection(
             version: version,
             source: source,
+            keepsVersion: pinsRequestedVersion && source == .requested,
             qualityPreference: quality.preferredQuality,
             bandwidthCapKbps: quality.bandwidthCapKbps
         )

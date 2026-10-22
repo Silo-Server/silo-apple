@@ -9,6 +9,8 @@ struct PlayerView: View {
     let contentId: String
     let libraryId: Int?
     let preferredFileId: Int?
+    /// The viewer picked `preferredFileId` in a version picker.
+    let pinsVersion: Bool
     let preferredAudioTrackIndex: Int?
     let preferredSubtitleTrackIndex: Int?
     /// `true` when the caller explicitly asked to restart from zero rather
@@ -70,6 +72,7 @@ struct PlayerView: View {
         contentId: String,
         libraryId: Int? = nil,
         preferredFileId: Int? = nil,
+        pinsVersion: Bool = false,
         preferredAudioTrackIndex: Int? = nil,
         preferredSubtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool = false,
@@ -87,6 +90,7 @@ struct PlayerView: View {
         self.libraryId = libraryId
         _viewModelBox = StateObject(wrappedValue: PlayerViewModelBox(PlayerViewModel(libraryId: libraryId)))
         self.preferredFileId = preferredFileId
+        self.pinsVersion = pinsVersion
         self.preferredAudioTrackIndex = preferredAudioTrackIndex
         self.preferredSubtitleTrackIndex = preferredSubtitleTrackIndex
         self.startFromBeginning = startFromBeginning
@@ -559,6 +563,7 @@ struct PlayerView: View {
             activeViewModel.loadAndPlay(
                 contentId: contentId,
                 preferredFileId: preferredFileId,
+                pinsVersion: pinsVersion,
                 preferredAudioTrackIndex: preferredAudioTrackIndex,
                 preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
                 startFromBeginning: startFromBeginning,

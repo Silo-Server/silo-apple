@@ -216,6 +216,7 @@ struct TVMainTabView: View {
                 contentId: payload.contentId,
                 libraryId: payload.libraryId,
                 preferredFileId: payload.fileId,
+                pinsVersion: payload.pinsVersion,
                 preferredAudioTrackIndex: payload.audioTrackIndex,
                 preferredSubtitleTrackIndex: payload.subtitleTrackIndex,
                 startFromBeginning: payload.startFromBeginning,
@@ -1389,11 +1390,12 @@ struct TVMainTabView: View {
                 resumePositionOverride: resumePosition,
                 prefersLastUsedVersion: prefersLastUsedVersion
             )
-        case .playerWithFile(let contentId, let fileId, let audioTrackIndex, let subtitleTrackIndex, let startFromBeginning, let resumePosition, let libraryId):
+        case .playerWithFile(let contentId, let fileId, let pinsVersion, let audioTrackIndex, let subtitleTrackIndex, let startFromBeginning, let resumePosition, let libraryId):
             PlayerView(
                 contentId: contentId,
                 libraryId: libraryId,
                 preferredFileId: fileId,
+                pinsVersion: pinsVersion,
                 preferredAudioTrackIndex: audioTrackIndex,
                 preferredSubtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,

@@ -30,6 +30,8 @@ enum Route: Hashable {
     case playerWithFile(
         contentId: String,
         fileId: Int,
+        /// The viewer picked `fileId` in a version picker.
+        pinsVersion: Bool = false,
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?,
         startFromBeginning: Bool,

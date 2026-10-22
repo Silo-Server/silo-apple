@@ -35,6 +35,9 @@ struct SiloControlPlaybackRequest: Codable, Equatable, Sendable {
     let subtitleTrackIndex: Int?
     let startFromBeginning: Bool
     let resumePosition: Double?
+    /// The viewer picked `fileId` in a version picker: the TV keeps that
+    /// version. Older phones, and Android phones, omit it.
+    var pinsVersion: Bool? = nil
 }
 
 struct SiloControlLaunchRequest: Codable, Equatable, Sendable {

@@ -15,6 +15,7 @@ struct PlayerView: View {
         contentId: String,
         libraryId: Int? = nil,
         preferredFileId: Int? = nil,
+        pinsVersion: Bool = false,
         preferredAudioTrackIndex: Int? = nil,
         preferredSubtitleTrackIndex: Int? = nil,
         startFromBeginning: Bool = false,
@@ -26,6 +27,7 @@ struct PlayerView: View {
         request = MacPlayerRequest(
             contentId: contentId,
             preferredFileId: preferredFileId,
+            pinsVersion: pinsVersion,
             preferredAudioTrackIndex: preferredAudioTrackIndex,
             preferredSubtitleTrackIndex: preferredSubtitleTrackIndex,
             startFromBeginning: startFromBeginning,
@@ -49,6 +51,8 @@ struct PlayerView: View {
 private struct MacPlayerRequest {
     let contentId: String
     let preferredFileId: Int?
+    /// The viewer picked `preferredFileId` in a version picker.
+    let pinsVersion: Bool
     let preferredAudioTrackIndex: Int?
     let preferredSubtitleTrackIndex: Int?
     let startFromBeginning: Bool
@@ -171,6 +175,7 @@ private struct MacPlayerScreen: View {
             viewModel.loadAndPlay(
                 contentId: request.contentId,
                 preferredFileId: request.preferredFileId,
+                pinsVersion: request.pinsVersion,
                 preferredAudioTrackIndex: request.preferredAudioTrackIndex,
                 preferredSubtitleTrackIndex: request.preferredSubtitleTrackIndex,
                 startFromBeginning: request.startFromBeginning,

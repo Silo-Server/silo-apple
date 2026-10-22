@@ -273,6 +273,7 @@ final class PlaybackNetworkQualityTests: XCTestCase {
 
     private func start(
         requestedFileId: Int? = nil,
+        pinsVersion: Bool = false,
         lastFileId: Int? = 2,
         resuming: Bool,
         override: String? = nil,
@@ -284,6 +285,7 @@ final class PlaybackNetworkQualityTests: XCTestCase {
             lastFileId: lastFileId,
             lastResolution: "1080p",
             prefersLastUsedVersion: resuming,
+            pinsRequestedVersion: pinsVersion,
             startsAtFirstPart: false,
             preferredQualityOverride: override,
             settingsQuality: settings
@@ -328,6 +330,30 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         picked = start(requestedFileId: 1, resuming: true, override: "1080p", settings: .auto)
         XCTAssertEqual(picked.version.fileId, 1, "the requested file wins over the last-played one")
         XCTAssertEqual(picked.qualityPreference, "1080p")
+    }
+
+    /// Only a version the viewer picked, while it is the file starting,
+    /// keeps that file for the attempt (`allow_alternate_versions` false), so
+    /// the server cannot swap in a lower version for Auto's budget. Any other
+    /// start leaves the server free to.
+    func testOnlyAPickedVersionKeepsItsFile() {
+        let rows: [(name: String, requested: Int?, picked: Bool, resuming: Bool, keeps: Bool)] = [
+            ("picked version", 1, true, false, true),
+            ("picked version on a resume", 1, true, true, true),
+            ("picked file is gone, a ranked one starts", 99, true, false, false),
+            ("file sent only for a track pick", 1, false, false, false),
+            ("default play", nil, false, false, false),
+            ("Continue Watching's last-played file", nil, false, true, false),
+        ]
+        for row in rows {
+            let selection = start(
+                requestedFileId: row.requested,
+                pinsVersion: row.picked,
+                resuming: row.resuming,
+                settings: .auto
+            )
+            XCTAssertEqual(selection.keepsVersion, row.keeps, row.name)
+        }
     }
 
     /// When the last-played file is gone, a resume ranks the remaining

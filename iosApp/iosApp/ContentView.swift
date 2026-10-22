@@ -3194,6 +3194,7 @@ struct MainTabView: View {
         case .playerWithFile(
             let contentId,
             let fileId,
+            let pinsVersion,
             let audioTrackIndex,
             let subtitleTrackIndex,
             let startFromBeginning,
@@ -3205,6 +3206,7 @@ struct MainTabView: View {
                 contentId: contentId,
                 libraryId: libraryId,
                 preferredFileId: fileId,
+                pinsVersion: pinsVersion,
                 preferredAudioTrackIndex: audioTrackIndex,
                 preferredSubtitleTrackIndex: subtitleTrackIndex,
                 startFromBeginning: startFromBeginning,
