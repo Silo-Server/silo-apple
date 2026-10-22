@@ -11,9 +11,11 @@ struct PlaybackV3QualityReason: Codable, Equatable, Sendable {
     var height: Int? = nil
     var from: String? = nil
     var to: String? = nil
+    /// Delivered audio channels; `audio_converted` only, when they drop.
+    var channels: Int? = nil
 
     private enum CodingKeys: String, CodingKey {
-        case code, kbps, expiresAt, height, from, to
+        case code, kbps, expiresAt, height, from, to, channels
     }
 }
 
@@ -28,6 +30,7 @@ extension PlaybackV3QualityReason {
         height = try? container.decodeIfPresent(Int.self, forKey: .height)
         from = try? container.decodeIfPresent(String.self, forKey: .from)
         to = try? container.decodeIfPresent(String.self, forKey: .to)
+        channels = try? container.decodeIfPresent(Int.self, forKey: .channels)
     }
 }
 
@@ -148,11 +151,17 @@ enum PlaybackQualityReasons {
             return "\(name(from, in: dynamicRangeNames)) shown as \(name(to, in: dynamicRangeNames))"
         case "audio_converted":
             guard let from = token(reason.from), let to = token(reason.to) else { return nil }
-            return "\(name(from, in: audioCodecNames)) audio converted to \(name(to, in: audioCodecNames))"
+            guard from == to else {
+                return "\(name(from, in: audioCodecNames)) audio converted to \(name(to, in: audioCodecNames))"
+            }
+            // Same codec: only the channels changed.
+            return channelsName(reason.channels).map { "Audio downmixed to \($0)" }
         case "subtitle_burn_in":
             return "Subtitles burned into the video"
         case "container_unsupported":
             return "Repackaged for this device"
+        case "compatibility_conversion":
+            return "Converted for this device"
         default:
             return nil
         }
@@ -185,5 +194,15 @@ enum PlaybackQualityReasons {
 
     private static func name(_ token: String, in names: [String: String]) -> String {
         names[token] ?? token.uppercased()
+    }
+
+    private static func channelsName(_ channels: Int?) -> String? {
+        switch channels {
+        case 1: return "mono"
+        case 2: return "stereo"
+        case 6: return "5.1"
+        case let count? where count > 0: return "\(count) channels"
+        default: return nil
+        }
     }
 }

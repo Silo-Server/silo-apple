@@ -273,6 +273,12 @@ final class PlaybackNetworkQualityTests: XCTestCase {
             (Reason(code: "video_codec_unsupported"), nil),
             (Reason(code: "video_codec_unsupported", from: "prores"), "Converted: this device can't play PRORES video"),
             (Reason(code: "audio_converted", from: "mp2", to: "aac"), "MP2 audio converted to AAC"),
+            // Same codec names the downmix (and needs the channel count);
+            // a codec change ignores the channels.
+            (Reason(code: "audio_converted", from: "aac", to: "aac", channels: 2), "Audio downmixed to stereo"),
+            (Reason(code: "audio_converted", from: "eac3", to: "eac3", channels: 4), "Audio downmixed to 4 channels"),
+            (Reason(code: "audio_converted", from: "aac", to: "aac"), nil),
+            (Reason(code: "audio_converted", from: "truehd", to: "aac", channels: 2), "TrueHD audio converted to AAC"),
             (Reason(code: "future_code"), nil),
         ]
         for (reason, text) in texts {
@@ -289,6 +295,11 @@ final class PlaybackNetworkQualityTests: XCTestCase {
             ([], nil),
             ([Reason(code: "future_code")], "Adjusted for this device"),
             ([Reason(code: "original"), Reason(code: "container_unsupported")], "Original quality"),
+            // A plain conversion can lead, and is not a change that joins.
+            ([Reason(code: "compatibility_conversion"), Reason(code: "audio_converted", from: "truehd", to: "aac")],
+             "Converted for this device · TrueHD audio converted to AAC"),
+            ([Reason(code: "network_estimate", kbps: 5_100), Reason(code: "compatibility_conversion")],
+             "Your connection measured 5.1 Mbps"),
             (line72, "Converted: this device can't play ABCDEFGHIJK video · HDR10 shown as SDR"),
             (line73, "Converted: this device can't play ABCDEFGHIJKL video"),
         ]
