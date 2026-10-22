@@ -234,6 +234,80 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         XCTAssertEqual(try PlaybackV3FixtureTestSupport.v2Decision(object).playbackPlan?.activeQuality, "1080p-low")
     }
 
+    /// `quality_reasons` words the plan's quality: the menu line is the
+    /// primary reason plus a short compatibility change, the stats row lists
+    /// every entry, and a server without the capability shows none.
+    func testThePlanExplainsItsQuality() throws {
+        var object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
+        var plan = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        plan["quality_reasons"] = [
+            ["code": "network_estimate", "kbps": 5_100],
+            ["code": "dynamic_range_converted", "from": "dolby_vision", "to": "hdr10"],
+            ["code": "alternate_version", "media_file_id": "42"],
+            ["code": "future_code", "kbps": "fast"],
+        ]
+        object["playback_plan"] = plan
+        let decoded = try XCTUnwrap(PlaybackV3FixtureTestSupport.v2Decision(object).playbackPlan)
+        XCTAssertNil(PlaybackQualityReasons.reasons(plan: decoded, serverFeatures: []))
+        let reasons = try XCTUnwrap(PlaybackQualityReasons.reasons(
+            plan: decoded, serverFeatures: [PlaybackProtocolV3.planQualityReasonsFeature]))
+        XCTAssertEqual(PlaybackQualityReasons.menuLine(reasons),
+                       "Your connection measured 5.1 Mbps · Dolby Vision shown as HDR10")
+        XCTAssertEqual(PlaybackQualityReasons.statsText(reasons), """
+            Your connection measured 5.1 Mbps
+            Dolby Vision shown as HDR10
+            Playing another version that fits
+            future_code
+            """)
+
+        typealias Reason = PlaybackV3QualityReason
+        let texts: [(Reason, String?)] = [
+            (Reason(code: "original"), "Original quality"),
+            (Reason(code: "user_selected"), "Quality you picked"),
+            (Reason(code: "network_learned_limit", kbps: 8_000, expiresAt: "2026-10-29T00:00:00Z"),
+             "Limited to 8 Mbps after buffering"),
+            (Reason(code: "network_estimate", kbps: 900), "Your connection measured 900 kbps"),
+            (Reason(code: "network_estimate"), nil),
+            (Reason(code: "client_cap", kbps: 2_000), "Limited to 2 Mbps by this device's settings"),
+            (Reason(code: "server_cap", kbps: 12_500), "Limited to 12.5 Mbps by the server"),
+            (Reason(code: "device_resolution_limit", height: 1_080), "This device plays up to 1080p"),
+            (Reason(code: "alternate_version"), "Playing another version that fits"),
+            (Reason(code: "video_codec_unsupported", from: "vc1"), "Converted: this device can't play VC-1 video"),
+            (Reason(code: "video_codec_unsupported", from: "prores"), "Converted: this device can't play PRORES video"),
+            (Reason(code: "video_codec_unsupported"), nil),
+            (Reason(code: "dynamic_range_converted", from: "hdr10_plus", to: "sdr"), "HDR10+ shown as SDR"),
+            (Reason(code: "audio_converted", from: "truehd", to: "eac3"), "TrueHD audio converted to Dolby Digital Plus"),
+            (Reason(code: "audio_converted", from: "mp2", to: "aac"), "MP2 audio converted to AAC"),
+            (Reason(code: "subtitle_burn_in"), "Subtitles burned into the video"),
+            (Reason(code: "container_unsupported"), "Repackaged for this device"),
+            (Reason(code: "future_code"), nil),
+        ]
+        for (reason, text) in texts {
+            XCTAssertEqual(PlaybackQualityReasons.text(reason), text, reason.code)
+        }
+
+        let lines: [([Reason], String?)] = [
+            ([], nil),
+            ([Reason(code: "future_code")], "Adjusted for this device"),
+            ([Reason(code: "original"), Reason(code: "container_unsupported")], "Original quality"),
+            ([Reason(code: "network_estimate", kbps: 5_100), Reason(code: "subtitle_burn_in")],
+             "Your connection measured 5.1 Mbps · Subtitles burned into the video"),
+            ([Reason(code: "client_cap", kbps: 12_500), Reason(code: "audio_converted", from: "truehd", to: "eac3")],
+             "Limited to 12.5 Mbps by this device's settings"),
+        ]
+        for (reasons, line) in lines {
+            XCTAssertEqual(PlaybackQualityReasons.menuLine(reasons), line, "\(reasons.map(\.code))")
+        }
+
+        let labels: [(Int, String)] = [
+            (2_160, "4K"), (2_000, "4K"), (1_999, "1080p"), (1_000, "1080p"), (700, "720p"),
+            (699, "480p"), (450, "480p"), (449, "360p"),
+        ]
+        for (height, label) in labels {
+            XCTAssertEqual(PlaybackQualityReasons.resolutionLabel(height: height), label, "\(height)")
+        }
+    }
+
     /// One quality switch at a time: a pick while one is in flight is ignored
     /// rather than racing it and clearing its state. (Without the guard this
     /// model, with no session, would end the switch with an error.)

@@ -35,6 +35,9 @@ enum PlaybackProtocolV3 {
     /// `active_quality`, so an absent field means "no entry" rather than "a
     /// server that predates the field". API v2 only.
     static let planActiveQualityFeature = "plan_active_quality_v1"
+    /// The plan explains its quality in `quality_reasons`. Without it the
+    /// player shows no reason. API v2 only.
+    static let planQualityReasonsFeature = "plan_quality_reasons_v1"
     /// Scoped to `original_http`: the Aether executor accepts the declared
     /// source dynamic range and resolves HDR/Dolby Vision presentation against
     /// the live output after delivery. It is not a promise that packaged
@@ -718,6 +721,9 @@ struct PlaybackV3Plan: Codable, Equatable {
     /// The `availableQualities` label this plan delivers, when the server
     /// advertises `plan_active_quality_v1`; nil when it delivers none.
     var activeQuality: String? = nil
+    /// Why the plan delivers this quality, primary reason first, when the
+    /// server advertises `plan_quality_reasons_v1`; see `PlaybackQualityReasons`.
+    var qualityReasons: [PlaybackV3QualityReason]? = nil
 }
 
 /// `playback_plan.bandwidth_limit`: the learned limit Auto planned under,
