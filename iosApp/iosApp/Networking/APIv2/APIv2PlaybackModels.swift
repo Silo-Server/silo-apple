@@ -319,13 +319,18 @@ struct APIv2PlaybackBandwidthProbeResult: Encodable, Equatable, Sendable {
     /// default, and a server from before the speed-test redesign refuses
     /// the member.
     let lowerBound: Bool?
+    /// The viewer started this test with **Test speed**; never set for the
+    /// automatic quick test. A manual result above the stored learned limit
+    /// clears it. Sent only when true, like `lower_bound`.
+    let manual: Bool?
 
-    init(kbps: Int, bytes: Int, durationMs: Int, transport: String, lowerBound: Bool) {
+    init(kbps: Int, bytes: Int, durationMs: Int, transport: String, lowerBound: Bool, manual: Bool = false) {
         self.kbps = kbps
         self.bytes = bytes
         self.durationMs = durationMs
         self.transport = transport
         self.lowerBound = lowerBound ? true : nil
+        self.manual = manual ? true : nil
     }
 }
 

@@ -83,6 +83,9 @@ struct BandwidthMeasurement: Equatable, Sendable {
     /// `wifi`, `ethernet`, `cellular` or `other`, as reported to the server.
     let transport: String
     let measuredAt: Date
+    /// The viewer ran it with **Test speed**. A manual result above the
+    /// learned limit lifts it on the server.
+    var manual = false
 
     var reading: BandwidthReading {
         BandwidthReading(kbps: kbps, lowerBound: lowerBound, measuredAt: measuredAt, source: .probe(transport: transport))
@@ -213,7 +216,8 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
                     bytes: measurement.bytes,
                     durationMs: measurement.durationMs,
                     transport: measurement.transport,
-                    lowerBound: measurement.lowerBound
+                    lowerBound: measurement.lowerBound,
+                    manual: measurement.manual
                 ),
                 auth: target.auth
             )
@@ -807,7 +811,8 @@ final class BandwidthProbeScheduler {
             bytes: rate.bytes,
             durationMs: rate.durationMs,
             transport: measuredOn.transport,
-            measuredAt: clock.now
+            measuredAt: clock.now,
+            manual: run.isTestSpeed
         )
         // A playback start must not cut the report short: the result is
         // already measured.

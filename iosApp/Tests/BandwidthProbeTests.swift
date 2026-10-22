@@ -278,6 +278,7 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertEqual(server.modes, [.quick(targetKbps: 115_000)])
         XCTAssertEqual(scheduler.freshEstimateKbps(), 115_000)
         XCTAssertEqual(server.reports.map(\.lowerBound), [true])
+        XCTAssertEqual(server.reports.map(\.manual), [false], "the automatic test never lifts a limit")
         XCTAssertEqual(scheduler.probeReading?.kbps, 115_000)
     }
 
@@ -359,8 +360,10 @@ final class BandwidthProbeSchedulerTests: XCTestCase {
         XCTAssertEqual(server.modes, [])
         let outcome = await scheduler.runNow()
         XCTAssertEqual(server.modes, [.accurate])
+        // Test speed's result is the viewer's: `manual`, which can lift a learned limit.
         XCTAssertEqual(outcome, .measured(BandwidthMeasurement(
-            kbps: 115_000, lowerBound: true, bytes: 7_187_500, durationMs: 500, transport: "wifi", measuredAt: clock.now
+            kbps: 115_000, lowerBound: true, bytes: 7_187_500, durationMs: 500, transport: "wifi", measuredAt: clock.now,
+            manual: true
         )))
     }
 
