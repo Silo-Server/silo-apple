@@ -534,6 +534,15 @@ class PlayerViewModel {
     /// carries it: the Restore itself, or the start or replan that replaces
     /// it. It goes out once. Read by tests.
     @ObservationIgnored private(set) var owesBufferingLearnedLimitClear = false
+    /// The failure of a load whose missed start deadline the buffering
+    /// controller answered with a lowering, until that lowering's plan is
+    /// adopted. A lowering refused, failed or never adopted hands it to the
+    /// usual recovery.
+    @ObservationIgnored private var heldStartDeadlineFailure: HeldStartDeadlineFailure?
+    private struct HeldStartDeadlineFailure {
+        let loadEpoch: AetherPlaybackController.LoadEpoch?
+        let recovery: (position: Double, classification: String, message: String)
+    }
     /// The viewer's quality change on its way: a pick, a version switch or
     /// the move to the other connection's quality, sent and not yet adopted
     /// or refused. A newer one supersedes it.
@@ -2042,6 +2051,11 @@ class PlayerViewModel {
                protocolV3ReplanTask == nil, freshLoadTask == nil, !isWatchPartyPlayback,
                bufferingQuality.startDeadlinePassed(observedThroughputKbps: startDeadlineThroughputKbps) {
                 Self.logger.info("[CMP-BUFFERING] start deadline passed: lowering instead of failure recovery")
+                holdStartDeadlineFailure(
+                    position: sourcePlayhead,
+                    classification: failure.kind.rawValue,
+                    message: failure.message
+                )
                 return
             }
             attemptProtocolV3Replan(
@@ -2789,7 +2803,10 @@ class PlayerViewModel {
                 if let seekTarget = self.reconnectCycle.finishHandoff() {
                     self.pendingProtocolV3SeekReanchorPosition = seekTarget
                 }
-                if let recovery = chainedLoadFailureRecovery {
+                // A start-deadline lowering that left the failed load
+                // installed hands that load's failure to the usual recovery.
+                let heldRecovery = issuedByBufferingQuality ? self.takeHeldStartDeadlineRecovery() : nil
+                if let recovery = chainedLoadFailureRecovery ?? heldRecovery {
                     self.attemptProtocolV3Replan(
                         position: recovery.position,
                         classification: recovery.classification,
@@ -2963,6 +2980,7 @@ class PlayerViewModel {
                     controllerInitiated: issuedByBufferingQuality
                 )
                 adoptedBufferingPlan = true
+                self.heldStartDeadlineFailure = nil
                 if let onMeteredNetwork = qualitySwitchOnMeteredNetwork {
                     self.recordViewerQualityPick(
                         prepared.activeQualityId,
@@ -10375,6 +10393,30 @@ extension PlayerViewModel {
             : upstreamMeter.throughputKbps
     }
 
+    /// Holds the failure of the load whose missed start deadline the
+    /// buffering controller answered with a lowering, until the lowering's
+    /// plan is adopted. Internal for tests.
+    func holdStartDeadlineFailure(position: Double, classification: String, message: String) {
+        heldStartDeadlineFailure = .init(
+            loadEpoch: activeAetherLoadEpoch,
+            recovery: (position, classification, message)
+        )
+    }
+
+    /// Takes the held start-deadline failure's recovery once its lowering
+    /// was refused, failed or never adopted. It comes back only while the
+    /// load that missed its deadline is still installed and nothing else
+    /// replaces it, so that load's failure takes the usual recovery and a
+    /// start never ends on a dead player.
+    private func takeHeldStartDeadlineRecovery() -> (position: Double, classification: String, message: String)? {
+        guard let held = heldStartDeadlineFailure else { return nil }
+        heldStartDeadlineFailure = nil
+        guard !isDisposed, freshLoadTask == nil, protocolV3ReplanTask == nil, !reconnectCycle.isActive,
+              activePreparedProtocolV3 != nil, activeAetherLoadEpoch == held.loadEpoch else { return nil }
+        Self.logger.info("[CMP-BUFFERING] start-deadline lowering not adopted: failure recovery")
+        return held.recovery
+    }
+
     /// One telemetry tick: what the engine's reader has received from the
     /// origin. Bytes a replacement's source receives while it loads are not
     /// the playing plan's.
@@ -10596,6 +10638,7 @@ extension PlayerViewModel {
     private func resetBufferingQuality() {
         bufferingQuality.reset()
         pendingViewerQualityChange = nil
+        heldStartDeadlineFailure = nil
         clearBufferingPlanState()
     }
 
@@ -10688,6 +10731,13 @@ extension PlayerViewModel {
             }
             Self.logger.info("[CMP-BUFFERING] replan not issued: player busy or unavailable")
             bufferingQuality.replanRefused()
+            if let recovery = takeHeldStartDeadlineRecovery() {
+                attemptProtocolV3Replan(
+                    position: recovery.position,
+                    classification: recovery.classification,
+                    message: recovery.message
+                )
+            }
             return
         }
         Self.logger.info("[CMP-BUFFERING] replan issued quality=\(qualityId, privacy: .public)")

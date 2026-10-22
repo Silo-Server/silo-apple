@@ -531,6 +531,25 @@ final class BufferingQualityPlayerTests: XCTestCase {
         XCTAssertFalse(model.isLoading)
     }
 
+    /// A lowering sent for a missed start deadline that gets no plan leaves
+    /// a load that will never play: that failure takes the usual recovery.
+    /// Here the recovery gets no plan either and ends with the failure's
+    /// message, where a player left to keep its plan would wait forever.
+    func testAStartDeadlineLoweringThatGetsNoPlanRecoversTheFailedStart() async throws {
+        let model = PlayerViewModel()
+        defer { model.cleanup() }
+        try play(try preparedPlan(), on: model, quality: "auto")
+        model.holdStartDeadlineFailure(
+            position: 0, classification: "no_playable_track_within_budget", message: "Nothing became playable"
+        )
+
+        model.issueBufferingReplan(.init(qualityPreference: "auto", bandwidthEstimateKbps: 5_600))
+        for _ in 0..<200 where model.error == nil {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(model.error, "Nothing became playable")
+    }
+
     /// An audio-session interruption pauses playback for the controller on
     /// every route, until it ends with a resume or the viewer plays.
     func testAnAudioInterruptionIsAPause() throws {
