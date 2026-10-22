@@ -543,6 +543,15 @@ class PlayerViewModel {
         let loadEpoch: AetherPlaybackController.LoadEpoch?
         let recovery: (position: Double, classification: String, message: String)
     }
+    /// The playing plan's own start deadline, on a route AetherEngine sets
+    /// none for, from the plan's adoption until its first frame, its end or
+    /// the next plan.
+    @ObservationIgnored private var armedStartDeadline: ArmedStartDeadline?
+    @ObservationIgnored private var startDeadlineTimer: PlayerPromptTimer?
+    private struct ArmedStartDeadline {
+        let loadEpoch: AetherPlaybackController.LoadEpoch
+        var deadline: PlaybackStartDeadline
+    }
     /// The viewer's quality change on its way: a pick, a version switch or
     /// the move to the other connection's quality, sent and not yet adopted
     /// or refused. A newer one supersedes it.
@@ -2094,6 +2103,7 @@ class PlayerViewModel {
     private func handleAetherStartupMilestone(epoch: AetherPlaybackController.LoadEpoch) {
         guard startedAetherLoadEpoch != epoch else { return }
         startedAetherLoadEpoch = epoch
+        disarmStartDeadline()
         viewingHasPlayed = true
         handleFileLoaded()
         if let playing = lastLoadRequest?.contentId, shuffleState != nil {
@@ -10338,6 +10348,7 @@ extension PlayerViewModel {
                 bufferingQuality.paused()
             }
         }
+        syncStartDeadline()
     }
 
     /// Speed tests wait while this player loads or plays, including while a
@@ -10355,10 +10366,7 @@ extension PlayerViewModel {
         let monitor = ConnectionMonitor.shared
         return BufferingSignalMapper.Snapshot(
             hasActiveLoad: activeAetherLoadEpoch != nil && aetherPlaybackController.hasActiveLoad,
-            // An audio interruption (a call, Siri) pauses playback until it
-            // resumes, on every route.
-            wantsToPlay: aetherPlaybackController.shouldPlayWhenReady
-                && !aetherPlaybackController.isAudioSessionInterrupted,
+            wantsToPlay: viewerWantsToPlay,
             phase: aetherPhase,
             engineBuffering: isBuffering,
             nativeTransport: aetherPlaybackController.nativeTransport,
@@ -10374,6 +10382,12 @@ extension PlayerViewModel {
             playheadFrozen: softwarePlayheadFrozenMs != nil || softwareSeekLanding.awaitsAdvance,
             upstreamSilent: upstreamMeter.isSilent(atMs: bufferingClock.elapsedMs)
         )
+    }
+
+    /// The viewer means playback to run: it is not paused, and no audio
+    /// interruption (a call, Siri) holds it, on every route.
+    private var viewerWantsToPlay: Bool {
+        aetherPlaybackController.shouldPlayWhenReady && !aetherPlaybackController.isAudioSessionInterrupted
     }
 
     /// A replan or start in flight leaves the playing source alone until the
@@ -10420,6 +10434,79 @@ extension PlayerViewModel {
         Self.logger.info("[CMP-BUFFERING] start-deadline lowering not adopted: failure recovery")
         return held.recovery
     }
+
+    /// Arms the adopted plan's start deadline where AetherEngine sets none:
+    /// direct play and the software route. Server HLS keeps the engine's,
+    /// and a load that already shows its first frame needs none.
+    private func armStartDeadline() {
+        disarmStartDeadline()
+        guard let epoch = activeAetherLoadEpoch, startedAetherLoadEpoch != epoch,
+              aetherPlaybackController.activeSpec?.options.nativeRemoteHLS == false else { return }
+        armedStartDeadline = .init(
+            loadEpoch: epoch,
+            deadline: PlaybackStartDeadline(atMs: bufferingClock.elapsedMs, running: viewerWantsToPlay)
+        )
+        scheduleStartDeadlineCheck()
+    }
+
+    private func disarmStartDeadline() {
+        armedStartDeadline = nil
+        startDeadlineTimer?.cancel()
+        startDeadlineTimer = nil
+    }
+
+    /// The start deadline spends its budget only while the viewer wants to
+    /// play.
+    private func syncStartDeadline() {
+        guard var armed = armedStartDeadline else { return }
+        let due = armed.deadline.dueAtMs
+        armed.deadline.setRunning(viewerWantsToPlay, atMs: bufferingClock.elapsedMs)
+        armedStartDeadline = armed
+        if armed.deadline.dueAtMs != due { scheduleStartDeadlineCheck() }
+    }
+
+    /// Checks the start deadline when it falls due, or `afterMs` from now;
+    /// while paused, once the viewer plays again.
+    private func scheduleStartDeadlineCheck(afterMs delay: Int? = nil) {
+        startDeadlineTimer?.cancel()
+        startDeadlineTimer = nil
+        guard let due = armedStartDeadline?.deadline.dueAtMs else { return }
+        let waitMs = delay ?? max(0, due - bufferingClock.elapsedMs)
+        startDeadlineTimer = bufferingClock.schedule(after: TimeInterval(waitMs) / 1000) { [weak self] in
+            self?.checkStartDeadline()
+        }
+    }
+
+    /// A plan whose start deadline passed without a first frame fails as a
+    /// server-HLS plan does when AetherEngine's deadline passes: on Auto in
+    /// "Automatically", with evidence of a slow link, the buffering
+    /// controller lowers it; otherwise it takes the failure recovery.
+    private func checkStartDeadline() {
+        startDeadlineTimer = nil
+        guard !isDisposed, let epoch = armedStartDeadline?.loadEpoch else { return }
+        guard epoch == activeAetherLoadEpoch, startedAetherLoadEpoch != epoch else {
+            disarmStartDeadline()
+            return
+        }
+        syncStartDeadline()
+        guard armedStartDeadline?.deadline.hasPassed(atMs: bufferingClock.elapsedMs) == true else {
+            scheduleStartDeadlineCheck()
+            return
+        }
+        // A start, replan or reconnect in flight decides what replaces the
+        // plan; if none does, the plan has still missed its start.
+        guard freshLoadTask == nil, protocolV3ReplanTask == nil, !reconnectCycle.isActive else {
+            scheduleStartDeadlineCheck(afterMs: 1_000)
+            return
+        }
+        disarmStartDeadline()
+        Self.logger.info("[CMP-BUFFERING] start deadline passed with no first frame")
+        handleAetherFailure(PlaybackErrorInfo(kind: .noPlayableTrackWithinBudget, message: Self.startDeadlineMessage))
+        syncBufferingQualitySignals()
+    }
+
+    private static let startDeadlineMessage =
+        "Playback didn't start within \(PlaybackStartDeadline.budgetMs / 1000) seconds."
 
     /// One telemetry tick: what the engine's reader has received from the
     /// origin. Bytes a replacement's source receives while it loads are not
@@ -10599,6 +10686,7 @@ extension PlayerViewModel {
         // The new plan hears whether playback is already waiting.
         bufferingSignals.planAdopted()
         softwareSeekLanding.reset()
+        armStartDeadline()
         syncBufferingQualitySignals()
     }
 
@@ -10673,6 +10761,7 @@ extension PlayerViewModel {
     private func clearBufferingPlanState() {
         bufferingSignalPoll?.cancel()
         bufferingSignalPoll = nil
+        disarmStartDeadline()
         deferredBufferingRestore = nil
         pendingBufferingNotice = nil
         bufferingPlan = nil

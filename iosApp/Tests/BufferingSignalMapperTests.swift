@@ -232,6 +232,28 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(shared.throughputKbps, 8_000, "1 MB over the one second the reader had alone")
     }
 
+    /// Direct play's start deadline: 45 s of the viewer wanting to play from
+    /// the plan's adoption, however the time is split by pauses.
+    func testTheStartDeadlineCountsOnlyTimeTheViewerWantsToPlay() {
+        var running = PlaybackStartDeadline(atMs: 0, running: true)
+        XCTAssertFalse(running.hasPassed(atMs: 44_999))
+        XCTAssertTrue(running.hasPassed(atMs: 45_000))
+        running.setRunning(true, atMs: 30_000)
+        XCTAssertEqual(running.dueAtMs, 45_000, "still running: nothing restarts")
+
+        var paused = PlaybackStartDeadline(atMs: 0, running: true)
+        paused.setRunning(false, atMs: 20_000)
+        XCTAssertNil(paused.dueAtMs)
+        XCTAssertFalse(paused.hasPassed(atMs: 600_000), "paused for ten minutes")
+        paused.setRunning(true, atMs: 600_000)
+        XCTAssertEqual(paused.dueAtMs, 625_000, "25 s of the budget left")
+
+        var openedPaused = PlaybackStartDeadline(atMs: 0, running: false)
+        XCTAssertFalse(openedPaused.hasPassed(atMs: 60_000))
+        openedPaused.setRunning(true, atMs: 60_000)
+        XCTAssertEqual(openedPaused.dueAtMs, 105_000)
+    }
+
     /// A seek made while paused in one title doesn't make the next title's
     /// start read as the seek's.
     func testASeekLatchEndsWithItsPlan() {
