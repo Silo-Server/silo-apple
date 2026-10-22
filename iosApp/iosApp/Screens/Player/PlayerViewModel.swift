@@ -1977,7 +1977,8 @@ class PlayerViewModel {
             plannedSourceDynamicRange: playbackPlan?.source.dynamicRange,
             plannedOutputDynamicRange: playbackPlan?.effectiveRecipe.dynamicRange,
             plannedSourceDolbyVisionProfile: playbackPlan?.source.dolbyVisionProfile,
-            qualityReason: qualityReasons.flatMap(PlaybackQualityReasons.statsText)
+            qualityReason: qualityReasons.flatMap(PlaybackQualityReasons.statsText),
+            qualityReasonLine: qualityReasonLine
         )
         return AetherPlaybackStatsProjection.make(
             snapshot: AetherPlaybackStatsSnapshot(engine: aetherPlaybackController.engine),

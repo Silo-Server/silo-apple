@@ -18,6 +18,8 @@ struct PlaybackStats: Equatable {
     var delivery: String?
     /// The plan's `quality_reasons`, one entry per line.
     var qualityReason: String?
+    /// The quality menu's line, for the compact set.
+    var qualityReasonLine: String?
     var container: String?
 
     // Static and selected media state supplied by Aether.
@@ -59,13 +61,22 @@ extension PlaybackStats {
     }
 
     /// The short set shown over iPhone video. It intentionally leaves the
-    /// engine-health counters to the paged tvOS panel.
+    /// engine-health counters to the paged tvOS panel, and gives Reason
+    /// the menu's one line rather than every entry, so the inert plate
+    /// keeps fitting the screen.
     var compactRows: [(String, String)] {
-        allRows.filter { Self.compactLabels.contains($0.0) }
+        allRows.compactMap { row -> (String, String)? in
+            guard Self.compactLabels.contains(row.0) else { return nil }
+            guard row.0 == Self.reasonLabel else { return row }
+            return qualityReasonLine.map { (row.0, $0) }
+        }
     }
 
+    /// The row that explains the quality. It wraps instead of shrinking.
+    static let reasonLabel = "Reason"
+
     private static let compactLabels: Set<String> = [
-        "Route", "Source", "Delivery", "Reason", "Container",
+        "Route", "Source", "Delivery", reasonLabel, "Container",
         "Video", "Audio", "Dynamic range", "Subtitles",
         "Playback status", "Forward buffer", "Display cushion",
         "Dropped frames", "Instant read bitrate", "Network throughput"
@@ -78,7 +89,7 @@ extension PlaybackStats {
             ("Route", route),
             ("Source", source),
             ("Delivery", delivery),
-            ("Reason", qualityReason),
+            (Self.reasonLabel, qualityReason),
             ("Container", container)
         ])
     }
