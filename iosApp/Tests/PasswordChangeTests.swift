@@ -51,6 +51,10 @@ final class PasswordChangeTests: XCTestCase {
             status: status, headers: ["Content-Type": "application/problem+json"])
     }
 
+    nonisolated private static func account(passwordChangeRequired: Bool) -> StubURLProtocol.Response {
+        .json(#"{"id":"1","username":"member","role":"user","download_allowed":true,"password_change_required":\#(passwordChangeRequired)}"#)
+    }
+
     // MARK: Saving
 
     func testSavingChangesThePasswordThenRefreshesBeforeShowingProfiles() async throws {
@@ -148,6 +152,9 @@ final class PasswordChangeTests: XCTestCase {
             Self.problem("validation_failed", status: 422, location: "body.current_password",
                 detail: "The current password is incorrect.")
         }
+        stub.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
+            Self.account(passwordChangeRequired: true)
+        }
         let (model, _) = try await makeModel()
         let router = routerOnPasswordChange()
         fill(model)
@@ -157,7 +164,91 @@ final class PasswordChangeTests: XCTestCase {
         XCTAssertFalse(saved)
         XCTAssertEqual(model.phase, .editing)
         XCTAssertEqual(model.error?.message, "That temporary password is incorrect.")
-        XCTAssertEqual(stub.requests.map(\.path), [APIv2Client.accountPasswordPath])
+        XCTAssertEqual(stub.requests.map(\.path), [APIv2Client.accountPasswordPath, "/api/v2/account/me"])
+        XCTAssertEqual(router.authState, .needsPasswordChange)
+    }
+
+    /// The server saved the new password but the response never arrived.
+    /// The account no longer holds the temporary password, so sign-in
+    /// continues instead of reopening a form that would resend it.
+    func testLostResponseAfterTheServerSavedThePasswordContinuesSignIn() async throws {
+        stub.route(StubURLProtocol.method("POST", path: APIv2Client.accountPasswordPath)) { _ in
+            throw URLError(.networkConnectionLost)
+        }
+        stub.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
+            Self.account(passwordChangeRequired: false)
+        }
+        stub.route(StubURLProtocol.method("POST", path: HTTPClient.refreshPath)) { _ in .json(Self.rotatedTokens) }
+        let (model, _) = try await makeModel()
+        let router = routerOnPasswordChange()
+        fill(model)
+
+        let saved = await model.save(router: router)
+
+        XCTAssertTrue(saved)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(stub.requests.map(\.path),
+            [APIv2Client.accountPasswordPath, "/api/v2/account/me", HTTPClient.refreshPath])
+        XCTAssertEqual(router.authState, .needsProfile)
+        XCTAssertEqual([model.currentPassword, model.newPassword, model.confirmation], ["", "", ""])
+    }
+
+    /// When the account can't be read either, nobody knows whether the
+    /// password changed. The form stays closed, so it can't be sent twice,
+    /// and "Try again" reads the account again.
+    func testUnconfirmedChangeChecksTheAccountInsteadOfResending() async throws {
+        let reachable = Switch()
+        stub.route(StubURLProtocol.method("POST", path: APIv2Client.accountPasswordPath)) { _ in
+            throw URLError(.networkConnectionLost)
+        }
+        stub.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
+            guard reachable.isOn else { throw URLError(.networkConnectionLost) }
+            return Self.account(passwordChangeRequired: false)
+        }
+        stub.route(StubURLProtocol.method("POST", path: HTTPClient.refreshPath)) { _ in .json(Self.rotatedTokens) }
+        let (model, _) = try await makeModel()
+        let router = routerOnPasswordChange()
+        fill(model)
+
+        let saved = await model.save(router: router)
+        let resent = await model.save(router: router)
+
+        XCTAssertFalse(saved)
+        XCTAssertFalse(resent)
+        XCTAssertEqual(model.phase, .unconfirmed(checking: false))
+        XCTAssertEqual(stub.requests.filter { $0.path == APIv2Client.accountPasswordPath }.count, 1)
+        XCTAssertEqual(router.authState, .needsPasswordChange)
+
+        reachable.turnOn()
+        await model.confirmChange(router: router)
+
+        XCTAssertEqual(stub.requests.filter { $0.path == APIv2Client.accountPasswordPath }.count, 1)
+        XCTAssertTrue(stub.requests.contains { $0.path == HTTPClient.refreshPath })
+        XCTAssertEqual(router.authState, .needsProfile)
+        XCTAssertEqual([model.currentPassword, model.newPassword, model.confirmation], ["", "", ""])
+    }
+
+    func testUnconfirmedChangeReopensTheFormWhenThePasswordIsStillTemporary() async throws {
+        let reachable = Switch()
+        stub.route(StubURLProtocol.method("POST", path: APIv2Client.accountPasswordPath)) { _ in
+            throw URLError(.networkConnectionLost)
+        }
+        stub.route(StubURLProtocol.method("GET", path: "/api/v2/account/me")) { _ in
+            guard reachable.isOn else { throw URLError(.networkConnectionLost) }
+            return Self.account(passwordChangeRequired: true)
+        }
+        let (model, _) = try await makeModel()
+        let router = routerOnPasswordChange()
+        fill(model)
+        await model.save(router: router)
+
+        reachable.turnOn()
+        await model.confirmChange(router: router)
+
+        XCTAssertEqual(model.phase, .editing)
+        XCTAssertEqual(model.error?.message, "Your password wasn't changed. Try again.")
+        XCTAssertEqual(model.newPassword, "a-new-password", "the form keeps what was typed")
+        XCTAssertFalse(stub.requests.contains { $0.path == HTTPClient.refreshPath })
         XCTAssertEqual(router.authState, .needsPasswordChange)
     }
 
@@ -211,6 +302,24 @@ final class PasswordChangeTests: XCTestCase {
         let unstated = APIv2PasswordCapability(state: "not_configured", allowed: nil,
             minimumPasswordLength: 0, maximumPasswordBytes: nil)
         XCTAssertEqual(PasswordRequirements(unstated), .serverDefault)
+    }
+}
+
+/// Off until the test turns it on; stub replies read it from any thread.
+private final class Switch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var on = false
+
+    var isOn: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return on
+    }
+
+    func turnOn() {
+        lock.lock()
+        defer { lock.unlock() }
+        on = true
     }
 }
 

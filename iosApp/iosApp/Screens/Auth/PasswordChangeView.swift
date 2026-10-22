@@ -15,9 +15,12 @@ struct PasswordChangeView: View {
 
     var body: some View {
         MarqueeStage(scrim: .bottomDeep, frostStart: 0.40) {
-            if case .refreshFailed(let retrying) = model.phase {
+            switch model.phase {
+            case .refreshFailed(let retrying):
                 refreshFailed(retrying: retrying)
-            } else {
+            case .unconfirmed(let checking):
+                unconfirmed(checking: checking)
+            case .editing, .saving:
                 form
             }
         }
@@ -123,6 +126,30 @@ struct PasswordChangeView: View {
             }
             .buttonStyle(.marquee(.primary, isLoading: retrying))
             .disabled(retrying)
+
+            signOutButton
+                .padding(.top, 6)
+        }
+        .padding(.top, 24)
+    }
+
+    // MARK: - Outcome unknown
+
+    @ViewBuilder
+    private func unconfirmed(checking: Bool) -> some View {
+        MarqueeHeadline(
+            title: "Password not confirmed",
+            lead: "Silo couldn't check whether your new password was saved. Try again in a moment."
+        )
+        VStack(spacing: 0) {
+            Button {
+                Task { await model.confirmChange(router: router) }
+            } label: {
+                Text(checking ? "Checking…" : "Try again")
+            }
+            .buttonStyle(.marquee(.primary, isLoading: checking))
+            .disabled(checking)
+            .accessibilityIdentifier("passwordChange.confirm")
 
             signOutButton
                 .padding(.top, 6)
