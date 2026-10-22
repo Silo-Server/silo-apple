@@ -52,6 +52,10 @@ final class BufferingQualityController {
     /// buffered past the playhead is the renderer's, not a stall
     /// (``WaitCause/renderer``).
     nonisolated static let rendererWaitBufferMs = 1_000
+    /// `RENDERER_WAIT_AMPLE_MS` (outside the vectors): a wait that comes to
+    /// hold more media than this past the playhead is the renderer's until
+    /// it ends, however far the buffer then falls.
+    nonisolated static let rendererWaitAmpleMs = 5_000
     /// `STEP_DOWN_RATIO`, as the vectors state it. The estimate itself is the
     /// exact integer `delivered × 7 / 10` (``stepDownEstimate(deliveredKbps:)``).
     nonisolated static let stepDownRatio = 0.7

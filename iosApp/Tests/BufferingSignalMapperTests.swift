@@ -406,8 +406,10 @@ final class BufferingSignalMapperTests: XCTestCase {
     }
 
     /// The spec's renderer wait: a wait that begins with more than a second
-    /// buffered is the decoder falling behind, until the buffer drains.
-    func testAWaitWithMediaBufferedIsTheRenderersUntilTheBufferDrains() {
+    /// buffered is the decoder falling behind, until the buffer drains. One
+    /// that comes to hold more than five seconds, a start's included, is the
+    /// renderer's until playback runs (contract C11).
+    func testAWaitWithMediaBufferedIsTheRenderers() {
         var mapper = BufferingSignalMapper()
         let starved = { (ms: Int?) in Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), bufferedMs: ms) }
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying, bufferedMs: 8_000)), [.playing])
@@ -420,6 +422,16 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertEqual(mapper.update(starved(900)), [.waiting(.network)], "an empty buffer is a stall at once")
         XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
         XCTAssertEqual(mapper.update(starved(nil)), [.waiting(.network)], "an unknown buffer counts as empty")
+
+        XCTAssertEqual(mapper.update(starved(5_001)), [.waiting(.renderer)], "plenty buffered: not the network")
+        XCTAssertEqual(mapper.update(starved(0)), [], "however far the buffer then falls")
+        XCTAssertEqual(mapper.update(Self.snapshot(native: Self.avPlaying)), [.playing])
+        XCTAssertEqual(mapper.update(starved(0)), [.waiting(.network)], "the next wait is judged afresh")
+
+        // A direct play that never renders (Pixel: 26 s buffered).
+        mapper.planAdopted()
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading)), [.waiting(.network)])
+        XCTAssertEqual(mapper.update(Self.snapshot(phase: .loading, bufferedMs: 26_000)), [.waiting(.renderer)])
     }
 
     /// AetherEngine's software host pauses its clock to rebuffer without

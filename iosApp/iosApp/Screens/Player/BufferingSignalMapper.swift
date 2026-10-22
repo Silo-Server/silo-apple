@@ -76,6 +76,9 @@ struct BufferingSignalMapper {
     /// The adopted plan has run. Until it does, a seek, the player applying
     /// the start position included, does not end the start's wait.
     private var planHasRun = true
+    /// The wait in progress has held more than `RENDERER_WAIT_AMPLE_MS`
+    /// buffered: it stays the renderer's until it ends.
+    private var waitHeldAmpleBuffer = false
     /// A media request failed since the last update: an outage begins.
     private var mediaRequestFailed = false
     /// The engine's reader received media data since the last update.
@@ -120,6 +123,7 @@ struct BufferingSignalMapper {
         // Until it plays, a seek doesn't end the new plan's start, nor does one
         // made under the plan before it, in this title or the last.
         seekSincePlaying = false
+        waitHeldAmpleBuffer = false
         outageAwaitsDataAboveMs = nil
         mediaRequestFailed = false
         mediaDataArrived = false
@@ -139,7 +143,11 @@ struct BufferingSignalMapper {
         // Buffering after a seek stays the seek's until playback runs, even
         // once the seek has landed, and for a seek made while paused.
         if next == .waiting(.network), seekSincePlaying { next = .waiting(.seek) }
-        if next == .waiting(.network) { next = classifyWait(bufferedAheadMs: snapshot.bufferedAheadMs) }
+        if next == .waiting(.network) {
+            next = classifyWait(bufferedAheadMs: snapshot.bufferedAheadMs)
+        } else {
+            waitHeldAmpleBuffer = false
+        }
         if next == .playing {
             itemStalledSincePlaying = false
             seekSincePlaying = false
@@ -165,11 +173,15 @@ struct BufferingSignalMapper {
     /// `RENDERER_WAIT_BUFFER_MS` buffered past the playhead is the decoder or
     /// renderer falling behind, not the network. It becomes a stall once the
     /// buffer falls to the threshold, and a stall stays one until playback
-    /// resumes.
-    private func classifyWait(bufferedAheadMs: Int?) -> MediaState {
+    /// resumes. Any wait, a start's or a stall, that comes to hold more than
+    /// `RENDERER_WAIT_AMPLE_MS` is the renderer's from then until it ends:
+    /// with that much buffered, the network is not what playback waits for.
+    private mutating func classifyWait(bufferedAheadMs: Int?) -> MediaState {
+        let buffered = bufferedAheadMs ?? 0
+        if buffered > BufferingQualityController.rendererWaitAmpleMs { waitHeldAmpleBuffer = true }
+        if waitHeldAmpleBuffer { return .waiting(.renderer) }
         if state == .waiting(.network) { return .waiting(.network) }
-        let buffered = (bufferedAheadMs ?? 0) > BufferingQualityController.rendererWaitBufferMs
-        return buffered ? .waiting(.renderer) : .waiting(.network)
+        return buffered > BufferingQualityController.rendererWaitBufferMs ? .waiting(.renderer) : .waiting(.network)
     }
 
     /// An outage begins when a media request fails, or when playback waits
