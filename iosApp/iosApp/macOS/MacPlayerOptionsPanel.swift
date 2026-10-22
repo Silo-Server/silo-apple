@@ -127,9 +127,9 @@ struct MacPlayerOptionsPanel: View {
             // The same plan-built list iOS and tvOS offer: Auto, then each
             // server rung in plan order.
             optionList {
-                // With no row checked, the reason heads the list instead.
-                if let reason = viewModel.qualityReasonHeader {
-                    Text(reason)
+                // With no row checked, what plays and why head the list instead.
+                if let status = viewModel.qualityStatusHeader {
+                    Text(status)
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.58))
                         .fixedSize(horizontal: false, vertical: true)
@@ -139,11 +139,14 @@ struct MacPlayerOptionsPanel: View {
 
                 ForEach(viewModel.qualityOptions) { option in
                     let selected = option.id == viewModel.highlightedQualityOptionId
+                    // The checked row says what plays and why in place of
+                    // its bitrate.
+                    let status = selected ? viewModel.qualityStatus : nil
                     trackButton(
                         title: option.label,
-                        detail: selected ? viewModel.qualityReasonLine : nil,
-                        detailLineLimit: 2,
-                        trailing: option.bitrateText,
+                        detail: status,
+                        detailLineLimit: 3,
+                        trailing: status == nil ? option.bitrateText : nil,
                         selected: selected
                     ) {
                         viewModel.switchQuality(option.id)

@@ -3804,12 +3804,8 @@ class PlayerViewModel {
     }
 
     /// The quality menu's reason line.
-    var qualityReasonLine: String? {
+    private var qualityReasonLine: String? {
         qualityReasons.flatMap(PlaybackQualityReasons.menuLine)
-    }
-
-    var qualityReasonHeader: String? {
-        highlightedQualityOptionId == nil ? qualityReasonLine : nil
     }
 
     /// What the checked quality row says under its title, in place of its
