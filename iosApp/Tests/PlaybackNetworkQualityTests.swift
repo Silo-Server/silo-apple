@@ -296,12 +296,15 @@ final class PlaybackNetworkQualityTests: XCTestCase {
             XCTAssertEqual(PlaybackQualityReasons.menuLine(reasons), line, "\(reasons.map(\.code))")
         }
 
-        let labels: [(Int, String)] = [
-            (2_000, "4K"), (1_999, "1080p"), (1_000, "1080p"), (700, "720p"),
-            (699, "480p"), (450, "480p"), (449, "360p"),
+        // Either dimension decides the class, so scope frames keep theirs.
+        let labels: [(Int, Int, String)] = [
+            (0, 2_000, "4K"), (0, 1_999, "1080p"), (0, 1_000, "1080p"), (0, 700, "720p"),
+            (0, 699, "480p"), (0, 450, "480p"), (0, 449, "360p"),
+            (1_920, 800, "1080p"), (3_840, 1_600, "4K"), (1_280, 536, "720p"),
         ]
-        for (height, label) in labels {
-            XCTAssertEqual(PlaybackQualityReasons.resolutionLabel(height: height), label, "\(height)")
+        for (width, height, label) in labels {
+            XCTAssertEqual(PlaybackQualityReasons.resolutionLabel(width: width, height: height), label,
+                           "\(width)x\(height)")
         }
     }
 

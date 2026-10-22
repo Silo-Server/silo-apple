@@ -73,23 +73,28 @@ enum PlaybackQualityReasons {
     }
 
     /// The quality control's value while Auto plays: Auto and the delivered
-    /// resolution, or the source's when the plan names no output height.
+    /// resolution, or the source's when the plan names no output size.
     static func autoLabel(plan: PlaybackV3Plan?) -> String {
-        let height = [plan?.effectiveRecipe.height, plan?.source.height]
-            .compactMap { $0 }
-            .first { $0 > 0 }
-        guard let height else { return ApplePlaybackQuality.auto.label }
-        return "\(ApplePlaybackQuality.auto.label) · \(resolutionLabel(height: height))"
+        guard let plan else { return ApplePlaybackQuality.auto.label }
+        let sizes = [
+            (plan.effectiveRecipe.width ?? 0, plan.effectiveRecipe.height ?? 0),
+            (plan.source.width ?? 0, plan.source.height ?? 0),
+        ]
+        guard let size = sizes.first(where: { $0.0 > 0 || $0.1 > 0 }) else {
+            return ApplePlaybackQuality.auto.label
+        }
+        return "\(ApplePlaybackQuality.auto.label) · \(resolutionLabel(width: size.0, height: size.1))"
     }
 
-    static func resolutionLabel(height: Int) -> String {
-        switch height {
-        case 2_000...: return "4K"
-        case 1_000...: return "1080p"
-        case 700...: return "720p"
-        case 450...: return "480p"
-        default: return "360p"
-        }
+    /// The class a picture belongs to by either dimension, so a scope frame
+    /// (1920x800) keeps its width's class. Pass a zero width to class by
+    /// height alone.
+    static func resolutionLabel(width: Int, height: Int) -> String {
+        if width >= 3_200 || height >= 2_000 { return "4K" }
+        if width >= 1_700 || height >= 1_000 { return "1080p" }
+        if width >= 1_200 || height >= 700 { return "720p" }
+        if width >= 800 || height >= 450 { return "480p" }
+        return "360p"
     }
 
     /// The line under the checked quality row: the primary reason, joined by
@@ -133,7 +138,7 @@ enum PlaybackQualityReasons {
             return rate.map { "Limited to \($0) by the server" }
         case "device_resolution_limit":
             guard let height = reason.height, height > 0 else { return nil }
-            return "This device plays up to \(resolutionLabel(height: height))"
+            return "This device plays up to \(resolutionLabel(width: 0, height: height))"
         case "alternate_version":
             return "Playing another version that fits"
         case "video_codec_unsupported":
