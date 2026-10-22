@@ -262,6 +262,10 @@ final class BufferingQualityController {
     @ObservationIgnored private var transportTroubleEndedAt: Int?
     @ObservationIgnored private var competingPillVisible = false
 
+    /// How far the current attempt has got. A plan adopted before any of
+    /// its plans played continues the attempt's start.
+    @ObservationIgnored private var attemptStage = AttemptStage.new
+
     // The title, across plans.
     @ObservationIgnored private var answered = false
     @ObservationIgnored private var noLowerRungNoticeShown = false
@@ -296,21 +300,29 @@ final class BufferingQualityController {
     /// `NO_LOWER_COOLDOWN_MS`. While the viewer's pick is pending, neither
     /// pill nor notice shows. Pass `controllerInitiated: false` for a plan
     /// that answers a replan the controller did not send; it settles nothing.
+    ///
+    /// A plan adopted before any plan of the attempt played, such as a
+    /// failure recovery before the first frame or a lowering made during the
+    /// start wait, continues the attempt's start: it has no grace of its own
+    /// and keeps the one the start began.
     func planAdopted(_ plan: Plan, controllerInitiated: Bool = true) {
         let now = nowMs
-        // A stall in progress carries over as the new plan's first wait, under
-        // its own grace, so a plan that never starts is still caught.
+        // A stall in progress carries over as the new plan's first wait, so a
+        // plan that never starts is still caught.
         let wasStalled = current?.stall != nil
+        let startGrace = attemptStage == .adopted ? current?.graceEndsAt : nil
         endPlan(at: now)
         let pending = controllerInitiated ? pendingReplan : nil
         pendingReplan = nil
         var state = PlanState(plan: plan)
+        state.graceEndsAt = startGrace
         // A plan adopted while playing has its first frame now, and its
         // startup grace counts from there.
         if playingSince != nil {
             playingSince = now
             state.graceEndsAt = now + Self.startupGraceMs
         }
+        if attemptStage == .new { attemptStage = .adopted }
         current = state
         if wasStalled { beginStall(at: now) }
         if let pending { settle(pending, at: now) }
@@ -330,8 +342,10 @@ final class BufferingQualityController {
     }
 
     /// The player starts a new playback attempt of the title: the kept
-    /// estimate belonged to the one that lowered.
+    /// estimate belonged to the one that lowered, and its first plan starts
+    /// afresh.
     func newAttempt() {
+        attemptStage = .new
         keptEstimateKbps = nil
         pendingReplan?.priorKeptEstimateKbps = nil
     }
@@ -362,6 +376,7 @@ final class BufferingQualityController {
             playingSince = now
             if current != nil, current?.graceEndsAt == nil { current?.graceEndsAt = now + Self.startupGraceMs }
         }
+        if current != nil { attemptStage = .played }
         endStall(at: now, resumed: true)
         refreshPill()
         evaluate(at: now)
@@ -448,22 +463,21 @@ final class BufferingQualityController {
     }
 
     /// The plan failed before its first frame because the player's own start
-    /// deadline passed: the attempt's first plan, or a replacement whose
-    /// loading is a reload and so never a stall. On Auto in `always`, when
-    /// the plan's media measurably arrived at `observedThroughputKbps`, below
-    /// its delivered bitrate, it lowers as a long stall would: a
-    /// `quality_change` with the step-down estimate, `observed_rebuffer` and
-    /// that figure. True when that replan was sent. False leaves the failure
-    /// to the player's usual recovery, whose `failure_recovery` keeps the
-    /// server's exclusion of the failed route: no measurement (nothing
-    /// arrived, or the player cannot measure it), media that arrived at or
-    /// above the bitrate (the stream fails for another reason, such as one
-    /// the device cannot play), `ask` or `never`, a title the viewer answered
-    /// (Keep or Restore), a picked quality, a Watch Party, an outage or one
-    /// that ended less than `LONG_STALL_MS` ago (the start never had a fair
-    /// run), a renderer wait, a pick pending, a lowering pending or that no
-    /// plan answered, no lower rung, or a plan a lowering was refused for or
-    /// already got back no lower.
+    /// deadline passed: the attempt's first plan or a replacement, even one whose
+    /// loading is a source reload and so never a stall. On Auto in `always`, when
+    /// the plan's media measurably arrived at `observedThroughputKbps`, below its
+    /// delivered bitrate, it lowers as a long stall would: a `quality_change`
+    /// with the step-down estimate, `observed_rebuffer` and that figure. True
+    /// when that replan was sent. False leaves the failure to the player's usual
+    /// recovery, whose `failure_recovery` keeps the server's exclusion of the
+    /// failed route: no measurement (nothing arrived, or the player cannot
+    /// measure it), media that arrived at or above the bitrate (the stream fails
+    /// for another reason, such as one the device cannot play), `ask` or `never`,
+    /// a title the viewer answered (Keep or Restore), a picked quality, a Watch
+    /// Party, an outage or one that ended less than `LONG_STALL_MS` ago (the
+    /// start never had a fair run), a renderer wait, a pick pending, a lowering
+    /// pending or that no plan answered, no lower rung, or a plan a lowering was
+    /// refused for or already got back no lower.
     func startDeadlinePassed(observedThroughputKbps: Int?) -> Bool {
         guard mode == .always, !answered, !isSuspended, !transportTrouble,
               transportTroubleEndedAt.map({ nowMs - $0 >= Self.longStallMs }) ?? true,
@@ -1062,6 +1076,13 @@ final class BufferingQualityController {
     private struct EndedStall {
         let at: Int
         let long: Bool
+    }
+
+    private enum AttemptStage {
+        case new
+        /// A plan was adopted and none has played yet.
+        case adopted
+        case played
     }
 
     private struct PendingReplan {

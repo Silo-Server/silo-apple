@@ -320,11 +320,11 @@ final class BufferingQualityControllerTests: XCTestCase {
         XCTAssertEqual(h.summaries.map(\.stallCount), [1, 0])
     }
 
-    /// A replacement's loading, from the source swap to its adoption, is a
-    /// source reload; the plan's own start wait begins at adoption, under its
-    /// grace. Gauntlet T2: an audio-track switch on a fast link took 6 s to
-    /// adoption and 11.4 s more to play. Timed from the swap, it would have
-    /// lowered at 76 s.
+    /// A replacement of a plan that played: its loading, from the source
+    /// swap to its adoption, is a source reload; the plan's own start wait
+    /// begins at adoption, under its grace. Gauntlet T2: an audio-track switch
+    /// on a fast link took 6 s to adoption and 11.4 s more to play. Timed
+    /// from the swap, it would have lowered at 76 s.
     func testASlowTrackChangeDoesNotLower() {
         let h = Harness(mode: .always)
         h.startPlaying(Self.plan("p1"))
@@ -336,6 +336,22 @@ final class BufferingQualityControllerTests: XCTestCase {
         h.at(77_400) { $0.playing() }
         h.clock.advance(to: 120_000)
         XCTAssertEqual(h.shown, [])
+    }
+
+    /// A plan adopted before any plan of the attempt played, here a failure
+    /// recovery 5 s into the start, continues the start under the grace it
+    /// began: its wait triggers at 16 s, not 10 s after its adoption.
+    func testAReplacementBeforeAnythingPlayedKeepsTheStartsGrace() {
+        let h = Harness(mode: .always)
+        h.at(0) {
+            $0.planAdopted(Self.plan("p1"))
+            $0.waiting()
+        }
+        h.at(5_000) { $0.planAdopted(Self.plan("p2"), controllerInitiated: false) }
+        h.clock.advance(to: 15_999)
+        XCTAssertEqual(h.shown, [])
+        h.clock.advance(to: 16_000)
+        XCTAssertEqual(h.shown, [.init(16_000, .replan(Self.autoLowering(44_100)))])
     }
 
     /// On Auto in `always`, a plan that never became playable within the
