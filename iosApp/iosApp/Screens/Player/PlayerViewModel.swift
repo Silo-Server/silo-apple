@@ -2030,6 +2030,15 @@ class PlayerViewModel {
         if serverCanAdapt.contains(failure.kind),
            activePreparedProtocolV3 != nil,
            committedProtocolV3LoadEpoch != nil {
+            // On Auto in "Automatically", a start that never became playable
+            // within the engine's own deadline lowers, as a long stall would,
+            // rather than asking for the same quality again.
+            if failure.kind == .noPlayableTrackWithinBudget, !currentTransportHasShownFrame,
+               protocolV3ReplanTask == nil, freshLoadTask == nil, !isWatchPartyPlayback,
+               bufferingQuality.startDeadlinePassed() {
+                Self.logger.info("[CMP-BUFFERING] start deadline passed: lowering instead of failure recovery")
+                return
+            }
             attemptProtocolV3Replan(
                 position: sourcePlayhead,
                 classification: failure.kind.rawValue,

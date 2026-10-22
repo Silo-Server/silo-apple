@@ -320,6 +320,95 @@ final class BufferingQualityControllerTests: XCTestCase {
         XCTAssertEqual(h.summaries.map(\.stallCount), [1, 0])
     }
 
+    /// A replacement's loading, from the source swap to its adoption, is a
+    /// source reload; the plan's own start wait begins at adoption, under its
+    /// grace. Gauntlet T2: an audio-track switch on a fast link took 6 s to
+    /// adoption and 11.4 s more to play. Timed from the swap, it would have
+    /// lowered at 76 s.
+    func testASlowTrackChangeDoesNotLower() {
+        let h = Harness(mode: .always)
+        h.startPlaying(Self.plan("p1"))
+        h.at(60_000) { $0.waiting(cause: .reload) }
+        h.at(66_000) {
+            $0.planAdopted(Self.plan("p2"), controllerInitiated: false)
+            $0.waiting()
+        }
+        h.at(77_400) { $0.playing() }
+        h.clock.advance(to: 120_000)
+        XCTAssertEqual(h.shown, [])
+    }
+
+    /// On Auto in `always`, a plan that never became playable within the
+    /// player's own deadline lowers as a long stall would, the lowering's
+    /// own plan included, whose loading is a reload (gauntlet T5/A2).
+    /// Otherwise the player's failure recovery keeps it; each case would
+    /// lower without its own rule.
+    func testAStartDeadlineLowersAutoInAlways() {
+        // An outage during the lower plan's load ended `LONG_STALL_MS` before
+        // the deadline: time enough for a fair run.
+        let h = Harness(mode: .always)
+        h.startPlaying(Self.plan("p1"))
+        h.at(125_000) { $0.waiting() }
+        h.at(133_000) { $0.waiting(cause: .reload) }
+        h.at(134_000) { $0.planAdopted(Self.plan("p2", delivered: 31_600)) }
+        h.at(150_000) { $0.transportTroubleChanged(true) }
+        h.at(173_000) { $0.transportTroubleChanged(false) }
+        h.at(179_000) { XCTAssertTrue($0.startDeadlinePassed()) }
+        XCTAssertEqual(h.shown.last, .init(179_000, .replan(Self.autoLowering(22_120))))
+
+        let auto = Self.plan("p1", delivered: 6_000)
+        let leftToRecovery: [(String, BufferingQualityMode, Controller.Plan, (Harness) -> Void)] = [
+            ("ask first", .ask, auto, { _ in }),
+            ("never", .never, auto, { _ in }),
+            ("kept, then Automatically", .ask, auto, { h in
+                h.at(17_000) { c in
+                    c.selectKeep()
+                    c.mode = .always
+                }
+            }),
+            ("a picked quality", .always, Self.plan("p1", delivered: 6_000, quality: "1080p-medium"), { _ in }),
+            ("no lower rung", .always, Self.plan("p1", delivered: 3_000), { _ in }),
+            ("a Watch Party", .always, auto, { h in h.at(1_000) { $0.isSuspended = true } }),
+            ("an outage", .always, auto, { h in h.at(1_000) { $0.transportTroubleChanged(true) } }),
+            ("an outage that ended 3 s before", .always, auto, { h in
+                h.at(1_000) { $0.transportTroubleChanged(true) }
+                h.at(42_000) { $0.transportTroubleChanged(false) }
+            }),
+            ("a renderer wait", .always, auto, { h in h.at(1_000) { $0.waiting(cause: .renderer) } }),
+            ("a lowering no plan answered", .always, auto, { h in h.at(17_000) { $0.replanFailed() } }),
+            ("the no-lower cooldown", .always, auto, { h in
+                h.at(18_000) {
+                    $0.planAdopted(Self.plan("p2", delivered: 6_000))
+                    $0.waiting()
+                }
+            }),
+        ]
+        for (name, mode, plan, meanwhile) in leftToRecovery {
+            let h = Harness(mode: mode)
+            h.at(0) {
+                $0.planAdopted(plan)
+                $0.waiting()
+            }
+            meanwhile(h)
+            h.clock.advance(to: 45_000)
+            let shown = h.shown.count
+            XCTAssertFalse(h.controller.startDeadlinePassed(), name)
+            XCTAssertEqual(h.shown.count, shown, name)
+        }
+
+        // Restore answers the title as Keep does (gauntlet T8: the restored
+        // source never started on a slow link).
+        let restored = Harness(mode: .always)
+        restored.lowerAutomatically()
+        restored.at(140_000) { $0.selectRestore() }
+        restored.at(141_000) { $0.waiting(cause: .reload) }
+        restored.at(142_000) {
+            $0.planAdopted(Self.plan("p3"))
+            $0.waiting()
+        }
+        restored.at(187_000) { XCTAssertFalse($0.startDeadlinePassed(), "restored") }
+    }
+
     /// The running summary is the plan's summary as if it ended now, kept on
     /// the device in case the app ends first. The plan plays on.
     func testTheRunningSummaryLeavesThePlanPlaying() {

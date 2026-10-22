@@ -245,7 +245,11 @@ final class BufferingQualityController {
     /// When the playing state began; nil while not playing.
     @ObservationIgnored private var playingSince: Int?
     @ObservationIgnored private var isPaused = false
+    /// The player waits on the renderer, not the network.
+    @ObservationIgnored private var rendererWaiting = false
     @ObservationIgnored private var transportTrouble = false
+    /// When the last transport trouble ended.
+    @ObservationIgnored private var transportTroubleEndedAt: Int?
     @ObservationIgnored private var competingPillVisible = false
 
     // The title, across plans.
@@ -341,6 +345,7 @@ final class BufferingQualityController {
     func playing() {
         let now = nowMs
         isPaused = false
+        rendererWaiting = false
         // The plan ran again: a reload that ended its stall did not end it.
         current?.stallEndedByReload = false
         if playingSince == nil {
@@ -362,6 +367,7 @@ final class BufferingQualityController {
     /// past the start of the current playing state.
     func waiting(cause: WaitCause = .network, startedAgoMs: Int = 0) {
         let now = nowMs
+        rendererWaiting = cause == .renderer
         // Backdated no further than playback last ran: a wait noticed late
         // after a pause began when playback resumed, not inside the pause.
         let began = playingSince.map { max($0, now - max(0, startedAgoMs)) } ?? now
@@ -381,6 +387,7 @@ final class BufferingQualityController {
 
     func paused() {
         let now = nowMs
+        rendererWaiting = false
         leavePlaying(at: now)
         endStall(at: now, resumed: false)
         isPaused = true
@@ -399,6 +406,7 @@ final class BufferingQualityController {
         guard trouble != transportTrouble else { return }
         transportTrouble = trouble
         let now = nowMs
+        if !trouble { transportTroubleEndedAt = now }
         guard let state = current, var stall = state.stall else { return }
         if trouble {
             stall.measuredFrom = nil
@@ -427,6 +435,30 @@ final class BufferingQualityController {
             keptEstimateKbps = pending.priorKeptEstimateKbps
         }
         pendingReplan = nil
+    }
+
+    /// The plan failed before its first frame because the player's own start
+    /// deadline passed: the attempt's first plan, or a replacement whose
+    /// loading is a reload and so never a stall. On Auto in `always` it
+    /// lowers as a long stall would: a `quality_change` with the step-down
+    /// estimate and `observed_rebuffer`. True when that replan was sent.
+    /// False leaves the failure to the player's usual recovery: `ask` or
+    /// `never`, a title the viewer answered (Keep or Restore), a picked
+    /// quality, a Watch Party, an outage or one that ended less than
+    /// `LONG_STALL_MS` ago (the start never had a fair run), a renderer wait,
+    /// a pick pending, a lowering pending or that no plan answered, no lower
+    /// rung, or a plan a lowering was refused for or already got back no
+    /// lower.
+    func startDeadlinePassed() -> Bool {
+        guard mode == .always, !answered, !isSuspended, !transportTrouble,
+              transportTroubleEndedAt.map({ nowMs - $0 >= Self.longStallMs }) ?? true,
+              !rendererWaiting, !pickPending, rearmTimer == nil,
+              let state = current, state.plan.isAuto, !state.plan.qualityReductionUnavailable,
+              state.cooldownUntil == nil, Self.lowerRung(in: state.plan) != nil,
+              let estimate = Self.stepDownEstimate(deliveredKbps: state.plan.deliveredKbps) else { return false }
+        withdrawPill()
+        sendReplan(.lowered, qualityPreference: Self.autoQuality, estimateKbps: estimate, fromKbps: state.plan.deliveredKbps)
+        return true
     }
 
     // MARK: - Pill answers
