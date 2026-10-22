@@ -423,8 +423,10 @@ final class SettingsViewModel {
 
     static let learnedLimitResetFailedMessage = "Couldn't reset the limit. Try again."
 
+    /// Nil in `never`, whose starts ignore the limit.
     var learnedConnectionLimitText: String? {
-        learnedConnectionLimit.map { Self.learnedLimitText($0) }
+        guard bufferingQualityMode != .never else { return nil }
+        return learnedConnectionLimit.map { Self.learnedLimitText($0) }
     }
 
     /// "Limited to 44 Mbps after buffering on Oct 17": the rate as Settings
@@ -570,10 +572,13 @@ final class SettingsViewModel {
         )
     }
 
-    /// "Auto plays videos up to 35 Mbps without converting them."
+    /// "Auto plays videos up to 35 Mbps without converting them." Nil in
+    /// `never` while a limit is learned: the server's budget counts the
+    /// limit, which that mode's starts ignore.
     @MainActor
     var autoBudgetText: String? {
-        guard connectionSpeedSkippedText == nil, let autoBudgetKbps else { return nil }
+        guard connectionSpeedSkippedText == nil, let autoBudgetKbps,
+              bufferingQualityMode != .never || learnedConnectionLimit == nil else { return nil }
         return "Auto plays videos up to \(Self.connectionRateText(kbps: autoBudgetKbps)) without converting them."
     }
 
