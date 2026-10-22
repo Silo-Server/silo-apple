@@ -83,6 +83,11 @@ struct APIv2Account: Decodable, Hashable, Sendable {
     let downloadAllowed: Bool
     /// Present only while an administrator impersonates this account.
     let impersonation: APIv2Impersonation?
+    /// The account holds a temporary password an administrator set. Read
+    /// from the account, not the session: right after the change it is
+    /// false while the access token still carries the restriction. Absent
+    /// from servers that predate it.
+    var passwordChangeRequired: Bool? = nil
 }
 
 struct APIv2Impersonation: Decodable, Hashable, Sendable {
