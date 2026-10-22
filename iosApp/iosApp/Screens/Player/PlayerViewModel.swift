@@ -1977,6 +1977,7 @@ class PlayerViewModel {
             plannedSourceDynamicRange: playbackPlan?.source.dynamicRange,
             plannedOutputDynamicRange: playbackPlan?.effectiveRecipe.dynamicRange,
             plannedSourceDolbyVisionProfile: playbackPlan?.source.dolbyVisionProfile,
+            playing: playbackPlan.flatMap(PlaybackQualityReasons.playingValue(plan:)),
             qualityReason: qualityReasons.flatMap(PlaybackQualityReasons.statsText),
             qualityReasonLine: qualityReasonLine
         )

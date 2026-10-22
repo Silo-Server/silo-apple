@@ -64,7 +64,7 @@ struct PlaybackV3QualityReasonList: Decodable {
 
 /// What the player says about the quality that plays: the `Auto · 1080p`
 /// value of the quality control, the Playing and reason lines under the
-/// checked quality row, and the stats overlay's Reason row.
+/// checked quality row, and the stats overlay's Playing and Reason rows.
 enum PlaybackQualityReasons {
     /// The plan's reasons, or nil when the server does not advertise
     /// `plan_quality_reasons_v1`, which shows no reason at all.

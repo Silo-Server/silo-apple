@@ -11,6 +11,8 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
     let plannedSourceDynamicRange: String?
     let plannedOutputDynamicRange: String?
     let plannedSourceDolbyVisionProfile: Int?
+    /// The plan's delivered resolution and bitrate (`1080p · 6 Mbps`).
+    let playing: String?
     /// Why the plan delivers its quality, one entry per line.
     let qualityReason: String?
     /// The same as the quality menu's one line.
@@ -25,6 +27,7 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
         plannedSourceDynamicRange: String? = nil,
         plannedOutputDynamicRange: String? = nil,
         plannedSourceDolbyVisionProfile: Int? = nil,
+        playing: String? = nil,
         qualityReason: String? = nil,
         qualityReasonLine: String? = nil
     ) {
@@ -36,6 +39,7 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
         self.plannedSourceDynamicRange = plannedSourceDynamicRange
         self.plannedOutputDynamicRange = plannedOutputDynamicRange
         self.plannedSourceDolbyVisionProfile = plannedSourceDolbyVisionProfile
+        self.playing = playing
         self.qualityReason = qualityReason
         self.qualityReasonLine = qualityReasonLine
     }
@@ -206,6 +210,7 @@ enum AetherPlaybackStatsProjection {
             route: routeLabel(snapshot.route),
             source: source.source,
             delivery: source.delivery,
+            playing: source.playing,
             qualityReason: source.qualityReason,
             qualityReasonLine: source.qualityReasonLine,
             container: source.container,

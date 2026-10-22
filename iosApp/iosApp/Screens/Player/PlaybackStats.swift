@@ -16,6 +16,9 @@ struct PlaybackStats: Equatable {
     var route: String?
     var source: String?
     var delivery: String?
+    /// What the plan serves (`1080p · 6 Mbps`); the Video row's bitrate is
+    /// the engine's and often missing on HLS.
+    var playing: String?
     /// The plan's `quality_reasons`, one entry per line.
     var qualityReason: String?
     /// The quality menu's line, for the compact set.
@@ -76,7 +79,7 @@ extension PlaybackStats {
     static let reasonLabel = "Reason"
 
     private static let compactLabels: Set<String> = [
-        "Route", "Source", "Delivery", reasonLabel, "Container",
+        "Route", "Source", "Delivery", "Playing", reasonLabel, "Container",
         "Video", "Audio", "Dynamic range", "Subtitles",
         "Playback status", "Forward buffer", "Display cushion",
         "Dropped frames", "Instant read bitrate", "Network throughput"
@@ -89,6 +92,7 @@ extension PlaybackStats {
             ("Route", route),
             ("Source", source),
             ("Delivery", delivery),
+            ("Playing", playing),
             (Self.reasonLabel, qualityReason),
             ("Container", container)
         ])
