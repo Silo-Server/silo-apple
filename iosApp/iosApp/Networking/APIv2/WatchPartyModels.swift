@@ -49,6 +49,12 @@ enum WatchPartyTransportAction: APIv2StringEnum {
 }
 
 struct WatchPartyCapabilities: Codable, Equatable, Sendable {
+    struct WorkAdmission: Codable, Equatable, Sendable {
+        var version: Int
+        var scope: String?
+        var backend: String?
+        var epoch: String?
+    }
     var revision = ""
     var state = "unsupported"
     var allowed: Bool? = nil
@@ -62,6 +68,8 @@ struct WatchPartyCapabilities: Codable, Equatable, Sendable {
     var stopPlayback = false
     var maxMemberStateIds = 0
     var socketProtocol = ""
+    var workAdmission: WorkAdmission? = nil
+    var supportsWorkAdmission: Bool { workAdmission?.version == 1 }
 
     var isAvailable: Bool { state == "available" && allowed == true }
     var supportsSocket: Bool { isAvailable && socketProtocol == "silo.room.v2" }
@@ -83,6 +91,7 @@ extension WatchPartyCapabilities {
         stopPlayback = try c.decodeIfPresent(Bool.self, forKey: .stopPlayback) ?? false
         maxMemberStateIds = try c.decodeIfPresent(Int.self, forKey: .maxMemberStateIds) ?? 0
         socketProtocol = try c.decodeIfPresent(String.self, forKey: .socketProtocol) ?? ""
+        workAdmission = try c.decodeIfPresent(WorkAdmission.self, forKey: .workAdmission)
     }
 }
 
@@ -255,6 +264,7 @@ struct WatchPartySuggestionPage: Decodable, Sendable {
 }
 
 struct WatchPartySocketTicket: Codable, Equatable, Sendable {
+    var workAdmission: WatchPartyCapabilities.WorkAdmission? = nil
     var ticket: String
     var expiresIn: Int
     var maxConnectionSeconds: Int

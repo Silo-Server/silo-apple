@@ -2,6 +2,7 @@ import Foundation
 
 struct WatchPartyClientMessage: Encodable, Sendable {
     let type: String
+    var requestId: String? = nil
     var sessionId: String? = nil
     var commandId: String? = nil
     var action: WatchPartyTransportAction? = nil
@@ -35,11 +36,13 @@ enum WatchPartyServerMessage: Decodable {
     case pong(client: Date, received: Date, sent: Date, receivedAt: Date)
     case closed(String)
     case connectionReplaced(reason: String?)
-    case error(code: String, message: String)
+    case error(WatchPartyWorkError)
+    case actionResult(requestId: String?, action: String, status: String)
     case unknown
 
     private enum CodingKeys: String, CodingKey {
         case type, room, command, suggestions, clientSentAt, serverReceivedAt, serverSentAt, reason, code, message
+        case requestId, retryAfterMs, workStarted, action, status
     }
 
     init(from decoder: Decoder) throws {
@@ -53,7 +56,12 @@ enum WatchPartyServerMessage: Decodable {
                                   sent: try c.decode(Date.self, forKey: .serverSentAt), receivedAt: Date())
         case "room_closed": self = .closed(try c.decodeIfPresent(String.self, forKey: .reason) ?? "ended")
         case "connection_replaced": self = .connectionReplaced(reason: try c.decodeIfPresent(String.self, forKey: .reason))
-        case "error": self = .error(code: try c.decode(String.self, forKey: .code), message: try c.decode(String.self, forKey: .message))
+        case "error": self = .error(WatchPartyWorkError(code: try c.decode(String.self, forKey: .code),
+            message: try c.decode(String.self, forKey: .message), requestId: try c.decodeIfPresent(String.self, forKey: .requestId),
+            retryAfterMilliseconds: try c.decodeIfPresent(Int.self, forKey: .retryAfterMs),
+            workStarted: try c.decodeIfPresent(Bool.self, forKey: .workStarted)))
+        case "action_result": self = .actionResult(requestId: try c.decodeIfPresent(String.self, forKey: .requestId),
+            action: try c.decode(String.self, forKey: .action), status: try c.decode(String.self, forKey: .status))
         default: self = .unknown
         }
     }
@@ -61,12 +69,27 @@ enum WatchPartyServerMessage: Decodable {
 
 enum WatchPartySocketError: Error {
     case invalidURL, unsupportedProtocol, closed
+    case remoteClose(code: Int, reason: String?)
+
+    var isInputShield: Bool {
+        if case .remoteClose(let code, let reason) = self {
+            return code == 1008 && reason == "realtime input shield"
+        }
+        return false
+    }
 }
 
 /// A room connection is separate from the player's playback-control socket.
 /// Each instance uses a fresh, single-use ticket and has exactly one receiver.
 @MainActor
-final class WatchPartySocket: NSObject, URLSessionWebSocketDelegate {
+protocol WatchPartySocketConnection: AnyObject {
+    func connect(serverURL: String, roomId: String, ticket: WatchPartySocketTicket) throws -> AsyncThrowingStream<WatchPartySocket.Event, Error>
+    func send(_ message: WatchPartyClientMessage) async throws
+    func close()
+}
+
+@MainActor
+final class WatchPartySocket: NSObject, URLSessionWebSocketDelegate, WatchPartySocketConnection {
     enum Event { case opened, message(WatchPartyServerMessage) }
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
@@ -125,7 +148,11 @@ final class WatchPartySocket: NSObject, URLSessionWebSocketDelegate {
                 }
             } catch {
                 guard let self, self.task === socket else { return }
-                self.continuation?.finish(throwing: error)
+                let code = socket.closeCode
+                if code != .invalid {
+                    self.continuation?.finish(throwing: WatchPartySocketError.remoteClose(
+                        code: code.rawValue, reason: socket.closeReason.flatMap { String(data: $0, encoding: .utf8) }))
+                } else { self.continuation?.finish(throwing: error) }
             }
         }
     }
@@ -168,7 +195,8 @@ final class WatchPartySocket: NSObject, URLSessionWebSocketDelegate {
             // A replacement frame followed immediately by closure must not be
             // lost to this delegate callback racing the receive continuation.
             guard self.receiver == nil else { return }
-            self.continuation?.finish(throwing: WatchPartySocketError.closed)
+            self.continuation?.finish(throwing: WatchPartySocketError.remoteClose(
+                code: closeCode.rawValue, reason: reason.flatMap { String(data: $0, encoding: .utf8) }))
         }
     }
 
