@@ -1667,6 +1667,10 @@ class PlayerViewModel {
             self?.handleBufferingQualityOutput(output)
         }
         bufferingQuality.measuredThroughputKbps = { [weak self] in self?.bufferingPlanArrivalKbps }
+        bufferingQuality.arrivalLowerBoundKbps = { [weak self] in
+            guard let self, aetherPlaybackController.activeSpec?.options.nativeRemoteHLS == false else { return nil }
+            return upstreamMeter.arrivalLowerBoundKbps
+        }
         observeBufferingHostInputs()
         observeBufferingConnectivity()
         observeBufferingSurfaceVisibility()

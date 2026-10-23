@@ -238,8 +238,10 @@ final class BufferingSignalMapperTests: XCTestCase {
         XCTAssertTrue(shared.note(totalBytes: 500_000, atMs: 1_000, networkKey: "wifi", shared: true))
         shared.note(totalBytes: 1_000_000, atMs: 2_000, networkKey: "wifi")
         XCTAssertNil(shared.throughputKbps, "it may have shared the tick after it stopped too")
+        XCTAssertEqual(shared.arrivalLowerBoundKbps, 4_000, "every tick counts toward the evidence-only bound")
         shared.note(totalBytes: 2_000_000, atMs: 3_000, networkKey: "wifi")
         XCTAssertEqual(shared.throughputKbps, 8_000, "1 MB over the one second the reader had alone")
+        XCTAssertEqual(shared.arrivalLowerBoundKbps, 5_333)
     }
 
     /// Direct play's start deadline: 45 s from the plan's adoption of the

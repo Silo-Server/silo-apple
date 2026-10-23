@@ -406,6 +406,27 @@ final class BufferingQualityControllerTests: XCTestCase {
             }
         }
 
+        // An embedded subtitle's prefetch shares the link, so nothing is
+        // measured, but the counted reader got 4.5 Mbps of the plan's
+        // bitrate (bedroom Apple TV, 5 Mbps link): that is evidence. A picked
+        // quality asks at the long stall, and Auto lowers without sending the
+        // shared figure. A bound at the bitrate is no evidence.
+        let sharedLink: [(String, Int, [Harness.Recorded])] = [
+            ("original", 4_500, [.init(16_000, .pillShown(.prompt))]),
+            ("auto", 4_500, [.init(16_000, .replan(Self.autoLowering(44_100)))]),
+            ("original", 63_000, []),
+        ]
+        for (quality, bound, expected) in sharedLink {
+            let h = Harness(mode: .always)
+            h.arrivalLowerBoundKbps = bound
+            h.at(0) {
+                $0.planAdopted(Self.plan("p1", quality: quality))
+                $0.waiting()
+            }
+            h.clock.advance(to: 20_000)
+            XCTAssertEqual(h.shown, expected, "\(quality) \(bound)")
+        }
+
         // The start's plan, lowered on evidence; its lower plan comes back
         // 7 s later and never starts either. It lowers again only on its
         // own evidence, once its undo pill is gone.
@@ -772,6 +793,8 @@ private final class Harness {
     private(set) var outputs: [Recorded] = []
     /// What the player measures the playing plan's media arriving at.
     var measuredKbps: Int?
+    /// The evidence-only bound of a shared link.
+    var arrivalLowerBoundKbps: Int?
 
     init(mode: BufferingQualityMode) {
         controller = BufferingQualityController(clock: clock)
@@ -781,6 +804,7 @@ private final class Harness {
             self.outputs.append(Recorded(self.clock.nowMs, output))
         }
         controller.measuredThroughputKbps = { [unowned self] in self.measuredKbps }
+        controller.arrivalLowerBoundKbps = { [unowned self] in self.arrivalLowerBoundKbps }
     }
 
     /// Everything but `plan_summary`: what the vectors' `expect` lists.

@@ -47,6 +47,9 @@ struct UpstreamReadMeter {
     // The playing plan's books.
     private var receivedBytes: Int64 = 0
     private var receivingMs = 0
+    /// The same books with the ticks another reader may have shared.
+    private var arrivedBytes: Int64 = 0
+    private var arrivingMs = 0
     private var networkKey: String?
     private var networkChanged = false
 
@@ -82,9 +85,14 @@ struct UpstreamReadMeter {
         let delta = totalBytes - previous.bytes
         guard delta > 0 else { return false }
         lastDataAtMs = now
-        if counts, inTime, !shared, !previous.shared {
-            receivedBytes += delta
-            receivingMs += max(interval, previous.intervalMs)
+        if counts, inTime {
+            let charged = max(interval, previous.intervalMs)
+            arrivedBytes += delta
+            arrivingMs += charged
+            if !shared, !previous.shared {
+                receivedBytes += delta
+                receivingMs += charged
+            }
         }
         return true
     }
@@ -93,6 +101,8 @@ struct UpstreamReadMeter {
     mutating func planAdopted(networkKey key: String) {
         receivedBytes = 0
         receivingMs = 0
+        arrivedBytes = 0
+        arrivingMs = 0
         networkKey = key
         networkChanged = false
     }
@@ -109,8 +119,20 @@ struct UpstreamReadMeter {
     /// not, when the network changed under the plan, or below
     /// `MIN_ESTIMATE_KBPS`; capped at 1,000,000.
     var throughputKbps: Int? {
-        guard !networkChanged, receivingMs >= Self.minReceivingMs else { return nil }
-        return Self.reportable(kbps: receivedBytes * 8 / Int64(receivingMs))
+        rate(bytes: receivedBytes, overMs: receivingMs)
+    }
+
+    /// The counted reader's rate over every tick that received, those another
+    /// reader may have shared included: a lower bound on what the plan's
+    /// media arrived at, for evidence of a slow link only. Nil under the
+    /// same rules as ``throughputKbps``.
+    var arrivalLowerBoundKbps: Int? {
+        rate(bytes: arrivedBytes, overMs: arrivingMs)
+    }
+
+    private func rate(bytes: Int64, overMs ms: Int) -> Int? {
+        guard !networkChanged, ms >= Self.minReceivingMs else { return nil }
+        return Self.reportable(kbps: bytes * 8 / Int64(ms))
     }
 
     /// A measured rate as the API takes it: nil below `MIN_ESTIMATE_KBPS`,
