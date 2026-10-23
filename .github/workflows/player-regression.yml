@@ -151,7 +151,7 @@ jobs:
           ref: ${{ inputs.benchmark_source_ref || inputs.baseline_ref || github.sha }}
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '27.0'
+          xcode-version: '27.1'
       - name: Record build inputs
         id: metadata
         # Historical baselines may resolve their lockfile during the original build.
@@ -205,19 +205,15 @@ jobs:
         run: |
           set -euo pipefail
           # Hosted images do not always have a usable pre-created device.
-          # Match the selected Xcode SDK and reuse one explicit destination.
-          # iOS and tvOS differ only in SDK name, runtime prefix, and device.
+          # The build metadata helper picks the runtime and device, so release
+          # proof records the same runtime that the release job discovers.
           case "$PLATFORM" in
             iOS)
               sdk=iphonesimulator
-              runtime_prefix=com.apple.CoreSimulator.SimRuntime.iOS-
-              device_type=com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro
               destination_platform="iOS Simulator"
               ;;
             tvOS)
               sdk=appletvsimulator
-              runtime_prefix=com.apple.CoreSimulator.SimRuntime.tvOS-
-              device_type=com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K
               destination_platform="tvOS Simulator"
               ;;
             *)
@@ -225,21 +221,22 @@ jobs:
               exit 1
               ;;
           esac
-          runtime_version=$(xcrun --sdk "$sdk" --show-sdk-version)
+          sdk_version=$(xcrun --sdk "$sdk" --show-sdk-version)
           runtime_inventory="$RUNNER_TEMP/apple-simulator-runtimes.json"
-          find_runtime() {
+          find_simulator() {
             xcrun simctl list runtimes --json > "$runtime_inventory"
-            jq -r --arg version "$runtime_version" --arg prefix "$runtime_prefix" \
-              '[.runtimes[] | select(.isAvailable and .version == $version and
-                (.identifier | startswith($prefix)))][0].identifier // empty' "$runtime_inventory"
+            python3 ../ci/scripts/ci/apple-build-metadata.py --test-simulator "$SCHEME" \
+              --runtimes "$runtime_inventory"
           }
-          runtime_id=$(find_runtime)
-          if [ -z "$runtime_id" ]; then
-            xcodebuild -downloadPlatform "$PLATFORM" -buildVersion "$runtime_version"
-            runtime_id=$(find_runtime)
+          simulator=$(find_simulator)
+          if [ -z "$(jq -r .runtime <<< "$simulator")" ]; then
+            xcodebuild -downloadPlatform "$PLATFORM" -buildVersion "$sdk_version"
+            simulator=$(find_simulator)
           fi
+          runtime_id=$(jq -r .runtime <<< "$simulator")
+          device_type=$(jq -r .device_type <<< "$simulator")
           if [ -z "$runtime_id" ]; then
-            echo "::error::No available $PLATFORM $runtime_version simulator runtime"
+            echo "::error::No $PLATFORM simulator runtime up to $sdk_version runs $device_type"
             exit 1
           fi
           simulator_id=$(xcrun simctl create "Silo-Player-Regression-$PLATFORM" \

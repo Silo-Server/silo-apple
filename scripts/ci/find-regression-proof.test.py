@@ -169,9 +169,11 @@ class RegressionProofTests(unittest.TestCase):
         original_command = build_metadata.command
         runtimes = {"runtimes": [
             {"identifier": "com.apple.CoreSimulator.SimRuntime.iOS-27-0", "version": "27.0",
-             "buildversion": "24A123", "isAvailable": True},
+             "buildversion": "24A123", "isAvailable": True,
+             "supportedDeviceTypes": [{"identifier": build_metadata.TEST_SIMULATORS["Silo"][1]}]},
             {"identifier": "com.apple.CoreSimulator.SimRuntime.tvOS-27-0", "version": "27.0",
-             "buildversion": "24T123", "isAvailable": True}]}
+             "buildversion": "24T123", "isAvailable": True,
+             "supportedDeviceTypes": [{"identifier": build_metadata.TEST_SIMULATORS["SiloTV"][1]}]}]}
 
         def measured_command(*args, cwd=None):
             if args == ("xcodebuild", "-version"):

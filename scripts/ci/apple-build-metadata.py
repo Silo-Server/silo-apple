@@ -12,6 +12,12 @@ import subprocess
 LOCK = Path('iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
 SDKS = {'Silo': 'iphonesimulator', 'SiloTV': 'appletvsimulator', 'SiloMac': 'macosx'}
 DEVICE_SDKS = {'Silo-device': 'iphoneos', 'SiloTV-device': 'appletvos'}
+# Simulator runtime prefix and device type that each mobile scheme tests on.
+TEST_SIMULATORS = {
+    'Silo': ('com.apple.CoreSimulator.SimRuntime.iOS-', 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro'),
+    'SiloTV': ('com.apple.CoreSimulator.SimRuntime.tvOS-',
+               'com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K'),
+}
 SHARED_SPM_LOCK_SHA256 = '40e3e0fbe264adac749a1f7db3f91a311e67f6419eeecad6bd4d88c07efd9410'
 SHARED_SPM_PROJECT_SHA256 = 'b698ee86dc410c8ada9251778a655f5428b2ea663ccfc8ba1291f180aa472eca'
 SHARED_SPM_TOOLCHAIN_KEY = '5e23d2022187a1fa502ad4a6'
@@ -95,8 +101,43 @@ def validate_controls(env):
     return namespace
 
 
+def version_key(version):
+    return tuple(int(part) for part in version.split('.'))
+
+
+def test_runtimes(runtimes, scheme, sdk_version):
+    """Available runtimes that run the scheme's test device, newest first.
+
+    A point release can ship a runtime for new hardware only (the iOS 27.1
+    runtime runs only the iPhone Duo), so tests take the newest runtime from
+    the SDK's major release that runs the device, never one newer than the SDK.
+    """
+    prefix, device_type = TEST_SIMULATORS[scheme]
+    sdk = version_key(sdk_version)
+    def runs_tests(runtime):
+        version = runtime.get('version')
+        if not isinstance(version, str) or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)*', version):
+            return False
+        devices = runtime.get('supportedDeviceTypes')
+        return (runtime.get('isAvailable') is True
+                and isinstance(runtime.get('identifier'), str) and runtime['identifier'].startswith(prefix)
+                and version_key(version)[0] == sdk[0] and version_key(version) <= sdk
+                and isinstance(devices, list)
+                and any(isinstance(device, dict) and device.get('identifier') == device_type
+                        for device in devices))
+    return sorted(filter(runs_tests, runtimes), key=lambda runtime: version_key(runtime['version']), reverse=True)
+
+
+def test_simulator(scheme, inventory):
+    """The runtime and device type a mobile test job creates its simulator from."""
+    runtimes = json.loads(inventory.read_text())['runtimes']
+    sdk_version = command('xcrun', '--sdk', SDKS[scheme], '--show-sdk-version')
+    matching = test_runtimes(runtimes, scheme, sdk_version)
+    return {'runtime': matching[0]['identifier'] if matching else '', 'device_type': TEST_SIMULATORS[scheme][1]}
+
+
 def prepared_runtimes(path, scheme, identifier, sdk_version):
-    if scheme not in ('Silo', 'SiloTV') or not identifier:
+    if scheme not in TEST_SIMULATORS or not identifier:
         raise ValueError('Prepared simulator identity is incomplete')
     def unique_keys(pairs):
         result = {}
@@ -112,10 +153,9 @@ def prepared_runtimes(path, scheme, identifier, sdk_version):
     if not all(isinstance(runtime, dict) for runtime in runtimes):
         raise ValueError('Prepared simulator inventory is invalid')
     selected = [runtime for runtime in runtimes if runtime.get('identifier') == identifier]
-    prefix = 'com.apple.CoreSimulator.SimRuntime.' + ('iOS-' if scheme == 'Silo' else 'tvOS-')
-    if (len(selected) != 1 or not identifier.startswith(prefix)
-            or selected[0].get('isAvailable') is not True
-            or selected[0].get('version') != sdk_version
+    matching = test_runtimes(runtimes, scheme, sdk_version)
+    if (len(selected) != 1 or selected[0] not in matching
+            or selected[0]['version'] != matching[0]['version']
             or not isinstance(selected[0].get('buildversion'), str)
             or not re.fullmatch(r'[A-Za-z0-9]+', selected[0]['buildversion'])):
         raise ValueError('Prepared simulator does not match the selected runtime and SDK')
@@ -136,12 +176,9 @@ def toolchains(runtime_capture=None, selected_scheme='', runtime_identifier=''):
                 'sdk_version': sdk_versions[scheme],
                 'sdk_build': command('xcrun', '--sdk', sdk, '--show-sdk-build-version')}
         if scheme != 'SiloMac':
-            prefix = 'com.apple.CoreSimulator.SimRuntime.' + ('iOS-' if scheme == 'Silo' else 'tvOS-')
-            matching = [runtime for runtime in runtimes if runtime.get('isAvailable')
-                        and runtime.get('version') == item['sdk_version']
-                        and runtime.get('identifier', '').startswith(prefix)
-                        and (not runtime_capture or scheme != selected_scheme
-                             or runtime.get('identifier') == runtime_identifier)]
+            matching = [runtime for runtime in test_runtimes(runtimes, scheme, item['sdk_version'])
+                        if not runtime_capture or scheme != selected_scheme
+                        or runtime.get('identifier') == runtime_identifier]
             # A missing runtime prevents release-proof reuse. The test job may
             # download its runtime and record complete metadata afterwards.
             item.update(runtime_version=matching[0]['version'] if matching else '',
@@ -270,9 +307,17 @@ def main():
     profile.add_argument('--proof', choices=SDKS)
     profile.add_argument('--device-scheme', choices=DEVICE_SDKS)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--test-simulator', choices=TEST_SIMULATORS,
+                        help='print the runtime and device type to test the scheme on')
+    parser.add_argument('--runtimes', type=Path, help='simctl runtime inventory for --test-simulator')
     args = parser.parse_args()
     if args.validate_controls:
         validate_controls(os.environ)
+        return
+    if args.test_simulator:
+        if not args.runtimes:
+            parser.error('--test-simulator requires --runtimes')
+        print(json.dumps(test_simulator(args.test_simulator, args.runtimes), sort_keys=True))
         return
     # Reuse only the inventory that selected this job's mobile test runtime.
     # Initial inputs and macOS proof metadata retain live runtime discovery.

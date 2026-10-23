@@ -16,6 +16,15 @@ spec.loader.exec_module(metadata)
 QUALIFIED_SPM_LOCK = '40e3e0fbe264adac749a1f7db3f91a311e67f6419eeecad6bd4d88c07efd9410'
 QUALIFIED_SPM_PROJECT = 'b698ee86dc410c8ada9251778a655f5428b2ea663ccfc8ba1291f180aa472eca'
 QUALIFIED_SPM_TOOLCHAIN = '5e23d2022187a1fa502ad4a6'
+IPHONE = [{'identifier': metadata.TEST_SIMULATORS['Silo'][1]}]
+APPLE_TV = [{'identifier': metadata.TEST_SIMULATORS['SiloTV'][1]}]
+DUO = [{'identifier': 'com.apple.CoreSimulator.SimDeviceType.iPhone-Duo'}]
+
+
+def ios_runtime(version, build, devices=IPHONE, **changes):
+    return {'identifier': 'com.apple.CoreSimulator.SimRuntime.iOS-' + version.replace('.', '-'),
+            'version': version, 'buildversion': build, 'isAvailable': True,
+            'supportedDeviceTypes': devices, **changes}
 
 
 class MetadataTests(unittest.TestCase):
@@ -164,12 +173,11 @@ class MetadataTests(unittest.TestCase):
 
     def test_runtime_must_match_platform_sdk_and_be_available(self):
         runtimes = {'runtimes': [
-            {'identifier': 'com.apple.CoreSimulator.SimRuntime.iOS-27-0', 'version': '27.0',
-             'buildversion': '24A100', 'isAvailable': True},
+            ios_runtime('27.0', '24A100'),
             {'identifier': 'com.apple.CoreSimulator.SimRuntime.tvOS-27-0', 'version': '27.0',
-             'buildversion': '24J100', 'isAvailable': False},
+             'buildversion': '24J100', 'isAvailable': False, 'supportedDeviceTypes': APPLE_TV},
             {'identifier': 'com.apple.CoreSimulator.SimRuntime.tvOS-26-0', 'version': '26.0',
-             'buildversion': '23J100', 'isAvailable': True}]}
+             'buildversion': '23J100', 'isAvailable': True, 'supportedDeviceTypes': APPLE_TV}]}
         def command(*args):
             if args == ('xcodebuild', '-version'):
                 return 'Xcode 27.0\nBuild version 27A266a'
@@ -187,9 +195,7 @@ class MetadataTests(unittest.TestCase):
         self.assertNotIn('runtime_build', tools['SiloMac'])
 
     def runtime_inventory(self, **changes):
-        return {'runtimes': [{'identifier': 'com.apple.CoreSimulator.SimRuntime.iOS-27-0',
-                             'version': '27.0', 'buildversion': '24A100',
-                             'isAvailable': True, **changes}]}
+        return {'runtimes': [{**ios_runtime('27.0', '24A100'), **changes}]}
 
     def live_tool_command(self, *args, cwd=None):
         if args == ('xcodebuild', '-version'):
@@ -231,6 +237,9 @@ class MetadataTests(unittest.TestCase):
                    (self.runtime_inventory(isAvailable=False), 'Silo', identifier),
                    (self.runtime_inventory(isAvailable=1), 'Silo', identifier),
                    (self.runtime_inventory(version='26.0'), 'Silo', identifier),
+                   (self.runtime_inventory(version='27.1'), 'Silo', identifier),
+                   (self.runtime_inventory(supportedDeviceTypes=DUO), 'Silo', identifier),
+                   (self.runtime_inventory(supportedDeviceTypes=None), 'Silo', identifier),
                    (self.runtime_inventory(buildversion=''), 'Silo', identifier),
                    (self.runtime_inventory(buildversion='24A100\nother=value'), 'Silo', identifier),
                    (self.runtime_inventory(), 'SiloTV', identifier),
@@ -251,6 +260,11 @@ class MetadataTests(unittest.TestCase):
                 capture.write_text(text)
                 with self.subTest(text=text), self.assertRaises(ValueError):
                     metadata.prepared_runtimes(capture, 'Silo', identifier, '27.0')
+            # A newer runtime that runs the device supersedes the selection.
+            capture.write_text(json.dumps({'runtimes': [*self.runtime_inventory()['runtimes'],
+                                                        ios_runtime('27.1', '24A200')]}))
+            with self.assertRaises(ValueError):
+                metadata.prepared_runtimes(capture, 'Silo', identifier, '27.1')
 
     def test_changed_current_sdk_invalidates_the_prepared_runtime(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -258,10 +272,45 @@ class MetadataTests(unittest.TestCase):
             capture.write_text(json.dumps(self.runtime_inventory()))
             def changed_sdk(*args):
                 if args == ('xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'):
-                    return '27.1'
+                    return '28.0'
                 return self.live_tool_command(*args)
             with patch.object(metadata, 'command', changed_sdk), self.assertRaises(ValueError):
                 metadata.toolchains(capture, 'Silo', 'com.apple.CoreSimulator.SimRuntime.iOS-27-0')
+
+    def test_tests_use_the_newest_runtime_in_the_sdk_release_that_runs_the_device(self):
+        # Xcode 27.1's iOS 27.1 runtime runs only the iPhone Duo.
+        runtimes = [ios_runtime('26.4', '23E100'), ios_runtime('27.0', '24A434'),
+                    ios_runtime('27.1', '24A944', devices=DUO), ios_runtime('28.0', '25A100'),
+                    ios_runtime('27.0.1', '24A500', isAvailable=False)]
+        self.assertEqual([runtime['buildversion'] for runtime in metadata.test_runtimes(runtimes, 'Silo', '27.1')],
+                         ['24A434'])
+        self.assertEqual(metadata.test_runtimes(runtimes, 'Silo', '26.0'), [])
+        self.assertEqual(metadata.test_runtimes(runtimes, 'SiloTV', '27.1'), [])
+
+        def sdk_27_1(*args):
+            if args == ('xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'):
+                return '27.1'
+            if args == ('xcrun', 'simctl', 'list', 'runtimes', '--json'):
+                return json.dumps({'runtimes': runtimes})
+            return self.live_tool_command(*args)
+        with patch.object(metadata, 'command', sdk_27_1):
+            live = metadata.toolchains()
+        self.assertEqual((live['Silo']['sdk_version'], live['Silo']['runtime_version'], live['Silo']['runtime_build']),
+                         ('27.1', '27.0', '24A434'))
+
+        # The release job's live discovery and the test job's prepared runtime agree.
+        with tempfile.TemporaryDirectory() as folder:
+            capture = Path(folder) / 'runtimes.json'
+            capture.write_text(json.dumps({'runtimes': runtimes}))
+            with patch.object(metadata, 'command', sdk_27_1):
+                simulator = metadata.test_simulator('Silo', capture)
+                prepared = metadata.toolchains(capture, 'Silo', simulator['runtime'])
+            self.assertEqual(simulator, {'runtime': 'com.apple.CoreSimulator.SimRuntime.iOS-27-0',
+                                         'device_type': 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro'})
+            self.assertEqual(prepared['Silo'], live['Silo'])
+            capture.write_text(json.dumps({'runtimes': runtimes[2:]}))
+            with patch.object(metadata, 'command', sdk_27_1):
+                self.assertEqual(metadata.test_simulator('Silo', capture)['runtime'], '')
 
     def test_final_metadata_recomputes_source_config_dirty_and_all_sdk_builds(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -334,7 +383,8 @@ class MetadataTests(unittest.TestCase):
     def proof_inventory(self):
         return {'runtimes': [*self.runtime_inventory()['runtimes'],
                             {'identifier': 'com.apple.CoreSimulator.SimRuntime.tvOS-27-0',
-                             'version': '27.0', 'buildversion': '24J100', 'isAvailable': True}]}
+                             'version': '27.0', 'buildversion': '24J100', 'isAvailable': True,
+                             'supportedDeviceTypes': APPLE_TV}]}
 
     def test_actual_cli_produces_captured_mobile_proof_and_live_mac_proof(self):
         original_command = metadata.command
@@ -377,7 +427,7 @@ class MetadataTests(unittest.TestCase):
             if args == ('xcrun', 'simctl', 'list', 'runtimes', '--json'):
                 raise AssertionError('Captured proof repeated runtime discovery')
             if change_sdk and args == ('xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'):
-                return '27.1'
+                return '28.0'
             return self.live_tool_command(*args, cwd=cwd)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / 'source'
