@@ -8,6 +8,8 @@ struct ItemDetailView: View {
     var tvSeed: TVItemDetailRouteSeed? = nil
     var onClose: (() -> Void)? = nil
     var resumeContext: SeriesDetailContext? = nil
+    /// Reports the season and episode chosen on a series page.
+    var onSeriesSelection: ((SeriesDetailContext) -> Void)? = nil
 
     @State private var resolvedSeries: SeriesDetailContext?
     @State private var resolvedSourceID: String?
@@ -36,7 +38,7 @@ struct ItemDetailView: View {
         #else
         ItemDetailPhoneContent(
             contentId: destinationID, libraryId: libraryId, onClose: onClose,
-            resumeContext: context, onResolveSeries: resolve
+            resumeContext: context, onResolveSeries: resolve, onSeriesSelection: onSeriesSelection
         )
         .id(CacheKey.itemDetail(destinationID, libraryId: libraryId))
         .environment(\.browseLibraryId, libraryId)
@@ -365,13 +367,18 @@ private struct ItemDetailPhoneContent: View {
     var resumeContext: SeriesDetailContext? = nil
 
     let onResolveSeries: ((SeriesDetailContext) -> Void)?
+    let onSeriesSelection: ((SeriesDetailContext) -> Void)?
 
-    init(contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: SeriesDetailContext?, onResolveSeries: ((SeriesDetailContext) -> Void)?) {
+    init(
+        contentId: String, libraryId: Int?, onClose: (() -> Void)?, resumeContext: SeriesDetailContext?,
+        onResolveSeries: ((SeriesDetailContext) -> Void)?, onSeriesSelection: ((SeriesDetailContext) -> Void)?
+    ) {
         self.contentId = contentId
         self.libraryId = libraryId
         self.onClose = onClose
         self.resumeContext = resumeContext
         self.onResolveSeries = onResolveSeries
+        self.onSeriesSelection = onSeriesSelection
         // Paint cached content on the first frame, so a warm visit pushes a
         // filled page rather than an empty one that fills in from `.task`.
         let viewModel = ItemDetailViewModel(libraryId: libraryId)
@@ -424,6 +431,15 @@ private struct ItemDetailPhoneContent: View {
     @State private var controlResumeLookupTask: Task<Void, Never>?
     @State private var isShowingControlPicker = false
     @State private var isShowingRemoteControl = false
+
+    private var seriesSelection: SeriesDetailContext? {
+        guard viewModel.detail?.type == "series" else { return nil }
+        return SeriesDetailContext(
+            seriesContentId: contentId,
+            episodeContentId: selectedSeriesEpisodeId,
+            seasonNumber: viewModel.selectedSeason?.seasonNumber
+        )
+    }
 
     private var isShowingControl: Bool {
         controlRequestBox != nil || isShowingControlPicker || isShowingRemoteControl
@@ -640,6 +656,9 @@ private struct ItemDetailPhoneContent: View {
         // Refitting the detail would discard these, so it waits for them.
         .onChange(of: isShowingControl) { _, showing in
             router.itemDetailShowsControl = showing
+        }
+        .onChange(of: seriesSelection) { _, selection in
+            if let selection { onSeriesSelection?(selection) }
         }
         #endif
     }

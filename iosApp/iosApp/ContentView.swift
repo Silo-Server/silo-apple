@@ -3371,7 +3371,10 @@ private struct ItemDetailSheet: View {
                 contentId: presentation.contentId,
                 libraryId: presentation.libraryId,
                 onClose: router.dismissItemDetail,
-                resumeContext: presentation.resumeContext
+                resumeContext: presentation.resumeContext,
+                // Unfolding the iPhone Duo rebuilds the detail (see
+                // `refitItemDetail`); it reopens on this selection.
+                onSeriesSelection: router.itemDetailSeriesSelectionDidChange
             )
         }
     }

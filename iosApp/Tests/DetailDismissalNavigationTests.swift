@@ -62,11 +62,27 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertEqual(router.presentedItemDetail?.id, opened.id)
         XCTAssertEqual(router.presentedItemDetail?.fillsWindow, true)
 
+        // A refit reopens a series on the season and episode chosen in it.
+        let chosen = SeriesDetailContext(seriesContentId: "series", episodeContentId: "s2e3", seasonNumber: 2)
+        router.itemDetailSeriesSelectionDidChange(chosen)
+        router.presentsItemDetailFullWindow = false
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail?.id, opened.id)
+        XCTAssertEqual(router.presentedItemDetail?.contentId, "series")
+        XCTAssertEqual(router.presentedItemDetail?.resumeContext, chosen)
+
         // Closing the detail can't leave the next one waiting.
         router.itemDetailShowsControl = true
         router.presentedItemDetail = nil
         router.itemDetailPresentationDidDismiss()
         XCTAssertFalse(router.itemDetailShowsControl)
+
+        // Nor can a closed detail's selection carry into the next one.
+        router.presentItemDetail(contentId: "movie", libraryId: 4)
+        router.presentsItemDetailFullWindow = true
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail?.contentId, "movie")
+        XCTAssertNil(router.presentedItemDetail?.resumeContext)
     }
 
     func testPartyWaitsForPickerDismissalAndCannotReopenAfterTermination() {

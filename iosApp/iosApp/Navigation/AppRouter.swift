@@ -166,9 +166,9 @@ final class AppRouter {
     /// keeping the content id itself available to the sheet root.
     struct ItemDetailPresentation: Identifiable, Equatable {
         let id = UUID()
-        let contentId: String
+        var contentId: String
         let libraryId: Int?
-        let resumeContext: SeriesDetailContext?
+        var resumeContext: SeriesDetailContext?
         /// Set when the card opens on a request detail (a TMDB title) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let request: RequestRoot?
@@ -214,10 +214,16 @@ final class AppRouter {
     /// Set by the open detail while its TV remote or a TV picker is up.
     /// They live in the detail's own state, which a refit would discard.
     var itemDetailShowsControl = false
+    /// The season and episode chosen on the open detail's series page, so a
+    /// refit reopens it there rather than where it first opened.
+    @ObservationIgnored private var itemDetailSeriesSelection: SeriesDetailContext?
 
     /// Opens or restores the detail card in the presentation the window calls
     /// for now. Request details stay sheets: their page has no split layout.
     private func openItemDetail(_ presentation: ItemDetailPresentation?) {
+        if presentation?.id != presentedItemDetail?.id {
+            itemDetailSeriesSelection = nil
+        }
         presentedItemDetail = presentation.map { presentation in
             var presentation = presentation
             presentation.fillsWindow = fillsWindow(presentation)
@@ -234,10 +240,18 @@ final class AppRouter {
     /// remote, or a TV picker is up over the detail, since the move would
     /// close it; each calls this again once it has dismissed.
     func refitItemDetail() {
-        guard presentedPlayer == nil, !itemDetailShowsControl, let presentation = presentedItemDetail,
+        guard presentedPlayer == nil, !itemDetailShowsControl, var presentation = presentedItemDetail,
               presentation.fillsWindow != fillsWindow(presentation)
         else { return }
+        if let selection = itemDetailSeriesSelection {
+            presentation.contentId = selection.seriesContentId
+            presentation.resumeContext = selection
+        }
         openItemDetail(presentation)
+    }
+
+    func itemDetailSeriesSelectionDidChange(_ selection: SeriesDetailContext) {
+        itemDetailSeriesSelection = selection
     }
     #endif
 
