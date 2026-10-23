@@ -35,10 +35,12 @@ struct BufferingSignalMapper {
         /// Media buffered past the playhead, in milliseconds; nil when
         /// unknown, which counts as nothing buffered.
         var bufferedAheadMs: Int? = nil
-        /// The software route reports playing, but its clock has not moved
-        /// for a second while the viewer wants to play, or not past where the
-        /// last seek landed (``SoftwareSeekLanding``). AetherEngine's software
-        /// host pauses its clock to rebuffer without reporting it.
+        /// The engine or AVPlayer reports playing, but the clock has not
+        /// moved for a second while the viewer wants to play, or on the
+        /// software route not past where the last seek landed
+        /// (``SoftwareSeekLanding``). AetherEngine's software host pauses its
+        /// clock to rebuffer without reporting it, and AVPlayer can report
+        /// `.playing` over a held frame while its media has not arrived.
         var playheadFrozen = false
         /// The engine's reader has received nothing from the origin for
         /// `OUTAGE_NO_DATA_MS` (``UpstreamReadMeter``). False on server HLS,
@@ -228,7 +230,7 @@ struct BufferingSignalMapper {
         if s.reachedEnd || s.phase == .ended || !s.wantsToPlay { return .paused }
         if s.seekInFlight || s.phase == .seeking { return planHasRun ? .waiting(.seek) : .waiting(.network) }
         if let native = s.nativeTransport {
-            if native.status == .playing { return .playing }
+            if native.status == .playing, !s.playheadFrozen { return .playing }
         } else if s.phase == .playing, !s.engineBuffering, !s.playheadFrozen {
             return .playing
         }
@@ -240,7 +242,7 @@ struct BufferingSignalMapper {
         // foreground: playback stopped, so a stall in progress ends uncounted.
         if s.nativeTransport?.hasItem == false { return .paused }
         if reason == .waitingForCoordinatedPlayback || reason == .interstitialEvent { return .waiting(.pause) }
-        if s.nativeTransport?.status == .waitingToPlayAtSpecifiedRate || itemStalledSincePlaying {
+        if s.nativeTransport?.status == .waitingToPlayAtSpecifiedRate || itemStalledSincePlaying || s.playheadFrozen {
             return .waiting(.network)
         }
         switch s.phase {
@@ -284,6 +286,40 @@ struct SoftwareSeekLanding {
 
     mutating func reset() {
         landing = nil
+    }
+}
+
+/// Whether the clock has moved since AVPlayer began reporting `.playing`.
+/// AVPlayer reports `.playing` over a frame it holds ready for display
+/// before its clock moves, and on a link far below the bitrate it stays
+/// there for minutes, so until a plan has run only the clock moving shows
+/// that it plays. The item can publish its start position just before, too
+/// recently for the frozen-clock rule to see.
+struct PlayingClockAdvance {
+    /// The clock when `.playing` began, until it moves past it.
+    private var playingFrom: Double?
+    private(set) var hasMoved = false
+
+    /// Takes the transport's current facts: whether it reports `.playing`,
+    /// and the clock.
+    mutating func note(playing: Bool, clock: Double) {
+        guard playing else {
+            reset()
+            return
+        }
+        guard !hasMoved, clock.isFinite else { return }
+        if let playingFrom {
+            hasMoved = clock > playingFrom
+        } else {
+            playingFrom = clock
+        }
+    }
+
+    /// A plan was adopted: AVPlayer can keep its rate across the item it
+    /// replaces, so the new plan's clock is watched afresh.
+    mutating func reset() {
+        playingFrom = nil
+        hasMoved = false
     }
 }
 

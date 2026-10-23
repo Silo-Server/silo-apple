@@ -400,6 +400,10 @@ class PlayerViewModel {
     /// Where the software route's last seek landed, until its clock moves on.
     @ObservationIgnored
     private var softwareSeekLanding = SoftwareSeekLanding()
+    /// Whether the native clock has moved since AVPlayer began reporting
+    /// `.playing`.
+    @ObservationIgnored
+    private var playingClockAdvance = PlayingClockAdvance()
     /// Since when the engine has held no media ahead of its clock, sampled
     /// while the source is stalled. nil while media is buffered ahead.
     @ObservationIgnored
@@ -10323,6 +10327,10 @@ extension PlayerViewModel {
         } else {
             softwareSeekLanding.reset()
         }
+        playingClockAdvance.note(
+            playing: aetherPlaybackController.nativeTransport?.status == .playing,
+            clock: aetherPlaybackController.engine.currentTime
+        )
         let calls = bufferingSignals.update(bufferingSignalSnapshot)
         if bufferingSignals.state == .playing {
             bufferingReloadEpoch = nil
@@ -10344,9 +10352,9 @@ extension PlayerViewModel {
                 bufferingQuality.playing()
             case .waiting(let cause):
                 Self.logger.debug("[CMP-BUFFERING] waiting cause=\(String(describing: cause), privacy: .public)")
-                // The software route's stall is seen only once its playhead has
-                // been still for a while; it began when the playhead stopped.
-                let startedAgoMs = cause == .network ? softwarePlayheadFrozenMs ?? 0 : 0
+                // A stall seen only once the playhead has been still for a
+                // while began when the playhead stopped.
+                let startedAgoMs = cause == .network ? playheadFrozenMs ?? 0 : 0
                 bufferingQuality.waiting(cause: cause, startedAgoMs: startedAgoMs)
             case .paused:
                 bufferingQuality.paused()
@@ -10383,7 +10391,7 @@ extension PlayerViewModel {
             // Media trouble only: a failed API call is not a media request.
             connectionTrouble: connectionState != .connected || !monitor.isDeviceOnline,
             bufferedAheadMs: engineBufferedAheadMs,
-            playheadFrozen: softwarePlayheadFrozenMs != nil || softwareSeekLanding.awaitsAdvance,
+            playheadFrozen: playheadFrozenMs != nil || softwareSeekLanding.awaitsAdvance || nativeStartHeld,
             upstreamSilent: upstreamMeter.isSilent(atMs: bufferingClock.elapsedMs)
         )
     }
@@ -10542,18 +10550,34 @@ extension PlayerViewModel {
         activeAetherLoadEpoch != nil && !isAudioOnlyAetherLoad && aetherPlaybackController.nativeTransport == nil
     }
 
-    /// The software route's engine reports playing, but its clock has not
-    /// moved for `PlayerStallPresentation.frozenPlayheadThreshold` while the
-    /// viewer wants to play: it is rebuffering. The renderer-wait rule then
-    /// tells a starved network from a slow decoder by what is buffered.
-    /// How long the frozen playhead has been still, in milliseconds, or nil
-    /// while it moves.
-    private var softwarePlayheadFrozenMs: Int? {
-        guard isSoftwareVideoRoute, aetherPhase == .playing, aetherPlaybackController.shouldPlayWhenReady,
+    /// The engine's software host, or AVPlayer on the native route, reports
+    /// playing, but the clock has not moved for
+    /// `PlayerStallPresentation.frozenPlayheadThreshold` while the viewer
+    /// wants to play: it is waiting for media. The software host pauses its
+    /// clock to rebuffer without reporting it, and AVPlayer can report
+    /// `.playing` over a frame it holds while Aether's loopback server waits
+    /// on a slow origin. The renderer-wait rule then tells a starved network
+    /// from a slow decoder by what is buffered. How long the frozen playhead
+    /// has been still, in milliseconds, or nil while it moves.
+    private var playheadFrozenMs: Int? {
+        guard activeAetherLoadEpoch != nil, !isAudioOnlyAetherLoad, aetherPlaybackController.shouldPlayWhenReady,
               let movedAt = playheadSample?.movedAt else { return nil }
+        if let native = aetherPlaybackController.nativeTransport {
+            guard native.status == .playing else { return nil }
+        } else {
+            guard aetherPhase == .playing else { return nil }
+        }
         let still = movedAt.duration(to: .now)
         guard still >= PlayerStallPresentation.frozenPlayheadThreshold else { return nil }
         return still.wholeMilliseconds
+    }
+
+    /// Before the plan has run, AVPlayer reports `.playing` on a clock that
+    /// has not moved since: it holds a frame, and the start still waits.
+    private var nativeStartHeld: Bool {
+        !bufferingSignals.planHasRun
+            && aetherPlaybackController.nativeTransport?.status == .playing
+            && !playingClockAdvance.hasMoved
     }
 
     private var needsBufferingSignalPoll: Bool {
@@ -10561,7 +10585,8 @@ extension PlayerViewModel {
         if bufferingSignals.outageAwaitsData { return true }
         switch bufferingSignals.state {
         case .waiting(.renderer): return true
-        case .playing: return isSoftwareVideoRoute
+        // A frozen clock is seen only by looking.
+        case .playing: return activeAetherLoadEpoch != nil && !isAudioOnlyAetherLoad
         default: return false
         }
     }
@@ -10694,6 +10719,7 @@ extension PlayerViewModel {
         // The new plan hears whether playback is already waiting.
         bufferingSignals.planAdopted()
         softwareSeekLanding.reset()
+        playingClockAdvance.reset()
         armStartDeadline()
         syncBufferingQualitySignals()
     }

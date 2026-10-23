@@ -504,16 +504,47 @@ final class BufferingSignalMapperTests: XCTestCase {
     }
 
     /// AetherEngine's software host pauses its clock to rebuffer without
-    /// reporting it, so a playing engine whose clock stopped is waiting.
-    func testAFrozenSoftwareClockIsAWait() {
+    /// reporting it, and AVPlayer can report `.playing` over a held frame:
+    /// a playing transport whose clock stopped is waiting, on each route.
+    func testAFrozenClockIsAWait() {
+        for native in [nil, Self.avPlaying] {
+            var mapper = BufferingSignalMapper()
+            let route = native == nil ? "software" : "AVPlayer"
+            XCTAssertEqual(mapper.update(Self.snapshot(native: native)), [.playing], route)
+            XCTAssertEqual(mapper.update(Self.snapshot(native: native, frozen: true)), [.waiting(.network)], route)
+            XCTAssertEqual(mapper.update(Self.snapshot(native: native)), [.playing], "\(route): the clock moved again")
+            XCTAssertEqual(
+                mapper.update(Self.snapshot(native: native, bufferedMs: 5_000, frozen: true)), [.waiting(.renderer)],
+                "\(route): the decoder is behind, with media buffered"
+            )
+        }
+    }
+
+    /// A start on a link far below the bitrate (bedroom Apple TV, 5 Mbps for
+    /// 25.7 Mbps): AVPlayer reports `.playing` over the first frame and its
+    /// clock never moves. That is the start's wait, not playback, until the
+    /// clock moves on from where it stood, however recently the item
+    /// published its start position.
+    func testAVPlayerPlayingOverAHeldFrameIsTheStartsWait() {
+        var advance = PlayingClockAdvance()
         var mapper = BufferingSignalMapper()
-        XCTAssertEqual(mapper.update(Self.snapshot()), [.playing])
-        XCTAssertEqual(mapper.update(Self.snapshot(frozen: true)), [.waiting(.network)], "starved")
-        XCTAssertEqual(mapper.update(Self.snapshot()), [.playing], "the clock moved again")
-        XCTAssertEqual(
-            mapper.update(Self.snapshot(bufferedMs: 5_000, frozen: true)), [.waiting(.renderer)],
-            "the decoder is behind, with media buffered"
-        )
+        mapper.planAdopted()
+        func update(_ native: Transport, clock: Double) -> [BufferingSignalMapper.Call] {
+            advance.note(playing: native.status == .playing, clock: clock)
+            let held = !mapper.planHasRun && native.status == .playing && !advance.hasMoved
+            return mapper.update(Self.snapshot(phase: .loading, native: native, frozen: held))
+        }
+        XCTAssertEqual(update(Self.avWaiting(.toMinimizeStalls), clock: 1_152.4), [.waiting(.network)])
+        XCTAssertEqual(update(Self.avPlaying, clock: 1_152.4), [], "a held frame")
+        XCTAssertEqual(update(Self.avPlaying, clock: 1_152.4), [])
+        XCTAssertFalse(mapper.planHasRun)
+        XCTAssertEqual(update(Self.avPlaying, clock: 1_152.5), [.playing])
+        XCTAssertTrue(mapper.planHasRun)
+
+        advance.reset()
+        mapper.planAdopted()
+        XCTAssertEqual(update(Self.avPlaying, clock: 40), [.waiting(.network)], "a replacement under the same rate")
+        XCTAssertEqual(update(Self.avPlaying, clock: 40.1), [.playing])
     }
 
     func testInvalidateReportsTheCurrentStateAgain() {
