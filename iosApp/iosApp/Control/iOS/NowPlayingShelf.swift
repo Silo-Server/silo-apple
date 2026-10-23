@@ -45,6 +45,10 @@ struct NowPlayingShelf: View {
 /// iOS 26 uses the native Liquid Glass accessory; iOS 18 uses the card-styled
 /// shelf in a safe-area inset. Nothing is attached while playback is idle.
 struct NowPlayingShelfAttachment: ViewModifier {
+    /// Shows the shelf as a card above the page instead of the tab bar
+    /// accessory, for layouts that hide the system tab bar.
+    var showsCard = false
+
     @Environment(SiloControlClient.self) private var siloControl
     @Environment(AudioPlaybackStore.self) private var audioStore
 
@@ -55,11 +59,18 @@ struct NowPlayingShelfAttachment: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.1, *) {
             // Toggling `isEnabled` keeps the TabView's structural identity, so
-            // tabs keep their state when playback starts or stops.
-            content.tabViewBottomAccessory(isEnabled: isActive) {
-                NowPlayingShelf(style: .accessory)
-                    .modifier(NowPlayingAccessoryPlacementReader())
-            }
+            // tabs keep their state when playback starts or stops, or when
+            // the layout switches between the accessory and the card.
+            content
+                .tabViewBottomAccessory(isEnabled: isActive && !showsCard) {
+                    NowPlayingShelf(style: .accessory)
+                        .modifier(NowPlayingAccessoryPlacementReader())
+                }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if isActive && showsCard {
+                        NowPlayingShelf(style: .card)
+                    }
+                }
         } else if #available(iOS 26.0, *) {
             if isActive {
                 content.tabViewBottomAccessory {

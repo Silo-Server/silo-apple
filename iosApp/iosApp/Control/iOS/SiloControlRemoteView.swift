@@ -2,6 +2,34 @@
 import Foundation
 import SwiftUI
 
+extension View {
+    /// Shows the TV remote as a sheet, or over the whole window where an
+    /// iPhone sheet can't fill it. On the iPhone Duo's open display iOS 27.1
+    /// caps a sheet at about 650pt wide, and on its folded screen the sheet
+    /// is an inset card with the page showing at its edges, so on both the
+    /// remote covers the window. Its Minimize button closes it.
+    func siloRemoteControl(
+        isPresented: Binding<Bool>,
+        coversWindow: Bool,
+        controller: SiloControlClient
+    ) -> some View {
+        let covers = coversWindow && UIDevice.current.userInterfaceIdiom == .phone
+        return sheet(isPresented: Binding(
+            get: { isPresented.wrappedValue && !covers },
+            set: { isPresented.wrappedValue = $0 }
+        )) {
+            SiloControlRemoteView(controller: controller)
+                .presentationDetents([.large])
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { isPresented.wrappedValue && covers },
+            set: { isPresented.wrappedValue = $0 }
+        )) {
+            SiloControlRemoteView(controller: controller)
+        }
+    }
+}
+
 /// Full-screen TV remote: connection states, toolbar, and hardware-volume
 /// interception around `RemoteNowPlayingContent`.
 struct SiloControlRemoteView: View {
@@ -219,6 +247,22 @@ private struct RemoteNowPlayingContent: View {
     @State private var scrubSettleTask: Task<Void, Never>?
 
     var body: some View {
+        GeometryReader { proxy in
+            if Self.splits(proxy.size) {
+                splitLayout
+            } else {
+                stackedLayout
+            }
+        }
+    }
+
+    /// A wide, short window (the iPhone Duo's open display) puts what's
+    /// playing beside the controls instead of stacking them in its height.
+    static func splits(_ size: CGSize) -> Bool {
+        size.width >= 700 && size.width >= size.height * 1.2
+    }
+
+    private var stackedLayout: some View {
         VStack(spacing: 0) {
             artwork
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -229,12 +273,44 @@ private struct RemoteNowPlayingContent: View {
             transport.padding(.top, 20)
             volumeRow.padding(.top, 20)
             secondaryControls.padding(.top, 20)
-            if let error = state.error, !error.isEmpty {
-                errorBanner(error).padding(.top, 12)
-            }
+            errorRow
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 12)
+    }
+
+    private var splitLayout: some View {
+        HStack(spacing: 48) {
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                artwork
+                titleBlock.padding(.top, 20)
+                playingOnPill.padding(.top, 10)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity)
+
+            // Controls sit at the bottom, within reach of the thumbs.
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                scrubber
+                transport.padding(.top, 32)
+                volumeRow.padding(.top, 32)
+                secondaryControls.padding(.top, 32)
+                errorRow
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 32)
+        .padding(.top, 16)
+        .padding(.bottom, 24)
+    }
+
+    @ViewBuilder
+    private var errorRow: some View {
+        if let error = state.error, !error.isEmpty {
+            errorBanner(error).padding(.top, 12)
+        }
     }
 
     private var artwork: some View {

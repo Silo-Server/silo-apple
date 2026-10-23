@@ -254,6 +254,9 @@ struct LibrariesTabView: View {
     @State private var appliedScopeID: String?
 
     @Environment(AppRouter.self) private var router
+    #if os(iOS)
+    @Environment(\.statusColumn) private var statusColumn
+    #endif
 
     init(
         category: PrimaryMenuBuiltin? = nil,
@@ -343,6 +346,11 @@ struct LibrariesTabView: View {
             .environment(chromeScrollState)
             .safeAreaInset(edge: .top, spacing: 0) {
                 topChrome(activeLibrary: activeLibrary)
+                    // The title and tab selector share one rounded panel.
+                    .pageChromeBacking(
+                        scrollState: chromeScrollState,
+                        outset: EdgeInsets(top: 0, leading: -8, bottom: -8, trailing: -8)
+                    )
                     // Same scroll-driven glass as the Detail page chrome so
                     // the selector and actions stay legible over posters.
                     .background {
@@ -365,7 +373,22 @@ struct LibrariesTabView: View {
 
     @ViewBuilder
     private func topChrome(activeLibrary: Library) -> some View {
-        VStack(spacing: 0) {
+        if centersHeader {
+            // The title and tabs center as one block, the title lined up
+            // with the first tab, while they fit side by side.
+            ViewThatFits(in: .horizontal) {
+                headerStack(activeLibrary: activeLibrary, scrollsTabs: false)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(maxWidth: .infinity)
+                headerStack(activeLibrary: activeLibrary, scrollsTabs: true)
+            }
+        } else {
+            headerStack(activeLibrary: activeLibrary, scrollsTabs: true)
+        }
+    }
+
+    private func headerStack(activeLibrary: Library, scrollsTabs: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
             LibrariesTopBar(
                 activeLibrary: activeLibrary,
                 canSwitch: canSwitchLibraries,
@@ -380,15 +403,25 @@ struct LibrariesTabView: View {
                 onSignOut: { router.signOutAndReset() }
             )
             .padding(.horizontal, SiloTheme.padding)
-            .padding(.top, SiloTheme.smallPadding)
+            .padding(.top, centersHeader ? SiloTheme.padding : SiloTheme.smallPadding)
             .padding(.bottom, SiloTheme.smallPadding)
 
             if activeLibrary.isMixedLibrary && category != .movies && category != .series {
                 LibraryVideoScopePicker(selection: $selectedVideoScope)
             }
-            LibraryPageTabSelector(selectedTab: $selectedTab)
+            LibraryPageTabSelector(selectedTab: $selectedTab, scrolls: scrollsTabs)
                 .padding(.bottom, SiloTheme.padding)
         }
+    }
+
+    /// The iPhone Duo's cover screen moves the header actions into the
+    /// status column, leaving the title and tabs alone in a rounded panel.
+    private var centersHeader: Bool {
+        #if os(iOS)
+        statusColumn != nil
+        #else
+        false
+        #endif
     }
 
     private func videoScope(for library: Library) -> LibraryVideoScope? {

@@ -104,11 +104,14 @@ struct PhoneDetailTopChrome: View {
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     /// The chrome spans the detail page, so its width is the hero's width.
     @State private var pageWidth: CGFloat = 0
+    #if os(iOS)
+    @State private var statusColumn: StatusColumnLayout?
+    #endif
 
     /// Follows the hero's own compact/expanded choice, so the strip and the
     /// title arrive as that hero's title scrolls away.
     private var scrollGlass: PhoneDetailScrollGlassTiming? {
-        guard isScrollGlassEnabled else { return nil }
+        guard isScrollGlassEnabled, !isBesideStatusColumn else { return nil }
         return .forHero(isExpanded: PhoneDetailHeroLayout.usesExpandedLayout(
             availableWidth: pageWidth,
             horizontalSizeClass: horizontalSizeClass,
@@ -143,24 +146,64 @@ struct PhoneDetailTopChrome: View {
 
                 Spacer(minLength: 20)
 
-                if let trailingSystemName, let onTrailingTap {
-                    Button(action: onTrailingTap) {
-                        controlIcon(systemName: trailingSystemName, size: 16)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Remote Control")
+                if !isBesideStatusColumn {
+                    trailingButton
                 }
             }
             .padding(.horizontal, 18)
             .padding(.top, 9)
         }
+        #if os(iOS)
+        .overlay(alignment: statusColumn?.edge == .leading ? .topLeading : .topTrailing) {
+            if let statusColumn {
+                // In the status column, where the tab pages keep the same
+                // action under the time and connection status.
+                trailingButton
+                    .statusColumnCentered(statusColumn)
+                    .padding(.top, StatusColumnBar.actionsTop - Self.cardTopInset)
+                    .ignoresSafeArea(edges: statusColumn.edgeSet)
+            }
+        }
+        #endif
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
             guard abs(width - pageWidth) > 1 else { return }
             pageWidth = width
         }
+        #if os(iOS)
+        .onGeometryChange(for: StatusColumnLayout?.self) { proxy in
+            StatusColumnLayout(safeArea: proxy.safeAreaInsets)
+        } action: { column in
+            statusColumn = column
+        }
+        #endif
         .zIndex(20)
+    }
+
+    /// Beside the iPhone Duo's status column the buttons keep their own
+    /// glass and no strip runs across the top: a strip there ends at the
+    /// column in a hard edge.
+    private var isBesideStatusColumn: Bool {
+        #if os(iOS)
+        statusColumn != nil
+        #else
+        false
+        #endif
+    }
+
+    /// How far below the top of the screen the detail card starts.
+    private static let cardTopInset: CGFloat = 8
+
+    @ViewBuilder
+    private var trailingButton: some View {
+        if let trailingSystemName, let onTrailingTap {
+            Button(action: onTrailingTap) {
+                controlIcon(systemName: trailingSystemName, size: 16)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Remote Control")
+        }
     }
 
     private func controlIcon(systemName: String, size: CGFloat) -> some View {
@@ -372,6 +415,9 @@ private struct ItemDetailPhoneContent: View {
     @State private var isSplitPage = false
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     #if os(iOS)
+    /// Beside the iPhone Duo's status column, where the TV remote covers the
+    /// window.
+    @State private var isBesideStatusColumn = false
     @Environment(SiloControlClient.self) private var siloControl
     @State private var controlRequestBox: ControlRequestBox?
     /// The cast button's in-flight watch-state read. A second tap replaces it.
@@ -570,16 +616,22 @@ private struct ItemDetailPhoneContent: View {
         } action: { isSplit in
             isSplitPage = isSplit
         }
+        .onGeometryChange(for: Bool.self) { proxy in
+            StatusColumnLayout(safeArea: proxy.safeAreaInsets) != nil
+        } action: { besideColumn in
+            isBesideStatusColumn = besideColumn
+        }
         .sheet(item: $controlRequestBox) { box in
             SiloControlTargetPickerView(request: box.request, controller: siloControl)
         }
         .sheet(isPresented: $isShowingControlPicker) {
             SiloControlTargetPickerView(request: nil, controller: siloControl)
         }
-        .sheet(isPresented: $isShowingRemoteControl) {
-            SiloControlRemoteView(controller: siloControl)
-                .presentationDetents([.large])
-        }
+        .siloRemoteControl(
+            isPresented: $isShowingRemoteControl,
+            coversWindow: router.presentsItemDetailFullWindow || isBesideStatusColumn,
+            controller: siloControl
+        )
         #endif
     }
 

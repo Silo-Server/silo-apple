@@ -26,7 +26,12 @@ struct HomeView: View {
     /// Breathing room between the status-bar safe area and the floating
     /// header. Uses the same value as the Libraries and For You top chrome so
     /// the shared action cluster sits at one height on every root page.
-    private let headerTopInset: CGFloat = SiloTheme.smallPadding
+    /// Beside the iPhone Duo's status column there is no action cluster, and
+    /// the extra room keeps the logo's glass pill off the screen's corner.
+    private var headerTopInset: CGFloat {
+        SiloTheme.smallPadding + (statusColumn == nil ? 0 : 6)
+    }
+    @Environment(\.statusColumn) private var statusColumn
     /// The LazyVStack already contributes its normal section spacing after the
     /// header runway. Adding a second large header gap pushed the first row
     /// far down the screen.
@@ -132,6 +137,13 @@ struct HomeView: View {
                 #if !os(macOS)
                 SiloWordmarkView(width: 72)
                     .frame(height: SiloTheme.topBarIconHitSize)
+                    .pageChromeBacking(
+                        scrollState: chromeScrollState,
+                        outset: EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16)
+                    )
+                    #if os(iOS)
+                    .padding(.leading, statusColumn == nil ? 0 : 8)
+                    #endif
                 #endif
                 Spacer(minLength: 8)
 

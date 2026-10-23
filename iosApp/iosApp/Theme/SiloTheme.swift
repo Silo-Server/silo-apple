@@ -139,7 +139,10 @@ enum SiloTheme {
     static let thumbnailCardWidth: CGFloat = 260
     static let thumbnailCardHeight: CGFloat = 146
     #else
-    static let posterCardWidth: CGFloat = 120
+    // A true 2:3 at Home's poster size, so rows, grids, and collections all
+    // show the whole poster at one shape. Grids shrink cards to fit three
+    // columns but keep the shape.
+    static let posterCardWidth: CGFloat = 132
     static let posterCardHeight: CGFloat = 198
     static let thumbnailCardWidth: CGFloat = 160
     static let thumbnailCardHeight: CGFloat = 90

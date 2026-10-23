@@ -2373,6 +2373,9 @@ struct MainTabView: View {
     /// Whether the app's window fills its screen. Split View, Slide Over,
     /// Stage Manager, and resized windows all report `false`.
     @State private var windowFillsScreen = WindowSceneFullScreenReader.currentWindowFillsScreen()
+    /// Set on the iPhone Duo's folded screen, where navigation moves into
+    /// the status column beside the page.
+    @State private var statusColumn: StatusColumnLayout?
     #endif
 
     var body: some View {
@@ -2395,6 +2398,9 @@ struct MainTabView: View {
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
         }
+        .onGeometryChange(for: StatusColumnLayout?.self) { proxy in
+            StatusColumnLayout(safeArea: proxy.safeAreaInsets)
+        } action: { statusColumn = $0 }
         #endif
         .tint(.siloOnSurface)
         #if os(iOS)
@@ -2409,6 +2415,8 @@ struct MainTabView: View {
                     .overlay(Color.siloGlassStrong.opacity(0.92))
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
+                    // A sideways swipe on the card reveals the page it returns to.
+                    .opacity(1 - router.itemDetailSwipeProgress)
                     .transition(.opacity)
             }
         }
@@ -2519,7 +2527,13 @@ struct MainTabView: View {
         .modifier(AudioPlayerPresentationModifier(router: router))
         .modifier(PlayerPresentationModifier(router: router))
         .sheet(
-            item: $router.presentedItemDetail,
+            item: itemDetailBinding(coversWindow: false),
+            onDismiss: { router.itemDetailPresentationDidDismiss() }
+        ) { presentation in
+            itemDetail(presentation)
+        }
+        .fullScreenCover(
+            item: itemDetailBinding(coversWindow: true),
             onDismiss: { router.itemDetailPresentationDidDismiss() }
         ) { presentation in
             itemDetail(presentation)
@@ -2528,14 +2542,20 @@ struct MainTabView: View {
             PhoneDetailHeroLayout.usesSplitLayout(pageSize: proxy.size, verticalSizeClass: vSize)
         } action: { splitsDetail in
             router.presentsItemDetailFullWindow = splitsDetail
+            // A detail opened on the iPhone Duo's folded screen would stay a
+            // capped card with black bars beside it once unfolded.
+            if !audioStore.isShowingFullPlayer {
+                router.refitItemDetail()
+            }
         }
-        .sheet(isPresented: Binding(
-            get: { siloControl.isShowingRemoteControl },
-            set: { if !$0 { siloControl.hideRemoteControl() } }
-        )) {
-            SiloControlRemoteView(controller: siloControl)
-                .presentationDetents([.large])
-        }
+        .siloRemoteControl(
+            isPresented: Binding(
+                get: { siloControl.isShowingRemoteControl },
+                set: { if !$0 { siloControl.hideRemoteControl() } }
+            ),
+            coversWindow: router.presentsItemDetailFullWindow || statusColumn != nil,
+            controller: siloControl
+        )
         #endif
         // Outside the presentation modifiers so presented covers (audio
         // player, video player) inherit the router — ErrorView requires
@@ -2593,6 +2613,29 @@ struct MainTabView: View {
 
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.verticalSizeClass) private var vSize
+
+    #if os(iOS)
+    /// The open detail, routed to the presentation it opened in. iOS 27.1
+    /// caps an iPhone sheet at about 650pt wide, so a detail that should
+    /// fill the window (the iPhone Duo's open display) opens as a cover
+    /// there. iPad sheets fill the window, so iPad keeps the sheet.
+    private func itemDetailBinding(coversWindow: Bool) -> Binding<AppRouter.ItemDetailPresentation?> {
+        func belongsHere(_ presentation: AppRouter.ItemDetailPresentation) -> Bool {
+            (presentation.fillsWindow && UIDevice.current.userInterfaceIdiom == .phone) == coversWindow
+        }
+        return Binding(
+            get: { router.presentedItemDetail.flatMap { belongsHere($0) ? $0 : nil } },
+            set: { newValue in
+                // The host the detail just left must not close it as it
+                // moves to the other one (see `refitItemDetail`).
+                if newValue == nil, let current = router.presentedItemDetail, !belongsHere(current) {
+                    return
+                }
+                router.presentedItemDetail = newValue
+            }
+        )
+    }
+    #endif
 
     /// Passes the audio store in explicitly. When the iPad app runs on a Mac,
     /// presented content doesn't inherit it, and the detail's audio player
@@ -2703,6 +2746,9 @@ struct MainTabView: View {
                         value: destination.id
                     ) {
                         destinationContent(for: destination)
+                            #if os(iOS)
+                            .toolbar(statusColumn == nil ? .automatic : .hidden, for: .tabBar)
+                            #endif
                     }
                 }
             }
@@ -2710,11 +2756,45 @@ struct MainTabView: View {
                 routeContent(for: route)
             }
             #if os(iOS)
+            .environment(\.statusColumn, statusColumn)
             .siloTabBarMinimizeOnScroll()
-            .modifier(NowPlayingShelfAttachment())
+            .modifier(NowPlayingShelfAttachment(showsCard: statusColumn != nil))
+            // Outside the shelf's bottom inset, which would otherwise shorten
+            // the column and push its actions up into the system status.
+            .overlay {
+                if let statusColumn {
+                    statusColumnBar(statusColumn)
+                }
+            }
             #endif
         }
     }
+
+    #if os(iOS)
+    private func statusColumnBar(_ layout: StatusColumnLayout) -> some View {
+        // Fill the page first, then grow into the safe area, so the bar
+        // lands inside the column rather than at the edge of the page.
+        HStack(spacing: 0) {
+            if layout.edge == .trailing { Spacer(minLength: 0) }
+            StatusColumnBar(
+                layout: layout,
+                destinations: visibleDestinations,
+                selection: $selectedDestinationID,
+                topBarActions: TabTopBarActions(
+                    onSearch: { router.navigate(to: .search) },
+                    onOpenSettings: { router.navigate(to: .settings) },
+                    onOpenRequests: { router.navigate(to: .requestsHub) },
+                    onSwitchProfile: { router.switchProfile() },
+                    onSwitchServer: { router.navigate(to: .serverList) },
+                    onSignOut: { router.signOutAndReset() },
+                    axis: .vertical
+                )
+            )
+            if layout.edge == .leading { Spacer(minLength: 0) }
+        }
+        .ignoresSafeArea()
+    }
+    #endif
 
     /// iPad regular width: the native sidebar overlays the detail pane without
     /// changing its original system material or row-selection appearance.
@@ -3246,6 +3326,10 @@ private struct ItemDetailSheet: View {
                         width: geometry.size.width,
                         height: geometry.size.height + geometry.safeAreaInsets.bottom
                     )
+                    .detailSwipeBack(
+                        onProgress: { router.itemDetailSwipeProgress = $0 },
+                        onDismiss: router.dismissItemDetail
+                    )
             }
                 .navigationDestination(for: Route.self) { route in
                     destination(for: route)
@@ -3261,9 +3345,10 @@ private struct ItemDetailSheet: View {
         .ignoresSafeArea(.container, edges: .bottom)
         // A page-sized sheet avoids the narrow form-card treatment on iPad,
         // while the large detent raises the rounded card to the top safe area.
-        // A wide, short window (iPad or iPhone Duo in landscape) gets a sheet
-        // as large as the window instead, so the split page has room. Either
-        // way native pull-down dismissal returns to the exact source page.
+        // A wide, short iPad window gets a sheet as large as the window
+        // instead, so the split page has room; an iPhone in that shape gets a
+        // full-screen cover (see `itemDetailBinding`). Native pull-down
+        // dismissal returns to the exact source page.
         .presentationSizing(ItemDetailSheetSizing(fillsWindow: presentation.fillsWindow))
         .presentationDetents([.large])
         // Nested pages handle a top pull as Back. The sheet's native dismiss

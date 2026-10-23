@@ -33,11 +33,34 @@ struct PageChromeGlass: View {
     let scrollState: PageChromeScrollState
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    #if os(iOS)
+    @Environment(\.statusColumn) private var statusColumn
+    #endif
 
+    @ViewBuilder
     var body: some View {
         #if os(tvOS)
         EmptyView()
         #else
+        if showsStrip {
+            strip
+        }
+        #endif
+    }
+
+    /// Beside the iPhone Duo's status column the strip would end at the
+    /// column in a hard edge, so the header's own content carries rounded
+    /// glass there instead (see `pageChromeBacking`).
+    private var showsStrip: Bool {
+        #if os(iOS)
+        statusColumn == nil
+        #else
+        true
+        #endif
+    }
+
+    #if !os(tvOS)
+    private var strip: some View {
         PageChromeStaticGlass(reduceTransparency: reduceTransparency)
             .equatable()
             .opacity(
@@ -71,20 +94,72 @@ struct PageChromeGlass: View {
             #endif
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+    }
+    #endif
+}
+
+extension View {
+    /// Rounded glass behind a header's leading content, used only beside
+    /// the iPhone Duo's status column, where the page has no full-width
+    /// strip. It fades in on the strip's schedule. `outset` extends the
+    /// glass past the content without moving it; negative values inset it.
+    @ViewBuilder
+    func pageChromeBacking(scrollState: PageChromeScrollState, outset: EdgeInsets) -> some View {
+        #if os(iOS)
+        background {
+            PageChromeBackingGlass(scrollState: scrollState, outset: outset)
+        }
+        #else
+        self
         #endif
     }
 }
 
-private struct PageChromeStaticGlass: View, Equatable {
-    let reduceTransparency: Bool
+#if os(iOS)
+private struct PageChromeBackingGlass: View {
+    let scrollState: PageChromeScrollState
+    let outset: EdgeInsets
+
+    @Environment(\.statusColumn) private var statusColumn
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
+        if statusColumn != nil {
+            PageChromeStaticGlass(reduceTransparency: reduceTransparency, cornerRadius: 28)
+                .equatable()
+                .padding(EdgeInsets(
+                    top: -outset.top,
+                    leading: -outset.leading,
+                    bottom: -outset.bottom,
+                    trailing: -outset.trailing
+                ))
+                .opacity(
+                    pageChromeSmoothProgress(
+                        scrollState.offset,
+                        from: PageChromeGlass.fadeStart,
+                        to: PageChromeGlass.fadeEnd
+                    )
+                )
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+}
+#endif
+
+private struct PageChromeStaticGlass: View, Equatable {
+    let reduceTransparency: Bool
+    var cornerRadius: CGFloat = 0
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if reduceTransparency {
             Color(white: 0.16).opacity(0.98)
+                .clipShape(shape)
         } else {
             Color.clear
-                .siloGlass(in: Rectangle(), tint: Color.black.opacity(0.10))
-                .overlay(Color.white.opacity(0.025))
+                .siloGlass(in: shape, tint: Color.black.opacity(0.10))
+                .overlay(Color.white.opacity(0.025).clipShape(shape))
         }
     }
 }

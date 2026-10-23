@@ -172,10 +172,11 @@ final class AppRouter {
         /// Set when the card opens on a request detail (a TMDB title) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let request: RequestRoot?
-        /// Presented as a sheet as large as the window instead of a page
-        /// sheet. Fixed when the detail opens (see `presentsItemDetailFullWindow`), so folding
-        /// or rotating never swaps the presentation, and the player above it,
-        /// out from under the user.
+        /// Presented as large as the window instead of as a page sheet: a
+        /// window-sized sheet on iPad, a full-screen cover on iPhone, where
+        /// iOS 27.1 caps sheets well short of the iPhone Duo's open display.
+        /// Set when the detail opens and refit when the window changes shape
+        /// (see `refitItemDetail`), except under a player.
         var fillsWindow = false
 
         struct RequestRoot: Equatable {
@@ -201,6 +202,9 @@ final class AppRouter {
     #if os(iOS)
     var presentedItemDetail: ItemDetailPresentation?
     var itemDetailPath = NavigationPath()
+    /// How far a sideways swipe has moved the detail card aside, from 0 to
+    /// 1. The glass that hides the page under the card fades to match.
+    var itemDetailSwipeProgress: CGFloat = 0
     /// Kept current by the tab view: true while its window would split a
     /// detail page (see `PhoneDetailHeroLayout.usesSplitLayout`), as on an
     /// iPad or the iPhone Duo's open display held in landscape. A page sheet
@@ -213,9 +217,23 @@ final class AppRouter {
     private func openItemDetail(_ presentation: ItemDetailPresentation?) {
         presentedItemDetail = presentation.map { presentation in
             var presentation = presentation
-            presentation.fillsWindow = presentsItemDetailFullWindow && presentation.request == nil
+            presentation.fillsWindow = fillsWindow(presentation)
             return presentation
         }
+    }
+
+    private func fillsWindow(_ presentation: ItemDetailPresentation) -> Bool {
+        presentsItemDetailFullWindow && presentation.request == nil
+    }
+
+    /// Moves an open detail to the presentation the window now calls for,
+    /// as when the iPhone Duo unfolds. Skipped while a player is up: it is
+    /// presented from the detail, so the move would close it.
+    func refitItemDetail() {
+        guard presentedPlayer == nil, let presentation = presentedItemDetail,
+              presentation.fillsWindow != fillsWindow(presentation)
+        else { return }
+        openItemDetail(presentation)
     }
     #endif
 
@@ -702,6 +720,7 @@ final class AppRouter {
         #if os(iOS)
         presentedItemDetail = nil
         itemDetailPath = NavigationPath()
+        itemDetailSwipeProgress = 0
         #endif
     }
 

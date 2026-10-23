@@ -54,12 +54,27 @@ struct PhoneDetailPageLayout<Column: View, PaneHero: View, PaneContent: View>: V
         // The Mac surface keeps its leading inset to stay clear of the sidebar.
         .ignoresSafeArea(edges: .top)
         #else
-        .ignoresSafeArea(edges: [.top, .horizontal])
+        // Beside the iPhone Duo's status column the page keeps clear of it,
+        // and only the hero artwork reaches underneath (see PhoneDetailHero).
+        .ignoresSafeArea(edges: statusColumn == nil ? [.top, .horizontal] : .top)
+        .scrollClipDisabled(statusColumn != nil)
+        .environment(\.statusColumn, statusColumn)
         #endif
         .coordinateSpace(name: PhoneDetailScrollCoordinateSpace.name)
         .detailScrollDismissal()
         .phoneDetailScrollTracking(scrollState)
     }
+
+    #if os(iOS)
+    private var statusColumn: StatusColumnLayout? {
+        StatusColumnLayout(safeArea: EdgeInsets(
+            top: topSafeArea,
+            leading: page.leadingInset,
+            bottom: 0,
+            trailing: page.trailingInset
+        ))
+    }
+    #endif
 
     private var split: some View {
         HStack(spacing: 0) {

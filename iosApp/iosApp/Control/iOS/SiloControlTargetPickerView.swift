@@ -21,6 +21,7 @@ struct SiloControlTargetPickerView: View {
                 }
             }
             .siloSheetBackground()
+            .statusColumnSheetWidth()
             .navigationTitle("Remote Control")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

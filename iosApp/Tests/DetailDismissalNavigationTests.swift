@@ -674,4 +674,21 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertFalse(DetailDismissalPolicy.shouldCompleteBack(translation: .init(x: 0, y: -10), velocity: .zero))
         XCTAssertFalse(DetailDismissalPolicy.shouldCompleteBack(translation: .init(x: 120, y: 110), velocity: .zero))
     }
+
+    #if os(iOS)
+    /// Back is a swipe to the right, or to the left in right-to-left layouts.
+    func testSwipeBackStartsOnlyOnAMostlySidewaysSwipeTowardBack() {
+        XCTAssertTrue(DetailSwipeBackPolicy.canBegin(velocity: .init(x: 500, y: 100), direction: 1))
+        XCTAssertTrue(DetailSwipeBackPolicy.canBegin(velocity: .init(x: -500, y: 100), direction: -1))
+        XCTAssertFalse(DetailSwipeBackPolicy.canBegin(velocity: .init(x: -500, y: 0), direction: 1))
+        XCTAssertFalse(DetailSwipeBackPolicy.canBegin(velocity: .init(x: 200, y: 400), direction: 1))
+    }
+
+    func testSwipeBackNeedsADistanceOrAFlickAndAllowsCancel() {
+        XCTAssertTrue(DetailSwipeBackPolicy.shouldComplete(translation: 170, velocity: 0, width: 466))
+        XCTAssertTrue(DetailSwipeBackPolicy.shouldComplete(translation: 45, velocity: 900, width: 466))
+        XCTAssertFalse(DetailSwipeBackPolicy.shouldComplete(translation: 120, velocity: 100, width: 466))
+        XCTAssertFalse(DetailSwipeBackPolicy.shouldComplete(translation: 20, velocity: 1200, width: 466))
+    }
+    #endif
 }

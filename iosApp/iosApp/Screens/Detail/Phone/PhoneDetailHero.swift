@@ -382,6 +382,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    #if os(iOS)
+    @Environment(\.statusColumn) private var statusColumn
+    #endif
     /// Rating scores follow Dynamic Type from their 15pt default.
     @ScaledMetric(relativeTo: .subheadline) private var ratingSize: CGFloat = 15
     /// How much larger than default the overview text is drawn; the "MORE"
@@ -466,11 +469,31 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
             titleBlock(textAlignment: .center, logoHeight: compactLogoHeight)
                 .padding(.horizontal, 28)
+                .padding(statusColumnEdge, statusColumnWidth)
                 .padding(.bottom, 6)
         }
         .frame(height: compactArtworkHeight)
         .clipped()
+        // The artwork runs under the iPhone Duo's status column; the title
+        // stays centred on the page beside it.
+        .padding(statusColumnEdge, -statusColumnWidth)
         .accessibilityElement(children: .contain)
+    }
+
+    private var statusColumnEdge: Edge.Set {
+        #if os(iOS)
+        statusColumn?.edgeSet ?? .trailing
+        #else
+        .trailing
+        #endif
+    }
+
+    private var statusColumnWidth: CGFloat {
+        #if os(iOS)
+        statusColumn?.width ?? 0
+        #else
+        0
+        #endif
     }
 
     private var compactArtworkHeight: CGFloat {

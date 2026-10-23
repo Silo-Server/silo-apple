@@ -180,13 +180,23 @@ struct CatalogGrid: View {
         if let fit = widthFittedPosterFit {
             return fit.cardWidth / uiCustomization.cardPresentation.posterSize.scale
         }
-        #endif
-        guard usesThreeColumnPhoneLayout else { return nil }
+        // Phone cards shrink to their column rather than spilling into the
+        // gaps, as they would in a window narrower than three standard
+        // posters, such as the iPhone Duo's cover screen beside its status
+        // column.
+        guard UIDevice.current.userInterfaceIdiom == .phone else { return nil }
+        let scale = uiCustomization.cardPresentation.posterSize.scale
         let fittedWidth = AdaptiveColumns.fittedPosterWidth(
             containerWidth: gridWidth,
-            columnCount: 3,
-            spacing: 8
+            columnCount: columns.count,
+            spacing: 8,
+            maximumWidth: usesThreeColumnPhoneLayout
+                ? SiloTheme.posterCardWidth
+                : SiloTheme.posterCardWidth * scale
         )
-        return fittedWidth / uiCustomization.cardPresentation.posterSize.scale
+        return fittedWidth / scale
+        #else
+        return nil
+        #endif
     }
 }

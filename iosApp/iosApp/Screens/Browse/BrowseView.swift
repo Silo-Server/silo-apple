@@ -348,33 +348,43 @@ enum LibraryPageTab: String, CaseIterable, Identifiable {
 /// shared top-chrome `safeAreaInset` overlay.
 struct LibraryPageTabSelector: View {
     @Binding var selectedTab: LibraryPageTab
+    /// Off when the caller has already made sure every chip fits.
+    var scrolls = true
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(LibraryPageTab.allCases) { tab in
-                    Button {
-                        withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
-                            selectedTab = tab
-                        }
-                    } label: {
-                        Text(tab.title)
-                            .font(.siloCaption)
-                            .fontWeight(selectedTab == tab ? .semibold : .regular)
-                            .foregroundColor(selectedTab == tab ? Color.siloBackground : .siloSecondaryText)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background(
-                                Capsule()
-                                    .fill(selectedTab == tab ? Color.siloOnSurface : Color.siloSurfaceElevated)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
+        if scrolls {
+            ScrollView(.horizontal, showsIndicators: false) {
+                chips
             }
-            .padding(.horizontal, SiloTheme.padding)
-            .padding(.vertical, SiloTheme.smallPadding)
+        } else {
+            chips
         }
+    }
+
+    private var chips: some View {
+        HStack(spacing: 8) {
+            ForEach(LibraryPageTab.allCases) { tab in
+                Button {
+                    withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
+                        selectedTab = tab
+                    }
+                } label: {
+                    Text(tab.title)
+                        .font(.siloCaption)
+                        .fontWeight(selectedTab == tab ? .semibold : .regular)
+                        .foregroundColor(selectedTab == tab ? Color.siloBackground : .siloSecondaryText)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(
+                            Capsule()
+                                .fill(selectedTab == tab ? Color.siloOnSurface : Color.siloSurfaceElevated)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.vertical, SiloTheme.smallPadding)
     }
 }
 

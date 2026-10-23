@@ -18,6 +18,8 @@ struct TabTopBarActions: View {
     let onSwitchProfile: () -> Void
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
+    /// Vertical in the iPhone Duo's status column (`StatusColumnBar`).
+    var axis: Axis = .horizontal
 
     /// Shared session cache so switching pages never refetches or flashes
     /// the avatar fallback.
@@ -25,6 +27,7 @@ struct TabTopBarActions: View {
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
     @State private var isShowingControlPicker = false
+    @Environment(\.statusColumn) private var statusColumn
     #endif
 
     var body: some View {
@@ -32,8 +35,35 @@ struct TabTopBarActions: View {
         // The Mac sidebar carries Search and the profile menu.
         EmptyView()
         #else
+        if showsActions {
+            actions
+        } else {
+            // Holds the header row at its usual height so the page below
+            // doesn't move up.
+            Color.clear
+                .frame(width: 0, height: SiloTheme.topBarIconHitSize)
+                .accessibilityHidden(true)
+        }
+        #endif
+    }
+
+    #if !os(macOS)
+    /// The header copy steps aside while the iPhone Duo's status column
+    /// shows the same actions.
+    private var showsActions: Bool {
+        #if os(iOS)
+        axis == .vertical || statusColumn == nil
+        #else
+        true
+        #endif
+    }
+
+    private var actions: some View {
         // Icons spaced evenly. Order is fixed: Search, Remote (iOS), Profile.
-        HStack(spacing: SiloTheme.topBarIconSpacing) {
+        let layout = axis == .horizontal
+            ? AnyLayout(HStackLayout(spacing: SiloTheme.topBarIconSpacing))
+            : AnyLayout(VStackLayout(spacing: 6))
+        return layout {
             TopBarIconButton(
                 systemImage: "magnifyingglass",
                 accessibilityLabel: "Search",
@@ -61,8 +91,8 @@ struct TabTopBarActions: View {
         // No-op once cached; covers a page shown before the session-level
         // load finished.
         .task { await profileStore.refresh() }
-        #endif
     }
+    #endif
 }
 
 /// Plain icon button used for utility actions (Search) in the top bar.

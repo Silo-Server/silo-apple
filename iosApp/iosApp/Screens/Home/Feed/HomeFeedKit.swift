@@ -10,17 +10,10 @@ import SwiftUI
 /// reasoning survives the experiment.
 enum HomeFeedMetrics {
     /// True 2:3, the ratio every poster source (TMDB, TVDB, Fanart) ships.
-    /// The shipping card is 120×198 — a 1.65 ratio — so `.fill` + `.clipped()`
-    /// currently shaves roughly 10% off both sides of every poster in the app.
     static let posterAspect: CGFloat = 3.0 / 2.0
 
-    /// Wider than today's 120pt. At 120 the cards read as thumbnails against
-    /// 24pt row gaps; the screen ends up feeling sparse rather than spacious.
-    #if os(macOS)
+    /// The app-wide poster width, so Home's rows match every other page.
     static let posterWidth: CGFloat = SiloTheme.posterCardWidth
-    #else
-    static let posterWidth: CGFloat = 132
-    #endif
     /// 16:9 still used by resume rows. Continue Watching is the row people
     /// act on most, so it reads as "one card plus a peek" rather than matching
     /// the poster rows' density — at 184 the stills felt like thumbnails and
