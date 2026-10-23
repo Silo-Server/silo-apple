@@ -9556,15 +9556,19 @@ class PlayerViewModel {
     }
 
     private func applyLocalProtocolV3SubtitleSelection(_ track: PlayerTrack?, reason: String) -> Bool {
-        guard let plan = activePreparedProtocolV3?.plan,
+        guard let prepared = activePreparedProtocolV3,
               protocolV3ReplanTask == nil, isAetherLoadEstablished,
-              let selection = ProtocolV3SubtitleSelection(track: track, plan: plan) else { return false }
+              let selection = ProtocolV3SubtitleSelection(track: track, plan: prepared.plan) else { return false }
+        let plan = prepared.plan
         let isMounted = track.map {
             registerProtocolV3EmbeddedSubtitleIfAvailable($0, plan: plan)
                 || aetherPlaybackController.containsSubtitle(appTrackID: $0.trackId)
         } ?? false
+        // A server that did not negotiate renditions would answer the replan
+        // with the same sidecar, so only a negotiated one is worth a reload.
         guard selection.canApplyLocally(to: plan, isMounted: isMounted),
               settings.subtitleSyncMs != 0
+                || !prepared.serverFeatures.contains(PlaybackProtocolV3.hlsSubtitleRenditionsFeature)
                 || !selection.replansIntoHLSSubtitleRendition(from: plan, isMounted: isMounted) else { return false }
         let priorSelection = localProtocolV3SubtitleSelection
         localProtocolV3SubtitleSelection = selection
