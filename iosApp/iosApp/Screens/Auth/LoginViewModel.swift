@@ -12,6 +12,9 @@ final class LoginViewModel {
     var discovery: SignInDiscovery = .loading
     /// Numbers `loadSignInOptions` reads; only the newest one publishes.
     @ObservationIgnored private var discoveryReads = 0
+    /// Whether the server emails password reset links on request, so the
+    /// password form offers "Forgot password?" instead of pointing at the admin.
+    var offersPasswordReset = false
     /// The provider whose browser or network sign-in is running.
     var providerInFlight: String?
     /// Why the last network sign-in ("Continue as …") failed, shown under its
@@ -81,7 +84,9 @@ final class LoginViewModel {
         discoveryReads += 1
         let read = discoveryReads
         if showsLoading { discovery = .loading }
+        async let resetAvailable = readPasswordReset()
         let options = await auth.signInOptions()
+        let offersReset = await resetAvailable
         // A slower, older read never replaces a newer one.
         guard !Task.isCancelled, read == discoveryReads else { return }
         if let options {
@@ -89,6 +94,21 @@ final class LoginViewModel {
         } else if showsLoading || discovery.options == nil {
             discovery = .failed
         }
+        // A failed read keeps what a background refresh already knew.
+        if let offersReset {
+            offersPasswordReset = offersReset
+        } else if showsLoading {
+            offersPasswordReset = false
+        }
+    }
+
+    /// The TV has no "Forgot password?", so it skips the capability read.
+    private func readPasswordReset() async -> Bool? {
+        #if os(tvOS)
+        return false
+        #else
+        return await auth.passwordResetAvailable()
+        #endif
     }
 
     /// Authenticate with username and password. Returns whether the
