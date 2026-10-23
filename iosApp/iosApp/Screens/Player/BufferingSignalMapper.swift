@@ -30,7 +30,7 @@ struct BufferingSignalMapper {
         var reachedEnd: Bool
         /// The player is reconnecting or lost its connection, the device is
         /// offline, or a media request failed recently. A `.stalled` phase
-        /// adds to it.
+        /// adds to it where no reader is metered.
         var connectionTrouble: Bool
         /// Media buffered past the playhead, in milliseconds; nil when
         /// unknown, which counts as nothing buffered.
@@ -46,6 +46,9 @@ struct BufferingSignalMapper {
         /// `OUTAGE_NO_DATA_MS` (``UpstreamReadMeter``). False on server HLS,
         /// which has no reader.
         var upstreamSilent = false
+        /// The load has an engine reader whose bytes are metered, so its
+        /// silence decides an outage, not the engine's `.stalled` phase.
+        var readerMetered = false
     }
 
     enum Call: Equatable {
@@ -196,9 +199,13 @@ struct BufferingSignalMapper {
     /// An outage begins when a media request fails, or when playback waits
     /// while the origin has sent nothing for `OUTAGE_NO_DATA_MS` (at once for
     /// a wait that begins on a link already that silent). It is signalled
-    /// while the device is offline, the player reconnects or the engine's
-    /// reader does. It lasts until the plan's media data arrives again, as
-    /// bytes reaching the reader or the media buffered past the playhead
+    /// while the device is offline or the player reconnects, and while the
+    /// engine's reader reconnects where its bytes are not metered. A metered
+    /// reader that reconnects on its own stall timer while bytes keep coming,
+    /// as it does on a link far below the bitrate, is a slow link: the
+    /// silence rule finds a real dropout. It lasts until the plan's media
+    /// data arrives again, as bytes reaching the reader or the media buffered
+    /// past the playhead
     /// rising, or playback runs. No timer, and no network or API recovering
     /// on its own, ends it. A request that keeps receiving, however slowly,
     /// is no outage: that is the slow link the controller exists for.
@@ -207,7 +214,8 @@ struct BufferingSignalMapper {
         let dataArrived = mediaDataArrived
         mediaDataArrived = false
         let silentWait = s.upstreamSilent && next == .waiting(.network)
-        if s.connectionTrouble || s.phase.isSourceStalled || mediaRequestFailed || silentWait {
+        let readerReconnecting = s.phase.isSourceStalled && !s.readerMetered
+        if s.connectionTrouble || readerReconnecting || mediaRequestFailed || silentWait {
             mediaRequestFailed = false
             outageAwaitsDataAboveMs = buffered
             return true

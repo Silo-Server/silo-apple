@@ -29,13 +29,14 @@ final class BufferingSignalMapperTests: XCTestCase {
         trouble: Bool = false,
         bufferedMs: Int? = nil,
         frozen: Bool = false,
-        silent: Bool = false
+        silent: Bool = false,
+        metered: Bool = false
     ) -> Snapshot {
         Snapshot(
             hasActiveLoad: load, wantsToPlay: play, phase: phase, engineBuffering: buffering,
             nativeTransport: native, seekInFlight: seek, reloadInProgress: reload, reachedEnd: end,
             connectionTrouble: trouble, bufferedAheadMs: bufferedMs, playheadFrozen: frozen,
-            upstreamSilent: silent
+            upstreamSilent: silent, readerMetered: metered
         )
     }
 
@@ -76,6 +77,15 @@ final class BufferingSignalMapperTests: XCTestCase {
             ("source stalled, playing from buffer",
              Self.snapshot(phase: .stalled(reconnecting: false), native: Self.avPlaying),
              [.transportTroubleChanged(true), .playing]),
+            // A metered reader's own reconnects while its bytes keep coming
+            // are a slow link; its silence is the outage.
+            ("metered reader reconnecting while it receives",
+             Self.snapshot(phase: .stalled(reconnecting: true), native: Self.avWaiting(.toMinimizeStalls), metered: true),
+             [.waiting(.network)]),
+            ("metered reader reconnecting, silent",
+             Self.snapshot(phase: .stalled(reconnecting: true), native: Self.avWaiting(.toMinimizeStalls),
+                           silent: true, metered: true),
+             [.transportTroubleChanged(true), .waiting(.network)]),
             ("reconnecting",
              Self.snapshot(native: Self.avWaiting(.toMinimizeStalls), trouble: true),
              [.transportTroubleChanged(true), .waiting(.network)]),

@@ -10392,7 +10392,8 @@ extension PlayerViewModel {
             connectionTrouble: connectionState != .connected || !monitor.isDeviceOnline,
             bufferedAheadMs: engineBufferedAheadMs,
             playheadFrozen: playheadFrozenMs != nil || softwareSeekLanding.awaitsAdvance || nativeStartHeld,
-            upstreamSilent: upstreamMeter.isSilent(atMs: bufferingClock.elapsedMs)
+            upstreamSilent: upstreamMeter.isSilent(atMs: bufferingClock.elapsedMs),
+            readerMetered: aetherPlaybackController.upstreamBytesFetched != nil
         )
     }
 
