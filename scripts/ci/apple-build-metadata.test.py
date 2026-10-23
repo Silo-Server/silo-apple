@@ -165,6 +165,17 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs['timeout'], 60)
         self.assertNotIn('shell', run.call_args.kwargs)
 
+    def test_command_failure_names_only_the_tool(self):
+        for error in (subprocess.CalledProcessError(1, ('xcrun', '--sdk', 'secret-arg')),
+                      FileNotFoundError(2, 'No such file', 'xcrun')):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(metadata.subprocess, 'check_output', side_effect=error):
+                with self.assertRaises(RuntimeError) as raised:
+                    metadata.command('xcrun', '--sdk', 'secret-arg')
+                self.assertEqual(str(raised.exception), 'Build metadata command failed: xcrun')
+                self.assertIsNone(raised.exception.__cause__)
+                self.assertTrue(raised.exception.__suppress_context__)
+
     def test_xcode_build_is_measured_and_version_output_is_validated(self):
         self.assertEqual(metadata.parse_xcode('Xcode 27.0\nBuild version 27A266a\n'),
                          {'xcode_version': '27.0', 'xcode_build': '27A266a'})

@@ -27,6 +27,9 @@ def command(*args, cwd=None):
         return subprocess.check_output(args, cwd=cwd, text=True, timeout=60).strip()
     except subprocess.TimeoutExpired:
         raise RuntimeError('Build metadata command timed out: ' + args[0]) from None
+    except (subprocess.CalledProcessError, OSError):
+        # The exception would print the full command line.
+        raise RuntimeError('Build metadata command failed: ' + args[0]) from None
 
 
 def parse_xcode(text):

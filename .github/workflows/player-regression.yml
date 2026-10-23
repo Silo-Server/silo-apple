@@ -229,10 +229,13 @@ jobs:
               --runtimes "$runtime_inventory"
           }
           simulator=$(find_simulator)
-          if [ -z "$(jq -r .runtime <<< "$simulator")" ]; then
-            xcodebuild -downloadPlatform "$PLATFORM" -buildVersion "$sdk_version"
+          # A point release's runtime may not run the test device (iOS 27.1
+          # runs only the iPhone Duo), so fall back to the release's .0.
+          for version in "$sdk_version" "${sdk_version%%.*}.0"; do
+            [ -z "$(jq -r .runtime <<< "$simulator")" ] || break
+            xcodebuild -downloadPlatform "$PLATFORM" -buildVersion "$version"
             simulator=$(find_simulator)
-          fi
+          done
           runtime_id=$(jq -r .runtime <<< "$simulator")
           device_type=$(jq -r .device_type <<< "$simulator")
           if [ -z "$runtime_id" ]; then
