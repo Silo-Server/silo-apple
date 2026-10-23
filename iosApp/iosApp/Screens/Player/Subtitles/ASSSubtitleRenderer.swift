@@ -142,7 +142,6 @@ final class ASSSubtitleRenderer {
     private var events: Set<Event> = []
     private var canvas: Canvas?
     private var pool: CVPixelBufferPool?
-    private var emptyCanvas: CVPixelBuffer?
     private var repeatNextRender = false
 
     /// Feeds libass the cues it has not seen.
@@ -259,17 +258,16 @@ final class ASSSubtitleRenderer {
         return .frame(buffer)
     }
 
-    /// A small transparent canvas that clears the overlay when queued.
+    /// A transparent canvas that clears the overlay when queued. It is the
+    /// size of the canvases it follows: when the overlay layer swaps a sign
+    /// for a canvas of another size, it can show the sign squashed for a few
+    /// frames before it clears. Nil when every canvas is still queued.
     func transparentCanvas() -> CVPixelBuffer? {
-        if let emptyCanvas { return emptyCanvas }
-        guard let pool = Self.makePool(Canvas(width: 2, height: 2)),
-              let buffer = Self.makeBuffer(from: pool) else { return nil }
+        guard let pool, let buffer = Self.makeBuffer(from: pool) else { return nil }
         CVPixelBufferLockBaseAddress(buffer, [])
-        if let base = CVPixelBufferGetBaseAddress(buffer) {
-            memset(base, 0, CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer))
-        }
-        CVPixelBufferUnlockBaseAddress(buffer, [])
-        emptyCanvas = buffer
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        memset(base, 0, CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer))
         return buffer
     }
 
