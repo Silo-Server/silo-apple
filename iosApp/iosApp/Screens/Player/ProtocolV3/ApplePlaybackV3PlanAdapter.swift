@@ -278,18 +278,22 @@ enum ApplePlaybackV3PlanAdapter {
     /// local selection API cannot switch it, so audio is server-owned.
     static func serverOwnsAudioTracks(_ plan: PlaybackV3Plan?) -> Bool {
         guard let plan else { return false }
+        // Every server remux or transcode maps only the plan's audio stream,
+        // so the one track the engine sees there is ordinal 0 of its output,
+        // not of the file.
         return [
+            PlaybackProtocolV3.PlanDelivery.remuxProgressive,
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,
         ].contains(plan.delivery)
     }
 
     /// Keeps Aether authoritative when it publishes the file's audio tracks,
-    /// but fills the picker from the selected catalog version on server HLS,
-    /// or when a remote V3 route publishes no audio at all. Audio changes on
-    /// those routes are server-owned replans, so each fallback row carries the
-    /// catalog ordinal in `srcId` and the plan's selected ordinal drives the
-    /// checkmark.
+    /// on direct play, but fills the picker from the selected catalog version
+    /// on a server remux or transcode, or when a remote V3 route publishes no
+    /// audio at all. Audio changes on those routes are server-owned replans,
+    /// so each fallback row carries the catalog ordinal in `srcId` and the
+    /// plan's selected ordinal drives the checkmark.
     static func audioPickerTracks(
         aetherTracks: [PlayerTrack],
         plan: PlaybackV3Plan?,

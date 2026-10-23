@@ -2364,8 +2364,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(tracks.filter(\.isSelected).map(\.trackId), [1])
     }
 
-    /// Direct play and the progressive remux run through Aether's own demux,
-    /// whose audio tracks are the file's, so they stay authoritative there.
+    /// Direct play runs through Aether's own demux, whose audio tracks are
+    /// the file's, so they stay authoritative there.
     func testV3AudioPickerKeepsAetherInventoryWhenAvailable() {
         let aetherTrack = PlayerTrack(
             trackId: 7,
@@ -2390,27 +2390,24 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             audioTracks: [makeAudio(index: 2, codec: "eac3", isDefault: true)]
         )
 
-        for delivery in [
-            PlaybackProtocolV3.PlanDelivery.originalHTTP,
-            PlaybackProtocolV3.PlanDelivery.remuxProgressive,
-        ] {
-            XCTAssertEqual(
-                ApplePlaybackV3PlanAdapter.audioPickerTracks(
-                    aetherTracks: [aetherTrack],
-                    plan: makePlan(delivery: delivery, selectedAudioIndex: 0),
-                    version: version
-                ),
-                [aetherTrack],
-                delivery
-            )
-        }
+        XCTAssertEqual(
+            ApplePlaybackV3PlanAdapter.audioPickerTracks(
+                aetherTracks: [aetherTrack],
+                plan: makePlan(delivery: PlaybackProtocolV3.PlanDelivery.originalHTTP, selectedAudioIndex: 0),
+                version: version
+            ),
+            [aetherTrack]
+        )
     }
 
-    /// Since AetherEngine 7.22 the remote-HLS bypass publishes AVPlayer's
-    /// packaged rendition as an audio track (ids from 400000). Server HLS
-    /// carries only the one stream the plan selected, so that row must not
-    /// replace the file's tracks or leak its id into a pick.
-    func testV3AudioPickerIgnoresBypassRenditionsOnServerHLS() {
+    /// A server remux or transcode carries only the one stream the plan
+    /// selected: on server HLS the remote-HLS bypass publishes AVPlayer's
+    /// packaged rendition as an audio track (ids from 400000), and the
+    /// progressive remux demuxes to a single track at ordinal 0. That row
+    /// must not replace the file's tracks or leak its ordinal into a pick: a
+    /// replan from a progressive remux of the file's second track sent the
+    /// first (bedroom Apple TV: English became Portuguese).
+    func testV3AudioPickerUsesTheFilesTracksWhereTheServerMapsOneStream() {
         let bypassRendition = PlayerTrack(
             trackId: 400_000,
             kind: .audio,
@@ -2437,11 +2434,12 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             ]
         )
 
-        for delivery in [
-            PlaybackProtocolV3.PlanDelivery.remuxHLS,
-            PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+        for (delivery, streamProtocol) in [
+            (PlaybackProtocolV3.PlanDelivery.remuxProgressive, "http_progressive"),
+            (PlaybackProtocolV3.PlanDelivery.remuxHLS, "hls"),
+            (PlaybackProtocolV3.PlanDelivery.transcodeHLS, "hls"),
         ] {
-            let plan = makePlan(delivery: delivery, streamProtocol: "hls", selectedAudioIndex: 1)
+            let plan = makePlan(delivery: delivery, streamProtocol: streamProtocol, selectedAudioIndex: 1)
 
             let tracks = ApplePlaybackV3PlanAdapter.audioPickerTracks(
                 aetherTracks: [bypassRendition],

@@ -4596,8 +4596,9 @@ class PlayerViewModel {
         }
         chapters = mediaChapters.isEmpty ? serverProvidedChapters : mediaChapters
 
-        // On server HLS the engine's active id names its packaged rendition,
-        // not a picker row, so only the plan's ordinal selects one.
+        // On a server remux or transcode the engine's active id names the one
+        // stream the server mapped, not a picker row, so only the plan's
+        // ordinal selects one.
         selectedAudioId = audioTracks.first(where: \.isSelected)?.trackId
             ?? (serverOwnsAudio ? nil : engine.activeAudioTrackIndex.map(Int64.init))
         // A locally-registered sidecar is selected client-side, so the plan —
