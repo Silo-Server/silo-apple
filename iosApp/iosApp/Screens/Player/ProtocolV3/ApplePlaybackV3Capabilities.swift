@@ -37,6 +37,10 @@ enum ApplePlaybackV3Capabilities {
     /// validated passthrough claim only to a client that enumerates real sink
     /// channel layouts at `exact` audio evidence, and Apple attests neither.
     /// Advertising it would be a claim we cannot back.
+    ///
+    /// `hls_subtitle_renditions_v1` only shapes `server_transcode_hls` plans,
+    /// which Aether always plays as native remote HLS, where AVPlayer draws the
+    /// master's own subtitle rendition. Offline downloads build their own list.
     static let features = [
         PlaybackProtocolV3.planFeature,
         PlaybackProtocolV3.clientTransformFeature,
@@ -47,7 +51,8 @@ enum ApplePlaybackV3Capabilities {
         PlaybackProtocolV3.directStreamResumeFeature,
         PlaybackProtocolV3.headerAuthenticatedMediaFeature,
         PlaybackProtocolV3.softwareVideoDecodeFeature,
-        PlaybackProtocolV3.embeddedSubtitlesFeature
+        PlaybackProtocolV3.embeddedSubtitlesFeature,
+        PlaybackProtocolV3.hlsSubtitleRenditionsFeature
     ]
 
     /// Audiobooks currently restart sessions at part boundaries and do not
@@ -58,6 +63,7 @@ enum ApplePlaybackV3Capabilities {
         $0 != PlaybackProtocolV3.seekReanchorFeature
             && $0 != PlaybackProtocolV3.softwareVideoDecodeFeature
             && $0 != PlaybackProtocolV3.embeddedSubtitlesFeature
+            && $0 != PlaybackProtocolV3.hlsSubtitleRenditionsFeature
     }
 
     /// `authorized_media_origins_v1` is negotiated per attempt rather than

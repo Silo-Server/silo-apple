@@ -52,3 +52,12 @@ surface with the ids as opaque strings. Re-vendor each file with
     > iosApp/Tests/Fixtures/PlaybackV3/<name>
 
 update the commit above, and run cd iosApp && xcodegen generate.
+
+HLS subtitle renditions
+Source: silo-server docs/design/schemas/playback-v3/v3/fixtures/valid
+Server commit: ef8cde1d93c03a843ebf030f3b0f6fcb28099485
+Vendored: 2026-10-23
+
+hls-subtitle-rendition-decision_response.json, copied byte for byte. It is the
+protocol domain's decision, with integer file ids. Re-vendor it the same way as
+the buffering quality files above.

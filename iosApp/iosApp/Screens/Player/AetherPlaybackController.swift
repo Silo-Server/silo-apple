@@ -242,6 +242,8 @@ final class AetherPlaybackController {
     private var muted = false
     private var aetherSubtitleIDByAppID: [Int64: Int] = [:]
     private var appSubtitleIDByAetherID: [Int: Int64] = [:]
+    /// The plan's HLS subtitle rendition was selected before AVPlayer listed it.
+    private var awaitsHLSSubtitleRendition = false
     /// What each sidecar alias was registered with, so it can be registered
     /// again to fetch its file anew (see `reloadExternalSubtitleTrack`).
     private var externalSubtitleSources: [Int64: ExternalSubtitleSource] = [:]
@@ -318,6 +320,7 @@ final class AetherPlaybackController {
         activeLoadEpoch = epoch
         hasCommittedActiveLoad = false
         activeSpec = spec
+        awaitsHLSSubtitleRendition = false
         appliedRequestHeaders = spec.options.httpHeaders
         assSubtitles.beginLoad(timelineOffset: spec.timeline.timelineOffsetSeconds)
         configureExternalPlaybackPolicy()
@@ -597,11 +600,41 @@ final class AetherPlaybackController {
 
     func selectSubtitleTrack(id: Int64?) {
         cueHold.release(.primary)
+        awaitsHLSSubtitleRendition = false
         if let id, refetchStaleExternalSubtitleTrack(appTrackID: id, primary: true) { return }
         if let id, let aetherID = aetherSubtitleID(forAppID: id) {
+            // Picking another track leaves the master's legible option
+            // selected, and AVPlayer would go on drawing it under the overlay.
+            let renditionID = activeSpec?.hlsSubtitleRenditionAppTrackID.flatMap { aetherSubtitleIDByAppID[$0] }
+            if let renditionID, renditionID != aetherID, engine.activeSubtitleTrackIndex == renditionID {
+                engine.clearSubtitle()
+            }
             engine.selectSubtitleTrack(index: aetherID)
         } else {
             engine.clearSubtitle()
+            awaitsHLSSubtitleRendition = id != nil && id == activeSpec?.hlsSubtitleRenditionAppTrackID
+        }
+    }
+
+    /// Binds the plan's rendition row to the master's legible option once
+    /// Aether lists it, and selects it if the row was picked before that.
+    /// The master offers only the plan's track, so exactly one option is
+    /// expected; anything else binds nothing.
+    private func adoptHLSSubtitleRendition(from tracks: [TrackInfo]) {
+        guard let appID = activeSpec?.hlsSubtitleRenditionAppTrackID,
+              aetherSubtitleIDByAppID[appID] == nil else { return }
+        let options = tracks.filter { !$0.isExternal && $0.isNativelyRenderedSubtitle }
+        guard options.count == 1, let option = options.first else { return }
+        aetherSubtitleIDByAppID[appID] = option.id
+        appSubtitleIDByAetherID[option.id] = appID
+        cmpLog("[CMP-SUB] HLS subtitle rendition listed as engine track \(option.id)")
+        guard awaitsHLSSubtitleRendition else { return }
+        // The list is still being published; select on the next turn.
+        Task { @MainActor [weak self] in
+            guard let self, awaitsHLSSubtitleRendition,
+                  aetherSubtitleIDByAppID[appID] == option.id else { return }
+            awaitsHLSSubtitleRendition = false
+            engine.selectSubtitleTrack(index: option.id)
         }
     }
 
@@ -988,6 +1021,12 @@ final class AetherPlaybackController {
 
         engine.sourceAuthorizationRefused
             .sink { [weak self] _ in self?.refreshRequestHeaders(afterRefusal: true) }
+            .store(in: &subscriptions)
+
+        // Ahead of the inventory publication below, so the row is bound
+        // before the view model reads it.
+        engine.$subtitleTracks
+            .sink { [weak self] in self?.adoptHLSSubtitleRendition(from: $0) }
             .store(in: &subscriptions)
 
         Publishers.Merge3(

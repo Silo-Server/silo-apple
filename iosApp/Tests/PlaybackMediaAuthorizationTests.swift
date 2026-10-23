@@ -115,6 +115,25 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
         ] {
             XCTAssertFalse(scope.allows(url(master + suffix)), suffix)
         }
+        // A subtitle rendition's master names its playlists as itself plus
+        // one silo_rendition field, and nothing else gains that allowance.
+        for suffix in ["?silo_rendition=video", "?silo_rendition=subtitles", "?seek=0&silo_rendition=subtitles"] {
+            XCTAssertTrue(scope.allows(url(master + suffix)), suffix)
+        }
+        for suffix in [
+            "?silo_rendition=audio", "?silo_rendition=", "?silo_rendition=video&silo_rendition=subtitles",
+            "?silo_rendition=subtitles&token=secret",
+        ] {
+            XCTAssertFalse(scope.allows(url(master + suffix)), suffix)
+        }
+        let segment = master.replacingOccurrences(of: "master.m3u8", with: "segment/sub_00001.vtt")
+        XCTAssertTrue(scope.allows(url(segment)))
+        XCTAssertFalse(scope.allows(url(segment + "?silo_rendition=subtitles")))
+        let progressive = try PlaybackMediaAuthorization.Scope(
+            sourceURL: url("https://api.example/api/v2/stream/session-one"), serverURL: "https://api.example",
+            sessionID: "session-one"
+        )
+        XCTAssertFalse(progressive.allows(url("https://api.example/api/v2/stream/session-one?silo_rendition=video")))
         XCTAssertFalse(scope.allows(url(master.replacingOccurrences(of: "api.example", with: "user:password@api.example"))))
     }
 

@@ -43,6 +43,10 @@ enum PlaybackProtocolV3 {
     /// Scoped to `original_http`: after probing the complete source, Aether
     /// maps the plan's selected audio ordinal to its concrete stream id.
     static let embeddedSubtitlesFeature = "embedded_subtitles_v1"
+    /// Native v2 only. A `server_transcode_hls` plan carries its embedded text
+    /// track as a WebVTT subtitle rendition of the transcode's own HLS master
+    /// (`subtitle.hls_rendition`) instead of a whole-file sidecar extract.
+    static let hlsSubtitleRenditionsFeature = "hls_subtitle_renditions_v1"
     static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
     /// Native v2 only. The server accepts `bandwidth_estimate_source` and
     /// `learned_limit` on a start or replan whose `client_features` names it,
@@ -638,11 +642,23 @@ struct PlaybackV3EmbeddedSubtitle: Codable, Equatable {
     let streamIndex: Int
 }
 
+/// The selected track as the plan stream's own `SUBTITLES` rendition. The
+/// stream URL is then a multivariant master that offers only this track.
+struct PlaybackV3HLSSubtitleRendition: Codable, Equatable {
+    let groupId: String
+    let name: String
+    let format: String
+    let mimeType: String
+}
+
 struct PlaybackV3SubtitleDecision: Codable, Equatable {
     let mode: String
     let trackId: String?
     let artifact: PlaybackV3SubtitleArtifact?
     var embedded: PlaybackV3EmbeddedSubtitle? = nil
+    /// Exclusive with `artifact` and `embedded`. The inventory row keeps its
+    /// sidecar URL.
+    var hlsRendition: PlaybackV3HLSSubtitleRendition? = nil
     /// Authoritative list of every subtitle track for this plan. Select a track
     /// by echoing an entry's `trackId` or `combinedIndex` — never by counting
     /// tracks, summing arrays, or taking max(index) + 1.
@@ -749,6 +765,19 @@ extension PlaybackV3Plan {
     /// executable without publishing the row).
     var selectedSubtitleCombinedIndex: Int? {
         selectedSubtitleInventoryItem?.combinedIndex ?? selectedTracks.subtitle?.index
+    }
+
+    /// The selected row's sidecar, for a player that does not show this
+    /// plan's HLS subtitle rendition. Nil when the plan has no rendition.
+    var hlsSubtitleRenditionSidecar: PlaybackV3SubtitleArtifact? {
+        guard subtitle.hlsRendition != nil, let item = selectedSubtitleInventoryItem,
+              item.delivery == "sidecar",
+              let url = item.url?.trimmingCharacters(in: .whitespacesAndNewlines), !url.isEmpty else {
+            return nil
+        }
+        // Only embedded text tracks get a rendition, and their sidecars are
+        // WebVTT on original-media time.
+        return PlaybackV3SubtitleArtifact(url: url, mimeType: "text/vtt", format: "vtt", timingOriginSeconds: 0)
     }
 }
 

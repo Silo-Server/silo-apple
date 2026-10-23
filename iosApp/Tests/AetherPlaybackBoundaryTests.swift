@@ -1658,6 +1658,66 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         }
     }
 
+    /// The server's own rendition decision: the transcode master carries the
+    /// track, so nothing is declared to Aether and nothing is extracted. A
+    /// subtitle delay needs the overlay, so that load mounts the row's sidecar.
+    func testServerTranscodeRenditionLoadsWithoutASidecar() throws {
+        XCTAssertTrue(ApplePlaybackV3Capabilities.features.contains(PlaybackProtocolV3.hlsSubtitleRenditionsFeature))
+        XCTAssertFalse(
+            ApplePlaybackV3Capabilities.audiobookFeatures.contains(PlaybackProtocolV3.hlsSubtitleRenditionsFeature)
+        )
+        let plan = try renditionPlan()
+        XCTAssertEqual(plan.subtitle.hlsRendition, PlaybackV3HLSSubtitleRendition(
+            groupId: "subs", name: "Subtitles", format: "vtt", mimeType: "text/vtt"
+        ))
+        XCTAssertNil(plan.subtitle.artifact)
+        let source = URL(string: "https://dev.example.test/playback/transcode/session/master.m3u8")!
+        let rowID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 0)
+        for showsRendition in [true, false] {
+            let spec = try AetherLoadSpec(
+                validating: plan, sessionID: "session", matchContentEnabled: false,
+                sourceURLOverride: source,
+                resolveURL: { URL(string: $0, relativeTo: source)?.absoluteURL },
+                panelIsInHDRMode: false,
+                showsHLSSubtitleRendition: showsRendition
+            )
+            XCTAssertTrue(spec.options.nativeRemoteHLS)
+            if showsRendition {
+                XCTAssertEqual(spec.hlsSubtitleRenditionAppTrackID, rowID)
+                XCTAssertEqual(spec.options.externalSubtitles.count, 0)
+                XCTAssertFalse(spec.declaresEmbeddedTrackExtract)
+            } else {
+                XCTAssertNil(spec.hlsSubtitleRenditionAppTrackID)
+                XCTAssertEqual(spec.options.externalSubtitles.map(\.url.path), ["/stream/11111111-1111-4111-8111-111111111111/subtitles/0.vtt"])
+                XCTAssertEqual(spec.externalSubtitleAppTrackIDs, [rowID])
+                XCTAssertTrue(spec.declaresEmbeddedTrackExtract, "the overlay route, which starts without the extract")
+            }
+        }
+    }
+
+    private func renditionPlan(
+        delivery: String = PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+        source: String = "embedded",
+        codec: String = "subrip"
+    ) throws -> PlaybackV3Plan {
+        let response = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3DecisionResponse.self, named: "hls-subtitle-rendition-decision_response", bundleClass: Self.self
+        )
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(XCTUnwrap(response.playbackPlan))
+        ) as? [String: Any])
+        object["delivery"] = delivery
+        var subtitle = try XCTUnwrap(object["subtitle"] as? [String: Any])
+        var inventory = try XCTUnwrap(subtitle["inventory"] as? [[String: Any]])
+        inventory[0]["source"] = source
+        inventory[0]["codec"] = codec
+        subtitle["inventory"] = inventory
+        object["subtitle"] = subtitle
+        return try PlaybackV3FixtureTestSupport.decoder.decode(
+            PlaybackV3Plan.self, from: JSONSerialization.data(withJSONObject: object)
+        )
+    }
+
     func testReplacementPreparationInvalidatesOutgoingLoadAndAllowsSuccessorEpoch() throws {
         let controller = try AetherPlaybackController()
         defer { controller.stop() }

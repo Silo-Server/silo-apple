@@ -51,12 +51,14 @@ enum PlaybackMediaAuthorization {
         func allows(_ url: URL) -> Bool {
             guard StreamRequest.hasSameOrigin(url, sourceURL),
                   let components = Self.checkedComponents(url),
-                  Self.hasAllowedQuery(components),
                   let path = Self.pathComponents(components.percentEncodedPath) else {
                 return false
             }
-            if path == sourcePath { return true }
-            guard let hlsPrefix,
+            if path == sourcePath {
+                return Self.hasAllowedQuery(components, allowsRendition: hlsPrefix != nil)
+            }
+            guard Self.hasAllowedQuery(components),
+                  let hlsPrefix,
                   path.count == hlsPrefix.count + 2,
                   Array(path.prefix(hlsPrefix.count)) == hlsPrefix,
                   path[hlsPrefix.count] == "segment" else {
@@ -104,8 +106,15 @@ enum PlaybackMediaAuthorization {
             }
         }
 
-        private static func hasAllowedQuery(_ components: URLComponents) -> Bool {
-            guard let items = components.queryItems, !items.isEmpty else { return true }
+        /// A transcode master that carries a subtitle rendition names its video
+        /// and subtitle playlists as itself plus one `silo_rendition` field.
+        private static func hasAllowedQuery(_ components: URLComponents, allowsRendition: Bool = false) -> Bool {
+            var items = components.queryItems ?? []
+            if allowsRendition, let index = items.firstIndex(where: { $0.name == "silo_rendition" }),
+               ["video", "subtitles"].contains(items[index].value) {
+                items.remove(at: index)
+            }
+            guard !items.isEmpty else { return true }
             guard items.count == 1, items[0].name == "seek",
                   let value = items[0].value, let seconds = Double(value),
                   seconds.isFinite, seconds >= 0 else {
