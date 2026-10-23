@@ -15,7 +15,10 @@ struct PlayerPresentationModifier: ViewModifier {
                 guard replacement == nil, let id = payload?.id else { return }
                 router.dismissPlayerPresentation(id: id)
             }
-        )) { presentation in
+        ), onDismiss: {
+            // The window may have changed shape under the player.
+            router.refitItemDetail()
+        }) { presentation in
             PlayerView(
                 contentId: presentation.contentId,
                 libraryId: presentation.libraryId,

@@ -176,7 +176,7 @@ final class AppRouter {
         /// window-sized sheet on iPad, a full-screen cover on iPhone, where
         /// iOS 27.1 caps sheets well short of the iPhone Duo's open display.
         /// Set when the detail opens and refit when the window changes shape
-        /// (see `refitItemDetail`), except under a player.
+        /// (see `refitItemDetail`), once nothing covers the detail.
         var fillsWindow = false
 
         struct RequestRoot: Equatable {
@@ -211,6 +211,9 @@ final class AppRouter {
     /// there is a centered card (about 930 x 710 on an 11-inch iPad) over a
     /// near-black dimmed page, so details opened then fill the window.
     var presentsItemDetailFullWindow = false
+    /// Set by the open detail while its TV remote or a TV picker is up.
+    /// They live in the detail's own state, which a refit would discard.
+    var itemDetailShowsControl = false
 
     /// Opens or restores the detail card in the presentation the window calls
     /// for now. Request details stay sheets: their page has no split layout.
@@ -227,10 +230,11 @@ final class AppRouter {
     }
 
     /// Moves an open detail to the presentation the window now calls for,
-    /// as when the iPhone Duo unfolds. Skipped while a player is up: it is
-    /// presented from the detail, so the move would close it.
+    /// as when the iPhone Duo unfolds. Skipped while a player, the TV
+    /// remote, or a TV picker is up over the detail, since the move would
+    /// close it; each calls this again once it has dismissed.
     func refitItemDetail() {
-        guard presentedPlayer == nil, let presentation = presentedItemDetail,
+        guard presentedPlayer == nil, !itemDetailShowsControl, let presentation = presentedItemDetail,
               presentation.fillsWindow != fillsWindow(presentation)
         else { return }
         openItemDetail(presentation)
@@ -635,6 +639,7 @@ final class AppRouter {
         // callback from an old sheet must not erase a newly opened detail.
         guard presentedItemDetail == nil else { return }
         itemDetailPath = NavigationPath()
+        itemDetailShowsControl = false
     }
     #endif
 

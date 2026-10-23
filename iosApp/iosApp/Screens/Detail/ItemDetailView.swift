@@ -424,6 +424,10 @@ private struct ItemDetailPhoneContent: View {
     @State private var controlResumeLookupTask: Task<Void, Never>?
     @State private var isShowingControlPicker = false
     @State private var isShowingRemoteControl = false
+
+    private var isShowingControl: Bool {
+        controlRequestBox != nil || isShowingControlPicker || isShowingRemoteControl
+    }
     #endif
     @Environment(AppRouter.self) private var router
 
@@ -621,17 +625,22 @@ private struct ItemDetailPhoneContent: View {
         } action: { besideColumn in
             isBesideStatusColumn = besideColumn
         }
-        .sheet(item: $controlRequestBox) { box in
+        .sheet(item: $controlRequestBox, onDismiss: { router.refitItemDetail() }) { box in
             SiloControlTargetPickerView(request: box.request, controller: siloControl)
         }
-        .sheet(isPresented: $isShowingControlPicker) {
+        .sheet(isPresented: $isShowingControlPicker, onDismiss: { router.refitItemDetail() }) {
             SiloControlTargetPickerView(request: nil, controller: siloControl)
         }
         .siloRemoteControl(
             isPresented: $isShowingRemoteControl,
             coversWindow: router.presentsItemDetailFullWindow || isBesideStatusColumn,
-            controller: siloControl
+            controller: siloControl,
+            onDismiss: { router.refitItemDetail() }
         )
+        // Refitting the detail would discard these, so it waits for them.
+        .onChange(of: isShowingControl) { _, showing in
+            router.itemDetailShowsControl = showing
+        }
         #endif
     }
 

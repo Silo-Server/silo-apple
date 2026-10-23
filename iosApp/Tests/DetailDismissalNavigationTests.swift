@@ -41,6 +41,34 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertNotNil(router.presentedItemDetail)
     }
 
+    func testUnfoldingRefitsTheDetailOnlyOnceNothingCoversIt() throws {
+        let router = AppRouter()
+        router.presentItemDetail(contentId: "movie", libraryId: 4)
+        let opened = try XCTUnwrap(router.presentedItemDetail)
+        XCTAssertFalse(opened.fillsWindow)
+
+        // The window grows while a player is up, then while the TV remote is.
+        router.presentPlayer(contentId: "movie")
+        router.presentsItemDetailFullWindow = true
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail, opened)
+        router.dismissPlayerPresentation(id: try XCTUnwrap(router.presentedPlayer).id)
+        router.itemDetailShowsControl = true
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail, opened)
+
+        router.itemDetailShowsControl = false
+        router.refitItemDetail()
+        XCTAssertEqual(router.presentedItemDetail?.id, opened.id)
+        XCTAssertEqual(router.presentedItemDetail?.fillsWindow, true)
+
+        // Closing the detail can't leave the next one waiting.
+        router.itemDetailShowsControl = true
+        router.presentedItemDetail = nil
+        router.itemDetailPresentationDidDismiss()
+        XCTAssertFalse(router.itemDetailShowsControl)
+    }
+
     func testPartyWaitsForPickerDismissalAndCannotReopenAfterTermination() {
         let router = AppRouter()
         let context = WatchPartyPlaybackContext(roomId: "room", selectionRevision: 1,

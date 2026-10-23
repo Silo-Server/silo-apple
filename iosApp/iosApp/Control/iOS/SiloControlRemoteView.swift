@@ -8,23 +8,27 @@ extension View {
     /// caps a sheet at about 650pt wide, and on its folded screen the sheet
     /// is an inset card with the page showing at its edges, so on both the
     /// remote covers the window. Its Minimize button closes it.
+    ///
+    /// When `coversWindow` changes while the remote is up, it moves between
+    /// the two, and the one it leaves must not close it.
     func siloRemoteControl(
         isPresented: Binding<Bool>,
         coversWindow: Bool,
-        controller: SiloControlClient
+        controller: SiloControlClient,
+        onDismiss: (() -> Void)? = nil
     ) -> some View {
         let covers = coversWindow && UIDevice.current.userInterfaceIdiom == .phone
         return sheet(isPresented: Binding(
             get: { isPresented.wrappedValue && !covers },
-            set: { isPresented.wrappedValue = $0 }
-        )) {
+            set: { if $0 || !covers { isPresented.wrappedValue = $0 } }
+        ), onDismiss: onDismiss) {
             SiloControlRemoteView(controller: controller)
                 .presentationDetents([.large])
         }
         .fullScreenCover(isPresented: Binding(
             get: { isPresented.wrappedValue && covers },
-            set: { isPresented.wrappedValue = $0 }
-        )) {
+            set: { if $0 || covers { isPresented.wrappedValue = $0 } }
+        ), onDismiss: onDismiss) {
             SiloControlRemoteView(controller: controller)
         }
     }

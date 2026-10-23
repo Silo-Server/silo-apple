@@ -28,7 +28,10 @@ struct AudioPlayerPresentationModifier: ViewModifier {
                     audioStore.dismissFullPlayer()
                 }
             }
-        )) {
+        ), onDismiss: {
+            // The window may have changed shape under the player.
+            router.refitItemDetail()
+        }) {
             AudioFullPlayerView()
                 // The iPad app on a Mac doesn't pass the store into this
                 // sheet, even from a detail that has it, and the player
