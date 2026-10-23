@@ -260,10 +260,12 @@ private struct RemoteNowPlayingContent: View {
         }
     }
 
-    /// A wide, short window (the iPhone Duo's open display) puts what's
-    /// playing beside the controls instead of stacking them in its height.
+    /// A wide, short iPhone window (the iPhone Duo's open display) puts
+    /// what's playing beside the controls instead of stacking them in its
+    /// height. iPad keeps the stacked remote.
     static func splits(_ size: CGSize) -> Bool {
-        size.width >= 700 && size.width >= size.height * 1.2
+        UIDevice.current.userInterfaceIdiom == .phone
+            && size.width >= 700 && size.width >= size.height * 1.2
     }
 
     private var stackedLayout: some View {

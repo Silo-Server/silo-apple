@@ -679,7 +679,12 @@ private struct LibraryCollectionCard: View {
                 Text(collection.name)
                     .font(.siloCaption)
                     .foregroundStyle(Color.siloOnSurface)
+                    #if os(iOS)
+                    // One line, like the 2:3 cards in the other iOS grids.
                     .lineLimit(1)
+                    #else
+                    .lineLimit(2, reservesSpace: true)
+                    #endif
             }
 
             if uiCustomization.cardPresentation.caption.showsMetadata {
