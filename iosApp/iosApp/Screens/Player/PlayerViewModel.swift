@@ -700,6 +700,19 @@ class PlayerViewModel {
         bufferingQuality.pill != nil
     }
 
+    /// The buffering card's first line when it names the quality: the undo
+    /// pill's, for the plan the lowering adopted. Nil keeps the kind's copy.
+    var bufferingPillTitle: String? {
+        bufferingPill?.kind == .undo ? bufferingLoweredMessage : nil
+    }
+
+    /// A lowering's copy, naming the playing plan's resolution when known.
+    private var bufferingLoweredMessage: String {
+        BufferingQualityController.loweredMessage(
+            resolution: activePreparedProtocolV3.flatMap { PlaybackQualityReasons.deliveredResolutionLabel($0.plan) }
+        )
+    }
+
     private var markerPlaybackHasStarted: Bool {
         guard let epoch = activeAetherLoadEpoch else { return false }
         return startedAetherLoadEpoch == epoch
@@ -11041,7 +11054,9 @@ extension PlayerViewModel {
     private func showPendingBufferingNotice() {
         guard let notice = pendingBufferingNotice, presentedNotice == nil, canShowPlayerOverlays else { return }
         pendingBufferingNotice = nil
-        showNotice(title: notice.text, message: "", tone: .info, symbol: notice.symbol, duration: 5)
+        // Shown once the lowered plan is adopted, so it names that plan.
+        let title = notice == .lowered ? bufferingLoweredMessage : notice.text
+        showNotice(title: title, message: "", tone: .info, symbol: notice.symbol, duration: 5)
     }
 
     /// Follows whether the player can show its pills: not while the app is in

@@ -133,6 +133,7 @@ private struct MacPlayerScreen: View {
                     if let pill = viewModel.bufferingPill {
                         MacBufferingQualityPill(
                             pill: pill,
+                            title: viewModel.bufferingPillTitle,
                             onPrimary: { viewModel.selectBufferingPrimary() },
                             onSecondary: { viewModel.selectBufferingKeep() }
                         )

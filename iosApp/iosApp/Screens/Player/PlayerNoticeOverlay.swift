@@ -219,6 +219,14 @@ extension BufferingQualityController.PillKind {
     }
 }
 
+extension BufferingQualityController {
+    /// A lowering's copy naming the resolution that now plays (`Lowered to
+    /// 720p to stop buffering`), or the shared copy without one.
+    static func loweredMessage(resolution: String?) -> String {
+        resolution.map { "Lowered to \($0) to stop buffering" } ?? loweredNotice
+    }
+}
+
 extension BufferingQualityController.Notice {
     /// The notice card's symbol: the undo pill's for a lowering; nil keeps
     /// the tone's.

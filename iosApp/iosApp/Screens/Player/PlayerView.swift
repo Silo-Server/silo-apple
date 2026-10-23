@@ -837,6 +837,7 @@ struct PlayerView: View {
         if showsBufferingPill, let pill = viewModel.bufferingPill {
             TVBufferingQualityPill(
                 pill: pill,
+                title: viewModel.bufferingPillTitle,
                 selectTarget: bufferingPillIsSelectTarget ? bufferingSelectTarget : nil,
                 focus: $focusedBufferingAction,
                 onPrimary: { viewModel.selectBufferingPrimary() },
@@ -859,6 +860,7 @@ struct PlayerView: View {
         if showsBufferingPill, let pill = viewModel.bufferingPill {
             MobileBufferingQualityPill(
                 pill: pill,
+                title: viewModel.bufferingPillTitle,
                 onPrimary: { viewModel.selectBufferingPrimary() },
                 onSecondary: { viewModel.selectBufferingKeep() }
             )

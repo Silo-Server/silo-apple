@@ -101,7 +101,9 @@ enum PlaybackQualityReasons {
         playingValue(plan: plan).map { "Playing \($0)" }
     }
 
-    private static func deliveredResolutionLabel(_ plan: PlaybackV3Plan) -> String? {
+    /// The delivered resolution (`720p`), else the source's; nil without a
+    /// size.
+    static func deliveredResolutionLabel(_ plan: PlaybackV3Plan) -> String? {
         let sizes = [
             (plan.effectiveRecipe.width ?? 0, plan.effectiveRecipe.height ?? 0),
             (plan.source.width ?? 0, plan.source.height ?? 0),
