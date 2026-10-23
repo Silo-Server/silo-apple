@@ -499,6 +499,8 @@ class PlayerViewModel {
     /// What the engine's reader receives from the origin: outage silence and
     /// the plan's `throughput_kbps`.
     @ObservationIgnored private var upstreamMeter = UpstreamReadMeter()
+    /// The device's own receive count, for what a shared link delivered.
+    @ObservationIgnored private var interfaceReceiveCounter = InterfaceReceiveCounter()
     /// Numbers each adopted plan, so a replan that comes back with the same
     /// server `plan_id` is still a new plan to the controller.
     @ObservationIgnored private var bufferingPlanRevision: UInt64 = 0
@@ -1670,6 +1672,10 @@ class PlayerViewModel {
         bufferingQuality.arrivalLowerBoundKbps = { [weak self] in
             guard let self, aetherPlaybackController.activeSpec?.options.nativeRemoteHLS == false else { return nil }
             return upstreamMeter.arrivalLowerBoundKbps
+        }
+        bufferingQuality.linkThroughputKbps = { [weak self] in
+            guard let self, aetherPlaybackController.activeSpec?.options.nativeRemoteHLS == false else { return nil }
+            return upstreamMeter.linkThroughputKbps
         }
         observeBufferingHostInputs()
         observeBufferingConnectivity()
@@ -10533,14 +10539,17 @@ extension PlayerViewModel {
     /// One telemetry tick: what the engine's reader has received from the
     /// origin. Bytes a replacement's source receives while it loads are not
     /// the playing plan's, and the reader's share of a link another reader
-    /// of the file may be using is not the link's rate.
+    /// of the file may be using is not the link's rate: the device's receive
+    /// count is.
     private func noteUpstreamTelemetry() {
+        let totalBytes = aetherPlaybackController.upstreamBytesFetched
         let arrived = upstreamMeter.note(
-            totalBytes: aetherPlaybackController.upstreamBytesFetched,
+            totalBytes: totalBytes,
             atMs: bufferingClock.elapsedMs,
             networkKey: BandwidthProbeScheduler.shared.network.key,
             counts: !bufferingReplacementLoading,
-            shared: aetherPlaybackController.mayShareSourceLink
+            shared: aetherPlaybackController.mayShareSourceLink,
+            deviceBytes: totalBytes == nil ? nil : interfaceReceiveCounter.read()
         )
         if arrived { bufferingSignals.noteMediaDataArrived() }
     }
@@ -10850,7 +10859,7 @@ extension PlayerViewModel {
                   learnedLimit: request.learnedLimit,
                   // A lowering reports what the playing plan received so far,
                   // or what its missed start deadline measured.
-                  observedThroughputKbps: request.observedThroughputKbps ?? upstreamMeter.throughputKbps,
+                  observedThroughputKbps: request.observedThroughputKbps ?? upstreamMeter.linkThroughputKbps,
                   issuedByBufferingQuality: true
               ) else {
             // Restore quality is the viewer's answer: it goes out once the

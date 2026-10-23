@@ -263,6 +263,10 @@ final class BufferingQualityController {
     /// media while its reader gets less than the delivered bitrate is still
     /// starved by the link.
     @ObservationIgnored var arrivalLowerBoundKbps: () -> Int? = { nil }
+    /// What the link delivered while the plan's media arrived, every reader
+    /// of a shared link included: what a lowering sends as
+    /// `observed_throughput_kbps`, else ``measuredThroughputKbps``.
+    @ObservationIgnored var linkThroughputKbps: () -> Int? = { nil }
 
     /// The actionable pill on screen, or nil.
     private(set) var pill: Pill?
@@ -745,10 +749,10 @@ final class BufferingQualityController {
         return measured < delivered
     }
 
-    /// The figure a lowering sends as `observed_throughput_kbps`: the plan's
-    /// measured throughput when it is below its delivered bitrate.
+    /// The figure a lowering sends as `observed_throughput_kbps`: what the
+    /// link delivered to the plan when it is below its delivered bitrate.
     private func observedThroughputKbps(of plan: Plan) -> Int? {
-        guard let delivered = plan.deliveredKbps, let measured = measuredThroughputKbps(),
+        guard let delivered = plan.deliveredKbps, let measured = linkThroughputKbps() ?? measuredThroughputKbps(),
               measured < delivered else { return nil }
         return measured
     }

@@ -410,21 +410,24 @@ final class BufferingQualityControllerTests: XCTestCase {
         // measured, but the counted reader got 4.5 Mbps of the plan's
         // bitrate (bedroom Apple TV, 5 Mbps link): that is evidence. A picked
         // quality asks at the long stall, and Auto lowers without sending the
-        // shared figure. A bound at the bitrate is no evidence.
-        let sharedLink: [(String, Int, [Harness.Recorded])] = [
-            ("original", 4_500, [.init(16_000, .pillShown(.prompt))]),
-            ("auto", 4_500, [.init(16_000, .replan(Self.autoLowering(44_100)))]),
-            ("original", 63_000, []),
+        // reader's share; it sends what the link delivered to both readers
+        // when the device counted it. A bound at the bitrate is no evidence.
+        let sharedLink: [(String, Int, Int?, [Harness.Recorded])] = [
+            ("original", 4_500, nil, [.init(16_000, .pillShown(.prompt))]),
+            ("auto", 4_500, nil, [.init(16_000, .replan(Self.autoLowering(44_100)))]),
+            ("auto", 2_500, 4_900, [.init(16_000, .replan(Self.autoLowering(44_100, observed: 4_900)))]),
+            ("original", 63_000, nil, []),
         ]
-        for (quality, bound, expected) in sharedLink {
+        for (quality, bound, link, expected) in sharedLink {
             let h = Harness(mode: .always)
             h.arrivalLowerBoundKbps = bound
+            h.linkKbps = link
             h.at(0) {
                 $0.planAdopted(Self.plan("p1", quality: quality))
                 $0.waiting()
             }
             h.clock.advance(to: 20_000)
-            XCTAssertEqual(h.shown, expected, "\(quality) \(bound)")
+            XCTAssertEqual(h.shown, expected, "\(quality) \(bound) \(link as Any)")
         }
 
         // The start's plan, lowered on evidence; its lower plan comes back
@@ -795,6 +798,8 @@ private final class Harness {
     var measuredKbps: Int?
     /// The evidence-only bound of a shared link.
     var arrivalLowerBoundKbps: Int?
+    /// What the link delivered, every reader included.
+    var linkKbps: Int?
 
     init(mode: BufferingQualityMode) {
         controller = BufferingQualityController(clock: clock)
@@ -805,6 +810,7 @@ private final class Harness {
         }
         controller.measuredThroughputKbps = { [unowned self] in self.measuredKbps }
         controller.arrivalLowerBoundKbps = { [unowned self] in self.arrivalLowerBoundKbps }
+        controller.linkThroughputKbps = { [unowned self] in self.linkKbps }
     }
 
     /// Everything but `plan_summary`: what the vectors' `expect` lists.

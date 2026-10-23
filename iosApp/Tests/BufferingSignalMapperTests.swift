@@ -242,6 +242,28 @@ final class BufferingSignalMapperTests: XCTestCase {
         shared.note(totalBytes: 2_000_000, atMs: 3_000, networkKey: "wifi")
         XCTAssertEqual(shared.throughputKbps, 8_000, "1 MB over the one second the reader had alone")
         XCTAssertEqual(shared.arrivalLowerBoundKbps, 5_333)
+
+        // The device's receive count takes in both readers: over shared
+        // ticks it is what the link delivered (bedroom Apple TV, 5 Mbps).
+        var link = UpstreamReadMeter()
+        link.planAdopted(networkKey: "wifi")
+        link.note(totalBytes: 0, atMs: 0, networkKey: "wifi", shared: true, deviceBytes: 0)
+        link.note(totalBytes: 200_000, atMs: 1_000, networkKey: "wifi", shared: true, deviceBytes: 600_000)
+        link.note(totalBytes: 400_000, atMs: 2_000, networkKey: "wifi", shared: true, deviceBytes: 1_200_000)
+        link.note(totalBytes: 600_000, atMs: 3_000, networkKey: "wifi", shared: true)
+        XCTAssertNil(link.throughputKbps)
+        XCTAssertEqual(link.arrivalLowerBoundKbps, 1_600, "the counted reader's share")
+        XCTAssertEqual(link.linkThroughputKbps, 4_800, "1.2 MB over 2 s; a tick without a count stays out")
+        var broken = UpstreamReadMeter()
+        broken.planAdopted(networkKey: "wifi")
+        broken.note(totalBytes: 0, atMs: 0, networkKey: "wifi", shared: true, deviceBytes: 0)
+        broken.note(totalBytes: 1_000_000, atMs: 1_000, networkKey: "wifi", shared: true, deviceBytes: 0)
+        XCTAssertNil(broken.linkThroughputKbps, "a count below the reader's own is no count")
+
+        var counter = InterfaceReceiveCounter()
+        XCTAssertEqual(counter.advance(["en0": 4_294_967_000]), 0)
+        XCTAssertEqual(counter.advance(["en0": 704, "en1": 10]), 1_000, "en0 wrapped; en1 counts from its next read")
+        XCTAssertNil(counter.advance([:]))
     }
 
     /// Direct play's start deadline: 45 s from the plan's adoption of the
