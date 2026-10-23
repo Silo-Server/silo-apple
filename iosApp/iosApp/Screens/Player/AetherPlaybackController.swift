@@ -378,12 +378,19 @@ final class AetherPlaybackController {
         guard epoch == activeLoadEpoch, let spec = activeSpec else {
             throw CancellationError()
         }
-        // A server subtitle artifact may still be streaming its extraction.
-        // Declaring it in the native HLS master makes AVPlayer wait for the
-        // whole film's captions before becoming ready for the room barrier.
-        // Party playback uses the host overlay (PiP/AirPlay are disabled), so
-        // register these tracks after mounting the media instead.
-        let usesSubtitleOverlay = requiresExplicitTransportResume && spec.options.nativeRemoteHLS
+        // A subtitle declared at load joins the native HLS master as one
+        // whole-film rendition, and AVPlayer will not start the item until
+        // that rendition has loaded. Aether answers it only once the whole
+        // artifact has arrived, and the server's extract of an embedded track
+        // streams until it has demuxed the whole file: tens of seconds on a
+        // large remux, past the start deadline. Register those tracks after
+        // mounting the media instead, on the host overlay; the cues fill in
+        // while the video plays. Party playback does the same for every
+        // artifact so the room barrier never waits on captions (PiP and
+        // AirPlay are disabled there). The overlay does not reach PiP or
+        // AirPlay, which keep the rendition for sidecar files.
+        let usesSubtitleOverlay = spec.options.nativeRemoteHLS
+            && (requiresExplicitTransportResume || spec.declaresEmbeddedTrackExtract)
         var options = spec.options
         if usesSubtitleOverlay { options.externalSubtitles = [] }
         do {

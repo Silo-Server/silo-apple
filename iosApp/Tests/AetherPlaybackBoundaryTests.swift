@@ -1599,13 +1599,27 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         controller.onEvent = nil
     }
 
-    func testPartyHLSKeepsSubtitleIdentityAcrossOverlayLoads() async throws {
+    /// Party HLS mounts every artifact before registering it; any HLS load
+    /// does so for the server's extract of an embedded track, which streams
+    /// for as long as the server demuxes the file.
+    func testServerHLSKeepsSubtitleIdentityAcrossOverlayLoads() async throws {
+        for (party, source) in [(true, "external"), (false, "embedded")] {
+            try await assertServerHLSOverlayLoadsKeepSubtitleIdentity(party: party, selectedSource: source)
+        }
+    }
+
+    private func assertServerHLSOverlayLoadsKeepSubtitleIdentity(party: Bool, selectedSource: String) async throws {
         let fixture = try sidecarInventoryPlan(
             mode: "render", selectedTrackId: "file:42:subtitle:2", includeArtifact: true
         )
         var object = try XCTUnwrap(JSONSerialization.jsonObject(
             with: JSONEncoder().encode(fixture.plan)
         ) as? [String: Any])
+        var subtitle = try XCTUnwrap(object["subtitle"] as? [String: Any])
+        var inventory = try XCTUnwrap(subtitle["inventory"] as? [[String: Any]])
+        inventory[2]["source"] = selectedSource
+        subtitle["inventory"] = inventory
+        object["subtitle"] = subtitle
         object["delivery"] = PlaybackProtocolV3.PlanDelivery.transcodeHLS
         var stream = try XCTUnwrap(object["stream"] as? [String: Any])
         stream["protocol"] = "hls"
@@ -1622,8 +1636,9 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
             resolveURL: { URL(string: $0, relativeTo: source)?.absoluteURL },
             panelIsInHDRMode: false
         )
+        XCTAssertEqual(spec.declaresEmbeddedTrackExtract, selectedSource == "embedded")
         let controller = try AetherPlaybackController()
-        controller.requiresExplicitTransportResume = true
+        controller.requiresExplicitTransportResume = party
         defer { controller.stop() }
         let appID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 2)
 

@@ -153,6 +153,10 @@ struct AetherLoadSpec {
     /// The selected native row uses the same picker ID space as sidecars,
     /// but resolves directly to its container stream, without an external slot.
     let embeddedSubtitleAlias: (appTrackID: Int64, streamIndex: Int)?
+    /// The declared subtitle artifact is the server's extract of a track
+    /// inside the media file. That response streams until the server has
+    /// demuxed the whole file, which takes tens of seconds on a large remux.
+    let declaresEmbeddedTrackExtract: Bool
 
     /// The bridge for codecs Aether cannot stream-copy, when a caller does not
     /// name one. Lossless rather than Aether's `.surroundCompat` default;
@@ -241,6 +245,7 @@ struct AetherLoadSpec {
             return (SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index), URLRequest(url: url))
         })
         embeddedSubtitleAlias = nil
+        declaresEmbeddedTrackExtract = false
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -324,6 +329,7 @@ struct AetherLoadSpec {
             return (SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index), request)
         })
         embeddedSubtitleAlias = nil
+        declaresEmbeddedTrackExtract = false
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -405,6 +411,7 @@ struct AetherLoadSpec {
         // every later Aether external id by one.
         var externalSubtitles: [ExternalSubtitleTrack] = []
         var externalSubtitleAppTrackIDs: [Int64?] = []
+        var declaresEmbeddedTrackExtract = false
         if plan.subtitle.embedded == nil,
            let artifact = plan.subtitle.artifact,
            PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode) {
@@ -454,6 +461,7 @@ struct AetherLoadSpec {
             externalSubtitleAppTrackIDs.append(inventoryItem.map { item in
                 SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)
             })
+            declaresEmbeddedTrackExtract = inventoryItem?.source == "embedded"
         }
 
         self.planID = plan.planId
@@ -482,6 +490,7 @@ struct AetherLoadSpec {
         }
         self.audioSourceStreamIndex = audioSourceStreamIndex
         self.externalSubtitleAppTrackIDs = externalSubtitleAppTrackIDs
+        self.declaresEmbeddedTrackExtract = declaresEmbeddedTrackExtract
         if let item = plan.selectedSubtitleInventoryItem, let value = item.fontBundleUrl {
             let url = resolveURL.map { $0(value) } ?? URL(string: value)
             guard let url, ["http", "https", "file"].contains(url.scheme?.lowercased() ?? "") else {
