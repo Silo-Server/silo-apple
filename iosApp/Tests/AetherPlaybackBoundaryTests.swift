@@ -1695,6 +1695,32 @@ final class AetherPlaybackBoundaryTests: XCTestCase {
         }
     }
 
+    /// Switching to an embedded text track on a transcode replans, so the
+    /// track arrives as the new transcode's rendition rather than as a
+    /// whole-file extract. Everything else keeps switching locally.
+    func testOnlyAnUnmountedEmbeddedTextTrackOnATranscodeReplansIntoARendition() throws {
+        let cases: [(delivery: String, source: String, codec: String, mounted: Bool, replans: Bool)] = [
+            (PlaybackProtocolV3.PlanDelivery.transcodeHLS, "embedded", "subrip", false, true),
+            (PlaybackProtocolV3.PlanDelivery.transcodeHLS, "embedded", "mov_text", false, true),
+            (PlaybackProtocolV3.PlanDelivery.transcodeHLS, "embedded", "subrip", true, false),
+            (PlaybackProtocolV3.PlanDelivery.transcodeHLS, "embedded", "ass", false, false),
+            (PlaybackProtocolV3.PlanDelivery.transcodeHLS, "embedded", "hdmv_pgs_subtitle", false, false),
+            (PlaybackProtocolV3.PlanDelivery.transcodeHLS, "external", "srt", false, false),
+            (PlaybackProtocolV3.PlanDelivery.remuxHLS, "embedded", "subrip", false, false),
+        ]
+        for row in cases {
+            let plan = try renditionPlan(delivery: row.delivery, source: row.source, codec: row.codec)
+            XCTAssertEqual(
+                ProtocolV3SubtitleSelection.track("file:42:subtitle:0")
+                    .replansIntoHLSSubtitleRendition(from: plan, isMounted: row.mounted),
+                row.replans, "\(row)"
+            )
+        }
+        XCTAssertFalse(ProtocolV3SubtitleSelection.off.replansIntoHLSSubtitleRendition(
+            from: try renditionPlan(), isMounted: false
+        ))
+    }
+
     private func renditionPlan(
         delivery: String = PlaybackProtocolV3.PlanDelivery.transcodeHLS,
         source: String = "embedded",

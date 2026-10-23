@@ -9563,7 +9563,9 @@ class PlayerViewModel {
             registerProtocolV3EmbeddedSubtitleIfAvailable($0, plan: plan)
                 || aetherPlaybackController.containsSubtitle(appTrackID: $0.trackId)
         } ?? false
-        guard selection.canApplyLocally(to: plan, isMounted: isMounted) else { return false }
+        guard selection.canApplyLocally(to: plan, isMounted: isMounted),
+              settings.subtitleSyncMs != 0
+                || !selection.replansIntoHLSSubtitleRendition(from: plan, isMounted: isMounted) else { return false }
         let priorSelection = localProtocolV3SubtitleSelection
         localProtocolV3SubtitleSelection = selection
         selectedSubtitleId = track?.trackId

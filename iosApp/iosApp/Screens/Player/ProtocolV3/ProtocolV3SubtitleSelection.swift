@@ -50,6 +50,19 @@ enum ProtocolV3SubtitleSelection: Equatable {
         return streamIndex
     }
 
+    /// On a transcode the server can carry an embedded text track as the
+    /// transcode's HLS subtitle rendition, whose cues arrive with the video.
+    /// Mounting the row's sidecar instead fetches a whole-file extract, which
+    /// takes minutes on a large remux. ASS stays a sidecar: the server keeps
+    /// it there for a client that preserves authored styling, as this one does.
+    func replansIntoHLSSubtitleRendition(from plan: PlaybackV3Plan, isMounted: Bool) -> Bool {
+        guard !isMounted, plan.delivery == PlaybackProtocolV3.PlanDelivery.transcodeHLS,
+              let item = inventoryItem(in: plan), item.source == "embedded", let codec = item.codec else {
+            return false
+        }
+        return ["subrip", "webvtt", "mov_text"].contains(ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec))
+    }
+
     func canApplyLocally(to plan: PlaybackV3Plan, isMounted: Bool) -> Bool {
         guard plan.subtitle.mode != PlaybackProtocolV3.SubtitleMode.burnIn else { return false }
         if self == .off { return true }
