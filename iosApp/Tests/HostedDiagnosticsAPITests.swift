@@ -979,6 +979,81 @@ final class HostedDiagnosticsAPITests: XCTestCase {
         XCTAssertTrue(selfHostedManifest.deviceSummary.model.contains(privateDeviceSummaryID))
     }
 
+    /// The hosted collector has not adopted `report.occurrence_count` yet,
+    /// so a repeat count stays local for hosted reports. Self-hosted servers
+    /// on the newer contract receive it.
+    func testOccurrenceCountReachesOnlySelfHostedManifests() throws {
+        let capturedAt = Date()
+        func bundle(
+            binding: DiagnosticsBinding,
+            destinationServerInstanceID: String
+        ) throws -> DiagnosticsBundleBuildResult {
+            let context = DiagnosticsCaptureContext(
+                binding: binding,
+                profileID: nil,
+                consentMode: .manual,
+                noticeVersion: 1,
+                appVersion: "1.0",
+                appBuild: "7",
+                platform: .ios,
+                osVersion: "26.0",
+                destinationServerInstanceID: destinationServerInstanceID
+            )
+            var manifest = context.makeManifestDraft(
+                type: .manual,
+                capturedAt: capturedAt,
+                crash: nil,
+                deviceSummary: DiagnosticsManifest.DeviceSummary(
+                    manufacturer: "Apple",
+                    model: "iPhone",
+                    os: "26.0",
+                    formFactor: "phone"
+                ),
+                playbackSessionIDs: [],
+                consentMode: .manual
+            )
+            manifest.report.occurrenceCount = 3
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+                "OccurrenceCount-\(UUID().uuidString)",
+                isDirectory: true
+            )
+            addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+            let report = try PendingReportStore(rootDirectory: root).save(PendingReportCapture(
+                binding: binding,
+                profileID: nil,
+                type: .manual,
+                fingerprint: "occurrence-count",
+                capturedAt: capturedAt,
+                manifest: manifest,
+                deviceSnapshot: makeDeviceSnapshot(capturedAt: capturedAt),
+                artifacts: [PendingReportArtifact(relativePath: "logs.jsonl", data: Data())]
+            ))
+            return try DiagnosticsBundleBuilder().build(report: report, logLines: [], droppedLogLines: 0)
+        }
+        // The upload manifest and the copy inside the archive.
+        func occurrenceCounts(in bundle: DiagnosticsBundleBuildResult) throws -> [Int?] {
+            let decoder = DiagnosticsJSONCoding.makeDecoder()
+            let embedded = try tarEntry(named: "manifest.json", in: gunzip(bundle.bundleData))
+            return [
+                try decoder.decode(DiagnosticsManifest.self, from: bundle.manifestData).report.occurrenceCount,
+                try decoder.decode(DiagnosticsManifestDraft.self, from: embedded).report.occurrenceCount,
+            ]
+        }
+
+        let hosted = try bundle(
+            binding: .hosted(serverRegistryID: "occurrence-server", accountUserID: "occurrence-account"),
+            destinationServerInstanceID: HostedDiagnosticsCapabilities.pinnedCollectorID
+        )
+        XCTAssertEqual(try occurrenceCounts(in: hosted), [nil, nil])
+        XCTAssertFalse(String(decoding: hosted.manifestData, as: UTF8.self).contains("occurrence_count"))
+
+        let selfHosted = try bundle(
+            binding: DiagnosticsBinding(serverInstanceID: "occurrence-instance", accountUserID: "42"),
+            destinationServerInstanceID: "occurrence-instance"
+        )
+        XCTAssertEqual(try occurrenceCounts(in: selfHosted), [3, 3])
+    }
+
     func testHostedDeviceSnapshotRedactsBarePrivateIdentifiersInNestedValues() throws {
         let privateUUID = "1198a8f8-6c2d-7e31-8f44-62d198a10112"
         let privateCompactUUIDKey = "5e884898da28047151d0e56f8dc62927"

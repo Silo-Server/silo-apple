@@ -397,6 +397,8 @@ struct DiagnosticsBundleBuilder {
         )
     }
 
+    /// `occurrence_count` is left out on purpose: the hosted collector has
+    /// not adopted it yet, so the repeat count stays local for hosted reports.
     private static func sanitizeHostedReport(
         _ report: DiagnosticsManifest.Report
     ) -> DiagnosticsManifest.Report {
@@ -912,7 +914,7 @@ struct DiagnosticsBundleBuilder {
     // Self-hosted uploads carry the full canonical set; only hosted bundles are
     // narrowed here.
     //
-    // Two distinct reasons put a canonical key on the withheld list, and the
+    // Three distinct reasons put a canonical key on the withheld list, and the
     // distinction matters because they fail differently:
     //
     // 1. Content we do not want a third party to hold, regardless of whether it
@@ -932,7 +934,15 @@ struct DiagnosticsBundleBuilder {
     //    all false positives, and false positives train operators to ignore the
     //    one check that catches real leaks. The retry line's `msg` ("401 retry"
     //    / "401 not retried") carries the distinction on its own, so hosted
-    //    evidence loses nothing by dropping the attribute.
+    //    evidence loses nothing by dropping the attribute. The playback session
+    //    summary's `session_ms` and `plan_change_count` collide the same way,
+    //    through the scanner's `session` and `plan` prefixes, so they stay
+    //    self-hosted even after the collector re-vendors the contract.
+    //
+    // 3. Keys newer than the hosted collector's vendored registry: the other
+    //    playback session summary keys and `lifecycle.resident_mb`. The
+    //    collector rejects a whole bundle on an unregistered key, so these stay
+    //    self-hosted until it re-vendors the contract.
     //
     // Before adding a key here, normalize it and check it against
     // `FORBIDDEN_KEYS`, `FORBIDDEN_COMPACT_KEYS` and the credential/identifier
