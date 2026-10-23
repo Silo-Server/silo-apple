@@ -76,23 +76,31 @@ final class BandwidthProbeMeterTests: XCTestCase {
     }
 
     func testEachModeAsksForItsOwnSize() throws {
+        let server = try XCTUnwrap(URL(string: "https://silo.example"))
         XCTAssertEqual(BandwidthProbeMeter(mode: .quick(targetKbps: nil)).requestedBytes, 100_000_000)
         XCTAssertEqual(BandwidthProbeMeter(mode: .accurate).requestedBytes, 1_000_000_000)
         XCTAssertEqual(
             BandwidthProbe.downloadURL(
                 try XCTUnwrap(URL(string: "https://silo.example/api/v2/playback/bandwidth-probe?media_path=true")),
-                bytes: 100_000_000
+                serverURL: server, bytes: 100_000_000
             )?.absoluteString,
             "https://silo.example/api/v2/playback/bandwidth-probe?media_path=true&size=100000000"
         )
         XCTAssertEqual(
             BandwidthProbe.downloadURL(
                 try XCTUnwrap(URL(string: "https://silo.example:8096/api/v2/playback/bandwidth-probe?size=5")),
-                bytes: 1_000_000_000
+                serverURL: server, bytes: 1_000_000_000
             )?.absoluteString,
             "https://silo.example:8096/api/v2/playback/bandwidth-probe?size=1000000000"
         )
-        XCTAssertNil(BandwidthProbe.downloadURL(try XCTUnwrap(URL(string: "ftp://silo.example/probe")), bytes: 1))
+        XCTAssertNil(BandwidthProbe.downloadURL(try XCTUnwrap(URL(string: "ftp://silo.example/probe")), serverURL: server, bytes: 1))
+        // The download carries credentials: an https server's never go to
+        // cleartext, while an http server's already do.
+        let cleartext = try XCTUnwrap(URL(string: "http://silo.example/api/v2/playback/bandwidth-probe"))
+        XCTAssertNil(BandwidthProbe.downloadURL(cleartext, serverURL: server, bytes: 1))
+        XCTAssertNotNil(BandwidthProbe.downloadURL(
+            cleartext, serverURL: try XCTUnwrap(URL(string: "http://silo.example")), bytes: 1
+        ))
     }
 }
 

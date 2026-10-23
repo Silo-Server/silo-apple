@@ -29,10 +29,13 @@ enum BandwidthProbe {
     static let maxKbps = 1_000_000
 
     /// The URL a test downloads: `url`, the resolved `bandwidth_probe_url`,
-    /// asking for `bytes`.
-    static func downloadURL(_ url: URL, bytes: Int) -> URL? {
+    /// asking for `bytes`. The download carries the account's credentials, so
+    /// an `https` server's test never goes to a cleartext `http` URL, as for
+    /// stream URLs (``StreamRequest``).
+    static func downloadURL(_ url: URL, serverURL: URL, bytes: Int) -> URL? {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.scheme == "http" || components.scheme == "https" else {
+              let scheme = components.scheme?.lowercased(),
+              scheme == "https" || (scheme == "http" && serverURL.scheme?.lowercased() == "http") else {
             return nil
         }
         var items = (components.queryItems ?? []).filter { $0.name != "size" }

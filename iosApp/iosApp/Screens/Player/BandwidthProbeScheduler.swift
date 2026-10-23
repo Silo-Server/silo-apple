@@ -193,8 +193,8 @@ struct LiveBandwidthProbeServer: BandwidthProbeServer {
     func measure(_ target: BandwidthProbeTarget, mode: BandwidthProbeMeter.Mode) async throws -> BandwidthProbeResult {
         let download = BandwidthProbeDownload(mode: mode)
         // An account address that does not parse measures nothing.
-        guard URL(string: target.auth.account.serverURL) != nil,
-              let url = BandwidthProbe.downloadURL(target.url, bytes: download.requestedBytes) else {
+        guard let serverURL = URL(string: target.auth.account.serverURL),
+              let url = BandwidthProbe.downloadURL(target.url, serverURL: serverURL, bytes: download.requestedBytes) else {
             return .unavailable(status: 0)
         }
         var request = URLRequest(url: url)
