@@ -75,7 +75,7 @@ struct BufferingSignalMapper {
     private var startPending = false
     /// The adopted plan has run. Until it does, a seek, the player applying
     /// the start position included, does not end the start's wait.
-    private var planHasRun = true
+    private(set) var planHasRun = true
     /// The wait in progress on the software route has held more than
     /// `RENDERER_WAIT_AMPLE_MS` buffered: it stays the renderer's until it
     /// ends.

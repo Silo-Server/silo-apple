@@ -2057,7 +2057,8 @@ class PlayerViewModel {
             // On Auto in "Automatically", a start that never became playable
             // within the engine's own deadline lowers, as a long stall would,
             // rather than asking for the same quality again.
-            if failure.kind == .noPlayableTrackWithinBudget, !currentTransportHasShownFrame,
+            if failure.kind == .noPlayableTrackWithinBudget,
+               !currentTransportHasShownFrame || !bufferingSignals.planHasRun,
                protocolV3ReplanTask == nil, freshLoadTask == nil, !isWatchPartyPlayback,
                bufferingQuality.startDeadlinePassed() {
                 Self.logger.info("[CMP-BUFFERING] start deadline passed: lowering instead of failure recovery")
@@ -2103,7 +2104,6 @@ class PlayerViewModel {
     private func handleAetherStartupMilestone(epoch: AetherPlaybackController.LoadEpoch) {
         guard startedAetherLoadEpoch != epoch else { return }
         startedAetherLoadEpoch = epoch
-        disarmStartDeadline()
         viewingHasPlayed = true
         handleFileLoaded()
         if let playing = lastLoadRequest?.contentId, shuffleState != nil {
@@ -10324,7 +10324,11 @@ extension PlayerViewModel {
             softwareSeekLanding.reset()
         }
         let calls = bufferingSignals.update(bufferingSignalSnapshot)
-        if bufferingSignals.state == .playing { bufferingReloadEpoch = nil }
+        if bufferingSignals.state == .playing {
+            bufferingReloadEpoch = nil
+            // The plan played: its start is over.
+            disarmStartDeadline()
+        }
         if needsBufferingSignalPoll {
             pollBufferingSignals()
         } else {
@@ -10436,11 +10440,13 @@ extension PlayerViewModel {
     }
 
     /// Arms the adopted plan's start deadline where AetherEngine sets none:
-    /// direct play and the software route. Server HLS keeps the engine's,
-    /// and a load that already shows its first frame needs none.
+    /// direct play and the software route. Server HLS keeps the engine's.
+    /// It runs until the plan first plays, not until a first frame: AVPlayer
+    /// holds a frame ready for display before its clock moves, and on a link
+    /// far below the bitrate it can hold it there for minutes.
     private func armStartDeadline() {
         disarmStartDeadline()
-        guard let epoch = activeAetherLoadEpoch, startedAetherLoadEpoch != epoch,
+        guard let epoch = activeAetherLoadEpoch,
               aetherPlaybackController.activeSpec?.options.nativeRemoteHLS == false else { return }
         armedStartDeadline = .init(loadEpoch: epoch, deadline: PlaybackStartDeadline())
         syncStartDeadline()
@@ -10453,12 +10459,13 @@ extension PlayerViewModel {
     }
 
     /// The start deadline spends its budget only while the viewer wants to
-    /// play and the buffering signals show no outage.
+    /// play, the buffering signals show no outage, and the player is not
+    /// held for a Watch Party or an interstitial.
     private func syncStartDeadline() {
         guard var armed = armedStartDeadline else { return }
         let due = armed.deadline.dueAtMs
         armed.deadline.update(
-            viewerWantsToPlay: viewerWantsToPlay,
+            viewerWantsToPlay: viewerWantsToPlay && bufferingSignals.state != .waiting(.pause),
             outage: bufferingSignals.transportTrouble,
             atMs: bufferingClock.elapsedMs
         )
@@ -10478,14 +10485,14 @@ extension PlayerViewModel {
         }
     }
 
-    /// A plan whose start deadline passed without a first frame fails as a
+    /// A plan whose start deadline passed before it played fails as a
     /// server-HLS plan does when AetherEngine's deadline passes: on Auto in
     /// "Automatically", with evidence of a slow link, the buffering
     /// controller lowers it; otherwise it takes the failure recovery.
     private func checkStartDeadline() {
         startDeadlineTimer = nil
         guard !isDisposed, let epoch = armedStartDeadline?.loadEpoch else { return }
-        guard epoch == activeAetherLoadEpoch, startedAetherLoadEpoch != epoch else {
+        guard epoch == activeAetherLoadEpoch else {
             disarmStartDeadline()
             return
         }
@@ -10501,7 +10508,7 @@ extension PlayerViewModel {
             return
         }
         disarmStartDeadline()
-        Self.logger.info("[CMP-BUFFERING] start deadline passed with no first frame")
+        Self.logger.info("[CMP-BUFFERING] start deadline passed before the plan played")
         handleAetherFailure(PlaybackErrorInfo(kind: .noPlayableTrackWithinBudget, message: Self.startDeadlineMessage))
         syncBufferingQualitySignals()
     }
