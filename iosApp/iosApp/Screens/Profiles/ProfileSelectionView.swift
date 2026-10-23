@@ -4,7 +4,6 @@ import SwiftUI
 struct ProfileSelectionView: View {
     var router: AppRouter
     @State private var viewModel = ProfileSelectionViewModel()
-    @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var pinEntryContext: PINEntryContext?
     @State private var wrongPINCount = 0
     @State private var pinError: String?
@@ -19,13 +18,12 @@ struct ProfileSelectionView: View {
     @State private var headerHeight: CGFloat = 0
     @State private var footerHeight: CGFloat = 0
     #endif
-    @Namespace private var profileFocusNamespace
     #if os(tvOS)
     @FocusState private var isSignOutFocused: Bool
+    @FocusState private var focusedProfileID: String?
     /// The profile whose PIN prompt was open, so closing it puts focus back
     /// on that profile rather than the first one.
     @State private var returnFocusProfileID: String?
-    @Environment(\.resetFocus) private var resetFocus
     #endif
 
     private enum PINEntryPurpose: String {
@@ -68,7 +66,7 @@ struct ProfileSelectionView: View {
         .task {
             MarqueeScene.shared.showActiveServer()
             MarqueeScene.shared.focus = .profiles
-            async let account: Void = viewModel.loadAccount()
+            async let account: Void = viewModel.loadAccount(accounts: router.accounts)
             await viewModel.loadProfiles()
             await skipPickerIfSingleProfile()
             await account
@@ -153,11 +151,15 @@ struct ProfileSelectionView: View {
         if viewModel.isLoading && viewModel.profiles.isEmpty {
             LoadingView(message: "Loading profiles...")
         } else if let error = viewModel.error, viewModel.profiles.isEmpty {
+            // Who's Watching is where accounts are switched, so a server that
+            // can't be reached still leaves the way to the others.
             ErrorView(state: error, onRetry: {
                 Task {
                     await viewModel.loadProfiles()
                     await skipPickerIfSingleProfile()
                 }
+            }, onSwitchAccount: {
+                Task { await router.accounts.beginSwitchAccount(router: router) }
             })
         } else {
             content
@@ -177,8 +179,12 @@ struct ProfileSelectionView: View {
                 .padding(.top, 84)
             Spacer(minLength: 0)
             // Full width so Down from any avatar column finds the section,
-            // not only from the avatars directly above the two buttons.
-            footerActions
+            // not only from the avatars directly above the buttons.
+            ProfileSelectionTVFooter(
+                router: router,
+                showsSignOutConfirmation: $showSignOutConfirm,
+                signOutFocus: $isSignOutFocused
+            )
                 .frame(maxWidth: .infinity)
                 .focusSection()
         }
@@ -214,7 +220,7 @@ struct ProfileSelectionView: View {
             MarqueeTopBar {
                 SiloWordmarkView(width: 92)
             } trailing: {
-                serverChip
+                ProfileSelectionServerMenu(router: router)
             }
             .padding(.horizontal, 24)
             .padding(.top, 6)
@@ -237,81 +243,49 @@ struct ProfileSelectionView: View {
         #endif
     }
 
-    /// Which account these profiles belong to. The line keeps its height
-    /// while the account loads so the picker doesn't shift when it appears.
+    /// Which account these profiles belong to (spec §5.1). The line
+    /// keeps its height while the account loads so the picker doesn't shift
+    /// when it appears.
     private var accountLine: some View {
-        Text(viewModel.accountName.map { "Signed in as \($0)" } ?? " ")
+        let line = viewModel.accountLine(accounts: router.accounts)
+        return Text(line ?? " ")
             .font(.system(size: MarqueeMetrics.leadFont))
             .foregroundStyle(Color.siloOnSurface.opacity(0.62))
             .lineLimit(1)
             .frame(maxWidth: .infinity)
-            .opacity(viewModel.accountName == nil ? 0 : 1)
-            .animation(.easeOut(duration: 0.25), value: viewModel.accountName)
+            .opacity(line == nil ? 0 : 1)
+            .animation(.easeOut(duration: 0.25), value: line)
     }
 
     #if !os(tvOS)
-    private var serverChip: some View {
-        let serverURL = AuthService.shared.serverUrl
-        let branding = ServerBrandingCache.branding(for: serverURL)
-        let name = ServerBranding.displayName(branding, serverURL: serverURL)
-        return Menu {
-            Section(ServerBranding.hostLabel(serverURL)) {
-                Button {
-                    router.navigate(to: .serverList)
-                } label: {
-                    Label("Change server", systemImage: "server.rack")
-                }
-            }
-        } label: {
-            MarqueeServerChipLabel(name: name, markURL: branding?.markURL)
-        }
-        .menuStyle(.button)
-        .buttonStyle(.marqueePressable)
-        .accessibilityLabel("\(name), server. Double-tap to change.")
-    }
-    #endif
-
-    /// Changing server and signing out are utilities, kept small and below
-    /// the people.
+    /// Switching account and signing out are utilities, kept small and below
+    /// the people. Switch Account shows Choose an Account; Sign out asks
+    /// first, since it affects everyone on the device (plan G10).
     private var footerActions: some View {
         HStack(spacing: footerSpacing) {
             Button {
-                router.navigate(to: .serverList)
+                Task { await router.accounts.beginSwitchAccount(router: router) }
             } label: {
-                Label("Change server", systemImage: "server.rack")
+                Label("Switch Account", systemImage: "person.2")
             }
-            .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
+            .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
 
             Button {
-                #if os(tvOS)
-                showSignOutConfirm = true
-                #else
-                router.signOutAndReset()
-                #endif
+                Task { await router.accounts.requestRemoval(.currentAccount, router: router) }
             } label: {
                 Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
             }
-            .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
-            #if os(tvOS)
-            .focused($isSignOutFocused)
-            #endif
+            .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
         }
     }
-
-    private var footerKind: MarqueeButtonStyle.Kind {
-        #if os(tvOS)
-        .glass
-        #else
-        .plain
-        #endif
-    }
+    #endif
 
     #if os(tvOS)
     private var tileRow: some View {
-        let rememberedProfileID = launchPreferences.rememberedProfile(
-            for: ServerRegistry.shared.activeServerId
-        )?.profileID
-        let preferredProfileID = returnFocusProfileID ?? rememberedProfileID ?? viewModel.profiles.first?.id
+        let rememberedProfileID = viewModel.rememberedProfileID
+        // Focus starts on the leftmost profile; closing a PIN prompt returns
+        // it to the profile that opened the prompt.
+        let preferredProfileID = returnFocusProfileID ?? viewModel.profiles.first?.id
         let grid = LazyVGrid(
             columns: gridColumns,
             spacing: rowSpacing
@@ -320,8 +294,7 @@ struct ProfileSelectionView: View {
                 TVProfileTile(
                     profile: profile,
                     isRemembered: profile.id == rememberedProfileID,
-                    prefersDefaultFocus: profile.id == preferredProfileID,
-                    defaultFocusNamespace: profileFocusNamespace
+                    focus: $focusedProfileID
                 ) {
                     handleProfileTap(profile)
                 }
@@ -330,10 +303,15 @@ struct ProfileSelectionView: View {
         }
 
         // A focus section, so Up from either footer button finds the
-        // centered grid.
+        // centered grid. The default only applies while nothing holds
+        // focus, and arriving from a screen whose focused control is gone
+        // leaves nothing focused, so it is seeded too.
         return grid
-            .focusScope(profileFocusNamespace)
             .focusSection()
+            .defaultFocus($focusedProfileID, preferredProfileID, priority: .userInitiated)
+            // The picker draws before its profiles load: seed again once the
+            // leftmost profile is there.
+            .marqueeTVSeedFocus($focusedProfileID, preferredProfileID ?? "", id: preferredProfileID)
     }
     #endif
 
@@ -372,9 +350,7 @@ struct ProfileSelectionView: View {
     private func tileRows(_ layout: ProfilePickerLayout?) -> some View {
         let items = viewModel.profiles.map(PickerItem.profile) + [.add]
         let perRow = layout?.perRow ?? 3
-        let rememberedProfileID = launchPreferences.rememberedProfile(
-            for: ServerRegistry.shared.activeServerId
-        )?.profileID
+        let rememberedProfileID = viewModel.rememberedProfileID
         let rows = stride(from: 0, to: items.count, by: perRow).map {
             Array(items[$0..<min($0 + perRow, items.count)])
         }
@@ -461,15 +437,7 @@ struct ProfileSelectionView: View {
     private var profileOverlay: some View {
         #if os(tvOS)
         if showSignOutConfirm {
-            TVSettingsConfirmationOverlay(
-                title: "Sign Out",
-                message: "Choose whether to keep or remove this server from this Apple TV.",
-                confirmTitle: "Sign Out",
-                additionalDestructiveTitle: "Sign Out & Remove Server",
-                cancel: dismissSignOutConfirmation,
-                confirm: router.signOutAndReset,
-                additionalDestructiveAction: router.signOutRemoveServerAndReset
-            )
+            ProfileSelectionTVSignOutConfirmation(router: router, cancel: dismissSignOutConfirmation)
             .transition(.opacity)
             .zIndex(10)
         } else if let context = pinEntryContext {
@@ -514,9 +482,15 @@ struct ProfileSelectionView: View {
         #if os(tvOS)
         // The picker is enabled again in this update; once it is, send focus
         // to the profile that opened the prompt.
+        let profileID = returnFocusProfileID
         Task {
             await Task.yield()
-            resetFocus(in: profileFocusNamespace)
+            // Only while that profile is still the one to return to and the
+            // picker can take focus.
+            guard let profileID, returnFocusProfileID == profileID,
+                  viewModel.profiles.contains(where: { $0.id == profileID }),
+                  !isPINEntryPresented, !showSignOutConfirm else { return }
+            focusedProfileID = profileID
         }
         #endif
     }
@@ -568,7 +542,6 @@ struct ProfileSelectionView: View {
     private let titleSize: CGFloat = 64
     private let tileSpacing: CGFloat = 44
     private let rowSpacing: CGFloat = 60
-    private let footerSpacing: CGFloat = 20
     private var gridColumns: [GridItem] {
         Array(repeating: GridItem(.fixed(240), spacing: tileSpacing), count: min(max(viewModel.profiles.count + 1, 1), 6))
         // 6 × 240 + 5 × 44 = 1660, inside the 1740 pt safe width.

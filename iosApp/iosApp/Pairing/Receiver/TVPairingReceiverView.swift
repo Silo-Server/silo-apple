@@ -19,6 +19,13 @@ struct TVPairingReceiverView: View {
 
     @FocusState private var focused: Control?
     private enum Control: Hashable { case primary, secondary, tertiary }
+    /// The pushed server's logo.
+    @State private var serverMarkURL: URL?
+
+    private struct MarkRequest: Equatable {
+        let serverURL: String?
+        let consented: Bool
+    }
 
     var body: some View {
         MarqueeTVScreen {
@@ -27,10 +34,23 @@ struct TVPairingReceiverView: View {
             MarqueeTVCard { card }
         }
         .defaultFocus($focused, .primary, priority: .userInitiated)
-        .marqueeTVSeedFocus($focused, .primary)
         // Each state draws its own buttons, so the one that had focus is gone;
-        // hand focus to the new state's main action.
-        .onChange(of: coordinator.state) { _, _ in focused = .primary }
+        // hand focus to the new state's main action. The screen also opens
+        // while the sign-in screen fades out, which drops a single request.
+        .marqueeTVClaimFocus($focused, .primary, id: coordinator.state)
+        // Nothing reaches the network before the person allows the session,
+        // not even a saved logo's image, so until then the mark is the Silo
+        // icon. Then the saved logo shows at once and the server's current
+        // one replaces it, if the phone hasn't moved on to another server.
+        .task(id: MarkRequest(serverURL: coordinator.pushedServerURL, consented: coordinator.consented)) {
+            serverMarkURL = nil
+            guard coordinator.consented, let serverURL = coordinator.pushedServerURL else { return }
+            serverMarkURL = ServerBrandingCache.branding(for: serverURL)?.markURL
+            let branding = await ServerBrandingLoader().branding(serverURL: serverURL)
+            guard !Task.isCancelled, let branding,
+                  coordinator.pushedServerURL == serverURL, coordinator.consented else { return }
+            serverMarkURL = branding.markURL
+        }
     }
 
     private var isSignIn: Bool { coordinator.mode.isSignIn }
@@ -82,7 +102,7 @@ struct TVPairingReceiverView: View {
                 .padding(.top, 28)
             actions { cancelButton(.primary) }
         case let .signedIn(count):
-            headline(count <= 1 ? "Signed in" : "Signed in to\n\(count) servers")
+            headline(count <= 1 ? "Signed in" : "Signed in to\n\(count) accounts")
             MarqueeTVBody("Finishing up on your phone or tablet…")
                 .padding(.top, 28)
             // No Cancel here: this server's sign-in is already committed, so a
@@ -164,7 +184,7 @@ struct TVPairingReceiverView: View {
             HStack(spacing: 26) {
                 MarqueeTVCardSymbol(systemImage: "iphone", size: 96)
                 MarqueeWaitingDots(count: 5, size: 10)
-                MarqueeServerMark(name: serverName, imageURL: nil, size: 96)
+                MarqueeServerMark(imageURL: serverMarkURL, size: 96)
             }
             cardTitle(serverName)
             cardNote("After you allow it, a code appears here to compare with your phone.")
@@ -182,7 +202,7 @@ struct TVPairingReceiverView: View {
             }
             Divider().overlay(Color.white.opacity(0.1)).padding(.vertical, 30)
             HStack(spacing: 18) {
-                MarqueeServerMark(name: serverName, imageURL: nil, size: 56)
+                MarqueeServerMark(imageURL: serverMarkURL, size: 56)
                 Text(serverName)
                     .font(.system(size: 28, weight: .semibold))
                     .lineLimit(1)
@@ -255,10 +275,13 @@ struct TVPairingReceiverView: View {
             .focused($focused, equals: control)
     }
 
+    /// One name per sign-in; two accounts on one server name it once.
+    /// Several sign-ins go on to Choose an Account.
     private func completedSummary(_ names: [String]) -> String {
-        names.isEmpty
-            ? "Taking you to your profiles…"
-            : "Signed in to \(names.joined(separator: ", ")). Taking you to your profiles…"
+        var seen = Set<String>()
+        let servers = names.filter { seen.insert($0).inserted }
+        let next = names.count >= 2 ? "Choose an account to start." : "Taking you to your profiles…"
+        return servers.isEmpty ? next : "Signed in to \(servers.joined(separator: ", ")). \(next)"
     }
 
     /// The host of an address, for a button label. Falls back to the

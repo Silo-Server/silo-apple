@@ -1747,6 +1747,7 @@ final class UICustomizationPreferences {
 
     private func loadCache(for key: String?) {
         defer { updateHeldState() }
+        adoptLegacyCache(into: key)
         if loadedCacheKey != key {
             if loadedCacheKey != nil {
                 capabilityState = .checking
@@ -1905,12 +1906,30 @@ final class UICustomizationPreferences {
             serverId: server.id,
             serverURL: server.url,
             profileId: profileId,
-            clientFamily: AppleDeviceIdentity.current.clientFamily
+            clientFamily: AppleDeviceIdentity.current.clientFamily,
+            accountID: AccountScopeReader.currentAccountID()
         )
     }
 
+    private static let cachePrefix = "silo.uiCustomization"
+
+    /// `silo.uiCustomization.v2.<server>.<account>.<profile>.<family>`, or the
+    /// key from before accounts while the account is unknown. The durable
+    /// outbox lives in the same record, so it moves with the key.
     private static func cacheKey(for identity: HTTPRequestIdentity) -> String {
-        "silo.uiCustomization.\(identity.serverId).\(identity.profileId).\(identity.clientFamily)"
+        AccountScopedKeyAdoption.key(cachePrefix, serverID: identity.serverId, accountID: identity.accountID,
+                                     profileID: identity.profileId, suffix: identity.clientFamily)
+    }
+
+    /// Moves the record saved before accounts, outbox included, to `key`
+    /// when `key` is the active identity's and that account owns the
+    /// server's old data. Only loads adopt: a save writes what was loaded,
+    /// which would replace an adopted record rather than keep it.
+    private func adoptLegacyCache(into key: String?) {
+        guard let key, let identity = requestIdentity(), Self.cacheKey(for: identity) == key else { return }
+        _ = AccountScopedKeyAdoption.adoptedKey(Self.cachePrefix, serverID: identity.serverId,
+                                                accountID: identity.accountID, profileID: identity.profileId,
+                                                suffix: identity.clientFamily, defaults: defaults)
     }
 
     private static func deleteIdentity(key: SettingKey, scope: SettingScope) -> String {

@@ -5,8 +5,11 @@ import OSLog
 import UIKit
 
 /// Drives the phone side: connect to a discovered TV, let the user pick which
-/// servers to push (a sign-in TV gets its own server, no chooser), have the
-/// user compare the TV's sign-in code once, then approve each server.
+/// signed-in accounts to sign it in with (a sign-in TV gets the one account
+/// chosen on the card, no chooser), have the user compare the TV's sign-in
+/// code once, then approve each account. Each account is one push of its
+/// server, approved with that account's bearer, so two accounts on one
+/// server are two pushes of it: the TV runs a device request for each.
 ///
 /// People compare the TV's user code, the one its sign-in screen shows. The
 /// match code stays on the wire as a consistency check: the code the TV
@@ -30,10 +33,11 @@ import UIKit
 final class CompanionPairingCoordinator {
     enum State: Equatable {
         case connecting
-        /// Connected; offer the phone's servers (those with a stored token).
-        case pickServers(tvName: String, servers: [ServerEntry])
+        /// Connected; offer the phone's signed-in accounts
+        /// (`signedInAccounts()`), the current one first.
+        case pickAccounts(tvName: String, accounts: [CompanionPairingAccount])
         /// Awaiting the user's comparison of the TV's sign-in code for the
-        /// first server, with what approving grants: the server, and the
+        /// first account, with what approving grants: the server, and the
         /// account (nil when it couldn't be read). `matchWords` is what
         /// older TVs show instead (the server's match code), nil for a
         /// sign-in TV; remove it once the Apple TV and Android TV apps that
@@ -46,15 +50,17 @@ final class CompanionPairingCoordinator {
             code: String,
             matchWords: String?
         )
-        /// Pushing/approving the remaining servers after confirmation.
+        /// Pushing/approving the remaining accounts after confirmation.
         case working(progress: String)
-        /// `failed` pairs each server that did not sign in with the reason
-        /// the TV reported, already phrased for the user.
-        case finished(signedIn: [String], failed: [FailedServer])
+        /// Each account that signed in (`CompanionPairingAccount.label`), and
+        /// each that did not with the reason the TV reported, already
+        /// phrased for the user.
+        case finished(signedIn: [String], failed: [FailedAccount])
         case error(String)
     }
 
-    struct FailedServer: Equatable, Sendable {
+    struct FailedAccount: Equatable, Sendable {
+        /// The account's `label`.
         let name: String
         let code: PairingFailureCode
 
@@ -105,8 +111,8 @@ final class CompanionPairingCoordinator {
     private let stream: AsyncThrowingStream<PairingMessage, Error>
     /// "iPhone" or "iPad" — pairing copy names the device the user is holding.
     private let deviceModel: String
-    private let availableServers: @MainActor () async -> [ServerEntry]
-    private let accessToken: @MainActor (String) async -> ApproverBearer
+    private let availableAccounts: @MainActor () async -> [CompanionPairingAccount]
+    private let accessToken: @MainActor (SiloAccountRef) async -> ApproverBearer
     /// The addresses a server offers besides the phone's own, or nil when the
     /// server predates the contract or the read fails. Best effort: the push
     /// then carries the phone's address alone, as before.
@@ -115,14 +121,15 @@ final class CompanionPairingCoordinator {
     private let accountName: @MainActor (ServerEntry, _ bearer: String) async -> String?
 
     private var tvName: String
-    /// A sign-in TV's own server: pushed alone, with no chooser.
-    private let fixedServer: ServerEntry?
-    private var queue: [ServerEntry] = []
+    /// The account a sign-in TV is signed in with: its server is pushed
+    /// alone, with no chooser.
+    private let fixedAccount: CompanionPairingAccount?
+    private var queue: [CompanionPairingAccount] = []
     private var confirmed = false
     private var isFirstPush = true
     private var pendingUserCode: String?
     private var signedIn: [String] = []
-    private var failed: [FailedServer] = []
+    private var failed: [FailedAccount] = []
     private var runTask: Task<Void, Never>?
     private var watchdog: Task<Void, Never>?
     /// Set once the flow reaches a deliberate end (summary, error, or a
@@ -135,13 +142,13 @@ final class CompanionPairingCoordinator {
         channel: any PairingChannel,
         stream: AsyncThrowingStream<PairingMessage, Error>,
         tvName: String = "TV",
-        fixedServer: ServerEntry? = nil,
+        fixedAccount: CompanionPairingAccount? = nil,
         api: any PairingDeviceAuthorizing = PairingDeviceAPI(),
         deviceModel: String? = nil,
-        availableServers: @escaping @MainActor () async -> [ServerEntry] = CompanionPairingCoordinator.serversWithTokens,
-        // Renewed first when it has expired or is about to: an approval is
-        // sent once and never replayed after a 401.
-        accessToken: @escaping @MainActor (String) async -> ApproverBearer = { await HTTPClient.shared.freshAccessToken(serverId: $0) },
+        availableAccounts: @escaping @MainActor () async -> [CompanionPairingAccount] = CompanionPairingCoordinator.signedInAccounts,
+        // That account's own bearer, renewed first when it has expired or is
+        // about to: an approval is sent once and never replayed after a 401.
+        accessToken: @escaping @MainActor (SiloAccountRef) async -> ApproverBearer = { await HTTPClient.shared.freshAccessToken(for: $0) },
         serverEndpoints: @escaping @MainActor (ServerEntry, String) async -> [ServerEndpoint]? = CompanionPairingCoordinator.offeredEndpoints,
         accountName: @escaping @MainActor (ServerEntry, String) async -> String? = { server, bearer in
             await LiveTVApprovalAPI().accountName(serverURL: server.url, bearer: bearer)
@@ -150,10 +157,10 @@ final class CompanionPairingCoordinator {
         self.channel = channel
         self.stream = stream
         self.tvName = tvName
-        self.fixedServer = fixedServer
+        self.fixedAccount = fixedAccount
         self.api = api
         self.deviceModel = deviceModel ?? UIDevice.current.model
-        self.availableServers = availableServers
+        self.availableAccounts = availableAccounts
         self.accessToken = accessToken
         self.serverEndpoints = serverEndpoints
         self.accountName = accountName
@@ -162,10 +169,10 @@ final class CompanionPairingCoordinator {
     /// Open the transport for a discovered TV and start its coordinator.
     /// The view never touches the session; it renders `state` and forwards
     /// user intent.
-    static func connect(to tv: DiscoveredTV, server: ServerEntry? = nil) async -> CompanionPairingCoordinator {
+    static func connect(to tv: DiscoveredTV, account: CompanionPairingAccount? = nil) async -> CompanionPairingCoordinator {
         let session = PairingSession(endpoint: tv.endpoint)
         let stream = await session.open()
-        let coordinator = CompanionPairingCoordinator(channel: session, stream: stream, tvName: tv.name, fixedServer: server)
+        let coordinator = CompanionPairingCoordinator(channel: session, stream: stream, tvName: tv.name, fixedAccount: account)
         coordinator.start()
         return coordinator
     }
@@ -211,22 +218,22 @@ final class CompanionPairingCoordinator {
                 await conclude(.error("Update Silo on both devices to continue."), goodbye: .cancel(reason: "version_unsupported"))
                 return
             }
-            if let fixedServer {
+            if let fixedAccount {
                 // A sign-in TV: push only the server it asked for.
                 guard receiverState == .login else {
                     await conclude(.error("\(tvName) is no longer on its sign-in screen."), goodbye: .cancel(reason: "state_changed"))
                     return
                 }
-                queue = [fixedServer]
+                queue = [fixedAccount]
                 await pushNext()
                 return
             }
-            let servers = await availableServers()
-            guard !servers.isEmpty else {
+            let accounts = await availableAccounts()
+            guard !accounts.isEmpty else {
                 await conclude(.error("Sign in to a server on this \(deviceModel) first."), goodbye: .cancel(reason: "no_servers"))
                 return
             }
-            state = .pickServers(tvName: name, servers: servers)
+            state = .pickAccounts(tvName: name, accounts: accounts)
         case let .deviceStarted(_, userCode, matchCode):
             disarmWatchdog()
             await handleDeviceStarted(userCode: userCode, channelCode: matchCode)
@@ -242,9 +249,10 @@ final class CompanionPairingCoordinator {
     }
 
     private func handleDeviceStarted(userCode: String, channelCode: String) async {
-        guard let server = queue.first else { return }
-        guard let token = await accessToken(server.id).token else {
-            await failCurrentAndAdvance(server)
+        guard let account = queue.first else { return }
+        let server = account.server
+        guard let token = await accessToken(account.id).token else {
+            await failCurrentAndAdvance(account)
             return
         }
         do {
@@ -253,7 +261,7 @@ final class CompanionPairingCoordinator {
                 // A request without its match code can't be bound to the
                 // channel; a hard failure, never an unchecked approval.
                 Self.logger.error("pairing server returned no match code")
-                await failCurrentAndAdvance(server)
+                await failCurrentAndAdvance(account)
                 return
             }
             // Bind every approval to the channel: the match code the TV
@@ -261,18 +269,18 @@ final class CompanionPairingCoordinator {
             // splicing the session. Refuse.
             guard serverCode == channelCode else {
                 Self.logger.error("pairing match code mismatch; refusing approval")
-                await failCurrentAndAdvance(server)
+                await failCurrentAndAdvance(account)
                 return
             }
             if let status = lookup.status, status != "pending" {
-                await failCurrentAndAdvance(server, code: status == "denied" ? .denied : .expired)
+                await failCurrentAndAdvance(account, code: status == "denied" ? .denied : .expired)
                 return
             }
             pendingUserCode = userCode
             if confirmed {
-                // Confirm-once multi-server: the user compared codes for the
-                // first server only; later ones pass the binding above.
-                await approveCurrent(server)
+                // Confirm-once multi-account: the user compared codes for
+                // the first account only; later ones pass the binding above.
+                await approveCurrent(account)
             } else {
                 // No watchdog while the user deliberates: the TV keeps its
                 // device code alive, and the loop keeps reading, so a TV-side
@@ -281,36 +289,40 @@ final class CompanionPairingCoordinator {
                 // A sign-in TV always shows the code: only TVs that show one
                 // advertise their sign-in screen.
                 let shown = ServerIdentity.usable(lookup.userCode) ?? userCode
-                let account = await accountName(server, token)
-                guard !concluded, queue.first?.id == server.id else { return }
+                // The account is named as this device saved it; the server
+                // is asked only when it hasn't named the account yet.
+                var name = account.username
+                if name == nil { name = await accountName(server, token) }
+                guard !concluded, queue.first?.id == account.id else { return }
                 state = .confirmMatch(
                     tvName: tvName,
                     serverName: server.displayName,
                     serverHost: TVSignInPresentation.host(of: server.url),
-                    accountName: account,
+                    accountName: name,
                     code: shown,
                     matchWords: isSignIn ? nil : serverCode
                 )
             }
         } catch {
-            await failCurrentAndAdvance(server, code: UpdateRequirement(error) == nil ? .authFailed : .updateRequired)
+            await failCurrentAndAdvance(account, code: UpdateRequirement(error) == nil ? .authFailed : .updateRequired)
         }
     }
 
     // MARK: - User actions
 
-    /// User tapped a set of servers to push (order = approval order).
-    func pushSelected(_ servers: [ServerEntry]) async {
-        guard case .pickServers = state, !servers.isEmpty else { return }
-        queue = servers
+    /// User chose the accounts to sign the TV in with (order = approval
+    /// order).
+    func pushSelected(_ accounts: [CompanionPairingAccount]) async {
+        guard case .pickAccounts = state, !accounts.isEmpty else { return }
+        queue = accounts
         await pushNext()
     }
 
     /// User confirmed the displayed match code matches the TV.
     func confirmMatch() async {
-        guard case .confirmMatch = state, let server = queue.first else { return }
+        guard case .confirmMatch = state, let account = queue.first else { return }
         confirmed = true
-        await approveCurrent(server)
+        await approveCurrent(account)
     }
 
     /// User said the codes don't match — abort the whole session.
@@ -330,11 +342,11 @@ final class CompanionPairingCoordinator {
     // MARK: - Flow
 
     /// Signing in a TV on its sign-in screen rather than setting one up.
-    var isSignIn: Bool { fixedServer != nil }
+    var isSignIn: Bool { fixedAccount != nil }
 
     private func pushNext() async {
         guard !concluded else { return }
-        guard let server = queue.first else {
+        guard let account = queue.first else {
             await conclude(.finished(signedIn: signedIn, failed: failed), goodbye: .done)
             return
         }
@@ -343,16 +355,17 @@ final class CompanionPairingCoordinator {
         if firstPush {
             state = .working(progress: "Continue on \(tvName): allow this \(deviceModel) to \(isSignIn ? "sign it in" : "set it up").")
         } else {
-            state = .working(progress: "Setting up \(server.displayName)…")
+            state = .working(progress: "Setting up \(account.label)…")
         }
+        let server = account.server
         // A sign-in TV already reaches its server and ignores alternate
         // addresses, so they aren't sent to it.
         var endpoints: [ServerEndpoint]?
         if !isSignIn, server.verifiedServerId != nil,
-           let token = await accessToken(server.id).token {
+           let token = await accessToken(account.id).token {
             endpoints = await serverEndpoints(server, token)
         }
-        guard !concluded, queue.first?.id == server.id else { return }
+        guard !concluded, queue.first?.id == account.id else { return }
         // Arm BEFORE the suspending send: the stream reader keeps running
         // while `send` is suspended, so a fast TV's `deviceStarted` could
         // otherwise land (and disarm nothing) before this task resumed and
@@ -378,11 +391,12 @@ final class CompanionPairingCoordinator {
         }
     }
 
-    private func approveCurrent(_ server: ServerEntry) async {
-        state = .working(progress: "Approving \(server.displayName)…")
-        let bearer = await accessToken(server.id)
+    private func approveCurrent(_ account: CompanionPairingAccount) async {
+        state = .working(progress: "Approving \(account.label)…")
+        let server = account.server
+        let bearer = await accessToken(account.id)
         guard let token = bearer.token else {
-            await conclude(.error(bearerFailureMessage(bearer, server: server)), goodbye: .cancel(reason: "approve_failed"))
+            await conclude(.error(bearerFailureMessage(bearer, account: account)), goodbye: .cancel(reason: "approve_failed"))
             return
         }
         // Armed before the suspending approve call (same reasoning as
@@ -397,7 +411,7 @@ final class CompanionPairingCoordinator {
             // screens honest instead of leaving the TV stuck on a dead code.
             // The approval is never re-sent, even when its answer was lost.
             await conclude(
-                .error(approveFailureMessage(for: error, server: server)),
+                .error(approveFailureMessage(for: error, account: account)),
                 goodbye: .cancel(reason: "approve_failed")
             )
         }
@@ -405,26 +419,37 @@ final class CompanionPairingCoordinator {
 
     /// Why there is no bearer to approve with. Only a session the server
     /// refused asks the person to sign in again.
-    private func bearerFailureMessage(_ bearer: ApproverBearer, server: ServerEntry) -> String {
+    private func bearerFailureMessage(_ bearer: ApproverBearer, account: CompanionPairingAccount) -> String {
         switch bearer {
         case .providerUnavailable:
             return ExternalSignInError.reasonText("provider_unavailable")
         case .unreachable:
-            return "Couldn’t reach \(server.displayName) to approve the sign-in. Check this \(deviceModel)’s connection and try again."
+            return "Couldn’t reach \(account.server.displayName) to approve the sign-in. Check this \(deviceModel)’s connection and try again."
         case .token, .rejected:
-            return "Sign in to \(server.displayName) on this \(deviceModel) again, then try again."
+            return signInAgainMessage(account)
         }
+    }
+
+    /// Asks the person to sign in to that account again, naming it when the
+    /// server has.
+    private func signInAgainMessage(_ account: CompanionPairingAccount) -> String {
+        let server = account.server.displayName
+        guard let username = account.username else {
+            return "Sign in to \(server) on this \(deviceModel) again, then try again."
+        }
+        return "Sign in to \(server) as \(username) on this \(deviceModel) again, then try again."
     }
 
     /// What to tell the user when the approval failed. A 409 means the
     /// request was already approved or declined, and a 410 means it expired.
-    private func approveFailureMessage(for error: Error, server: ServerEntry) -> String {
+    private func approveFailureMessage(for error: Error, account: CompanionPairingAccount) -> String {
         if let requirement = UpdateRequirement(error) { return requirement.message }
+        let server = account.server
         switch error {
         case APIv2Error.problem(let problem) where problem.identifier == "provider_unavailable":
             return ExternalSignInError.reasonText("provider_unavailable")
         case APIv2Error.problem(let problem) where problem.status == 401:
-            return "Sign in to \(server.displayName) on this \(deviceModel) again, then try again."
+            return signInAgainMessage(account)
         case APIv2Error.problem(let problem) where problem.status == 409:
             return "This sign-in request was already approved or declined. Start again on \(tvName)."
         case APIv2Error.problem(let problem) where problem.status == 410 || problem.status == 404:
@@ -437,20 +462,20 @@ final class CompanionPairingCoordinator {
     }
 
     private func recordResult(signedInOK: Bool, code: PairingFailureCode) {
-        guard let server = queue.first else { return }
+        guard let account = queue.first else { return }
         if signedInOK {
-            signedIn.append(server.displayName)
+            signedIn.append(account.label)
         } else {
-            failed.append(FailedServer(name: server.displayName, code: code))
+            failed.append(FailedAccount(name: account.label, code: code))
         }
         queue.removeFirst()
     }
 
-    /// A server failed before approval (token missing, lookup failed, or the
-    /// codes couldn't be bound). Move on; the TV abandons its in-flight
+    /// An account failed before approval (token missing, lookup failed, or
+    /// the codes couldn't be bound). Move on; the TV abandons its in-flight
     /// attempt as soon as the next `pushServer` arrives.
-    private func failCurrentAndAdvance(_ server: ServerEntry, code: PairingFailureCode = .authFailed) async {
-        failed.append(FailedServer(name: server.displayName, code: code))
+    private func failCurrentAndAdvance(_ account: CompanionPairingAccount, code: PairingFailureCode = .authFailed) async {
+        failed.append(FailedAccount(name: account.label, code: code))
         if !queue.isEmpty { queue.removeFirst() }
         await pushNext()
     }
@@ -489,9 +514,63 @@ final class CompanionPairingCoordinator {
         await conclude(.error(message), goodbye: .cancel(reason: "timeout"))
     }
 
-    // MARK: - Servers
+    // MARK: - Accounts
 
-    /// The phone's servers that currently have a stored access token.
+    /// The phone's signed-in accounts, the current one first, then in the
+    /// order they were added (`pairingAccounts`). Read from stored sign-ins
+    /// only, never the network. Before sign-in migration each server with a
+    /// stored token is its own account.
+    static func signedInAccounts() async -> [CompanionPairingAccount] {
+        let tokens = TokenStore.shared
+        let registry = ServerRegistry.shared
+        let snapshot: SiloAccountDirectorySnapshot
+        do {
+            snapshot = try await tokens.directory()
+        } catch SavedSignInAccessError.notMigrated {
+            let active = registry.activeServerId
+            return await serversWithTokens().map { server in
+                CompanionPairingAccount(sessionOf: server, isCurrent: server.id == active)
+            }
+        } catch {
+            return []
+        }
+        let directory = SiloAccountDirectory(snapshot: snapshot, servers: registry.entries,
+                                             state: ProfileLaunchState(),
+                                             currentAccountID: await tokens.currentAccount())
+        var serverDefaults: Set<SiloAccountRef> = []
+        for serverID in Set(directory.accounts.map(\.serverID)) {
+            if let account = await tokens.backgroundAccount(forServer: serverID) {
+                serverDefaults.insert(account)
+            }
+        }
+        return pairingAccounts(in: directory, servers: registry.entries, serverDefaults: serverDefaults)
+    }
+
+    /// The accounts a TV can be signed in with: the directory's signed-in
+    /// accounts on saved servers, the current one first, then in index
+    /// order. A pending legacy account is left out unless it is the current
+    /// one: the server hasn't named it, so it can't be told apart from the
+    /// server's other accounts. `serverDefaults` are the accounts each
+    /// server's background work uses (`TokenStore.backgroundAccount`).
+    nonisolated static func pairingAccounts(
+        in directory: SiloAccountDirectory,
+        servers: [ServerEntry],
+        serverDefaults: Set<SiloAccountRef>
+    ) -> [CompanionPairingAccount] {
+        let entryByID = Dictionary(servers.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let current = directory.currentAccountID
+        let accounts = directory.accounts.compactMap { account -> CompanionPairingAccount? in
+            guard account.isSignedIn, account.key != nil || account.id == current,
+                  let server = entryByID[account.serverID] else { return nil }
+            return CompanionPairingAccount(account, server: server, isCurrent: account.id == current,
+                                           isServerDefault: serverDefaults.contains(account.id))
+        }
+        return accounts.filter(\.isCurrent) + accounts.filter { !$0.isCurrent }
+    }
+
+    /// The phone's servers that currently have a stored access token: the
+    /// background account's on each (`TokenStore.getAccessToken(for:)`).
+    /// "Sign in a TV" still chooses among servers.
     static func serversWithTokens() async -> [ServerEntry] {
         var result: [ServerEntry] = []
         for entry in ServerRegistry.shared.sortedEntries {
@@ -513,6 +592,47 @@ final class CompanionPairingCoordinator {
         }
         let endpoints = document.usableEndpoints
         return endpoints.isEmpty ? nil : endpoints
+    }
+}
+
+/// One signed-in account the phone can sign a TV in with, shown as Choose
+/// an Account shows it.
+struct CompanionPairingAccount: Equatable, Identifiable {
+    let id: SiloAccountRef
+    let server: ServerEntry
+    /// The server account's username; nil until the server names it.
+    let username: String?
+    /// The card's first line and other lines (`SiloAccountDirectory.Account`).
+    let name: String
+    let detailLines: [String]
+    /// The server's name, with its host when two saved servers share it.
+    let serverName: String
+    let profiles: [SavedSignInProfile]
+    /// The account this phone uses now.
+    let isCurrent: Bool
+    /// The account work for its server uses when none is chosen there
+    /// (`TokenStore.backgroundAccount(forServer:)`).
+    let isServerDefault: Bool
+
+    /// How the summary names the account: "alex on Home Silo", or the
+    /// server's name before the server named the account.
+    var label: String {
+        username.map { "\($0) on \(serverName)" } ?? serverName
+    }
+}
+
+extension CompanionPairingAccount {
+    init(_ account: SiloAccountDirectory.Account, server: ServerEntry, isCurrent: Bool, isServerDefault: Bool) {
+        self.init(id: account.id, server: server, username: account.username, name: account.name,
+                  detailLines: account.detailLines, serverName: account.serverName, profiles: account.profiles,
+                  isCurrent: isCurrent, isServerDefault: isServerDefault)
+    }
+
+    /// A server's own session, before sign-in migration.
+    init(sessionOf server: ServerEntry, isCurrent: Bool) {
+        self.init(id: .pendingLegacy(serverID: server.id), server: server, username: nil, name: server.displayName,
+                  detailLines: [TVSignInPresentation.host(of: server.url)], serverName: server.displayName,
+                  profiles: [], isCurrent: isCurrent, isServerDefault: true)
     }
 }
 #endif

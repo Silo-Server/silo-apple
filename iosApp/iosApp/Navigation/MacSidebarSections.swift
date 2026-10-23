@@ -99,7 +99,7 @@ func macSidebarHighlight(
 ) -> MainTabDestinationID? {
     for route in pushedRoutes.reversed() {
         switch route {
-        case .settings, .serverList:
+        case .settings, .chooseAccount, .signInTarget, .manageAccounts:
             return nil
         case .requestsHub, .myRequests, .requestDetail:
             return .app(.requests)

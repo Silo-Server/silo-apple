@@ -7,13 +7,20 @@ import SwiftUI
 /// `LoginViewModel` owns the sign-in rules; this view lays them out.
 struct LoginView: View {
     var router: AppRouter
-    @State private var viewModel = LoginViewModel()
+    @State private var viewModel: LoginViewModel
+
+    init(router: AppRouter) {
+        self.router = router
+        _viewModel = State(initialValue: LoginViewModel(context: router.signInContext))
+    }
     @State private var server = SignInServerModel()
     @State private var choosesProviderForAccountSwitch = false
     /// Several providers fold the password form behind a button until asked.
     @State private var expandsPasswordForm = false
     /// Counts failed password attempts so the fields shake on each one.
     @State private var passwordFailures = 0
+    /// Back, Switch Account, or Cancel is running; another tap waits.
+    @State private var isLeaving = false
     @FocusState private var focusedField: Field?
     @Environment(\.scenePhase) private var scenePhase
 
@@ -22,10 +29,10 @@ struct LoginView: View {
     var body: some View {
         // Leaving mid-sign-in would let the finished sign-in pull the app
         // back from server setup, so going back waits until it settles.
-        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { router.resetToServerSetup() }) {
+        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { changeServer() }) {
             MarqueeTopBar {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Change server") {
-                    router.resetToServerSetup()
+                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back") {
+                    changeServer()
                 }
                 .disabled(viewModel.isBusy)
             } trailing: {
@@ -36,6 +43,7 @@ struct LoginView: View {
                 title: "Sign in",
                 // An expired session says why sign-in is back on screen.
                 lead: router.loginNotice?.message(serverName: server.serverName)
+                    ?? Self.contextLead(router.signInContext, serverName: server.serverName)
                     ?? server.branding?.loginSubtitle ?? "Use your \(server.serverName) account."
             )
             options
@@ -45,6 +53,7 @@ struct LoginView: View {
                 .animation(.easeInOut(duration: 0.2), value: viewModel.discovery)
                 .sensoryFeedback(.error, trigger: viewModel.error) { _, error in error != nil }
                 .sensoryFeedback(.error, trigger: viewModel.networkSignInError) { _, error in error != nil }
+            contextActions
         }
         .task {
             MarqueeScene.shared.focus = .account
@@ -53,7 +62,6 @@ struct LoginView: View {
         }
         .task {
             await viewModel.loadSignInOptions()
-            await viewModel.startRequestedSignIn(router: router)
         }
         .onChange(of: scenePhase) { _, phase in
             // Back from Settings or another app: read discovery again without
@@ -71,15 +79,45 @@ struct LoginView: View {
         .marqueeTransparentNavigation()
     }
 
+    /// What the sign-in adds, when it isn't the person already here.
+    static func contextLead(_ context: SignInContext, serverName: String) -> String? {
+        switch context {
+        case .addAccount:
+            return "Sign in with the \(serverName) account to add."
+        case .firstRun, .signInAgain:
+            return nil
+        }
+    }
+
     static let noSignInText = "This server doesn't offer a sign-in this app can use. Sign in on the web, or ask the server's admin."
+
+    /// Back to the server step, or for Sign in again, Choose an Account.
+    private func changeServer() {
+        leave { await router.accounts.leaveSignIn(router: router) }
+    }
+
+    /// Runs one way out of this sign-in at a time: a second Cancel after the
+    /// first has cleared its return point would go somewhere else.
+    private func leave(_ action: @escaping () async -> Void) {
+        guard !isLeaving else { return }
+        isLeaving = true
+        Task {
+            await action()
+            isLeaving = false
+        }
+    }
 
     private var serverMenu: some View {
         Menu {
             Section(server.hostLabel) {
-                Button {
-                    router.resetToServerSetup()
-                } label: {
-                    Label("Use a different server", systemImage: "server.rack")
+                // An expired account belongs to this server; a new sign-in
+                // can pick another one.
+                if !isSignInAgain {
+                    Button {
+                        changeServer()
+                    } label: {
+                        Label("Use a different server", systemImage: "server.rack")
+                    }
                 }
             }
         } label: {
@@ -88,7 +126,55 @@ struct LoginView: View {
         .menuStyle(.button)
         .buttonStyle(.marqueePressable)
         .disabled(viewModel.isBusy)
-        .accessibilityLabel("\(server.serverName), server. Double-tap to change.")
+        .accessibilityLabel("\(server.serverName), server")
+    }
+
+    /// Whether this sign-in can be abandoned for the screen it started on
+    /// (Add Account).
+    private var offersCancel: Bool { router.signInReturnPoint != nil }
+
+    /// Sign in again for a saved sign-in (spec §6.2.3).
+    private var isSignInAgain: Bool {
+        if case .signInAgain = router.signInContext { return true }
+        return false
+    }
+
+    /// The ways out of this sign-in, small and under the form like Who's
+    /// Watching's utilities: Switch Account when a saved sign-in expired
+    /// (spec §6.2.3), Cancel for Add Account.
+    @ViewBuilder
+    private var contextActions: some View {
+        if isSignInAgain || offersCancel {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 4) { contextButtons }
+                VStack(spacing: 4) { contextButtons }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 18)
+        }
+    }
+
+    @ViewBuilder
+    private var contextButtons: some View {
+        if isSignInAgain {
+            Button {
+                leave { await router.accounts.switchAccountFromSignIn(router: router) }
+            } label: {
+                Label("Switch Account", systemImage: "person.2")
+            }
+            .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
+            .disabled(viewModel.isBusy || isLeaving)
+        }
+        if offersCancel {
+            Button {
+                leave { await router.accounts.cancelSignIn(router: router) }
+            } label: {
+                Label(ConfirmationCopy.cancelTitle, systemImage: "xmark")
+            }
+            .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
+            .keyboardShortcut(.cancelAction)
+            .disabled(viewModel.isBusy || isLeaving)
+        }
     }
 
     // MARK: - Options

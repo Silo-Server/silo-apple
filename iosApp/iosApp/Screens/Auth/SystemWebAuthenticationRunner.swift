@@ -149,20 +149,22 @@ final class SystemWebAuthenticationRunner: NSObject, WebAuthenticationRunning, A
 
 extension ExternalSignInService {
     /// The app's service: the shared v2 client and token store, the system
-    /// browser, and the saved server's verified identity.
-    @MainActor static let live = ExternalSignInService(
-        api: SiloAPI.shared.apiV2Client,
-        tokenStore: .shared,
-        runner: SystemWebAuthenticationRunner.shared,
-        verifiedServerId: { await AuthService.shared.verifiedIdentityOfActiveServer() },
-        installSession: { tokens, expectedAccount in
-            try await AuthService.shared.installSession(
-                accessToken: tokens.accessToken,
-                refreshToken: tokens.refreshToken,
-                accountID: tokens.user.id,
-                expectedAccount: expectedAccount
-            )
-        }
-    )
+    /// browser, and the saved server's verified identity. A sign-in it
+    /// finishes is saved outside any user flow; the sign-in screen uses
+    /// `live(installSession:)` to place it (`SiloAccountCoordinator`).
+    @MainActor static let live = live(installSession: { tokens, expectedAccount in
+        try await AuthService.shared.commitOutsideUserFlow(PendingSignIn(tokens: tokens, expected: expectedAccount))
+    })
+
+    /// The app's service, handing each finished sign-in to `installSession`.
+    @MainActor static func live(installSession: @escaping InstallSession) -> ExternalSignInService {
+        ExternalSignInService(
+            api: SiloAPI.shared.apiV2Client,
+            tokenStore: .shared,
+            runner: SystemWebAuthenticationRunner.shared,
+            verifiedServerId: { await AuthService.shared.verifiedIdentityOfActiveServer() },
+            installSession: installSession
+        )
+    }
 }
 #endif

@@ -399,9 +399,9 @@ final class EpisodeSpoilerPreferencesTests: XCTestCase {
     func testTopShelfReadsTheImageSwitchTheStoreCached() async {
         transport.effective = ["catalog.hide_unwatched_episode_images": true]
         await makeStore().refresh()
-        XCTAssertTrue(EpisodeSpoilerCache.hidesImages(serverId: "server-1", profileId: "profile-a", in: suite))
-        XCTAssertFalse(EpisodeSpoilerCache.hidesImages(serverId: "server-1", profileId: "profile-b", in: suite))
-        XCTAssertFalse(EpisodeSpoilerCache.hidesImages(serverId: "server-1", profileId: nil, in: suite))
+        XCTAssertTrue(EpisodeSpoilerCache.hidesImages(serverId: "server-1", accountId: nil, profileId: "profile-a", in: suite))
+        XCTAssertFalse(EpisodeSpoilerCache.hidesImages(serverId: "server-1", accountId: nil, profileId: "profile-b", in: suite))
+        XCTAssertFalse(EpisodeSpoilerCache.hidesImages(serverId: "server-1", accountId: nil, profileId: nil, in: suite))
     }
 
     func testProbeFailureKeepsTheCachedAnswer() async {

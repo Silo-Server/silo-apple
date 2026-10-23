@@ -19,11 +19,14 @@ struct DownloadTaskRef: Sendable, Equatable {
 
     /// A task created from resume data rebuilds its original request,
     /// headers included, so this reads the same for either kind of task.
+    /// A tag an earlier build wrote, without an account, goes to its
+    /// server's legacy owner when one is known by now; the manager asks
+    /// again when it handles the event.
     init(_ task: URLSessionTask) {
         let request = task.originalRequest ?? task.currentRequest
         self.init(
             taskId: task.taskIdentifier,
-            tag: DownloadTaskTag(taskDescription: task.taskDescription),
+            tag: DownloadTaskTag(taskDescription: task.taskDescription)?.attributedToLegacyOwner(),
             requestURL: request?.url,
             requestProfileId: request?.value(forHTTPHeaderField: "X-Profile-Id")
         )
@@ -329,9 +332,8 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
         // whichever scope is loaded and the process itself.
         let destination = ref.tag.map(DownloadFilePaths.finishedTransferURL(for:))
             ?? DownloadFilePaths.stagingFileURL(taskIdentifier: taskId)
-        try? FileManager.default.removeItem(at: destination)
         do {
-            try FileManager.default.moveItem(at: location, to: destination)
+            try DownloadFilePaths.park(location, at: destination)
             // The move keeps the temp file's date; the stale-staging sweep
             // must see when it was staged.
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: destination.path)

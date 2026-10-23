@@ -64,7 +64,7 @@ struct HomeView: View {
                 ErrorView(
                     state: error,
                     onRetry: { Task { await viewModel.loadSections() } },
-                    onManageServers: { router.navigate(to: .serverList) }
+                    onManageAccounts: { router.navigate(to: .manageAccounts) }
                 )
             } else if viewModel.isLoading {
                 Color.clear
@@ -108,7 +108,7 @@ struct HomeView: View {
                     ErrorView(
                         state: error,
                         onRetry: { Task { await viewModel.loadSections() } },
-                        onManageServers: { router.navigate(to: .serverList) }
+                        onManageAccounts: { router.navigate(to: .manageAccounts) }
                     )
                 } else if viewModel.isLoading {
                     PosterRowsSkeleton()
@@ -142,9 +142,7 @@ struct HomeView: View {
                     onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: {
                         router.switchProfile()
-                    },
-                    onSwitchServer: { router.navigate(to: .serverList) },
-                    onSignOut: { router.signOutAndReset() }
+                    }
                 )
             }
             .clearsWindowControls()

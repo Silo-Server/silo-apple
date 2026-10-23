@@ -19,12 +19,32 @@ final class LoginViewModel {
     var networkSignInError: FormError?
 
     private let auth: AuthService
+    /// Where a finished sign-in goes (`SiloAccountCoordinator.completeSignIn`).
+    private let accounts: SiloAccountCoordinator
 
-    init(auth: AuthService = .shared) {
+    /// Why this sign-in is running (`AppRouter.signInContext`).
+    var context: SignInContext
+
+    init(auth: AuthService = .shared, accounts: SiloAccountCoordinator? = nil, context: SignInContext = .firstRun) {
         self.auth = auth
+        self.accounts = accounts ?? (auth === AuthService.shared ? .shared : SiloAccountCoordinator(auth: auth))
+        self.context = context
     }
 
+    /// What this server offers this sign-in: discovery's answer. Network
+    /// sign-in ("Continue as …") is offered for Add Account too: it saves
+    /// whichever account the network names, as a new account or a refresh
+    /// of the saved one.
     var signInOptions: SignInOptions? { discovery.options }
+
+    /// The route a sign-in started on, so one that finishes after the person
+    /// left the sign-in screen doesn't pull the app back.
+    private func finish(_ pending: PendingSignIn, router: AppRouter, route: AppRouter.AuthState) async throws {
+        let completion = try await accounts.completeSignIn(pending, router: router, routesWhenOpened: false)
+        guard router.authState == route, case .opened = completion else { return }
+        StartupContentPrefetcher.prefetchProfiles()
+        accounts.showSignedIn(router: router)
+    }
 
     /// Whether the username and password form is offered: not while
     /// discovery is loading (an OIDC-only server must not flash it), and
@@ -109,12 +129,11 @@ final class LoginViewModel {
         error = nil
         networkSignInError = nil
         defer { isLoading = false }
+        let route = router.authState
 
         do {
-            try await auth.login(username: username, password: password)
-            StartupContentPrefetcher.prefetchProfiles()
-            router.skipsSingleProfilePicker = true
-            router.showProfileSelection()
+            let pending = try await auth.login(username: username, password: password)
+            try await finish(pending, router: router, route: route)
             return true
         } catch let loginError {
             self.error = FormError(Self.message(for: loginError, browserProviders: browserProviders,
@@ -125,7 +144,7 @@ final class LoginViewModel {
 
     /// Signs this device's owner in through a network provider ("Continue
     /// as …"), then routes on like a password sign-in, unless the app left
-    /// the sign-in screen meanwhile ("Change server"). Returns whether it
+    /// the sign-in screen meanwhile (Back). Returns whether it
     /// succeeded. A refusal shows under the button (`networkSignInError`).
     @discardableResult
     func signInWithNetworkIdentity(_ provider: APIv2AuthProvider, router: AppRouter) async -> Bool {
@@ -136,11 +155,8 @@ final class LoginViewModel {
         networkSignInError = nil
         defer { providerInFlight = nil }
         do {
-            try await auth.signInWithNetworkIdentity(provider)
-            guard router.authState == route else { return true }
-            StartupContentPrefetcher.prefetchProfiles()
-            router.skipsSingleProfilePicker = true
-            router.showProfileSelection()
+            let pending = try await auth.signInWithNetworkIdentity(provider)
+            try await finish(pending, router: router, route: route)
             return true
         } catch {
             networkSignInError = NetworkSignIn.signInMessage(for: error, provider: provider).map(FormError.init)
@@ -157,39 +173,29 @@ final class LoginViewModel {
         guard !isBusy else { return }
         let serverId = ServerRegistry.shared.activeServerId ?? ""
         let prompt = SelectAccountPrompt.shared
-        let selectAccount = Self.asksToSelectAccount(options: signInOptions, choosingAccount: choosingAccount,
+        // Add Account is usually another account: let the provider choose.
+        let selectAccount = Self.asksToSelectAccount(options: signInOptions,
+            choosingAccount: choosingAccount || context == .addAccount,
             afterSignOut: prompt.isRequested(serverId: serverId))
         providerInFlight = provider.id
         error = nil
         networkSignInError = nil
         defer { providerInFlight = nil }
+        let route = router.authState
         do {
-            try await ExternalSignInService.live.signIn(with: provider, selectAccount: selectAccount)
+            try await ExternalSignInService.live(installSession: { [accounts] tokens, expectedAccount in
+                _ = try await accounts.completeSignIn(PendingSignIn(tokens: tokens, expected: expectedAccount),
+                                                   router: router, routesWhenOpened: false)
+            }).signIn(with: provider, selectAccount: selectAccount)
             prompt.clear(serverId: serverId)
+            guard router.authState == route else { return }
             StartupContentPrefetcher.prefetchProfiles()
-            router.skipsSingleProfilePicker = true
-            router.showProfileSelection()
+            accounts.showSignedIn(router: router)
         } catch {
             self.error = Self.browserSignInMessage(for: error).map(FormError.init)
         }
     }
 
-    /// Starts the browser sign-in by itself when "Not you? Switch account"
-    /// sent the person here and the server lists exactly one provider.
-    ///
-    /// SwiftUI can build a login screen and drop it while the app routes
-    /// here after the sign-out; that screen's task is already cancelled, so
-    /// it leaves the request to the screen that stays, and hands it back if
-    /// it goes away before the sign-in finished.
-    func startRequestedSignIn(router: AppRouter) async {
-        guard !Task.isCancelled, signInOptions != nil, let serverId = ServerRegistry.shared.activeServerId,
-              SelectAccountPrompt.shared.consumeAutoStart(serverId: serverId),
-              browserProviders.count == 1, let provider = browserProviders.first else { return }
-        await signIn(with: provider, router: router)
-        if Task.isCancelled {
-            SelectAccountPrompt.shared.restoreAutoStart(serverId: serverId)
-        }
-    }
     #endif
 
     /// Whether a browser sign-in sends `prompt=select_account`: asked for

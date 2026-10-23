@@ -207,17 +207,58 @@ final class TVSignInTests: XCTestCase {
             lastUsedAt: Date(), verifiedServerId: "srv-home")
         let other = ServerEntry(id: "other", url: "https://other.example", fetchedName: "Other", profileId: nil,
             lastUsedAt: Date(), verifiedServerId: "srv-other")
-        XCTAssertEqual(CompanionPairingOffer.server(for: loginTV, among: [other, home]), home)
-        XCTAssertNil(CompanionPairingOffer.server(for: loginTV, among: [other]), "a phone without the TV's server stays quiet")
-        XCTAssertNil(CompanionPairingOffer.server(for: legacyTV, among: [home]), "setup TVs use the chooser")
+        let kim = pairingAccount(on: other, "kim", isCurrent: true)
+        let alex = pairingAccount(on: home, "alex")
+        let sam = pairingAccount(on: home, "sam", isServerDefault: true)
+        // Both accounts on the TV's server are offered, the one this device
+        // uses there first.
+        XCTAssertEqual(CompanionPairingOffer.accounts(for: loginTV, among: [kim, alex, sam]), [sam, alex])
+        XCTAssertEqual(CompanionPairingOffer.accounts(for: loginTV, among: [kim]), [], "a phone without the TV's server stays quiet")
+        XCTAssertEqual(CompanionPairingOffer.accounts(for: legacyTV, among: [alex]), [], "setup TVs use the chooser")
 
-        // The offer is decided from the signed-in servers alone, so a
+        // The offer is decided from the signed-in accounts alone, so a
         // sign-in TV whose server is saved but signed out is no candidate
         // and never blocks a setup TV behind it.
-        XCTAssertNil(CompanionPairingOffer.make(for: loginTV, signedIn: [other]))
-        XCTAssertEqual(CompanionPairingOffer.make(for: legacyTV, signedIn: [other]), CompanionPairingOffer(tv: legacyTV, server: nil))
-        XCTAssertEqual(CompanionPairingOffer.make(for: loginTV, signedIn: [other, home])?.server, home)
+        XCTAssertNil(CompanionPairingOffer.make(for: loginTV, signedIn: [kim]))
+        XCTAssertEqual(CompanionPairingOffer.make(for: legacyTV, signedIn: [kim]), CompanionPairingOffer(tv: legacyTV, accounts: []))
+        let offer = CompanionPairingOffer.make(for: loginTV, signedIn: [kim, alex, sam])
+        XCTAssertEqual(offer?.server, home)
+        XCTAssertEqual(offer?.accounts, [sam, alex])
         XCTAssertNil(CompanionPairingOffer.make(for: legacyTV, signedIn: []), "a signed-out phone offers nothing")
+    }
+
+    /// The accounts a phone offers a TV: signed-in accounts on saved servers,
+    /// the current one first, then in the order they were added. A pending
+    /// legacy account is offered only while it is the current one.
+    func testPairingAccountsAreSignedInAccountsCurrentFirst() {
+        typealias Fixture = SiloAccountDirectoryFixture
+        let alex = Fixture.Account(serverID: Fixture.home, accountID: "1", username: "alex", email: "alex@example.com")
+        let sam = Fixture.Account(serverID: Fixture.home, accountID: "2", username: "sam")
+        let expired = Fixture.Account(serverID: Fixture.home, accountID: "3", username: "old", isSignedIn: false)
+        let kim = Fixture.Account(serverID: Fixture.friend, accountID: "4", username: "kim")
+        let legacy = Fixture.Account(serverID: Fixture.friend)
+        let gone = Fixture.Account(serverID: ServerRegistry.serverId(for: "https://gone.example"), accountID: "5", username: "lee")
+        let directory = Fixture.directory([alex, sam, expired, kim, legacy, gone], current: kim.ref)
+
+        let accounts = CompanionPairingCoordinator.pairingAccounts(
+            in: directory, servers: Fixture.servers, serverDefaults: [kim.ref, sam.ref])
+        XCTAssertEqual(accounts.map(\.id), [kim.ref, alex.ref, sam.ref])
+        XCTAssertEqual(accounts.map(\.label), ["kim on Friend's Silo", "alex on Home Silo", "sam on Home Silo"])
+        XCTAssertEqual(accounts[1].detailLines, ["alex@example.com", "Home Silo"])
+        XCTAssertEqual(accounts.map(\.isCurrent), [true, false, false])
+        XCTAssertEqual(accounts.map(\.isServerDefault), [true, false, true])
+
+        let onLegacy = CompanionPairingCoordinator.pairingAccounts(
+            in: Fixture.directory([alex, legacy], current: legacy.ref), servers: Fixture.servers, serverDefaults: [])
+        XCTAssertEqual(onLegacy.map(\.id), [legacy.ref, alex.ref])
+    }
+
+    private func pairingAccount(on server: ServerEntry, _ username: String, isCurrent: Bool = false,
+                                isServerDefault: Bool = false) -> CompanionPairingAccount {
+        CompanionPairingAccount(
+            id: .signIn(SignInKey.make(server.id, username)), server: server, username: username, name: username,
+            detailLines: [server.displayName], serverName: server.displayName, profiles: [],
+            isCurrent: isCurrent, isServerDefault: isServerDefault)
     }
     #endif
 
@@ -437,47 +478,18 @@ final class TVSignInTests: XCTestCase {
         guard case .failed = phase else { return XCTFail("a lost denial is not a decline: \(phase)") }
     }
 
-    /// "Not you?" promises an account choice only where the server
-    /// advertises `select_account`. A password-only server still reads
-    /// "Switch account" (the password form lets the person choose) with the
-    /// plain sign-out confirmation; only a provider that could sign the same
-    /// person straight back in reads "Sign out".
+    /// "Not you?" on the approval card is Switch Account on every server,
+    /// and never promises a sign-out (coordinator decision 2).
     @MainActor
-    func testNotYouOffersAnAccountChoiceOnlyWhereTheServerAdvertisesIt() async {
-        for accountSwitch in [TVApprovalAccountSwitch.chooseAccount, .switchAccount, .signOut] {
-            let api = FakeTVApprovalAPI()
-            api.accountSwitchValue = accountSwitch
-            api.lookups = [DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: "pending")]
-            let model = TVApprovalModel(server: Self.home, code: "48217730", api: api)
-            XCTAssertEqual(model.accountSwitch, .signOut)
-            await model.lookUp()
-            XCTAssertEqual(model.accountSwitch, accountSwitch)
-            XCTAssertEqual(model.offersAccountChoice, accountSwitch == .chooseAccount)
-            XCTAssertEqual(api.choiceQueries, ["https://home.example"])
-        }
-
-        let sso = APIv2AuthProvider(id: "plugin:3:oidc", displayName: "SSO", mode: "oauth", default: false,
-            iconUrl: nil, installationId: "3", nativeStartPath: "/api/v2/auth/oauth/3/native/start")
-        XCTAssertEqual(TVApprovalAccountSwitch(SignInOptions(browserProviders: [sso], acceptsPasswords: true,
-            supportsSelectAccount: true)), .chooseAccount)
-        XCTAssertEqual(TVApprovalAccountSwitch(SignInOptions(browserProviders: [sso], acceptsPasswords: true,
-            supportsSelectAccount: false)), .signOut)
-        XCTAssertEqual(TVApprovalAccountSwitch(.passwordOnly), .switchAccount, "password-only or directory-only")
-        let network = APIv2AuthProvider(id: "plugin:5:tailscale", displayName: "Tailscale", mode: "network",
-            default: false, installationId: "5", networkSignInPath: "/api/v2/auth/network/5/sign-in")
-        XCTAssertEqual(TVApprovalAccountSwitch(SignInOptions(browserProviders: [], acceptsPasswords: false,
-            supportsSelectAccount: false, networkProviders: [network])), .signOut,
-            "network sign-in only signs the same device owner back in")
-        XCTAssertEqual(TVApprovalAccountSwitch(nil), .signOut, "unread discovery promises nothing")
+    func testNotYouIsSwitchAccountOnEveryServer() async {
+        let api = FakeTVApprovalAPI()
+        api.lookups = [DeviceLookupResponse(matchCode: "w", deviceName: "TV", devicePlatform: "tvos", status: "pending")]
+        let model = TVApprovalModel(server: Self.home, code: "48217730", api: api)
+        await model.lookUp()
+        guard case .review = model.phase else { return XCTFail("the card shows the review: \(model.phase)") }
         #if os(iOS)
-        XCTAssertEqual(TVApprovalCard.switchAccountLink(.chooseAccount), "Not you? Switch account")
-        XCTAssertEqual(TVApprovalCard.switchAccountLink(.switchAccount), "Not you? Switch account")
-        XCTAssertEqual(TVApprovalCard.switchAccountLink(.signOut), "Not you? Sign out")
-        XCTAssertTrue(TVApprovalCard.switchAccountMessage(serverName: "Home", choosingAccount: true)
-            .contains("asked which account"))
-        let plain = TVApprovalCard.switchAccountMessage(serverName: "Home", choosingAccount: false)
-        XCTAssertFalse(plain.lowercased().contains("which account"), plain)
-        XCTAssertFalse(plain.lowercased().contains("choose"), plain)
+        XCTAssertEqual(TVApprovalCard.switchAccountLink, "Not you? Switch Account")
+        XCTAssertFalse(TVApprovalCard.switchAccountLink.lowercased().contains("sign out"))
         #endif
     }
 
@@ -548,8 +560,6 @@ private final class FakeTVApprovalAPI: TVApprovalAPI, @unchecked Sendable {
     var denyError: Error?
     var approveError: Error?
     var accountNameValue: String? = "laura"
-    var accountSwitchValue = TVApprovalAccountSwitch.signOut
-    private(set) var choiceQueries: [String] = []
     private(set) var bearerRequests: [String] = []
     private(set) var lookedUpCodes: [String] = []
     private(set) var approved: [String] = []
@@ -575,8 +585,4 @@ private final class FakeTVApprovalAPI: TVApprovalAPI, @unchecked Sendable {
         denied.append(code)
     }
     func accountName(serverURL: String, bearer: String) async -> String? { accountNameValue }
-    func accountSwitch(serverURL: String) async -> TVApprovalAccountSwitch {
-        choiceQueries.append(serverURL)
-        return accountSwitchValue
-    }
 }

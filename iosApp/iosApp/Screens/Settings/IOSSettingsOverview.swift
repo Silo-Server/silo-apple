@@ -9,7 +9,6 @@ struct IOSSettingsOverview: View {
     let viewModel: SettingsViewModel
     let diagnosticsModel: DiagnosticsViewModel
     let uiCustomization: UICustomizationPreferences
-    @Binding var showSignOutConfirm: Bool
 
     @Environment(AppRouter.self) private var router
     @State private var navPrefs = AppNavPreferences.shared
@@ -23,12 +22,8 @@ struct IOSSettingsOverview: View {
         List {
             Section {
                 SettingsAccountCard(
-                    avatar: viewModel.activeProfile?.avatarEmoji,
-                    avatarImageUrl: viewModel.activeProfile?.avatarImageUrl,
-                    name: viewModel.displayName,
-                    subtitle: viewModel.accountSubtitleLine,
-                    isAdministrator: viewModel.userInfo?.isAdmin == true,
-                    action: switchProfile
+                    header: viewModel.accountHeader,
+                    isAdministrator: viewModel.userInfo?.isAdmin == true
                 )
             }
 
@@ -82,10 +77,14 @@ struct IOSSettingsOverview: View {
         .siloToolbarColorSchemeDark()
         .onAppear(perform: navPrefs.refresh)
         .task { await accountSignIn.load() }
+        .task { await router.accounts.reloadDirectory() }
         .sheet(isPresented: $showsSignInTV) {
-            SignInTVView(onSwitchAccount: { server, link, choosingAccount in
+            // "Not you?" on the approval card is Switch Account: it signs
+            // nobody out, and the card comes back once an account is chosen
+            // or added.
+            SignInTVView(onSwitchAccount: { link in
                 showsSignInTV = false
-                router.switchAccount(forTVApproval: link, on: server, choosingAccount: choosingAccount)
+                router.switchAccount(forTVApproval: link)
             }, onClose: { showsSignInTV = false })
         }
     }
@@ -210,16 +209,18 @@ struct IOSSettingsOverview: View {
 
     private var connectionSection: some View {
         Section("Connection") {
-            Button {
-                router.navigate(to: .serverList)
-            } label: {
-                SettingsOverviewRow(
-                    title: "Server",
-                    subtitle: "Manage this device's Silo connection",
-                    systemImage: "server.rack",
-                    value: viewModel.serverDisplayName,
-                    showsChevron: true
-                )
+            if matchesAccounts {
+                Button {
+                    router.navigate(to: .manageAccounts)
+                } label: {
+                    SettingsOverviewRow(
+                        title: AccountsSettingsViewModel.title,
+                        subtitle: "Silo accounts on this \(router.accounts.device.noun) and their servers",
+                        systemImage: "person.2.fill",
+                        value: Self.accountsValue(router.accounts.directory) ?? viewModel.serverDisplayName,
+                        showsChevron: true
+                    )
+                }
             }
             if matchesSignInTV {
                 Button {
@@ -233,6 +234,24 @@ struct IOSSettingsOverview: View {
                     )
                 }
             }
+        }
+    }
+
+    /// The Accounts row (spec §5.7), which also holds each account's server.
+    private var matchesAccounts: Bool {
+        let directory = router.accounts.directory
+        return matches(["accounts", "account", "server", "connection", "switch account", "add account",
+                        viewModel.serverDisplayName]
+            + directory.accounts.flatMap { [$0.name, $0.serverName] })
+    }
+
+    /// The current account's name, or how many accounts there are.
+    static func accountsValue(_ directory: SiloAccountDirectory) -> String? {
+        if let current = directory.currentAccount { return current.name }
+        switch directory.accounts.count {
+        case 0: return nil
+        case 1: return directory.accounts[0].name
+        default: return "\(directory.accounts.count) accounts"
         }
     }
 
@@ -313,16 +332,13 @@ struct IOSSettingsOverview: View {
 
     private var signOutSection: some View {
         Section {
+            // Asks first, with Sign Out & Remove Server (spec §5.6, plan G10).
             Button("Sign Out", role: .destructive) {
-                showSignOutConfirm = true
+                Task { await router.accounts.requestRemoval(.currentAccount, router: router) }
             }
             .frame(maxWidth: .infinity)
             .foregroundStyle(Color.red)
         }
-    }
-
-    private func switchProfile() {
-        router.switchProfile()
     }
 
     private var matchesPlayback: Bool {
@@ -355,7 +371,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesConnectionSection: Bool {
-        matches("server", "connection", viewModel.serverDisplayName) || matchesSignInTV
+        matchesAccounts || matchesSignInTV
     }
 
     private var matchesAboutSection: Bool {
@@ -408,6 +424,10 @@ struct IOSSettingsOverview: View {
     }
 
     private func matches(_ terms: String...) -> Bool {
+        matches(terms)
+    }
+
+    private func matches(_ terms: [String]) -> Bool {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return true }
         return terms.contains { $0.localizedCaseInsensitiveContains(query) }

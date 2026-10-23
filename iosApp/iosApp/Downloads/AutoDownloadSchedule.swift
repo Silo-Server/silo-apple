@@ -96,8 +96,10 @@ final class AutoDownloadSchedule {
 
     // MARK: - Loading
 
+    /// Profile IDs repeat across accounts on one server, so the account is
+    /// part of the scope.
     private var currentScopeKey: String {
-        "\(manager.scopeServerId)|\(manager.scopeProfileId)"
+        "\(manager.scopeServerId)|\(manager.scopeAccountId ?? "")|\(manager.scopeProfileId)"
     }
 
     private func resetIfScopeChanged() {

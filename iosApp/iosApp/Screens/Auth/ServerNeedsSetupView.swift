@@ -20,7 +20,6 @@ struct ServerNeedsSetupView: View {
             MarqueeServerCard(
                 name: ServerBranding.hostLabel(serverURL),
                 address: serverURL,
-                showsInitial: false,
                 badge: .init(text: "Setup needed", systemImage: "clock", tone: .warning),
                 status: .init(text: "Reachable · not set up yet", tone: .warning)
             )

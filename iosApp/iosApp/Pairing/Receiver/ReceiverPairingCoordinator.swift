@@ -121,6 +121,9 @@ final class ReceiverPairingCoordinator {
         /// The account the tokens authenticate (`TokenPair.user.id`), bound
         /// as the session's verified account.
         let accountID: String
+        /// That account's username, so Choose an Account names it before
+        /// the server is asked.
+        var username: String? = nil
     }
 
     private enum AlternateChoice: Sendable {
@@ -155,9 +158,16 @@ final class ReceiverPairingCoordinator {
 
     private let api: any PairingDeviceAuthorizing
     private let identityProbe: @Sendable (_ serverURL: String) async -> ServerIdentityProbeResult
-    private let persist: @MainActor (PersistedPairing) async -> Bool
+    /// Commits a collected sign-in. The setup screen points it at
+    /// `SiloAccountCoordinator.completePairing` with its router, so Who's
+    /// Watching follows for the account it saves.
+    @ObservationIgnored var persist: @MainActor (PersistedPairing) async -> Bool
     private var signedInNames: [String] = []
-    private var consented = false
+    /// The TV user allowed this session's pushes.
+    private(set) var consented = false
+    /// The address the phone pushed last, for its server's logo on the
+    /// pairing screens.
+    private(set) var pushedServerURL: String?
     private var pendingPush: PushedServer?
     /// The TV user's pending choice while `state` is `.unreachable`.
     private var alternateDecision: CheckedContinuation<AlternateChoice, Never>?
@@ -195,6 +205,7 @@ final class ReceiverPairingCoordinator {
         signedInNames = []
         consented = false
         pendingPush = nil
+        pushedServerURL = nil
         activeSession = session
         let device = AppleDeviceIdentity.current
         do {
@@ -223,6 +234,7 @@ final class ReceiverPairingCoordinator {
                         serverIdentity: ServerIdentity.usable(serverIdentity),
                         endpoints: endpoints ?? []
                     )
+                    pushedServerURL = push.serverURL
                     if consented {
                         beginAttempt(push, session: session)
                     } else {
@@ -493,7 +505,8 @@ final class ReceiverPairingCoordinator {
                 verifiedServerId: push.serverIdentity,
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken,
-                accountID: tokens.user.id
+                accountID: tokens.user.id,
+                username: ServerIdentity.usable(tokens.user.username)
             )) else {
                 // A cancellation before the first write is not a failure
                 // (the catch below returns quietly).
@@ -673,129 +686,11 @@ final class ReceiverPairingCoordinator {
         return nil
     }
 
-    /// Commit the now-trusted server + tokens. Runs only after a successful poll.
+    /// Commit the now-trusted server + tokens. Runs only after a successful
+    /// poll. Without a screen's router the account is saved, as a new one or
+    /// a refresh of the saved one, and nothing routes.
+    @MainActor
     static func persistServer(_ pairing: PersistedPairing) async -> Bool {
-        let access = pairing.accessToken
-        let refresh = pairing.refreshToken
-        guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
-            return false
-        }
-        guard !Task.isCancelled else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return false
-        }
-        await HTTPClient.shared.cancelInFlightRequests()
-        guard !Task.isCancelled else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return false
-        }
-        let previousTokenServerID = await TokenStore.shared.getActiveServerId()
-        let previousServerURL = await TokenStore.shared.getServerUrl()
-        let previousProfileID = await TokenStore.shared.getProfileId()
-        let previousProfileToken = await TokenStore.shared.getProfileToken()
-        // A server already saved under a differently cased URL keeps that
-        // entry's id and URL, which key its credentials and settings. Look
-        // it up inside the transition so a pairing that saved it first is seen.
-        let pairedID = ServerRegistry.serverId(for: pairing.url)
-        let saved = ServerRegistry.shared.entry(matching: pairedID)
-        let url = saved?.url ?? pairing.url
-        let id = saved?.id ?? pairedID
-        // Device authorization can replace the account for an already-saved
-        // server URL. Preserve its name, but never carry the previous account's
-        // profile selection across that credential boundary.
-        let entry = ServerEntry(
-            id: id,
-            url: url,
-            fetchedName: pairing.fetchedName,
-            profileId: nil,
-            lastUsedAt: Date(),
-            verifiedServerId: pairing.verifiedServerId
-        )
-        // Re-pairing an already saved server replaces its credential slot in
-        // the session install below (and adopts the slot even when the write fails
-        // part way), before the registry commit can still fail. Keep what
-        // the slot and its server-scoped profile proof held, so either
-        // failure puts it back instead of leaving the new credentials, an
-        // adoption marker, or a tombstone behind a reported failure.
-        let previousSession = await TokenStore.shared.accountSessionSnapshot(for: id)
-        guard previousSession != .unreadable else {
-            // A slot that cannot be read cannot be restored either; refuse
-            // before anything is mutated rather than fail half way.
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return false
-        }
-        // `addOrUpdate(preservingProfile: false)` forgets the durable profile
-        // choice for this server id. When the pairing then fails, the previous
-        // session is kept, so its remembered profile must come back too or the
-        // next launch lands on profile selection for no reason.
-        let launchPreferences = ProfileLaunchPreferences.shared
-        let previousRememberedProfile = launchPreferences.rememberedProfile(for: id)
-        let previousSelectionRequired = launchPreferences.state.selectionRequiredServerIDs.contains(id)
-        func restoreRememberedProfile() {
-            if let remembered = previousRememberedProfile {
-                launchPreferences.remember(
-                    profileID: remembered.profileID,
-                    requiresPIN: remembered.requiredPINAtSelection,
-                    accountEpoch: remembered.accountEpoch,
-                    for: id
-                )
-            }
-            if previousSelectionRequired {
-                launchPreferences.markSelectionRequired(for: id)
-            }
-        }
-        // From this first persistent mutation onward the transaction must
-        // finish even if the pairing task is cancelled. Publishing failure
-        // after committed credentials would make the phone and TV disagree.
-        guard ServerRegistry.shared.addOrUpdate(entry, preservingProfile: false) != nil else {
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
-            return false
-        }
-        await TokenStore.shared.setServerUrl(url)
-        await TokenStore.shared.switchActiveServer(serverId: id)
-        await TokenStore.shared.setProfileId(nil)
-        await TokenStore.shared.setProfileToken(nil)
-        // One rollback for both failure points below. The slot is restored
-        // first (a failed install has still blocked the runtime session
-        // and may have adopted the slot; a failed commit has the candidate's
-        // tokens persisted in it), then the URL and profile, so the previous
-        // server reads exactly as it did before pairing started. When the
-        // slot itself cannot be restored the token store keeps that server
-        // blocked (fail closed) and pairing still reports failure; the
-        // registry entry stays either way so the user can retry.
-        func rollBack() async {
-            let restored = await TokenStore.shared.restoreAccountSession(previousSession, for: id)
-            if !restored {
-                Self.logger.error("pairing rollback could not restore the previous session; the server stays blocked until relaunch")
-            }
-            await TokenStore.shared.setServerUrl(previousServerURL)
-            await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
-            await TokenStore.shared.setProfileId(previousProfileID)
-            _ = await TokenStore.shared.setProfileToken(previousProfileToken)
-            restoreRememberedProfile()
-            await HTTPClient.shared.endIdentityTransition(transitionLease)
-        }
-        do {
-            try await TokenStore.shared.installAccountSession(
-                accessToken: access,
-                refreshToken: refresh,
-                accountID: pairing.accountID,
-                clearProfile: false
-            )
-        } catch {
-            Self.logger.error("pairing session install failed: \(String(describing: error), privacy: .private)")
-            await rollBack()
-            return false
-        }
-        guard await ServerRegistry.shared.commitSwitchTo(
-            serverId: id,
-            holding: transitionLease
-        ) else {
-            await rollBack()
-            return false
-        }
-        await HTTPClient.shared.endIdentityTransition(transitionLease)
-        await ServerRegistry.shared.refreshFeaturesAfterGatedServerSwitch()
-        return true
+        await SiloAccountCoordinator.shared.completePairing(pairing, router: nil)
     }
 }

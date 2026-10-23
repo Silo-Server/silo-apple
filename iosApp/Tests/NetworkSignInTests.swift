@@ -195,7 +195,8 @@ final class NetworkSignInTests: XCTestCase {
         let sent = "/media" + Self.apiPath
         stub.reply(path: sent, 200, fixture("sign_in_with_network_identity_ok"))
 
-        try await auth.signInWithNetworkIdentity(Self.network(path: "/elsewhere/api/v2/auth/network/5/sign-in"))
+        try await auth.commitOutsideUserFlow(
+            auth.signInWithNetworkIdentity(Self.network(path: "/elsewhere/api/v2/auth/network/5/sign-in")))
 
         XCTAssertEqual(stub.requestedPaths, [sent], "one dispatch, on the saved base")
         let request = try XCTUnwrap(stub.requests.first)
@@ -229,7 +230,7 @@ final class NetworkSignInTests: XCTestCase {
             stub.reply(path: HTTPClient.refreshPath, 200, #"{"access_token":"new","refresh_token":"new-ref","expires_in":3600}"#)
             stub.reply(path: Self.apiPath, status, body)
             do {
-                try await auth.signInWithNetworkIdentity(Self.network())
+                _ = try await auth.signInWithNetworkIdentity(Self.network())
                 XCTFail("\(status): signed in")
             } catch APIv2Error.problem(let problem) {
                 XCTAssertEqual(problem.status, status)
@@ -244,15 +245,16 @@ final class NetworkSignInTests: XCTestCase {
         // A provider whose path has another shape sends nothing.
         stub.reset()
         do {
-            try await auth.signInWithNetworkIdentity(Self.network(path: "https://evil.example" + Self.apiPath))
+            _ = try await auth.signInWithNetworkIdentity(Self.network(path: "https://evil.example" + Self.apiPath))
             XCTFail("signed in through another origin")
         } catch HTTPError.invalidURL {}
         XCTAssertTrue(stub.requests.isEmpty)
     }
 
-    /// "Change server" while "Continue as …" runs leaves the sign-in screen.
-    /// The session still lands, but the sign-in must not pull the app back
-    /// to the profiles.
+    /// Back while "Continue as …" runs leaves the sign-in screen. The
+    /// sign-in must not pull the app back to the profiles, and it is saved
+    /// nowhere: saving it would add or refresh an account behind the screen
+    /// the person moved to, so its session is ended instead.
     @MainActor
     func testSignInDoesNotRouteOnceTheAppLeftTheSignInScreen() async throws {
         let (auth, tokens) = try await makeAuth()
@@ -269,10 +271,36 @@ final class NetworkSignInTests: XCTestCase {
         stub.release()
         let succeeded = await signIn.value
 
-        XCTAssertTrue(succeeded)
+        XCTAssertFalse(succeeded)
+        XCTAssertNil(model.networkSignInError, "leaving the screen isn't a failure to report")
         XCTAssertEqual(router.authState, .needsServerSetup)
         let access = await tokens.getAccessToken()
-        XCTAssertEqual(access, "acc")
+        XCTAssertEqual(access, "old", "the abandoned sign-in replaced nothing")
+        let stub = self.stub
+        let revoked = {
+            stub.requests.contains { $0.path.hasSuffix("/api/v2/auth/logout") && $0.header("Authorization") == "Bearer acc" }
+        }
+        for _ in 0..<300 where !revoked() {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(revoked(), "the abandoned session is ended on the server")
+    }
+
+    /// Add Account keeps "Continue as …": the network names the account,
+    /// which is saved as a new account or refreshes the saved one.
+    @MainActor
+    func testEverySignInContextOffersNetworkSignIn() async throws {
+        let (auth, _) = try await makeAuth()
+        let network = Self.network()
+        let options = SignInOptions(providers: APIv2AuthProviders(items: [network], passwordLogin: true), oauth: nil)
+        let key = try XCTUnwrap(SignInKey(serverID: "server", accountID: "12"))
+
+        for context: SignInContext in [.firstRun, .addAccount, .signInAgain(key)] {
+            let model = LoginViewModel(auth: auth, context: context)
+            model.discovery = .loaded(options)
+            XCTAssertEqual(model.signInOptions, options, "\(context)")
+            XCTAssertEqual(model.networkProviders, [network], "\(context)")
+        }
     }
 
     func testRefusalsReadAsSentencesNamingTheProvider() {

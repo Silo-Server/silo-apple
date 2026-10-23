@@ -6,12 +6,13 @@ import SwiftUI
 /// (`CompanionPairingCard`) rising from the bottom. Owns discovery
 /// (`TVPairingBrowser`) and per-session "Not Now" dismissal.
 ///
-/// A setup TV is offered when this device has any signed-in server to hand
+/// A setup TV is offered when this device has any signed-in account to hand
 /// off. A sign-in TV is offered only when this device holds a signed-in
-/// server whose verified identity is the TV's `srv`; that server alone is
-/// pushed. Both the candidate and the latch read the same cached list of
-/// signed-in servers (`CompanionPairingOffer.make`), refreshed when auth
-/// changes or the app returns to the foreground, so a TV this device can't
+/// account on a server whose verified identity is the TV's `srv`; that
+/// server alone is pushed, for the one account the person picks. Both the
+/// candidate and the latch read the same cached list of signed-in accounts
+/// (`CompanionPairingOffer.make`), refreshed when auth or the accounts
+/// change or the app returns to the foreground, so a TV this device can't
 /// help never blocks one it can. Browsing pauses while the app is
 /// backgrounded.
 struct CompanionPairingCardModifier: ViewModifier {
@@ -25,17 +26,20 @@ struct CompanionPairingCardModifier: ViewModifier {
     @State private var browser = TVPairingBrowser()
     @State private var dismissed: Set<String> = []
     @State private var active: CompanionPairingOffer?
-    /// Saved servers holding a token, in preference order.
-    @State private var signedIn: [ServerEntry] = []
+    /// Signed-in accounts on saved servers, the current one first
+    /// (`CompanionPairingCoordinator.signedInAccounts`).
+    @State private var signedIn: [CompanionPairingAccount] = []
     /// True once the active offer's TV no longer advertises that offer.
     @State private var offerWithdrawn = false
     @Environment(\.scenePhase) private var scenePhase
 
-    /// When the signed-in servers are re-read: auth changes, a return to the
-    /// foreground, and a TV starting to advertise. A newer key cancels the
-    /// older read, so a slow read never overwrites a newer one.
+    /// When the signed-in accounts are re-read: auth changes, an account
+    /// opened, a return to the foreground, and a TV starting to advertise.
+    /// A newer key cancels the older read, so a slow read never overwrites a
+    /// newer one.
     private struct SignedInRefreshKey: Equatable {
         let authState: AppRouter.AuthState
+        let signInRevision: Int
         let isActive: Bool
         let hasAdverts: Bool
     }
@@ -45,6 +49,7 @@ struct CompanionPairingCardModifier: ViewModifier {
             .task { browser.start() }
             .task(id: SignedInRefreshKey(
                 authState: authState,
+                signInRevision: SiloAccountCoordinator.shared.signInRevision,
                 isActive: scenePhase == .active,
                 hasAdverts: !browser.found.isEmpty
             )) {
@@ -97,7 +102,7 @@ struct CompanionPairingCardModifier: ViewModifier {
             .overlay {
                 if let offer = active {
                     let tv = offer.tv
-                    CompanionPairingCard(tv: tv, server: offer.server, onDismiss: {
+                    CompanionPairingCard(tv: tv, signInAccounts: offer.accounts, onDismiss: {
                         // Every exit dismisses for the TV's current setup
                         // session (`sid`): predictable, and retry lives inside
                         // the card. A new session on the TV re-offers the card.
@@ -141,38 +146,49 @@ struct CompanionPairingCardModifier: ViewModifier {
     }
 
     private func refreshSignedIn() async {
-        let servers = await CompanionPairingCoordinator.serversWithTokens()
+        let accounts = await CompanionPairingCoordinator.signedInAccounts()
         guard !Task.isCancelled else { return }
-        if servers != signedIn { signedIn = servers }
+        if accounts != signedIn { signedIn = accounts }
     }
 }
 
-/// One TV the card is offering to help, and for a sign-in TV the one saved
-/// server it asked for.
+/// One TV the card is offering to help, and for a sign-in TV the accounts
+/// it can be signed in with.
 struct CompanionPairingOffer: Equatable {
     let tv: DiscoveredTV
-    let server: ServerEntry?
+    /// A sign-in TV's choices (`accounts(for:among:)`), the one to preselect
+    /// first. Empty for a setup TV: the person chooses among every account
+    /// once connected.
+    let accounts: [CompanionPairingAccount]
 
-    /// What this device can offer `tv`: any signed-in server for a setup
-    /// TV (the user chooses), the TV's own server for a sign-in TV. Nil when
-    /// there is nothing to offer. `signedIn` holds the saved servers with a
-    /// token, in preference order.
-    static func make(for tv: DiscoveredTV, signedIn: [ServerEntry]) -> CompanionPairingOffer? {
+    /// The sign-in TV's server, nil for a setup TV.
+    var server: ServerEntry? { accounts.first?.server }
+
+    /// What this device can offer `tv`: any signed-in account for a setup
+    /// TV, the accounts on the TV's own server for a sign-in TV. Nil when
+    /// there is nothing to offer. `signedIn` holds the signed-in accounts,
+    /// the current one first.
+    static func make(for tv: DiscoveredTV, signedIn: [CompanionPairingAccount]) -> CompanionPairingOffer? {
         switch tv.state {
         case .setup:
-            return signedIn.isEmpty ? nil : CompanionPairingOffer(tv: tv, server: nil)
+            return signedIn.isEmpty ? nil : CompanionPairingOffer(tv: tv, accounts: [])
         case .login:
-            return server(for: tv, among: signedIn).map { CompanionPairingOffer(tv: tv, server: $0) }
+            let choices = Self.accounts(for: tv, among: signedIn)
+            return choices.isEmpty ? nil : CompanionPairingOffer(tv: tv, accounts: choices)
         }
     }
 
-    /// The saved server a sign-in TV asked for: the one whose verified
-    /// identity is the TV's `srv`. Identity, not URL spelling, since one
-    /// server has several addresses. `servers` is in preference order
-    /// (active first). Nil for a setup TV or a server this device lacks.
-    static func server(for tv: DiscoveredTV, among servers: [ServerEntry]) -> ServerEntry? {
-        guard tv.state == .login, let identity = ServerIdentity.usable(tv.serverIdentity) else { return nil }
-        return servers.first { $0.verifiedServerId == identity }
+    /// The signed-in accounts on the server a sign-in TV asked for: the
+    /// one whose verified identity is the TV's `srv`. Identity, not URL
+    /// spelling, since one server has several addresses. The account this
+    /// device uses there comes first: the current account when it is on
+    /// that server, else the server's background account. Empty for a
+    /// setup TV or a server this device has no account on.
+    static func accounts(for tv: DiscoveredTV, among signedIn: [CompanionPairingAccount]) -> [CompanionPairingAccount] {
+        guard tv.state == .login, let identity = ServerIdentity.usable(tv.serverIdentity) else { return [] }
+        let onServer = signedIn.filter { $0.server.verifiedServerId == identity }
+        let preferred = onServer.filter { $0.isCurrent || $0.isServerDefault }
+        return preferred + onServer.filter { !$0.isCurrent && !$0.isServerDefault }
     }
 }
 

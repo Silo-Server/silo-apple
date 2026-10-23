@@ -2,12 +2,15 @@ import Foundation
 
 /// Last-known copies of the responses the first screens draw (Home, For You,
 /// the library list, library landings, first grid pages), kept in Caches per
-/// server and profile. A launch seeds `ResponseCache` from them before the
-/// app builds, so a slow or unreachable server still opens on content; fresh
-/// responses replace them as they arrive.
+/// server, account, and profile. A launch seeds `ResponseCache` from them
+/// before the app builds, so a slow or unreachable server still opens on
+/// content; fresh responses replace them as they arrive.
 enum ResponseSnapshotStore {
     struct Scope: Equatable, Sendable {
         let serverId: String
+        /// Nil for a server's own session from before saved sign-ins, whose
+        /// snapshots keep the directory they had before accounts.
+        let accountId: String?
         let profileId: String
     }
 
@@ -33,7 +36,7 @@ enum ResponseSnapshotStore {
         guard fileName(forKey: key).utf8.count <= maxFileNameBytes else { return }
         queue.async {
             guard let data = try? JSONEncoder().encode(value) else { return }
-            let directory = directory(for: scope, in: root)
+            let directory = adoptedDirectory(for: scope, in: root)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try? data.write(to: directory.appendingPathComponent(fileName(forKey: key)), options: .atomic)
             trim(directory)
@@ -43,7 +46,7 @@ enum ResponseSnapshotStore {
     /// Removes `scope`'s snapshots whose key matches.
     static func remove(scope: Scope, in root: URL = defaultRoot, where matches: @escaping @Sendable (String) -> Bool) {
         queue.async {
-            let directory = directory(for: scope, in: root)
+            let directory = adoptedDirectory(for: scope, in: root)
             guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
                 return
             }
@@ -64,7 +67,7 @@ enum ResponseSnapshotStore {
     /// always sees the latest stored state.
     static func load(scope: Scope, in root: URL = defaultRoot) -> [(key: String, value: Any)] {
         queue.sync {
-            let directory = directory(for: scope, in: root)
+            let directory = adoptedDirectory(for: scope, in: root)
             guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
                 return []
             }
@@ -84,7 +87,28 @@ enum ResponseSnapshotStore {
     }
 
     private static func directory(for scope: Scope, in root: URL) -> URL {
-        root.appendingPathComponent(encode("\(scope.serverId)|\(scope.profileId)"), isDirectory: true)
+        guard let accountId = scope.accountId else {
+            return root.appendingPathComponent(encode("\(scope.serverId)|\(scope.profileId)"), isDirectory: true)
+        }
+        let name = "\(AccountScopedKeyAdoption.versionMarker)|\(scope.serverId)|\(accountId)|\(scope.profileId)"
+        return root.appendingPathComponent(encode(name), isDirectory: true)
+    }
+
+    /// `scope`'s directory, after the account that owns its server's
+    /// snapshots from before accounts takes over the old one. Runs on
+    /// `queue`.
+    private static func adoptedDirectory(for scope: Scope, in root: URL) -> URL {
+        let directory = directory(for: scope, in: root)
+        if let accountId = scope.accountId {
+            let legacy = Scope(serverId: scope.serverId, accountId: nil, profileId: scope.profileId)
+            AccountScopedKeyAdoption.adoptDirectory(
+                from: self.directory(for: legacy, in: root),
+                to: directory,
+                serverID: scope.serverId,
+                accountID: accountId
+            )
+        }
+        return directory
     }
 
     private static func fileName(forKey key: String) -> String {

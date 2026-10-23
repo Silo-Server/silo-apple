@@ -329,15 +329,10 @@ struct MarqueeErrorText: View {
 // MARK: - Server identity
 
 /// The server's mark: its `mark_url` image when branding provides one,
-/// otherwise its initial on a warm tile, otherwise a server glyph.
+/// otherwise the Silo app icon.
 struct MarqueeServerMark: View {
-    var name: String?
     var imageURL: URL?
     var size: CGFloat = 48
-
-    private static let initialGradient = [Color(hex: "#EAA65C"), Color(hex: "#A8521D"), Color(hex: "#5E290D")]
-    private static let initialInk = Color(hex: "#FFF6EA")
-    private static let placeholderGradient = [Color(hex: "#2B2D33"), Color(hex: "#15171C")]
 
     var body: some View {
         ZStack {
@@ -346,11 +341,11 @@ struct MarqueeServerMark: View {
                     if let image = phase.image {
                         image.resizable().scaledToFill()
                     } else {
-                        fallback
+                        appIcon
                     }
                 }
             } else {
-                fallback
+                appIcon
             }
         }
         .frame(width: size, height: size)
@@ -362,26 +357,10 @@ struct MarqueeServerMark: View {
         .accessibilityHidden(true)
     }
 
-    @ViewBuilder
-    private var fallback: some View {
-        if let initial = name?.trimmingCharacters(in: .whitespaces).first {
-            LinearGradient(
-                colors: Self.initialGradient,
-                startPoint: .topLeading, endPoint: .bottomTrailing
-            )
-            .overlay(
-                Text(String(initial).uppercased())
-                    .font(.system(size: size * 0.54, weight: .bold, design: .serif))
-                    .foregroundStyle(Self.initialInk)
-            )
-        } else {
-            LinearGradient(colors: Self.placeholderGradient, startPoint: .top, endPoint: .bottom)
-                .overlay(
-                    Image(systemName: "server.rack")
-                        .font(.system(size: size * 0.42))
-                        .foregroundStyle(Color.siloOnSurface.opacity(0.62))
-                )
-        }
+    /// The app icon draws the mark at 84% of its height.
+    private var appIcon: some View {
+        Color.siloIconField
+            .overlay(Image("SiloMark").resizable().scaledToFit().frame(height: size * 0.84))
     }
 }
 
@@ -403,14 +382,13 @@ struct MarqueeServerCard: View {
     let name: String
     let address: String
     var markURL: URL?
-    var showsInitial: Bool = true
     var badge: Badge?
     var status: Status?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: gap) {
-                MarqueeServerMark(name: showsInitial ? name : nil, imageURL: markURL, size: markSize)
+                MarqueeServerMark(imageURL: markURL, size: markSize)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
                         .font(.system(size: nameFont, weight: .bold))
@@ -511,7 +489,7 @@ struct MarqueeServerChipLabel: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            MarqueeServerMark(name: name, imageURL: markURL, size: markSize)
+            MarqueeServerMark(imageURL: markURL, size: markSize)
             Text(name)
                 .font(.system(size: font, weight: .semibold))
                 .foregroundStyle(Color.siloOnSurface)

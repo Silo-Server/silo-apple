@@ -1,5 +1,12 @@
 import Foundation
 
+extension Notification.Name {
+    /// Posted (object: `BindOutcome`) when an account read turned a pending
+    /// legacy server into a saved sign-in, or found its account already
+    /// saved and dropped it (plan §3.3).
+    static let siloSignInMigrated = Notification.Name("siloSignInMigrated")
+}
+
 /// A v2 request was refused because its owner changed before the request
 /// reached the URL session. Nothing was sent.
 struct APIv2OwnerChangedBeforeDispatch: LocalizedError, Sendable {
@@ -136,7 +143,20 @@ struct APIv2Client: Sendable {
         guard let current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: captured) else {
             throw HTTPError.authorityChanged
         }
-        try await tokenStore.bindVerifiedAccount(value.id, expected: current)
+        let outcome = try await tokenStore.bindVerifiedAccount(value, expected: current)
+        if case .legacyDuplicate(_, let dropped?) = outcome {
+            // The dropped session is no longer kept anywhere: end it on its
+            // own server, without waiting.
+            Task { [http] in await http.revoke(dropped) }
+        }
+        switch outcome {
+        case .legacyMigrated, .legacyDuplicate:
+            await MainActor.run {
+                NotificationCenter.default.post(name: .siloSignInMigrated, object: outcome)
+            }
+        case .unchanged, .usernameUpdated:
+            break
+        }
         return value
     }
 
@@ -198,7 +218,9 @@ struct APIv2Client: Sendable {
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         if profileRequired && auth.profileId == nil { throw SettingsAPIError.profileRequired }
         if let profileID, profileID != auth.profileId { throw HTTPError.requestIdentityChanged }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
+        let identity = auth.profileId.map {
+            Self.requestIdentity(auth, profile: $0, accountID: expectedIdentity?.accountID)
+        }
         try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
         let response = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
@@ -216,14 +238,19 @@ struct APIv2Client: Sendable {
     /// captured session has selected: the household-parent `profile_id` query
     /// override is never sent, so a write captured for one profile cannot land
     /// on another. The status and receipt checks belong to each operation.
+    /// `accountID`, for a caller that pinned the account but no full
+    /// identity (the player's settings queue), is refused the same way under
+    /// another sign-in; `expectedIdentity`'s account wins when both are given.
     func settingsWrite(_ method: String, path: String, query: [String: String], body: Data?,
                        profileID: String, expectedIdentity: HTTPRequestIdentity? = nil,
+                       accountID: String? = nil,
                        quietStatuses: Set<Int> = []) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         guard let profile = auth.profileId else { throw SettingsAPIError.profileRequired }
         guard profile == profileID else { throw HTTPError.requestIdentityChanged }
-        let identity = Self.requestIdentity(auth, profile: profile)
+        let identity = Self.requestIdentity(auth, profile: profile,
+                                            accountID: expectedIdentity == nil ? accountID : expectedIdentity?.accountID)
         try Self.requireSettingsIdentity(expectedIdentity, matches: identity)
         return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
@@ -237,7 +264,9 @@ struct APIv2Client: Sendable {
     /// Refuses a settings request whose caller pinned an identity that is no
     /// longer the captured one. The captured account URL is normalized; a
     /// caller's identity may carry the registry spelling, which HTTPClient
-    /// normalizes the same way.
+    /// normalizes the same way. The caller's account rides on the identity
+    /// sent, so `TokenStore.captureRequestAuth` refuses it under another
+    /// sign-in whose profile has the same ID.
     private static func requireSettingsIdentity(_ expected: HTTPRequestIdentity?,
                                                 matches identity: HTTPRequestIdentity?) throws {
         guard let expected else { return }
@@ -245,7 +274,8 @@ struct APIv2Client: Sendable {
             serverId: expected.serverId,
             serverURL: ServerRegistry.normalize(url: expected.serverURL),
             profileId: expected.profileId,
-            clientFamily: expected.clientFamily
+            clientFamily: expected.clientFamily,
+            accountID: expected.accountID
         )
         if normalizedExpected != identity { throw HTTPError.requestIdentityChanged }
     }
@@ -1367,9 +1397,13 @@ struct APIv2Client: Sendable {
         return await tokenStore.captureOrdinaryRequestAuth()
     }
 
-    static func requestIdentity(_ auth: CapturedOrdinaryRequestAuth, profile: String) -> HTTPRequestIdentity {
+    /// The identity of a request under `auth`. `accountID` is the account a
+    /// caller queued the work for, if any; without one, the owner fence on
+    /// `auth`'s credential generation already pins the sign-in.
+    static func requestIdentity(_ auth: CapturedOrdinaryRequestAuth, profile: String,
+                                accountID: String? = nil) -> HTTPRequestIdentity {
         HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
-            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily, accountID: accountID)
     }
 
     /// A strong entity tag: quoted, non-empty, single line. Anything else is

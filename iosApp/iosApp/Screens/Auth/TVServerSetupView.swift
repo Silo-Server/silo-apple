@@ -20,6 +20,7 @@ struct TVServerSetupView: View {
     @State private var advertiser = TVPairingAdvertiser()
     @State private var coordinator = ReceiverPairingCoordinator()
     @State private var discovery = ServerDiscovery()
+    @State private var registry = ServerRegistry.shared
     @State private var isEnteringAddress = false
     @FocusState private var focusedField: Field?
     /// Where focus goes once the system keyboard closes after Done.
@@ -27,12 +28,25 @@ struct TVServerSetupView: View {
 
     private enum Field: Hashable {
         case enterAddress
+        case savedServers
         case host
         case advanced
         case scheme(ServerSetupScheme)
         case port
         case connect
         case back
+        case cancel
+    }
+
+    /// Server setup is the root of an Add User or Add Server sign-in (Change
+    /// server led here): Menu would leave Silo, so it offers Cancel, back to
+    /// where the sign-in started. Pushed, Back already does that.
+    private var cancelsSignIn: Bool {
+        route == .needsServerSetup && router.signInReturnPoint != nil
+    }
+
+    private func cancelSignIn() {
+        Task { await router.accounts.cancelSignIn(router: router) }
     }
 
     /// True once a phone is on the line; the screen hands over to the pairing screens.
@@ -50,8 +64,9 @@ struct TVServerSetupView: View {
         ZStack {
             if isPairing {
                 TVPairingReceiverView(coordinator: coordinator, advance: {
-                    router.skipsSingleProfilePicker = true
-                    router.showProfileSelection()
+                    var signedIn = 0
+                    if case .completed(let names) = coordinator.state { signedIn = names.count }
+                    router.accounts.finishPhoneSetup(signedInCount: signedIn, router: router)
                 })
                     .transition(.opacity)
             } else if isEnteringAddress {
@@ -67,6 +82,11 @@ struct TVServerSetupView: View {
         .onAppear {
             MarqueeScene.shared.showGeneric()
             discovery.start()
+            // Each sign-in a phone sends is saved as an account; the
+            // summary moves on once the phone is done (`finishPhoneSetup`).
+            coordinator.persist = { [router] pairing in
+                await router.accounts.completePairing(pairing, router: router)
+            }
         }
         .task { await advertise() }
         .onChange(of: coordinator.state) { _, state in
@@ -84,11 +104,21 @@ struct TVServerSetupView: View {
         .serverInsecurePromptAlert(viewModel, router: router)
     }
 
+    /// Add Account says so, as "Sign in to…" does; otherwise this TV's name.
+    @ViewBuilder
+    private var headerChip: some View {
+        if case .addAccount = router.signInContext {
+            MarqueeTVStatusChip(text: ChooseAccountViewModel.addAccountTitle, systemImage: "person.badge.plus")
+        } else {
+            MarqueeTVStatusChip(text: Self.tvName, systemImage: "appletv")
+        }
+    }
+
     // MARK: - Set up with a phone (default)
 
     private var phoneFirst: some View {
         MarqueeTVScreen {
-            MarqueeTVStatusChip(text: Self.tvName, systemImage: "appletv")
+            headerChip
         } copy: {
             MarqueeTVStatusChip(text: "Looking for a phone or tablet…", showsSpinner: true)
                 .padding(.bottom, 36)
@@ -118,7 +148,7 @@ struct TVServerSetupView: View {
                     .frame(width: 760, alignment: .leading)
                     .padding(.top, 16)
             }
-            HStack {
+            HStack(spacing: 22) {
                 Button {
                     // A found server may be connecting; leaving now would let
                     // its result land behind manual entry.
@@ -130,6 +160,26 @@ struct TVServerSetupView: View {
                 }
                 .buttonStyle(.marquee(.glass, fullWidth: false))
                 .focused($focusedField, equals: .enterAddress)
+
+                // Add Account starts here even with servers saved; "Sign in
+                // to…" lists them.
+                if !registry.sortedEntries.isEmpty {
+                    Button {
+                        guard !viewModel.isLoading else { return }
+                        router.navigate(to: .signInTarget(router.signInContext))
+                    } label: {
+                        Label("Saved servers", systemImage: "server.rack")
+                    }
+                    .buttonStyle(.marquee(.glass, fullWidth: false))
+                    .focused($focusedField, equals: .savedServers)
+                }
+
+                if cancelsSignIn {
+                    Button(ConfirmationCopy.cancelTitle, action: cancelSignIn)
+                        .buttonStyle(.marquee(.plain, fullWidth: false))
+                        .focused($focusedField, equals: .cancel)
+                        .disabled(viewModel.isLoading)
+                }
             }
             .padding(.top, 18)
         } card: {
@@ -137,6 +187,10 @@ struct TVServerSetupView: View {
         }
         .defaultFocus($focusedField, .enterAddress, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, .enterAddress)
+        .onExitCommand(perform: cancelsSignIn ? {
+            guard !viewModel.isLoading else { return }
+            cancelSignIn()
+        } : nil)
         .animation(.easeOut(duration: 0.32), value: discovery.servers)
         .animation(.easeInOut(duration: 0.2), value: viewModel.discoveryError)
     }
@@ -145,7 +199,7 @@ struct TVServerSetupView: View {
 
     private var manualEntry: some View {
         MarqueeTVScreen {
-            MarqueeTVStatusChip(text: Self.tvName, systemImage: "appletv")
+            headerChip
         } copy: {
             Text("Enter your\nserver address")
                 .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))

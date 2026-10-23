@@ -56,6 +56,13 @@ final class AppRouter {
         case needsProfile
         /// Fully authenticated with an active profile.
         case authenticated
+        /// Choose an Account as the root: at launch with two or more
+        /// accounts and none linked, when Ask For says so, or after a removal
+        /// (spec §6.2).
+        case needsAccount(focus: SiloAccountRef?)
+        /// "Sign in to…" as the root: no accounts yet, but servers are saved
+        /// (spec §5.4).
+        case needsSignInTarget(SignInContext)
 
         /// Stable diagnostics token. Spelled out rather than derived from
         /// `String(describing:)` so a future case rename can't silently break
@@ -70,14 +77,31 @@ final class AppRouter {
             case .serverRecovery(let reason): return "serverRecovery.\(reason.rawValue)"
             case .needsProfile: return "needsProfile"
             case .authenticated: return "authenticated"
+            case .needsAccount: return "needsAccount"
+            case .needsSignInTarget: return "needsSignInTarget"
             }
         }
 
         /// The first-run screens draw over the shared brand-light backdrop.
         var showsMarqueeBackdrop: Bool {
             switch self {
-            case .needsServerSetup, .needsLogin, .serverRecovery, .needsProfile: true
+            case .needsServerSetup, .needsLogin, .serverRecovery, .needsProfile,
+                 .needsAccount, .needsSignInTarget: true
             case .loading, .authenticated: false
+            }
+        }
+
+        /// Whether `ContentView` draws `other` with the same root screen as
+        /// `self`: the same case, whatever it carries (a focus, a reason).
+        func showsSameScreens(as other: AuthState) -> Bool {
+            switch (self, other) {
+            case (.loading, .loading), (.needsServerSetup, .needsServerSetup), (.needsLogin, .needsLogin),
+                 (.serverRecovery, .serverRecovery), (.needsProfile, .needsProfile),
+                 (.authenticated, .authenticated), (.needsAccount, .needsAccount),
+                 (.needsSignInTarget, .needsSignInTarget):
+                return true
+            default:
+                return false
             }
         }
     }
@@ -139,6 +163,20 @@ final class AppRouter {
 
     /// Navigation path for push/pop within the current flow.
     var path = NavigationPath()
+
+    /// `path` as the stack of the screens `state` shows sees it: empty, and
+    /// closed to writes, once another auth state shows. Every root's stack
+    /// binds to this one `path`, and the stack an auth-state change swaps
+    /// out can stay in the hierarchy for a moment (a removal transition)
+    /// and keep reading it. Cancel on a sign-in started in Settings › Server
+    /// restores Settings' routes, which the sign-in stack then tried to
+    /// push, with no destinations for them.
+    func path(for state: AuthState) -> Binding<NavigationPath> {
+        Binding(
+            get: { self.authState.showsSameScreens(as: state) ? self.path : NavigationPath() },
+            set: { if self.authState.showsSameScreens(as: state) { self.path = $0 } }
+        )
+    }
 
     #if os(macOS)
     /// Routes pushed through the router, mirrored because `NavigationPath` is
@@ -748,6 +786,61 @@ final class AppRouter {
 
     private(set) var loginNotice: LoginNotice?
 
+    // MARK: - Silo accounts (spec §5, plan §2.10)
+
+    /// Why the sign-in screens are running: the server step and the
+    /// sign-in screen's buttons follow it.
+    var signInContext: SignInContext = .firstRun
+    /// Where Cancel on a sign-in returns: the account and screens showing
+    /// when the sign-in started. Nil for a first sign-in.
+    var signInReturnPoint: SignInReturnPoint?
+    /// A sign-out or removal waiting for its confirmation (spec §5.6).
+    var removalRequest: RemovalRequest?
+    /// How deep the Choose an Account that Settings › Paired Silo Profile
+    /// pushed on Who's Watching sits on the stack. While it shows, the
+    /// account opened ends on its Who's Watching, even under Automatic, so
+    /// the person picks the profile to pair (spec §5.7). Nil otherwise.
+    @ObservationIgnored var pairedProfileChooserDepth: Int?
+    /// Bumped each time an account is opened, even when the auth state stays
+    /// the same (Automatic reopening a profile under another account), so
+    /// session-scoped stores re-scope. The coordinator keeps it, so every
+    /// window follows: on macOS, an account opened in one window re-scopes
+    /// the others too, as a server switch always has.
+    var signInRevision: Int { accounts.signInRevision }
+    /// The coordinator this router's flows run through. Tests replace it.
+    @ObservationIgnored var accountsOverride: SiloAccountCoordinator?
+    var accounts: SiloAccountCoordinator { accountsOverride ?? .shared }
+
+    func noteSignInChanged() {
+        accounts.noteSignInChanged()
+    }
+
+    /// Choose an Account as the root.
+    func showAccountChooser(focus account: SiloAccountRef?) {
+        loginNotice = nil
+        recordScreenBreadcrumb(target: "chooseAccount", action: "reset")
+        path = NavigationPath()
+        setAuthState(.needsAccount(focus: account), reason: "showAccountChooser")
+    }
+
+    /// "Sign in to…" as the root.
+    func showSignInTarget(_ context: SignInContext) {
+        loginNotice = nil
+        signInContext = context
+        recordScreenBreadcrumb(target: "signInTarget", action: "reset")
+        path = NavigationPath()
+        setAuthState(.needsSignInTarget(context), reason: "showSignInTarget")
+    }
+
+    /// The sign-in screen for the active server, for `context`.
+    func showSignIn(context: SignInContext, notice: LoginNotice? = nil) {
+        signInContext = context
+        loginNotice = notice
+        recordScreenBreadcrumb(target: "login", action: "reset")
+        path = NavigationPath()
+        setAuthState(.needsLogin, reason: "showSignIn")
+    }
+
     /// An address to fill in on the next server-setup screen (adding the
     /// server a TV sign-in link names). Read once.
     private var serverSetupPrefill: String?
@@ -771,6 +864,7 @@ final class AppRouter {
     /// Transition to profile selection after successful login.
     func showProfileSelection() {
         loginNotice = nil
+        signInReturnPoint = nil
         recordScreenBreadcrumb(target: "profileSelection", action: "reset")
         path = NavigationPath()
         setAuthState(.needsProfile, reason: "showProfileSelection")
@@ -793,6 +887,7 @@ final class AppRouter {
     /// Transition to the authenticated home screen. After a session expiry,
     /// the same profile of the same account returns to the screens it was on.
     func resetToHome() {
+        signInReturnPoint = nil
         recordScreenBreadcrumb(target: "home", action: "reset")
         let returnPoint = sessionReturnPoint
         sessionReturnPoint = nil
@@ -807,8 +902,10 @@ final class AppRouter {
         #endif
     }
 
-    /// Return to server setup (e.g., to change servers).
-    func resetToServerSetup() {
+    /// Return to server setup (e.g., to change servers). `context` replaces
+    /// the running sign-in's context when given.
+    func resetToServerSetup(context: SignInContext? = nil) {
+        if let context { signInContext = context }
         loginNotice = nil
         sessionReturnPoint = nil
         recordScreenBreadcrumb(target: "serverSetup", action: "reset")
@@ -822,6 +919,7 @@ final class AppRouter {
     func resetAfterServerResolution(to state: AuthState) {
         loginNotice = nil
         sessionReturnPoint = nil
+        signInReturnPoint = nil
         recordScreenBreadcrumb(target: state.diagnosticsState, action: "reset")
         PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
         presentedPlayer = nil
@@ -830,137 +928,143 @@ final class AppRouter {
         setAuthState(state, reason: "serverResolution")
     }
 
+    /// Commits the route the launch resolved under the splash, with the
+    /// sign-in it runs.
+    func commitLaunch(_ resolution: RestoredSessionAuthResolver.LocalResolution) {
+        if let context = resolution.signInContext { signInContext = context }
+        loginNotice = resolution.loginNotice
+        authState = resolution.state
+    }
+
+    /// Commits a resolved launch route, with the sign-in it runs.
+    func resetAfterServerResolution(to resolution: RestoredSessionAuthResolver.LocalResolution) {
+        if let context = resolution.signInContext { signInContext = context }
+        resetAfterServerResolution(to: resolution.state)
+        loginNotice = resolution.loginNotice
+    }
+
     func signOutAndReset() {
-        requestSignOut(removingServer: false)
+        requestSignOut(removingAccount: false)
     }
 
-    /// "Sign In Again" after the session expired. Not an explicit sign-out:
-    /// the next browser sign-in does not ask the provider for an account
-    /// choice, so the same person is signed straight back in.
+    /// "Sign In Again" after the session expired. Not a sign-out: the saved
+    /// sign-in stays (other accounts on the device are untouched) and its
+    /// sign-in screen opens, so the same person signs straight back in.
+    /// Before sign-in migration, the server's own session is signed out as
+    /// it always was.
     func signOutAfterSessionExpired() {
-        requestSignOut(removingServer: false, asksForAccountChoice: false)
-    }
-
-    func signOutRemoveServerAndReset() {
-        requestSignOut(removingServer: true)
-    }
-
-    #if os(iOS)
-    /// A TV approval to show again once the person has signed back in after
-    /// "Not you? Switch account". ContentView takes it (`takePendingDeviceApproval`).
-    private(set) var pendingDeviceApproval: DeviceApprovalLink?
-
-    func takePendingDeviceApproval() -> DeviceApprovalLink? {
-        defer { pendingDeviceApproval = nil }
-        return pendingDeviceApproval
-    }
-
-    /// A TV approval link named a saved server this device is signed out
-    /// of: make it the active server and show its login screen. The TV's code
-    /// returns to the approval card after that sign-in.
-    func signIn(forTVApproval link: DeviceApprovalLink, on server: ServerEntry) {
-        guard !isSigningOut else { return }
-        pendingDeviceApproval = link
-        Task { @MainActor in
-            if ServerRegistry.shared.activeServerId != server.id {
-                guard await ServerRegistry.shared.switchTo(serverId: server.id, resolveDestinationProfile: true) else {
-                    pendingDeviceApproval = nil
-                    accountActionError = "Couldn't switch to that server. Try again."
-                    return
-                }
-            }
-            resetAfterServerResolution(to: await RestoredSessionAuthResolver.resolveValidated())
-        }
-    }
-
-    /// "Not you?" on a TV approval for `server`: make it the active server
-    /// and sign out of it in Silo only (the provider's own session is left
-    /// alone). When the server advertises `select_account`
-    /// (`choosingAccount`), the provider sign-in that follows starts by
-    /// itself with `prompt=select_account`, so the provider lets the person
-    /// pick another account; otherwise the login screen waits. The TV's code
-    /// returns to the approval card after that sign-in.
-    func switchAccount(forTVApproval link: DeviceApprovalLink, on server: ServerEntry, choosingAccount: Bool) {
-        guard !isSigningOut else { return }
-        pendingDeviceApproval = link
-        requestSignOut(removingServer: false, switchingTo: server.id, startsSignIn: choosingAccount)
-    }
-    #endif
-
-    /// One operation owns the button action through cleanup and navigation.
-    /// Repeated taps cannot queue another logout behind a subsequent login.
-    /// `switchingTo` makes that saved server active first; `startsSignIn`
-    /// asks its login screen to open the provider sign-in by itself.
-    /// `asksForAccountChoice` is false only when the session ended rather
-    /// than the person signing out.
-    private func requestSignOut(removingServer: Bool, switchingTo targetServerID: String? = nil,
-                                startsSignIn: Bool = false, asksForAccountChoice: Bool = true) {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
         Task {
             defer { isSigningOut = false }
-            #if os(tvOS)
-            if await TokenStore.shared.hasTemporaryScope() {
-                guard await RemotePlaybackIdentityManager.shared.end() else {
-                    accountActionError = "Couldn't end remote playback. Try signing out again."
-                    return
-                }
-            }
-            #endif
-            if let targetServerID, ServerRegistry.shared.activeServerId != targetServerID {
-                guard await ServerRegistry.shared.switchTo(serverId: targetServerID) else {
-                    accountActionError = "Couldn't switch to that server. Try again."
-                    #if os(iOS)
-                    pendingDeviceApproval = nil
-                    #endif
-                    return
-                }
-            }
-            let serverID = ServerRegistry.shared.activeServerId
-            let outcome = await AuthService.shared.signOutWithOutcome()
-            guard outcome != .refused else {
-                accountActionError = "The active session changed. Try signing out again."
-                if targetServerID != nil {
-                    #if os(iOS)
-                    pendingDeviceApproval = nil
-                    #endif
-                    // The switch above may have changed the active server.
-                    resetAfterServerResolution(to: await RestoredSessionAuthResolver.resolveValidated())
-                }
+            guard await accounts.signInAgainForCurrentSession(router: self) else {
+                await accounts.signOutCurrent(alsoRemoveAccount: false, asksForAccountChoice: false, router: self)
                 return
             }
-            #if !os(tvOS)
-            // The provider still has the person signed in in the system
-            // browser; the next browser sign-in asks it for an account choice.
-            if !removingServer, asksForAccountChoice, let serverID {
-                SelectAccountPrompt.shared.request(serverId: serverID, autoStart: startsSignIn)
+        }
+    }
+
+    func signOutRemoveAccountAndReset() {
+        requestSignOut(removingAccount: true)
+    }
+
+    #if os(iOS)
+    /// A TV approval to show again once an account is chosen, added, or
+    /// signed back in. ContentView takes it when it is due (`takeDueDeviceApproval`).
+    private(set) var pendingDeviceApproval: DeviceApprovalLink?
+    /// How deep the Choose an Account that "Not you? Switch Account" pushed
+    /// sits on the stack. The approval waits while it shows, an Add Account
+    /// cancelled back to it included, and is due once the person leaves it.
+    @ObservationIgnored private var deviceApprovalChooserDepth: Int?
+
+    func takePendingDeviceApproval() -> DeviceApprovalLink? {
+        defer {
+            pendingDeviceApproval = nil
+            deviceApprovalChooserDepth = nil
+        }
+        return pendingDeviceApproval
+    }
+
+    /// The waiting TV approval, once its card can show again: a signed-in
+    /// screen shows (approval is account-level, so Who's Watching counts)
+    /// and the Switch Account chooser it waited on is gone, whether an
+    /// account was picked (the current one too) or the person went back.
+    /// Going back works like Cancel on the old sign-out confirmation: the
+    /// card returns for the account still signed in, and nothing is left to
+    /// show later.
+    func takeDueDeviceApproval() -> DeviceApprovalLink? {
+        guard pendingDeviceApproval != nil, authState == .authenticated || authState == .needsProfile else {
+            return nil
+        }
+        if let depth = deviceApprovalChooserDepth, path.count >= depth { return nil }
+        return takePendingDeviceApproval()
+    }
+
+    /// A TV approval link named a saved server the current account isn't
+    /// on: open that server's account, or its sign-in screen. The TV's code returns to the
+    /// approval card after that sign-in.
+    func signIn(forTVApproval link: DeviceApprovalLink, on server: ServerEntry) {
+        guard !isSigningOut else { return }
+        pendingDeviceApproval = link
+        deviceApprovalChooserDepth = nil
+        Task { @MainActor in
+            guard await accounts.beginSignIn(forServer: server.id, router: self) else {
+                pendingDeviceApproval = nil
+                accountActionError = "Couldn't switch to that server. Try again."
+                return
             }
-            #endif
-            var durable = outcome != .localOnly
-            if outcome == .diagnosticsCleanupFailed {
-                accountActionError = "You're signed out, but Silo couldn't erase local diagnostics. Remove this server from the server list to retry cleanup."
-            }
-            if removingServer, let serverID {
-                let removed = await ServerRegistry.shared.remove(serverId: serverID, resolveFallbackProfile: true)
-                durable = durable || removed
-                if removed { accountActionError = nil }
-                if !removed {
-                    accountActionError = "Silo couldn't remove the saved server. Please try again."
-                }
-            }
-            if !durable, accountActionError == nil {
-                accountActionError = "Silo couldn't clear the saved sign-in on this device. Please try signing out again."
-            }
-            let state: AuthState
-            if !ServerRegistry.shared.hasActiveServer {
-                state = .needsServerSetup
-            } else if removingServer, ServerRegistry.shared.activeServerId != serverID {
-                state = await RestoredSessionAuthResolver.resolveValidated()
-            } else {
-                state = .needsLogin
-            }
-            resetAfterServerResolution(to: state)
+        }
+    }
+
+    /// "Not you?" on a TV approval: Switch Account, without signing anyone
+    /// out (coordinator decision 2). The chooser offers Add Account too; the
+    /// TV's code returns to the approval card once an account is chosen or
+    /// added, or the person goes back (`takeDueDeviceApproval`).
+    func switchAccount(forTVApproval link: DeviceApprovalLink) {
+        guard !isSigningOut else { return }
+        Task { @MainActor in
+            await beginSwitchAccount(forTVApproval: link)
+        }
+    }
+
+    /// `switchAccount(forTVApproval:)`'s work, to the chooser showing.
+    func beginSwitchAccount(forTVApproval link: DeviceApprovalLink) async {
+        pendingDeviceApproval = link
+        // Not due while the chooser opens.
+        deviceApprovalChooserDepth = 0
+        let depth = path.count
+        await accounts.beginSwitchAccount(router: self)
+        // A newer link replaced or dropped this approval while the chooser
+        // opened; the gate is that link's now.
+        guard pendingDeviceApproval == link else { return }
+        // Pushed on top of the screens: due once the person leaves it. A
+        // chooser shown as the root waits for a signed-in screen instead.
+        deviceApprovalChooserDepth = path.count > depth ? path.count : nil
+    }
+    #endif
+
+    /// One operation owns the button action through cleanup and navigation.
+    /// Repeated taps cannot queue another logout behind a subsequent login.
+    private func requestSignOut(removingAccount: Bool) {
+        guard !isSigningOut else { return }
+        isSigningOut = true
+        accountActionError = nil
+        Task {
+            defer { isSigningOut = false }
+            await accounts.signOutCurrent(alsoRemoveAccount: removingAccount, asksForAccountChoice: true, router: self)
+        }
+    }
+
+    /// Runs a confirmed sign-out or removal through the same single flight
+    /// as Sign out.
+    func performRemoval(_ request: RemovalRequest, removingAccount: Bool = false) {
+        guard !isSigningOut else { return }
+        isSigningOut = true
+        accountActionError = nil
+        Task {
+            defer { isSigningOut = false }
+            await accounts.perform(request, removingAccount: removingAccount, router: self)
         }
     }
 
@@ -982,10 +1086,14 @@ final class AppRouter {
     /// drop tokens (already done by the refresh path), and route to the
     /// login screen so the user can re-enter credentials. If no server
     /// is active at all (e.g. all removed), fall back to server setup.
-    func expiredSession() {
+    /// `context` is the sign-in that follows: Sign in again for a saved
+    /// sign-in (spec §6.2.3).
+    func expiredSession(context: SignInContext? = nil, hasActiveServer: Bool? = nil) {
         sessionReturnPoint = currentReturnPoint()
+        signInReturnPoint = nil
         path = NavigationPath()
-        if ServerRegistry.shared.hasActiveServer {
+        if let context { signInContext = context }
+        if hasActiveServer ?? ServerRegistry.shared.hasActiveServer {
             recordScreenBreadcrumb(target: "login", action: "sessionExpired")
             loginNotice = .sessionExpired
             setAuthState(.needsLogin, reason: "sessionExpired")
@@ -1133,8 +1241,6 @@ private extension Route {
             return "collectionDetail"
         case .settings:
             return "settings"
-        case .serverList:
-            return "serverList"
         case .watchParty:
             return "watchParty"
         case .requestsHub:
@@ -1151,6 +1257,12 @@ private extension Route {
             return "offlineDownloadDetail"
         case .autoDownloads:
             return "autoDownloads"
+        case .chooseAccount:
+            return "chooseAccount"
+        case .signInTarget:
+            return "signInTarget"
+        case .manageAccounts:
+            return "manageAccounts"
         }
     }
 }

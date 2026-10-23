@@ -492,7 +492,7 @@ final class ApplePushRegistrationTests: XCTestCase {
         }
         func opens(_ url: URL, _ server: ServerEntry?, _ profileID: String?) -> Bool {
             ApplePushDeepLinkCoordinator.opensUnderActiveIdentity(url, activeServer: server,
-                activeProfileID: profileID, targets: noTargets)
+                activeProfileID: profileID, activeAccountID: nil, targets: noTargets)
         }
 
         let disguised = try XCTUnwrap(ApplePushDeepLinkCoordinator.deepLinkURL(from: [
@@ -522,7 +522,8 @@ final class ApplePushRegistrationTests: XCTestCase {
         XCTAssertTrue(heldElsewhere.save(ApplePushDisplayTarget(serverID: "deployment-a", profileID: "profile-a",
             registryServerID: "registry-b", serverURL: "https://b.example", displayToken: "display-b", expiresAt: nil)))
         XCTAssertFalse(ApplePushDeepLinkCoordinator.opensUnderActiveIdentity(link,
-            activeServer: server("deployment-a"), activeProfileID: "profile-a", targets: heldElsewhere))
+            activeServer: server("deployment-a"), activeProfileID: "profile-a", activeAccountID: nil,
+            targets: heldElsewhere))
     }
 
     /// The dispatcher asks before any of its own branches, whatever kind of
@@ -542,7 +543,7 @@ final class ApplePushRegistrationTests: XCTestCase {
         func admission(_ url: URL, profileInUse: Bool, profileID: String = "profile-a")
             -> ApplePushDeepLinkCoordinator.Admission {
             ApplePushDeepLinkCoordinator.admission(for: url, profileInUse: profileInUse, activeServer: server,
-                activeProfileID: profileID, targets: targets)
+                activeProfileID: profileID, activeAccountID: nil, targets: targets)
         }
         let approval = try pushLink("silo://device?server=deployment-z&code=ABCD2345")
         let party = try pushLink("silo://watch-party?server=https%3A%2F%2Fz.example&token=join-1")

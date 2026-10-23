@@ -59,22 +59,33 @@ struct ProfileTile: View {
     /// Reports touch-down and release so the picker can tint the backdrop
     /// while a finger rests on a profile.
     var onPressChange: (Bool) -> Void = { _ in }
+    /// The picker's focus, keyed by profile ID, when it moves focus itself.
+    /// The tile then draws its focus from it rather than its own.
+    var focus: FocusState<String?>.Binding? = nil
     let action: () -> Void
 
-    @FocusState private var isFocused: Bool
+    @FocusState private var hasFocus: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var tint: Color {
-        ProfileTilePalette.tint(for: profile.id)
-    }
 
     private var scale: CGFloat { size / tileSize }
 
+    /// One `focused` binding per tile: a second one on the same button
+    /// leaves the drawn focus out of step with the engine's.
+    @ViewBuilder
     var body: some View {
+        if let focus {
+            tile(isFocused: focus.wrappedValue == profile.id)
+                .focused(focus, equals: profile.id)
+        } else {
+            tile(isFocused: hasFocus)
+                .focused($hasFocus)
+        }
+    }
+
+    private func tile(isFocused: Bool) -> some View {
         Button(action: action) {
             VStack(spacing: 0) {
-                avatar
-                    .frame(width: size, height: size)
+                ProfileAvatar(profile: profile, serverURL: ServerRegistry.shared.activeServerUrl, size: size)
                     .overlay(alignment: .bottomTrailing) {
                         if profile.hasPin { lockBadge }
                     }
@@ -109,7 +120,6 @@ struct ProfileTile: View {
         }
         .buttonStyle(ProfileTileButtonStyle(onPressChange: onPressChange))
         .animation(.spring(response: 0.32, dampingFraction: 0.72), value: isFocused)
-        .focused($isFocused)
         #if os(tvOS)
         .focusEffectDisabled()
         #endif
@@ -123,56 +133,6 @@ struct ProfileTile: View {
         #else
         1.0
         #endif
-    }
-
-    private var avatar: some View {
-        ZStack {
-            Circle().fill(
-                RadialGradient(
-                    colors: [tint.mix(with: .white, by: 0.35), tint, tint.mix(with: .black, by: 0.45)],
-                    center: UnitPoint(x: 0.3, y: 0.25),
-                    startRadius: 0,
-                    endRadius: size * 0.8
-                )
-            )
-            avatarContent
-        }
-        .clipShape(Circle())
-        .overlay(Circle().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-    }
-
-    @ViewBuilder
-    private var avatarContent: some View {
-        let avatar = profile.avatarEmoji?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if let serverURL = ProfileAvatarResolver.serverResolvedImageURL(profile.avatarImageUrl) {
-            AsyncImageView(url: serverURL, contentMode: .fill)
-                .frame(width: size, height: size)
-        } else if ProfileAvatarResolver.isImage(avatar) {
-            if let url = ProfileAvatarResolver.imageURL(for: avatar) {
-                AsyncImageView(url: url, contentMode: .fill)
-                    .frame(width: size, height: size)
-            } else {
-                initialFallback
-            }
-        } else if !avatar.isEmpty, !avatar.lowercased().hasPrefix("upload:") {
-            // An `upload:` ref is only loadable through `avatar_url`.
-            Text(avatar)
-                .font(.system(size: emojiSize * scale))
-        } else {
-            initialFallback
-        }
-    }
-
-    private var initialFallback: some View {
-        Text(initial)
-            .font(.system(size: initialSize * scale, weight: .bold, design: .rounded))
-            .foregroundStyle(.white.opacity(0.95))
-    }
-
-    private var initial: String {
-        let trimmed = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "?" }
-        return String(trimmed.prefix(1)).uppercased()
     }
 
     private var lockBadge: some View {
@@ -292,13 +252,130 @@ struct AddProfileTile: View {
     }
 }
 
+/// One profile's round avatar as Who's Watching draws it: the profile's tint
+/// as a lit sphere, with its picture, emoji, or initial. The user cards draw
+/// it too, for profiles of a server that need not be the active one, so a
+/// server-relative picture loads from `serverURL`.
+struct ProfileAvatar: View {
+    /// The profile's ID, which picks its tint.
+    let id: String
+    let name: String
+    let avatarEmoji: String?
+    let avatarImageUrl: String?
+    /// The address of the server the profile belongs to.
+    let serverURL: String?
+    let size: CGFloat
+    /// The initial's size as a share of the diameter; nil draws it as Who's
+    /// Watching does. The user cards keep their slightly larger initial.
+    var initialScale: CGFloat? = nil
+    /// The emoji or initial shows until the picture has loaded, and stays
+    /// when it can't load (the user cards on iPhone, iPad and Mac).
+    /// Otherwise the picture's own placeholder shows meanwhile.
+    var showsFallbackUntilLoaded = false
+
+    @State private var loadedURL: String?
+
+    var body: some View {
+        let tint = ProfileTilePalette.tint(for: id)
+        let imageURL = ProfileAvatarResolver.imageURL(avatarImageUrl: avatarImageUrl, avatarEmoji: avatarEmoji,
+                                                      serverURL: serverURL)
+        ZStack {
+            Circle().fill(
+                RadialGradient(
+                    colors: [tint.mix(with: .white, by: 0.35), tint, tint.mix(with: .black, by: 0.45)],
+                    center: UnitPoint(x: 0.3, y: 0.25),
+                    startRadius: 0,
+                    endRadius: size * 0.8
+                )
+            )
+            if let imageURL {
+                if showsFallbackUntilLoaded {
+                    if loadedURL != imageURL { fallback }
+                    AsyncImageView(
+                        url: imageURL,
+                        contentMode: .fill,
+                        placeholderStyle: .clear,
+                        onImageLoaded: { loadedURL = imageURL }
+                    )
+                    .frame(width: size, height: size)
+                    .id(imageURL)
+                } else {
+                    AsyncImageView(url: imageURL, contentMode: .fill)
+                        .frame(width: size, height: size)
+                }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+    }
+
+    @ViewBuilder
+    private var fallback: some View {
+        if let emoji = ProfileAvatarResolver.emoji(avatarEmoji) {
+            Text(emoji)
+                .font(.system(size: size * (emojiSize / tileSize)))
+        } else {
+            Text(ProfileAvatarResolver.initial(of: name))
+                .font(.system(size: size * (initialScale ?? initialSize / tileSize), weight: .bold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.95))
+        }
+    }
+}
+
+extension ProfileAvatar {
+    init(profile: UserProfile, serverURL: String?, size: CGFloat) {
+        self.init(id: profile.id, name: profile.name, avatarEmoji: profile.avatarEmoji,
+                  avatarImageUrl: profile.avatarImageUrl, serverURL: serverURL, size: size)
+    }
+
+    init(profile: SavedSignInProfile, serverURL: String?, size: CGFloat, initialScale: CGFloat? = nil,
+         showsFallbackUntilLoaded: Bool = false) {
+        self.init(id: profile.id, name: profile.name, avatarEmoji: profile.avatarEmoji,
+                  avatarImageUrl: profile.avatarImageUrl, serverURL: serverURL, size: size,
+                  initialScale: initialScale, showsFallbackUntilLoaded: showsFallbackUntilLoaded)
+    }
+}
+
 /// Turns a profile's avatar ref or `avatar_url` into a loadable image URL.
 enum ProfileAvatarResolver {
+    /// The picture an avatar loads: the server's `avatar_url`, else an image
+    /// reference in `avatarEmoji`, with server-relative paths read on
+    /// `serverURL`. Nil draws the emoji or initial.
+    static func imageURL(avatarImageUrl: String?, avatarEmoji: String?, serverURL: String?) -> String? {
+        if let url = serverResolvedImageURL(avatarImageUrl, serverURL: serverURL) { return url }
+        guard let avatar = avatarEmoji?.trimmingCharacters(in: .whitespacesAndNewlines), isImage(avatar) else {
+            return nil
+        }
+        return imageURL(for: avatar, serverURL: serverURL)
+    }
+
+    /// An emoji avatar, as opposed to an image reference. An `upload:` ref
+    /// is only loadable through `avatar_url`.
+    static func emoji(_ value: String?) -> String? {
+        guard let avatar = value?.trimmingCharacters(in: .whitespacesAndNewlines), !avatar.isEmpty,
+              !isImage(avatar), !avatar.lowercased().hasPrefix("upload:") else { return nil }
+        return avatar
+    }
+
+    static func initial(of name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "?" }
+        return String(trimmed.prefix(1)).uppercased()
+    }
+
+    /// Resolve the server-supplied `avatar_url` against the active server.
+    static func serverResolvedImageURL(_ value: String?) -> String? {
+        serverResolvedImageURL(value, serverURL: ServerRegistry.shared.activeServerUrl)
+    }
+
     /// Resolve the server-supplied `avatar_url`. Absolute URLs (presigned
     /// upload URLs, DiceBear) are used verbatim; a server-relative path is
-    /// prefixed with the active server URL. Returns nil when absent or when
-    /// no active server is known for a relative path.
-    static func serverResolvedImageURL(_ value: String?) -> String? {
+    /// prefixed with `serverURL`. Returns nil when absent or when no server
+    /// is known for a relative path.
+    static func serverResolvedImageURL(_ value: String?, serverURL: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty else {
             return nil
@@ -320,12 +397,8 @@ enum ProfileAvatarResolver {
             return trimmed
         }
 
-        guard trimmed.hasPrefix("/") else { return nil }
-        let serverURL = ServerRegistry.shared.activeServerUrl
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard !serverURL.isEmpty else { return nil }
-        return serverURL + trimmed
+        guard trimmed.hasPrefix("/"), let base = baseURL(serverURL) else { return nil }
+        return base + trimmed
     }
 
     static func isImage(_ value: String) -> Bool {
@@ -341,7 +414,12 @@ enum ProfileAvatarResolver {
             || lowercased.contains(".avif")
     }
 
+    /// An avatar ref's image URL, with paths read on the active server.
     static func imageURL(for value: String) -> String? {
+        imageURL(for: value, serverURL: ServerRegistry.shared.activeServerUrl)
+    }
+
+    static func imageURL(for value: String, serverURL: String?) -> String? {
         if let diceBear = diceBearURL(for: value) { return diceBear }
 
         let lowercased = value.lowercased()
@@ -354,14 +432,19 @@ enum ProfileAvatarResolver {
         }
 
         if value.hasPrefix("/") || value.contains("/") {
-            let serverURL = ServerRegistry.shared.activeServerUrl
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            guard !serverURL.isEmpty else { return nil }
-            if value.hasPrefix("/") { return serverURL + value }
-            return serverURL + "/" + value.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard let base = baseURL(serverURL) else { return nil }
+            if value.hasPrefix("/") { return base + value }
+            return base + "/" + value.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         }
         return value
+    }
+
+    /// `serverURL` without surrounding whitespace or slashes; nil when empty.
+    private static func baseURL(_ serverURL: String?) -> String? {
+        let base = (serverURL ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return base.isEmpty ? nil : base
     }
 
     private static func diceBearURL(for value: String) -> String? {

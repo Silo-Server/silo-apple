@@ -39,10 +39,16 @@ final class ContentProvider: TVTopShelfContentProvider {
             return nil
         }
         // The profile's last confirmed spoiler answer, cached by the app. Read
-        // with the credentials, before any request suspends.
+        // with the credentials, before any request suspends. Top Shelf keeps
+        // no copy of the legacy data owners, so it reads them from the user
+        // index, and only when an answer saved before accounts could apply.
         let hidesEpisodeStills = EpisodeSpoilerCache.hidesImages(
             serverId: defaults.string(forKey: SharedStorage.activeServerIdKey),
+            accountId: AccountScopeReader.currentAccountID(),
             profileId: defaults.string(forKey: SharedStorage.profileIdKey),
+            legacyOwner: { serverID in
+                (try? SavedSignInStore(keychain: SharedKeychain()).loadIndex())?.legacyDataOwnerByServerID?[serverID]
+            },
             in: defaults
         )
         let response: TopShelfSectionsResponse

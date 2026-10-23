@@ -12,6 +12,9 @@ struct ContentView: View {
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var deepLinkCoordinator = SiloDeepLinkCoordinator.shared
     @State private var isApplyingProfileReturnPolicy = false
+    /// The sign-in revision whose session stores were last refreshed, so an
+    /// auth-state change and a sign-in change in one step refresh once.
+    @State private var sessionStoresRevision = -1
     #if os(iOS)
     @State private var siloControl = SiloControlClient()
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
@@ -70,8 +73,24 @@ struct ContentView: View {
     /// data, and connecting makes the new server active before the app moves
     /// to sign-in; re-keying there would flash a fresh, empty setup screen
     /// between the two.
+    ///
+    /// The choosers and the server step hold no server data either, and a
+    /// sign-in started from them makes its server active before moving on.
+    ///
+    /// Opening another account is the same boundary even on the same
+    /// server (`AppRouter.signInRevision`): profile IDs repeat across
+    /// accounts, so nothing keyed by server and profile may survive it.
     private var authContentIdentity: String? {
-        router.authState == .needsServerSetup ? "serverSetup" : serverRegistry.activeServerId
+        switch router.authState {
+        case .needsServerSetup: return "serverSetup"
+        case .needsAccount: return "chooseAccount"
+        case .needsSignInTarget: return "signInTarget"
+        case .needsProfile, .authenticated:
+            return serverRegistry.activeServerId.map { "\($0)#\(router.signInRevision)" }
+        default:
+            // The sign-in screen stays put while the sign-in it finished opens.
+            return serverRegistry.activeServerId
+        }
     }
 
     private var presentedContent: some View {
@@ -83,7 +102,15 @@ struct ContentView: View {
         // Moving between first-run screens (setup, sign-in, profiles)
         // crossfades instead of cutting, while the brand light stays put
         // behind them. Entering the app itself is not animated here.
+        #if os(tvOS)
+        // On Apple TV the new screen fades in by opacity, not a transition:
+        // a screen in a transition can't take focus, and focus lost meanwhile
+        // (the old screen held it) stays lost, so the new screen would show
+        // nothing focused until a swipe.
+        .modifier(MarqueeTVFadeIn(isEnabled: router.authState.showsMarqueeBackdrop))
+        #else
         .animation(router.authState.showsMarqueeBackdrop ? .easeInOut(duration: 0.4) : nil, value: router.authState)
+        #endif
         // The first-run backdrop lives outside the re-keyed subtree so it
         // keeps drifting while screens and servers change in front of it.
         .background {
@@ -152,17 +179,18 @@ struct ContentView: View {
                 deviceApprovalLink = nil
                 pendingDeepLink = link.url
                 router.prefillServerSetup(with: url)
-                router.resetToServerSetup()
+                Task { await router.accounts.startAddAccountOnNewServer(router: router) }
             }, onSignIn: { server, pending in
                 // Sign in to that saved server again, then come back here.
                 deviceApprovalLink = nil
                 router.signIn(forTVApproval: pending, on: server)
-            }, onSwitchAccount: { server, pending, choosingAccount in
+            }, onSwitchAccount: { pending in
                 deviceApprovalLink = nil
-                router.switchAccount(forTVApproval: pending, on: server, choosingAccount: choosingAccount)
+                router.switchAccount(forTVApproval: pending)
             }, onClose: { deviceApprovalLink = nil })
         }
         #endif
+        .modifier(RemovalRequestPresenter(router: router))
         #if DEBUG
         .modifier(DebugPlayerPresentationModifier(
             contentId: debugPlayContentId,
@@ -223,9 +251,28 @@ struct ContentView: View {
                 #if !os(tvOS)
                 DownloadManager.shared.clearForSignOut()
                 #endif
-                router.expiredSession()
+                await router.accounts.handleSessionExpired(router: router)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .siloSignInMigrated)) { notification in
+            guard let outcome = notification.object as? BindOutcome else { return }
+            Task { @MainActor in
+                // At launch the validation that read the account re-resolves
+                // the route itself.
+                await router.accounts.handleSignInMigrated(outcome, router: router,
+                                                        routes: router.authState != .loading)
+            }
+        }
+        .onChange(of: router.signInRevision) { _, _ in
+            handleSignInChanged()
+        }
+        #if os(iOS)
+        // Leaving the chooser "Not you? Switch User" pushed, by Back or a
+        // pick, brings a waiting TV approval back.
+        .onChange(of: router.path.count) { _, _ in
+            presentDueDeviceApproval()
+        }
+        #endif
         .onReceive(NotificationCenter.default.publisher(for: .siloProfileVerificationRequired)) { notification in
             guard let event = notification.object as? ProfileVerificationRequiredEvent else { return }
             Task { await AuthService.shared.recoverFromProfileVerificationRequired(event) }
@@ -244,20 +291,11 @@ struct ContentView: View {
             Task { await audioStore.player.close() }
             router.showProfileSelection()
         }
-        .onChange(of: serverRegistry.activeServerId) { previousServerID, activeServerID in
-            guard previousServerID != activeServerID,
-                  router.authState == .needsServerSetup,
-                  shouldPresentProfileSelectionAfterRecovery(
-                      isLoggedIn: AuthService.shared.isLoggedIn,
-                      activeProfileID: AuthService.shared.profileId
-                  ) else { return }
-            // Companion setup adds the server and account atomically. The
-            // active-server change intentionally re-keys `authContent`, which
-            // otherwise replaces the receiver's success screen with a fresh
-            // setup view before its delayed navigation can run.
-            router.skipsSingleProfilePicker = true
-            router.showProfileSelection()
-        }
+        // Phone setup's first sign-in makes its server active while the
+        // phone may still send more accounts. The setup screen stays (its
+        // identity doesn't follow the server) and moves on itself once the
+        // phone is done (`SiloAccountCoordinator.finishPhoneSetup`): leaving
+        // earlier would end the phone's session after one account.
         #if os(iOS) || os(tvOS)
         .onReceive(NotificationCenter.default.publisher(for: .diagnosticsPendingReportCreated)) { _ in
             guard router.authState == .authenticated else { return }
@@ -327,6 +365,11 @@ struct ContentView: View {
             await maybeDebugAutoLogin()
         }
         #endif
+        .task {
+            // At launch: sessions removed in an earlier run whose logout never
+            // got through (a scene already active at launch reports no change).
+            await HTTPClient.shared.retryPendingRevocations()
+        }
         .task(id: router.authState) {
             if router.authState != .authenticated {
                 WatchPartySession.shared.leave(forgetRecent: router.authState != .loading && router.authState != .needsProfile)
@@ -352,10 +395,10 @@ struct ContentView: View {
             #if os(iOS)
             if router.authState == .authenticated || router.authState == .needsProfile {
                 // A TV approval that waited for this sign-in ("Sign in",
-                // "Not you? Switch account", or a newly added server).
+                // "Not you? Switch User", or a newly added server).
                 // Approval is account-level, so it reopens before a profile
                 // is picked; other links still wait for one.
-                if let link = router.takePendingDeviceApproval() {
+                if let link = router.takeDueDeviceApproval() {
                     pendingDeepLink = link.url
                 }
                 if router.authState == .needsProfile, let url = pendingDeepLink, DeviceApprovalLink(url: url) != nil {
@@ -377,6 +420,7 @@ struct ContentView: View {
                 restoreTrailerReturnIfNeeded(hasPriorityLaunchIntent: hasPendingDeepLink)
                 await ExitSentinel.shared.captureLeftoverIfNeeded()
                 #endif
+                sessionStoresRevision = router.signInRevision
                 await refreshSessionStores()
             }
         }
@@ -485,7 +529,10 @@ struct ContentView: View {
             LaunchTimeline.recordScenePhase(Self.diagnosticsScenePhase(newPhase))
             #endif
             switch newPhase {
-            case .active: LocalRouteController.shared.sceneDidBecomeActive()
+            case .active:
+                LocalRouteController.shared.sceneDidBecomeActive()
+                // Sessions removed earlier whose logout never got through.
+                Task { await HTTPClient.shared.retryPendingRevocations() }
             case .background: LocalRouteController.shared.sceneDidEnterBackground()
             default: break
             }
@@ -578,6 +625,42 @@ struct ContentView: View {
         router.authState == .authenticated && !isShowingStartupSplash
     }
 
+    /// A user or sign-in was opened (`AppRouter.signInRevision`). When the
+    /// auth state stayed the same, as when Automatic reopens a profile under
+    /// another account, nothing else re-scopes the session's stores: the
+    /// account changed even if the server and profile IDs didn't.
+    #if os(iOS)
+    /// Shows a waiting TV approval's card again once it is due
+    /// (`AppRouter.takeDueDeviceApproval`).
+    private func presentDueDeviceApproval() {
+        guard let url = router.takeDueDeviceApproval()?.url else { return }
+        if router.authState == .needsProfile {
+            handleDeepLink(url, revision: deepLinkRevision)
+        } else {
+            pendingDeepLink = url
+            drainPendingDeepLinkIfReady()
+        }
+    }
+    #endif
+
+    private func handleSignInChanged() {
+        #if os(iOS)
+        presentDueDeviceApproval()
+        #endif
+        guard router.authState == .authenticated else { return }
+        let revision = router.signInRevision
+        Task { @MainActor in
+            await Task.yield()
+            guard router.authState == .authenticated, sessionStoresRevision != revision else { return }
+            sessionStoresRevision = revision
+            AppNavPreferences.shared.refresh()
+            await refreshSessionStores()
+            #if !os(tvOS)
+            await DownloadManager.shared.onAppActive()
+            #endif
+        }
+    }
+
     /// Session-scoped stores read after every sign-in or cold start. They are
     /// independent, so they load together rather than one round trip at a time.
     private func refreshSessionStores(overlayPhase: String = "session_hydrate") async {
@@ -620,9 +703,10 @@ struct ContentView: View {
         return false
     }
 
+    /// Who's Watching counts too: with no profile open the interval retires
+    /// nothing, but Ask For reads it on return (spec §6.3).
     private func markProfileAwayStartIfNeeded(at date: Date = .now) {
-        guard router.authState == .authenticated,
-              AuthService.shared.profileId != nil else { return }
+        guard isAwayClockRunning else { return }
         if keepsProfileActiveInBackground {
             launchPreferences.clearBackgroundedAt()
         } else {
@@ -634,9 +718,17 @@ struct ContentView: View {
     /// Termination always ends active playback, so it starts an away interval
     /// even when media was still playing at the time of the notification.
     private func markProfileAwayStartForTermination(at date: Date = .now) {
-        guard AuthService.shared.isLoggedIn,
-              AuthService.shared.profileId != nil else { return }
+        guard AuthService.shared.isLoggedIn, isAwayClockRunning else { return }
         launchPreferences.markBackgrounded(at: date)
+    }
+
+    /// A profile is open, or Who's Watching shows.
+    private var isAwayClockRunning: Bool {
+        switch router.authState {
+        case .authenticated: return AuthService.shared.profileId != nil
+        case .needsProfile: return true
+        default: return false
+        }
     }
 
     /// If background playback starts, stop the away clock. If it later stops
@@ -660,6 +752,9 @@ struct ContentView: View {
         }
         isApplyingProfileReturnPolicy = true
         defer { isApplyingProfileReturnPolicy = false }
+        // Ask For (spec §6.3) reads the away clock, so it is decided before
+        // the profile is cleared.
+        let launchDecision = await router.accounts.resolve(.foregroundAfterAway)
 
         // Retire player UI and audio state while the old profile still owns
         // request identity, then close the HTTP dispatch gate and clear every
@@ -699,7 +794,11 @@ struct ContentView: View {
         }
         #endif
         guard deactivated else { return }
-        router.showProfileSelection()
+        if case .chooseAccount(let focus)? = launchDecision {
+            await router.accounts.apply(.chooseAccount(focus: focus), router: router)
+        } else {
+            router.showProfileSelection()
+        }
     }
 
     #if os(iOS) || os(tvOS)
@@ -726,13 +825,23 @@ struct ContentView: View {
 
         case .needsServerSetup:
             #if os(tvOS)
-            TVServerSetupView(router: router)
+            // A stack, so setup can push "Sign in to…" (Saved servers).
+            NavigationStack(path: router.path(for: .needsServerSetup)) {
+                TVServerSetupView(router: router)
+                    .navigationDestination(for: Route.self) { route in
+                        profileFlowDestination(for: route)
+                    }
+            }
+            .environment(router)
             #else
             ServerSetupView(router: router)
             #endif
 
+        // Each stack sees `router.path` only while its auth state shows, so
+        // a path restored with an auth-state change never reaches the stack
+        // being swapped out (`AppRouter.path(for:)`).
         case .needsLogin:
-            NavigationStack(path: $router.path) {
+            NavigationStack(path: router.path(for: .needsLogin)) {
                 loginRoot
                     .navigationDestination(for: Route.self) { route in
                         destinationView(for: route)
@@ -740,7 +849,7 @@ struct ContentView: View {
             }
 
         case .serverRecovery(let reason):
-            NavigationStack(path: $router.path) {
+            NavigationStack(path: router.path(for: .serverRecovery(reason))) {
                 RestoredServerRecoveryView(
                     router: router,
                     reason: reason,
@@ -753,7 +862,7 @@ struct ContentView: View {
             .environment(router)
 
         case .needsProfile:
-            NavigationStack(path: $router.path) {
+            NavigationStack(path: router.path(for: .needsProfile)) {
                 ProfileSelectionView(router: router)
                     .navigationDestination(for: Route.self) { route in
                         profileFlowDestination(for: route)
@@ -769,6 +878,15 @@ struct ContentView: View {
             MainTabView(router: router)
                 .onboardingTourGate(router: router)
             #endif
+
+        case .needsAccount, .needsSignInTarget:
+            NavigationStack(path: router.path(for: router.authState)) {
+                UserFlowRoot(router: router)
+                    .navigationDestination(for: Route.self) { route in
+                        profileFlowDestination(for: route)
+                    }
+            }
+            .environment(router)
         }
     }
 
@@ -1068,33 +1186,44 @@ struct ContentView: View {
     private func checkInitialState() async {
         let local = await RestoredSessionAuthResolver.resolveLocal()
         guard !Task.isCancelled, router.authState == .loading else { return }
-        commitInitialState(local.state)
+        commitInitialState(local)
 
         guard let expectedAccount = local.restoredAccount else { return }
         let validation = await AuthService.shared.validateRestoredSession(
             expected: expectedAccount
         )
         guard !Task.isCancelled, router.authState == local.state else { return }
-        let validatedState = await RestoredSessionAuthResolver.state(
-            after: validation,
-            fallingBackTo: local.state
-        )
+        let validated: RestoredSessionAuthResolver.LocalResolution
+        if validation == .identityChanged {
+            // Something re-selected meanwhile (a pending server's account
+            // turned out to be saved already): the launch rules decide again.
+            validated = await RestoredSessionAuthResolver.resolveLocal()
+        } else {
+            validated = RestoredSessionAuthResolver.LocalResolution(
+                state: await RestoredSessionAuthResolver.state(after: validation, fallingBackTo: local.state),
+                restoredAccount: local.restoredAccount
+            )
+        }
+        // Another sign-in opened by the re-resolution re-scopes the screen
+        // even when the route is the same (`signInRevision`).
+        let changedSignIn = validated.restoredAccount != local.restoredAccount
         guard !Task.isCancelled,
               router.authState == local.state,
-              validatedState != local.state else { return }
-        commitInitialState(validatedState)
+              validated.state != local.state || changedSignIn else { return }
+        commitInitialState(validated)
+        if changedSignIn { router.noteSignInChanged() }
 
         #if DEBUG
         Task.detached(priority: .background) { await Self.logTopShelfDiagnostics() }
         #endif
     }
 
-    private func commitInitialState(_ state: AppRouter.AuthState) {
+    private func commitInitialState(_ resolution: RestoredSessionAuthResolver.LocalResolution) {
         #if os(iOS) || os(tvOS)
-        LaunchTimeline.recordInitialStateResolved(state: state.diagnosticsState)
+        LaunchTimeline.recordInitialStateResolved(state: resolution.state.diagnosticsState)
         #endif
-        StartupContentPrefetcher.prefetchForInitialRoute(state)
-        router.authState = state
+        StartupContentPrefetcher.prefetchForInitialRoute(resolution.state)
+        router.commitLaunch(resolution)
     }
 
     /// Saved servers' push registrations still need renewing while no
@@ -1117,6 +1246,9 @@ struct ContentView: View {
         sceneBackgroundedAt = nil
         #endif
         guard router.authState == .authenticated else {
+            if router.authState == .needsProfile {
+                Task { await router.accounts.applyAskForOnReturnToProfileSelection(router: router) }
+            }
             maintainPushRegistrationsWithoutProfile()
             return
         }
@@ -1298,7 +1430,8 @@ struct ContentView: View {
         }
         do {
             _ = try await AuthService.shared.checkServer(url: server)
-            try await AuthService.shared.login(username: username, password: password)
+            let pending = try await AuthService.shared.login(username: username, password: password)
+            try await AuthService.shared.commitOutsideUserFlow(pending)
             let profiles = try await StartupContentPrefetcher.fetchProfiles()
             guard let profile = profiles.first(where: \.isPrimary)
                 ?? (profiles.count == 1 ? profiles.first : nil) else {
@@ -1375,27 +1508,24 @@ struct ContentView: View {
             #else
             ServerSetupView(router: router)
             #endif
+        case .chooseAccount, .signInTarget, .manageAccounts:
+            UserFlowDestination(route: route, router: router)
         default:
-            // Signed-out screens push only the routes above, and every
-            // auth-state change clears `router.path` first, so reaching this
-            // is a bug.
+            // Signed-out screens push only the routes above, and this stack
+            // sees `router.path` only while signed out (`AppRouter.path(for:)`),
+            // so reaching this is a bug. Release builds show the page below.
             let _ = assertionFailure("No signed-out destination for \(route)")
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloPageBackground()
         }
     }
 
-    /// Destinations reachable from the profile-selection stack. The
-    /// "Change Server" chip pushes `.serverList`; from there the user
-    /// can swap active servers or dive into `.serverSetup` to add a
-    /// new one. Auth-flow routes are included so an "Add Server" tap
-    /// on tvOS — which stays inside this stack rather than flipping
-    /// `authState` — still lands on a real view.
+    /// Destinations reachable from the profile-selection stack: Switch
+    /// Account, Manage Accounts, and the server step of Add Account, which
+    /// stays inside this stack rather than flipping `authState`.
     @ViewBuilder
     private func profileFlowDestination(for route: Route) -> some View {
         switch route {
-        case .serverList:
-            ServerListView()
         case .serverSetup:
             #if os(tvOS)
             TVServerSetupView(router: router)
@@ -1408,12 +1538,33 @@ struct ContentView: View {
             #else
             ServerNeedsSetupView(router: router)
             #endif
+        case .chooseAccount, .signInTarget, .manageAccounts:
+            UserFlowDestination(route: route, router: router)
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloPageBackground()
         }
     }
 }
+
+#if os(tvOS)
+/// Fades a first-run screen in when it appears.
+private struct MarqueeTVFadeIn: ViewModifier {
+    let isEnabled: Bool
+    @State private var isShown = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isShown ? 1 : 0)
+            .onAppear {
+                // A screen that appears without the fade (launch, under the
+                // splash) shows at once.
+                guard isEnabled else { isShown = true; return }
+                withAnimation(.easeInOut(duration: 0.4)) { isShown = true }
+            }
+    }
+}
+#endif
 
 func shouldPresentProfileSelectionAfterRecovery(
     isLoggedIn: Bool,
@@ -3188,8 +3339,10 @@ struct MainTabView: View {
             #endif
         case .settings:
             SettingsView()
-        case .serverList:
-            ServerListView()
+        case .chooseAccount, .signInTarget, .manageAccounts:
+            UserFlowDestination(route: route, router: router)
+        case .serverSetup:
+            ServerSetupView(router: router)
         case .offlinePlayer(let downloadId, let contentId, let startFromBeginning, let resumePosition):
             #if os(macOS)
             PlayerView(

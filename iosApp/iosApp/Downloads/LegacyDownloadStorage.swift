@@ -152,26 +152,44 @@ struct LegacyDownloadStorage: Sendable {
 
     // MARK: - Carried scopes
 
-    /// Every `<server>/<profile>/` scope the earlier version wrote, keyed by
-    /// its path relative to the tree, with the newest queued progress entry
-    /// per item across all `trees`.
+    /// Every scope under `trees`, keyed by its path relative to the tree,
+    /// with the newest queued progress entry per item across all `trees`.
     private func carriedScopes(in trees: [URL]) -> [String: [QueuedProgress]] {
         var scopes: [String: [String: QueuedProgress]] = [:]
         for tree in trees {
-            for server in subdirectories(of: tree) where server.lastPathComponent != "staging" {
-                for scope in subdirectories(of: server) {
-                    let key = server.lastPathComponent + "/" + scope.lastPathComponent
-                    var newest = scopes[key] ?? [:]
-                    let store = scope.appendingPathComponent(DownloadFilePaths.storeFileName, isDirectory: false)
-                    for entry in queuedProgress(in: store) {
-                        if let kept = newest[entry.mediaItemId], kept.updatedAt >= entry.updatedAt { continue }
-                        newest[entry.mediaItemId] = entry
-                    }
-                    scopes[key] = newest
+            for (key, scope) in scopeDirectories(in: tree) {
+                var newest = scopes[key] ?? [:]
+                let store = scope.appendingPathComponent(DownloadFilePaths.storeFileName, isDirectory: false)
+                for entry in queuedProgress(in: store) {
+                    if let kept = newest[entry.mediaItemId], kept.updatedAt >= entry.updatedAt { continue }
+                    newest[entry.mediaItemId] = entry
                 }
+                scopes[key] = newest
             }
         }
         return scopes.mapValues { $0.values.sorted { $0.updatedAt < $1.updatedAt } }
+    }
+
+    /// The scope directories under `tree`, keyed by their path relative to
+    /// it: `<server>/<profile>/` as earlier versions wrote them, and
+    /// `<server>/acct-<account>/<profile>/`. The second exists only when a
+    /// removal that didn't finish (no marker) runs again after a launch that
+    /// opened an account's downloads.
+    private func scopeDirectories(in tree: URL) -> [(key: String, url: URL)] {
+        var scopes: [(key: String, url: URL)] = []
+        for server in subdirectories(of: tree) where server.lastPathComponent != "staging" {
+            for child in subdirectories(of: server) {
+                let path = server.lastPathComponent + "/" + child.lastPathComponent
+                guard child.lastPathComponent.hasPrefix(DownloadFilePaths.accountDirectoryPrefix) else {
+                    scopes.append((path, child))
+                    continue
+                }
+                for scope in subdirectories(of: child) {
+                    scopes.append((path + "/" + scope.lastPathComponent, scope))
+                }
+            }
+        }
+        return scopes
     }
 
     /// The store's queued progress. Read without the store's Codable model so
@@ -229,16 +247,14 @@ struct LegacyDownloadStorage: Sendable {
         }
     }
 
-    /// True when a `<server>/<profile>/` scope under `tree` holds a download
-    /// directory or a store with at least one record. Empty scopes and
-    /// capability-only stores are what every signed-in launch leaves behind.
+    /// True when a scope under `tree` holds a download directory or a store
+    /// with at least one record. Empty scopes and capability-only stores are
+    /// what every signed-in launch leaves behind.
     private func containsDownloads(_ tree: URL) -> Bool {
-        for server in subdirectories(of: tree) where server.lastPathComponent != "staging" {
-            for scope in subdirectories(of: server) {
-                if !subdirectories(of: scope).isEmpty { return true }
-                let store = scope.appendingPathComponent(DownloadFilePaths.storeFileName, isDirectory: false)
-                if storeHasRecords(store) { return true }
-            }
+        for (_, scope) in scopeDirectories(in: tree) {
+            if !subdirectories(of: scope).isEmpty { return true }
+            let store = scope.appendingPathComponent(DownloadFilePaths.storeFileName, isDirectory: false)
+            if storeHasRecords(store) { return true }
         }
         return false
     }

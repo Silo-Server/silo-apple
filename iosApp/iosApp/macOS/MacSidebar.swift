@@ -58,9 +58,7 @@ struct MacSidebar: View {
                 showsName: true,
                 onOpenSettings: { router.navigate(to: .settings) },
                 onOpenRequests: { onSelect(.app(.requests)) },
-                onSwitchProfile: { router.switchProfile() },
-                onSwitchServer: { router.navigate(to: .serverList) },
-                onSignOut: { router.signOutAndReset() }
+                onSwitchProfile: { router.switchProfile() }
             )
             .menuIndicator(.hidden)
             .padding(.horizontal, SiloTheme.padding)

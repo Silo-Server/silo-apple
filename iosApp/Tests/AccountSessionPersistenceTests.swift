@@ -38,7 +38,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
             launchPreferences: preferences, tokenStore: store, httpClient: http, unregisterPush: unregisterPush)
         XCTAssertNotNil(registry.addOrUpdate(ServerEntry(id: "server", url: "https://session.example",
             fetchedName: "Test Server", lastUsedAt: Date())))
-        let switched = await registry.switchTo(serverId: "server")
+        let switched = await registry.switchTo(serverId: "server", launchSelectionFrom: store)
         XCTAssertTrue(switched)
         let auth = AuthService(serverRegistry: registry, launchPreferences: preferences,
             httpClient: http, tokenStore: store, sessionPersistence: memory.persistence,
@@ -47,8 +47,8 @@ final class AccountSessionPersistenceTests: XCTestCase {
         await store.setProfileId("profile")
         _ = await store.setProfileToken("proof")
         let epoch = await store.getOrCreateAccountEpoch()
-        preferences.remember(profileID: "profile", requiresPIN: true,
-            accountEpoch: try XCTUnwrap(epoch), for: "server")
+        preferences.rememberLegacy(profileID: "profile", requiresPIN: true,
+            accountEpoch: try XCTUnwrap(epoch), forServer: "server")
         return (store, keys, defaults, memory, registry, auth, http, stub)
     }
 
@@ -154,7 +154,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertNotNil(h.registry.activeServer)
         XCTAssertFalse(h.auth.isLoggedIn)
         XCTAssertNil(h.defaults.string(forKey: SharedStorage.profileIdKey))
-        XCTAssertNil(ProfileLaunchPreferences(defaults: h.defaults).rememberedProfile(for: "server"))
+        XCTAssertNil(ProfileLaunchPreferences(defaults: h.defaults).legacyRememberedProfile(forServer: "server"))
         let restored = await restarted(h.keys, h.defaults, h.memory).getAccessToken()
         XCTAssertNil(restored)
         await h.stub.waitUntilHeld()
@@ -166,15 +166,20 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertNil(h.stub.requests.first?.header("X-Profile-Token"))
     }
 
+    /// A logout answered 401 refreshes the outgoing session once, in memory,
+    /// to retry; nothing it gets back may reach the store or clear the login
+    /// that replaced the session meanwhile.
     @MainActor
-    func testLateUnauthorizedLogoutCannotRefreshOrClearNewLogin() async throws {
+    func testLateUnauthorizedLogoutRefreshesInMemoryAndCannotClearNewLogin() async throws {
         let h = try await lifecycleHarness()
-        let capture = await h.store.captureOrdinaryRequestAuth()
-        let outgoing = try XCTUnwrap(capture)
-        h.stub.reply(401, "{}")
-        h.stub.hold()
+        let outgoing = RevocableCredential(serverURL: "https://session.example", accessToken: "original",
+                                           refreshToken: "refresh")
+        h.stub.reply(path: "/api/v2/auth/logout", 401, "{}")
+        h.stub.reply(path: HTTPClient.refreshPath, 200,
+                     #"{"access_token":"revocation-only","refresh_token":"revocation-refresh","expires_in":3600}"#)
+        h.stub.hold(path: "/api/v2/auth/logout")
         defer { h.stub.release() }
-        let revoke = Task { await h.http.revokeSession(outgoing) }
+        let revoke = Task { await h.http.revoke(outgoing) }
         await h.stub.waitUntilHeld()
         _ = await h.store.clearTokens()
         let expected = await h.store.refreshAccountIdentity()
@@ -183,9 +188,21 @@ final class AccountSessionPersistenceTests: XCTestCase {
         h.stub.release()
         await revoke.value
         let access = await h.store.getAccessToken()
+        let refresh = await h.store.getRefreshToken()
         XCTAssertEqual(access, "replacement")
+        XCTAssertEqual(refresh, "replacement-refresh")
         XCTAssertTrue(h.auth.isLoggedIn)
-        XCTAssertEqual(h.stub.requestedPaths, ["/api/v2/auth/logout"])
+        let logout = "/api/v2/auth/logout"
+        XCTAssertEqual(h.stub.requestedPaths.filter { $0 == logout || $0 == HTTPClient.refreshPath },
+                       [logout, HTTPClient.refreshPath, logout], "one refresh, then one retried logout")
+        let retried = try XCTUnwrap(h.stub.requests.last { $0.path == logout })
+        XCTAssertEqual(retried.header("Authorization"), "Bearer revocation-only")
+        let refreshRequest = try XCTUnwrap(h.stub.requests.first { $0.path == HTTPClient.refreshPath })
+        XCTAssertNil(refreshRequest.header("Authorization"))
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(refreshRequest.body)) as? [String: String])
+        XCTAssertEqual(body, ["refresh_token": "refresh"], "the outgoing session refreshes itself, not the new login")
+        guard case .session(let stored) = try h.memory.persistence.load("server") else { return XCTFail() }
+        XCTAssertEqual(stored.accessToken, "replacement")
     }
 
     @MainActor
@@ -204,7 +221,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertNil(restored.activeServerId)
         XCTAssertNotNil(restored.addOrUpdate(ServerEntry(id: "server", url: "https://session.example",
             fetchedName: nil, lastUsedAt: Date())))
-        let switched = await restored.switchTo(serverId: "server")
+        let switched = await restored.switchTo(serverId: "server", launchSelectionFrom: h.store)
         XCTAssertTrue(switched)
         let access = await h.store.getAccessToken()
         XCTAssertNil(access)
@@ -220,9 +237,9 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let h = try await lifecycleHarness()
         XCTAssertNotNil(h.registry.addOrUpdate(ServerEntry(id: "fallback", url: "https://fallback.example",
             fetchedName: nil, lastUsedAt: .distantPast)))
-        let before = await h.store.captureAccountInstallationExpectation()
-        try await h.store.installAccountSessionForServer(serverID: "fallback", origin: "https://fallback.example",
-            accessToken: "fallback-access", refreshToken: "fallback-refresh", accountID: "34", expected: before)
+        try h.memory.persistence.save(CanonicalAccountSession(version: 1, signedOut: false,
+            origin: "https://fallback.example", accountID: "34", epoch: UUID(),
+            accessToken: "fallback-access", refreshToken: "fallback-refresh"), serverID: "fallback")
         let removed = await h.registry.remove(serverId: "server")
         XCTAssertTrue(removed)
         XCTAssertEqual(h.registry.activeServerId, "fallback")
@@ -293,28 +310,34 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(current, "new-login")
     }
 
+    /// A receiver's sign-in carries the identity captured before it polled:
+    /// switching away and back refuses it, and a successful install consumes
+    /// it so a duplicate delivery can't replace the session it just saved.
     func testReceiverExpectationFencesSwitchAwayAndBackAndConsumesSuccess() async throws {
-        let (store, _, _, memory) = try await harness()
-        let expected = await store.captureAccountInstallationExpectation()
+        let (store, keys, _, _) = try await harness()
+        try SavedSignInStore(keychain: keys).saveIndex(SiloAccountIndex())
+        func install(_ access: String, _ expected: RefreshAccountIdentity) async throws {
+            try await store.installSignIn(accessToken: access, refreshToken: "\(access)-refresh",
+                account: SignInAccount(id: "12", username: nil), origin: "https://session.example",
+                expected: expected)
+        }
+        let captured = await store.refreshAccountIdentity()
+        let expected = try XCTUnwrap(captured)
         await store.switchActiveServer(serverId: "other")
         await store.switchActiveServer(serverId: "server")
         do {
-            try await store.installAccountSessionForServer(serverID: "candidate", origin: "https://candidate.example",
-                accessToken: "delayed", refreshToken: "delayed-refresh", accountID: "12", expected: expected)
+            try await install("delayed", expected)
             XCTFail("Changed owner accepted")
         } catch HTTPError.requestIdentityChanged {}
-        let fresh = await store.captureAccountInstallationExpectation()
-        try await store.installAccountSessionForServer(serverID: "candidate", origin: "https://candidate.example",
-            accessToken: "new", refreshToken: "new-refresh", accountID: "12", expected: fresh)
-        let active = await store.getActiveServerId()
-        XCTAssertEqual(active, "server", "Persisting an explicit candidate does not retarget active credentials")
+        let freshValue = await store.refreshAccountIdentity()
+        let fresh = try XCTUnwrap(freshValue)
+        try await install("new", fresh)
         do {
-            try await store.installAccountSessionForServer(serverID: "candidate", origin: "https://candidate.example",
-                accessToken: "duplicate", refreshToken: "duplicate-refresh", accountID: "12", expected: fresh)
+            try await install("duplicate", fresh)
             XCTFail("Successful installation must consume its expectation")
         } catch HTTPError.requestIdentityChanged {}
-        guard case .session(let value) = try memory.persistence.load("candidate") else { return XCTFail() }
-        XCTAssertEqual(value.accessToken, "new")
+        let saved = try SavedSignInStore(keychain: keys).loadSignIn(SignInKey(serverID: "server", accountID: "12")!)
+        XCTAssertEqual(saved?.accessToken, "new")
     }
 
     func testTemporaryHandoffCannotReplaceNewerLogin() async throws {
@@ -330,23 +353,34 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(current, "new-login")
     }
 
+    /// A new session for a server never inherits its previous profile proof,
+    /// and a store with no active server installs for a setup candidate once
+    /// the receiver has pointed it there.
     func testReceiverInitialSetupAndExistingProfileProofBoundary() async throws {
         let (store, keys, defaults, memory) = try await harness()
-        try await store.installAccountSession(accessToken: "old", refreshToken: "old-refresh", accountID: "12")
+        try SavedSignInStore(keychain: keys).saveIndex(SiloAccountIndex())
+        let key = SignInKey(serverID: "server", accountID: "12")!
+        func install(_ store: TokenStore, _ access: String,
+                     url: String = "https://session.example", account: String = "12") async throws -> SignInInstallResult {
+            let identity = await store.refreshAccountIdentity()
+            return try await store.installSignIn(accessToken: access, refreshToken: "\(access)-refresh",
+                account: SignInAccount(id: account, username: nil), origin: url,
+                expected: XCTUnwrap(identity))
+        }
+        _ = try await install(store, "old")
         await store.setProfileId("old-profile")
         _ = await store.setProfileToken("old-proof")
-        let expected = await store.captureAccountInstallationExpectation()
-        try await store.installAccountSessionForServer(serverID: "server", origin: "https://session.example",
-            accessToken: "new", refreshToken: "new-refresh", accountID: "13", expected: expected)
+        _ = try await install(store, "new")
         let proof = await store.getProfileToken()
         XCTAssertNil(proof)
+        XCTAssertNil(try SignInProofStore(keychain: keys).load(key))
+
         let fresh = TokenStore(keychain: keys, defaults: defaults, sessionPersistence: memory.persistence)
-        let blankExpected = await fresh.captureAccountInstallationExpectation()
-        XCTAssertNil(blankExpected.account)
-        try await fresh.installAccountSessionForServer(serverID: "candidate", origin: "https://candidate.example",
-            accessToken: "setup", refreshToken: "setup-refresh", accountID: "14", expected: blankExpected)
+        let blank = await fresh.refreshAccountIdentity()
+        XCTAssertNil(blank)
         await fresh.setServerUrl("https://candidate.example")
         await fresh.switchActiveServer(serverId: "candidate")
+        _ = try await install(fresh, "setup", url: "https://candidate.example", account: "14")
         let access = await fresh.getAccessToken()
         XCTAssertEqual(access, "setup")
     }
@@ -431,7 +465,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         await store.setServerUrl("https://session.example/")
         let capturedValue = await store.captureOrdinaryRequestAuth()
         let captured = try XCTUnwrap(capturedValue)
-        try await store.bindVerifiedAccount("12", expected: captured)
+        try await store.bindVerifiedAccount(.stub(id: "12"), expected: captured)
         guard case .session(let value) = try memory.persistence.load("server") else { return XCTFail() }
         XCTAssertEqual(value.accountID, "12")
         XCTAssertEqual(value.epoch?.uuidString, epoch)
@@ -552,7 +586,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         _ = await store.setProfileToken("proof")
         let epoch = await store.getOrCreateAccountEpoch()
         let preferences = ProfileLaunchPreferences(defaults: defaults)
-        preferences.remember(profileID: "profile", requiresPIN: true, accountEpoch: try XCTUnwrap(epoch), for: "server")
+        preferences.rememberLegacy(profileID: "profile", requiresPIN: true, accountEpoch: try XCTUnwrap(epoch), forServer: "server")
         let before = preferences.state
         let stub = APIv2TestStub()
         stub.reply(200, Self.tokenPair)
@@ -562,7 +596,9 @@ final class AccountSessionPersistenceTests: XCTestCase {
             httpClient: http, tokenStore: store)
         memory.failAccessToken = "replacement"
         do {
-            try await auth.login(username: "new", password: "password")
+            // The password sign-in answers a session; saving it is the step
+            // that fails.
+            try await auth.commitOutsideUserFlow(auth.login(username: "new", password: "password"))
             XCTFail("Failed persistence reported login success")
         } catch AccountSessionPersistenceError.unavailable { }
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/login"])
@@ -594,7 +630,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         let auth = AuthService(launchPreferences: ProfileLaunchPreferences(defaults: defaults),
             apiV2Client: APIv2Client(http: http, tokenStore: store, isUpdateRequired: { false }),
             httpClient: http, tokenStore: store)
-        try await auth.login(username: "new", password: "password")
+        try await auth.commitOutsideUserFlow(auth.login(username: "new", password: "password"))
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/auth/login"])
         XCTAssertEqual(stub.requests.first?.url?.host, "session.example")
         let access = await store.getAccessToken()
@@ -623,7 +659,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
             apiV2Client: APIv2Client(http: http, tokenStore: store, isUpdateRequired: { false }),
             httpClient: http, tokenStore: store)
         do {
-            try await auth.login(username: "new", password: "wrong")
+            _ = try await auth.login(username: "new", password: "wrong")
             XCTFail("A rejected login installed a session")
         } catch APIv2Error.problem(let problem) {
             XCTAssertEqual(problem.status, 401)
@@ -816,7 +852,7 @@ final class AccountSessionPersistenceTests: XCTestCase {
         await store.setProfileId("profile-one")
         let beforeValue = await store.captureOrdinaryRequestAuth()
         let before = try XCTUnwrap(beforeValue)
-        try await store.bindVerifiedAccount("12", expected: before)
+        try await store.bindVerifiedAccount(.stub(id: "12"), expected: before)
         let boundValue = await store.captureDurableAccountAuth()
         let bound = try XCTUnwrap(boundValue)
         XCTAssertEqual(bound.accountID, "12")

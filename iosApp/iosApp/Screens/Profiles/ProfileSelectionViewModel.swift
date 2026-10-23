@@ -48,12 +48,25 @@ class ProfileSelectionViewModel {
         }
     }
 
-    /// The signed-in account's username, shown under the title. Nil until
-    /// `loadAccount` finishes, or when the read fails.
+    /// The signed-in account's username, shown under the title before Silo
+    /// users exist. Nil until `loadAccount` finishes, or when the read fails.
     private(set) var accountName: String?
 
-    func loadAccount() async {
+    /// The profile remembered for this sign-in ("Last used"), read without
+    /// waiting: tvOS focuses it on the first frame.
+    var rememberedProfileID: String? { auth.rememberedProfileIDForCurrentSelection }
+
+    /// Reads the account, which also records its username on the saved
+    /// sign-in, then the accounts directory the account line names.
+    func loadAccount(accounts: SiloAccountCoordinator) async {
         accountName = try? await SiloAPI.shared.currentUser().username
+        await accounts.reloadDirectory()
+    }
+
+    /// "Signed in as alex", plus the server when the device has accounts on
+    /// more than one (spec §5.1).
+    func accountLine(accounts: SiloAccountCoordinator) -> String? {
+        accounts.accountLine(fallbackUsername: accountName)
     }
 
     var primaryProfile: UserProfile? {

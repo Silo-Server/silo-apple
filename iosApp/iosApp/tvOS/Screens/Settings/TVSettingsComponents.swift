@@ -30,6 +30,13 @@ enum TVSettingsOptions {
             .init(id: $0.rawValue, label: $0.title, detail: $0.tvDescription)
         }
 
+    /// Ask For (spec §5.7): what Silo asks for first when it asks who's
+    /// watching on an Apple TV with two or more Silo accounts.
+    static let askFor: [TVSettingsOption] =
+        ProfileLaunchAskFor.allCases.map {
+            .init(id: $0.rawValue, label: $0.title, detail: $0.description)
+        }
+
     /// The Resolution picker, tagged with the contract's resolution members.
     static let resolution: [TVSettingsOption] = SiloQualityPresets.resolutionChoices.map {
         .init(id: $0, label: SiloQualityPresets.resolutionLabel($0))
@@ -292,15 +299,27 @@ private struct TVSettingsPaneRowBody: View {
 /// option sheet.
 struct TVSettingsPickerRow: View {
     let title: String
+    /// A second line under the title, such as the account a value
+    /// belongs to.
+    var subtitle: String? = nil
     let value: String
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 16) {
-                Text(title)
-                    .font(.system(size: 26))
-                    .lineLimit(1)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 26))
+                        .lineLimit(1)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 20))
+                            .opacity(0.62)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
                 Spacer(minLength: 16)
                 Text(value)
                     .font(.system(size: 24))
@@ -469,12 +488,15 @@ struct TVSettingsWarningFooter: View {
 
 // MARK: - Confirmation overlay
 
-/// Settings-styled destructive confirmation used instead of the native tvOS
-/// alert, whose app-wide tint can leave focused Cancel text without contrast.
+/// Settings-styled confirmation used instead of the native tvOS alert, whose
+/// app-wide tint can leave focused Cancel text without contrast. Destructive
+/// by default; a question that loses nothing (the sign-in prompts) passes
+/// `confirmIsDestructive: false`.
 struct TVSettingsConfirmationOverlay: View {
     let title: String
     let message: String
     let confirmTitle: String
+    var confirmIsDestructive = true
     var additionalDestructiveTitle: String? = nil
     let cancel: () -> Void
     let confirm: () -> Void
@@ -493,11 +515,17 @@ struct TVSettingsConfirmationOverlay: View {
                     Text(title)
                         .font(.system(size: 38, weight: .semibold))
                         .foregroundColor(.siloOnSurface)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: Self.textWidth)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
 
                     Text(message)
                         .font(.system(size: 22))
                         .foregroundColor(.siloSecondaryText)
                         .multilineTextAlignment(.center)
+                        .frame(maxWidth: Self.textWidth)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 HStack(spacing: 16) {
@@ -517,8 +545,8 @@ struct TVSettingsConfirmationOverlay: View {
                             .lineLimit(1)
                             .minimumScaleFactor(0.72)
                     }
-                        .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
-                        .frame(width: buttonWidth)
+                        .buttonStyle(TVSettingsPaneRowStyle(isDestructive: confirmIsDestructive))
+                        .frame(width: width(for: confirmTitle))
                         .focused($focusedAction, equals: .confirm)
 
                     if let additionalDestructiveTitle,
@@ -531,7 +559,7 @@ struct TVSettingsConfirmationOverlay: View {
                                 .minimumScaleFactor(0.65)
                         }
                         .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
-                        .frame(width: buttonWidth)
+                        .frame(width: width(for: additionalDestructiveTitle))
                         .focused($focusedAction, equals: .additionalDestructive)
                     }
                 }
@@ -562,6 +590,14 @@ struct TVSettingsConfirmationOverlay: View {
     private var buttonWidth: CGFloat {
         additionalDestructiveTitle == nil ? 260 : 320
     }
+
+    /// Long answers ("Add sam as a Separate User") get a wider button rather
+    /// than shrinking past legibility.
+    private func width(for title: String) -> CGFloat {
+        max(buttonWidth, min(CGFloat(title.count) * 14 + 56, 480))
+    }
+
+    private static let textWidth: CGFloat = 860
 }
 
 // MARK: - Privacy policy handoff

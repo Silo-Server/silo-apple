@@ -13,6 +13,8 @@ struct ServerSetupView: View {
     /// Whether Continue was pressed with the keyboard up. Recents stay hidden
     /// for that attempt so they don't pop in as the screen fades to sign-in.
     @State private var submittedWithKeyboard = false
+    /// Cancel is running; a second tap would find its return point gone.
+    @State private var isCancelling = false
 
     private enum Field: Hashable { case host, port }
 
@@ -24,10 +26,31 @@ struct ServerSetupView: View {
     }
 
     var body: some View {
-        MarqueeStage(scrim: .bottom, frostStart: 0.30) {
+        MarqueeStage(scrim: .bottom, frostStart: 0.30, onBack: canGoBack ? { router.goBack() } : nil) {
             MarqueeTopBar {
-                SiloWordmarkView(width: 92)
-            } trailing: { EmptyView() }
+                if canGoBack {
+                    MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back") {
+                        router.goBack()
+                    }
+                    .disabled(viewModel.isLoading)
+                } else {
+                    SiloWordmarkView(width: 92)
+                }
+            } trailing: {
+                // Add User and Add Server can be abandoned for the screen
+                // they started on.
+                if router.signInReturnPoint != nil {
+                    UserFlowCancelButton {
+                        guard !isCancelling else { return }
+                        isCancelling = true
+                        Task {
+                            await router.accounts.cancelSignIn(router: router)
+                            isCancelling = false
+                        }
+                    }
+                    .disabled(viewModel.isLoading || isCancelling)
+                }
+            }
         } content: {
             MarqueeHeadline(title: "Connect to\nyour server", lead: "Type the address you use for Silo.")
 
@@ -115,6 +138,16 @@ struct ServerSetupView: View {
         .onDisappear { discovery.stop() }
         .marqueeTransparentNavigation()
         .keepsSubmittedServerInputs(viewModel)
+    }
+
+    /// Pushed onto "Sign in to…" (Add a New Server): Back returns to it. The
+    /// Mac toolbar has its own Back button.
+    private var canGoBack: Bool {
+        #if os(iOS)
+        !router.path.isEmpty
+        #else
+        false
+        #endif
     }
 
     /// The keyboard stays up while connecting: dismissing it would shift the
@@ -207,7 +240,6 @@ struct ServerSetupView: View {
         ServerPickerList(recentServers) { server in
             ServerPickerRow(
                 name: server.displayName,
-                markName: server.fetchedName,
                 markURL: ServerBrandingCache.branding(for: server.url)?.markURL,
                 detail: ServerBranding.hostLabel(server.url)
             ) {

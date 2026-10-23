@@ -110,7 +110,7 @@ class QRLoginViewModel: NearbySignInCodeSource {
     /// `retry()` is waiting for the request in flight before starting over.
     private var restartHold = false
     /// Bumped by every `retry()` and `stop()`: a `retry()` that wakes to a
-    /// newer number was overtaken (a `stop()` from "Change server", or a
+    /// newer number was overtaken (a `stop()` from "Use a different server", or a
     /// later retry) and must not start a loop of its own.
     private var intentGeneration = 0
     /// `expires_at` minus the local clock, from the start answer: moves a
@@ -118,7 +118,13 @@ class QRLoginViewModel: NearbySignInCodeSource {
     private var serverClockOffset: TimeInterval = 0
     private var nearbyWaiters: [UUID: (deviceCode: String, continuation: CheckedContinuation<NearbySignInOutcome, Never>)] = [:]
 
+    /// Where an approved sign-in goes. The sign-in screen places it through
+    /// `SiloAccountCoordinator.completeSignIn`; without one it is saved outside
+    /// any user flow (`AuthService.commitOutsideUserFlow`).
+    typealias CompleteSignIn = @MainActor (PendingSignIn) async throws -> Void
+
     private let auth: AuthService
+    private let completeSignIn: CompleteSignIn
     private let tokenStore: TokenStore
     private let timing: Timing
     private let sleeper: @Sendable (TimeInterval) async -> Void
@@ -136,9 +142,11 @@ class QRLoginViewModel: NearbySignInCodeSource {
         // Withdrawals go to an explicit URL with no credentials: the device
         // code is the only authority, and a password sign-in or server
         // switch that just replaced the session must not stop them.
-        devices: any PairingDeviceAuthorizing = PairingDeviceAPI()
+        devices: any PairingDeviceAuthorizing = PairingDeviceAPI(),
+        completeSignIn: CompleteSignIn? = nil
     ) {
         self.auth = auth
+        self.completeSignIn = completeSignIn ?? { [auth] pending in try await auth.commitOutsideUserFlow(pending) }
         self.tokenStore = tokenStore
         self.timing = timing
         self.sleeper = sleeper
@@ -652,12 +660,7 @@ class QRLoginViewModel: NearbySignInCodeSource {
             // The tokens were issued once; a failed install cannot be
             // collected again, so it ends this attempt.
             do {
-                try await auth.installSession(
-                    accessToken: tokens.accessToken,
-                    refreshToken: tokens.refreshToken,
-                    accountID: tokens.user.id,
-                    expectedAccount: account
-                )
+                try await completeSignIn(PendingSignIn(tokens: tokens, expected: account))
                 return .approved(.approved(account: ServerIdentity.usable(tokens.user.username)))
             } catch HTTPError.requestIdentityChanged {
                 return .finished(.failed(message: Self.serverChangedMessage))

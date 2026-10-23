@@ -6,10 +6,15 @@ import SwiftUI
 struct GeneralSettingsView: View {
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
+    @Environment(AppRouter.self) private var router
 
     var body: some View {
         List {
             profileSection
+            // Ask For only matters with two or more Silo accounts (spec §5.7).
+            if router.accounts.directory.accounts.count >= 2 {
+                askForSection
+            }
             if advisoryAgePreference.isSupported {
                 advisoryAgeSection
             }
@@ -19,6 +24,32 @@ struct GeneralSettingsView: View {
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
         .task { await advisoryAgePreference.refresh() }
+        .task { await router.accounts.reloadDirectory() }
+    }
+
+    /// What Silo asks for when it asks who's watching (spec §6.3). Automatic
+    /// never asks, so there the setting is dimmed and says when it applies.
+    private var askForSection: some View {
+        let isActive = launchPreferences.behavior != .automatic
+        return Section {
+            Picker("Ask For", selection: $launchPreferences.askFor) {
+                ForEach(ProfileLaunchAskFor.allCases) { option in
+                    Text(option.title)
+                        .accessibilityHint(option.standardDescription)
+                        .tag(option)
+                }
+            }
+            .foregroundStyle(Color.siloOnSurface)
+            .settingsPickerStyle()
+            .disabled(!isActive)
+            .accessibilityValue(launchPreferences.askFor.title)
+            .accessibilityHint(isActive ? launchPreferences.askFor.standardDescription
+                                        : ProfileLaunchAskFor.inactiveUnderAutomaticFooter)
+        } footer: {
+            Text(isActive ? launchPreferences.askFor.standardDescription : ProfileLaunchAskFor.inactiveUnderAutomaticFooter)
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .listRowBackground(Color.siloGroupedCell)
     }
 
     private var profileSection: some View {

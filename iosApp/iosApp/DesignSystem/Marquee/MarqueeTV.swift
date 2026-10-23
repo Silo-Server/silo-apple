@@ -62,7 +62,7 @@ struct MarqueeWaitingDots: View {
 struct MarqueeTVSetupSteps: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 30) {
-            step(1, "Open Silo on your phone") { SetupAppIcon() }
+            step(1, "Open Silo on your phone") { MarqueeTVAppIcon() }
             step(2, "Tap Set Up") { SetupCardPicture() }
             step(3, "Finish on your phone") { SetupDonePicture() }
         }
@@ -99,20 +99,25 @@ struct MarqueeTVSetupSteps: View {
     }
 }
 
-/// The Silo app icon: the mark on the deep blue field.
-private struct SetupAppIcon: View {
+/// The Silo app icon: the mark on the deep blue field. Shown where a phone
+/// running Silo can do the work, as in the setup steps.
+struct MarqueeTVAppIcon: View {
+    var size: CGFloat = 92
+
     var body: some View {
+        let corner = size * 22 / 92
         // The icon draws the mark at 84% of its height.
         Image("SiloMark")
             .resizable()
             .scaledToFit()
-            .frame(height: 77)
-            .frame(width: 92, height: 92)
-            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Color.siloIconField))
+            .frame(height: size * 0.84)
+            .frame(width: size, height: size)
+            .background(RoundedRectangle(cornerRadius: corner, style: .continuous).fill(Color.siloIconField))
             .overlay(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
                     .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
             )
+            .accessibilityHidden(true)
     }
 }
 
@@ -203,16 +208,35 @@ extension View {
     /// A page can appear while focus still belongs to what it replaces: the
     /// Sign Out alert closing over Settings, or the old screen mid-crossfade.
     /// The focus engine drops a request made then, so keep asking until one
-    /// lands, for about a second and a half.
+    /// lands, for about a second and a half. The first page after launch
+    /// draws under the startup splash, which disables it, so it asks again
+    /// once the splash lifts.
     func marqueeTVSeedFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, _ value: F) -> some View {
-        task {
-            await Task.yield()
-            for _ in 0..<15 {
-                guard focus.wrappedValue == nil else { return }
-                focus.wrappedValue = value
-                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
-            }
-        }
+        marqueeTVSeedFocus(focus, value, id: 0)
+    }
+
+    /// The same, asked again each time `id` changes: a page that draws
+    /// before what should take focus has loaded.
+    func marqueeTVSeedFocus<F: Hashable, ID: Equatable>(_ focus: FocusState<F?>.Binding, _ value: F,
+                                                        id: ID) -> some View {
+        modifier(FocusRequest(focus: focus, value: value, id: id, overridesHeldFocus: false))
+    }
+
+    /// Moves focus to `value` when a page replaces another in place, as the
+    /// password sign-in replaces the code screen. Focus still belongs to the
+    /// page fading out, so a request made with the switch is dropped, and
+    /// `marqueeTVSeedFocus` leaves a held focus alone. Keep asking until
+    /// `value` holds focus, for about a second and a half, and again once
+    /// the startup splash lifts.
+    func marqueeTVClaimFocus<F: Hashable>(_ focus: FocusState<F?>.Binding, _ value: F) -> some View {
+        marqueeTVClaimFocus(focus, value, id: 0)
+    }
+
+    /// The same, asked again each time `id` changes: a page that swaps its
+    /// controls in place, so the one holding focus is gone.
+    func marqueeTVClaimFocus<F: Hashable, ID: Equatable>(_ focus: FocusState<F?>.Binding, _ value: F,
+                                                         id: ID) -> some View {
+        modifier(FocusRequest(focus: focus, value: value, id: id, overridesHeldFocus: true))
     }
 
     /// Moves focus after Done on the system keyboard. Each field's
@@ -222,6 +246,35 @@ extension View {
     /// gets overwritten. So the first focus that returns takes `pending`.
     func marqueeTVFocusAfterKeyboard<F: Hashable>(_ focus: FocusState<F?>.Binding, pending: Binding<F?>) -> some View {
         modifier(FocusAfterKeyboard(focus: focus, pending: pending))
+    }
+}
+
+/// `marqueeTVSeedFocus` and `marqueeTVClaimFocus`: a seed asks only while
+/// nothing holds focus, a claim until `value` holds it.
+private struct FocusRequest<F: Hashable, ID: Equatable>: ViewModifier {
+    var focus: FocusState<F?>.Binding
+    var value: F
+    var id: ID
+    var overridesHeldFocus: Bool
+    @Environment(\.isStartupSplashVisible) private var isUnderSplash
+
+    private struct Trigger: Equatable {
+        let id: ID
+        let isUnderSplash: Bool
+    }
+
+    func body(content: Content) -> some View {
+        content.task(id: Trigger(id: id, isUnderSplash: isUnderSplash)) {
+            // Everything under the splash is disabled and can't take focus.
+            guard !isUnderSplash else { return }
+            await Task.yield()
+            for _ in 0..<15 {
+                let current = focus.wrappedValue
+                guard overridesHeldFocus ? current != value : current == nil else { return }
+                focus.wrappedValue = value
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
+            }
+        }
     }
 }
 

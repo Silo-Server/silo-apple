@@ -13,6 +13,26 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
     /// builds still decodes; nil means no offer is due.
     var rememberOfferPending: Bool? = nil
 
+    // Fields for Silo accounts. Every one is optional so state saved by earlier
+    // builds still decodes; a required field would reset Profile Selection.
+    // `rememberedByServerID` and `selectionRequiredServerIDs` stay for a
+    // server's own session (before migration, or a pending legacy server),
+    // and saved sign-ins read them as the fallback for state recorded
+    // before sign-ins existed.
+
+    /// Nil means `.profileOnly`.
+    var askFor: ProfileLaunchAskFor? = nil
+    /// The account this Apple TV user (or this device) opens
+    /// (`SiloAccountRef.storageKey`). State saved by the first multi-account
+    /// design linked a user instead; it is ignored, so that Apple TV user
+    /// chooses an account once.
+    var linkedAccount: String? = nil
+    /// Keyed by `SignInKey.storageKey`.
+    var rememberedBySignIn: [String: RememberedProfile]? = nil
+    /// `SignInKey.storageKey` of each sign-in with an explicit Switch Profile
+    /// pending.
+    var selectionRequiredSignIns: Set<String>? = nil
+
     /// The state of a device with nothing saved yet. A TV asks who's watching
     /// until someone chooses to remember a profile; phones, tablets and Macs
     /// reopen the last profile.
@@ -36,17 +56,69 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
         knownProfileIDs: Set<String>? = nil,
         now: Date = .now
     ) -> ProfileLaunchResolution {
-        guard !requiresSelectionAtLaunch(at: now),
-              !selectionRequiredServerIDs.contains(serverID),
-              let remembered = rememberedByServerID[serverID],
-              let accountEpoch,
-              remembered.accountEpoch == accountEpoch,
-              !remembered.profileID.isEmpty,
-              knownProfileIDs?.contains(remembered.profileID) != false,
-              !remembered.requiredPINAtSelection || hasStoredProfileToken else {
-            return .needsSelection
+        resolution(
+            remembered: rememberedByServerID[serverID],
+            selectionRequired: selectionRequiredServerIDs.contains(serverID),
+            accountEpoch: accountEpoch,
+            hasStoredProfileToken: hasStoredProfileToken,
+            knownProfileIDs: knownProfileIDs,
+            now: now
+        )
+    }
+
+    /// The same rule as the server-keyed resolution, for a saved sign-in.
+    /// `legacyOwnerAccountID` is the account that owns the sign-in's server's
+    /// state from before sign-ins existed.
+    func resolution(
+        for key: SignInKey,
+        accountEpoch: String?,
+        hasStoredProfileToken: Bool,
+        knownProfileIDs: Set<String>? = nil,
+        legacyOwnerAccountID: String?,
+        now: Date = .now
+    ) -> ProfileLaunchResolution {
+        resolution(
+            remembered: rememberedProfile(for: key, accountEpoch: accountEpoch),
+            selectionRequired: isSelectionRequired(for: key, legacyOwnerAccountID: legacyOwnerAccountID),
+            accountEpoch: accountEpoch,
+            hasStoredProfileToken: hasStoredProfileToken,
+            knownProfileIDs: knownProfileIDs,
+            now: now
+        )
+    }
+
+    /// The profile remembered for this sign-in. An entry recorded per server
+    /// before sign-ins existed counts only when its epoch is the sign-in's:
+    /// epochs are unique per sign-in and migration keeps them, so a match
+    /// proves the entry was recorded for this sign-in.
+    func rememberedProfile(for key: SignInKey, accountEpoch: String?) -> RememberedProfile? {
+        if let remembered = rememberedBySignIn?[key.storageKey] {
+            return remembered
         }
-        return .restore(remembered)
+        guard let accountEpoch,
+              let legacy = rememberedByServerID[key.serverID],
+              legacy.accountEpoch == accountEpoch else {
+            return nil
+        }
+        return legacy
+    }
+
+    /// A pending Switch Profile recorded per server before sign-ins existed
+    /// applies only to the server's legacy owner.
+    func isSelectionRequired(for key: SignInKey, legacyOwnerAccountID: String?) -> Bool {
+        if selectionRequiredSignIns?.contains(key.storageKey) == true {
+            return true
+        }
+        return legacyOwnerAccountID == key.accountID
+            && selectionRequiredServerIDs.contains(key.serverID)
+    }
+
+    var linkedAccountRef: SiloAccountRef? {
+        linkedAccount.flatMap(SiloAccountRef.init(storageKey:))
+    }
+
+    var effectiveAskFor: ProfileLaunchAskFor {
+        askFor ?? .profileOnly
     }
 
     /// Cold starts preserve the original Every Time contract even when the
@@ -71,6 +143,27 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
             return freshForCurrentDevice
         }
         return decoded
+    }
+
+    private func resolution(
+        remembered: RememberedProfile?,
+        selectionRequired: Bool,
+        accountEpoch: String?,
+        hasStoredProfileToken: Bool,
+        knownProfileIDs: Set<String>?,
+        now: Date
+    ) -> ProfileLaunchResolution {
+        guard !requiresSelectionAtLaunch(at: now),
+              !selectionRequired,
+              let remembered,
+              let accountEpoch,
+              remembered.accountEpoch == accountEpoch,
+              !remembered.profileID.isEmpty,
+              knownProfileIDs?.contains(remembered.profileID) != false,
+              !remembered.requiredPINAtSelection || hasStoredProfileToken else {
+            return .needsSelection
+        }
+        return .restore(remembered)
     }
 
     private func hasExpiredAwayInterval(at now: Date) -> Bool {

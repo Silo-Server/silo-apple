@@ -70,6 +70,9 @@ enum StartupContentPrefetcher {
 
     static func fetchProfiles() async throws -> [UserProfile] {
         let generation = profilesGeneration
+        // The sign-in the list is read for, so user cards cache it there;
+        // none while a remote-playback identity answers the read.
+        let signIn = await TokenStore.shared.hasTemporaryScope() ? nil : await TokenStore.shared.currentSignInKey()
         #if os(iOS) || os(tvOS)
         let probe = PrefetchProbe.begin("profiles", isOriginator: !profiles.isInFlight)
         #endif
@@ -82,7 +85,10 @@ enum StartupContentPrefetcher {
             probe.finish(error: nil)
             #endif
             ResponseCache.shared.set(result, for: CacheKey.profiles)
+            // Reconciled first, while the profile it checks is still the one
+            // this list was read for; the cache write can wait.
             await AuthService.shared.reconcileAvailableProfiles(result)
+            await AuthService.shared.updateSignInDisplayCache(result, for: signIn)
             prefetchProfileArtwork(for: result)
             return result
         } catch {
@@ -612,7 +618,8 @@ enum StartupContentPrefetcher {
             prefetchProfiles()
         case .needsProfile:
             prefetchProfiles()
-        case .loading, .needsServerSetup, .needsLogin, .serverRecovery:
+        case .loading, .needsServerSetup, .needsLogin, .serverRecovery,
+             .needsAccount, .needsSignInTarget:
             break
         }
     }

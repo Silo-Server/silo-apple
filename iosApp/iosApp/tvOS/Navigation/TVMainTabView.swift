@@ -47,6 +47,9 @@ struct TVMainTabView: View {
         return cached.first(where: { $0.id == profileId })
     }()
     @State private var showSignOutConfirm = false
+    /// The Sign Out confirmation's text, read from the accounts directory when
+    /// it opens (spec §5.6).
+    @State private var signOutCopy: ConfirmationCopy?
     @State private var librariesStaleSinceBackground = false
     @State private var registry = ServerRegistry.shared
     /// Local, per-profile legacy Audiobooks opt-in. It only seeds the app
@@ -185,14 +188,15 @@ struct TVMainTabView: View {
         .allowsHitTesting(!showSignOutConfirm)
         .overlay {
             if showSignOutConfirm {
+                let copy = signOutCopy ?? router.accounts.confirmation(for: .currentAccount)
                 TVSettingsConfirmationOverlay(
-                    title: "Sign Out",
-                    message: "Choose whether to keep or remove this server from this Apple TV.",
-                    confirmTitle: "Sign Out",
-                    additionalDestructiveTitle: "Sign Out & Remove Server",
+                    title: copy.title,
+                    message: copy.message,
+                    confirmTitle: copy.confirmTitle,
+                    additionalDestructiveTitle: copy.additionalDestructiveTitle,
                     cancel: dismissSignOutConfirmation,
                     confirm: router.signOutAndReset,
-                    additionalDestructiveAction: router.signOutRemoveServerAndReset
+                    additionalDestructiveAction: router.signOutRemoveAccountAndReset
                 )
                 .transition(.opacity)
             }
@@ -761,9 +765,16 @@ struct TVMainTabView: View {
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
-            onSwitchServer: { closePanel(then: { navigateFromBar(.serverList) }) },
-            onSignOut: { closePanel(then: { showSignOutConfirm = true }) }
+            onSignOut: { closePanel(then: { Task { await presentSignOutConfirmation() } }) }
         )
+    }
+
+    /// The copy names the current account and its server, so it is read
+    /// fresh.
+    private func presentSignOutConfirmation() async {
+        await router.accounts.reloadDirectory()
+        signOutCopy = router.accounts.confirmation(for: .currentAccount)
+        showSignOutConfirm = true
     }
 
     private func dismissSignOutConfirmation() {
@@ -1425,15 +1436,15 @@ struct TVMainTabView: View {
             SearchView(usesTVTopMenuInset: false, seededQuery: $siriSearchRequest)
         case .settings:
             TVSettingsView()
-        case .serverList:
-            ServerListView()
         case .serverSetup:
-            // Pushed from the server list's "Add Server" button — staying
-            // on the nav stack means the tvOS back button returns to the
-            // previous active server instead of dropping the authenticated
-            // tree entirely. Successful `connect()` flips authState to
+            // Pushed by Add Account's "Add a New Server" — staying on the
+            // nav stack means the tvOS back button returns to the account
+            // that was open instead of dropping the authenticated tree
+            // entirely. Successful `connect()` flips authState to
             // `.needsLogin` and replaces this view tree.
             TVServerSetupView(router: router)
+        case .chooseAccount, .signInTarget, .manageAccounts:
+            UserFlowDestination(route: route, router: router)
         default:
             EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
                 .siloBackground()

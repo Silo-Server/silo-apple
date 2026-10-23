@@ -10,7 +10,9 @@ struct ErrorView: View {
     var onRetry: (() -> Void)? = nil
     var onGoBack: (() -> Void)? = nil
     var onSignOut: (() -> Void)? = nil
-    var onManageServers: (() -> Void)? = nil
+    var onManageAccounts: (() -> Void)? = nil
+    /// Choose an Account, for a screen whose account can't be reached.
+    var onSwitchAccount: (() -> Void)? = nil
 
     @Environment(AppRouter.self) private var router
 
@@ -107,8 +109,11 @@ struct ErrorView: View {
 
     private var secondaryActions: [Action] {
         var actions: [Action] = []
-        if let onManageServers {
-            actions.append(Action(title: "Manage Servers", run: onManageServers))
+        if let onSwitchAccount {
+            actions.append(Action(title: "Switch Account", run: onSwitchAccount))
+        }
+        if let onManageAccounts {
+            actions.append(Action(title: "Manage Accounts", run: onManageAccounts))
         }
         actions.append(contentsOf: plan.secondary.compactMap(action(for:)))
         return actions

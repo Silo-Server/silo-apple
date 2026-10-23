@@ -11,6 +11,18 @@ struct HTTPRequestIdentity: Equatable, Sendable {
     let serverURL: String
     let profileId: String
     let clientFamily: String
+    /// The account the work was queued for. Profile IDs repeat across
+    /// accounts on one server, so when set, `TokenStore.captureRequestAuth`
+    /// also requires the selected sign-in to be this account.
+    let accountID: String?
+
+    init(serverId: String, serverURL: String, profileId: String, clientFamily: String, accountID: String? = nil) {
+        self.serverId = serverId
+        self.serverURL = serverURL
+        self.profileId = profileId
+        self.clientFamily = clientFamily
+        self.accountID = accountID
+    }
 }
 
 enum CapturedHTTPRequestCredentialOwner: Equatable, Sendable {
@@ -128,11 +140,13 @@ actor HTTPClient {
     private var inFlightRefreshes: [RefreshAccountIdentity: RefreshFlight] = [:]
     private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
-    /// Approver-bearer renewals of saved servers that are not active
-    /// (`freshAccessToken(serverId:)`), keyed by server. A caller holding the
-    /// same refresh token joins the renewal in flight instead of sending that
-    /// token a second time.
-    private var inactiveServerRenewals: [String: (refreshToken: String, task: Task<ApproverBearer, Never>)] = [:]
+    /// Approver-bearer renewals of stored sessions that are not selected:
+    /// an inactive server's (`freshAccessToken(serverId:)`) or any saved
+    /// sign-in's (`freshAccessToken(for:)`), keyed by the server and refresh
+    /// token they send (`renewalKey`). A caller holding the same refresh
+    /// token for the same server, on either path, joins the renewal in
+    /// flight instead of sending that token a second time.
+    private var storedSessionRenewals: [String: Task<ApproverBearer, Never>] = [:]
     /// The profile proof the last `.siloProfileVerificationRequired` was
     /// posted for (access token dropped), with the `TokenStore` selection
     /// generation it was installed under. A burst of rejected requests posts
@@ -190,6 +204,12 @@ actor HTTPClient {
     /// The local route requests may take (`LocalRoute.active`; tests pass
     /// their own).
     private let localRoute: @Sendable () -> LocalRoute?
+    private let revocationPolicy: RevocationPolicy
+    /// A `retryPendingRevocations()` pass is running.
+    private var isRetryingPendingRevocations = false
+    /// Queued sessions a `revoke(_:)` is still trying; the retry pass leaves
+    /// them to it.
+    private var revocationsInFlight: Set<UUID> = []
 
     private struct IdentityTransitionWaiter {
         let id: UUID
@@ -211,7 +231,8 @@ actor HTTPClient {
         scopedRefreshRetryBarrier: (@Sendable () async -> Void)? = nil,
         requestCaptureBarrier: (@Sendable () async -> Void)? = nil,
         responseReceivedBarrier: (@Sendable () async -> Void)? = nil,
-        localRoute: @escaping @Sendable () -> LocalRoute? = { LocalRoute.active }
+        localRoute: @escaping @Sendable () -> LocalRoute? = { LocalRoute.active },
+        revocationPolicy: RevocationPolicy = .standard
     ) {
         // An injected session (tests) serves both timeout classes so mocks
         // observe every request regardless of the caller's timeout choice.
@@ -225,6 +246,7 @@ actor HTTPClient {
         self.requestCaptureBarrier = requestCaptureBarrier
         self.responseReceivedBarrier = responseReceivedBarrier
         self.localRoute = localRoute
+        self.revocationPolicy = revocationPolicy
 
         self.decoder = Self.makeJSONDecoder()
 
@@ -404,25 +426,178 @@ actor HTTPClient {
         }
     }
 
-    /// Best-effort revocation after local sign-out (`POST /api/v2/auth/logout`).
-    /// The captured bearer belongs to the outgoing session; never refresh it or
-    /// read the replacement account. The request carries only that bearer: v2
-    /// logout does not accept the profile header.
-    func revokeSession(_ auth: CapturedOrdinaryRequestAuth) async {
-        guard let token = auth.accessToken, !token.isEmpty else { return }
-        do {
-            var request = try buildRequest(serverUrl: auth.account.serverURL,
-                method: "POST", path: "/api/v2/auth/logout", query: [:])
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.timeoutInterval = 5
-            // Removing the server or signing in again cancels ordinary traffic.
-            // Let this one captured revocation finish independently.
-            let revocationSession = URLSession(configuration: session.configuration)
-            defer { revocationSession.invalidateAndCancel() }
-            _ = try await revocationSession.data(for: request)
-        } catch {
-            // Local sign-out is complete even when the server is unavailable.
+    /// How hard `revoke(_:)` tries before it queues a session for later.
+    struct RevocationPolicy: Sendable {
+        /// Tries per revocation, the first included.
+        var attempts: Int
+        /// Each request's timeout.
+        var timeout: TimeInterval
+        /// The wait before each try after the first; the last repeats.
+        var backoff: [Duration]
+
+        static let standard = RevocationPolicy(attempts: 3, timeout: 15, backoff: [.seconds(2), .seconds(8)])
+    }
+
+    /// What one try at ending a session learned.
+    private enum RevocationAttempt {
+        /// The server ended it, or says there is nothing to end.
+        case finished
+        /// No answer, or one worth trying again, with the tokens to try next
+        /// (a refresh replaces them).
+        case retry(RevocableCredential)
+    }
+
+    /// Revocation of a session already removed from this device
+    /// (`POST /api/v2/auth/logout`). Callers start it detached, after the
+    /// local deletion, so signing out never waits on the network.
+    ///
+    /// The server needs a valid access token to end a session, so a logout
+    /// answered 401 refreshes once (`POST /api/v2/auth/refresh`, no bearer)
+    /// and retries with the new access token. The refreshed pair never
+    /// reaches `TokenStore`: the session is being ended, and a replacement
+    /// sign-in must not be touched. Requests carry only the bearer (v2 logout
+    /// does not accept the profile header) and run on their own session.
+    ///
+    /// The session is queued first (`PendingRevocationStore`), so one cut
+    /// short (the app quit during the retries) is finished at the next
+    /// launch. No answer, a server fault, 408 or 429 tries again with
+    /// backoff (`revocationPolicy`); a session still not ended stays queued,
+    /// with any refreshed tokens, for `retryPendingRevocations()`. A session
+    /// the server ended, or already treats as invalid (logout 401 after a
+    /// refresh, a refused refresh, 404 or any other 4xx), leaves the queue.
+    func revoke(_ credential: RevocableCredential) async {
+        guard !credential.accessToken.isEmpty else { return }
+        // Removing the server or signing in again cancels ordinary traffic.
+        // Let this one revocation finish independently.
+        let revocationSession = URLSession(configuration: session.configuration)
+        defer { revocationSession.invalidateAndCancel() }
+        let entryID = queuePendingRevocation(credential)
+        if let entryID { revocationsInFlight.insert(entryID) }
+        defer { if let entryID { revocationsInFlight.remove(entryID) } }
+        var current = credential
+        for attempt in 0..<max(1, revocationPolicy.attempts) {
+            let backoff = revocationPolicy.backoff
+            if attempt > 0, let delay = backoff.indices.contains(attempt - 1) ? backoff[attempt - 1] : backoff.last {
+                try? await Task.sleep(for: delay)
+            }
+            switch await attemptRevocation(current, entryID: entryID, session: revocationSession) {
+            case .finished:
+                if let entryID { updatePendingRevocation(entryID, to: nil) }
+                return
+            case .retry(let next):
+                // A refresh spent the old refresh token: the entry keeps the new pair.
+                if next != current, let entryID { updatePendingRevocation(entryID, to: next) }
+                current = next
+            }
         }
+        // Queued already, unless the keychain couldn't be read then.
+        if entryID == nil { _ = queuePendingRevocation(current) }
+    }
+
+    /// Tries each queued revocation once more, at launch and on each return
+    /// to the foreground. Ended or already-invalid sessions leave the queue;
+    /// the rest stay, with any tokens a refresh replaced. One pass at a
+    /// time, skipping sessions a `revoke(_:)` is still trying.
+    func retryPendingRevocations() async {
+        guard !isRetryingPendingRevocations else { return }
+        isRetryingPendingRevocations = true
+        defer { isRetryingPendingRevocations = false }
+        guard let entries = try? tokenStore.pendingRevocations.load(), !entries.isEmpty else { return }
+        let revocationSession = URLSession(configuration: session.configuration)
+        defer { revocationSession.invalidateAndCancel() }
+        for entry in entries where !revocationsInFlight.contains(entry.id) {
+            switch await attemptRevocation(entry.credential, entryID: entry.id, session: revocationSession) {
+            case .finished:
+                updatePendingRevocation(entry.id, to: nil)
+            case .retry(let next):
+                if next != entry.credential { updatePendingRevocation(entry.id, to: next) }
+            }
+        }
+    }
+
+    /// Adds a session to the pending queue and returns its entry. A keychain
+    /// that can't be read is left alone rather than overwritten with this
+    /// entry alone.
+    private func queuePendingRevocation(_ credential: RevocableCredential) -> UUID? {
+        let store = tokenStore.pendingRevocations
+        guard var queue = try? store.load() else {
+            Self.logger.error("Pending revocations can't be read; this session isn't queued.")
+            return nil
+        }
+        let entry = PendingRevocation(credential, queuedAt: Date())
+        queue.removeAll { $0.accessToken == credential.accessToken }
+        queue.append(entry)
+        return store.save(queue) ? entry.id : nil
+    }
+
+    /// Replaces a queued session's tokens, or with nil, drops it. Read
+    /// again each time: other revocations change the queue meanwhile.
+    private func updatePendingRevocation(_ id: UUID, to credential: RevocableCredential?) {
+        let store = tokenStore.pendingRevocations
+        guard var queue = try? store.load(), let index = queue.firstIndex(where: { $0.id == id }) else { return }
+        if let credential {
+            queue[index].accessToken = credential.accessToken
+            queue[index].refreshToken = credential.refreshToken
+        } else {
+            queue.remove(at: index)
+        }
+        store.save(queue)
+    }
+
+    /// One try: logout with the session's access token and, answered 401,
+    /// one refresh and a logout with the new access token. The refresh spends
+    /// the old refresh token, so the new pair goes into the queue entry
+    /// (`entryID`) before that logout: an app that quits during it retries
+    /// with tokens that still work.
+    private func attemptRevocation(_ credential: RevocableCredential, entryID: UUID?,
+                                   session: URLSession) async -> RevocationAttempt {
+        let status = await sendLogout(serverURL: credential.serverURL, bearer: credential.accessToken,
+                                      session: session)
+        guard status == 401 else {
+            return status.map(Self.endsRevocation) == true ? .finished : .retry(credential)
+        }
+        // The server refused the token, and there is nothing to renew it.
+        guard let refreshToken = credential.refreshToken, !refreshToken.isEmpty,
+              var refresh = Self.makeRefreshRequest(serverURL: credential.serverURL,
+                                                    refreshToken: refreshToken, encoder: encoder) else {
+            return .finished
+        }
+        refresh.timeoutInterval = revocationPolicy.timeout
+        guard let (data, response) = try? await session.data(for: refresh),
+              let http = response as? HTTPURLResponse else { return .retry(credential) }
+        guard (200..<300).contains(http.statusCode) else {
+            // A refused refresh means the session is already gone.
+            return Self.endsRevocation(http.statusCode) || http.statusCode == 401 ? .finished : .retry(credential)
+        }
+        guard let tokens = try? decoder.decode(RefreshResponse.self, from: data),
+              !tokens.accessToken.isEmpty else { return .retry(credential) }
+        let refreshed = RevocableCredential(
+            serverURL: credential.serverURL,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken.isEmpty ? credential.refreshToken : tokens.refreshToken
+        )
+        if let entryID { updatePendingRevocation(entryID, to: refreshed) }
+        let retried = await sendLogout(serverURL: refreshed.serverURL, bearer: refreshed.accessToken,
+                                       session: session)
+        guard let retried else { return .retry(refreshed) }
+        return retried == 401 || Self.endsRevocation(retried) ? .finished : .retry(refreshed)
+    }
+
+    /// A logout or refresh answer that leaves nothing to retry: the session
+    /// ended (2xx), or the server says it can't be (4xx other than 401,
+    /// which refreshes, and 408 and 429, which may pass).
+    private static func endsRevocation(_ status: Int) -> Bool {
+        (200..<300).contains(status) || ((400..<500).contains(status) && ![401, 408, 429].contains(status))
+    }
+
+    /// One logout request; the HTTP status, or nil when none arrived.
+    private func sendLogout(serverURL: String, bearer: String, session: URLSession) async -> Int? {
+        guard var request = try? buildRequest(serverUrl: serverURL, method: "POST",
+                                              path: "/api/v2/auth/logout", query: [:]) else { return nil }
+        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = revocationPolicy.timeout
+        guard let (_, response) = try? await session.data(for: request) else { return nil }
+        return (response as? HTTPURLResponse)?.statusCode
     }
 
     /// Send a request with a caller-supplied body and extra headers, doing no
@@ -1401,7 +1576,7 @@ actor HTTPClient {
     /// has a parallel chokepoint in
     /// ``performRefreshTransport(request:session:)``. Those two functions are
     /// the only places in this file that may call `session.data(for:)`, apart
-    /// from the best-effort, unclassified `revokeSession`; adding another
+    /// from the best-effort, unclassified `revoke(_:)`; adding another
     /// would reintroduce an unclassified path.
     ///
     /// `routesLocally` lets an ordinary active-server request take the local
@@ -2186,6 +2361,16 @@ actor HTTPClient {
             if let failure = await existing.task.value { throw failure.error }
             return await rotatedAuth(since: expected)
         }
+        // An approver renewal started before this account was selected may
+        // be spending the same refresh token (`storedSessionRenewals`). Wait
+        // for it rather than send the token again: its save rotates the
+        // selected sign-in too (`TokenStore.saveBackgroundSignInRefresh`).
+        if let credential = await tokenStore.captureRefreshCredential(expected: key),
+           let renewal = storedSessionRenewals[Self.renewalKey(origin: key.serverURL, refresh: credential.refreshToken)] {
+            refreshFlightJoinObserver?(.ordinary)
+            _ = await renewal.value
+            return await rotatedAuth(since: expected)
+        }
 
         let task = Task<RefreshFlightFailure?, Never> { [tokenStore, session, decoder, encoder] in
             await Self.performRefresh(
@@ -2401,22 +2586,87 @@ actor HTTPClient {
             return await storedBearer(serverId: serverId)
         }
         guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
-        if let flight = inactiveServerRenewals[serverId], flight.refreshToken == refresh {
-            return await flight.task.value
+        let tokenStore = tokenStore
+        return await renewOnce(origin: origin, refresh: refresh) {
+            await self.renewStoredSession(access: access, refresh: refresh, origin: origin) { [tokenStore] tokens in
+                await tokenStore.saveInactiveServerRefresh(accessToken: tokens.accessToken,
+                    refreshToken: tokens.refreshToken, replacing: stored, for: serverId)
+            }
         }
-        let task = Task { await renewInactiveServer(serverId, stored: stored, access: access, refresh: refresh, origin: origin) }
-        inactiveServerRenewals[serverId] = (refresh, task)
+    }
+
+    /// Runs `renewal` unless one sending `refresh` to `origin` is already in
+    /// flight, which the caller joins instead (`storedSessionRenewals`).
+    private func renewOnce(origin: String, refresh: String,
+                           _ renewal: @escaping @Sendable () async -> ApproverBearer) async -> ApproverBearer {
+        let key = Self.renewalKey(origin: origin, refresh: refresh)
+        if let flight = storedSessionRenewals[key] {
+            return await flight.value
+        }
+        let task = Task { await renewal() }
+        storedSessionRenewals[key] = task
         let bearer = await task.value
-        if inactiveServerRenewals[serverId]?.refreshToken == refresh {
-            inactiveServerRenewals[serverId] = nil
-        }
+        storedSessionRenewals[key] = nil
         return bearer
     }
 
-    /// One renewal of an inactive saved server's slot, compare-and-set
-    /// against `stored` (see `freshAccessToken(serverId:)`).
-    private func renewInactiveServer(_ serverId: String, stored: CanonicalAccountSession, access: String,
-                                     refresh: String, origin: String) async -> ApproverBearer {
+    /// A renewal is the refresh token and the server it is sent to: two
+    /// servers may issue the same token text.
+    private static func renewalKey(origin: String, refresh: String) -> String {
+        "\(ServerRegistry.normalize(url: origin))\n\(refresh)"
+    }
+
+    /// A bearer for one saved account, on the same terms as
+    /// `freshAccessToken(serverId:)`, for approving another device as that
+    /// account when several share a server.
+    ///
+    /// The selected account, and the background account of a server that is
+    /// not active, renew through `freshAccessToken(serverId:)` and share its
+    /// flights. Any other saved sign-in renews its own item once,
+    /// compare-and-set against the session the refresh was sent with
+    /// (`TokenStore.saveBackgroundSignInRefresh`); a caller on either path
+    /// holding the same refresh token waits for that renewal. A pending legacy account
+    /// has no session of its own outside those two paths: `.rejected`.
+    ///
+    /// The server's path serves whichever account holds that server's
+    /// credential. When that changed hands while the bearer was read, the
+    /// bearer may be another account's and is not handed out.
+    func freshAccessToken(for account: SiloAccountRef) async -> ApproverBearer {
+        if await servesServerBearer(account) {
+            let bearer = await freshAccessToken(serverId: account.serverID)
+            return await servesServerBearer(account) ? bearer : .unreachable
+        }
+        guard case .signIn(let key) = account,
+              let stored = await tokenStore.backgroundSignInSession(for: key),
+              let access = stored.accessToken, let refresh = stored.refreshToken,
+              let origin = stored.origin.map({ ServerRegistry.normalize(url: $0) }), !origin.isEmpty else {
+            return .rejected
+        }
+        guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
+        let tokenStore = tokenStore
+        return await renewOnce(origin: origin, refresh: refresh) {
+            await self.renewStoredSession(access: access, refresh: refresh, origin: origin) { [tokenStore] tokens in
+                await tokenStore.saveBackgroundSignInRefresh(accessToken: tokens.accessToken,
+                    refreshToken: tokens.refreshToken, replacing: stored, for: key)
+            }
+        }
+    }
+
+    /// Whether `freshAccessToken(serverId:)` reads `account`'s credential:
+    /// it is selected, or it is the background account of a server that is
+    /// not active.
+    private func servesServerBearer(_ account: SiloAccountRef) async -> Bool {
+        if await tokenStore.currentAccount() == account { return true }
+        guard await tokenStore.getActiveServerId() != account.serverID else { return false }
+        return await tokenStore.backgroundAccount(forServer: account.serverID) == account
+    }
+
+    /// One renewal of a stored session that is not the selected credential,
+    /// sent to `origin`. `save` writes the rotated pair compare-and-set
+    /// against the session the refresh was sent with, and answers false when
+    /// that session changed (see `freshAccessToken(serverId:)`).
+    private func renewStoredSession(access: String, refresh: String, origin: String,
+                                    save: @Sendable (RefreshResponse) async -> Bool) async -> ApproverBearer {
         func fallback(_ failure: ApproverBearer) -> ApproverBearer {
             Self.hasExpired(access) ? failure : .token(access)
         }
@@ -2429,9 +2679,7 @@ actor HTTPClient {
             return fallback(Self.isProviderUnavailable(statusCode: http.statusCode, body: body)
                 ? .providerUnavailable : .unreachable)
         }
-        guard let tokens = try? decoder.decode(RefreshResponse.self, from: data),
-              await tokenStore.saveInactiveServerRefresh(accessToken: tokens.accessToken,
-                  refreshToken: tokens.refreshToken, replacing: stored, for: serverId) else {
+        guard let tokens = try? decoder.decode(RefreshResponse.self, from: data), await save(tokens) else {
             return fallback(.unreachable)
         }
         return .token(tokens.accessToken)
@@ -2967,7 +3215,8 @@ enum HTTPDecodingDiagnostics {
 #endif
 
 /// A bearer for approving another device's sign-in on a saved server
-/// (`HTTPClient.freshAccessToken(serverId:)`), or why there is none.
+/// (`HTTPClient.freshAccessToken(serverId:)`, or `freshAccessToken(for:)`
+/// for one account there), or why there is none.
 enum ApproverBearer: Equatable, Sendable {
     case token(String)
     /// The server refused the session, or this device has none: sign in to

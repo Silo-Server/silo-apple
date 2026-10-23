@@ -12,11 +12,10 @@ import SwiftUI
 struct SignInTVView: View {
     var initialCode: String = ""
     var initialServerId: String? = nil
-    /// "Not you?" on the card: the caller closes this view, signs out of the
-    /// server and signs in again with the TV's code kept. The flag is the
-    /// card's `offersAccountChoice`: whether the provider is asked to let
-    /// the person choose an account.
-    var onSwitchAccount: ((ServerEntry, DeviceApprovalLink, Bool) -> Void)? = nil
+    /// "Not you? Switch Account" on the card: the caller closes this view
+    /// and opens the account chooser, signing nobody out; the TV's code
+    /// returns to the card once an account is chosen or added.
+    var onSwitchAccount: ((DeviceApprovalLink) -> Void)? = nil
     var onClose: () -> Void
 
     @State private var code = ""
@@ -47,8 +46,7 @@ struct SignInTVView: View {
                             onSwitchAccount: onSwitchAccount.map { switchAccount in
                                 {
                                     model.stop()
-                                    switchAccount(model.server, DeviceApprovalLink(server: model.server, code: model.code),
-                                                  model.offersAccountChoice)
+                                    switchAccount(DeviceApprovalLink(server: model.server, code: model.code))
                                 }
                             },
                             onClose: onClose
@@ -151,11 +149,11 @@ struct DeviceLinkApprovalView: View {
     let link: DeviceApprovalLink
     /// Add the server (prefilled) and come back to the link after signing in.
     var onAddServer: (String) -> Void
-    /// Sign in to a saved server this device is signed out of, and come back
-    /// to the link after signing in.
+    /// Sign in to a saved server the current account isn't on, and
+    /// come back to the link after signing in.
     var onSignIn: (ServerEntry, DeviceApprovalLink) -> Void
     /// "Not you?" on the card (see `SignInTVView.onSwitchAccount`).
-    var onSwitchAccount: (ServerEntry, DeviceApprovalLink, Bool) -> Void
+    var onSwitchAccount: (DeviceApprovalLink) -> Void
     var onClose: () -> Void
 
     private enum Resolution: Equatable {
@@ -184,7 +182,7 @@ struct DeviceLinkApprovalView: View {
                 NavigationStack {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Sign in to \(server.displayName)").font(.siloTitle)
-                        Text("The TV's code belongs to \(server.displayName), and this device isn't signed in to it. Sign in, then approve the TV.")
+                        Text("The TV's code belongs to \(server.displayName), and the current account isn't on it. Sign in, then approve the TV.")
                             .font(.siloBody)
                             .fixedSize(horizontal: false, vertical: true)
                         Button {

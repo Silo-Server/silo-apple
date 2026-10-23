@@ -101,7 +101,8 @@ struct RestoredSessionValidator: Sendable {
                 await tokenStore.refreshAccountIdentity()
             },
             accessTokenReader: { serverID in
-                await tokenStore.hasAccessTokenForActiveServer(serverId: serverID)
+                guard await tokenStore.getActiveServerId() == serverID else { return false }
+                return await tokenStore.hasUsableCredential()
             },
             isServerUpdateRequired: isServerUpdateRequired,
             contractRecheck: contractRecheck
@@ -223,12 +224,18 @@ struct RestoredSessionValidator: Sendable {
 
 /// Resolves the current registry/token/profile combination into the router's
 /// auth state. Cold launch can use `resolveLocal()` as an immediate fallback
-/// and apply validation only while the splash is still visible; explicit
-/// server switches use `resolveValidated()` and await the same policy.
+/// and apply validation only while the splash is still visible; server
+/// recovery's Try again uses `resolveCurrentValidated()` and awaits the same
+/// policy. Switches between accounts go through
+/// `SiloAccountCoordinator`.
 enum RestoredSessionAuthResolver {
     struct LocalResolution: Equatable {
         let state: AppRouter.AuthState
         let restoredAccount: RefreshAccountIdentity?
+        /// The sign-in the route runs, when it shows a sign-in screen or the
+        /// server step.
+        var signInContext: SignInContext? = nil
+        var loginNotice: AppRouter.LoginNotice? = nil
     }
 
     static func localState(
@@ -241,20 +248,54 @@ enum RestoredSessionAuthResolver {
         return hasProfile ? .authenticated : .needsProfile
     }
 
+    /// Runs the one-time sign-in migration first, before any credential is
+    /// selected and before anything reads local data under account keys
+    /// (migration publishes their legacy owners). Then the launch rules
+    /// (spec §6.2, §6.3) pick the account and credential through
+    /// `SiloAccountCoordinator`. Before migration, or while the accounts index
+    /// can't be read, the active server's own session is used, as before
+    /// users existed.
     static func resolveLocal() async -> LocalResolution {
         let auth = AuthService.shared
+        let registry = ServerRegistry.shared
+        let tokenStore = TokenStore.shared
+        _ = await tokenStore.migrateLegacySessionsIfNeeded(
+            servers: registry.entries.map { (id: $0.id, url: $0.url) },
+            activeServerID: registry.activeServerId
+        )
+        let resolution: LocalResolution
+        if let launch = await SiloAccountCoordinator.shared.resolveLaunch() {
+            resolution = launch
+        } else {
+            resolution = await resolveLegacy(auth: auth, registry: registry, tokenStore: tokenStore)
+        }
+        #if !os(tvOS)
+        // A background launch may have loaded the downloads of the server
+        // and profile it found; follow whoever the launch rules opened, so
+        // another user's downloads never show (plan WP2 note).
+        _ = await DownloadManager.shared.activateScopeIfNeeded()
+        #endif
+        return resolution
+    }
+
+    /// The active server's own session, as before accounts existed.
+    private static func resolveLegacy(
+        auth: AuthService,
+        registry: ServerRegistry,
+        tokenStore: TokenStore
+    ) async -> LocalResolution {
         guard auth.hasServer,
-              let activeServerID = ServerRegistry.shared.activeServerId,
+              let activeServerID = registry.activeServerId,
               !activeServerID.isEmpty else {
             return LocalResolution(state: .needsServerSetup, restoredAccount: nil)
         }
-
-        guard await TokenStore.shared.hasAccessTokenForActiveServer(serverId: activeServerID) else {
+        await tokenStore.select(serverID: activeServerID, credential: .legacy(serverID: activeServerID))
+        guard await tokenStore.hasUsableCredential() else {
             return LocalResolution(state: .needsLogin, restoredAccount: nil)
         }
 
         let hasProfile = await auth.resolveActiveProfileForSession()
-        let account = await TokenStore.shared.refreshAccountIdentity()
+        let account = await tokenStore.refreshAccountIdentity()
         return LocalResolution(
             state: localState(
                 hasServer: true,
@@ -281,10 +322,28 @@ enum RestoredSessionAuthResolver {
         }
     }
 
-    static func resolveValidated() async -> AppRouter.AuthState {
-        let local = await resolveLocal()
-        guard let expected = local.restoredAccount else { return local.state }
-        let result = await AuthService.shared.validateRestoredSession(expected: expected)
-        return await state(after: result, fallingBackTo: local.state)
+    /// The current account again (server recovery's Try again): no Ask For
+    /// and no other account, unlike a cold launch. Before migration, or with
+    /// no current account, the cold-launch path.
+    static func resolveCurrent() async -> LocalResolution {
+        if let current = await SiloAccountCoordinator.shared.resolveCurrentAccount() { return current }
+        return await resolveLocal()
+    }
+
+    /// `resolveCurrent`, validated with the server, keeping the sign-in a
+    /// sign-in screen runs.
+    static func resolveCurrentValidated() async -> LocalResolution {
+        let local = await resolveCurrent()
+        guard let expected = local.restoredAccount else { return local }
+        switch await AuthService.shared.validateRestoredSession(expected: expected) {
+        case .valid, .indeterminate:
+            return local
+        case .needsLogin:
+            return LocalResolution(state: .needsLogin, restoredAccount: nil, loginNotice: .sessionExpired)
+        case .serverRecovery(let reason):
+            return LocalResolution(state: .serverRecovery(reason), restoredAccount: nil)
+        case .identityChanged:
+            return await resolveCurrent()
+        }
     }
 }

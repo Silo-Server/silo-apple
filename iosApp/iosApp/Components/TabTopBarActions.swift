@@ -16,8 +16,6 @@ struct TabTopBarActions: View {
     /// server reports `requests_enabled`, so the closure is inert otherwise.
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
-    let onSwitchServer: () -> Void
-    let onSignOut: () -> Void
 
     /// Shared session cache so switching pages never refetches or flashes
     /// the avatar fallback.
@@ -48,9 +46,7 @@ struct TabTopBarActions: View {
                 profile: profileStore.profile,
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
-                onSwitchProfile: onSwitchProfile,
-                onSwitchServer: onSwitchServer,
-                onSignOut: onSignOut
+                onSwitchProfile: onSwitchProfile
             )
         }
         #if os(iOS)
@@ -87,7 +83,9 @@ private struct TopBarIconButton: View {
 }
 
 /// Profile avatar opening the account menu (Watch Party, Requests, Settings,
-/// Switch Profile, Switch Server, Sign Out).
+/// Switch Profile, Sign Out). Other accounts are reached from Who's Watching
+/// (Switch Profile), the one place to switch accounts. Sign Out asks first,
+/// with the option to remove the account too.
 struct ProfileAvatarMenu: View {
     @Environment(AppRouter.self) private var router
     let profile: UserProfile?
@@ -97,8 +95,6 @@ struct ProfileAvatarMenu: View {
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
-    let onSwitchServer: () -> Void
-    let onSignOut: () -> Void
 
     /// Capability-gated: the Requests row exists only when the server has
     /// the feature enabled (older servers 404 the probe and read as off).
@@ -150,13 +146,8 @@ struct ProfileAvatarMenu: View {
             } label: {
                 Label("Switch Profile", systemImage: "person.2")
             }
-            Button {
-                onSwitchServer()
-            } label: {
-                Label("Switch Server", systemImage: "server.rack")
-            }
             Button(role: .destructive) {
-                onSignOut()
+                Task { await router.accounts.requestRemoval(.currentAccount, router: router) }
             } label: {
                 Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
             }

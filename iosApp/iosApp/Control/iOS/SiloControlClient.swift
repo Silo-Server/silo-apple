@@ -375,7 +375,8 @@ final class SiloControlClient {
             throw SiloControlHandoffError.identityChanged
         }
         let identity = HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
-            profileId: profileId, clientFamily: AppleDeviceIdentity.current.clientFamily)
+            profileId: profileId, clientFamily: AppleDeviceIdentity.current.clientFamily,
+            accountID: TokenStore.shared.mirroredAccountID)
         let api = SiloAPI.shared.apiV2Client
 
         let requestId = UUID().uuidString

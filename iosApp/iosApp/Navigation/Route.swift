@@ -42,7 +42,13 @@ enum Route: Hashable {
     case collections
     case collectionDetail(collectionId: String)
     case settings
-    case serverList
+    // Silo accounts (spec §5)
+    /// Choose an Account, with focus on `focus`.
+    case chooseAccount(focus: SiloAccountRef? = nil)
+    /// "Sign in to…": the server step of a sign-in (spec §5.4).
+    case signInTarget(SignInContext)
+    /// Settings › Accounts.
+    case manageAccounts
 
     /// The active party or the create/join hub.
     case watchParty

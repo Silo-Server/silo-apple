@@ -32,33 +32,33 @@ final class DownloadStorageReclaimTests: XCTestCase {
         let root: URL = self.root
         let store = DownloadStore(rootDirectory: { root })
 
-        let missing = await store.loadScope(serverId: "server", profileId: "missing")
+        let missing = await store.loadScope(serverId: "server", accountId: nil, profileId: "missing")
         XCTAssertEqual(missing.outcome, .missing)
-        XCTAssertTrue(missing.tracksScopeStorage, "nothing can read a missing store's directories again")
+        XCTAssertTrue(missing.isComplete, "nothing can read a missing store's directories again")
 
         try writeStore(profile: "loaded", contents: Data(#"{"version":1,"records":{},"subscriptions":[],"progressQueue":[],"localProgress":{}}"#.utf8))
-        let loaded = await store.loadScope(serverId: "server", profileId: "loaded")
+        let loaded = await store.loadScope(serverId: "server", accountId: nil, profileId: "loaded")
         XCTAssertEqual(loaded.outcome, .loaded)
-        XCTAssertTrue(loaded.tracksScopeStorage)
+        XCTAssertTrue(loaded.isComplete)
 
         try writeStore(profile: "corrupt", contents: Data("not json".utf8))
-        let quarantined = await store.loadScope(serverId: "server", profileId: "corrupt")
+        let quarantined = await store.loadScope(serverId: "server", accountId: nil, profileId: "corrupt")
         XCTAssertEqual(quarantined.outcome, .quarantined)
-        XCTAssertTrue(quarantined.tracksScopeStorage, "nothing reads a quarantined store again")
+        XCTAssertTrue(quarantined.isComplete, "nothing reads a quarantined store again")
 
         // Present but unreadable, as before first unlock.
         let locked = try writeStore(profile: "locked", contents: Data("{}".utf8))
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
-        let unreadable = await store.loadScope(serverId: "server", profileId: "locked")
+        let unreadable = await store.loadScope(serverId: "server", accountId: nil, profileId: "locked")
         XCTAssertEqual(unreadable.outcome, .unreadable)
-        XCTAssertFalse(unreadable.tracksScopeStorage, "the store may still own every directory")
+        XCTAssertFalse(unreadable.isComplete, "the store may still own every directory")
 
         // Undecodable and stuck in place.
         let stuck = try writeStore(profile: "stuck", contents: Data("not json".utf8))
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: stuck.deletingLastPathComponent().path)
-        let unmovable = await store.loadScope(serverId: "server", profileId: "stuck")
+        let unmovable = await store.loadScope(serverId: "server", accountId: nil, profileId: "stuck")
         XCTAssertEqual(unmovable.outcome, .unreadable)
-        XCTAssertFalse(unmovable.tracksScopeStorage)
+        XCTAssertFalse(unmovable.isComplete)
     }
 
     // MARK: - Sweep of the loaded scope
@@ -125,7 +125,7 @@ final class DownloadStorageReclaimTests: XCTestCase {
         try writeFile("not a server/file.bin", bytes: 5)
         _ = try makeDirectory("empty-server/profile/d5")
 
-        let groups = DownloadStorageReclaim.otherStorage(root: root, activeServerFolder: "active", activeProfileFolder: "profile")
+        let groups = DownloadStorageReclaim.otherStorage(root: root, activeServerFolder: "active", activeScopeFolders: ["profile"])
 
         XCTAssertEqual(groups, [
             .init(folderName: oldServer, serverURL: "https://old.example.com", bytes: 200, isActiveServer: false),
@@ -142,7 +142,7 @@ final class DownloadStorageReclaimTests: XCTestCase {
 
         for folder in ["active", "old"] {
             let targets = DownloadStorageReclaim.removalTargets(
-                folderName: folder, root: root, activeServerFolder: "active", activeProfileFolder: "profile"
+                folderName: folder, root: root, activeServerFolder: "active", activeScopeFolders: ["profile"]
             )
             DownloadStorageReclaim.setAside(targets, root: root)
         }
@@ -151,12 +151,44 @@ final class DownloadStorageReclaimTests: XCTestCase {
         XCTAssertEqual(try contents(of: root), ["active"])
         XCTAssertEqual(try contents(of: root.appendingPathComponent("active")), ["profile"])
         XCTAssertEqual(DownloadFilePaths.bytes(under: root), 100)
-        XCTAssertTrue(DownloadStorageReclaim.otherStorage(root: root, activeServerFolder: "active", activeProfileFolder: "profile").isEmpty)
+        XCTAssertTrue(DownloadStorageReclaim.otherStorage(root: root, activeServerFolder: "active", activeScopeFolders: ["profile"]).isEmpty)
+    }
+
+    /// An account's scope sits a level deeper: the server's other accounts
+    /// and the account's other profiles are other data, and so is the
+    /// layout from before accounts. The active scope is never listed or
+    /// removed.
+    func testTheActiveAccountsScopeIsKept() throws {
+        try writeFile("active/acct-1/profile/d1/media.mp4", bytes: 100)
+        try writeFile("active/acct-1/other-profile/d2/media.mp4", bytes: 50)
+        try writeFile("active/acct-2/profile/d3/media.mp4", bytes: 30)
+        try writeFile("active/profile/d4/media.mp4", bytes: 20)
+        let scope = DownloadFilePaths.scopeFolderNames(serverId: "active", accountId: "1", profileId: "profile")
+        XCTAssertEqual(scope.scope, ["acct-1", "profile"])
+
+        XCTAssertEqual(
+            DownloadStorageReclaim.otherStorage(root: root, activeServerFolder: "active", activeScopeFolders: scope.scope),
+            [.init(folderName: "active", serverURL: nil, bytes: 100, isActiveServer: true)]
+        )
+        DownloadStorageReclaim.setAside(DownloadStorageReclaim.removalTargets(
+            folderName: "active", root: root, activeServerFolder: "active", activeScopeFolders: scope.scope
+        ), root: root)
+
+        XCTAssertEqual(DownloadStorageReclaim.deleteSetAside(root: root), 100)
+        XCTAssertEqual(try contents(of: root.appendingPathComponent("active")), ["acct-1"])
+        XCTAssertEqual(try contents(of: root.appendingPathComponent("active/acct-1")), ["profile"])
+        XCTAssertEqual(DownloadFilePaths.bytes(under: root), 100)
+    }
+
+    /// Downloads that couldn't move to their account aren't in the scope's
+    /// store, so the sweep stays off.
+    func testDownloadsNotMovedToTheirAccountKeepTheSweepOff() {
+        XCTAssertFalse(DownloadStoreLoad(file: .empty, outcome: .notMovedToAccount).isComplete)
     }
 
     func testAMissingGroupRemovesNothing() {
         XCTAssertTrue(DownloadStorageReclaim.removalTargets(
-            folderName: "gone", root: root, activeServerFolder: "active", activeProfileFolder: "profile"
+            folderName: "gone", root: root, activeServerFolder: "active", activeScopeFolders: ["profile"]
         ).isEmpty)
     }
 

@@ -76,7 +76,7 @@ final class ServerIdentityResolverTests: XCTestCase {
         )
         registry.addOrUpdate(serverA)
         registry.addOrUpdate(serverB)
-        await registry.switchTo(serverId: serverA.id)
+        await registry.switchTo(serverId: serverA.id, launchSelectionFrom: .shared)
 
         stub.configure([
             Self.brandingPath: (200, Self.branding(name: "Updated A")),
@@ -90,7 +90,7 @@ final class ServerIdentityResolverTests: XCTestCase {
         let refresh = Task { await service.refreshActiveServerName() }
         await waitForRequest(path: Self.brandingPath)
 
-        await registry.switchTo(serverId: serverB.id)
+        await registry.switchTo(serverId: serverB.id, launchSelectionFrom: .shared)
         stub.release(path: Self.brandingPath)
         await refresh.value
 

@@ -2,7 +2,7 @@
 import SwiftUI
 
 /// Skyline-styled tvOS settings: a two-pane layout instead of a stock
-/// full-width `Form`. The left rail holds the profile card, the category
+/// full-width `Form`. The left rail holds the account header, the category
 /// list, and Sign Out; the right pane renders the focused category's
 /// controls inline. The pane follows rail focus live (like the system
 /// Settings app's split screens), so there is no drill-in navigation.
@@ -30,6 +30,10 @@ struct TVSettingsView: View {
     @State private var preferredFocusOwner: FocusOwner = .rail
     @State private var preferredRailFocus: RailItem = .category(.general)
     @State private var preferredDetailFocus: TVSettingsDetailFocus = .top
+    /// The Settings › Account and Server row whose action opened a
+    /// confirmation; focus returns to it, or to the row that took its place.
+    @State private var accountsReturnRow: TVAccountsSettingsRow?
+    @State private var hasLoadedAccounts = false
     @FocusState private var railFocus: RailItem?
     @FocusState private var detailFocus: TVSettingsDetailFocus?
     @Environment(\.resetFocus) private var resetFocus
@@ -45,14 +49,18 @@ struct TVSettingsView: View {
             settingsContent
 
             if showSignOutConfirm {
+                // Spec §5.6: names the account and its server, says it
+                // affects everyone on this Apple TV, and offers Remove
+                // Account.
+                let copy = viewModel.signOutConfirmation
                 TVSettingsConfirmationOverlay(
-                    title: "Sign Out",
-                    message: "Choose whether to keep or remove this server from this Apple TV.",
-                    confirmTitle: "Sign Out",
-                    additionalDestructiveTitle: "Sign Out & Remove Server",
+                    title: copy.title,
+                    message: copy.message,
+                    confirmTitle: copy.confirmTitle,
+                    additionalDestructiveTitle: copy.additionalDestructiveTitle,
                     cancel: dismissSignOutConfirmation,
                     confirm: router.signOutAndReset,
-                    additionalDestructiveAction: router.signOutRemoveServerAndReset
+                    additionalDestructiveAction: router.signOutRemoveAccountAndReset
                 )
                 .onDisappear(perform: restoreSignOutFocus)
                 .transition(.opacity)
@@ -90,7 +98,22 @@ struct TVSettingsView: View {
         .onAppear(perform: focusGeneralOnEntry)
         .task {
             await viewModel.loadSettings()
+            hasLoadedAccounts = true
             await diagnosticsModel.load(profile: viewModel.activeProfile)
+        }
+        .onChange(of: isAccountsOverlayPresented) { _, presented in
+            guard !presented, selectedCategory == .accountAndServer,
+                  let row = accountsReturnRow, accountsRows.contains(row) else { return }
+            restoreDetailFocus(to: .accounts(row))
+        }
+        .onChange(of: accountsRows) { before, after in
+            guard let row = accountsReturnRow, !after.contains(row) else { return }
+            accountsReturnRow = nil
+            guard selectedCategory == .accountAndServer,
+                  let next = TVFocusNeighbor.replacement(for: row, before: before, after: after) ?? after.first else { return }
+            preferredFocusOwner = .detail
+            preferredDetailFocus = .accounts(next)
+            restoreDetailFocus(to: .accounts(next))
         }
         .onChange(of: railFocus) { _, focus in
             if let focus,
@@ -102,7 +125,7 @@ struct TVSettingsView: View {
             }
 
             // The pane previews whatever category the rail focus rests on.
-            // Profile / Sign Out keep the last category visible.
+            // Sign Out keeps the last category visible.
             if case .category(let category) = focus {
                 preferredDetailFocus = initialDetailFocus(for: category)
                 if category != selectedCategory {
@@ -131,12 +154,19 @@ struct TVSettingsView: View {
     /// A picker, confirmation, or full-screen overlay owns focus.
     private var isModalPresented: Bool {
         activePicker != nil || showSignOutConfirm || showPrivacyPolicy || showOpenSourceAcknowledgements
+            || isAccountsOverlayPresented
+    }
+
+    /// A confirmation from the app's presenter, raised by Settings ›
+    /// Accounts.
+    private var isAccountsOverlayPresented: Bool {
+        router.removalRequest != nil
     }
 
     /// Settings always enters through General. Assign the concrete rail focus
     /// before tvOS performs its first geometric resolution, then re-assert it
-    /// once the two focus scopes have mounted so the profile card cannot paint
-    /// a simultaneous entry highlight.
+    /// once the two focus scopes have mounted so no other row paints a
+    /// simultaneous entry highlight.
     private func focusGeneralOnEntry() {
         selectedCategory = .general
         preferredFocusOwner = .rail
@@ -200,7 +230,7 @@ struct TVSettingsView: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
 
-            profileRow
+            accountHeader
                 .padding(.bottom, 22)
 
             ForEach(visibleCategories) { category in
@@ -221,35 +251,31 @@ struct TVSettingsView: View {
         .padding(.bottom, 24)
     }
 
-    private var profileRow: some View {
-        Button(action: router.switchProfile) {
-            HStack(spacing: 18) {
-                ProfileAvatarView(
-                    avatar: viewModel.profileAvatar,
-                    imageUrl: viewModel.profileAvatarImageUrl,
-                    name: viewModel.displayName,
-                    size: 68
-                )
+    /// The open account: its username, email, and server. Not a button:
+    /// Who's Watching and Switch Account are elsewhere.
+    private var accountHeader: some View {
+        let header = viewModel.accountHeader
+        return HStack(spacing: 18) {
+            ProfileAvatarView(avatar: nil, imageUrl: nil, name: header.name, size: 68)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(viewModel.displayName)
-                        .font(.system(size: 27, weight: .semibold))
-                        .lineLimit(1)
-                    Text(viewModel.accountSubtitle)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(header.name)
+                    .font(.system(size: 27, weight: .semibold))
+                    .lineLimit(1)
+                ForEach(header.detailLines, id: \.self) { line in
+                    Text(line)
                         .font(.system(size: 19))
                         .opacity(0.62)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-
-                Spacer(minLength: 0)
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 17, weight: .semibold))
-                    .opacity(0.5)
             }
+
+            Spacer(minLength: 0)
         }
-        .buttonStyle(TVSettingsRailRowStyle())
-        .focused($railFocus, equals: .profile)
+        .foregroundStyle(Color.siloOnSurface)
+        .padding(.horizontal, 20)
+        .accessibilityElement(children: .combine)
     }
 
     private func categoryRow(_ category: TVSettingsCategory) -> some View {
@@ -324,6 +350,9 @@ struct TVSettingsView: View {
     private func initialDetailFocus(for category: TVSettingsCategory) -> TVSettingsDetailFocus {
         if category == .general {
             return .generalAppleTVUser
+        }
+        if category == .accountAndServer {
+            return accountsRows.first.map(TVSettingsDetailFocus.accounts) ?? .serverPrivacyPolicy
         }
         if category == .subtitles,
            viewModel.prefs.serverUpgradeRequired || viewModel.subtitleMatchesSystemAppearance {
@@ -508,10 +537,28 @@ struct TVSettingsView: View {
         switch selectedCategory {
         case .general:
             TVGeneralSettingsPane(
-                activeProfile: viewModel.activeProfile,
+                pairedProfileValue: viewModel.pairedProfileValue,
+                pairedAccountLine: viewModel.pairedAccountLine,
+                hasMultipleAccounts: viewModel.showsAskFor,
                 detailFocus: $detailFocus,
-                changePairedProfile: router.switchProfile
+                // With two or more accounts this goes through Choose an
+                // Account.
+                changePairedProfile: { Task { await router.accounts.changePairedProfile(router: router) } }
             )
+        case .accountAndServer:
+            // The accounts sit in the pane itself, like every other setting
+            // here, with the open account's server and the app below them.
+            VStack(alignment: .leading, spacing: 8) {
+                TVAccountsSettingsSection(
+                    model: accountsModel,
+                    phase: TVUserListPhase(directory: router.accounts.directory, hasLoaded: hasLoadedAccounts),
+                    addresses: Dictionary(router.accounts.directory.accounts.map { ($0.id, $0.serverAddress) },
+                                          uniquingKeysWith: { first, _ in first }),
+                    focus: $detailFocus,
+                    actions: accountsActions
+                )
+                serverSections
+            }
         case .playback:
             TVPlaybackSettingsPane(
                 viewModel: viewModel,
@@ -526,16 +573,15 @@ struct TVSettingsView: View {
             )
         case .diagnostics:
             TVDiagnosticsSettingsPane(model: diagnosticsModel, detailFocus: $detailFocus)
-        case .server:
-            serverPane
         }
     }
 
-    // MARK: - Server pane
+    // MARK: - Server and app
 
-    private var serverPane: some View {
+    /// Under the accounts: the open account's server, and about this app.
+    private var serverSections: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TVSettingsSectionHeader("ACTIVE SERVER")
+            TVSettingsSectionHeader("SERVER")
 
             TVSettingsInfoRow(
                 title: "Server",
@@ -549,20 +595,6 @@ struct TVSettingsView: View {
                 TVSettingsInfoRow(title: "Address", value: viewModel.serverUrl)
             }
 
-            Button { router.navigate(to: .serverList) } label: {
-                HStack(spacing: 16) {
-                    Image(systemName: "server.rack")
-                        .font(.system(size: 22, weight: .medium))
-                    Text("Manage Servers")
-                        .font(.system(size: 26))
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 18, weight: .semibold))
-                        .opacity(0.55)
-                }
-            }
-            .buttonStyle(TVSettingsPaneRowStyle())
-            .focused($detailFocus, equals: .top)
 
             TVSettingsSectionHeader("ABOUT")
 
@@ -612,10 +644,43 @@ struct TVSettingsView: View {
         }
     }
 
+    // MARK: - Accounts pane
+
+    private var accountsModel: AccountsSettingsViewModel {
+        AccountsSettingsViewModel(directory: router.accounts.directory, device: router.accounts.device)
+    }
+
+    private var accountsRows: [TVAccountsSettingsRow] {
+        TVAccountsSettingsSection.rows(in: accountsModel)
+    }
+
+    private var accountsActions: TVAccountsSettingsSection.Actions {
+        TVAccountsSettingsSection.Actions(
+            signOut: { account, row in
+                noteAccountsAction(row)
+                Task { await router.accounts.requestRemoval(.signOut(account), router: router) }
+            },
+            signInAgain: { account in
+                Task { await router.accounts.openAccount(account, router: router) }
+            },
+            remove: { account, row in
+                noteAccountsAction(row)
+                Task { await router.accounts.requestRemoval(.remove(account), router: router) }
+            },
+            addAccount: { Task { await router.accounts.startAddAccount(router: router) } }
+        )
+    }
+
+    /// The overlay takes focus; remember the row so it comes back here.
+    private func noteAccountsAction(_ row: TVAccountsSettingsRow) {
+        accountsReturnRow = row
+        preferredFocusOwner = .detail
+        preferredDetailFocus = .accounts(row)
+    }
+
     // MARK: - Rail model
 
     enum RailItem: Hashable {
-        case profile
         case category(TVSettingsCategory)
         case signOut
     }
@@ -647,6 +712,7 @@ enum TVSettingsDetailFocus: Hashable {
     case top
     case generalAppleTVUser
     case generalProfileLaunch
+    case generalAskFor
     case generalAdvisoryAge
     case generalCardPreset
     case generalTopMenu
@@ -678,6 +744,7 @@ enum TVSettingsDetailFocus: Hashable {
     case serverPrivacyPolicy
     case serverOpenSourceLicenses
     case serverExperimental(ExperimentalFeature)
+    case accounts(TVAccountsSettingsRow)
 }
 
 // MARK: - Categories
@@ -687,7 +754,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
     case playback
     case subtitles
     case diagnostics
-    case server
+    case accountAndServer
 
     var id: String { rawValue }
 
@@ -697,7 +764,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
         case .playback: return "Playback"
         case .subtitles: return "Subtitles"
         case .diagnostics: return "Diagnostics"
-        case .server: return "Server"
+        case .accountAndServer: return "Account and Server"
         }
     }
 
@@ -707,7 +774,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
         case .playback: return "play.rectangle"
         case .subtitles: return "captions.bubble"
         case .diagnostics: return "stethoscope"
-        case .server: return "server.rack"
+        case .accountAndServer: return "person.2"
         }
     }
 
@@ -721,8 +788,8 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
             return "Language, behavior, and on-screen appearance."
         case .diagnostics:
             return "Review and send diagnostics to this Silo server."
-        case .server:
-            return "The Silo server this Apple TV is connected to."
+        case .accountAndServer:
+            return "Silo accounts on this Apple TV, the server of the one open now, and this app's version."
         }
     }
 
@@ -732,7 +799,7 @@ enum TVSettingsCategory: String, CaseIterable, Identifiable {
         case .playback: return "Quality and episodes"
         case .subtitles: return "Language and appearance"
         case .diagnostics: return "Reports and support"
-        case .server: return "Connection and version"
+        case .accountAndServer: return "Accounts, server, and version"
         }
     }
 

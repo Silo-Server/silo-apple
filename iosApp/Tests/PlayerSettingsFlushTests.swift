@@ -2667,7 +2667,8 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         key: SettingKey,
         scope: PlayerSettingWriteScope,
         value: SettingJSONValue,
-        profileId: String?
+        profileId: String?,
+        accountID: String?
     ) async throws {
         try failIfCancelled()
         onAttemptStart?()
@@ -2693,7 +2694,7 @@ final class FakeSettingsTransport: PlayerSettingsTransport, @unchecked Sendable 
         if shouldFail { throw error }
     }
 
-    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?) async throws {
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?, accountID: String?) async throws {
         try failIfCancelled()
         await writeGate.waitIfBlocked()
         try failIfCancelled()

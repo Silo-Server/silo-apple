@@ -82,11 +82,38 @@ enum SharedStorage {
         keychainAccountPrefix + "\(serverID).accountEpoch"
     }
 
+    /// The device's accounts (`SiloAccountIndex`), in the user-independent
+    /// audience. The keychain can't list items, so this index is how sign-ins
+    /// are found. The name is from the first multi-account format, which the
+    /// current one converts.
+    static let usersIndexAccount = keychainAccountPrefix + "users.v1"
+    /// The same index as of its last successful write, read only when
+    /// `usersIndexAccount` holds something that can't be decoded.
+    static let usersIndexBackupAccount = keychainAccountPrefix + "users.v1.previous"
+    /// One `SavedSignIn` per server and account, in the user-independent
+    /// audience. `SharedStorage.signInAccount(_:)` appends the key.
+    static let signInAccountPrefix = keychainAccountPrefix + "signIn.v1."
+    /// The saved server list on tvOS, in the user-independent audience
+    /// (`ServerRegistry`). Top Shelf reads which servers are saved.
+    static let serverRegistryAccount = keychainAccountPrefix + "serverRegistry.v2"
+    /// The saved server list on iOS and macOS, in App Group defaults.
+    static let serverRegistryDefaultsKey = "siloServerRegistry.v1"
+
+    /// One `SignInProfileProof` per sign-in, in the current-user audience.
+    /// The name differs from the sign-in's because on iOS and macOS both
+    /// audiences address the same item. `SharedStorage.signInProofAccount(_:)`
+    /// appends the key.
+    static let signInProofAccountPrefix = keychainAccountPrefix + "signInProof.v1."
+
     /// UserDefaults keys shared between the app and the Top Shelf
     /// extension. Centralised here so the extension, `AuthService`,
     /// `TokenStore`, and `ServerRegistry` can't drift.
     static let serverUrlKey = "serverUrl"
     static let activeServerIdKey = "activeServerId"
+    /// Account of the current sign-in on the active server, mirrored for
+    /// synchronous readers and Top Shelf. Unset while no saved sign-in is
+    /// selected.
+    static let activeAccountIdKey = "activeAccountId"
     static let profileIdKey = "profileId"
     static let profileLaunchStateKey = "profileLaunchState.v1"
 
@@ -640,5 +667,34 @@ struct SharedKeychain {
         }
         #endif
         return query
+    }
+}
+
+extension SharedStorage {
+    /// The IDs in the saved server list as `ServerRegistry` stored it: the
+    /// user-independent keychain copy on tvOS, else the App Group defaults
+    /// copy (iOS and macOS, or a tvOS list from before the keychain copy).
+    /// Nil when the list can't be read or decoded, which is not an empty
+    /// list.
+    static func storedServerIDs(keychain: SharedKeychain, defaults: SharedDefaults) -> Set<String>? {
+        struct StoredList: Decodable {
+            struct Entry: Decodable { let id: String }
+            let entries: [Entry]
+        }
+        #if os(tvOS)
+        let stored: String?
+        do {
+            stored = try keychain.withAudience(.userIndependent).getChecked(serverRegistryAccount)
+        } catch {
+            return nil
+        }
+        #else
+        let stored: String? = nil
+        #endif
+        guard let data = stored.map({ Data($0.utf8) }) ?? defaults.data(forKey: serverRegistryDefaultsKey) else {
+            return []
+        }
+        guard let list = try? JSONDecoder().decode(StoredList.self, from: data) else { return nil }
+        return Set(list.entries.map(\.id))
     }
 }

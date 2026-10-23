@@ -291,7 +291,7 @@ final class RestoredSessionValidatorTests: XCTestCase {
             let restored = try XCTUnwrap(identity, c.name)
 
             let result = await validator.validate(expected: restored)
-            let hasAccessToken = await tokens.hasAccessTokenForActiveServer(serverId: restored.serverId)
+            let hasAccessToken = await tokens.hasUsableCredential()
 
             XCTAssertEqual(result, c.expected, c.name)
             XCTAssertEqual(hasAccessToken, c.keepsToken, c.name)
@@ -325,7 +325,7 @@ final class RestoredSessionValidatorTests: XCTestCase {
             let restored = try XCTUnwrap(identity)
 
             let result = await validator.validate(expected: restored)
-            let hasAccessToken = await tokens.hasAccessTokenForActiveServer(serverId: restored.serverId)
+            let hasAccessToken = await tokens.hasUsableCredential()
 
             let name = recheckAnswersV2 ? "re-probe answers v2" : "re-probe still v1-only"
             XCTAssertEqual(result, recheckAnswersV2 ? .valid : .serverRecovery(.serverUpdateRequired), name)
@@ -363,27 +363,45 @@ final class RestoredSessionValidatorTests: XCTestCase {
         return tokens
     }
 
-    func testConfirmedForgetCompletesAndRoutesOutsideTheRecoveryViewLifetime() async throws {
-        let gate = ServerRemovalGate()
+    func testConfirmedForgetCompletesOutsideTheRecoveryViewLifetime() async throws {
+        let gate = AccountRemovalGate()
         let router = AppRouter()
         router.authState = .serverRecovery(.serverNotRecognized)
-        let coordinator = RestoredServerRecoveryCoordinator(
-            removeServer: { serverID in
-                await gate.remove(serverID: serverID)
-            },
-            resolveDestination: { .needsServerSetup }
-        )
+        let coordinator = RestoredServerRecoveryCoordinator(removeAccount: { router in
+            await gate.remove(router: ObjectIdentifier(router))
+        })
 
-        let task = try XCTUnwrap(coordinator.forget(serverID: "server-a", router: router))
+        let task = try XCTUnwrap(coordinator.forget(router: router))
         XCTAssertTrue(coordinator.isForgetting)
+        XCTAssertNil(coordinator.forget(router: router), "a second confirmation while removing is ignored")
         await gate.allowRemoval()
         await task.value
 
-        let removedServerID = await gate.removedServerID()
-        XCTAssertEqual(removedServerID, "server-a")
+        let removedFrom = await gate.removedFrom()
+        XCTAssertEqual(removedFrom, [ObjectIdentifier(router)])
         XCTAssertFalse(coordinator.isForgetting)
         XCTAssertNil(coordinator.error)
-        XCTAssertEqual(router.authState, .needsServerSetup)
+    }
+
+    func testFailedForgetShowsAnErrorAndCanBeRetried() async throws {
+        let gate = AccountRemovalGate(succeeds: false)
+        let router = AppRouter()
+        let coordinator = RestoredServerRecoveryCoordinator(removeAccount: { router in
+            await gate.remove(router: ObjectIdentifier(router))
+        })
+        await gate.allowRemoval()
+
+        let failed = try XCTUnwrap(coordinator.forget(router: router))
+        await failed.value
+
+        XCTAssertFalse(coordinator.isForgetting)
+        XCTAssertNotNil(coordinator.error)
+        await gate.setSucceeds(true)
+        let retried = try XCTUnwrap(coordinator.forget(router: router))
+        await retried.value
+        XCTAssertNil(coordinator.error)
+        let removals = await gate.removedFrom()
+        XCTAssertEqual(removals.count, 2)
     }
 
     private func makeValidator(_ harness: ValidationHarness) -> RestoredSessionValidator {
@@ -406,17 +424,20 @@ private actor VerdictBox {
     func set(updateRequired: Bool) { self.updateRequired = updateRequired }
 }
 
-private actor ServerRemovalGate {
+private actor AccountRemovalGate {
     private var continuation: CheckedContinuation<Void, Never>?
     private var isRemovalAllowed = false
-    private var serverID: String?
+    private var succeeds: Bool
+    private var routers: [ObjectIdentifier] = []
 
-    func remove(serverID: String) async -> Bool {
-        self.serverID = serverID
+    init(succeeds: Bool = true) { self.succeeds = succeeds }
+
+    func remove(router: ObjectIdentifier) async -> Bool {
+        routers.append(router)
         if !isRemovalAllowed {
             await withCheckedContinuation { continuation = $0 }
         }
-        return true
+        return succeeds
     }
 
     func allowRemoval() {
@@ -425,7 +446,9 @@ private actor ServerRemovalGate {
         continuation = nil
     }
 
-    func removedServerID() -> String? { serverID }
+    func setSucceeds(_ value: Bool) { succeeds = value }
+
+    func removedFrom() -> [ObjectIdentifier] { routers }
 }
 
 private actor ValidationHarness {

@@ -17,8 +17,7 @@ final class SettingsViewModel {
     var error: String?
 
     /// Active server URL. Reads through the registry so a server switch
-    /// reflects here without a reload. Used by the account-card subtitle
-    /// to derive a short host label.
+    /// reflects here without a reload.
     var serverUrl: String { ServerRegistry.shared.activeServerUrl }
 
     /// Friendly label for the active server, shown in the Settings
@@ -226,69 +225,7 @@ final class SettingsViewModel {
         )
     }
 
-    #if os(tvOS)
-    var isAdmin: Bool { userInfo?.isAdmin == true }
-
-    var displayName: String {
-        if let profileName = activeProfile?.name, !profileName.isEmpty {
-            return profileName
-        }
-        return userInfo?.username ?? "Silo"
-    }
-
-    var accountSubtitle: String {
-        if isAdmin { return "Administrator" }
-        if let username = userInfo?.username, !username.isEmpty {
-            return username
-        }
-        return "Signed in"
-    }
-
-    var profileAvatar: String? {
-        activeProfile?.avatarEmoji
-    }
-
-    /// Server-resolved avatar image URL, preferred over ``profileAvatar``.
-    var profileAvatarImageUrl: String? {
-        activeProfile?.avatarImageUrl
-    }
-    #else
-    /// Account card title. Tapping the card switches profiles, so with no
-    /// name to show it says that instead.
-    var displayName: String {
-        if let name = activeProfile?.name, !name.isEmpty {
-            return name
-        }
-        if let username = userInfo?.username, !username.isEmpty {
-            return username
-        }
-        return "Switch Profile"
-    }
-
-    /// Account card subtitle: the username when the title is not already
-    /// showing it, and the server host.
-    var accountSubtitleLine: String {
-        let host = serverHost
-        let username = userInfo?.username
-        switch (username, host) {
-        case let (user?, host?) where !user.isEmpty && user != displayName:
-            return "\(user) · \(host)"
-        case let (_, host?):
-            return host
-        case let (user?, _) where !user.isEmpty && user != displayName:
-            return user
-        default:
-            return "Tap to switch profile"
-        }
-    }
-
-    private var serverHost: String? {
-        guard let url = URL(string: serverUrl), let host = url.host else {
-            return serverUrl.isEmpty ? nil : serverUrl
-        }
-        return host
-    }
-
+    #if !os(tvOS)
     /// The Subtitles row's value: the profile's subtitle language.
     var subtitleLanguageName: String {
         let tag = prefs.subtitleLanguage
@@ -309,13 +246,86 @@ final class SettingsViewModel {
     }()
     #endif
 
+    // MARK: - Silo accounts (spec §5.7)
+
+    /// The profile remembered for the current sign-in, read by
+    /// `loadSettings`: Paired Silo Profile's value.
+    private(set) var rememberedProfileID: String?
+
+    /// The device's accounts, as Settings › Accounts and the rows below read
+    /// them.
+    @MainActor var accountsDirectory: SiloAccountDirectory { SiloAccountCoordinator.shared.directory }
+
+    /// The top of Settings: the open account's username, its email, and
+    /// its server. Before accounts are readable, the signed-in username and
+    /// the server.
+    @MainActor var accountHeader: SettingsAccountHeader {
+        Self.accountHeader(directory: accountsDirectory, username: userInfo?.username,
+                           serverName: ServerRegistry.shared.activeServer?.displayName)
+    }
+
+    static func accountHeader(directory: SiloAccountDirectory, username: String?,
+                              serverName: String?) -> SettingsAccountHeader {
+        if let account = directory.currentAccount {
+            return SettingsAccountHeader(name: account.name, detailLines: account.detailLines)
+        }
+        let username = username.flatMap { $0.isEmpty ? nil : $0 }
+        return SettingsAccountHeader(name: username ?? serverName ?? "Silo",
+                                     detailLines: username == nil ? [] : serverName.map { [$0] } ?? [])
+    }
+
+    /// Settings › General › Apple TV User › Paired Silo Profile: the
+    /// remembered profile. "Not paired" without one, and "Saved profile"
+    /// when another profile is open now.
+    @MainActor var pairedProfileValue: String {
+        Self.pairedProfileValue(rememberedProfileID: rememberedProfileID, activeProfile: activeProfile)
+    }
+
+    static func pairedProfileValue(rememberedProfileID: String?, activeProfile: UserProfile?) -> String {
+        guard let rememberedProfileID else { return "Not paired" }
+        return activeProfile?.id == rememberedProfileID ? activeProfile?.name ?? "Saved profile" : "Saved profile"
+    }
+
+    /// The account Paired Silo Profile belongs to ("alex · alex@example.com
+    /// · Home Silo"), shown when the device has more than one account.
+    @MainActor var pairedAccountLine: String? {
+        Self.pairedAccountLine(directory: accountsDirectory)
+    }
+
+    static func pairedAccountLine(directory: SiloAccountDirectory) -> String? {
+        guard directory.accounts.count >= 2, let account = directory.currentAccount else { return nil }
+        return ([account.name] + account.detailLines).joined(separator: " · ")
+    }
+
+    /// Ask For shows only on a device with two or more accounts.
+    @MainActor var showsAskFor: Bool { accountsDirectory.accounts.count >= 2 }
+
+    /// Ask For applies only when Silo asks who's watching: dimmed under
+    /// Automatic, with `ProfileLaunchAskFor.inactiveUnderAutomaticFooter`.
+    var isAskForActive: Bool { ProfileLaunchPreferences.shared.behavior != .automatic }
+
+    var askFor: ProfileLaunchAskFor {
+        get { ProfileLaunchPreferences.shared.askFor }
+        set { ProfileLaunchPreferences.shared.askFor = newValue }
+    }
+
+    /// Settings' Sign Out confirmation (spec §5.6).
+    @MainActor var signOutConfirmation: ConfirmationCopy {
+        SiloAccountCoordinator.shared.confirmation(for: .currentAccount)
+    }
+
     /// Main-actor isolated: it publishes into observable state the settings
     /// views are already rendering, and seeds the profile editor, which is
     /// itself main-actor bound.
     @MainActor
     func loadSettings() async {
-        prefs.bindProfile(id: AuthService.shared.profileId)
+        prefs.bindProfile(id: AuthService.shared.profileId, accountID: AccountScopeReader.currentAccountID())
+        // Before the server round trips, so Paired Silo Profile never reads
+        // "Not paired" while they run.
+        rememberedProfileID = AuthService.shared.rememberedProfileIDForCurrentSelection
+        async let directory: Void = SiloAccountCoordinator.shared.reloadDirectory()
         await PlayerSettings.shared.refreshFromServer()
+        await directory
 
         async let user: UserInfo? = try? SiloAPI.shared.currentUser()
         async let profiles: [UserProfile] = (try? AuthService.shared.getProfiles()) ?? []
@@ -324,6 +334,7 @@ final class SettingsViewModel {
         userInfo = loadedUser
 
         let activeProfileId = AuthService.shared.profileId
+        let activeAccountID = AccountScopeReader.currentAccountID()
         if let activeProfileId {
             activeProfile = loadedProfiles.first(where: { $0.id == activeProfileId })
         } else {
@@ -333,7 +344,7 @@ final class SettingsViewModel {
         // Paint the profile's own values first, then let the batched effective
         // read replace them: it is the only source that accounts for a library,
         // series or device override winning over the profile row.
-        prefs.bindProfile(id: activeProfileId)
+        prefs.bindProfile(id: activeProfileId, accountID: activeAccountID)
         prefs.seed(from: activeProfile)
         await prefs.load()
     }
@@ -519,4 +530,12 @@ final class SettingsViewModel {
     func setSubtitleMatchesSystemAppearance(_ enabled: Bool) {
         PlayerSettings.shared.setSubtitleMatchesSystemAppearance(enabled)
     }
+}
+
+/// The account Settings opens with (`SettingsViewModel.accountHeader`).
+struct SettingsAccountHeader: Equatable, Sendable {
+    /// The username, else the server's name.
+    let name: String
+    /// The email when known, and the server's name.
+    let detailLines: [String]
 }

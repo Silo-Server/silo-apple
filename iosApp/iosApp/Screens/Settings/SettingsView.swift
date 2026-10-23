@@ -16,7 +16,6 @@ struct SettingsView: View {
     @State private var viewModel = SettingsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(AppRouter.self) private var router
-    @State private var showSignOutConfirm = false
     #if os(iOS)
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
@@ -25,22 +24,14 @@ struct SettingsView: View {
     @State private var accountSignIn = AccountSignInModel.live()
     #endif
 
+    // Sign Out asks through the app-wide confirmation, with Sign Out &
+    // Remove Server (spec §5.6, plan G10).
     var body: some View {
-        Group {
-            #if os(iOS)
-            iOSOverview
-            #else
-            macOSBody
-            #endif
-        }
-        .alert("Sign Out", isPresented: $showSignOutConfirm) {
-            Button("Sign Out", role: .destructive) {
-                router.signOutAndReset()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Are you sure you want to sign out?")
-        }
+        #if os(iOS)
+        iOSOverview
+        #else
+        macOSBody
+        #endif
     }
     #endif
 
@@ -49,8 +40,7 @@ struct SettingsView: View {
         IOSSettingsOverview(
             viewModel: viewModel,
             diagnosticsModel: diagnosticsModel,
-            uiCustomization: uiCustomization,
-            showSignOutConfirm: $showSignOutConfirm
+            uiCustomization: uiCustomization
         )
         .task {
             await viewModel.loadSettings()
@@ -66,8 +56,8 @@ struct SettingsView: View {
             if accountSignIn.showsEntry {
                 accountSignInSection
             }
+            accountsSection
             preferencesSection
-            connectionSection
             aboutSection
             signOutSection
         }
@@ -79,6 +69,69 @@ struct SettingsView: View {
             await viewModel.loadSettings()
         }
         .task { await accountSignIn.load() }
+        .task { await router.accounts.reloadDirectory() }
+    }
+
+    // MARK: - Accounts
+
+    /// Settings › Accounts (spec §5.7): the device's accounts, each opening
+    /// Manage Accounts, where accounts are signed out of and removed.
+    private var accountsSection: some View {
+        Section {
+            ForEach(router.accounts.directory.accounts) { account in
+                Button {
+                    router.navigate(to: .manageAccounts)
+                } label: {
+                    HStack(spacing: 12) {
+                        StackedProfileAvatars(
+                            profiles: account.profiles,
+                            fallbackID: account.id.storageKey,
+                            fallbackName: account.name,
+                            serverAddress: account.serverAddress,
+                            maxCount: 3
+                        )
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(account.name)
+                                .foregroundStyle(Color.siloOnSurface)
+                            Text(account.detailLines.joined(separator: AccountMenuModel.separator))
+                                .font(.footnote)
+                                .foregroundStyle(Color.siloSecondaryText)
+                        }
+                        Spacer(minLength: 8)
+                        if account.needsSignInAgain {
+                            Text(ChooseAccountViewModel.signInAgainLabel)
+                                .foregroundStyle(Color.siloStatusWarning)
+                        } else if account.id == router.accounts.directory.currentAccountID {
+                            Text(AccountsSettingsViewModel.currentLabel)
+                                .foregroundStyle(Color.siloSecondaryText)
+                        }
+                        SettingsRowChevron()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if router.accounts.directory.accounts.isEmpty {
+                Button {
+                    router.navigate(to: .manageAccounts)
+                } label: {
+                    HStack(spacing: 0) {
+                        SettingsRowLabel(
+                            title: "Server",
+                            systemImage: "server.rack",
+                            color: .teal,
+                            value: viewModel.serverDisplayName
+                        )
+                        SettingsRowChevron()
+                            .padding(.leading, 8)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            Text(AccountsSettingsViewModel.title)
+                .foregroundStyle(Color.siloSecondaryText)
+        }
     }
 
     // MARK: - Sign-in
@@ -100,50 +153,38 @@ struct SettingsView: View {
 
     // MARK: - Account
 
+    /// The open account: its username, email, and server. Not a button:
+    /// Who's Watching and Switch Account are elsewhere.
     private var accountSection: some View {
-        Section {
-            Button(action: switchProfile) {
-                HStack(spacing: 14) {
-                    ProfileAvatarView(
-                        avatar: viewModel.activeProfile?.avatarEmoji,
-                        imageUrl: viewModel.activeProfile?.avatarImageUrl,
-                        name: viewModel.activeProfile?.name
-                            ?? viewModel.userInfo?.username
-                            ?? "",
-                        size: 56
-                    )
+        let header = viewModel.accountHeader
+        return Section {
+            HStack(spacing: 14) {
+                ProfileAvatarView(avatar: nil, imageUrl: nil, name: header.name, size: 56)
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(viewModel.displayName)
-                            .font(.title3.weight(.semibold))
-                            .foregroundStyle(Color.siloOnSurface)
-                            .lineLimit(1)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(header.name)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(Color.siloOnSurface)
+                        .lineLimit(1)
 
-                        Text(viewModel.accountSubtitleLine)
+                    ForEach(header.detailLines, id: \.self) { line in
+                        Text(line)
                             .font(.footnote)
                             .foregroundStyle(Color.siloSecondaryText)
                             .lineLimit(1)
+                            .truncationMode(.middle)
                     }
-
-                    Spacer(minLength: 0)
-
-                    SettingsRowChevron()
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Switches to a different profile")
 
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
         } footer: {
             if viewModel.userInfo?.isAdmin == true {
                 Text("Signed in as an administrator.")
                     .foregroundStyle(Color.siloSecondaryText)
             }
         }
-    }
-
-    private func switchProfile() {
-        router.switchProfile()
     }
 
     // MARK: - Preferences
@@ -208,28 +249,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Connection
-
-    private var connectionSection: some View {
-        Section {
-            Button {
-                router.navigate(to: .serverList)
-            } label: {
-                HStack(spacing: 0) {
-                    SettingsRowLabel(
-                        title: "Server",
-                        systemImage: "server.rack",
-                        color: .teal,
-                        value: viewModel.serverDisplayName
-                    )
-                    SettingsRowChevron()
-                        .padding(.leading, 8)
-                }
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
     // MARK: - About
 
     private var aboutSection: some View {
@@ -285,7 +304,7 @@ struct SettingsView: View {
     private var signOutSection: some View {
         Section {
             Button(role: .destructive) {
-                showSignOutConfirm = true
+                Task { await router.accounts.requestRemoval(.currentAccount, router: router) }
             } label: {
                 Text("Sign Out")
                     .font(.siloBody.weight(.semibold))

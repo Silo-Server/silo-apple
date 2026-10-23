@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 struct RefreshAccountIdentity: Hashable, Sendable {
     let serverId: String
@@ -138,11 +139,89 @@ enum TemporaryAuthScopeEndResult: Equatable, Sendable {
     case differentGeneration(activeGenerationID: UUID)
 }
 
-/// Actor that owns session credentials. Per-server tokens live in the
-/// Keychain (`SharedStorage.*Account(for:)`), and the active server URL and
-/// profile id in `SharedDefaults`. The active access and profile tokens are
-/// mirrored to fixed Keychain accounts for the extensions. `HTTPClient`
-/// collapses concurrent 401s into one refresh per `RefreshAccountIdentity`.
+/// A server session to end after its sign-in was removed or replaced on this
+/// device (`HTTPClient.revoke(_:)`). Holds secrets; never logged.
+struct RevocableCredential: Equatable, Sendable {
+    let serverURL: String
+    let accessToken: String
+    let refreshToken: String?
+}
+
+/// The server account a sign-in response named (`TokenPair.user`). Pairing
+/// and device-code sign-ins carry no username until `/api/v2/account/me`.
+struct SignInAccount: Equatable, Sendable {
+    let id: String
+    let username: String?
+}
+
+struct SignInInstallResult: Equatable, Sendable {
+    let key: SignInKey
+    /// False when the account was already saved and this refreshed it.
+    let addedAccount: Bool
+    /// The refreshed sign-in's previous session, to revoke.
+    let superseded: RevocableCredential?
+}
+
+/// Thrown by reads of the account model while the index has never been
+/// written: the device still runs on per-server sessions.
+enum SavedSignInAccessError: Error, Equatable {
+    case notMigrated
+}
+
+struct SignInRemoval: Equatable, Sendable {
+    /// Captured before deletion so the session can be revoked. Nil when the
+    /// sign-in held no session.
+    let credential: RevocableCredential?
+    /// Whether the session can no longer come back after a relaunch.
+    let durable: Bool
+}
+
+/// What an account read did to the selected credential.
+enum BindOutcome: Equatable, Sendable {
+    case unchanged
+    case usernameUpdated
+    /// A pending legacy server became this saved sign-in (plan §3.3).
+    case legacyMigrated(SignInKey)
+    /// A pending legacy account's account was already saved; the legacy
+    /// session was dropped and nothing is selected. `revoking` is the
+    /// dropped session to end on its server, nil when it holds the saved
+    /// sign-in's own tokens (or they can't be compared): ending it would sign
+    /// that sign-in out too.
+    case legacyDuplicate(existing: SignInKey, revoking: RevocableCredential?)
+}
+
+enum LegacyMigrationOutcome: Equatable, Sendable {
+    /// The accounts index already existed.
+    case notNeeded
+    case migrated
+    /// Nothing was written; the next launch tries again.
+    case deferred(LegacyMigrationDeferral)
+}
+
+enum LegacyMigrationDeferral: String, Equatable, Sendable {
+    case indexUnreadable
+    case sessionUnreadable
+    /// The caller passed no servers, but the stored server list couldn't be
+    /// read or still names some.
+    case serverListUnreadable
+    case writeFailed
+}
+
+/// Actor that owns session credentials.
+///
+/// Two regimes share one API. Before the accounts index exists, every
+/// server has one per-server slot (`AccountSessionPersistence` plus the raw
+/// per-token mirrors) and the selection is `.legacy(serverID)`. Once
+/// migration writes the index, each account is a saved sign-in
+/// (`SavedSignIn`, one per server account) and the selection names one of
+/// them; a per-server slot is read only for a pending legacy account
+/// (plan §3.3).
+///
+/// The active server URL and profile ID live in `SharedDefaults`, with the
+/// selected account mirrored to `activeAccountId`. The active access and
+/// profile tokens are mirrored to fixed Keychain accounts for the
+/// extensions. `HTTPClient` collapses concurrent 401s into one refresh per
+/// `RefreshAccountIdentity`.
 actor TokenStore {
     static let shared = TokenStore()
 
@@ -153,11 +232,25 @@ actor TokenStore {
     private let profileKeychain: SharedKeychain
     private let defaults: SharedDefaults
     private let sessions: AccountSessionPersistence
+    /// The accounts index and saved sign-ins. Read-only outside the actor, for
+    /// synchronous readers such as `AuthService.isLoggedIn`; every write
+    /// goes through this actor.
+    nonisolated let savedSignIns: SavedSignInStore
+    /// Removed sessions whose logout hasn't reached their server yet, for
+    /// `HTTPClient` to retry (it serializes every change to it).
+    nonisolated let pendingRevocations: PendingRevocationStore
+    private let proofs: SignInProofStore
     #if os(iOS)
     private let displayTargets: ApplePushDisplayTargetStore
     #endif
     private var canonicalSession: CanonicalAccountSession?
-    private var runtimeBlockedServers: Set<String> = []
+    /// The selected saved sign-in as last read or written, including an
+    /// expired one. Nil for other selections.
+    private var cachedSignIn: SavedSignIn?
+    /// Credentials that must not be served in this process: a slot that
+    /// could not be read, or a rollback that could not be made durable.
+    /// Keyed `legacy:<serverID>` or `signIn:<serverID>/<accountID>`.
+    private var runtimeBlocked: Set<String> = []
 
     private let serverUrlDefaultsKey = SharedStorage.serverUrlKey
     private let profileIdDefaultsKey = SharedStorage.profileIdKey
@@ -178,17 +271,27 @@ actor TokenStore {
         SharedStorage.accountEpochAccount(for: serverId)
     }
 
-    /// Server whose tokens are currently cached in `cached*` and returned
-    /// by `getAccessToken` etc. Empty string means "no active server" —
-    /// reads return nil and saves no-op.
+    /// Server whose credential is currently selected. Empty string means
+    /// "no active server": reads return nil and saves no-op.
     private var activeServerId: String = ""
+    /// Which credential on `activeServerId` requests use.
+    private var selection: CredentialSelection = .none {
+        didSet { selectionSnapshot.withLock { $0 = selection } }
+    }
+    /// `selection` for synchronous readers (`mirroredSelection`).
+    private nonisolated let selectionSnapshot = Mutex<CredentialSelection>(.none)
+    /// `SiloAccountIndex.legacyDataOwnerByServerID` as last read or written.
+    private var legacyDataOwners: [String: String] = [:]
+    /// Whether `legacyDataOwners` came from an index read or write in this
+    /// process.
+    private var hasReadLegacyDataOwners = false
 
     private var cachedAccessToken: String?
     private var cachedRefreshToken: String?
     private var cachedProfileToken: String?
-    /// Process-local identity for the persistent credential slot currently
-    /// selected by `activeServerId`. Refresh rotation leaves it unchanged;
-    /// every session replacement or routing boundary installs a fresh epoch.
+    /// Process-local identity for the persistent credential currently
+    /// selected. Refresh rotation leaves it unchanged; every session
+    /// replacement or routing boundary installs a fresh epoch.
     private var persistentCredentialGenerationID = UUID()
     /// Process-local identity for one installation of the persistent profile
     /// ID and proof. Every activation, deactivation, or direct profile write
@@ -196,15 +299,15 @@ actor TokenStore {
     /// (or with none) is still a new selection.
     private var profileSelectionGeneration = UUID()
     /// Playback-scoped credentials received by a TV through remote handoff.
-    /// They are process-only and never written into normal per-server slots.
+    /// They are process-only and never written into persistent slots.
     private var temporaryScope: TemporaryAuthScope?
     /// A terminally rejected temporary generation remains installed until
     /// remote-playback teardown, but it must never submit its refresh token
     /// again or emit duplicate expiry notifications.
     private var rejectedTemporaryCredentialGenerations: Set<UUID> = []
-    /// Server the current cache was loaded for. Nil means the cache is
+    /// Selection the current cache was loaded for. Nil means the cache is
     /// invalid and must be re-read on next access.
-    private var loadedForServerId: String?
+    private var loadedSelection: CredentialSelection?
 
     /// Last values written to the shared-extension keychain slots. Skips
     /// redundant Keychain writes; the access value is re-mirrored after every
@@ -214,26 +317,44 @@ actor TokenStore {
 
     init(keychain: SharedKeychain = SharedKeychain(),
          defaults: SharedDefaults = .shared,
-         sessionPersistence: AccountSessionPersistence? = nil) {
+         sessionPersistence: AccountSessionPersistence? = nil,
+         savedSignIns: SavedSignInStore? = nil,
+         signInProofs: SignInProofStore? = nil,
+         pendingRevocations: PendingRevocationStore? = nil) {
         self.accountKeychain = keychain.withAudience(Self.accountCredentialAudience)
         self.profileKeychain = keychain.withAudience(Self.profileCredentialAudience)
         self.defaults = defaults
         self.sessions = sessionPersistence ?? AccountSessionPersistence(keychain: keychain)
+        self.savedSignIns = savedSignIns ?? SavedSignInStore(keychain: keychain)
+        self.proofs = signInProofs ?? SignInProofStore(keychain: keychain)
+        self.pendingRevocations = pendingRevocations ?? PendingRevocationStore(keychain: keychain)
         #if os(iOS)
         self.displayTargets = ApplePushDisplayTargetStore(keychain: keychain.withAudience(Self.profileCredentialAudience))
         #endif
     }
 
+    /// The `activeAccountId` mirror this store writes: the selected saved
+    /// sign-in's account, or nil.
+    nonisolated var mirroredAccountID: String? {
+        AccountScopeReader.currentAccountID(defaults: defaults)
+    }
+
+    /// The selected credential, for synchronous readers such as
+    /// `AuthService.isLoggedIn`. `.none` until this process selects one.
+    nonisolated var mirroredSelection: CredentialSelection {
+        selectionSnapshot.withLock { $0 }
+    }
+
     // MARK: - Diagnostics
     //
     // Session lines are deliberately outcome-only. Everything this actor holds
-    // — access/refresh/profile tokens, profile ids, server ids (base64 of the
-    // server URL, so an id *is* the hostname), server URLs — is credential or
-    // identifying material and must never reach a log line, not truncated and
-    // not hashed. What a report needs to explain "I got logged out" is the
-    // sequence of outcomes and a stable classification of each refusal, so
-    // that is all these emit: a fixed `phase`, a fixed `outcome`, and a fixed
-    // `reason`, every one of them a compile-time literal.
+    // — access/refresh/profile tokens, profile ids, account ids, server ids
+    // (base64 of the server URL, so an id *is* the hostname), server URLs — is
+    // credential or identifying material and must never reach a log line, not
+    // truncated and not hashed. What a report needs to explain "I got logged
+    // out" is the sequence of outcomes and a stable classification of each
+    // refusal, so that is all these emit: a fixed `phase`, a fixed `outcome`,
+    // and a fixed `reason`, every one of them a compile-time literal.
 
     /// Durable session-event line. Breadcrumbs are the right destination
     /// because a rejected refresh is frequently followed by the user killing
@@ -262,36 +383,425 @@ actor TokenStore {
         case AccountSessionPersistenceError.unavailable: return "persistenceUnavailable"
         case AccountSessionPersistenceError.invalidRecord: return "invalidSessionRecord"
         case AccountSessionPersistenceError.invalidIdentity: return "invalidSessionIdentity"
+        case SavedSignInStoreError.writeFailed: return "persistenceUnavailable"
+        case SavedSignInStoreError.corrupt, SavedSignInStoreError.keyMismatch: return "invalidSignInRecord"
+        case SavedSignInStoreError.unsupportedVersion: return "unsupportedSignInRecord"
+        case SavedSignInAccessError.notMigrated: return "notMigrated"
+        case HTTPError.requestIdentityChanged: return "identityChanged"
         case is DecodingError: return "invalidSessionRecord"
         case is SharedKeychain.ReadError: return "keychainReadFailed"
         default: return "persistenceUnavailable"
         }
     }
 
-    // MARK: - Active server
+    /// A record whose bytes were read but can't be used: corrupt, from
+    /// another format, or naming another key. Unlike a keychain read error,
+    /// reading it again won't help, and it authorizes nothing.
+    private static func isUnusableRecord(_ error: Error) -> Bool {
+        switch error {
+        case is DecodingError,
+             AccountSessionPersistenceError.invalidRecord,
+             SavedSignInStoreError.corrupt,
+             SavedSignInStoreError.keyMismatch,
+             SavedSignInStoreError.unsupportedVersion:
+            return true
+        default:
+            return false
+        }
+    }
 
-    /// Point the Keychain reads at a different server. Flushes the
-    /// in-memory cache so the next access re-reads from the new slot.
-    /// Idempotent: a no-op if `serverId` is already active.
-    func switchActiveServer(serverId: String) {
-        guard serverId != activeServerId else { return }
-        retargetActiveServer(serverId: serverId)
+    // MARK: - Selection
+
+    /// Select the credential requests use: a saved sign-in, a per-server
+    /// legacy slot, or none (a chooser or sign-in screen is showing). Mints a
+    /// new credential generation, reloads the credential and this Apple TV
+    /// user's proof, and writes the `activeAccountId` and Top Shelf mirrors.
+    /// A credential for another server than `serverID` selects nothing.
+    /// Selecting what is already selected changes nothing.
+    func select(serverID: String?, credential: CredentialSelection) {
+        applySelection(serverID: serverID, credential: credential)
         ensureLoaded()
         mirrorActiveTokensForExtension()
     }
 
-    /// Retarget the actor to the active registry server without touching
-    /// Keychain. Used during cold launch so route selection can avoid doing
-    /// the full token load + Top Shelf mirror before SwiftUI leaves `.loading`.
+    /// Whether the selected credential holds an access token. Never changes
+    /// the selection.
+    func hasUsableCredential() -> Bool {
+        ensureLoaded()
+        return cachedAccessToken != nil
+    }
+
+    func currentSelection() -> CredentialSelection { selection }
+
+    func currentSignInKey() -> SignInKey? {
+        guard case .signIn(let key) = selection else { return nil }
+        return key
+    }
+
+    /// The account the selection belongs to. Nil while none is chosen.
+    func currentAccount() -> SiloAccountRef? { SiloAccountRef(selection) }
+
+    /// The credential the launch rules (spec §6.2) give `serverID` when no
+    /// chooser is involved: before migration, the server's own slot;
+    /// afterwards the selected account when it is on that server, else the
+    /// account this Apple TV user (or device) is linked to when it is, else
+    /// the account that took over the server's state from before accounts
+    /// existed when this Apple TV user used Silo then, else the server's
+    /// only account. Background launches (push, download refresh) use this;
+    /// foreground launches go through `SiloAccountCoordinator`, which
+    /// selects explicitly.
+    func launchSelection(forServer serverID: String) -> CredentialSelection {
+        guard !serverID.isEmpty else { return .none }
+        let index: SiloAccountIndex?
+        do { index = try loadIndex() } catch {
+            // Unreadable index: no writes, and this launch uses the server's
+            // own slot as before migration (plan §3.5).
+            recordSessionEvent(phase: "selectCredential", outcome: "fallback", reason: Self.persistenceFailureReason(error))
+            return .legacy(serverID: serverID)
+        }
+        guard let index else { return .legacy(serverID: serverID) }
+        let launch = ProfileLaunchState.load(from: defaults)
+        // As in `SiloLaunchResolver`: an active server the registry fell
+        // back to (a new Apple TV user's first launch, the survivor of a
+        // removal) is not history.
+        let openedServerBefore = defaults.string(forKey: SharedStorage.activeServerIdKey) != nil
+            && !defaults.bool(forKey: ServerRegistry.activeServerFallbackKey)
+        let hasLegacyHistory = launch.linkedAccount == nil
+            && (!launch.rememberedByServerID.isEmpty || openedServerBefore)
+        return index.launchAccount(onServer: serverID, current: SiloAccountRef(selection),
+                                   linked: launch.linkedAccountRef, hasLegacyHistory: hasLegacyHistory)?
+            .credential ?? .none
+    }
+
+    /// Point the store at `serverId` with the launch rules' credential there
+    /// (`launchSelection(forServer:)`), loading it and refreshing the Top
+    /// Shelf mirrors. A no-op when `serverId` is already active, so a choice
+    /// made through `select` stands.
+    func switchActiveServer(serverId: String) {
+        guard serverId != activeServerId else { return }
+        select(serverID: serverId, credential: launchSelection(forServer: serverId))
+    }
+
+    /// The same choice as `switchActiveServer`, without loading credentials
+    /// or touching the Top Shelf mirrors. Used during background launches
+    /// before routing settles.
     func retargetActiveServer(serverId: String) {
-        if serverId == activeServerId { return }
+        guard serverId != activeServerId else { return }
+        applySelection(serverID: serverId, credential: launchSelection(forServer: serverId))
+    }
+
+    private func applySelection(serverID: String?, credential: CredentialSelection) {
+        let serverID = serverID ?? ""
+        var credential = credential
+        switch credential {
+        case .legacy(let owner) where owner != serverID:
+            credential = .none
+        case .signIn(let key) where key.serverID != serverID:
+            credential = .none
+        default:
+            break
+        }
+        if serverID.isEmpty { credential = .none }
+        defer { writeAccountMirror() }
+        guard serverID != activeServerId || credential != selection else { return }
         persistentCredentialGenerationID = UUID()
-        activeServerId = serverId
+        activeServerId = serverID
+        selection = credential
+        invalidateLoadedCredential()
+    }
+
+    /// The account background work for `serverID` uses
+    /// (`storedCredential(forServer:)`): push registration follows it.
+    func backgroundAccount(forServer serverID: String) -> SiloAccountRef? {
+        SiloAccountRef(storedCredential(forServer: serverID))
+    }
+
+    /// The credential on `serverID` that background work for that server
+    /// uses, without changing the selection. Before migration every server
+    /// is its own slot. Afterwards it is the account this Apple TV user (or
+    /// device) is linked to when it is on that server, else the server's
+    /// only account, and none while no account is chosen (a chooser is
+    /// showing). An unreadable index releases nothing.
+    private func storedCredential(forServer serverID: String) -> CredentialSelection {
+        guard !serverID.isEmpty else { return .none }
+        if serverID == activeServerId { return selection }
+        let index: SiloAccountIndex?
+        do { index = try loadIndex() } catch { return .none }
+        guard let index else { return .legacy(serverID: serverID) }
+        guard selection != .none else { return .none }
+        let launch = ProfileLaunchState.load(from: defaults)
+        return index.launchAccount(onServer: serverID, current: nil,
+                                   linked: launch.linkedAccountRef, hasLegacyHistory: false)?
+            .credential ?? .none
+    }
+
+    private static func serverID(of selection: CredentialSelection) -> String? {
+        switch selection {
+        case .none: return nil
+        case .legacy(let serverID): return serverID
+        case .signIn(let key): return key.serverID
+        }
+    }
+
+    private static func blockKey(_ selection: CredentialSelection) -> String? {
+        switch selection {
+        case .none: return nil
+        case .legacy(let serverID): return "legacy:\(serverID)"
+        case .signIn(let key): return "signIn:\(key.storageKey)"
+        }
+    }
+
+    private func isBlocked(_ selection: CredentialSelection) -> Bool {
+        Self.blockKey(selection).map(runtimeBlocked.contains) ?? false
+    }
+
+    private func block(_ selection: CredentialSelection) {
+        if let key = Self.blockKey(selection) { runtimeBlocked.insert(key) }
+    }
+
+    private func unblock(_ selection: CredentialSelection) {
+        if let key = Self.blockKey(selection) { runtimeBlocked.remove(key) }
+    }
+
+    private func invalidateLoadedCredential() {
+        canonicalSession = nil
+        cachedSignIn = nil
         cachedAccessToken = nil
         cachedRefreshToken = nil
         cachedProfileToken = nil
-        loadedForServerId = nil
+        loadedSelection = nil
     }
+
+    private func writeAccountMirror() {
+        if case .signIn(let key) = selection {
+            defaults.set(key.accountID, forKey: SharedStorage.activeAccountIdKey)
+        } else {
+            defaults.removeObject(forKey: SharedStorage.activeAccountIdKey)
+        }
+    }
+
+    // MARK: - Accounts index
+
+    /// Strict index read. Every successful read republishes the legacy
+    /// data owners for synchronous local-data stores.
+    private func loadIndex() throws -> SiloAccountIndex? {
+        let index = try savedSignIns.loadIndex()
+        if let index { publishLegacyOwners(index) }
+        return index
+    }
+
+    /// The commit point of every account-model change (invariant 5).
+    private func saveIndex(_ index: SiloAccountIndex) throws {
+        try savedSignIns.saveIndex(index)
+        publishLegacyOwners(index)
+    }
+
+    private func publishLegacyOwners(_ index: SiloAccountIndex) {
+        let owners = index.legacyDataOwnerByServerID ?? [:]
+        hasReadLegacyDataOwners = true
+        legacyDataOwners = owners
+        LegacyLocalDataOwner.publish(owners)
+    }
+
+    /// The device's accounts and a secret-free summary of each readable
+    /// sign-in. Throws `SavedSignInAccessError.notMigrated` before migration
+    /// and the read error when the index can't be read. A sign-in whose
+    /// item is missing or unreadable has no summary.
+    func directory() throws -> SiloAccountDirectorySnapshot {
+        guard let index = try loadIndex() else { throw SavedSignInAccessError.notMigrated }
+        let summaries = index.accounts.compactMap(\.signInKey).compactMap { key in
+            (try? savedSignIns.loadSignIn(key)).flatMap { $0 }.map(SignInSummary.init)
+        }
+        return SiloAccountDirectorySnapshot(index: index, signIns: summaries)
+    }
+
+    /// The account that took over `serverID`'s state from before sign-ins
+    /// existed (`SiloAccountIndex.legacyDataOwnerByServerID`). Nil before
+    /// migration and for servers no migrated sign-in owns.
+    func legacyDataOwner(forServer serverID: String) -> String? {
+        if !hasReadLegacyDataOwners {
+            // This process may not have read the index yet. Every later
+            // read or write of the index republishes the owners.
+            _ = try? loadIndex()
+        }
+        return legacyDataOwners[serverID]
+    }
+
+    /// Whether any account is saved on `serverID`. False before migration.
+    /// True when the index can't be read: callers keep server-wide state
+    /// (diagnostics) that another account may still need.
+    func hasSavedSignIn(onServer serverID: String) -> Bool {
+        let index: SiloAccountIndex?
+        do { index = try loadIndex() } catch { return true }
+        guard let index else { return false }
+        return !index.accounts(onServer: serverID).isEmpty
+    }
+
+    // MARK: - Migration (plan §3.2)
+
+    /// Moves today's per-server sessions into accounts, once: one account
+    /// per server session. Verified sessions become saved sign-ins with the
+    /// same epoch; unverified ones stay pending legacy accounts until their
+    /// first account read. Idempotent: an existing index means done, and only retries the
+    /// cleanup of migrated slots. A keychain read error or a failed write
+    /// defers without changing anything that is read afterwards.
+    func migrateLegacySessionsIfNeeded(
+        servers: [(id: String, url: String)],
+        activeServerID: String?
+    ) -> LegacyMigrationOutcome {
+        let existing: SiloAccountIndex?
+        do { existing = try loadIndex() } catch {
+            recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "indexUnreadable")
+            return .deferred(.indexUnreadable)
+        }
+        if let existing {
+            cleanUpMigratedLegacySlots(existing)
+            return .notNeeded
+        }
+
+        var verified: [(key: SignInKey, session: CanonicalAccountSession)] = []
+        var pending: [String] = []
+        var seen: Set<String> = []
+        for server in servers where !server.id.isEmpty && seen.insert(server.id).inserted {
+            let state: AccountSessionPersistence.State
+            do {
+                state = try sessions.load(server.id)
+            } catch where Self.isUnusableRecord(error) {
+                // Today this record blocks its server until the next sign-in,
+                // so it is not a working sign-in to carry over.
+                continue
+            } catch {
+                recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "sessionUnreadable")
+                return .deferred(.sessionUnreadable)
+            }
+            switch state {
+            case .signedOut:
+                continue
+            case .session(let value):
+                if let accountID = value.accountID,
+                   let key = SignInKey(serverID: server.id, accountID: accountID),
+                   let origin = value.origin,
+                   ServerRegistry.normalize(url: origin) == ServerRegistry.normalize(url: server.url) {
+                    verified.append((key, value))
+                } else {
+                    pending.append(server.id)
+                }
+            case .legacy:
+                let access: String?
+                do {
+                    access = try accountKeychain.getChecked(Self.accessTokenKey(for: server.id))
+                } catch {
+                    recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "sessionUnreadable")
+                    return .deferred(.sessionUnreadable)
+                }
+                if access?.isEmpty == false { pending.append(server.id) }
+            }
+        }
+
+        guard !verified.isEmpty || !pending.isEmpty else {
+            // Saved servers without a sign-in stay in the server list. No
+            // servers at all is trusted only when the stored list agrees: a
+            // list that failed to load at launch looks empty too, and an
+            // index committed then would retire every per-server session for
+            // good (invariant 4).
+            if servers.isEmpty,
+               SharedStorage.storedServerIDs(keychain: accountKeychain, defaults: defaults)?.isEmpty != true {
+                recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "serverListUnreadable")
+                return .deferred(.serverListUnreadable)
+            }
+            let index = SiloAccountIndex()
+            do { try saveIndex(index) } catch {
+                recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "writeFailed")
+                return .deferred(.writeFailed)
+            }
+            reselectRetiredLegacySelection(index)
+            recordSessionEvent(phase: "signInMigration", outcome: "migrated", reason: "noSignIns")
+            return .migrated
+        }
+
+        let now = Date()
+        var migrated: [SavedSignIn] = []
+        for (key, session) in verified {
+            // The active server's account is listed first (spec §9: the order
+            // isn't recorded).
+            let signIn = SavedSignIn(
+                key: key,
+                origin: ServerRegistry.normalize(url: session.origin ?? ""),
+                accessToken: session.accessToken,
+                refreshToken: session.refreshToken,
+                epoch: session.epoch,
+                addedAt: key.serverID == activeServerID ? now.addingTimeInterval(-1) : now,
+                adoptsLegacyLocalData: true
+            )
+            do { try savedSignIns.saveSignIn(signIn) } catch {
+                // Items written so far are unreachable without the index and
+                // are overwritten by the retry.
+                recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "writeFailed")
+                return .deferred(.writeFailed)
+            }
+            migrated.append(signIn)
+        }
+        let ordered = migrated.enumerated()
+            .sorted { ($0.element.addedAt, $0.offset) < ($1.element.addedAt, $1.offset) }
+            .map { SiloAccountRef.signIn($0.element.key) }
+        let index = SiloAccountIndex(
+            accounts: ordered + pending.map { SiloAccountRef.pendingLegacy(serverID: $0) },
+            migrated: true,
+            legacyDataOwnerByServerID: verified.isEmpty
+                ? nil
+                : Dictionary(verified.map { ($0.key.serverID, $0.key.accountID) }, uniquingKeysWith: { first, _ in first })
+        )
+        do { try saveIndex(index) } catch {
+            recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "writeFailed")
+            return .deferred(.writeFailed)
+        }
+        cleanUpMigratedLegacySlots(index)
+        reselectRetiredLegacySelection(index)
+        recordSessionEvent(phase: "signInMigration", outcome: "migrated", reason: "signIns")
+        return .migrated
+    }
+
+    /// A selection made before migration (a background launch) can still
+    /// name a server's own slot that no pending legacy account holds, which
+    /// is never read again once the index exists (invariant 4): a migrated
+    /// server's tombstone, or a server that had no working sign-in.
+    private func reselectRetiredLegacySelection(_ index: SiloAccountIndex) {
+        guard case .legacy(let serverID) = selection,
+              !index.contains(.pendingLegacy(serverID: serverID)) else { return }
+        select(serverID: activeServerId, credential: launchSelection(forServer: activeServerId))
+    }
+
+    /// Step 6 of plan §3.2, retried on every migration call. Once the index
+    /// exists these slots are never read (invariant 4), so failures are
+    /// harmless; this only keeps stale tokens from lingering. This Apple TV
+    /// user's `<serverID>.profileToken` stays for proof adoption.
+    private func cleanUpMigratedLegacySlots(_ index: SiloAccountIndex) {
+        let pending = Set(index.accounts.compactMap { account -> String? in
+            guard case .pendingLegacy(let serverID) = account else { return nil }
+            return serverID
+        })
+        for serverID in (index.legacyDataOwnerByServerID ?? [:]).keys where !pending.contains(serverID) {
+            let needsTombstone: Bool
+            switch try? sessions.load(serverID) {
+            case .signedOut?: needsTombstone = false
+            default: needsTombstone = true
+            }
+            if needsTombstone { _ = sessions.invalidate(serverID) }
+            let hasRawSlot = (try? accountKeychain.getChecked(Self.accessTokenKey(for: serverID))) != nil
+                || (try? accountKeychain.getChecked(Self.refreshTokenKey(for: serverID))) != nil
+            if needsTombstone || hasRawSlot {
+                deleteRawSlots(serverID)
+            }
+        }
+    }
+
+    private func deleteRawSlots(_ serverID: String) {
+        accountKeychain.delete(Self.accessTokenKey(for: serverID))
+        accountKeychain.delete(Self.refreshTokenKey(for: serverID))
+        accountKeychain.delete(Self.accountEpochKey(for: serverID))
+    }
+
+    // MARK: - Active server
 
     /// The current active server ID. Empty string if none.
     func getActiveServerId() -> String { temporaryScope?.serverId ?? activeServerId }
@@ -320,10 +830,20 @@ actor TokenStore {
     /// legacy sessions and temporary playback credentials cannot acquire it.
     func captureDurableAccountAuth() -> CapturedDurableAccountAuth? {
         guard temporaryScope == nil, let request = captureOrdinaryRequestAuth(),
-              !runtimeBlockedServers.contains(activeServerId), let session = canonicalSession,
-              let accountID = session.accountID, let epoch = session.epoch,
-              session.origin == request.account.serverURL, session.accessToken == request.accessToken else { return nil }
-        return CapturedDurableAccountAuth(accountID: accountID, accountEpoch: epoch, request: request)
+              !isBlocked(selection), let access = request.accessToken else { return nil }
+        switch selection {
+        case .none:
+            return nil
+        case .signIn(let key):
+            guard let signIn = cachedSignIn, let epoch = signIn.epoch,
+                  ServerRegistry.normalize(url: signIn.origin) == request.account.serverURL,
+                  signIn.accessToken == access else { return nil }
+            return CapturedDurableAccountAuth(accountID: key.accountID, accountEpoch: epoch, request: request)
+        case .legacy:
+            guard let session = canonicalSession, let accountID = session.accountID, let epoch = session.epoch,
+                  session.origin == request.account.serverURL, session.accessToken == access else { return nil }
+            return CapturedDurableAccountAuth(accountID: accountID, accountEpoch: epoch, request: request)
+        }
     }
 
     /// Execute a synchronous effect in the same actor turn as its durable
@@ -575,6 +1095,15 @@ actor TokenStore {
             )
             throw HTTPError.requestIdentityChanged
         }
+        // Profile IDs repeat across accounts on one server, so a write queued
+        // for one account must not go out under another's matching profile.
+        if let expectedAccountID = expected.accountID {
+            let currentAccountID = temporaryScope == nil ? currentSignInKey()?.accountID : nil
+            guard currentAccountID == expectedAccountID else {
+                recordSessionEvent(phase: "captureRequestAuth", outcome: "failed", reason: "accountChanged")
+                throw HTTPError.requestIdentityChanged
+            }
+        }
 
         if let temporaryScope {
             return CapturedHTTPRequestAuth(
@@ -617,6 +1146,10 @@ actor TokenStore {
               !expectedURL.isEmpty,
               let previousValue,
               !previousValue.isEmpty else { return false }
+        if let expectedAccountID = expected.accountID,
+           currentSignInKey()?.accountID != expectedAccountID {
+            return false
+        }
         guard let account = refreshAccountIdentity(),
               account.serverId == expected.serverId,
               account.serverURL == expectedURL else { return false }
@@ -637,6 +1170,8 @@ actor TokenStore {
 
     /// Store rotated credentials only if the exact account, credential owner,
     /// and refresh token captured before the network call are still current.
+    /// The credential generation changes on every selection, so a rotation
+    /// for one sign-in can never land on another sign-in of the same server.
     func saveRefreshedTokens(
         _ accessValue: String,
         _ value: String,
@@ -701,58 +1236,109 @@ actor TokenStore {
                 )
                 return false
             }
-
-            if let original = canonicalSession {
-                let stored: AccountSessionPersistence.State
-                do { stored = try sessions.load(serverId) }
-                catch {
-                    recordSessionEvent(
-                        phase: "tokenRefresh",
-                        outcome: "discarded",
-                        reason: Self.persistenceFailureReason(error)
-                    )
-                    return false
-                }
-                guard case .session(let current) = stored, current == original else {
-                    recordSessionEvent(
-                        phase: "tokenRefresh",
-                        outcome: "discarded",
-                        reason: "canonicalSessionMismatch"
-                    )
-                    return false
-                }
+            switch selection {
+            case .none:
+                return false
+            case .signIn(let key):
+                return saveRefreshedSignIn(key, accessValue: accessValue, refreshValue: value)
+            case .legacy(let serverID):
+                return saveRefreshedLegacySession(serverID, accessValue: accessValue, refreshValue: value,
+                                                  capturedURL: captured.account.serverURL)
             }
-            let rotated = CanonicalAccountSession(version: 1, signedOut: false,
-                origin: canonicalSession?.origin ?? captured.account.serverURL,
-                accountID: canonicalSession?.accountID,
-                epoch: canonicalSession?.epoch ?? accountKeychain.get(accountEpochKey).flatMap(UUID.init(uuidString:)) ?? UUID(),
-                accessToken: accessValue, refreshToken: value)
-            do { try sessions.save(rotated, serverID: serverId) }
+        }
+    }
+
+    /// Rotates the selected sign-in's tokens, keeping its epoch, after
+    /// checking the stored item is still the one this process loaded. No
+    /// per-server mirrors: Top Shelf reads the sign-in itself.
+    private func saveRefreshedSignIn(_ key: SignInKey, accessValue: String, refreshValue: String) -> Bool {
+        guard let original = cachedSignIn else {
+            recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: "savedSignInMismatch")
+            return false
+        }
+        let stored: SavedSignIn?
+        do { stored = try savedSignIns.loadSignIn(key) } catch {
+            recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: Self.persistenceFailureReason(error))
+            return false
+        }
+        guard stored == original else {
+            recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: "savedSignInMismatch")
+            return false
+        }
+        var rotated = original
+        rotated.accessToken = accessValue
+        rotated.refreshToken = refreshValue
+        do { try savedSignIns.saveSignIn(rotated) } catch {
+            recordSessionEvent(phase: "tokenRefresh", outcome: "failed", reason: Self.persistenceFailureReason(error))
+            blockRuntimeSession()
+            return false
+        }
+        cachedSignIn = rotated
+        cachedAccessToken = accessValue
+        cachedRefreshToken = refreshValue
+        recordSessionEvent(phase: "tokenRefresh", outcome: "succeeded", reason: "savedSignIn")
+        // Account refresh must not re-mirror a stale profile credential
+        // during an in-progress profile transition.
+        mirrorActiveAccessValueForExtension()
+        return true
+    }
+
+    private func saveRefreshedLegacySession(
+        _ serverId: String,
+        accessValue: String,
+        refreshValue value: String,
+        capturedURL: String
+    ) -> Bool {
+        if let original = canonicalSession {
+            let stored: AccountSessionPersistence.State
+            do { stored = try sessions.load(serverId) }
             catch {
                 recordSessionEvent(
                     phase: "tokenRefresh",
-                    outcome: "failed",
+                    outcome: "discarded",
                     reason: Self.persistenceFailureReason(error)
                 )
-                blockRuntimeSession()
                 return false
             }
-            canonicalSession = rotated
-            mirrorCanonicalSession(rotated)
-            cachedAccessToken = accessValue
-            cachedRefreshToken = value
+            guard case .session(let current) = stored, current == original else {
+                recordSessionEvent(
+                    phase: "tokenRefresh",
+                    outcome: "discarded",
+                    reason: "canonicalSessionMismatch"
+                )
+                return false
+            }
+        }
+        let rotated = CanonicalAccountSession(version: 1, signedOut: false,
+            origin: canonicalSession?.origin ?? capturedURL,
+            accountID: canonicalSession?.accountID,
+            epoch: canonicalSession?.epoch
+                ?? accountKeychain.get(Self.accountEpochKey(for: serverId)).flatMap(UUID.init(uuidString:))
+                ?? UUID(),
+            accessToken: accessValue, refreshToken: value)
+        do { try sessions.save(rotated, serverID: serverId) }
+        catch {
             recordSessionEvent(
                 phase: "tokenRefresh",
-                outcome: "succeeded",
-                reason: "persistentSession"
+                outcome: "failed",
+                reason: Self.persistenceFailureReason(error)
             )
-            accountKeychain.set(accessValue, for: Self.accessTokenKey(for: serverId))
-            accountKeychain.set(value, for: Self.refreshTokenKey(for: serverId))
-            // Account refresh must not re-mirror a stale profile credential
-            // during an in-progress profile transition.
-            mirrorActiveAccessValueForExtension()
-            return true
+            blockRuntimeSession()
+            return false
         }
+        canonicalSession = rotated
+        mirrorCanonicalSession(rotated, serverID: serverId)
+        cachedAccessToken = accessValue
+        cachedRefreshToken = value
+        recordSessionEvent(
+            phase: "tokenRefresh",
+            outcome: "succeeded",
+            reason: "persistentSession"
+        )
+        // Account refresh must not re-mirror a stale profile credential
+        // during an in-progress profile transition.
+        mirrorActiveAccessValueForExtension()
+        return true
     }
 
     /// Invalidate only the credential snapshot the server rejected. Temporary
@@ -816,34 +1402,54 @@ actor TokenStore {
                 return nil
             }
 
-            // The durable tombstone is written first. If it cannot be
-            // persisted, the canonical record still holds the rejected tokens
-            // and `ensureLoaded()` would restore them on the next launch, so
-            // nothing local is cleared and no expiry is reported: the caller
-            // sees the same outcome as any other skipped invalidation and the
-            // next 401 retries the whole sequence.
-            guard sessions.invalidate(serverId) else {
-                recordSessionEvent(
-                    phase: "sessionInvalidation",
-                    outcome: "failed",
-                    reason: "persistenceUnavailable"
-                )
+            // The durable step is written first. If it cannot be persisted,
+            // the stored record still holds the rejected tokens and would
+            // restore them on the next launch, so nothing local is cleared
+            // and no expiry is reported: the caller sees the same outcome as
+            // any other skipped invalidation and the next 401 retries the
+            // whole sequence.
+            switch selection {
+            case .none:
                 return nil
+            case .signIn(let key):
+                // The sign-in stays in its user, expired, so it can show
+                // "Sign in again" (plan §2.4).
+                guard var expired = cachedSignIn else { return nil }
+                expired.accessToken = nil
+                expired.refreshToken = nil
+                expired.epoch = nil
+                do { try savedSignIns.saveSignIn(expired) } catch {
+                    recordSessionEvent(
+                        phase: "sessionInvalidation",
+                        outcome: "failed",
+                        reason: "persistenceUnavailable"
+                    )
+                    return nil
+                }
+                cachedSignIn = expired
+                removeProofs(for: key)
+            case .legacy:
+                guard sessions.invalidate(serverId) else {
+                    recordSessionEvent(
+                        phase: "sessionInvalidation",
+                        outcome: "failed",
+                        reason: "persistenceUnavailable"
+                    )
+                    return nil
+                }
+                block(selection)
+                canonicalSession = nil
+                deleteRawSlots(serverId)
+                profileKeychain.delete(Self.profileTokenKey(for: serverId))
             }
             recordSessionEvent(
                 phase: "sessionInvalidation",
                 outcome: "cleared",
                 reason: "refreshRejected"
             )
-            runtimeBlockedServers.insert(serverId)
-            canonicalSession = nil
             cachedAccessToken = nil
             cachedRefreshToken = nil
             cachedProfileToken = nil
-            accountKeychain.delete(Self.accessTokenKey(for: serverId))
-            accountKeychain.delete(Self.refreshTokenKey(for: serverId))
-            accountKeychain.delete(Self.accountEpochKey(for: serverId))
-            profileKeychain.delete(Self.profileTokenKey(for: serverId))
             defaults.removeObject(forKey: profileIdDefaultsKey)
             clearMirroredTokensForExtension()
             removeDisplayTargets(registeredBy: serverId)
@@ -893,65 +1499,131 @@ actor TokenStore {
     }
 
     /// Read a specific server's stored access token WITHOUT changing the
-    /// active server. Used by companion pairing to approve a device on a
-    /// server other than the one currently active.
+    /// active server: the background account's credential there
+    /// (`storedCredential(forServer:)`). Used by
+    /// companion pairing to approve a device on a server other than the one
+    /// currently active.
     func getAccessToken(for serverId: String) -> String? {
         guard !serverId.isEmpty else { return nil }
         if serverId == activeServerId {
             ensureLoaded()
             if let canonicalSession, !Self.session(canonicalSession, belongsTo: serverId) { return nil }
+            if let cachedSignIn, !Self.signIn(cachedSignIn, belongsTo: serverId) { return nil }
             return cachedAccessToken
         }
-        guard !runtimeBlockedServers.contains(serverId) else { return nil }
-        do {
-            switch try sessions.load(serverId) {
-            case .session(let value): return Self.session(value, belongsTo: serverId) ? value.accessToken : nil
-            case .signedOut: return nil
-            case .legacy: return accountKeychain.get(Self.accessTokenKey(for: serverId))
-            }
-        } catch {
-            recordSessionEvent(
-                phase: "sessionLoad",
-                outcome: "failed",
-                reason: Self.persistenceFailureReason(error)
-            )
+        switch storedCredential(forServer: serverId) {
+        case .none:
             return nil
+        case .signIn(let key):
+            return storedSignIn(key, servingServer: serverId)?.accessToken
+        case .legacy:
+            guard !isBlocked(.legacy(serverID: serverId)) else { return nil }
+            do {
+                switch try sessions.load(serverId) {
+                case .session(let value): return Self.session(value, belongsTo: serverId) ? value.accessToken : nil
+                case .signedOut: return nil
+                case .legacy: return accountKeychain.get(Self.accessTokenKey(for: serverId))
+                }
+            } catch {
+                recordSessionEvent(
+                    phase: "sessionLoad",
+                    outcome: "failed",
+                    reason: Self.persistenceFailureReason(error)
+                )
+                return nil
+            }
         }
     }
 
     /// A saved server's stored session when that server is NOT the active
     /// one: what an approving phone needs to renew the bearer of a server it
-    /// is not currently using. Nil for the active server (its credentials
-    /// rotate through `HTTPClient`'s single refresh flight), a blocked slot,
-    /// a signed-out slot, or a legacy record without a canonical session.
+    /// is not currently using. It is the background account's sign-in there
+    /// (`storedCredential(forServer:)`), in the
+    /// record shape the renewal compares against. Nil for the active server
+    /// (its credentials rotate through `HTTPClient`'s single refresh flight),
+    /// a blocked slot, a signed-out or expired one, or a legacy record
+    /// without a canonical session.
     func inactiveServerSession(for serverId: String) -> CanonicalAccountSession? {
-        guard !serverId.isEmpty, serverId != activeServerId, temporaryScope?.serverId != serverId,
-              !runtimeBlockedServers.contains(serverId) else { return nil }
-        guard case .session(let value)? = try? sessions.load(serverId), !value.signedOut,
-              Self.session(value, belongsTo: serverId),
-              value.accessToken?.isEmpty == false, value.refreshToken?.isEmpty == false else { return nil }
-        return value
+        guard !serverId.isEmpty, serverId != activeServerId, temporaryScope?.serverId != serverId else { return nil }
+        switch storedCredential(forServer: serverId) {
+        case .none:
+            return nil
+        case .signIn(let key):
+            return storedSignIn(key, servingServer: serverId).map(Self.storedSession(of:))
+        case .legacy:
+            guard !isBlocked(.legacy(serverID: serverId)),
+                  case .session(let value)? = try? sessions.load(serverId), !value.signedOut,
+                  Self.session(value, belongsTo: serverId),
+                  value.accessToken?.isEmpty == false, value.refreshToken?.isEmpty == false else { return nil }
+            return value
+        }
+    }
+
+    /// A saved sign-in's stored session when it is not the selected
+    /// credential: what an approving phone needs to renew the bearer of an
+    /// account it is not using, on the active server or another one. Nil
+    /// for the selected sign-in (its credentials rotate through
+    /// `HTTPClient`'s single refresh flight), a server in a temporary scope,
+    /// and a blocked, signed-out, or expired sign-in or one bound elsewhere.
+    func backgroundSignInSession(for key: SignInKey) -> CanonicalAccountSession? {
+        guard selection != .signIn(key), temporaryScope?.serverId != key.serverID else { return nil }
+        return storedSignIn(key, servingServer: key.serverID).map(Self.storedSession(of:))
+    }
+
+    /// A saved sign-in in the record shape the bearer renewals compare against.
+    private static func storedSession(of signIn: SavedSignIn) -> CanonicalAccountSession {
+        CanonicalAccountSession(version: 1, signedOut: false, origin: signIn.origin,
+            accountID: signIn.accountID, epoch: signIn.epoch,
+            accessToken: signIn.accessToken, refreshToken: signIn.refreshToken)
+    }
+
+    /// A saved sign-in that may hand its bearer to `serverId`: signed in,
+    /// not blocked, and bound to the address the server's ID names.
+    private func storedSignIn(_ key: SignInKey, servingServer serverId: String) -> SavedSignIn? {
+        guard !isBlocked(.signIn(key)),
+              let signIn = try? savedSignIns.loadSignIn(key),
+              signIn.isSignedIn,
+              Self.signIn(signIn, belongsTo: serverId) else { return nil }
+        return signIn
     }
 
     #if os(iOS)
     /// The verified account and sign-in epoch of the session stored for a
-    /// saved server, active or not. Nil for a signed-out, blocked, legacy, or
-    /// temporary slot, which cannot keep a push registration current.
+    /// saved server, active or not: the selected or background account's
+    /// sign-in there. Nil for
+    /// a signed-out, blocked, legacy, or temporary slot, which cannot keep a
+    /// push registration current.
     func savedSessionAccount(for serverId: String) -> (accountID: String, epoch: UUID)? {
-        guard !serverId.isEmpty, temporaryScope?.serverId != serverId,
-              !runtimeBlockedServers.contains(serverId) else { return nil }
-        let session: CanonicalAccountSession?
+        guard !serverId.isEmpty, temporaryScope?.serverId != serverId else { return nil }
         if serverId == activeServerId {
+            guard !isBlocked(selection) else { return nil }
             ensureLoaded()
-            session = canonicalSession
-        } else if case .session(let value)? = try? sessions.load(serverId) {
-            session = value
-        } else {
-            session = nil
+            switch selection {
+            case .none:
+                return nil
+            case .signIn(let key):
+                guard let signIn = cachedSignIn, signIn.isSignedIn, Self.signIn(signIn, belongsTo: serverId),
+                      let epoch = signIn.epoch else { return nil }
+                return (key.accountID, epoch)
+            case .legacy:
+                guard let session = canonicalSession, !session.signedOut, Self.session(session, belongsTo: serverId),
+                      let accountID = session.accountID, let epoch = session.epoch else { return nil }
+                return (accountID, epoch)
+            }
         }
-        guard let session, !session.signedOut, Self.session(session, belongsTo: serverId),
-              let accountID = session.accountID, let epoch = session.epoch else { return nil }
-        return (accountID, epoch)
+        switch storedCredential(forServer: serverId) {
+        case .none:
+            return nil
+        case .signIn(let key):
+            guard let signIn = storedSignIn(key, servingServer: serverId), let epoch = signIn.epoch else { return nil }
+            return (key.accountID, epoch)
+        case .legacy:
+            guard !isBlocked(.legacy(serverID: serverId)),
+                  case .session(let session)? = try? sessions.load(serverId), !session.signedOut,
+                  Self.session(session, belongsTo: serverId),
+                  let accountID = session.accountID, let epoch = session.epoch else { return nil }
+            return (accountID, epoch)
+        }
     }
 
     /// The profile verification proof stored for a saved server. The active
@@ -964,7 +1636,17 @@ actor TokenStore {
             ensureLoaded()
             return cachedProfileToken
         }
-        return profileKeychain.get(Self.profileTokenKey(for: serverId))
+        switch storedCredential(forServer: serverId) {
+        case .none:
+            return nil
+        case .signIn(let key):
+            guard let proof = try? proofs.load(key), proof.profileID == nil || proof.profileID == profileID else {
+                return nil
+            }
+            return proof.token
+        case .legacy:
+            return profileKeychain.get(Self.profileTokenKey(for: serverId))
+        }
     }
 
     /// Runs a local push-registration write only while `owner`'s account
@@ -992,6 +1674,12 @@ actor TokenStore {
         return ServerRegistry.normalize(url: origin) == address
     }
 
+    /// The same origin binding for a saved sign-in.
+    static func signIn(_ value: SavedSignIn, belongsTo serverId: String) -> Bool {
+        guard let address = ServerRegistry.url(forServerId: serverId) else { return false }
+        return ServerRegistry.normalize(url: value.origin) == address
+    }
+
     /// Store a rotated token pair for an inactive server, but only when that
     /// slot still holds exactly the session the refresh was sent with. A slot
     /// that became active, was signed out, or rotated meanwhile keeps what it
@@ -1008,26 +1696,72 @@ actor TokenStore {
             recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: "inactiveSlotChanged")
             return false
         }
-        let rotated = CanonicalAccountSession(version: 1, signedOut: false, origin: captured.origin,
-            accountID: captured.accountID, epoch: captured.epoch, accessToken: accessToken, refreshToken: refreshToken)
-        do { try sessions.save(rotated, serverID: serverId) } catch {
-            recordSessionEvent(phase: "tokenRefresh", outcome: "failed", reason: Self.persistenceFailureReason(error))
+        switch storedCredential(forServer: serverId) {
+        case .none:
             return false
+        case .signIn(let key):
+            guard storeRotatedSignIn(key, accessToken: accessToken, refreshToken: refreshToken) else { return false }
+        case .legacy:
+            let rotated = CanonicalAccountSession(version: 1, signedOut: false, origin: captured.origin,
+                accountID: captured.accountID, epoch: captured.epoch, accessToken: accessToken, refreshToken: refreshToken)
+            do { try sessions.save(rotated, serverID: serverId) } catch {
+                recordSessionEvent(phase: "tokenRefresh", outcome: "failed", reason: Self.persistenceFailureReason(error))
+                return false
+            }
         }
         recordSessionEvent(phase: "tokenRefresh", outcome: "succeeded", reason: "inactiveServer")
         return true
     }
 
-    /// Launch-time check for whether `serverId` has a stored access token.
-    /// Retargets to it and loads its session record.
-    func hasAccessTokenForActiveServer(serverId: String) -> Bool {
-        retargetActiveServer(serverId: serverId)
-        ensureLoaded()
-        return cachedAccessToken != nil
+    /// Store a rotated token pair for a saved sign-in that was not selected
+    /// (`backgroundSignInSession(for:)`), on the same terms as
+    /// `saveInactiveServerRefresh`: only while the sign-in still holds
+    /// exactly the session the refresh was sent with.
+    ///
+    /// The sign-in may have been selected while the refresh ran. The server
+    /// has spent the old refresh token either way, so while the stored item
+    /// is unchanged the pair goes through the selected sign-in's own save,
+    /// which also updates the credentials this process holds for it.
+    func saveBackgroundSignInRefresh(
+        accessToken: String,
+        refreshToken: String,
+        replacing captured: CanonicalAccountSession,
+        for key: SignInKey
+    ) -> Bool {
+        if selection == .signIn(key), !accessToken.isEmpty, !refreshToken.isEmpty {
+            ensureLoaded()
+            guard let stored = try? savedSignIns.loadSignIn(key), Self.storedSession(of: stored) == captured else {
+                recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: "inactiveSlotChanged")
+                return false
+            }
+            return saveRefreshedSignIn(key, accessValue: accessToken, refreshValue: refreshToken)
+        }
+        guard !accessToken.isEmpty, !refreshToken.isEmpty,
+              backgroundSignInSession(for: key) == captured else {
+            recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: "inactiveSlotChanged")
+            return false
+        }
+        guard storeRotatedSignIn(key, accessToken: accessToken, refreshToken: refreshToken) else { return false }
+        recordSessionEvent(phase: "tokenRefresh", outcome: "succeeded", reason: "inactiveServer")
+        return true
+    }
+
+    /// Writes a rotated pair into a saved sign-in that is not selected,
+    /// keeping its epoch.
+    private func storeRotatedSignIn(_ key: SignInKey, accessToken: String, refreshToken: String) -> Bool {
+        guard var signIn = try? savedSignIns.loadSignIn(key) else { return false }
+        signIn.accessToken = accessToken
+        signIn.refreshToken = refreshToken
+        do { try savedSignIns.saveSignIn(signIn) } catch {
+            recordSessionEvent(phase: "tokenRefresh", outcome: "failed", reason: Self.persistenceFailureReason(error))
+            return false
+        }
+        return true
     }
 
     /// Compatibility entry point for unverified sessions; it creates no verified
-    /// durable account binding. Actual login/pairing installers supply accountID.
+    /// durable account binding. Before migration only: it writes the active
+    /// server's per-server slot (`installAccountSession`).
     @discardableResult
     func saveTokens(accessToken: String, refreshToken: String) -> Bool {
         if temporaryScope != nil {
@@ -1052,49 +1786,24 @@ actor TokenStore {
         AccountInstallationExpectation(account: refreshAccountIdentity(), generation: persistentCredentialGenerationID)
     }
 
-    /// Explicit receiver targets are persisted without changing the active owner.
-    /// Comparison and checked keychain publication occur in one actor turn.
-    func installAccountSessionForServer(serverID: String, origin: String, accessToken: String,
-        refreshToken: String, accountID: String, expected: AccountInstallationExpectation) throws {
-        guard captureAccountInstallationExpectation() == expected, temporaryScope == nil else {
-            throw HTTPError.requestIdentityChanged
-        }
-        let origin = ServerRegistry.normalize(url: origin)
-        guard !serverID.isEmpty, !origin.isEmpty, !accountID.isEmpty,
-              !accessToken.isEmpty, !refreshToken.isEmpty else { throw AccountSessionPersistenceError.invalidIdentity }
-        let value = CanonicalAccountSession(version: 1, signedOut: false, origin: origin,
-            accountID: accountID, epoch: UUID(), accessToken: accessToken, refreshToken: refreshToken)
-        do { try sessions.save(value, serverID: serverID) }
-        catch {
-            runtimeBlockedServers.insert(serverID)
-            if serverID == activeServerId { blockRuntimeSession() }
-            throw error
-        }
-        runtimeBlockedServers.remove(serverID)
-        profileKeychain.delete(Self.profileTokenKey(for: serverID))
-        if serverID == activeServerId { defaults.removeObject(forKey: profileIdDefaultsKey) }
-        // A successful install consumes this expectation even for an inactive target.
-        persistentCredentialGenerationID = UUID()
-        if serverID == activeServerId {
-            canonicalSession = nil
-            cachedAccessToken = nil
-            cachedRefreshToken = nil
-            cachedProfileToken = nil
-            loadedForServerId = nil
-        }
-    }
-
+    /// Install a session into the active server's per-server slot. Before
+    /// migration only (the device has no accounts index yet): afterwards every
+    /// sign-in goes through `installSignIn`, and this throws.
     func installAccountSession(accessToken: String, refreshToken: String, accountID: String?, clearProfile: Bool = true, expectedAccount: RefreshAccountIdentity? = nil) throws {
         if let expectedAccount, refreshAccountIdentity() != expectedAccount { throw HTTPError.requestIdentityChanged }
+        let serverID = activeServerId
         let value: CanonicalAccountSession
         do {
-            guard temporaryScope == nil, !activeServerId.isEmpty, !accessToken.isEmpty, !refreshToken.isEmpty,
+            guard temporaryScope == nil, !serverID.isEmpty, !accessToken.isEmpty, !refreshToken.isEmpty,
                   accountID == nil || accountID?.isEmpty == false else { throw AccountSessionPersistenceError.invalidIdentity }
+            let index: SiloAccountIndex?
+            do { index = try loadIndex() } catch { throw AccountSessionPersistenceError.unavailable }
+            guard index == nil else { throw AccountSessionPersistenceError.invalidIdentity }
             let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
             guard !origin.isEmpty else { throw AccountSessionPersistenceError.invalidIdentity }
             value = CanonicalAccountSession(version: 1, signedOut: false, origin: origin, accountID: accountID,
                 epoch: UUID(), accessToken: accessToken, refreshToken: refreshToken)
-            do { try sessions.save(value, serverID: activeServerId) }
+            do { try sessions.save(value, serverID: serverID) }
             catch { blockRuntimeSession(); throw error }
         } catch {
             // Recorded here rather than by each caller so login, pairing and
@@ -1107,25 +1816,626 @@ actor TokenStore {
             )
             throw error
         }
-        runtimeBlockedServers.remove(activeServerId)
+        let legacy = CredentialSelection.legacy(serverID: serverID)
+        unblock(legacy)
         if clearProfile {
             defaults.removeObject(forKey: profileIdDefaultsKey)
-            profileKeychain.delete(profileTokenKey)
+            profileKeychain.delete(Self.profileTokenKey(for: serverID))
             cachedProfileToken = nil
         } else {
             // The install marks the cache loaded below, so the profile proof
             // must reflect the Keychain now: a blocked or never-loaded slot
             // would otherwise hide a stored proof until the next switch.
-            cachedProfileToken = profileKeychain.get(profileTokenKey)
+            cachedProfileToken = profileKeychain.get(Self.profileTokenKey(for: serverID))
         }
         persistentCredentialGenerationID = UUID()
+        selection = legacy
         canonicalSession = value
+        cachedSignIn = nil
         cachedAccessToken = accessToken
         cachedRefreshToken = refreshToken
-        loadedForServerId = activeServerId
-        mirrorCanonicalSession(value)
+        loadedSelection = selection
+        writeAccountMirror()
+        mirrorCanonicalSession(value, serverID: serverID)
         mirrorActiveTokensForExtension()
     }
+
+    // MARK: - Saved sign-ins
+
+    /// Add or refresh an account on the active server and select it (plan
+    /// §2.5). The key is the active server plus `account.id`: an account
+    /// already saved gets new tokens and epoch, keeping its place, `addedAt`,
+    /// and profile cache; any other is added. It never touches other
+    /// accounts on the server.
+    /// Every install mints a new epoch and deletes this Apple TV user's
+    /// proof for the key, so a refresh asks everyone to pick a profile again.
+    ///
+    /// The item is written first and the index second (invariant 5). Throws
+    /// `HTTPError.requestIdentityChanged` when `expected` is no longer the
+    /// active account identity, `AccountSessionPersistenceError` for an
+    /// invalid account or a temporary scope (`.invalidIdentity`) and for a
+    /// keychain failure (`.unavailable`), and
+    /// `SavedSignInAccessError.notMigrated` before migration.
+    @discardableResult
+    func installSignIn(
+        accessToken: String,
+        refreshToken: String,
+        account: SignInAccount,
+        origin: String,
+        expected: RefreshAccountIdentity
+    ) throws -> SignInInstallResult {
+        do {
+            return try commitSignIn(accessToken: accessToken, refreshToken: refreshToken, account: account,
+                                    origin: origin, expected: expected)
+        } catch {
+            recordSessionEvent(phase: "sessionInstall", outcome: "failed", reason: Self.persistenceFailureReason(error))
+            throw error
+        }
+    }
+
+    private func commitSignIn(
+        accessToken: String,
+        refreshToken: String,
+        account: SignInAccount,
+        origin: String,
+        expected: RefreshAccountIdentity
+    ) throws -> SignInInstallResult {
+        guard temporaryScope == nil else { throw AccountSessionPersistenceError.invalidIdentity }
+        guard refreshAccountIdentity() == expected else { throw HTTPError.requestIdentityChanged }
+        let origin = ServerRegistry.normalize(url: origin)
+        guard !accessToken.isEmpty, !refreshToken.isEmpty, origin == expected.serverURL,
+              let key = SignInKey(serverID: expected.serverId, accountID: account.id) else {
+            throw AccountSessionPersistenceError.invalidIdentity
+        }
+        let loadedIndex: SiloAccountIndex?
+        do { loadedIndex = try loadIndex() } catch { throw AccountSessionPersistenceError.unavailable }
+        guard var index = loadedIndex else { throw SavedSignInAccessError.notMigrated }
+
+        let isSaved = index.contains(.signIn(key))
+        var existing: SavedSignIn?
+        if isSaved {
+            do {
+                existing = try savedSignIns.loadSignIn(key)
+            } catch where Self.isUnusableRecord(error) {
+                existing = nil
+            } catch {
+                throw AccountSessionPersistenceError.unavailable
+            }
+        } else if index.legacyDataOwnerByServerID?[key.serverID] == nil,
+                  index.accounts(onServer: key.serverID).isEmpty,
+                  index.migrated == true || index.accounts.isEmpty {
+            // A server whose session had ended by migration got no owner for
+            // its data from before accounts existed, which signing in again
+            // always brought back. The next account signed in there takes it
+            // over, on a migrated device or as the device's first account.
+            // Never on a server where an account is saved already.
+            var owners = index.legacyDataOwnerByServerID ?? [:]
+            owners[key.serverID] = key.accountID
+            index.legacyDataOwnerByServerID = owners
+        }
+
+        let now = Date()
+        let signIn = SavedSignIn(
+            key: key,
+            origin: origin,
+            username: account.username ?? existing?.username,
+            email: existing?.email,
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            epoch: UUID(),
+            addedAt: existing?.addedAt ?? now,
+            profiles: existing?.profiles ?? [],
+            adoptsLegacyLocalData: existing?.adoptsLegacyLocalData
+        )
+        do { try savedSignIns.saveSignIn(signIn) } catch { throw AccountSessionPersistenceError.unavailable }
+        if !isSaved {
+            index.accounts.append(.signIn(key))
+            // The item written above is unreachable until this commit; a
+            // retry overwrites it.
+            do { try saveIndex(index) } catch { throw AccountSessionPersistenceError.unavailable }
+        }
+
+        let superseded = existing.flatMap(Self.revocableCredential(of:))
+            .flatMap { $0.accessToken == accessToken ? nil : $0 }
+        removeProofs(for: key)
+        unblock(.signIn(key))
+        persistentCredentialGenerationID = UUID()
+        selection = .signIn(key)
+        canonicalSession = nil
+        cachedSignIn = signIn
+        cachedAccessToken = accessToken
+        cachedRefreshToken = refreshToken
+        cachedProfileToken = nil
+        loadedSelection = selection
+        defaults.removeObject(forKey: profileIdDefaultsKey)
+        profileSelectionGeneration = UUID()
+        writeAccountMirror()
+        mirrorActiveTokensForExtension()
+        recordSessionEvent(phase: "sessionInstall", outcome: "succeeded", reason: "savedSignIn")
+        return SignInInstallResult(key: key, addedAccount: !isSaved, superseded: superseded)
+    }
+
+    private static func revocableCredential(of signIn: SavedSignIn) -> RevocableCredential? {
+        guard let access = signIn.accessToken, !access.isEmpty else { return nil }
+        return RevocableCredential(serverURL: ServerRegistry.normalize(url: signIn.origin),
+                                   accessToken: access, refreshToken: signIn.refreshToken)
+    }
+
+    /// The session a sign-in holds, for revoking it. The selected sign-in
+    /// answers from memory; any other from its saved item.
+    func revocableCredential(for key: SignInKey) -> RevocableCredential? {
+        if selection == .signIn(key) {
+            ensureLoaded()
+            if let access = cachedAccessToken, let signIn = cachedSignIn {
+                return RevocableCredential(serverURL: ServerRegistry.normalize(url: signIn.origin),
+                                           accessToken: access, refreshToken: cachedRefreshToken)
+            }
+        }
+        guard let signIn = try? savedSignIns.loadSignIn(key) else { return nil }
+        return Self.revocableCredential(of: signIn)
+    }
+
+    /// The session a server's per-server slot holds, for revoking it. A slot
+    /// from before canonical records names no origin, so it goes to the
+    /// address its server ID names, never to the active-URL mirror: removing
+    /// the active server points that mirror at the fallback server first.
+    private func legacyRevocableCredential(serverID: String) -> RevocableCredential? {
+        if selection == .legacy(serverID: serverID) {
+            ensureLoaded()
+            let url = canonicalSession?.origin.map { ServerRegistry.normalize(url: $0) }
+                ?? ServerRegistry.url(forServerId: serverID)
+            if let access = cachedAccessToken, !access.isEmpty, let url, !url.isEmpty {
+                return RevocableCredential(serverURL: url, accessToken: access, refreshToken: cachedRefreshToken)
+            }
+        }
+        switch try? sessions.load(serverID) {
+        case .session(let value)?:
+            guard let origin = value.origin, let access = value.accessToken, !access.isEmpty else { return nil }
+            return RevocableCredential(serverURL: ServerRegistry.normalize(url: origin),
+                                       accessToken: access, refreshToken: value.refreshToken)
+        case .legacy?:
+            guard let url = ServerRegistry.url(forServerId: serverID),
+                  let access = accountKeychain.get(Self.accessTokenKey(for: serverID)), !access.isEmpty else { return nil }
+            return RevocableCredential(serverURL: url, accessToken: access,
+                                       refreshToken: accountKeychain.get(Self.refreshTokenKey(for: serverID)))
+        case .signedOut?, nil:
+            return nil
+        }
+    }
+
+    // MARK: - Removal
+
+    /// Sign out of the selected credential (`signOut(_:)`). Refuses while a
+    /// temporary scope owns requests.
+    @discardableResult
+    func signOutCurrentCredential() -> SignInRemoval {
+        guard temporaryScope == nil else {
+            return SignInRemoval(credential: nil, durable: false)
+        }
+        guard let account = SiloAccountRef(selection) else {
+            persistentCredentialGenerationID = UUID()
+            invalidateLoadedCredential()
+            loadedSelection = selection
+            defaults.removeObject(forKey: profileIdDefaultsKey)
+            clearMirroredTokensForExtension()
+            if !activeServerId.isEmpty { removeDisplayTargets(registeredBy: activeServerId) }
+            recordSessionEvent(phase: "clearTokens", outcome: "cleared", reason: "noCredential")
+            return SignInRemoval(credential: nil, durable: true)
+        }
+        return signOut(account)
+    }
+
+    /// Sign out of the selected credential (`signOutCurrentCredential`), or
+    /// end a temporary scope. Returns whether the sign-out is durable.
+    @discardableResult
+    func clearTokens() -> Bool {
+        // The deliberate counterpart to `invalidateRejectedRefresh`: reaching
+        // login through this path means the app dropped the session on
+        // purpose (sign-out), not because the server rejected it. Reports that
+        // conflate the two are the reason "I got logged out" is unanswerable,
+        // so the two paths carry distinct phases.
+        if let temporaryScope {
+            rejectedTemporaryCredentialGenerations.remove(temporaryScope.credentialGenerationID)
+            self.temporaryScope = nil
+            recordSessionEvent(
+                phase: "clearTokens",
+                outcome: "cleared",
+                reason: "temporaryScope"
+            )
+            return true
+        }
+        return signOutCurrentCredential().durable
+    }
+
+    /// Sign out of an account but keep it: its sign-in stays saved without
+    /// tokens, so its card shows Sign in again (plan §2.4). The session is
+    /// captured first so the caller can revoke it. When the expired record
+    /// can't be written the item is deleted instead, which keeps the session
+    /// from coming back; the card then shows Sign in again without its
+    /// cached details. A pending legacy account, and any server slot before
+    /// migration, has nothing to keep and is removed.
+    @discardableResult
+    func signOut(_ account: SiloAccountRef) -> SignInRemoval {
+        guard case .signIn(let key) = account else {
+            return removeAccount(account)
+        }
+        // The expired record is keyed by the sign-in, so an index that can't
+        // be read right now doesn't stop it; only an index that no longer
+        // lists the account turns this into a removal.
+        if let index = try? loadIndex(), !index.contains(account) {
+            return removeAccount(account)
+        }
+        let credential = revocableCredential(for: key)
+        // Push display targets follow the account background work uses on
+        // its server (selected or not), read before anything changes.
+        let ownsPushTargets = SiloAccountRef(storedCredential(forServer: key.serverID)) == account
+        let stored: SavedSignIn?
+        do { stored = try savedSignIns.loadSignIn(key) } catch { stored = nil }
+        var durable: Bool
+        if var expired = stored {
+            expired.accessToken = nil
+            expired.refreshToken = nil
+            expired.epoch = nil
+            do {
+                try savedSignIns.saveSignIn(expired)
+                durable = true
+            } catch {
+                durable = savedSignIns.removeSignIn(key)
+            }
+        } else {
+            durable = savedSignIns.removeSignIn(key)
+        }
+        removeProofs(for: key)
+        if durable { unblock(.signIn(key)) } else { block(.signIn(key)) }
+        if ownsPushTargets { removeDisplayTargets(registeredBy: key.serverID) }
+        if selection == .signIn(key) {
+            persistentCredentialGenerationID = UUID()
+            selection = .none
+            invalidateLoadedCredential()
+            loadedSelection = selection
+            defaults.removeObject(forKey: profileIdDefaultsKey)
+            clearMirroredTokensForExtension()
+            writeAccountMirror()
+        }
+        recordSessionEvent(
+            phase: "clearTokens",
+            outcome: durable ? "cleared" : "failed",
+            reason: durable ? "persistentSession" : "persistenceUnavailable"
+        )
+        return SignInRemoval(credential: credential, durable: durable)
+    }
+
+    /// Remove an account: the index first, then its item (or server slot)
+    /// and this Apple TV user's proof. Other Apple TV users' proofs stay;
+    /// they stop working with the revoked session.
+    @discardableResult
+    func removeAccount(_ account: SiloAccountRef) -> SignInRemoval {
+        switch account {
+        case .signIn(let key):
+            return removeCredentials(keys: [key], legacyServerIDs: [], phase: "signInRemoval")[0]
+        case .pendingLegacy(let serverID):
+            return removeCredentials(keys: [], legacyServerIDs: [serverID], phase: "signInRemoval")[0]
+        }
+    }
+
+    /// Remove everything saved for a server: every account on it, its
+    /// per-server slot (tombstoned), and its push display targets. When the
+    /// index can't be read, its sign-ins can't be found, so nothing is
+    /// removed and the result is not durable.
+    @discardableResult
+    func removeServer(_ serverID: String) -> [SignInRemoval] {
+        guard !serverID.isEmpty else { return [] }
+        let index: SiloAccountIndex?
+        do { index = try loadIndex() } catch {
+            recordSessionEvent(phase: "deleteTokens", outcome: "failed", reason: Self.persistenceFailureReason(error))
+            return [SignInRemoval(credential: nil, durable: false)]
+        }
+        let keys = (index?.accounts(onServer: serverID) ?? []).compactMap(\.signInKey)
+        let removals = removeCredentials(keys: keys, legacyServerIDs: [serverID], phase: "deleteTokens")
+        removeDisplayTargets(registeredBy: serverID)
+        return removals
+    }
+
+    /// Remove a server's per-server slot: tombstone it and drop its pending
+    /// legacy account. Before migration this is the server's only sign-in.
+    @discardableResult
+    func removeLegacyServer(_ serverID: String) -> SignInRemoval {
+        removeCredentials(keys: [], legacyServerIDs: [serverID], phase: "signInRemoval")[0]
+    }
+
+    /// One removal: credentials captured first, then the index (commit
+    /// point), then items, proofs, and per-server slots. Returns one result
+    /// per key, then one per legacy server.
+    private func removeCredentials(
+        keys: [SignInKey],
+        legacyServerIDs: [String],
+        phase: String
+    ) -> [SignInRemoval] {
+        let index: SiloAccountIndex?
+        var indexReadable = true
+        do { index = try loadIndex() } catch {
+            index = nil
+            indexReadable = false
+        }
+        let credentials = keys.map { revocableCredential(for: $0) }
+        let legacyCredentials = legacyServerIDs.map { legacyRevocableCredential(serverID: $0) }
+        // Push display targets follow the account background work uses on
+        // each server (selected or not), read before anything changes.
+        let pushTargetServers = Set(keys.filter { storedCredential(forServer: $0.serverID) == .signIn($0) }.map(\.serverID)
+            + legacyServerIDs.filter { storedCredential(forServer: $0) == .legacy(serverID: $0) })
+        let removed = Set(keys.map(SiloAccountRef.signIn)
+            + legacyServerIDs.map { SiloAccountRef.pendingLegacy(serverID: $0) })
+        // A server's own slot holds a session only while it can still be
+        // read: before migration (or while the index can't be read), or as a
+        // pending legacy account.
+        func legacyCounts(_ serverID: String) -> Bool {
+            index == nil || index?.contains(.pendingLegacy(serverID: serverID)) == true
+        }
+
+        var indexCommitted = indexReadable && index == nil
+        if indexReadable, let index {
+            var updated = index
+            updated.accounts.removeAll { removed.contains($0) }
+            if updated == index {
+                indexCommitted = true
+            } else {
+                do {
+                    try saveIndex(updated)
+                    indexCommitted = true
+                } catch {
+                    recordSessionEvent(phase: phase, outcome: "failed", reason: Self.persistenceFailureReason(error))
+                }
+            }
+        }
+
+        var itemsRemoved: [Bool] = []
+        for key in keys {
+            // When the index write failed, deleting the item still keeps the
+            // session from coming back; the index then lists a missing item.
+            itemsRemoved.append(savedSignIns.removeSignIn(key))
+            removeProofs(for: key)
+            if indexCommitted { unblock(.signIn(key)) } else { block(.signIn(key)) }
+        }
+        var legacyRemoved: [Bool] = []
+        for serverID in legacyServerIDs {
+            let invalidated = sessions.invalidate(serverID)
+            deleteRawSlots(serverID)
+            profileKeychain.delete(Self.profileTokenKey(for: serverID))
+            block(.legacy(serverID: serverID))
+            // Before migration the slot is the server's only sign-in.
+            if index == nil { removeDisplayTargets(registeredBy: serverID) }
+            // Gone for good once tombstoned, or once the index no longer
+            // lists it: it is never read again (invariant 4).
+            let stillListed = index == nil || (legacyCounts(serverID) && !indexCommitted)
+            legacyRemoved.append(invalidated || !stillListed)
+        }
+
+        let removesSelection: Bool
+        switch selection {
+        case .none: removesSelection = false
+        case .signIn(let key): removesSelection = keys.contains(key)
+        case .legacy(let serverID): removesSelection = legacyServerIDs.contains(serverID)
+        }
+        for serverID in pushTargetServers { removeDisplayTargets(registeredBy: serverID) }
+        if removesSelection {
+            // Push follows the selected account (plan §2.13).
+            removeDisplayTargets(registeredBy: activeServerId)
+            persistentCredentialGenerationID = UUID()
+            // Before migration the server keeps its (now signed-out) slot
+            // selected, as sign-out always has; afterwards nothing is.
+            if index != nil || !indexReadable { selection = .none }
+            invalidateLoadedCredential()
+            loadedSelection = selection
+            defaults.removeObject(forKey: profileIdDefaultsKey)
+            clearMirroredTokensForExtension()
+            writeAccountMirror()
+        }
+
+        let keyResults = keys.enumerated().map { offset, _ in
+            SignInRemoval(credential: credentials[offset], durable: indexCommitted || itemsRemoved[offset])
+        }
+        let legacyResults = legacyServerIDs.enumerated().map { offset, serverID in
+            SignInRemoval(credential: legacyCounts(serverID) ? legacyCredentials[offset] : nil,
+                          durable: legacyRemoved[offset])
+        }
+        let results = keyResults + legacyResults
+        let allDurable = results.allSatisfy(\.durable)
+        recordSessionEvent(
+            phase: phase,
+            outcome: allDurable ? "cleared" : "failed",
+            reason: allDurable ? "persistentSession" : "persistenceUnavailable"
+        )
+        return results
+    }
+
+    // MARK: - Display data
+
+    /// Update a sign-in's display cache (username, email, profiles for
+    /// account cards). Nil leaves a field as it is (`.some(nil)` clears the
+    /// email); an unchanged cache is not rewritten.
+    @discardableResult
+    func updateSignInDisplay(
+        _ key: SignInKey,
+        username: String?,
+        email: String?? = nil,
+        profiles: [SavedSignInProfile]?
+    ) -> Bool {
+        guard let signIn = try? savedSignIns.loadSignIn(key) else { return false }
+        var updated = signIn
+        if let username { updated.username = username }
+        if let email { updated.email = email.flatMap { $0.isEmpty ? nil : $0 } }
+        if let profiles { updated.profiles = profiles }
+        guard updated != signIn else { return true }
+        do { try savedSignIns.saveSignIn(updated) } catch { return false }
+        // Token rotation compares the stored item with this copy.
+        if cachedSignIn == signIn { cachedSignIn = updated }
+        return true
+    }
+
+    /// Bind the account `/api/v2/account/me` named to the credential that
+    /// read it, under this exact token and process identity.
+    ///
+    /// - A saved sign-in must name the same account (otherwise identity
+    ///   changed); its username and email are filled in when they differ.
+    /// - A pending legacy account becomes a saved sign-in in its place,
+    ///   keeping the epoch, the generation, and the cached tokens, or is
+    ///   dropped when that account is already saved (plan §3.3). A failed
+    ///   write leaves it pending and working.
+    /// - Before migration the server's own record is bound, as it always was.
+    ///   Access-only legacy credentials can still read account metadata, but
+    ///   cannot establish a refreshable durable login envelope.
+    @discardableResult
+    func bindVerifiedAccount(_ account: APIv2Account, expected: CapturedOrdinaryRequestAuth) throws -> BindOutcome {
+        guard temporaryScope == nil else { return .unchanged }
+        ensureLoaded()
+        guard !account.id.isEmpty, refreshAccountIdentity() == expected.account,
+              cachedAccessToken == expected.accessToken else { throw HTTPError.requestIdentityChanged }
+        switch selection {
+        case .none:
+            return .unchanged
+        case .signIn(let key):
+            guard key.accountID == account.id else { throw AccountSessionPersistenceError.invalidIdentity }
+            let email = account.email.flatMap { $0.isEmpty ? nil : $0 }
+            guard cachedSignIn?.username != account.username || cachedSignIn?.email != email else { return .unchanged }
+            return updateSignInDisplay(key, username: account.username, email: .some(email), profiles: nil)
+                ? .usernameUpdated : .unchanged
+        case .legacy(let serverID):
+            guard let access = cachedAccessToken, let refresh = cachedRefreshToken else { return .unchanged }
+            if let canonicalSession, canonicalSession.accountID != nil, canonicalSession.accountID != account.id {
+                throw AccountSessionPersistenceError.invalidIdentity
+            }
+            let index: SiloAccountIndex?
+            do { index = try loadIndex() } catch {
+                // Bind nothing until the index can be read; the next account
+                // read retries.
+                return .unchanged
+            }
+            guard let index else {
+                try bindLegacySession(serverID, accountID: account.id, access: access, refresh: refresh,
+                                      serverURL: expected.account.serverURL)
+                return .unchanged
+            }
+            guard let position = index.accounts.firstIndex(of: .pendingLegacy(serverID: serverID)) else {
+                return .unchanged
+            }
+            guard let key = SignInKey(serverID: serverID, accountID: account.id) else {
+                throw AccountSessionPersistenceError.invalidIdentity
+            }
+            if index.contains(.signIn(key)) {
+                return dropDuplicateLegacyServer(serverID, existing: key, index: index)
+            }
+            return migratePendingLegacyServer(serverID, key: key, username: account.username,
+                                              email: account.email, access: access, refresh: refresh,
+                                              serverURL: expected.account.serverURL, position: position, index: index)
+        }
+    }
+
+    private func bindLegacySession(_ serverID: String, accountID: String, access: String, refresh: String, serverURL: String) throws {
+        if canonicalSession?.accountID == accountID { return }
+        let legacyEpoch = accountKeychain.get(Self.accountEpochKey(for: serverID)).flatMap(UUID.init(uuidString:))
+        let value = CanonicalAccountSession(version: 1, signedOut: false, origin: serverURL,
+            accountID: accountID, epoch: canonicalSession?.epoch ?? legacyEpoch ?? UUID(), accessToken: access, refreshToken: refresh)
+        do { try sessions.save(value, serverID: serverID) }
+        catch { blockRuntimeSession(); throw error }
+        canonicalSession = value
+        mirrorCanonicalSession(value, serverID: serverID)
+    }
+
+    private func migratePendingLegacyServer(
+        _ serverID: String,
+        key: SignInKey,
+        username: String?,
+        email: String?,
+        access: String,
+        refresh: String,
+        serverURL: String,
+        position: Int,
+        index: SiloAccountIndex
+    ) -> BindOutcome {
+        let epoch = canonicalSession?.epoch
+            ?? accountKeychain.get(Self.accountEpochKey(for: serverID)).flatMap(UUID.init(uuidString:))
+            ?? UUID()
+        let signIn = SavedSignIn(
+            key: key,
+            origin: canonicalSession?.origin.map { ServerRegistry.normalize(url: $0) } ?? serverURL,
+            username: username,
+            email: email.flatMap { $0.isEmpty ? nil : $0 },
+            accessToken: access,
+            refreshToken: refresh,
+            epoch: epoch,
+            addedAt: Date(),
+            adoptsLegacyLocalData: true
+        )
+        do { try savedSignIns.saveSignIn(signIn) } catch {
+            recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "writeFailed")
+            return .unchanged
+        }
+        // The account keeps its place in the list.
+        var updated = index
+        updated.accounts[position] = .signIn(key)
+        var owners = updated.legacyDataOwnerByServerID ?? [:]
+        owners[serverID] = key.accountID
+        updated.legacyDataOwnerByServerID = owners
+        do { try saveIndex(updated) } catch {
+            recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "writeFailed")
+            return .unchanged
+        }
+        // Never read again (invariant 4). This Apple TV user's proof moves
+        // below; others adopt theirs on their next launch.
+        _ = sessions.invalidate(serverID)
+        deleteRawSlots(serverID)
+        // The same credential, now under its sign-in: the generation and the
+        // cached tokens stay, so requests in flight are unaffected.
+        selection = .signIn(key)
+        canonicalSession = nil
+        cachedSignIn = signIn
+        loadedSelection = selection
+        cachedProfileToken = loadProof(for: key) ?? cachedProfileToken
+        writeAccountMirror()
+        recordSessionEvent(phase: "signInMigration", outcome: "migrated", reason: "pendingServer")
+        return .legacyMigrated(key)
+    }
+
+    private func dropDuplicateLegacyServer(_ serverID: String, existing: SignInKey, index: SiloAccountIndex) -> BindOutcome {
+        var updated = index
+        updated.accounts.removeAll { $0 == .pendingLegacy(serverID: serverID) }
+        // The server's old local data belonged to this same account, so the
+        // saved sign-in takes it over unless another account already has.
+        var owners = updated.legacyDataOwnerByServerID ?? [:]
+        if owners[serverID] == nil {
+            owners[serverID] = existing.accountID
+            updated.legacyDataOwnerByServerID = owners
+        }
+        // Captured before the slot goes. A session holding either of the saved
+        // sign-in's tokens may be that sign-in's own, so it is dropped without
+        // revoking it; so is one whose sign-in can't be read to compare.
+        let dropped = legacyRevocableCredential(serverID: serverID)
+        let saved = try? savedSignIns.loadSignIn(existing)
+        let revoking = dropped.flatMap { dropped -> RevocableCredential? in
+            guard let saved,
+                  saved.accessToken != dropped.accessToken,
+                  dropped.refreshToken == nil || saved.refreshToken != dropped.refreshToken else { return nil }
+            return dropped
+        }
+        do { try saveIndex(updated) } catch {
+            recordSessionEvent(phase: "signInMigration", outcome: "deferred", reason: "writeFailed")
+            return .unchanged
+        }
+        _ = sessions.invalidate(serverID)
+        deleteRawSlots(serverID)
+        profileKeychain.delete(Self.profileTokenKey(for: serverID))
+        persistentCredentialGenerationID = UUID()
+        selection = .none
+        invalidateLoadedCredential()
+        loadedSelection = selection
+        defaults.removeObject(forKey: profileIdDefaultsKey)
+        clearMirroredTokensForExtension()
+        writeAccountMirror()
+        recordSessionEvent(phase: "signInMigration", outcome: "migrated", reason: "duplicatePendingServer")
+        return .legacyDuplicate(existing: existing, revoking: revoking)
+    }
+
+    // MARK: - Per-server slots (before migration, and pending legacy servers)
 
     /// Everything a server's credential slot held at one moment, so pairing
     /// can put it back exactly when a later commit fails. The four states
@@ -1170,11 +2480,7 @@ actor TokenStore {
         case .session(let value, let proof):
             profileToken = proof
             durable = (try? sessions.save(value, serverID: serverID)) != nil
-            if durable {
-                if let access = value.accessToken { accountKeychain.set(access, for: Self.accessTokenKey(for: serverID)) }
-                if let refresh = value.refreshToken { accountKeychain.set(refresh, for: Self.refreshTokenKey(for: serverID)) }
-                if let epoch = value.epoch { accountKeychain.set(epoch.uuidString, for: Self.accountEpochKey(for: serverID)) }
-            }
+            if durable { mirrorCanonicalSession(value, serverID: serverID) }
         case .legacy(let access, let refresh, let epoch, let proof):
             profileToken = proof
             func put(_ value: String?, _ key: String) -> Bool {
@@ -1191,9 +2497,7 @@ actor TokenStore {
             profileToken = proof
             durable = sessions.invalidate(serverID)
             if durable {
-                accountKeychain.delete(Self.accessTokenKey(for: serverID))
-                accountKeychain.delete(Self.refreshTokenKey(for: serverID))
-                accountKeychain.delete(Self.accountEpochKey(for: serverID))
+                deleteRawSlots(serverID)
             }
         case .unreadable:
             profileToken = nil
@@ -1214,141 +2518,36 @@ actor TokenStore {
                     : "profileRestoreFailedInvalidationFailed"
             }
         }
+        let slot = CredentialSelection.legacy(serverID: serverID)
         if durable {
-            runtimeBlockedServers.remove(serverID)
+            unblock(slot)
         } else {
             recordSessionEvent(phase: "sessionRestore", outcome: "failed", reason: failureReason)
-            runtimeBlockedServers.insert(serverID)
+            block(slot)
         }
-        if serverID == activeServerId {
+        if selection == slot {
             persistentCredentialGenerationID = UUID()
-            canonicalSession = nil
-            cachedAccessToken = nil; cachedRefreshToken = nil; cachedProfileToken = nil
-            loadedForServerId = nil
+            invalidateLoadedCredential()
             ensureLoaded()
             mirrorActiveTokensForExtension()
         }
         return durable
     }
 
-    /// Bind a legacy/unverified session only after an authenticated account response
-    /// under this exact token and process identity. Existing queues are not relabelled.
-    func bindVerifiedAccount(_ accountID: String, expected: CapturedOrdinaryRequestAuth) throws {
-        guard temporaryScope == nil else { return }
-        ensureLoaded()
-        guard !accountID.isEmpty, refreshAccountIdentity() == expected.account,
-              cachedAccessToken == expected.accessToken else { throw HTTPError.requestIdentityChanged }
-        // Access-only legacy credentials can still read account metadata, but cannot
-        // establish a refreshable durable login envelope or queue authority.
-        guard let access = cachedAccessToken, let refresh = cachedRefreshToken else { return }
-        if let canonicalSession {
-            guard canonicalSession.accountID == nil || canonicalSession.accountID == accountID else {
-                throw AccountSessionPersistenceError.invalidIdentity
-            }
-            if canonicalSession.accountID == accountID { return }
-        }
-        let legacyEpoch = accountKeychain.get(accountEpochKey).flatMap(UUID.init(uuidString:))
-        let value = CanonicalAccountSession(version: 1, signedOut: false, origin: expected.account.serverURL,
-            accountID: accountID, epoch: canonicalSession?.epoch ?? legacyEpoch ?? UUID(), accessToken: access, refreshToken: refresh)
-        do { try sessions.save(value, serverID: activeServerId) }
-        catch { blockRuntimeSession(); throw error }
-        canonicalSession = value
-        mirrorCanonicalSession(value)
-    }
-
-    private func mirrorCanonicalSession(_ value: CanonicalAccountSession) {
-        if let access = value.accessToken { accountKeychain.set(access, for: accessTokenKey) }
-        if let refresh = value.refreshToken { accountKeychain.set(refresh, for: refreshTokenKey) }
-        if let epoch = value.epoch { accountKeychain.set(epoch.uuidString, for: accountEpochKey) }
+    private func mirrorCanonicalSession(_ value: CanonicalAccountSession, serverID: String) {
+        if let access = value.accessToken { accountKeychain.set(access, for: Self.accessTokenKey(for: serverID)) }
+        if let refresh = value.refreshToken { accountKeychain.set(refresh, for: Self.refreshTokenKey(for: serverID)) }
+        if let epoch = value.epoch { accountKeychain.set(epoch.uuidString, for: Self.accountEpochKey(for: serverID)) }
     }
 
     private func blockRuntimeSession() {
-        runtimeBlockedServers.insert(activeServerId)
+        block(selection)
         persistentCredentialGenerationID = UUID()
-        cachedAccessToken = nil; cachedRefreshToken = nil; cachedProfileToken = nil; canonicalSession = nil
-        loadedForServerId = activeServerId
+        cachedAccessToken = nil; cachedRefreshToken = nil; cachedProfileToken = nil
+        canonicalSession = nil; cachedSignIn = nil
+        loadedSelection = selection
         clearMirroredTokensForExtension()
         removeDisplayTargets(registeredBy: activeServerId)
-    }
-
-    /// Clear tokens for the active server only. Leaves other servers'
-    /// stored tokens intact and leaves the active-server registry entry
-    /// in place (sign-out keeps the URL / name).
-    @discardableResult
-    func clearTokens() -> Bool {
-        // The deliberate counterpart to `invalidateRejectedRefresh`: reaching
-        // login through this path means the app dropped the session on
-        // purpose (sign-out), not because the server rejected it. Reports that
-        // conflate the two are the reason "I got logged out" is unanswerable,
-        // so the two paths carry distinct phases.
-        if let temporaryScope {
-            rejectedTemporaryCredentialGenerations.remove(temporaryScope.credentialGenerationID)
-            self.temporaryScope = nil
-            recordSessionEvent(
-                phase: "clearTokens",
-                outcome: "cleared",
-                reason: "temporaryScope"
-            )
-            return true
-        }
-        let durable = activeServerId.isEmpty || sessions.invalidate(activeServerId)
-        runtimeBlockedServers.insert(activeServerId)
-        canonicalSession = nil
-        ensureLoaded()
-        persistentCredentialGenerationID = UUID()
-        cachedAccessToken = nil
-        cachedRefreshToken = nil
-        cachedProfileToken = nil
-        guard !activeServerId.isEmpty else {
-            // Cache dropped, but there is no server slot to delete from. A
-            // sign-out here leaves nothing persisted to clear.
-            recordSessionEvent(
-                phase: "clearTokens",
-                outcome: "cleared",
-                reason: "noActiveServer"
-            )
-            return true
-        }
-        recordSessionEvent(
-            phase: "clearTokens",
-            outcome: durable ? "cleared" : "failed",
-            reason: durable ? "persistentSession" : "persistenceUnavailable"
-        )
-        accountKeychain.delete(accessTokenKey)
-        accountKeychain.delete(refreshTokenKey)
-        accountKeychain.delete(accountEpochKey)
-        profileKeychain.delete(profileTokenKey)
-        defaults.removeObject(forKey: profileIdDefaultsKey)
-        clearMirroredTokensForExtension()
-        removeDisplayTargets(registeredBy: activeServerId)
-        return durable
-    }
-
-    /// Delete tokens for an arbitrary server. Used by the registry when
-    /// removing a server or signing out from a non-active server.
-    @discardableResult
-    func deleteTokens(for serverId: String) -> Bool {
-        guard !serverId.isEmpty else { return true }
-        let durable = sessions.invalidate(serverId)
-        if !durable {
-            recordSessionEvent(phase: "deleteTokens", outcome: "failed", reason: "persistenceUnavailable")
-        }
-        runtimeBlockedServers.insert(serverId)
-        accountKeychain.delete(Self.accessTokenKey(for: serverId))
-        accountKeychain.delete(Self.refreshTokenKey(for: serverId))
-        accountKeychain.delete(Self.accountEpochKey(for: serverId))
-        profileKeychain.delete(Self.profileTokenKey(for: serverId))
-        removeDisplayTargets(registeredBy: serverId)
-        if serverId == activeServerId {
-            canonicalSession = nil
-            persistentCredentialGenerationID = UUID()
-            cachedAccessToken = nil
-            cachedRefreshToken = nil
-            cachedProfileToken = nil
-            loadedForServerId = nil
-            clearMirroredTokensForExtension()
-        }
-        return durable
     }
 
     // MARK: - Profile
@@ -1381,17 +2580,57 @@ actor TokenStore {
         }
         guard !activeServerId.isEmpty else { return false }
         ensureLoaded()
-        let persisted: Bool
-        if let token {
-            persisted = profileKeychain.set(token, for: profileTokenKey)
-        } else {
-            persisted = profileKeychain.delete(profileTokenKey)
-        }
-        guard persisted else { return false }
+        guard writeProof(token, profileID: defaults.string(forKey: profileIdDefaultsKey)) else { return false }
         cachedProfileToken = token
         profileSelectionGeneration = UUID()
         mirrorActiveTokensForExtension()
         return true
+    }
+
+    /// Writes, or with nil clears, this Apple TV user's proof for the
+    /// selected credential. With nothing selected there is no slot, so only
+    /// clearing succeeds.
+    private func writeProof(_ token: String?, profileID: String?) -> Bool {
+        switch selection {
+        case .none:
+            return token == nil
+        case .legacy(let serverID):
+            if let token { return profileKeychain.set(token, for: Self.profileTokenKey(for: serverID)) }
+            return profileKeychain.delete(Self.profileTokenKey(for: serverID))
+        case .signIn(let key):
+            if let token { return proofs.save(SignInProfileProof(profileID: profileID, token: token), for: key) }
+            return proofs.remove(key)
+        }
+    }
+
+    /// Deletes this Apple TV user's proof for `key`, and, when `key` took
+    /// over its server's data from before sign-ins existed, the proof still
+    /// saved under the server's old per-server name, so a later load can't
+    /// adopt a proof bound to a session that is gone.
+    private func removeProofs(for key: SignInKey) {
+        proofs.remove(key)
+        if legacyDataOwners[key.serverID] == key.accountID {
+            proofs.removeLegacy(serverID: key.serverID)
+        }
+    }
+
+    /// The selected sign-in's proof for this Apple TV user. A sign-in that
+    /// owns its server's data from before migration adopts the proof saved
+    /// under the old per-server name the first time it has none (plan §2.4),
+    /// so each Apple TV user moves only their own proof.
+    private func loadProof(for key: SignInKey) -> String? {
+        do {
+            if let proof = try proofs.load(key) { return proof.token }
+        } catch {
+            recordSessionEvent(phase: "sessionLoad", outcome: "failed", reason: "invalidProfileProof")
+            return nil
+        }
+        guard legacyDataOwner(forServer: key.serverID) == key.accountID,
+              let legacy = proofs.loadLegacy(serverID: key.serverID) else { return nil }
+        if proofs.save(SignInProfileProof(profileID: nil, token: legacy), for: key) {
+            proofs.removeLegacy(serverID: key.serverID)
+        }
+        return legacy
     }
 
     func getOrCreateAccountEpoch() -> String? {
@@ -1399,8 +2638,29 @@ actor TokenStore {
         return getOrCreateAccountEpoch(for: activeServerId)
     }
 
+    /// The epoch of the credential on `serverID` (the selected one, else the
+    /// background account's): a saved
+    /// sign-in's own, or a per-server slot's, minted on demand for a legacy
+    /// slot that never had one.
     func getOrCreateAccountEpoch(for serverID: String) -> String? {
-        guard !serverID.isEmpty, !runtimeBlockedServers.contains(serverID) else { return nil }
+        guard !serverID.isEmpty else { return nil }
+        switch storedCredential(forServer: serverID) {
+        case .none:
+            return nil
+        case .signIn(let key):
+            guard !isBlocked(.signIn(key)) else { return nil }
+            if serverID == activeServerId {
+                ensureLoaded()
+                return cachedSignIn?.epoch?.uuidString
+            }
+            return (try? savedSignIns.loadSignIn(key))?.epoch?.uuidString
+        case .legacy:
+            return getOrCreateLegacyEpoch(for: serverID)
+        }
+    }
+
+    private func getOrCreateLegacyEpoch(for serverID: String) -> String? {
+        guard !isBlocked(.legacy(serverID: serverID)) else { return nil }
         do {
             switch try sessions.load(serverID) {
             case .session(let value): return value.epoch?.uuidString
@@ -1428,25 +2688,21 @@ actor TokenStore {
 
     /// Commits profile ID and verification proof in one actor turn after the
     /// caller has closed HTTP dispatch. Persistent mutations fail closed while
-    /// a temporary remote-playback identity owns request authentication.
+    /// a temporary remote-playback identity owns request authentication, and
+    /// when no credential is selected.
     func activateProfile(
         profileID: String,
         profileToken: String?,
         expectedAccount: RefreshAccountIdentity
     ) -> Bool {
         guard temporaryScope == nil,
+              selection != .none,
               refreshAccountIdentity() == expectedAccount,
               !profileID.isEmpty else {
             return false
         }
         ensureLoaded()
-        let persisted: Bool
-        if let profileToken {
-            persisted = profileKeychain.set(profileToken, for: profileTokenKey)
-        } else {
-            persisted = profileKeychain.delete(profileTokenKey)
-        }
-        guard persisted else { return false }
+        guard writeProof(profileToken, profileID: profileID) else { return false }
         cachedProfileToken = profileToken
         // A display target names its own profile, so the previous profile's
         // stays until this profile's registration replaces it, as the
@@ -1481,7 +2737,7 @@ actor TokenStore {
         }
         ensureLoaded()
         if !activeServerId.isEmpty,
-           !profileKeychain.delete(profileTokenKey) {
+           !writeProof(nil, profileID: nil) {
             return false
         }
         defaults.removeObject(forKey: profileIdDefaultsKey)
@@ -1501,7 +2757,7 @@ actor TokenStore {
     func setServerUrl(_ url: String) {
         let normalized = ServerRegistry.normalize(url: url)
         if normalized != defaults.string(forKey: serverUrlDefaultsKey) {
-            loadedForServerId = nil
+            loadedSelection = nil
             persistentCredentialGenerationID = UUID()
         }
         defaults.set(normalized, forKey: serverUrlDefaultsKey)
@@ -1545,56 +2801,79 @@ actor TokenStore {
         return "unknown"
     }
 
-    private var accessTokenKey: String { Self.accessTokenKey(for: activeServerId) }
-    private var refreshTokenKey: String { Self.refreshTokenKey(for: activeServerId) }
-    private var profileTokenKey: String { Self.profileTokenKey(for: activeServerId) }
-    private var accountEpochKey: String { Self.accountEpochKey(for: activeServerId) }
-
     private func ensureLoaded() {
-        guard loadedForServerId != activeServerId else { return }
-        if activeServerId.isEmpty {
-            cachedAccessToken = nil
-            cachedRefreshToken = nil
-            cachedProfileToken = nil
-        } else {
-            canonicalSession = nil
-            cachedAccessToken = nil; cachedRefreshToken = nil; cachedProfileToken = nil
-            if !runtimeBlockedServers.contains(activeServerId) {
-                do {
-                    switch try sessions.load(activeServerId) {
-                    case .session(let value):
-                        let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
-                        if value.origin == origin {
-                            canonicalSession = value
-                            cachedAccessToken = value.accessToken
-                            cachedRefreshToken = value.refreshToken
-                            cachedProfileToken = profileKeychain.get(profileTokenKey)
-                        }
-                    case .signedOut: break
-                    case .legacy:
-                        cachedAccessToken = accountKeychain.get(accessTokenKey)
-                        cachedRefreshToken = accountKeychain.get(refreshTokenKey)
-                        cachedProfileToken = profileKeychain.get(profileTokenKey)
-                    }
-                } catch {
-                    // Fail closed: a record that cannot be read or decoded
-                    // blocks the runtime session until the next install.
-                    recordSessionEvent(
-                        phase: "sessionLoad",
-                        outcome: "blocked",
-                        reason: Self.persistenceFailureReason(error)
-                    )
-                    runtimeBlockedServers.insert(activeServerId)
-                }
+        guard loadedSelection != selection else { return }
+        canonicalSession = nil
+        cachedSignIn = nil
+        cachedAccessToken = nil
+        cachedRefreshToken = nil
+        cachedProfileToken = nil
+        if !isBlocked(selection) {
+            switch selection {
+            case .none:
+                break
+            case .legacy(let serverID):
+                loadLegacySession(serverID)
+            case .signIn(let key):
+                loadSavedSignIn(key)
             }
         }
-        loadedForServerId = activeServerId
+        loadedSelection = selection
+    }
+
+    private func loadLegacySession(_ serverID: String) {
+        do {
+            switch try sessions.load(serverID) {
+            case .session(let value):
+                let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
+                if value.origin == origin {
+                    canonicalSession = value
+                    cachedAccessToken = value.accessToken
+                    cachedRefreshToken = value.refreshToken
+                    cachedProfileToken = profileKeychain.get(Self.profileTokenKey(for: serverID))
+                }
+            case .signedOut: break
+            case .legacy:
+                cachedAccessToken = accountKeychain.get(Self.accessTokenKey(for: serverID))
+                cachedRefreshToken = accountKeychain.get(Self.refreshTokenKey(for: serverID))
+                cachedProfileToken = profileKeychain.get(Self.profileTokenKey(for: serverID))
+            }
+        } catch {
+            // Fail closed: a record that cannot be read or decoded
+            // blocks the runtime session until the next install.
+            recordSessionEvent(
+                phase: "sessionLoad",
+                outcome: "blocked",
+                reason: Self.persistenceFailureReason(error)
+            )
+            block(.legacy(serverID: serverID))
+        }
+    }
+
+    /// A saved sign-in serves only the origin it was saved for.
+    private func loadSavedSignIn(_ key: SignInKey) {
+        let signIn: SavedSignIn?
+        do { signIn = try savedSignIns.loadSignIn(key) } catch {
+            recordSessionEvent(
+                phase: "sessionLoad",
+                outcome: "blocked",
+                reason: Self.persistenceFailureReason(error)
+            )
+            block(.signIn(key))
+            return
+        }
+        let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
+        guard let signIn, ServerRegistry.normalize(url: signIn.origin) == origin else { return }
+        cachedSignIn = signIn
+        guard signIn.isSignedIn else { return }
+        cachedAccessToken = signIn.accessToken
+        cachedRefreshToken = signIn.refreshToken
+        cachedProfileToken = loadProof(for: key)
     }
 
     /// Mirror the current active access + profile tokens to fixed-name
-    /// Keychain slots the Top Shelf extension reads. The extension
-    /// doesn't know which server is active, so it looks for these
-    /// server-independent accounts instead.
+    /// Keychain slots the extensions read. They don't know which server is
+    /// active, so they look for these server-independent accounts instead.
     private func mirrorActiveTokensForExtension() {
         mirrorActiveAccessValueForExtension()
         if cachedProfileToken != lastMirroredProfileToken {

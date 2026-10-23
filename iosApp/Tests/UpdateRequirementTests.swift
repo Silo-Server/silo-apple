@@ -181,7 +181,7 @@ final class UpdateRequirementTests: XCTestCase {
         let client = APIv2Client(http: HTTPClient(session: handler.makeSession()), isUpdateRequired: { false })
         let viewModel = ServerSetupViewModel(checkServer: { url in
             try await client.setupStatus(serverURL: url)
-        })
+        }, beginSignIn: { $0.showSignIn(context: $0.signInContext); return true })
         viewModel.host = "silo.example"
         let router = AppRouter()
         await viewModel.connect(router: router)

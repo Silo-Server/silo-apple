@@ -116,8 +116,9 @@ extension SiloAPI {
     /// (the contract marks it `natural_idempotent`) but not free: every
     /// accepted attempt advances the row's revision. There is no mutation id
     /// and no replayed receipt. `profileId`, when given, must be the session's
-    /// selected profile: a write captured for one profile is refused rather
-    /// than sent for another.
+    /// selected profile, and `accountID` the selected sign-in's account: a
+    /// write captured for one profile or account is refused rather than sent
+    /// for another.
     ///
     /// A value that exceeds a policy restriction is stored, not rejected: the
     /// restriction filters what the preference does at resolution time, so a
@@ -130,6 +131,7 @@ extension SiloAPI {
         scope: SettingScopeIdentity,
         value: SettingJSONValue,
         profileId: String? = nil,
+        accountID: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
     ) async throws -> StoredSettingValue {
         do {
@@ -138,7 +140,8 @@ extension SiloAPI {
                 scope: scope,
                 value: value,
                 profileID: try await writeProfile(explicit: profileId ?? requestIdentity?.profileId),
-                expectedIdentity: requestIdentity
+                expectedIdentity: requestIdentity,
+                accountID: accountID
             )
         } catch {
             throw SettingsAPIError.from(error, key: key.rawValue, scope: scope.scope)
@@ -183,6 +186,7 @@ extension SiloAPI {
         key: SettingKey,
         scope: SettingScopeIdentity,
         profileId: String? = nil,
+        accountID: String? = nil,
         requestIdentity: HTTPRequestIdentity? = nil
     ) async throws {
         do {
@@ -190,7 +194,8 @@ extension SiloAPI {
                 key: key,
                 scope: scope,
                 profileID: try await writeProfile(explicit: profileId ?? requestIdentity?.profileId),
-                expectedIdentity: requestIdentity
+                expectedIdentity: requestIdentity,
+                accountID: accountID
             )
         } catch {
             throw SettingsAPIError.from(error, key: key.rawValue, scope: scope.scope)

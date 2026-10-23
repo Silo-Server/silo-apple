@@ -22,10 +22,16 @@ struct TVLoginView: View {
     init(router: AppRouter) {
         self.router = router
         route = router.authState
+        _loginVM = State(initialValue: LoginViewModel(context: router.signInContext))
+        // An approval is placed in the running sign-in (`SiloAccountCoordinator`);
+        // the screen moves on once "Signed in as …" has shown.
+        _qrVM = State(initialValue: QRLoginViewModel(completeSignIn: { pending in
+            _ = try await router.accounts.completeSignIn(pending, router: router, routesWhenOpened: false)
+        }))
     }
 
-    @State private var loginVM = LoginViewModel()
-    @State private var qrVM = QRLoginViewModel()
+    @State private var loginVM: LoginViewModel
+    @State private var qrVM: QRLoginViewModel
     @State private var server = SignInServerModel()
     @State private var advertiser = TVPairingAdvertiser()
     @State private var receiver = ReceiverPairingCoordinator()
@@ -38,6 +44,7 @@ struct TVLoginView: View {
     /// Set by `goToProfiles()`, the one place this screen moves on after a
     /// device sign-in (the QR approval and the nearby panel both land there).
     @State private var navigatedAfterApproval = false
+    @State private var isCancellingSignIn = false
 
     @FocusState private var focusedField: Field?
     /// Where focus goes once the system keyboard closes after Done.
@@ -49,6 +56,8 @@ struct TVLoginView: View {
         case usePassword
         case stateAction
         case changeServer
+        case switchAccount
+        case cancelSignIn
         case username
         case password
         case togglePassword
@@ -143,6 +152,14 @@ struct TVLoginView: View {
             Task { await receiver.cancel() }
             qrVM.stop()
         }
+        // This screen is the root of a sign-in started from a chooser or
+        // Settings, so Menu goes back as Cancel does, like "Sign in to…" and
+        // server setup; otherwise it keeps its system meaning. The password
+        // screen's own Menu (back to the code) answers first.
+        .onExitCommand(perform: router.signInReturnPoint != nil && !isPairing ? {
+            guard !isSigningIn, !isSubmittingNetwork else { return }
+            cancelSignIn()
+        } : nil)
     }
 
     // MARK: - Code screen
@@ -151,7 +168,9 @@ struct TVLoginView: View {
         MarqueeTVScreen {
             sessionExpiredChip
             serverCard
-            headline("Sign in to \(server.serverName)")
+            // Smaller than other headlines: a server's name can be long, and
+            // the ways in below matter more than the title.
+            headline("Sign in to \(server.serverName)", size: Self.codeHeadlineFont)
                 .padding(.top, 44)
             if let provider = networkProvider {
                 networkSignInButton(provider)
@@ -163,18 +182,35 @@ struct TVLoginView: View {
             }
             MarqueeTVBody(codeLead)
                 .padding(.top, networkProvider == nil ? 26 : 12)
-            Label(TVSignInPresentation.nearbyHint, systemImage: "iphone.gen3")
-                .font(.system(size: 22))
-                .foregroundStyle(Color.siloOnSurface.opacity(0.4))
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 24)
+            if PairingProtocol.advertisesSignInTVs {
+                nearbyHint
+                    .padding(.top, 28)
+            }
             codeActions
                 .padding(.top, 48)
+            contextActions
+                .padding(.top, 18)
         } card: {
             MarqueeTVCard { codeCard }
         }
         .defaultFocus($focusedField, defaultCodeScreenFocus, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, defaultCodeScreenFocus)
+    }
+
+    private static let codeHeadlineFont: CGFloat = 64
+
+    /// Silo on a nearby phone can sign this TV in: the app's icon, as the
+    /// setup screen shows it, beside the hint. Only while the screen
+    /// advertises itself to phones.
+    private var nearbyHint: some View {
+        HStack(spacing: 22) {
+            MarqueeTVAppIcon(size: 64)
+            Text(TVSignInPresentation.nearbyHint)
+                .font(.system(size: 26, weight: .medium))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.72))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
     }
 
     /// Where focus enters the code screen: "Continue as …" when this TV can
@@ -183,7 +219,8 @@ struct TVLoginView: View {
     private var defaultCodeScreenFocus: Field {
         if networkProvider != nil { return .networkSignIn }
         // An update requirement hides the password button.
-        return offersPassword && !isUpdateRequired ? .usePassword : .changeServer
+        if offersPassword && !isUpdateRequired { return .usePassword }
+        return isSignInAgain ? .switchAccount : .changeServer
     }
 
     private var codeLead: String {
@@ -214,11 +251,68 @@ struct TVLoginView: View {
                 .focused($focusedField, equals: .usePassword)
             }
 
-            Button("Change server") { changeServer() }
-                .buttonStyle(.marquee(.plain, fullWidth: false))
-                .focused($focusedField, equals: .changeServer)
+            if !isSignInAgain {
+                Button("Use a different server") { changeServer() }
+                    .buttonStyle(.marquee(.plain, fullWidth: false))
+                    .focused($focusedField, equals: .changeServer)
+            }
         }
         .focusSection()
+    }
+
+    /// Whether this sign-in offers a way back besides Use a different server: Switch
+    /// Account for Sign in again, Cancel for one started from a chooser or
+    /// Settings (spec §6.2.3, plan §2.10).
+    private var hasContextActions: Bool {
+        if case .signInAgain = router.signInContext { return true }
+        return router.signInReturnPoint != nil
+    }
+
+    /// The context's ways back, in their own row under the screen's actions
+    /// so the row above keeps its width.
+    @ViewBuilder
+    private var contextActions: some View {
+        if hasContextActions {
+            HStack(spacing: 22) {
+                signInContextButtons
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .focusSection()
+        }
+    }
+
+    /// Sign in again for a saved account (spec §6.2.3), which keeps its
+    /// server.
+    private var isSignInAgain: Bool {
+        if case .signInAgain = router.signInContext { return true }
+        return false
+    }
+
+    /// Sign in again offers Switch Account; a sign-in started from Choose an
+    /// Account, or from Settings, offers Cancel.
+    @ViewBuilder
+    private var signInContextButtons: some View {
+        if isSignInAgain {
+            Button {
+                qrVM.stop()
+                Task { await router.accounts.switchAccountFromSignIn(router: router) }
+            } label: {
+                Label("Switch Account", systemImage: "person.2")
+            }
+            .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
+            .focused($focusedField, equals: .switchAccount)
+            .accessibilityHint("Choose another Silo account on this Apple TV.")
+        }
+        if router.signInReturnPoint != nil {
+            Button {
+                cancelSignIn()
+            } label: {
+                Label(ConfirmationCopy.cancelTitle, systemImage: "xmark")
+            }
+            .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
+            .focused($focusedField, equals: .cancelSignIn)
+            .accessibilityHint("Go back without signing in.")
+        }
     }
 
     /// Whether "Sign in with a password" is offered: not on a server whose
@@ -403,11 +497,13 @@ struct TVLoginView: View {
                     .disabled(isSubmittingPassword || isSubmittingNetwork)
                 }
 
-                Button("Change server") { changeServer() }
-                    .buttonStyle(.marquee(.plain, fullWidth: false))
-                    .focused($focusedField, equals: .changeServer)
-                    // A password sign-in in flight would pull the app back.
-                    .disabled(isSubmittingPassword)
+                if !isSignInAgain {
+                    Button("Use a different server") { changeServer() }
+                        .buttonStyle(.marquee(.plain, fullWidth: false))
+                        .focused($focusedField, equals: .changeServer)
+                        // A password sign-in in flight would pull the app back.
+                        .disabled(isSubmittingPassword)
+                }
             }
             // Full width, so Down from the show-password button reaches the
             // row; entering it lands on Sign in.
@@ -415,11 +511,17 @@ struct TVLoginView: View {
             .padding(.top, 40)
             .focusSection()
             .defaultFocus($focusedField, .signIn, priority: .userInitiated)
+
+            contextActions
+                .padding(.top, 18)
+                .disabled(isSubmittingPassword)
         } card: {
             TVTypeOnPhoneCard()
         }
         .defaultFocus($focusedField, passwordScreenFocus, priority: .userInitiated)
-        .marqueeTVSeedFocus($focusedField, passwordScreenFocus)
+        // Opened from the code screen, focus is still on its password
+        // button as it fades out, which drops a plain request.
+        .marqueeTVClaimFocus($focusedField, passwordScreenFocus)
         .marqueeTVFocusAfterKeyboard($focusedField, pending: $focusAfterKeyboard)
         // Menu returns to the code screen; on a password-only server there is
         // none, so Menu keeps its system meaning.
@@ -481,16 +583,24 @@ struct TVLoginView: View {
         MarqueeTVScreen {
             sessionExpiredChip
             serverCard
-            headline("Sign in to \(server.serverName)")
+            // Smaller than other headlines: a server's name can be long, and
+            // the ways in below matter more than the title.
+            headline("Sign in to \(server.serverName)", size: Self.codeHeadlineFont)
                 .padding(.top, 44)
             if let provider = networkProvider {
                 networkSignInButton(provider)
                     .padding(.top, 40)
             }
-            Button("Change server") { changeServer() }
-                .buttonStyle(.marquee(.plain, fullWidth: false))
-                .focused($focusedField, equals: .changeServer)
-                .padding(.top, 30)
+            HStack(spacing: 22) {
+                if !isSignInAgain {
+                    Button("Use a different server") { changeServer() }
+                        .buttonStyle(.marquee(.plain, fullWidth: false))
+                        .focused($focusedField, equals: .changeServer)
+                }
+                signInContextButtons
+            }
+            .focusSection()
+            .padding(.top, 30)
         } card: {
             MarqueeTVCard {
                 MarqueeTVCardSymbol(systemImage: "network")
@@ -509,6 +619,8 @@ struct TVLoginView: View {
 
     // MARK: - Pieces
 
+    /// Above the server: why the sign-in is asked for (an expired session),
+    /// or which flow it belongs to (Add Account).
     @ViewBuilder
     private var sessionExpiredChip: some View {
         if let notice = router.loginNotice {
@@ -517,6 +629,18 @@ struct TVLoginView: View {
                 systemImage: "exclamationmark.circle"
             )
             .padding(.bottom, 30)
+        } else if let chip = contextChip {
+            MarqueeTVStatusChip(text: chip.text, systemImage: chip.systemImage)
+                .padding(.bottom, 30)
+        }
+    }
+
+    private var contextChip: (text: String, systemImage: String)? {
+        switch router.signInContext {
+        case .addAccount:
+            return (ChooseAccountViewModel.addAccountTitle, "person.badge.plus")
+        case .firstRun, .signInAgain:
+            return nil
         }
     }
 
@@ -530,9 +654,9 @@ struct TVLoginView: View {
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    private func headline(_ text: String) -> some View {
+    private func headline(_ text: String, size: CGFloat = MarqueeMetrics.heroFont) -> some View {
         Text(text)
-            .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))
+            .font(.system(size: size, weight: .heavy))
             .kerning(-2)
             .foregroundStyle(Color.siloOnSurface)
             .lineLimit(3)
@@ -574,7 +698,7 @@ struct TVLoginView: View {
 
     /// Leave for the profiles once, however the sign-in finished.
     private func goToProfiles() {
-        // "Change server" during the approval pause has already left this
+        // "Use a different server" during the approval pause has already left this
         // screen; don't pull the app back to profiles.
         guard !navigatedAfterApproval, router.authState == route else { return }
         navigatedAfterApproval = true
@@ -584,7 +708,19 @@ struct TVLoginView: View {
 
     private func changeServer() {
         qrVM.stop()
-        router.resetToServerSetup()
+        Task { await router.accounts.leaveSignIn(router: router) }
+    }
+
+    /// Runs once: a second press would find the return point cleared and
+    /// apply the launch rules over the screen the first one restored.
+    private func cancelSignIn() {
+        guard !isCancellingSignIn else { return }
+        isCancellingSignIn = true
+        qrVM.stop()
+        Task {
+            await router.accounts.cancelSignIn(router: router)
+            isCancellingSignIn = false
+        }
     }
 
     /// "Continue as …": the same single flight as a password sign-in, so a

@@ -35,25 +35,23 @@ final class ServerBrandingTests: XCTestCase {
 /// Where a successful connect leads.
 @MainActor
 final class ServerSetupRoutingTests: XCTestCase {
-    func testSavedSignedInServerGoesToProfilesNotSignIn() async {
+    /// Every server added continues to its sign-in, even one already saved
+    /// and signed in: placement then refreshes that sign-in or asks (spec
+    /// §5.4.1).
+    func testEveryConnectContinuesToSignIn() async {
         let router = AppRouter()
+        var started = 0
         let viewModel = ServerSetupViewModel(
             checkServer: { _ in APIv2SetupStatus(needsSetup: false) },
-            hasSession: { true }
+            beginSignIn: { router in
+                started += 1
+                router.showSignIn(context: router.signInContext)
+                return true
+            }
         )
         viewModel.host = "https://silo.example.com"
         await viewModel.connect(router: router)
-        XCTAssertEqual(router.authState, .needsProfile)
-    }
-
-    func testServerWithoutSessionOpensSignIn() async {
-        let router = AppRouter()
-        let viewModel = ServerSetupViewModel(
-            checkServer: { _ in APIv2SetupStatus(needsSetup: false) },
-            hasSession: { false }
-        )
-        viewModel.host = "https://silo.example.com"
-        await viewModel.connect(router: router)
+        XCTAssertEqual(started, 1)
         XCTAssertEqual(router.authState, .needsLogin)
         XCTAssertTrue(router.path.isEmpty)
     }
@@ -62,7 +60,7 @@ final class ServerSetupRoutingTests: XCTestCase {
         let router = AppRouter()
         let viewModel = ServerSetupViewModel(
             checkServer: { _ in APIv2SetupStatus(needsSetup: true) },
-            hasSession: { true }
+            beginSignIn: { $0.showSignIn(context: $0.signInContext); return true }
         )
         viewModel.host = "https://silo.example.com"
         await viewModel.connect(router: router)
@@ -79,7 +77,7 @@ final class ServerSetupRoutingTests: XCTestCase {
                 for await _ in gate { break }
                 throw URLError(.cannotConnectToHost)
             },
-            hasSession: { false }
+            beginSignIn: { $0.showSignIn(context: $0.signInContext); return true }
         )
         viewModel.host = "https://silo.example.com"
         let connecting = Task { await viewModel.connect(router: AppRouter()) }
@@ -120,7 +118,7 @@ final class ServerSetupRoutingTests: XCTestCase {
                 guard url.hasPrefix("http://") else { throw URLError(.cannotConnectToHost) }
                 return APIv2SetupStatus(needsSetup: false)
             },
-            hasSession: { false }
+            beginSignIn: { $0.showSignIn(context: $0.signInContext); return true }
         )
         viewModel.host = "media.lan"
         await viewModel.connect(router: router)

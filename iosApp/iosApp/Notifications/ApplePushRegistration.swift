@@ -24,6 +24,15 @@ extension ApplePushDisplayTarget {
         if let date = fractional.date(from: raw) { return date }
         return ISO8601DateFormatter().date(from: raw)
     }
+
+    /// The account this target serves. A target saved before accounts were
+    /// recorded belongs to the account that owns its saved server's data
+    /// from before accounts (`LegacyLocalDataOwner`), or to no known account.
+    func attributedAccountID(
+        legacyOwner: AccountScopedKeyAdoption.LegacyOwner = LegacyLocalDataOwner.accountID(forServerID:)
+    ) -> String? {
+        accountID ?? legacyOwner(registryServerID)
+    }
 }
 
 extension ApplePushDisplayTargetStore {
@@ -46,7 +55,9 @@ extension ApplePushDisplayTargetStore {
                 registryServerID: registryServerID,
                 serverURL: server.url,
                 displayToken: token,
-                expiresAt: serverID == nil ? nil : defaults.string(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey)
+                expiresAt: serverID == nil ? nil : defaults.string(forKey: SharedStorage.applePushDisplayTokenExpiresAtKey),
+                // That build kept no account: the server's legacy owner.
+                accountID: nil
             ))
             guard migrated else { return }
         }
@@ -417,7 +428,7 @@ actor ApplePushRegistrar {
             }
             target = ApplePushDisplayTarget(serverID: deploymentID, profileID: intentOwner.profileID,
                 registryServerID: serverID, serverURL: channel.serverURL, displayToken: token,
-                expiresAt: receipt.displayTokenExpiresAt)
+                expiresAt: receipt.displayTokenExpiresAt, accountID: intentOwner.accountID)
         }
         let displayTargets = self.displayTargets
         do {
@@ -439,7 +450,7 @@ actor ApplePushRegistrar {
 
     private func needsDisplayToken(owner: ApplePushIntentOwner, generation: Int64) -> Bool {
         if let target = displayTargets.target(registeredBy: owner.serverID), target.profileID == owner.profileID,
-           target.isCurrent(at: now()) {
+           target.attributedAccountID() == owner.accountID, target.isCurrent(at: now()) {
             return false
         }
         return !isHeld(serverID: owner.serverID, generation: generation)

@@ -133,17 +133,24 @@ final class ProfilePrefsEditor {
         let editorValue: String
         let language: String?
         /// Profile that owned the editor when this logical write was queued.
-        let profileId: String?
+        let owner: ProfileOwner
     }
 
     private struct SubtitleWriteIdentity: Hashable {
         let key: SettingKey
-        let profileId: String?
+        let owner: ProfileOwner
     }
 
     private struct MetadataWrite: Equatable {
         let language: String?
+        let owner: ProfileOwner
+    }
+
+    /// A profile and the account it belongs to. Profile IDs repeat across
+    /// accounts on one server, so only the pair names one profile's rows.
+    private struct ProfileOwner: Hashable {
         let profileId: String?
+        let accountID: String?
     }
 
     /// What the screens show in place of server-backed controls when the
@@ -158,10 +165,11 @@ final class ProfilePrefsEditor {
 
     private let writer: ProfileSettingsWriter
 
-    /// The profile whose values this editor currently represents. Every write
-    /// captures this before its first suspension so a later session switch
-    /// cannot redirect the request through a newly active X-Profile-Id.
-    private var boundProfileId: String?
+    /// The profile, with its account, whose values this editor currently
+    /// represents. Every write captures this before its first suspension so
+    /// a later session switch cannot redirect the request through a newly
+    /// active X-Profile-Id, or another account's profile with the same ID.
+    private var boundOwner = ProfileOwner(profileId: nil, accountID: nil)
 
     /// The user can make another edit while a PUT is suspended. That edit
     /// queues its value, marks another pass owed and returns; the running
@@ -186,8 +194,8 @@ final class ProfilePrefsEditor {
 
     /// True while any change is held for the profile this editor shows.
     var hasHeldChanges: Bool {
-        heldSubtitleEditorValues.keys.contains { $0.profileId == boundProfileId }
-            || (heldMetadataWrite.map { $0.profileId == boundProfileId } ?? false)
+        heldSubtitleEditorValues.keys.contains { $0.owner == boundOwner }
+            || (heldMetadataWrite.map { $0.owner == boundOwner } ?? false)
     }
 
     /// Coalescing for the metadata language: it has a side effect the others
@@ -207,11 +215,12 @@ final class ProfilePrefsEditor {
         self.writer = writer
     }
 
-    /// Bind subsequent edits to the profile painted into this editor.
+    /// Bind subsequent edits to the profile painted into this editor, of
+    /// `accountID` (nil before sign-in migration).
     @MainActor
-    func bindProfile(id: String?) {
+    func bindProfile(id: String?, accountID: String? = nil) {
         let trimmed = id?.trimmingCharacters(in: .whitespacesAndNewlines)
-        boundProfileId = trimmed.flatMap { $0.isEmpty ? nil : $0 }
+        boundOwner = ProfileOwner(profileId: trimmed.flatMap { $0.isEmpty ? nil : $0 }, accountID: accountID)
     }
 
     // MARK: - Load
@@ -274,10 +283,10 @@ final class ProfilePrefsEditor {
     @MainActor
     private func hasUnsettledEdit(for key: SettingKey) -> Bool {
         if key == ProfileSettingKeys.metadataLanguage {
-            return (pendingMetadataWrite.map { $0.profileId == boundProfileId } ?? false)
-                || (inFlightMetadataWrite.map { $0.profileId == boundProfileId } ?? false)
+            return (pendingMetadataWrite.map { $0.owner == boundOwner } ?? false)
+                || (inFlightMetadataWrite.map { $0.owner == boundOwner } ?? false)
         }
-        let identity = SubtitleWriteIdentity(key: key, profileId: boundProfileId)
+        let identity = SubtitleWriteIdentity(key: key, owner: boundOwner)
         return pendingSubtitleEditorValues[identity] != nil || inFlightSubtitleWrites.contains(identity)
     }
 
@@ -293,11 +302,11 @@ final class ProfilePrefsEditor {
     @MainActor
     private func showHeldValues() {
         for (identity, value) in heldSubtitleEditorValues
-        where identity.profileId == boundProfileId && !hasUnsettledEdit(for: identity.key) {
+        where identity.owner == boundOwner && !hasUnsettledEdit(for: identity.key) {
             setEditorValue(value, for: identity.key)
         }
         if let held = heldMetadataWrite,
-           held.profileId == boundProfileId,
+           held.owner == boundOwner,
            !hasUnsettledEdit(for: ProfileSettingKeys.metadataLanguage) {
             preferredMetadataLanguage = held.language ?? PlaybackPrefSentinel.none
         }
@@ -346,7 +355,7 @@ final class ProfilePrefsEditor {
     @MainActor
     func discardHeldChanges() async {
         for (identity, held) in heldSubtitleEditorValues
-        where identity.profileId == boundProfileId && currentEditorValue(for: identity.key) == held {
+        where identity.owner == boundOwner && currentEditorValue(for: identity.key) == held {
             if pendingSubtitleEditorValues[identity] == held {
                 pendingSubtitleEditorValues.removeValue(forKey: identity)
             }
@@ -355,7 +364,7 @@ final class ProfilePrefsEditor {
             }
         }
         if let held = heldMetadataWrite,
-           held.profileId == boundProfileId,
+           held.owner == boundOwner,
            Self.outboundLanguage(preferredMetadataLanguage) == held.language {
             if pendingMetadataWrite == held { pendingMetadataWrite = nil }
             preferredMetadataLanguage = serverValues.metadataLanguage ?? PlaybackPrefSentinel.none
@@ -441,10 +450,10 @@ final class ProfilePrefsEditor {
             saveState = .serverUpgradeRequired
             return
         }
-        let write = MetadataWrite(language: Self.outboundLanguage(value), profileId: boundProfileId)
+        let write = MetadataWrite(language: Self.outboundLanguage(value), owner: boundOwner)
         // A new edit replaces a held one. It is sent even when it matches the
         // server value, because the held one may have reached the server.
-        if let held = heldMetadataWrite, held.profileId == boundProfileId {
+        if let held = heldMetadataWrite, held.owner == boundOwner {
             heldMetadataWrite = nil
         }
         if isSavingMetadataLanguage {
@@ -463,7 +472,7 @@ final class ProfilePrefsEditor {
             saveState = .serverUpgradeRequired
             return
         }
-        let identity = SubtitleWriteIdentity(key: key, profileId: boundProfileId)
+        let identity = SubtitleWriteIdentity(key: key, owner: boundOwner)
         // A new edit replaces a held one. It is sent even when it matches the
         // server value, because the held one may have reached the server.
         heldSubtitleEditorValues.removeValue(forKey: identity)
@@ -511,20 +520,21 @@ final class ProfilePrefsEditor {
                 for write in writes {
                     let identity = SubtitleWriteIdentity(
                         key: write.key,
-                        profileId: write.profileId
+                        owner: write.owner
                     )
                     defer { inFlightSubtitleWrites.remove(identity) }
                     do {
                         try await writer.write(
                             write.key,
                             value: write.value,
-                            profileId: write.profileId,
+                            profileId: write.owner.profileId,
+                            accountID: write.owner.accountID,
                             isLatest: { [weak self] in
                                 self?.isLatestSubtitleWrite(write, identity: identity) ?? false
                             }
                         )
                         failures.removeValue(forKey: identity)
-                        let stillEditingWrittenProfile = boundProfileId == write.profileId
+                        let stillEditingWrittenProfile = boundOwner == write.owner
                         if stillEditingWrittenProfile {
                             recordServerValue(for: write.key, value: write.editorValue)
                             // A read already in flight may predate this row.
@@ -565,7 +575,7 @@ final class ProfilePrefsEditor {
                             return
                         }
                         failures[identity] = error
-                        let stillEditingWrittenProfile = boundProfileId == write.profileId
+                        let stillEditingWrittenProfile = boundOwner == write.owner
                         if SettingsAPIError.from(error).writeFailure == .release {
                             // The server answered and refused this value;
                             // sending it again gets the same answer. Release
@@ -619,7 +629,7 @@ final class ProfilePrefsEditor {
     @MainActor
     private func isLatestSubtitleWrite(_ write: SubtitleWrite, identity: SubtitleWriteIdentity) -> Bool {
         guard pendingSubtitleEditorValues[identity] == nil else { return false }
-        return boundProfileId != write.profileId || currentEditorValue(for: write.key) == write.editorValue
+        return boundOwner != write.owner || currentEditorValue(for: write.key) == write.editorValue
     }
 
     @MainActor
@@ -646,7 +656,8 @@ final class ProfilePrefsEditor {
             let lhsOrder = keyOrder[lhs.key.key] ?? Int.max
             let rhsOrder = keyOrder[rhs.key.key] ?? Int.max
             if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
-            return (lhs.key.profileId ?? "") < (rhs.key.profileId ?? "")
+            return (lhs.key.owner.profileId ?? "", lhs.key.owner.accountID ?? "")
+                < (rhs.key.owner.profileId ?? "", rhs.key.owner.accountID ?? "")
         }
         let writes = ordered.compactMap { identity, editorValue -> SubtitleWrite? in
             if identity.key == ProfileSettingKeys.subtitleLanguage {
@@ -656,7 +667,7 @@ final class ProfilePrefsEditor {
                     value: ProfileSettingsWriter.languageValue(language),
                     editorValue: editorValue,
                     language: language,
-                    profileId: identity.profileId
+                    owner: identity.owner
                 )
             }
             if identity.key == ProfileSettingKeys.subtitleMode {
@@ -665,7 +676,7 @@ final class ProfilePrefsEditor {
                     value: .string(editorValue),
                     editorValue: editorValue,
                     language: nil,
-                    profileId: identity.profileId
+                    owner: identity.owner
                 )
             }
             if identity.key == ProfileSettingKeys.showForcedSubtitles {
@@ -674,13 +685,13 @@ final class ProfilePrefsEditor {
                     value: .bool(editorValue == "on"),
                     editorValue: editorValue,
                     language: nil,
-                    profileId: identity.profileId
+                    owner: identity.owner
                 )
             }
             return nil
         }
         inFlightSubtitleWrites.formUnion(writes.map {
-            SubtitleWriteIdentity(key: $0.key, profileId: $0.profileId)
+            SubtitleWriteIdentity(key: $0.key, owner: $0.owner)
         })
         return writes
     }
@@ -775,11 +786,12 @@ final class ProfilePrefsEditor {
             try await writer.write(
                 ProfileSettingKeys.metadataLanguage,
                 value: ProfileSettingsWriter.languageValue(write.language),
-                profileId: write.profileId,
+                profileId: write.owner.profileId,
+                accountID: write.owner.accountID,
                 isLatest: { [weak self] in
                     guard let self else { return false }
                     return self.pendingMetadataWrite == nil
-                        && self.boundProfileId == write.profileId
+                        && self.boundOwner == write.owner
                         && Self.outboundLanguage(self.preferredMetadataLanguage) == write.language
                 }
             )
@@ -797,7 +809,7 @@ final class ProfilePrefsEditor {
             // A newer edit landed while this was in flight; let its own pass
             // report, or this one would announce a value already superseded.
             guard Self.outboundLanguage(preferredMetadataLanguage) == write.language,
-                  boundProfileId == write.profileId else {
+                  boundOwner == write.owner else {
                 if pendingMetadataWrite == nil { saveState = nil }
                 return
             }
@@ -813,7 +825,7 @@ final class ProfilePrefsEditor {
             if pendingMetadataWrite == nil { saveState = nil }
         } catch is ProfileSettingsWriter.HeldChange {
             heldMetadataWrite = write
-            if boundProfileId == write.profileId {
+            if boundOwner == write.owner {
                 saveState = .held
             } else if pendingMetadataWrite == nil {
                 saveState = nil
@@ -826,7 +838,7 @@ final class ProfilePrefsEditor {
                 return
             }
             guard Self.outboundLanguage(preferredMetadataLanguage) == write.language,
-                  boundProfileId == write.profileId else {
+                  boundOwner == write.owner else {
                 if pendingMetadataWrite == nil { saveState = nil }
                 return
             }
