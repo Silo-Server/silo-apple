@@ -8,16 +8,18 @@ import SwiftUI
 /// Pointer rules, like the intro pill: click is Select, Return selects the
 /// primary action while the pill is up, and Escape is Back (both routed by
 /// ``PlayerView``'s command capture). The buttons are the intro pill's
-/// capsules, with the countdown on the primary.
+/// capsules without its fill; the countdown runs along the card's bottom edge.
 struct MacBufferingQualityPill: View {
     let pill: BufferingQualityController.Pill
+    /// The card's first line; the kind's own copy when nil.
+    var title: String? = nil
     let onPrimary: () -> Void
     let onSecondary: () -> Void
 
     var body: some View {
-        PlayerBufferingPillCard(kind: pill.kind) {
+        PlayerBufferingPillCard(pill: pill, title: title) {
             HStack(spacing: 10) {
-                MacPlayerPillButton(title: pill.kind.primaryAction, pill: pill, action: onPrimary)
+                MacPlayerPillButton(title: pill.kind.primaryAction, pill: nil, action: onPrimary)
                 if let secondary = pill.kind.secondaryAction {
                     MacPlayerPillButton(title: secondary, pill: nil, action: onSecondary)
                 }

@@ -9082,9 +9082,10 @@ class PlayerViewModel {
         title: String,
         message: String,
         tone: PlayerNoticeTone,
+        symbol: String? = nil,
         duration: TimeInterval
     ) {
-        let notice = PlayerNotice(title: title, message: message, tone: tone)
+        let notice = PlayerNotice(title: title, message: message, tone: tone, symbol: symbol)
         activeNotice = notice
         noticeDismissTask?.cancel()
         noticeDismissTask = Task { @MainActor [weak self] in
@@ -10980,7 +10981,7 @@ extension PlayerViewModel {
     private func showPendingBufferingNotice() {
         guard let notice = pendingBufferingNotice, presentedNotice == nil, canShowPlayerOverlays else { return }
         pendingBufferingNotice = nil
-        showNotice(title: notice.text, message: "", tone: .info, duration: 5)
+        showNotice(title: notice.text, message: "", tone: .info, symbol: notice.symbol, duration: 5)
     }
 
     /// Follows whether the player can show its pills: not while the app is in

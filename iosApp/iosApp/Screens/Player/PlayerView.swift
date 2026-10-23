@@ -326,7 +326,8 @@ struct PlayerView: View {
                     // Outside the playback-only branch, so an end that stopped
                     // short explains itself on the end-of-playback screen too,
                     // above that screen's video preview. The buffering pill
-                    // shares the notice position, below any notice.
+                    // shares the notice stack, in its top-trailing corner and
+                    // below any notice.
                     #if os(tvOS)
                     // Below the player menu's panel while it is open, so the
                     // pill never covers its tabs.
@@ -369,15 +370,17 @@ struct PlayerView: View {
                     if viewModel.showNextUpScreen { loadingCloseButton }
                     #endif
 
+                    // The pill, which already says playback is buffering, takes
+                    // this corner capsule's place while it shows.
                     #if os(tvOS)
-                    if let message = watchPartySyncMessage {
-                        PlayerBufferingCapsule(message: message, delay: .milliseconds(500))
-                    } else if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
-                        PlayerBufferingCapsule()
+                    if !showsBufferingPill {
+                        if let message = watchPartySyncMessage {
+                            PlayerBufferingCapsule(message: message, delay: .milliseconds(500))
+                        } else if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
+                            PlayerBufferingCapsule()
+                        }
                     }
                     #else
-                    // The pill, which already says playback is buffering, would
-                    // sit under this corner capsule on a phone.
                     if (viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting) &&
                         !showsBufferingPill {
                         PlayerBufferingCapsule()
@@ -843,6 +846,8 @@ struct PlayerView: View {
             // Its own focus region, sized to the card: Left and Right move
             // between its buttons, and Down leaves it for the transport.
             .focusSection()
+            // The "Loading…" capsule's corner, which the pill takes over.
+            .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, SiloTheme.safePadding)
             .transition(.move(edge: .top).combined(with: .opacity))
             .playerNoticeStackPill()
@@ -857,6 +862,8 @@ struct PlayerView: View {
                 onPrimary: { viewModel.selectBufferingPrimary() },
                 onSecondary: { viewModel.selectBufferingKeep() }
             )
+            // The "Loading…" capsule's corner, which the pill takes over.
+            .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.horizontal, SiloTheme.safePadding)
             .transition(.move(edge: .top).combined(with: .opacity))
             .playerNoticeStackPill()

@@ -61,15 +61,35 @@ extension BufferingQualityController.Pill: PlayerTimedPill {}
 struct PlayerPillProgress: View {
     let pill: any PlayerTimedPill
     let color: Color
+    /// Draws the time left instead, full when the pill appears and empty when
+    /// its timer runs out.
+    var drains = false
 
     var body: some View {
         TimelineView(.animation(minimumInterval: nil, paused: pill.deadline == nil)) { context in
             GeometryReader { proxy in
+                let progress = pill.progress(at: context.date)
                 Rectangle()
                     .fill(color)
-                    .frame(width: proxy.size.width * pill.progress(at: context.date))
+                    .frame(width: proxy.size.width * (drains ? 1 - progress : progress))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The buffering card's countdown: a thin track along the card's bottom edge
+/// whose bar drains as the timer runs out, so no fill ever sits behind a
+/// button's label.
+struct PlayerPillCountdownTrack: View {
+    let pill: any PlayerTimedPill
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Color.white.opacity(0.12))
+            PlayerPillProgress(pill: pill, color: .white.opacity(0.8), drains: true)
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)

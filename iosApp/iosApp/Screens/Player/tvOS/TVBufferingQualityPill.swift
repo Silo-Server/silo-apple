@@ -3,12 +3,13 @@ import SwiftUI
 
 /// The tvOS buffering pill: "Playback keeps buffering" over **Lower quality**
 /// and **Keep quality**, or "Quality lowered to stop buffering" over **Restore
-/// quality**, in a notice card at the top of the screen.
+/// quality**, in a notice card at the top-trailing corner.
 ///
-/// The buttons are the intro pill's capsules, with the countdown on the
-/// primary. Positioning, focus, Select and Menu belong to the player shell and
-/// ``TVPlayerControls``, which apply the intro pill's rules; this view only
-/// draws the pill, binds its buttons' focus and forwards their actions.
+/// The buttons are the intro pill's capsules without its fill; the countdown
+/// runs along the card's bottom edge. Positioning, focus, Select and Menu
+/// belong to the player shell and ``TVPlayerControls``, which apply the intro
+/// pill's rules; this view only draws the pill, binds its buttons' focus and
+/// forwards their actions.
 struct TVBufferingQualityPill: View {
     enum Action: Hashable {
         /// **Lower quality** or **Restore quality**.
@@ -18,6 +19,8 @@ struct TVBufferingQualityPill: View {
     }
 
     let pill: BufferingQualityController.Pill
+    /// The card's first line; the kind's own copy when nil.
+    var title: String? = nil
     /// The button drawn lit without holding focus: with the controls hidden
     /// the player's press capture owns the remote, sends Select to it, and
     /// moves it between the prompt's buttons on Left and Right.
@@ -27,23 +30,27 @@ struct TVBufferingQualityPill: View {
     let onSecondary: () -> Void
 
     var body: some View {
-        PlayerBufferingPillCard(kind: pill.kind) {
+        PlayerBufferingPillCard(pill: pill, title: title) {
             HStack(spacing: SiloTheme.spacing) {
                 Button(action: onPrimary) {
                     Text(pill.kind.primaryAction)
                 }
-                .buttonStyle(TVPlayerPillButtonStyle(pill: pill, isSelectTarget: selectTarget == .primary))
+                .buttonStyle(buttonStyle(.primary))
                 .focused(focus, equals: .primary)
 
                 if let secondary = pill.kind.secondaryAction {
                     Button(action: onSecondary) {
                         Text(secondary)
                     }
-                    .buttonStyle(TVPlayerPillButtonStyle(pill: nil, isSelectTarget: selectTarget == .secondary))
+                    .buttonStyle(buttonStyle(.secondary))
                     .focused(focus, equals: .secondary)
                 }
             }
         }
+    }
+
+    private func buttonStyle(_ action: Action) -> TVPlayerPillButtonStyle {
+        TVPlayerPillButtonStyle(pill: nil, isSelectTarget: selectTarget == action, unfocusedLabelOpacity: 0.85)
     }
 }
 

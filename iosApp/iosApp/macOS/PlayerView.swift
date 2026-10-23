@@ -117,7 +117,10 @@ private struct MacPlayerScreen: View {
                     .transition(.opacity)
                 }
 
-                if viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting {
+                // The buffering pill, which already says playback is
+                // buffering, replaces this capsule while it shows.
+                if (viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting) &&
+                    viewModel.bufferingPill == nil {
                     PlayerBufferingCapsule()
                 }
 

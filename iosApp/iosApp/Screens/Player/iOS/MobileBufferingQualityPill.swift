@@ -3,23 +3,27 @@ import SwiftUI
 
 /// The iOS and iPadOS buffering pill: "Playback keeps buffering" with **Lower
 /// quality** and **Keep quality**, or "Quality lowered to stop buffering" with
-/// **Restore quality**, in a notice card at the top of the player.
+/// **Restore quality**, in a notice card at the top-trailing corner of the
+/// player.
 ///
 /// The same state machine and copy as the TV, Mac, web and Android pills, with
 /// pointer rules: a tap is Select, and a tap elsewhere is not a dismissal. The
-/// buttons are the intro pill's capsules, with the countdown on the primary.
+/// buttons are the intro pill's capsules without its fill; the countdown runs
+/// along the card's bottom edge.
 struct MobileBufferingQualityPill: View {
     let pill: BufferingQualityController.Pill
+    /// The card's first line; the kind's own copy when nil.
+    var title: String? = nil
     let onPrimary: () -> Void
     let onSecondary: () -> Void
 
     var body: some View {
-        PlayerBufferingPillCard(kind: pill.kind) {
+        PlayerBufferingPillCard(pill: pill, title: title) {
             HStack(spacing: SiloTheme.smallPadding) {
                 Button(action: onPrimary) {
                     label(pill.kind.primaryAction)
                 }
-                .buttonStyle(MobilePlayerPillButtonStyle(pill: pill))
+                .buttonStyle(MobilePlayerPillButtonStyle(pill: nil))
 
                 if let secondary = pill.kind.secondaryAction {
                     Button(action: onSecondary) {
