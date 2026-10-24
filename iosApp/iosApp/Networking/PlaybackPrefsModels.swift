@@ -221,6 +221,13 @@ enum TrackPreferenceKind: String, Codable, Sendable {
 /// returns besides `profile_id`, `series_id` and `updated_at`.
 protocol TrackPrefBody: Codable, Hashable, Sendable {
     static var kind: TrackPreferenceKind { get }
+
+    /// The row the server stores when this body is written over `stored`.
+    func applied(over stored: Self?) -> Self
+}
+
+extension TrackPrefBody {
+    func applied(over stored: Self?) -> Self { self }
 }
 
 // MARK: - Per-series subtitle pref
@@ -237,6 +244,14 @@ struct SubtitlePrefRequest: TrackPrefBody {
 }
 
 extension SubtitlePrefRequest {
+    /// An omitted `show_forced_subtitles` keeps the stored override.
+    func applied(over stored: SubtitlePrefRequest?) -> SubtitlePrefRequest {
+        guard showForcedSubtitles == nil, let kept = stored?.showForcedSubtitles else { return self }
+        return SubtitlePrefRequest(subtitleLanguage: subtitleLanguage, subtitleTrackIndex: subtitleTrackIndex,
+                                   externalSubtitlePath: externalSubtitlePath, subtitleMode: subtitleMode,
+                                   trackSignature: trackSignature, showForcedSubtitles: kept)
+    }
+
     /// A GET omits an empty `external_subtitle_path`.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)

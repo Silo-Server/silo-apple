@@ -12,14 +12,17 @@ import Foundation
 /// the meantime. The flush reads the row first: unchanged since the pick was
 /// made (same `updated_at`, or still absent) sends it. Otherwise the pick
 /// time, moved onto the server's clock by the offset the read's `Date`
-/// header shows, must be later than the row's `updated_at`. The write is a
-/// plain upsert, so a change landing between that read and the write is
-/// still overwritten.
+/// header shows, must be later than the row's `updated_at`. A row this
+/// device wrote itself never counts as a newer choice. The write is a plain
+/// upsert, so a change landing between that read and the write is still
+/// overwritten.
 struct TrackPrefsStore: Codable, Equatable, Sendable {
     var audio = TrackPrefLedger<AudioPrefRequest>()
     var subtitle = TrackPrefLedger<SubtitlePrefRequest>()
     /// The subtitle cascade (`WatchDetail.effective_subtitle_*`) last seen
     /// streaming, per key with a download: what applies without a series row.
+    /// It may include the series row's own choices, so it is dropped when
+    /// the row is cleared, until streaming shows the cascade again.
     var effectiveSubtitle: [String: EffectiveSubtitlePrefs] = [:]
 
     var hasPending: Bool { !audio.pending.isEmpty || !subtitle.pending.isEmpty }
@@ -41,6 +44,47 @@ struct TrackPrefsStore: Codable, Equatable, Sendable {
             showForced: row.showForcedSubtitles ?? inherited?.showForced,
             signature: row.trackSignature
         )
+    }
+
+    // The ledger changes the store makes, each dropping the cascade along
+    // with a series subtitle row it clears.
+
+    /// Queues a pick made during downloaded playback.
+    @discardableResult
+    mutating func record<Body>(_ body: Body?, key: String, in ledger: WritableKeyPath<Self, TrackPrefLedger<Body>>,
+                               at time: Date) -> PendingTrackPref<Body> {
+        if body == nil { clearedRow(Body.self, key: key) }
+        return self[keyPath: ledger].record(body, key: key, at: time)
+    }
+
+    /// Ends `pick` once the server has it. `serverDate` is the response's
+    /// `Date` header.
+    mutating func acknowledge<Body>(_ pick: PendingTrackPref<Body>, key: String,
+                                    in ledger: WritableKeyPath<Self, TrackPrefLedger<Body>>, serverDate: Date?) {
+        self[keyPath: ledger].acknowledge(pick, key: key, serverDate: serverDate)
+        if pick.body == nil { clearedRow(Body.self, key: key) }
+    }
+
+    /// Records a write this device sent outside the queue at `sentAt`,
+    /// stored or not. `serverDate` is the response's `Date` header.
+    mutating func wrote<Body>(_ body: Body?, key: String, in ledger: WritableKeyPath<Self, TrackPrefLedger<Body>>,
+                              sentAt: Date, stored: Bool, serverDate: Date?) {
+        self[keyPath: ledger].wrote(body, key: key, sentAt: sentAt, stored: stored, serverDate: serverDate)
+        if stored, body == nil { clearedRow(Body.self, key: key) }
+    }
+
+    /// Records what a read of the server row found, unless the key changed
+    /// since `revision` was taken as the read began.
+    mutating func observe<Body>(_ row: TrackPrefRow<Body>?, key: String,
+                                in ledger: WritableKeyPath<Self, TrackPrefLedger<Body>>,
+                                since revision: TrackPrefLedger<Body>.Revision) {
+        let hadRow = self[keyPath: ledger].observed[key]?.body != nil
+        guard self[keyPath: ledger].observe(row, key: key, since: revision) else { return }
+        if hadRow, row == nil { clearedRow(Body.self, key: key) }
+    }
+
+    private mutating func clearedRow<Body: TrackPrefBody>(_: Body.Type, key: String) {
+        if Body.kind == .subtitle { effectiveSubtitle[key] = nil }
     }
 }
 
@@ -65,6 +109,10 @@ struct ObservedTrackPref<Body: TrackPrefBody>: Codable, Equatable, Sendable {
     /// The row's server time. Nil when this device wrote the row and has not
     /// read it back.
     var updatedAt: Date?
+    /// For a row this device wrote: a server time the write is stamped
+    /// before (its response's `Date` header, plus the header's one-second
+    /// resolution).
+    var writtenBefore: Date?
 }
 
 extension ObservedTrackPref {
@@ -81,6 +129,9 @@ struct PendingTrackPref<Body: TrackPrefBody>: Codable, Equatable, Sendable {
         case unknown
         case absent
         case updatedAt(Date)
+        /// The row was this device's own write, stamped before this server
+        /// time.
+        case ownWrite(stampedBefore: Date)
     }
 
     var id = UUID()
@@ -97,34 +148,75 @@ struct TrackPrefLedger<Body: TrackPrefBody>: Codable, Equatable, Sendable {
     /// The row playback should use: nil when nothing is known, `.some(nil)`
     /// when the key has no row.
     func current(_ key: String) -> Body?? {
-        if let pick = pending[key] { return .some(pick.body) }
+        if let pick = pending[key] { return .some(pick.body.map { $0.applied(over: observed[key]?.body) }) }
         return observed[key].map(\.body)
+    }
+
+    /// What a read of a key must find unchanged to be applied: a write
+    /// stored or a pick queued after the read began makes its answer stale.
+    struct Revision: Equatable {
+        fileprivate let observed: ObservedTrackPref<Body>?
+        fileprivate let pick: UUID?
+    }
+
+    func revision(_ key: String) -> Revision {
+        Revision(observed: observed[key], pick: pending[key]?.id)
+    }
+
+    /// Records what a read found; false when it was stale.
+    fileprivate mutating func observe(_ row: TrackPrefRow<Body>?, key: String, since revision: Revision) -> Bool {
+        guard self.revision(key) == revision else { return false }
+        observed[key] = ObservedTrackPref(row)
+        return true
     }
 
     /// Queues a pick, replacing any earlier one for the key.
     @discardableResult
-    mutating func record(_ body: Body?, key: String, at time: Date) -> PendingTrackPref<Body> {
-        let baseline: PendingTrackPref<Body>.Baseline =
-            if let seen = observed[key]?.updatedAt { .updatedAt(seen) }
-            else if let row = observed[key], row.body == nil { .absent }
-            else { .unknown }
-        let pick = PendingTrackPref(body: body, pickedAt: time, baseline: baseline)
+    fileprivate mutating func record(_ body: Body?, key: String, at time: Date) -> PendingTrackPref<Body> {
+        let pick = PendingTrackPref(body: body, pickedAt: time, baseline: baseline(key))
         pending[key] = pick
         return pick
     }
 
-    /// Records a write this device sent outside the queue. It supersedes
-    /// any pick still queued for the key.
-    mutating func wrote(_ body: Body?, key: String) {
-        pending[key] = nil
-        observed[key] = ObservedTrackPref(body: body)
+    private func baseline(_ key: String) -> PendingTrackPref<Body>.Baseline {
+        guard let row = observed[key] else { return .unknown }
+        if let seen = row.updatedAt { return .updatedAt(seen) }
+        if let bound = row.writtenBefore { return .ownWrite(stampedBefore: bound) }
+        return row.body == nil ? .absent : .unknown
     }
 
-    /// Ends `pick` once the server has it. A newer pick for the key stays.
-    mutating func acknowledge(_ pick: PendingTrackPref<Body>, key: String) {
-        guard pending[key]?.id == pick.id else { return }
-        pending[key] = nil
-        observed[key] = ObservedTrackPref(body: pick.body)
+    /// Ends `pick` once the server has it. A newer pick for the key stays,
+    /// rebased onto this write.
+    fileprivate mutating func acknowledge(_ pick: PendingTrackPref<Body>, key: String, serverDate: Date?) {
+        stored(pick.body, key: key, serverDate: serverDate) { $0.id == pick.id }
+    }
+
+    /// Records a write this device sent outside the queue at `sentAt`. It
+    /// supersedes the picks made before it was sent, stored or not; a later
+    /// pick stays, rebased onto the write once it is stored.
+    fileprivate mutating func wrote(_ body: Body?, key: String, sentAt: Date, stored: Bool, serverDate: Date?) {
+        let superseded = { (pick: PendingTrackPref<Body>) in pick.pickedAt <= sentAt }
+        if stored {
+            self.stored(body, key: key, serverDate: serverDate, ending: superseded)
+        } else if let pick = pending[key], superseded(pick) {
+            pending[key] = nil
+        }
+    }
+
+    /// The server stored `body` from this device. A queued pick `ending`
+    /// selects is done; a newer one must not take this write for a newer
+    /// choice made elsewhere, so it is rebased onto it.
+    private mutating func stored(_ body: Body?, key: String, serverDate: Date?,
+                                 ending: (PendingTrackPref<Body>) -> Bool) {
+        observed[key] = ObservedTrackPref(body: body.map { $0.applied(over: observed[key]?.body) },
+                                          writtenBefore: serverDate?.addingTimeInterval(1))
+        guard let pick = pending[key] else { return }
+        if ending(pick) {
+            pending[key] = nil
+        } else {
+            let rebased = baseline(key)
+            pending[key]?.baseline = rebased
+        }
     }
 
     /// Ends `pick` without sending it: the server row is newer.
@@ -140,7 +232,11 @@ struct TrackPrefLedger<Body: TrackPrefBody>: Codable, Equatable, Sendable {
         // No row: still absent, or cleared at a time the read can't tell,
         // and a deliberate pick is the more specific choice.
         guard let row else { return true }
-        if case .updatedAt(let seen) = pick.baseline, seen == row.updatedAt { return true }
+        switch pick.baseline {
+        case .updatedAt(let seen) where seen == row.updatedAt: return true
+        case .ownWrite(let bound) where row.updatedAt < bound: return true
+        default: break
+        }
         let offset = serverDate.map { $0.timeIntervalSince(readAt) } ?? 0
         return pick.pickedAt.addingTimeInterval(offset) > row.updatedAt
     }
@@ -254,6 +350,32 @@ enum OfflineTrackPrefs {
             audioLanguage: tracks[ordinal].language ?? "",
             trackSignature: nil
         )
+    }
+
+    /// An audio pick against the track the player shows at `ordinal`. The
+    /// probe's ordinal names a manifest track only when both list the same
+    /// tracks; otherwise (an older download without the list) the pick
+    /// carries the played track's language alone.
+    static func audioRequest(track: PlayerTrack, ordinal: Int?, shownTrackCount: Int,
+                             manifestTracks: [AudioTrack]?, sourceOrdinals: Bool) -> AudioPrefRequest? {
+        if let ordinal, let manifestTracks, manifestTracks.count == shownTrackCount {
+            return audioRequest(tracks: manifestTracks, ordinal: ordinal, sourceOrdinals: sourceOrdinals)
+        }
+        guard let language = track.normalizedLanguageCode else { return nil }
+        return AudioPrefRequest(audioTrackIndex: -1, audioLanguage: language, trackSignature: nil)
+    }
+
+    /// Whether the server refused a pick for good. Kept queued, it would
+    /// hold up the picks behind it; an auth, timeout or rate-limit answer
+    /// can pass later.
+    static func isRefusedForGood(_ error: Error) -> Bool {
+        let status: Int
+        switch error {
+        case APIv2Error.problem(let problem): status = problem.status
+        case APIv2Error.httpStatus(let code): status = code
+        default: return false
+        }
+        return (400..<500).contains(status) && ![401, 408, 425, 429].contains(status)
     }
 
     /// A subtitle pick from the local file or one of its sidecars. Neither

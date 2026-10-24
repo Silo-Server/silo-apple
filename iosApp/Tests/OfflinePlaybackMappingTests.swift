@@ -162,6 +162,22 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         XCTAssertEqual(playback.watchDetail.effectiveSubtitleTrackSignature, signature)
     }
 
+    func testDownloadWithoutAnAudioListStartsFromTheSeriesLanguage() throws {
+        let playback = OfflinePlaybackBuilder.makePreparedPlayback(
+            leafContentId: "leaf",
+            manifest: try manifest(),
+            mediaURL: URL(fileURLWithPath: "/tmp/media.mkv"),
+            subtitleURLs: [],
+            audioPref: AudioPrefRequest(audioTrackIndex: 1, audioLanguage: "ja", trackSignature: nil),
+            resumePosition: nil
+        )
+
+        XCTAssertNil(playback.session.audioTrackIndex)
+        XCTAssertEqual(AetherInitialAudioPreference.languages(for: playback, profileLanguage: "en"), ["ja"])
+        XCTAssertEqual(AetherInitialAudioPreference.languages(for: prepared(try manifest()), profileLanguage: "en"),
+                       ["en"])
+    }
+
     // MARK: - Bitrate
 
     func testBitrateIsDerivedFromTheDeliveredFile() throws {

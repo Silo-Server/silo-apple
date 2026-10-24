@@ -4153,9 +4153,7 @@ class PlayerViewModel {
         abandonedLoadPlayIntent = nil
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
         let preferredAudio = AetherInitialAudioPreference.languages(
-            selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
-            tracks: prepared.selectedVersion.audioTracks ?? [],
-            fallbackLanguage: settings.audioLanguage
+            for: prepared, profileLanguage: settings.audioLanguage
         )
         // The explicit Buffer Ahead choice wins; `automatic` has no count of
         // its own and keeps the historical mapping from the synced Seek Cache
@@ -7875,13 +7873,11 @@ class PlayerViewModel {
     private func persistAudioSelection(_ track: PlayerTrack) {
         let ordinal = audioSelectionIndex(for: track)
         if let offline = offlinePlaybackContext {
-            // The probe's ordinal names a manifest track only when both
-            // list the same tracks.
-            guard let key = offline.trackPrefKey, let ordinal,
-                  let manifestTracks = currentSelectedVersion?.audioTracks,
-                  manifestTracks.count == audioTracks.count,
+            guard let key = offline.trackPrefKey,
                   let request = OfflineTrackPrefs.audioRequest(
-                      tracks: manifestTracks, ordinal: ordinal, sourceOrdinals: !offline.isServerPreparedFile
+                      track: track, ordinal: ordinal, shownTrackCount: audioTracks.count,
+                      manifestTracks: currentSelectedVersion?.audioTracks,
+                      sourceOrdinals: !offline.isServerPreparedFile
                   ) else { return }
             DownloadManager.shared.recordTrackPref(request, key: key, in: \.audio, owner: offline.owner)
             return

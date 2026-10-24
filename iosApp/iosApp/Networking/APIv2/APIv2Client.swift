@@ -254,18 +254,20 @@ struct APIv2Client: Sendable {
     /// acting profile's remembered track for one series (or movie) id. The
     /// operation is `natural_idempotent` and answers 204; the body schema is
     /// closed, so `body` encodes snake_case with nil members omitted.
+    @discardableResult
     func writeTrackPreference<Body: Encodable>(kind: TrackPreferenceKind, seriesId: String, body: Body,
-                                              auth: CapturedOrdinaryRequestAuth) async throws {
+                                              auth: CapturedOrdinaryRequestAuth) async throws -> Date? {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "PUT",
-                                        body: encoder.encode(body), auth: auth)
+        return try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "PUT",
+                                               body: encoder.encode(body), auth: auth)
     }
 
     /// `deleteAudioPreference` / `deleteSubtitlePreference`. The server
     /// answers 204 whether or not a preference existed.
+    @discardableResult
     func deleteTrackPreference(kind: TrackPreferenceKind, seriesId: String,
-                               auth: CapturedOrdinaryRequestAuth) async throws {
+                               auth: CapturedOrdinaryRequestAuth) async throws -> Date? {
         try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "DELETE", body: nil, auth: auth)
     }
 
@@ -309,8 +311,10 @@ struct APIv2Client: Sendable {
         return formatter
     }()
 
+    /// Answers the response's `Date` header, a server time the change is
+    /// stamped no later than.
     private func mutateTrackPreference(kind: TrackPreferenceKind, seriesId: String, method: String, body: Data?,
-                                       auth: CapturedOrdinaryRequestAuth) async throws {
+                                       auth: CapturedOrdinaryRequestAuth) async throws -> Date? {
         try await gate()
         guard !seriesId.isEmpty,
               let profile = auth.profileId, !profile.isEmpty,
@@ -326,6 +330,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 204 else { throw APIv2Error.httpStatus(response.statusCode) }
+        return response.header("date").flatMap(Self.httpDate.date(from:))
     }
 
     /// Whether `auth` still describes the current owner. Goes through the one

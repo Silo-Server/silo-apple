@@ -3861,16 +3861,23 @@ final class DownloadManager {
                                               in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
                                               owner: OfflinePlaybackOwner) {
         guard isCurrentOfflinePlayback(owner) else { return }
-        updateTrackPrefs { $0[keyPath: ledger].record(body, key: key, at: Date()) }
+        updateTrackPrefs { $0.record(body, key: key, in: ledger, at: Date()) }
         flushTrackPrefs()
     }
 
-    /// Records a write sent while streaming or from a detail page, for a key
-    /// this scope has downloads of.
+    /// Records the outcome of a write sent at `sentAt` while streaming or
+    /// from a detail page, for a key this scope has downloads of. A write
+    /// sent for another server or profile than the active scope's is not
+    /// this store's. `serverDate` is the response's `Date` header.
     func noteTrackPrefWrite<Body: TrackPrefBody>(_ body: Body?, key: String,
-                                                 in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>) {
-        guard hasDownload(forPrefKey: key) else { return }
-        updateTrackPrefs { $0[keyPath: ledger].wrote(body, key: key) }
+                                                 in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                                 auth: CapturedOrdinaryRequestAuth, sentAt: Date,
+                                                 stored: Bool, serverDate: Date?) {
+        guard let scope = loadedScope, auth.account.serverId == scope.serverId, auth.profileId == scope.profileId,
+              hasDownload(forPrefKey: key) else { return }
+        updateTrackPrefs {
+            $0.wrote(body, key: key, in: ledger, sentAt: sentAt, stored: stored, serverDate: serverDate)
+        }
     }
 
     /// Keeps the subtitle cascade a streamed item resolved to, for its
@@ -3888,7 +3895,8 @@ final class DownloadManager {
     ///
     /// The reads run unstructured: a token refresh they wait on ignores
     /// cancellation, so a task group would outlast `limit`. A read that
-    /// lands later still updates the store, fenced by its scope owner.
+    /// lands later still updates the store, fenced by its scope owner and
+    /// dropped if the key changed while it ran.
     func refreshTrackPrefs(key: String, owner: OfflinePlaybackOwner, limit: Duration) async {
         guard ConnectionMonitor.shared.isServerReachable,
               let scopeOwner = await captureScopeOwner(expecting: owner.scope) else { return }
@@ -3910,22 +3918,23 @@ final class DownloadManager {
     private func refreshTrackPref<Body: TrackPrefBody>(key: String,
                                                        in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
                                                        owner: ScopeOwner) async {
+        let revision = trackPrefs[keyPath: ledger].revision(key)
         guard let read = try? await SiloAPI.shared.apiV2Client.readTrackPreference(Body.self, seriesId: key, auth: owner.auth),
-              isCurrent(owner) else { return }
-        let row = ObservedTrackPref(read.row)
-        guard trackPrefs[keyPath: ledger].observed[key] != row else { return }
-        updateTrackPrefs { $0[keyPath: ledger].observed[key] = row }
+              isCurrent(owner), trackPrefs[keyPath: ledger].observed[key] != ObservedTrackPref(read.row) else { return }
+        updateTrackPrefs { $0.observe(read.row, key: key, in: ledger, since: revision) }
     }
 
     /// Sends the queued picks, one at a time and in the same per-key order
     /// as every other preference write. A pass stops at the first pick that
     /// could not be sent, or when the scope changes; picks recorded during
-    /// the pass are sent in it.
+    /// the pass are sent in it. A pass the scope changed under starts one
+    /// for the new scope as it ends.
     @discardableResult
     func flushTrackPrefs() -> Task<Void, Never>? {
         guard trackPrefFlush == nil, trackPrefs.hasPending, ConnectionMonitor.shared.isServerReachable else {
             return trackPrefFlush
         }
+        let scope = loadedScope
         let task = Task {
             if let owner = await self.captureScopeOwner() {
                 var tried: Set<UUID> = []
@@ -3936,6 +3945,7 @@ final class DownloadManager {
                 }
             }
             self.trackPrefFlush = nil
+            if self.loadedScope != scope { self.flushTrackPrefs() }
         }
         trackPrefFlush = task
         return task
@@ -3962,27 +3972,28 @@ final class DownloadManager {
         guard isCurrent(owner), trackPrefs[keyPath: ledger].pending[key]?.id == pick.id else { return }
         let client = SiloAPI.shared.apiV2Client
         do {
+            let revision = trackPrefs[keyPath: ledger].revision(key)
             let read = try await client.readTrackPreference(Body.self, seriesId: key, auth: owner.auth)
             let readAt = Date()
             guard isCurrent(owner) else { return }
             guard TrackPrefLedger.shouldSend(pick, over: read.row, serverDate: read.serverDate, readAt: readAt) else {
                 updateTrackPrefs {
+                    $0.observe(read.row, key: key, in: ledger, since: revision)
                     $0[keyPath: ledger].discard(pick, key: key)
-                    $0[keyPath: ledger].observed[key] = ObservedTrackPref(read.row)
                 }
                 return
             }
+            let serverDate: Date?
             if let body = pick.body {
-                try await client.writeTrackPreference(kind: Body.kind, seriesId: key, body: body, auth: owner.auth)
+                serverDate = try await client.writeTrackPreference(kind: Body.kind, seriesId: key, body: body, auth: owner.auth)
             } else {
-                try await client.deleteTrackPreference(kind: Body.kind, seriesId: key, auth: owner.auth)
+                serverDate = try await client.deleteTrackPreference(kind: Body.kind, seriesId: key, auth: owner.auth)
             }
             guard isCurrent(owner) else { return }
-            updateTrackPrefs { $0[keyPath: ledger].acknowledge(pick, key: key) }
+            updateTrackPrefs { $0.acknowledge(pick, key: key, in: ledger, serverDate: serverDate) }
         } catch {
             Self.logger.warning("track pref send failed key=\(key, privacy: .public): \(String(describing: error), privacy: .public)")
-            // A body the server rejects outright would be refused forever.
-            if case APIv2Error.problem(let problem) = error, [400, 422].contains(problem.status), isCurrent(owner) {
+            if OfflineTrackPrefs.isRefusedForGood(error), isCurrent(owner) {
                 updateTrackPrefs { $0[keyPath: ledger].discard(pick, key: key) }
             }
         }

@@ -124,6 +124,17 @@ final class TrackPreferencesV2Tests: XCTestCase {
         XCTAssertEqual(read.serverDate, Date(timeIntervalSince1970: 1_792_836_300))
     }
 
+    func testWriteAnswersTheServerClock() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        stub.reply(204, "", headers: ["Date": "Sat, 24 Oct 2026 10:05:00 GMT"])
+
+        let serverDate = try await api.deleteTrackPreference(kind: .audio, seriesId: "series-9", auth: auth)
+
+        XCTAssertEqual(serverDate, Date(timeIntervalSince1970: 1_792_836_300))
+    }
+
     func testReadOfASeriesWithNoRowIsNil() async throws {
         let (api, tokens) = try await client()
         let captured = await tokens.captureOrdinaryRequestAuth()

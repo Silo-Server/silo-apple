@@ -256,7 +256,9 @@ enum OfflinePlaybackBuilder {
             chapters: manifest.chapters,
             intro: manifest.intro,
             credits: manifest.credits,
-            recap: manifest.recap
+            recap: manifest.recap,
+            // Without a manifest audio list the player picks by language.
+            effectiveAudioLanguage: audioPref.map(\.audioLanguage).flatMap { $0.isEmpty ? nil : $0 }
         )
 
         let watchDetail = WatchDetail(
