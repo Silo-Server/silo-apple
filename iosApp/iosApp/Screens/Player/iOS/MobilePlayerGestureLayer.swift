@@ -195,6 +195,7 @@ struct MobilePlayerGestureLayer: View {
                         dragBaseline = PlayerScreenBrightness.shared.currentLevel()
                     } else if startX > size.width - Self.edgeZoneWidth {
                         activeAdjustment = .volume
+                        viewModel.unmutePlayerGainForLocalVolume()
                         dragBaseline = Double(systemVolume.currentLevel)
                     } else {
                         activeAdjustment = nil
