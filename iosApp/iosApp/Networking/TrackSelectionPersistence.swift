@@ -302,7 +302,18 @@ enum TrackSelectionPersistence {
                     || TrackSelectionPersistence.identifiesUntaggedSubtitle(request, on: detail.versions) {
                     detail.effectiveSubtitleLanguage = language
                     detail.effectiveSubtitleMode = request.subtitleMode
-                    detail.effectiveSubtitleTrackSignature = request.trackSignature
+                    // An undefined language (`und`) in the signature would
+                    // score as a language match for any other `und` track.
+                    detail.effectiveSubtitleTrackSignature = request.trackSignature.map { signature in
+                        SubtitleTrackSignature(
+                            source: signature.source,
+                            language: TrackSelectionPersistence.taggedLanguage(signature.language),
+                            codec: signature.codec,
+                            label: signature.label,
+                            forced: signature.forced,
+                            hearingImpaired: signature.hearingImpaired
+                        )
+                    }
                 }
             }
             if case .audio(let request)? = unsettled[.audio] {

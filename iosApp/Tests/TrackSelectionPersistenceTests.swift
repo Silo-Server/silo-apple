@@ -253,6 +253,33 @@ final class TrackSelectionPersistenceTests: XCTestCase {
                        "an untagged pick its title identifies is carried")
     }
 
+    func testUndefinedLanguageInACarriedPickDoesNotPickAnotherUndefinedTrack() {
+        let version = decodedVersion("""
+        {
+          "file_id": 6,
+          "subtitle_tracks": [
+            { "index": 2, "language": "und", "codec": "subrip", "title": "Full dialogue" },
+            { "index": 3, "codec": "ass", "title": "Signs & Songs" }
+          ]
+        }
+        """)
+        let pick = SubtitlePrefRequest(
+            subtitleLanguage: "und", subtitleTrackIndex: 3, externalSubtitlePath: "", subtitleMode: "always",
+            trackSignature: SubtitleTrackSignature(source: "embedded", language: "und", codec: "ass", label: "Signs & Songs")
+        )
+        let detail = TrackSelectionPersistence.Settlement(rereads: false, unsettled: [.subtitle: .subtitle(pick)])
+            .applied(to: watchDetail(version: version, subtitleLanguage: nil))
+
+        let start = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: version, explicitFFmpegIndex: nil, explicitCombinedIndex: nil,
+            preferredLanguage: detail.effectiveSubtitleLanguage,
+            mode: SubtitleMode(rawValue: detail.effectiveSubtitleMode ?? ""),
+            showForced: false, trackSignature: detail.effectiveSubtitleTrackSignature,
+            currentAudioLanguage: "ja"
+        )
+        XCTAssertEqual(start.ffmpegStreamIndex, 3, "the title finds the pick; `und` is no language to match on")
+    }
+
     func testAudioPickPrefersItsOwnOrdinalThenTheMatchingDefaultFlag() throws {
         let version = decodedVersion("""
         {
