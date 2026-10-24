@@ -166,6 +166,53 @@ final class TrackSelectionPersistenceTests: XCTestCase {
         XCTAssertEqual(request.trackSignature?.label, "Signs & Songs")
     }
 
+    // MARK: - Carrying an unsaved pick
+
+    func testUnsavedPicksFoldIntoTheWatchDetail() {
+        // The pick was made on another episode, whose Japanese track sat at
+        // ordinal 1; on this file it is ordinal 0.
+        let version = decodedVersion("""
+        {
+          "file_id": 9,
+          "effective_audio_track_index": 1,
+          "effective_audio_language": "en",
+          "audio_tracks": [
+            { "index": 1, "language": "jpn", "codec": "aac", "channels": 2 },
+            { "index": 2, "language": "eng", "codec": "aac", "channels": 2 }
+          ]
+        }
+        """)
+        let detail = WatchDetail(
+            contentId: "ep-2", type: "episode", title: "Two", year: nil, overview: nil,
+            versions: [version], subtitles: nil, intro: nil, credits: nil, userData: nil,
+            seriesId: "series-9", seriesTitle: nil, seasonNumber: 1, episodeNumber: 2,
+            effectiveSubtitleLanguage: "en", effectiveSubtitleMode: "always",
+            effectiveShowForcedSubtitles: false,
+            effectiveSubtitleTrackSignature: SubtitleTrackSignature(
+                source: "embedded", language: "en", codec: "subrip", label: nil, forced: false, hearingImpaired: false
+            )
+        )
+        let settlement = TrackSelectionPersistence.Settlement(waited: true, unsettled: [
+            .audio: .audio(AudioPrefRequest(
+                audioTrackIndex: 1, audioLanguage: "jpn",
+                trackSignature: AudioTrackSignature(language: "jpn", codec: "aac", channels: 2)
+            )),
+            .subtitle: .subtitle(TrackSelectionPersistence.subtitleOffRequest()),
+        ])
+
+        let applied = settlement.applied(to: detail)
+
+        XCTAssertEqual(applied.versions[0].effectiveAudioTrackIndex, 0)
+        XCTAssertEqual(applied.versions[0].effectiveAudioLanguage, "jpn")
+        XCTAssertEqual(applied.effectiveSubtitleMode, "off")
+        XCTAssertNil(applied.effectiveSubtitleTrackSignature)
+        XCTAssertEqual(applied.effectiveShowForcedSubtitles, false, "the forced setting is not the pick's to change")
+
+        let auto = TrackSelectionPersistence.Settlement(waited: true, unsettled: [.audio: .cleared])
+        XCTAssertEqual(auto.applied(to: detail).versions[0].effectiveAudioTrackIndex, 1,
+                       "only the server can resolve what Auto falls back to")
+    }
+
     // MARK: - Helpers
 
     private func decodedVersion(_ json: String) -> FileVersion {

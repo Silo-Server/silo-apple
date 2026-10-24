@@ -904,8 +904,10 @@ struct FileVersion: Codable, Identifiable, Hashable {
     let editionRaw: String?
     let editionKey: String?
     /// Server-resolved default audio track ordinal for this version.
-    let effectiveAudioTrackIndex: Int?
-    let effectiveAudioLanguage: String?
+    /// `var` so a read can fold in an audio pick the server has not stored
+    /// yet (`TrackSelectionPersistence.Settlement`).
+    var effectiveAudioTrackIndex: Int?
+    var effectiveAudioLanguage: String?
     /// Whether the server publishes seek-bar previews for this file.
     let trickplayAvailable: Bool?
     var id: Int { fileId }
@@ -1234,7 +1236,7 @@ struct WatchDetail {
     let title: String
     let year: Int?
     let overview: String?
-    let versions: [FileVersion]
+    var versions: [FileVersion]
     let subtitles: [SubtitleInfoBasic]?
     let intro: TimeRange?
     let credits: TimeRange?
@@ -1248,10 +1250,13 @@ struct WatchDetail {
     /// per-series → library → profile prefs cascade. Absent when the
     /// user hasn't configured anything that applies. Consumed by the
     /// player at track-discovery time to auto-pick the right track.
-    let effectiveSubtitleLanguage: String?
-    let effectiveSubtitleMode: String?
+    /// The pick-derived fields (and `versions`) are `var` so a read can fold
+    /// in a pick the server has not stored yet
+    /// (`TrackSelectionPersistence.Settlement`).
+    var effectiveSubtitleLanguage: String?
+    var effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
-    let effectiveSubtitleTrackSignature: SubtitleTrackSignature?
+    var effectiveSubtitleTrackSignature: SubtitleTrackSignature?
 
     /// "Show forced subtitles" for this content. The server omits
     /// `effective_show_forced_subtitles` when no stored setting applies, and

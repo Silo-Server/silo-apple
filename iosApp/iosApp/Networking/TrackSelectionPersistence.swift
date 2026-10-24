@@ -12,11 +12,13 @@
 //  the key the server's detail resolver reads movie prefs back from.
 //
 //  Writes go to `/api/v2/{audio,subtitle}-prefs/{key}` and are
-//  best-effort fire-and-forget: a failed PUT costs the user a
-//  remembered preference, never playback. Reads never happen here —
-//  the server folds saved prefs into `WatchDetail.effective_*` /
-//  `FileVersion.effectiveAudioTrackIndex`, which the detail page and
-//  player already consume.
+//  best-effort: a failed PUT costs the user a remembered preference,
+//  never playback. These explicit writes are the only way a pick
+//  persists; automatic selections never call them. The server folds
+//  saved prefs into `WatchDetail.effective_*` /
+//  `FileVersion.effectiveAudioTrackIndex`; `SiloAPI.watchDetail` passes
+//  `settlePendingWrites` first so a read right after a pick (Next Up,
+//  the detail page) neither races the write nor loses it.
 //
 
 import Foundation
@@ -157,15 +159,18 @@ enum TrackSelectionPersistence {
     // pick made under one profile never lands on another. Writes for the same
     // kind and key run one at a time in dispatch order, so a pick followed by
     // "Auto" cannot be overtaken by the earlier PUT and leave a stale
-    // override. The writes are `natural_idempotent`, but a failed or
-    // unanswered write is logged and dropped rather than retried: the next
-    // explicit pick sends a fresh one.
+    // override; a write still queued when a newer one arrives is skipped,
+    // because the newer one names the state the viewer wants. The writes are
+    // `natural_idempotent`, but a failed or unanswered write is logged and
+    // not retried: the next explicit pick sends a fresh one. Until then reads
+    // under the same owner carry it (see `settlePendingWrites`).
 
     @discardableResult
     static func saveAudio(prefKey: String, request: AudioPrefRequest,
                           client: APIv2Client = SiloAPI.shared.apiV2Client,
                           tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("audio pref save", kind: .audio, prefKey: prefKey, tokenStore: tokenStore) { auth in
+        dispatch("audio pref save", kind: .audio, prefKey: prefKey, intent: .audio(request),
+                 tokenStore: tokenStore) { auth in
             try await client.writeTrackPreference(kind: .audio, seriesId: prefKey, body: request, auth: auth)
         }
     }
@@ -174,7 +179,8 @@ enum TrackSelectionPersistence {
     static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest,
                              client: APIv2Client = SiloAPI.shared.apiV2Client,
                              tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("subtitle pref save", kind: .subtitle, prefKey: prefKey, tokenStore: tokenStore) { auth in
+        dispatch("subtitle pref save", kind: .subtitle, prefKey: prefKey, intent: .subtitle(request),
+                 tokenStore: tokenStore) { auth in
             try await client.writeTrackPreference(kind: .subtitle, seriesId: prefKey, body: request, auth: auth)
         }
     }
@@ -186,7 +192,8 @@ enum TrackSelectionPersistence {
     static func clearAudio(prefKey: String,
                            client: APIv2Client = SiloAPI.shared.apiV2Client,
                            tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("audio pref clear", kind: .audio, prefKey: prefKey, tokenStore: tokenStore) { auth in
+        dispatch("audio pref clear", kind: .audio, prefKey: prefKey, intent: .cleared,
+                 tokenStore: tokenStore) { auth in
             try await client.deleteTrackPreference(kind: .audio, seriesId: prefKey, auth: auth)
         }
     }
@@ -195,27 +202,34 @@ enum TrackSelectionPersistence {
     static func clearSubtitle(prefKey: String,
                               client: APIv2Client = SiloAPI.shared.apiV2Client,
                               tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("subtitle pref clear", kind: .subtitle, prefKey: prefKey, tokenStore: tokenStore) { auth in
+        dispatch("subtitle pref clear", kind: .subtitle, prefKey: prefKey, intent: .cleared,
+                 tokenStore: tokenStore) { auth in
             try await client.deleteTrackPreference(kind: .subtitle, seriesId: prefKey, auth: auth)
         }
     }
 
-    private static let writeOrder = WriteOrder()
+    private static let pendingWrites = PendingWrites()
 
     private static func dispatch(
         _ action: String,
         kind: TrackPreferenceKind,
         prefKey: String,
+        intent: Intent,
         tokenStore: TokenStore,
         operation: @escaping @Sendable (CapturedOrdinaryRequestAuth) async throws -> Void
     ) -> Task<Void, Never> {
-        writeOrder.enqueue("\(kind.rawValue)/\(prefKey)") { previous in
+        let pending = pendingWrites
+        return pending.enqueue(.init(kind: kind, prefKey: prefKey), intent: intent) { write, previous in
             let auth = await tokenStore.captureOrdinaryRequestAuth()
+            pending.bind(write, owner: auth)
             await previous?.value
+            guard pending.isLatest(write) else { return }
             do {
                 guard let auth else { throw HTTPError.requestIdentityChanged }
                 try await operation(auth)
+                pending.finish(write, stored: true)
             } catch {
+                pending.finish(write, stored: false)
                 logger.warning(
                     "\(action, privacy: .public) failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
                 )
@@ -223,38 +237,243 @@ enum TrackSelectionPersistence {
         }
     }
 
-    /// Chains the writes for one kind and key: each write starts only after
-    /// the one dispatched before it has finished, whatever its outcome.
-    /// Callers dispatch synchronously, so dispatch order is pick order.
-    private final class WriteOrder: Sendable {
+    // MARK: - Pending-write barrier
+
+    /// What the newest write for one kind and key asks the server to store.
+    enum Intent: Sendable {
+        case audio(AudioPrefRequest)
+        case subtitle(SubtitlePrefRequest)
+        /// "Auto": remove the series override.
+        case cleared
+    }
+
+    /// How long a read waits for in-flight writes to its key before it goes
+    /// ahead and carries their intent instead.
+    static let pendingWriteWait: Duration = .milliseconds(2500)
+
+    /// The writes a read of `prefKey` could not see stored.
+    struct Settlement: Sendable {
+        /// Some write was in flight when the read asked, so a response
+        /// fetched before this call may predate it.
+        let waited: Bool
+        /// Latest intent per kind that has not been stored: still in flight
+        /// after the wait, or failed.
+        let unsettled: [TrackPreferenceKind: Intent]
+
+        /// `detail` with every unsettled pick folded into the server-resolved
+        /// fields that detail selectors and playback start read. An unsettled
+        /// "Auto" cannot be folded in: the profile defaults it falls back to
+        /// are only resolved by the server.
+        func applied(to detail: WatchDetail) -> WatchDetail {
+            var detail = detail
+            if case .subtitle(let request)? = unsettled[.subtitle] {
+                if !request.subtitleLanguage.isEmpty {
+                    detail.effectiveSubtitleLanguage = request.subtitleLanguage
+                }
+                detail.effectiveSubtitleMode = request.subtitleMode
+                detail.effectiveSubtitleTrackSignature = request.trackSignature
+            }
+            if case .audio(let request)? = unsettled[.audio] {
+                detail.versions = detail.versions.map { version in
+                    guard let ordinal = TrackSelectionPersistence.audioOrdinal(matching: request, in: version) else {
+                        return version
+                    }
+                    var version = version
+                    version.effectiveAudioTrackIndex = ordinal
+                    version.effectiveAudioLanguage = version.audioTracks?[ordinal].language ?? version.effectiveAudioLanguage
+                    return version
+                }
+            }
+            return detail
+        }
+    }
+
+    /// The barrier a read of server track state passes before it trusts the
+    /// response. Waits up to `timeout` for this owner's in-flight writes to
+    /// `prefKey`, then reports what is still not stored so the caller can
+    /// carry it rather than block on it. Writes under another owner are
+    /// neither waited on nor reported.
+    static func settlePendingWrites(
+        prefKey: String,
+        owner: CapturedOrdinaryRequestAuth,
+        timeout: Duration = pendingWriteWait
+    ) async -> Settlement {
+        let inFlight = pendingWrites.inFlightTasks(prefKey: prefKey, owner: owner)
+        if !inFlight.isEmpty {
+            await waitForAll(inFlight, timeout: timeout)
+        }
+        let unsettled = pendingWrites.unsettled(prefKey: prefKey, owner: owner)
+        for kind in unsettled.keys {
+            logger.info(
+                "carrying unsaved \(kind.rawValue, privacy: .public) pref key=\(prefKey, privacy: .public)"
+            )
+        }
+        return Settlement(waited: !inFlight.isEmpty, unsettled: unsettled)
+    }
+
+    /// The ordinal in `version.audioTracks` an audio pick names on another
+    /// file of the series: the track matching its signature, then its own
+    /// ordinal when that track has the pick's language, then the first track
+    /// in that language. Nil leaves the server's choice alone.
+    static func audioOrdinal(matching request: AudioPrefRequest, in version: FileVersion) -> Int? {
+        let tracks = version.audioTracks ?? []
+        func same(_ lhs: String?, _ rhs: String?) -> Bool {
+            let normalize = { (value: String?) in value?.trimmingCharacters(in: .whitespaces).lowercased() ?? "" }
+            return normalize(lhs) == normalize(rhs)
+        }
+        if let signature = request.trackSignature,
+           let ordinal = tracks.firstIndex(where: { track in
+               same(track.language, signature.language)
+                   && (signature.codec == nil || same(track.codec, signature.codec))
+                   && (signature.channels == nil || track.channels == signature.channels)
+                   && (signature.title == nil || same(track.title, signature.title)
+                       || same(track.embeddedTitle, signature.title))
+           }) {
+            return ordinal
+        }
+        let language = request.audioLanguage
+        if tracks.indices.contains(request.audioTrackIndex),
+           language.isEmpty || same(tracks[request.audioTrackIndex].language, language) {
+            return request.audioTrackIndex
+        }
+        guard !language.isEmpty else { return nil }
+        return tracks.firstIndex { same($0.language, language) }
+    }
+
+    /// Returns when every task has finished or `timeout` has passed,
+    /// whichever comes first. The tasks keep running either way.
+    private static func waitForAll(_ tasks: [Task<Void, Never>], timeout: Duration) async {
+        let once = ResumeOnce()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let timer = Task {
+                try? await Task.sleep(for: timeout)
+                if once.claim() { continuation.resume() }
+            }
+            Task {
+                for task in tasks { await task.value }
+                timer.cancel()
+                if once.claim() { continuation.resume() }
+            }
+        }
+    }
+
+    private final class ResumeOnce: Sendable {
+        private let claimed = Mutex(false)
+        func claim() -> Bool {
+            claimed.withLock { claimed in
+                defer { claimed = true }
+                return !claimed
+            }
+        }
+    }
+
+    /// The latest write per kind and key, in dispatch order. Each write
+    /// starts only after the one dispatched before it has finished, whatever
+    /// its outcome; callers dispatch synchronously, so dispatch order is pick
+    /// order. An entry is bound to the owner its write captured and leaves
+    /// once that write is stored. A failed one stays until a newer write for
+    /// the key replaces it, so later reads under that owner still carry it.
+    ///
+    /// Slots are not split by owner: a newer write can only come from the
+    /// owner acting now, and a queued write for an earlier owner would be
+    /// refused by the owner fence anyway.
+    private final class PendingWrites: Sendable {
+        struct Slot: Hashable {
+            let kind: TrackPreferenceKind
+            let prefKey: String
+        }
+
+        struct WriteID: Sendable {
+            let slot: Slot
+            let id: UInt64
+        }
+
+        private struct Entry {
+            let id: UInt64
+            let intent: Intent
+            let task: Task<Void, Never>
+            /// Nil until the write has captured its owner; `.some(nil)` when
+            /// nobody was signed in.
+            var owner: CapturedOrdinaryRequestAuth??
+            var failed = false
+
+            func belongs(to reader: CapturedOrdinaryRequestAuth, includingUnbound: Bool) -> Bool {
+                switch owner {
+                case .none: includingUnbound
+                case .some(.none): false
+                case .some(.some(let owner)): owner.sameCredentialIdentity(as: reader)
+                }
+            }
+        }
+
         private struct State {
-            var tails: [String: (id: UInt64, task: Task<Void, Never>)] = [:]
+            var latest: [Slot: Entry] = [:]
             var nextId: UInt64 = 0
         }
 
         private let state = Mutex(State())
 
         func enqueue(
-            _ key: String,
-            _ body: @escaping @Sendable (_ previous: Task<Void, Never>?) async -> Void
+            _ slot: Slot,
+            intent: Intent,
+            _ body: @escaping @Sendable (_ write: WriteID, _ previous: Task<Void, Never>?) async -> Void
         ) -> Task<Void, Never> {
             state.withLock { state -> Task<Void, Never> in
                 state.nextId += 1
-                let id = state.nextId
-                let previous = state.tails[key]?.task
-                let task = Task {
-                    await body(previous)
-                    self.finish(key, id)
-                }
-                state.tails[key] = (id, task)
+                let write = WriteID(slot: slot, id: state.nextId)
+                let previous = state.latest[slot]?.task
+                let task = Task { await body(write, previous) }
+                state.latest[slot] = Entry(id: write.id, intent: intent, task: task)
                 return task
             }
         }
 
-        private func finish(_ key: String, _ id: UInt64) {
+        func bind(_ write: WriteID, owner: CapturedOrdinaryRequestAuth?) {
             state.withLock { state in
-                if state.tails[key]?.id == id { state.tails[key] = nil }
+                guard state.latest[write.slot]?.id == write.id else { return }
+                state.latest[write.slot]?.owner = .some(owner)
             }
+        }
+
+        func isLatest(_ write: WriteID) -> Bool {
+            state.withLock { $0.latest[write.slot]?.id == write.id }
+        }
+
+        func finish(_ write: WriteID, stored: Bool) {
+            state.withLock { state in
+                guard state.latest[write.slot]?.id == write.id else { return }
+                if stored {
+                    state.latest[write.slot] = nil
+                } else {
+                    state.latest[write.slot]?.failed = true
+                }
+            }
+        }
+
+        func inFlightTasks(prefKey: String, owner: CapturedOrdinaryRequestAuth) -> [Task<Void, Never>] {
+            state.withLock { state in
+                Self.slots(prefKey).compactMap { slot in
+                    guard let entry = state.latest[slot], !entry.failed,
+                          entry.belongs(to: owner, includingUnbound: true) else { return nil }
+                    return entry.task
+                }
+            }
+        }
+
+        func unsettled(prefKey: String, owner: CapturedOrdinaryRequestAuth) -> [TrackPreferenceKind: Intent] {
+            state.withLock { state in
+                var result: [TrackPreferenceKind: Intent] = [:]
+                for slot in Self.slots(prefKey) {
+                    guard let entry = state.latest[slot],
+                          entry.belongs(to: owner, includingUnbound: false) else { continue }
+                    result[slot.kind] = entry.intent
+                }
+                return result
+            }
+        }
+
+        private static func slots(_ prefKey: String) -> [Slot] {
+            [Slot(kind: .audio, prefKey: prefKey), Slot(kind: .subtitle, prefKey: prefKey)]
         }
     }
 }
