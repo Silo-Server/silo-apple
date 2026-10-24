@@ -30,6 +30,15 @@ enum DiagLog {
         DiagnosticsRedactor.resetSensitiveHostsForTesting()
     }
 
+    /// Applies the URL, address, email, and credential rules every log line
+    /// gets to text that did not come through the log, such as the free-text
+    /// fields of a MetricKit payload. Unlike a log line it is never cut:
+    /// a cut can split an identifier or a quoted value so that no later rule
+    /// matches the rest. Returns nil for text too long to redact whole.
+    static func redactFreeText(_ value: String) -> String? {
+        DiagnosticsRedactor.sanitizeWhole(value)
+    }
+
     static func d(_ category: Category, _ tag: String, _ message: String, _ attrs: [String: DiagLogAttributeValue] = [:]) {
         append(level: .debug, category: category, tag: tag, message: message, attrs: attrs)
     }
@@ -367,6 +376,23 @@ private enum DiagnosticsRedactor {
     }
 
     static func sanitize(_ value: String, maxLength: Int) -> String {
+        trim(redactFilesystemAndMedia(in: redactNetworkAndCredentials(in: value)), maxLength: maxLength)
+    }
+
+    /// `sanitize` without a length cut. Returns nil when the text, before or
+    /// after its URLs and credentials are redacted, is longer than the
+    /// filesystem and media rules read, because they would drop the rest
+    /// mid-word. Checking first also bounds the URL pass, which copies the
+    /// whole string for each URL it rewrites.
+    static func sanitizeWhole(_ value: String) -> String? {
+        let limit = MediaLogRedactor.workingInputLimit
+        guard value.count <= limit else { return nil }
+        let redacted = redactNetworkAndCredentials(in: value)
+        guard redacted.count <= limit else { return nil }
+        return redactFilesystemAndMedia(in: redacted)
+    }
+
+    private static func redactNetworkAndCredentials(in value: String) -> String {
         let urlNormalized = replaceURLs(in: value)
         var result = replaceMatches(in: urlNormalized, regex: authorizationRegex, replacement: "Authorization: [redacted]")
         result = replaceMatches(in: result, regex: cookieRegex, replacement: "Cookie: [redacted]")
@@ -375,15 +401,17 @@ private enum DiagnosticsRedactor {
         result = replaceMatches(in: result, regex: emailRegex, replacement: "[redacted_email]")
         result = replaceSecretKeyValues(in: result)
         result = replaceMatches(in: result, regex: tokenWrapperRegex, replacement: "$1(…[redacted])")
-        result = replaceKnownHosts(in: result)
-        // Filesystem paths and bare media filenames are the one class this
-        // layer never covered on its own, and every DiagTrace, breadcrumb, and
-        // early-boot line lands here. Compose the OSLog boundary's rules for
-        // that class only: its URL and credential rules are deliberately not
-        // reused, because hashing the host while keeping the API path is what
-        // makes these lines correlatable.
-        result = houseStyleMarkers(MediaLogRedactor.sanitizeFilesystemAndMediaIdentity(result))
-        return trim(result, maxLength: maxLength)
+        return replaceKnownHosts(in: result)
+    }
+
+    // Filesystem paths and bare media filenames are the one class this
+    // layer never covered on its own, and every DiagTrace, breadcrumb, and
+    // early-boot line lands here. Compose the OSLog boundary's rules for
+    // that class only: its URL and credential rules are deliberately not
+    // reused, because hashing the host while keeping the API path is what
+    // makes these lines correlatable.
+    private static func redactFilesystemAndMedia(in value: String) -> String {
+        houseStyleMarkers(MediaLogRedactor.sanitizeFilesystemAndMediaIdentity(value))
     }
 
     static func normalizedURLString(_ url: URL) -> String {
