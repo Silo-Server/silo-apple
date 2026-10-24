@@ -625,6 +625,44 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertEqual(label, "Auto: English · SRT", "preview must name the embedded track playback starts on; got \(label)")
     }
 
+    func testAutoSubtitlePreviewNamesTheDefaultTrackPlaybackStarts() {
+        // With no language or saved pick in Auto mode the resolver leaves the
+        // choice to the file, and playback starts its default track. The
+        // preview must name that track, not promise "Off".
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "subtitle_tracks": [
+              { "index": 2, "codec": "subrip", "language": "eng" },
+              { "index": 3, "codec": "subrip", "language": "fre", "default": true }
+            ]
+          }
+        ]
+        """)
+        let label = DetailPlaybackFormatting.subtitleValueLabel(
+            version: versions[0],
+            selectedSubtitleTrackIndex: nil,
+            autoContext: .init(preferredLanguage: nil, mode: "auto", audioLanguage: "ja")
+        )
+        let intent = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: versions[0],
+            explicitFFmpegIndex: nil,
+            explicitCombinedIndex: nil,
+            preferredLanguage: nil,
+            mode: .auto,
+            showForced: false,
+            trackSignature: nil,
+            currentAudioLanguage: "ja"
+        )
+        XCTAssertEqual(intent.ffmpegStreamIndex, 3)
+        let french = DetailPlaybackFormatting.subtitleValueLabel(
+            version: versions[0],
+            selectedSubtitleTrackIndex: 3
+        )
+        XCTAssertEqual(label, "Auto: \(french)")
+    }
+
     func testAutoSubtitlePreviewKeepsEmbeddedStreamZero() {
         // The wire omits a zero stream index. An embedded row with no index is
         // FFmpeg stream 0, which the plan can select, so the preview must

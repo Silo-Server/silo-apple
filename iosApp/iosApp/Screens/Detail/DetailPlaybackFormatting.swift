@@ -353,8 +353,10 @@ enum DetailPlaybackFormatting {
     /// Preview the track the player's `SubtitleAutoResolver` would auto-select
     /// for the "Auto" (no explicit override) case, applied to the detail
     /// payload's `SubtitleTrack` list. Returns nil when Auto resolves to no
-    /// subtitles (mode off with no forced track in the audio language, no
-    /// preference, or audio already in the preferred language). Runs the
+    /// subtitles (mode off with no forced track in the audio language, or
+    /// audio already in the preferred language). When the resolver leaves the
+    /// choice to the file, this names the default or forced track playback
+    /// starts on. Runs the
     /// resolver itself, with the inputs the detail page can supply, over the
     /// candidates the start request resolves (V3 combined order, externals
     /// first), so the preview names the track playback starts on. The returned ordinal stays the catalog offset so "Track N" labels
@@ -378,8 +380,19 @@ enum DetailPlaybackFormatting {
             currentAudioLanguage: context.audioLanguage,
             sourceContainer: version?.container
         ))
-        guard case .select(let pick) = resolution,
-              let position = candidates.firstIndex(of: pick) else {
+        let pick: PlayerTrack?
+        switch resolution {
+        case .select(let track):
+            pick = track
+        case .disable:
+            pick = nil
+        case .noChange:
+            // Playback then starts the file's default track, else a forced
+            // one (`PlaybackSessionBridge.initialProtocolV3SubtitleIntent`).
+            pick = candidates.first(where: { $0.isDefault })
+                ?? candidates.first(where: { $0.isForced })
+        }
+        guard let pick, let position = candidates.firstIndex(of: pick) else {
             return nil
         }
         return (ordered[position].element, ordered[position].offset)

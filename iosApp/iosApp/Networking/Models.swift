@@ -503,7 +503,8 @@ struct ItemDetail: Codable {
     /// "user picked a track" marker for selector seeding. The language comes
     /// only from the watch detail, which also sets the flag.
     var effectiveSubtitleLanguage: String? = nil
-    var hasWatchDetailSubtitlePolicy = false
+    /// Optional so payloads cached or written without it still decode.
+    var hasWatchDetailSubtitlePolicy: Bool? = nil
     let effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
     let effectiveSubtitleTrackSignature: SubtitleTrackSignature?
