@@ -1883,6 +1883,7 @@ actor HTTPClient {
         "/api/v2/auth/device/start", "/api/v2/auth/device/poll",
         "/api/v2/auth/device/capability", "/api/v2/auth/oauth/complete",
         "/api/v2/system/setup", "/api/v2/auth/signup",
+        "/api/v2/password-resets",
     ]
 
     /// Whether a 401 may refresh the session and re-send the request. Reads

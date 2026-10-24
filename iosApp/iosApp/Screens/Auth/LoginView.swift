@@ -14,6 +14,7 @@ struct LoginView: View {
     @State private var expandsPasswordForm = false
     /// Counts failed password attempts so the fields shake on each one.
     @State private var passwordFailures = 0
+    @State private var showsForgotPassword = false
     @FocusState private var focusedField: Field?
     @Environment(\.scenePhase) private var scenePhase
 
@@ -67,6 +68,9 @@ struct LoginView: View {
                 Button(SignInOptions.buttonTitle(for: provider)) { signIn(with: provider, choosingAccount: true) }
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .navigationDestination(isPresented: $showsForgotPassword) {
+            ForgotPasswordView(login: viewModel.username)
         }
         .marqueeTransparentNavigation()
     }
@@ -298,6 +302,21 @@ struct LoginView: View {
                     .padding(.leading, 4)
             }
 
+            if viewModel.offersPasswordReset {
+                Button("Forgot password?") {
+                    focusedField = nil
+                    showsForgotPassword = true
+                }
+                .buttonStyle(.marqueePressable)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.6))
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 10)
+                .padding(.trailing, 4)
+                .disabled(viewModel.isBusy)
+                .accessibilityIdentifier("login.forgotPassword")
+            }
+
             Button(action: signIn) {
                 Text(viewModel.isLoading ? "Signing in…" : "Sign in")
             }
@@ -311,7 +330,7 @@ struct LoginView: View {
     @ViewBuilder
     private var footnote: some View {
         if let options = viewModel.signInOptions {
-            if options.browserProviders.isEmpty && options.showsPasswordForm {
+            if options.browserProviders.isEmpty && options.showsPasswordForm && !viewModel.offersPasswordReset {
                 footnoteText("Forgot your password? Ask the server admin.")
             } else if !options.browserProviders.isEmpty && !options.showsPasswordForm {
                 footnoteText("Password sign-in is turned off on this server.")
