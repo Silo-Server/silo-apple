@@ -12,6 +12,19 @@ import Foundation
 /// tracks are resolved to an exact stream id before loading; the existing
 /// post-open reconciliation remains a fallback for partial metadata.
 enum AetherInitialAudioPreference {
+    /// The languages Aether starts from for `prepared`: the selected track's,
+    /// else the version's effective audio language (a download's stored
+    /// series preference), else the profile's.
+    static func languages(for prepared: PreparedPlayback, profileLanguage: String) -> [String] {
+        let effective = prepared.selectedVersion.effectiveAudioLanguage?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return languages(
+            selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
+            tracks: prepared.selectedVersion.audioTracks ?? [],
+            fallbackLanguage: effective.isEmpty ? profileLanguage : effective
+        )
+    }
+
     static func languages(
         selectedOrdinal: Int?,
         tracks: [AudioTrack],

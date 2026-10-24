@@ -254,23 +254,67 @@ struct APIv2Client: Sendable {
     /// acting profile's remembered track for one series (or movie) id. The
     /// operation is `natural_idempotent` and answers 204; the body schema is
     /// closed, so `body` encodes snake_case with nil members omitted.
+    @discardableResult
     func writeTrackPreference<Body: Encodable>(kind: TrackPreferenceKind, seriesId: String, body: Body,
-                                              auth: CapturedOrdinaryRequestAuth) async throws {
+                                              auth: CapturedOrdinaryRequestAuth) async throws -> Date? {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "PUT",
-                                        body: encoder.encode(body), auth: auth)
+        return try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "PUT",
+                                               body: encoder.encode(body), auth: auth)
     }
 
     /// `deleteAudioPreference` / `deleteSubtitlePreference`. The server
     /// answers 204 whether or not a preference existed.
+    @discardableResult
     func deleteTrackPreference(kind: TrackPreferenceKind, seriesId: String,
-                               auth: CapturedOrdinaryRequestAuth) async throws {
+                               auth: CapturedOrdinaryRequestAuth) async throws -> Date? {
         try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "DELETE", body: nil, auth: auth)
     }
 
+    /// `getAudioPreference` / `getSubtitlePreference`: the stored row, nil
+    /// on the 404 for a series with none, and the response's `Date` header,
+    /// which places the row's `updated_at` against this device's clock.
+    func readTrackPreference<Body: TrackPrefBody>(_: Body.Type, seriesId: String,
+                                                  auth: CapturedOrdinaryRequestAuth) async throws
+        -> (row: TrackPrefRow<Body>?, serverDate: Date?) {
+        try await gate()
+        guard !seriesId.isEmpty,
+              let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let path = "/api/v2/\(Body.kind.rawValue)-prefs/\(try catalogPathSegment(seriesId))"
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: path, quietStatuses: [404],
+                    requestIdentity: identity, acceptedStatuses: [404], expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        let serverDate = raw.header("date").flatMap(Self.httpDate.date(from:))
+        if raw.statusCode == 404 {
+            let problem = try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: raw.data)
+            guard problem.status == 404, problem.identifier == "not_found" else {
+                throw APIv2Error.problem(problem)
+            }
+            return (nil, serverDate)
+        }
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return (try HTTPClient.makeJSONDecoder().decode(TrackPrefRow<Body>.self, from: raw.data), serverDate)
+    }
+
+    private static let httpDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        return formatter
+    }()
+
+    /// Answers the response's `Date` header, a server time the change is
+    /// stamped no later than.
     private func mutateTrackPreference(kind: TrackPreferenceKind, seriesId: String, method: String, body: Data?,
-                                       auth: CapturedOrdinaryRequestAuth) async throws {
+                                       auth: CapturedOrdinaryRequestAuth) async throws -> Date? {
         try await gate()
         guard !seriesId.isEmpty,
               let profile = auth.profileId, !profile.isEmpty,
@@ -286,6 +330,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 204 else { throw APIv2Error.httpStatus(response.statusCode) }
+        return response.header("date").flatMap(Self.httpDate.date(from:))
     }
 
     /// Whether `auth` still describes the current owner. Goes through the one

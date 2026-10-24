@@ -967,6 +967,9 @@ struct DownloadStoreFile: Codable, Sendable {
     /// values belong to. Nil in stores written before the continuum → silo
     /// rename moved transfers to a new session.
     var taskSessionIdentifier: String? = nil
+    /// Per-series track preferences for downloaded playback, and the picks
+    /// made during it that have not reached the server.
+    var trackPrefs: TrackPrefsStore? = nil
 
     static let currentVersion = 1
 

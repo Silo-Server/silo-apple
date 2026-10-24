@@ -1112,6 +1112,8 @@ class PlayerViewModel {
     private struct OfflinePlaybackContext {
         let mediaItemId: String
         let isServerPreparedFile: Bool
+        let owner: DownloadManager.OfflinePlaybackOwner
+        let trackPrefKey: String?
     }
     private var offlinePlaybackContext: OfflinePlaybackContext?
     /// Mirrors the server's default watched threshold (90%) so an offline
@@ -4151,9 +4153,7 @@ class PlayerViewModel {
         abandonedLoadPlayIntent = nil
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
         let preferredAudio = AetherInitialAudioPreference.languages(
-            selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
-            tracks: prepared.selectedVersion.audioTracks ?? [],
-            fallbackLanguage: settings.audioLanguage
+            for: prepared, profileLanguage: settings.audioLanguage
         )
         // The explicit Buffer Ahead choice wins; `automatic` has no count of
         // its own and keeps the historical mapping from the synced Seek Cache
@@ -5742,7 +5742,9 @@ class PlayerViewModel {
                     )
                     preparedOfflineContext = OfflinePlaybackContext(
                         mediaItemId: offline.mediaItemId,
-                        isServerPreparedFile: offline.isServerPreparedFile
+                        isServerPreparedFile: offline.isServerPreparedFile,
+                        owner: offline.owner,
+                        trackPrefKey: offline.trackPrefKey
                     )
                     preparedOfflineArtworkURL = offline.posterFileURL
                     prepared = offline.prepared
@@ -5832,6 +5834,7 @@ class PlayerViewModel {
                 // already published its cached poster above and has no
                 // server to resolve a next episode against.
                 if request.offlineDownloadId == nil {
+                    DownloadManager.shared.noteEffectiveSubtitlePrefs(prepared.watchDetail)
                     self.pushNowPlayingArtwork(contentId: prepared.watchDetail.contentId)
                     // The panel still describes the successor being loaded.
                     // Fetch its following episode only once it has a picture,
@@ -7850,10 +7853,10 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
-    /// Server pref key for remembering explicit track picks: series id
-    /// for episodes (one choice covers the series), the item's own
-    /// content id for movies. Nil during offline playback — there is no
-    /// server to remember anything for.
+    /// Server pref key for remembering explicit track picks while
+    /// streaming: series id for episodes (one choice covers the series),
+    /// the item's own content id for movies. Downloaded playback records
+    /// its picks through `DownloadManager` instead.
     private var trackPrefPersistKey: String? {
         guard offlinePlaybackContext == nil, let detail = currentWatchDetail else { return nil }
         return TrackSelectionPersistence.prefKey(
@@ -7868,8 +7871,18 @@ class PlayerViewModel {
     /// switching never calls). Prefers the server's probed metadata for
     /// the signature so re-resolution gets an exact match.
     private func persistAudioSelection(_ track: PlayerTrack) {
-        guard let key = trackPrefPersistKey else { return }
         let ordinal = audioSelectionIndex(for: track)
+        if let offline = offlinePlaybackContext {
+            guard let key = offline.trackPrefKey,
+                  let request = OfflineTrackPrefs.audioRequest(
+                      track: track, ordinal: ordinal, shownTrackCount: audioTracks.count,
+                      manifestTracks: currentSelectedVersion?.audioTracks,
+                      sourceOrdinals: !offline.isServerPreparedFile
+                  ) else { return }
+            DownloadManager.shared.recordTrackPref(request, key: key, in: \.audio, owner: offline.owner)
+            return
+        }
+        guard let key = trackPrefPersistKey else { return }
         let request: AudioPrefRequest
         if let ordinal,
            let version = currentSelectedVersion,
@@ -7883,11 +7896,18 @@ class PlayerViewModel {
 
     /// Best-effort write of an explicit subtitle pick (or explicit
     /// "Off" when `track` is nil). Live AI translation tracks are
-    /// session-scoped and never persisted.
+    /// session-scoped and never persisted. The player has no forced-subtitle
+    /// control, so the series row keeps whatever override it has.
     private func persistSubtitleSelection(_ track: PlayerTrack?) {
-        guard let key = trackPrefPersistKey else { return }
         if let track, SubtitleTrackIdSpace.isAILive(track.trackId) { return }
-        let showForced = currentWatchDetail?.effectiveShowForcedSubtitles
+        if let offline = offlinePlaybackContext {
+            guard let key = offline.trackPrefKey else { return }
+            let request = track.map(OfflineTrackPrefs.subtitleRequest(track:))
+                ?? TrackSelectionPersistence.subtitleOffRequest(showForced: nil)
+            DownloadManager.shared.recordTrackPref(request, key: key, in: \.subtitle, owner: offline.owner)
+            return
+        }
+        guard let key = trackPrefPersistKey else { return }
         let request: SubtitlePrefRequest
         if let track {
             if !track.isExternal,
@@ -7896,14 +7916,14 @@ class PlayerViewModel {
                let fromDetail = TrackSelectionPersistence.subtitleRequest(
                    version: version,
                    ffIndex: ffIndex,
-                   showForced: showForced
+                   showForced: nil
                ) {
                 request = fromDetail
             } else {
-                request = TrackSelectionPersistence.subtitleRequest(track: track, showForced: showForced)
+                request = TrackSelectionPersistence.subtitleRequest(track: track, showForced: nil)
             }
         } else {
-            request = TrackSelectionPersistence.subtitleOffRequest(showForced: showForced)
+            request = TrackSelectionPersistence.subtitleOffRequest(showForced: nil)
         }
         TrackSelectionPersistence.saveSubtitle(prefKey: key, request: request)
     }
