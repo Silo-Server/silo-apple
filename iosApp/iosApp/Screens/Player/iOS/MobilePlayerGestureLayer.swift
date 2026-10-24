@@ -206,14 +206,15 @@ struct MobilePlayerGestureLayer: View {
 
                 // Up increases.
                 let fraction = min(max(baseline - Double(value.translation.height / Self.gaugeFullSwing), 0), 1)
-                showGauge(adjustment, fraction: fraction)
-                gaugeHapticStep = Self.gaugeHapticStep(for: fraction)
                 switch adjustment {
                 case .brightness:
                     PlayerScreenBrightness.shared.apply(fraction)
                 case .volume:
-                    systemVolume.apply(Float(fraction))
+                    // No feedback for a level the route won't take.
+                    guard systemVolume.apply(Float(fraction)) else { return }
                 }
+                showGauge(adjustment, fraction: fraction)
+                gaugeHapticStep = Self.gaugeHapticStep(for: fraction)
             }
             .onEnded { _ in
                 if activeAdjustment != nil {

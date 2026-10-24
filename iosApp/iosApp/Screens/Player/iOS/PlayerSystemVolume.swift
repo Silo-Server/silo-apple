@@ -22,9 +22,12 @@ final class PlayerSystemVolume {
         AVAudioSession.sharedInstance().outputVolume
     }
 
-    func apply(_ level: Float) {
-        guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first else { return }
+    /// Returns false when there is no slider to move, such as on an output
+    /// route without volume control, so the caller can skip its feedback.
+    func apply(_ level: Float) -> Bool {
+        guard let slider = volumeView.subviews.compactMap({ $0 as? UISlider }).first else { return false }
         slider.value = min(max(level, 0), 1)
+        return true
     }
 
     func startObserving() {
