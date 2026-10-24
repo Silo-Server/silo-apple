@@ -102,6 +102,40 @@ final class TrackPreferencesV2Tests: XCTestCase {
         XCTAssertEqual(Set(signature.keys), ["source", "language", "codec", "label", "forced", "hearing_impaired"])
     }
 
+    func testReadDecodesTheStoredRowAndTheServerClock() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        stub.reply(200, """
+        {"profile_id":"profile-one","series_id":"series-9","audio_track_index":1,"audio_language":"ja",
+         "track_signature":{"language":"ja","title":"Japanese","embedded_title":"JPN 5.1","codec":"eac3",
+         "layout":"5.1","channels":6,"default":true},"updated_at":"2026-10-24T10:00:00.250Z"}
+        """, headers: ["Date": "Sat, 24 Oct 2026 10:05:00 GMT"])
+
+        let read = try await api.readTrackPreference(AudioPrefRequest.self, seriesId: "series-9", auth: auth)
+
+        XCTAssertEqual(stub.requests.last?.method, "GET")
+        XCTAssertEqual(stub.requests.last?.path, "/api/v2/audio-prefs/series-9")
+        let row = try XCTUnwrap(read.row)
+        XCTAssertEqual(row.body.audioTrackIndex, 1)
+        XCTAssertEqual(row.body.trackSignature?.embeddedTitle, "JPN 5.1")
+        XCTAssertEqual(row.body.trackSignature?.isDefault, true)
+        XCTAssertEqual(row.updatedAt, Date(timeIntervalSince1970: 1_792_836_000.25))
+        XCTAssertEqual(read.serverDate, Date(timeIntervalSince1970: 1_792_836_300))
+    }
+
+    func testReadOfASeriesWithNoRowIsNil() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(captured)
+        stub.reply(404, #"{"type":"https://siloserver.org/problems/not_found","title":"Not Found","status":404,"detail":"No preference."}"#)
+
+        let read = try await api.readTrackPreference(SubtitlePrefRequest.self, seriesId: "series-9", auth: auth)
+
+        XCTAssertEqual(stub.requests.last?.path, "/api/v2/subtitle-prefs/series-9")
+        XCTAssertNil(read.row)
+    }
+
     func testClearSendsDeleteWithAnEncodedKey() async throws {
         let (api, tokens) = try await client()
 

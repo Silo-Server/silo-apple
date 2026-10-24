@@ -16,7 +16,8 @@
 //  remembered preference, never playback. Reads never happen here —
 //  the server folds saved prefs into `WatchDetail.effective_*` /
 //  `FileVersion.effectiveAudioTrackIndex`, which the detail page and
-//  player already consume.
+//  player already consume. Downloaded playback reads and queues its
+//  picks through `DownloadManager` (see `OfflineTrackPrefs.swift`).
 //
 
 import Foundation
@@ -31,8 +32,7 @@ enum TrackSelectionPersistence {
     )
 
     /// Server pref key: the series id for episodes, the item's own
-    /// content id otherwise. Nil when neither is known (e.g. offline
-    /// playback with no server-backed identity).
+    /// content id otherwise. Nil when neither is known.
     static func prefKey(seriesId: String?, contentId: String?) -> String? {
         if let seriesId, !seriesId.isEmpty { return seriesId }
         if let contentId, !contentId.isEmpty { return contentId }
@@ -160,13 +160,16 @@ enum TrackSelectionPersistence {
     // "Auto" cannot be overtaken by the earlier PUT and leave a stale
     // override. The writes are `natural_idempotent`, but a failed or
     // unanswered write is logged and dropped rather than retried: the next
-    // explicit pick sends a fresh one.
+    // explicit pick sends a fresh one. Picks made during downloaded playback
+    // are queued by `DownloadManager` instead, which sends them through
+    // `ordered` so they keep the same order.
 
     @discardableResult
     static func saveAudio(prefKey: String, request: AudioPrefRequest,
                           client: APIv2Client = SiloAPI.shared.apiV2Client,
                           tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("audio pref save", kind: .audio, prefKey: prefKey, tokenStore: tokenStore) { auth in
+        noteWrite(request, prefKey: prefKey, in: \.audio)
+        return dispatch("audio pref save", kind: .audio, prefKey: prefKey, tokenStore: tokenStore) { auth in
             try await client.writeTrackPreference(kind: .audio, seriesId: prefKey, body: request, auth: auth)
         }
     }
@@ -175,7 +178,8 @@ enum TrackSelectionPersistence {
     static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest,
                              client: APIv2Client = SiloAPI.shared.apiV2Client,
                              tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("subtitle pref save", kind: .subtitle, prefKey: prefKey, tokenStore: tokenStore) { auth in
+        noteWrite(request, prefKey: prefKey, in: \.subtitle)
+        return dispatch("subtitle pref save", kind: .subtitle, prefKey: prefKey, tokenStore: tokenStore) { auth in
             try await client.writeTrackPreference(kind: .subtitle, seriesId: prefKey, body: request, auth: auth)
         }
     }
@@ -187,7 +191,8 @@ enum TrackSelectionPersistence {
     static func clearAudio(prefKey: String,
                            client: APIv2Client = SiloAPI.shared.apiV2Client,
                            tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("audio pref clear", kind: .audio, prefKey: prefKey, tokenStore: tokenStore) { auth in
+        noteWrite(AudioPrefRequest?.none, prefKey: prefKey, in: \.audio)
+        return dispatch("audio pref clear", kind: .audio, prefKey: prefKey, tokenStore: tokenStore) { auth in
             try await client.deleteTrackPreference(kind: .audio, seriesId: prefKey, auth: auth)
         }
     }
@@ -196,9 +201,25 @@ enum TrackSelectionPersistence {
     static func clearSubtitle(prefKey: String,
                               client: APIv2Client = SiloAPI.shared.apiV2Client,
                               tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("subtitle pref clear", kind: .subtitle, prefKey: prefKey, tokenStore: tokenStore) { auth in
+        noteWrite(SubtitlePrefRequest?.none, prefKey: prefKey, in: \.subtitle)
+        return dispatch("subtitle pref clear", kind: .subtitle, prefKey: prefKey, tokenStore: tokenStore) { auth in
             try await client.deleteTrackPreference(kind: .subtitle, seriesId: prefKey, auth: auth)
         }
+    }
+
+    /// Runs `operation` in turn with the writes for the same kind and key.
+    static func ordered(kind: TrackPreferenceKind, prefKey: String,
+                        _ operation: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
+        writeOrder.enqueue("\(kind.rawValue)/\(prefKey)") { previous in
+            await previous?.value
+            await operation()
+        }
+    }
+
+    /// Keeps the store downloaded playback reads in step with this write.
+    private static func noteWrite<Body: TrackPrefBody>(_ body: Body?, prefKey: String,
+                                                       in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>) {
+        Task { @MainActor in DownloadManager.shared.noteTrackPrefWrite(body, key: prefKey, in: ledger) }
     }
 
     private static let writeOrder = WriteOrder()

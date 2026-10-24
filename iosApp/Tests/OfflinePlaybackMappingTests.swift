@@ -135,6 +135,33 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         XCTAssertEqual(session.audioTrackIndex, 0)
     }
 
+    // MARK: - Series track preference
+
+    func testSeriesTrackPreferenceSeedsDownloadedPlayback() throws {
+        let tracks = """
+        [{"index": 0, "language": "eng", "codec": "eac3", "default": true},
+         {"index": 1, "language": "jpn", "codec": "eac3"}]
+        """
+        let signature = SubtitleTrackSignature(language: "en", forced: false, hearingImpaired: true)
+        let playback = OfflinePlaybackBuilder.makePreparedPlayback(
+            leafContentId: "leaf",
+            manifest: try manifest(audioTracksJSON: tracks, selectedAudioTrackIndex: 0),
+            mediaURL: URL(fileURLWithPath: "/tmp/media.mkv"),
+            subtitleURLs: [],
+            subtitlePrefs: EffectiveSubtitlePrefs(language: "en", mode: "always", showForced: false, signature: signature),
+            audioPref: AudioPrefRequest(audioTrackIndex: 1, audioLanguage: "ja", trackSignature: nil),
+            resumePosition: nil
+        )
+
+        XCTAssertEqual(playback.session.audioTrackIndex, 1, "the series' Japanese pick replaces the download-time track")
+        // The player's subtitle resolver reads these as it does a streamed
+        // item's `effective_subtitle_*`.
+        XCTAssertEqual(playback.watchDetail.effectiveSubtitleLanguage, "en")
+        XCTAssertEqual(playback.watchDetail.effectiveSubtitleMode, "always")
+        XCTAssertEqual(playback.watchDetail.effectiveShowForcedSubtitles, false)
+        XCTAssertEqual(playback.watchDetail.effectiveSubtitleTrackSignature, signature)
+    }
+
     // MARK: - Bitrate
 
     func testBitrateIsDerivedFromTheDeliveredFile() throws {

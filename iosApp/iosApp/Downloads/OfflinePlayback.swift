@@ -35,22 +35,30 @@ struct OfflinePreparedPlayback {
     /// The file is an MP4 the server remuxed or transcoded, not the source.
     /// Its container metadata needs `OfflinePreparedTrackInventory`.
     let isServerPreparedFile: Bool
+    /// The download and scope this playback opened, for recording picks.
+    let owner: DownloadManager.OfflinePlaybackOwner
+    /// Series-pref key picks are saved under; nil when the series is unknown.
+    let trackPrefKey: String?
 }
 
 /// Synthesizes the same `PreparedPlayback` the online path produces, but
 /// from a stored offline manifest + local media file, so AetherEngine loads
 /// with no server session. Aether probes the delivered file itself; the
 /// manifest remains authoritative for catalog metadata, chapters,
-/// intro/credits markers, track preferences, and downloaded subtitles.
+/// intro/credits markers and downloaded subtitles. Track choices start from
+/// the series preference streaming uses (`OfflineTrackPrefs`).
 enum OfflinePlaybackBuilder {
     /// Near-end resume points restart from zero, mirroring the session
     /// bridge's suppression window so offline resume feels identical to
     /// the online path.
     private static let nearEndResumeSuppressionSeconds: Double = 5
+    /// How long opening a download waits for the series track preferences.
+    private static let trackPrefReadLimit: Duration = .seconds(2)
 
     /// Assemble a fully local `OfflinePreparedPlayback` for a completed
-    /// download. Reads only the on-device record/manifest/media — never
-    /// the network — so it works in airplane mode.
+    /// download from the on-device record/manifest/media, so it works in
+    /// airplane mode. The only request is a short read of the series track
+    /// preferences when the server is reachable.
     @MainActor
     static func loadPreparedPlayback(
         downloadId: String,
@@ -61,9 +69,20 @@ enum OfflinePlaybackBuilder {
         guard let record = manager.record(id: downloadId), record.isPlayableOffline else {
             throw OfflinePlaybackError.downloadNotFound
         }
+        guard let owner = manager.offlinePlaybackOwner(for: record) else {
+            throw OfflinePlaybackError.downloadNotFound
+        }
         guard let manifest = await manager.loadManifest(for: record) else {
             throw OfflinePlaybackError.manifestUnavailable
         }
+        let trackPrefKey = OfflineTrackPrefs.prefKey(manifest: manifest, recordSeriesId: record.seriesId)
+        if let trackPrefKey {
+            await manager.refreshTrackPrefs(key: trackPrefKey, owner: owner, limit: trackPrefReadLimit)
+        }
+        guard manager.isCurrentOfflinePlayback(owner) else {
+            throw OfflinePlaybackError.downloadNotFound
+        }
+        let trackPrefs = manager.trackPrefs
         guard let mediaURL = manager.absoluteMediaURL(for: record),
               FileManager.default.fileExists(atPath: mediaURL.path) else {
             throw OfflinePlaybackError.mediaFileMissing
@@ -75,6 +94,8 @@ enum OfflinePlaybackBuilder {
             manifest: manifest,
             mediaURL: mediaURL,
             subtitleURLs: localSubtitleUrls(record: record, manifest: manifest, manager: manager),
+            subtitlePrefs: trackPrefKey.flatMap(trackPrefs.subtitlePrefs(forKey:)),
+            audioPref: trackPrefKey.flatMap(trackPrefs.audioPref(forKey:)),
             resumePosition: resolvedResumePosition(
                 startFromBeginning: startFromBeginning,
                 explicitPosition: resumePositionOverride,
@@ -88,7 +109,9 @@ enum OfflinePlaybackBuilder {
             downloadId: record.id,
             mediaItemId: leafId,
             posterFileURL: posterFileURL,
-            isServerPreparedFile: manifest.isServerPreparedFile
+            isServerPreparedFile: manifest.isServerPreparedFile,
+            owner: owner,
+            trackPrefKey: trackPrefKey
         )
     }
 
@@ -206,6 +229,8 @@ enum OfflinePlaybackBuilder {
         manifest: OfflineManifest,
         mediaURL: URL,
         subtitleURLs: [SubtitleUrl],
+        subtitlePrefs: EffectiveSubtitlePrefs? = nil,
+        audioPref: AudioPrefRequest? = nil,
         resumePosition: Double?
     ) -> PreparedPlayback {
         // The player's models still key files by integer id. A download plays
@@ -237,7 +262,8 @@ enum OfflinePlaybackBuilder {
         let watchDetail = WatchDetail(
             offlineLeafContentId: leafContentId,
             manifest: manifest,
-            version: version
+            version: version,
+            subtitlePrefs: subtitlePrefs
         )
 
         let session = PlaybackSessionResponse(
@@ -249,7 +275,12 @@ enum OfflinePlaybackBuilder {
             position: resumePosition ?? 0,
             isPaused: false,
             streamUrl: mediaURL.absoluteString,
-            audioTrackIndex: manifest.selectedAudioTrackIndex,
+            audioTrackIndex: OfflineTrackPrefs.audioOrdinal(
+                tracks: manifest.audioTracks ?? [],
+                pref: audioPref,
+                sourceOrdinals: !manifest.isServerPreparedFile,
+                fallback: manifest.selectedAudioTrackIndex
+            ),
             durationSeconds: manifest.durationSeconds,
             timelineOffsetSeconds: 0,
             subtitleUrls: subtitleURLs.isEmpty ? nil : subtitleURLs,
@@ -267,8 +298,10 @@ enum OfflinePlaybackBuilder {
 extension WatchDetail {
     /// Build a `WatchDetail` from a stored offline manifest. `userData` is
     /// nil — the offline resume point is carried on the synthetic session's
-    /// `position` instead.
-    init(offlineLeafContentId: String, manifest: OfflineManifest, version: FileVersion) {
+    /// `position` instead. `subtitlePrefs` stands in for the server's
+    /// `effective_subtitle_*`, so the player's resolver picks the track.
+    init(offlineLeafContentId: String, manifest: OfflineManifest, version: FileVersion,
+         subtitlePrefs: EffectiveSubtitlePrefs? = nil) {
         contentId = offlineLeafContentId
         type = manifest.type
         title = manifest.title
@@ -284,9 +317,9 @@ extension WatchDetail {
         seriesTitle = manifest.seriesTitle
         seasonNumber = manifest.seasonNumber
         episodeNumber = manifest.episodeNumber
-        effectiveSubtitleLanguage = nil
-        effectiveSubtitleMode = nil
-        effectiveShowForcedSubtitles = nil
-        effectiveSubtitleTrackSignature = nil
+        effectiveSubtitleLanguage = subtitlePrefs?.language
+        effectiveSubtitleMode = subtitlePrefs?.mode
+        effectiveShowForcedSubtitles = subtitlePrefs?.showForced
+        effectiveSubtitleTrackSignature = subtitlePrefs?.signature
     }
 }
