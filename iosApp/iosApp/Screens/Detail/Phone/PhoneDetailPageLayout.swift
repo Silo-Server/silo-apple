@@ -3,22 +3,27 @@ import SwiftUI
 
 /// The scrolling body of a movie or series detail page. Usually one column:
 /// the hero, then the sections below it. A wide, short page (see
-/// `PhoneDetailHeroLayout.usesSplitLayout`) instead holds the hero still in
-/// the leading half and scrolls the sections in the trailing half, the way
-/// Apple Music lays out an album on the iPhone Duo's open display.
+/// `PhoneDetailHeroLayout.usesSplitLayout`) instead spreads the artwork
+/// across the whole window, holds the title and actions still in a glass
+/// sidebar over its leading side, and scrolls the sections beside it. The
+/// sections start low enough to leave the top of the artwork clear, and the
+/// artwork blurs and darkens behind them as they scroll up.
 ///
 /// Place it in a `PhoneDetailPageSurface` that keeps the side safe area: the
 /// split reads those insets, and the single column extends back under them.
-struct PhoneDetailPageLayout<Column: View, PaneHero: View, PaneContent: View>: View {
+struct PhoneDetailPageLayout<Column: View, PaneArtwork: View, PaneSidebar: View, PaneContent: View>: View {
     let scrollState: PhoneDetailScrollState
     /// The single-column page.
     @ViewBuilder let column: () -> Column
-    /// The hero for the leading pane, given the pane's height.
-    @ViewBuilder let paneHero: (_ height: CGFloat) -> PaneHero
-    /// Everything below the hero, for the trailing pane.
+    /// The artwork spread behind the split page.
+    @ViewBuilder let paneArtwork: () -> PaneArtwork
+    /// The title, facts, actions, and playback selectors for the sidebar.
+    @ViewBuilder let paneSidebar: () -> PaneSidebar
+    /// Everything else, for the content pane beside the sidebar.
     @ViewBuilder let paneContent: () -> PaneContent
 
     @State private var page = PageGeometry()
+    @State private var contentScroll = ContentPaneScroll()
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.detailPageTopSafeArea) private var topSafeArea
 
@@ -77,26 +82,138 @@ struct PhoneDetailPageLayout<Column: View, PaneHero: View, PaneContent: View>: V
     #endif
 
     private var split: some View {
-        HStack(spacing: 0) {
-            paneHero(page.size.height)
-                .frame(width: page.heroPaneWidth)
-                .frame(maxHeight: .infinity)
+        let artworkHeight = page.artworkHeight
+        // The sections begin where the artwork starts fading out.
+        let contentTop = max(topSafeArea + Self.contentPaneTopInset, artworkHeight * 0.66)
+        return HStack(alignment: .top, spacing: 0) {
+            ScrollView(.vertical, showsIndicators: false) {
+                paneSidebar()
+                    // The selectors sit low in the sidebar, with room above them.
+                    .environment(\.detailSelectorPopover, .sidebar)
+                    .padding(.horizontal, 18)
+                    // Clears the Close button, which moves into the sidebar.
+                    .padding(.top, topSafeArea + Self.contentPaneTopInset)
+                    .padding(.bottom, 20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(width: page.sidebarWidth)
+            .clipShape(.rect(cornerRadius: 32, style: .continuous))
+            .siloGlass(in: .rect(cornerRadius: 32, style: .continuous), tint: .black.opacity(0.32))
+            .padding(PhoneDetailHeroLayout.splitSidebarMargin)
 
             ScrollView(.vertical, showsIndicators: false) {
                 paneContent()
+                    .padding(.top, contentTop)
             }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top
+            } action: { _, offset in
+                contentScroll.update(offset: offset, fadeDistance: contentTop)
+            }
+            // Unclipped, so the rails inside draw past the pane too; text
+            // keeps to the pane's padding.
+            .scrollClipDisabled()
             .detailScrollDismissal()
-            // A full-window page on iPad runs under the status bar, and the
-            // floating buttons sit below it.
-            .padding(.top, topSafeArea + Self.contentPaneTopInset)
-            // iPhone Duo reserves about 20pt either side of the fold. With
-            // the sections' own 16pt inset this keeps every control clear of
-            // it, matching the hero pane's 28pt margin on the other side.
-            .padding(.leading, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            // Rails scroll within the pane rather than across the hero.
-            .clipped()
+            // Rails stop at the sidebar but run on under the status column
+            // to the window's trailing edge.
+            .mask(alignment: .leading) {
+                Rectangle().padding(.trailing, -page.trailingInset)
+            }
         }
+        // Wider than the page, so it sits in the background where it can't
+        // widen the layout.
+        .background(alignment: .topLeading) {
+            SplitPageArtwork(
+                scroll: contentScroll,
+                size: CGSize(width: page.windowWidth, height: artworkHeight),
+                shift: page.artworkShift,
+                artwork: paneArtwork
+            )
+            .offset(x: -page.leadingInset)
+        }
+    }
+}
+
+/// How far the content pane has scrolled over the artwork, from 0 at rest to
+/// 1 once the sections cover where they started. Only `SplitPageArtwork`
+/// reads it, so scrolling redraws the artwork's effects and nothing else.
+@Observable
+@MainActor
+private final class ContentPaneScroll {
+    private(set) var progress: CGFloat = 0
+
+    func update(offset: CGFloat, fadeDistance: CGFloat) {
+        let progress = min(max(offset / max(fadeDistance, 1), 0), 1)
+        // Small steps are invisible; the endpoints always land exactly.
+        guard progress != self.progress,
+              abs(progress - self.progress) >= 0.01 || progress == 0 || progress == 1 else { return }
+        self.progress = progress
+    }
+}
+
+/// The split page's artwork, faded into the page surface at its lower edge,
+/// and blurred and darkened as the content pane scrolls over it so the
+/// sections stay readable.
+private struct SplitPageArtwork<Artwork: View>: View {
+    let scroll: ContentPaneScroll
+    let size: CGSize
+    /// How far right of the window's center the artwork's center sits.
+    let shift: CGFloat
+    let artwork: () -> Artwork
+
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        let progress = scroll.progress
+        artwork()
+            .frame(width: size.width, height: size.height)
+            .clipped()
+            // Shifted right, the artwork leaves the window's leading edge
+            // bare; it fades in from there, behind the sidebar.
+            .mask {
+                LinearGradient(
+                    colors: [.clear, .black],
+                    startPoint: .leading,
+                    endPoint: UnitPoint(x: shift / size.width, y: 0.5)
+                )
+            }
+            .padding(.leading, shift)
+            .frame(width: size.width, height: size.height, alignment: .leading)
+            .clipped()
+            .overlay {
+                // Darkens the top for the time, connection status, and
+                // floating buttons, and the lower part for the sections that
+                // start over it, so both read over bright artwork.
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.3), location: 0),
+                        .init(color: .clear, location: 0.3),
+                        .init(color: .clear, location: 0.4),
+                        .init(color: .black.opacity(0.62), location: 0.62),
+                        .init(color: .black.opacity(0.8), location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+            .blur(radius: reduceTransparency ? 0 : 28 * progress)
+            .overlay(Color.black.opacity((reduceTransparency ? 0.7 : 0.45) * progress))
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: 0.6),
+                        .init(color: .black.opacity(0.55), location: 0.8),
+                        .init(color: .clear, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
@@ -104,6 +221,20 @@ extension EnvironmentValues {
     /// The window's top safe area, set by `PhoneDetailPageSurface` for pages
     /// that extend beneath it.
     @Entry var detailPageTopSafeArea: CGFloat = 0
+
+    /// How the playback selectors' popover attaches and how big it is.
+    @Entry var detailSelectorPopover: DetailSelectorPopover = .standard
+}
+
+/// How the playback selectors' popover appears on a regular-size screen:
+/// below them as a titled list in a single column, and above them as a bare
+/// list of options in the split page's sidebar.
+struct DetailSelectorPopover {
+    let arrowEdge: Edge
+    let isCompact: Bool
+
+    static let standard = DetailSelectorPopover(arrowEdge: .top, isCompact: false)
+    static let sidebar = DetailSelectorPopover(arrowEdge: .bottom, isCompact: true)
 }
 
 private struct PageGeometry: Equatable {
@@ -111,12 +242,28 @@ private struct PageGeometry: Equatable {
     var leadingInset: CGFloat = 0
     var trailingInset: CGFloat = 0
 
-    /// The hero pane ends at the middle of the window, insets included, so
-    /// on iPhone Duo the panes meet at the fold even though the content pane
-    /// loses the status-bar column on its trailing side.
-    var heroPaneWidth: CGFloat {
-        let windowMidpoint = (leadingInset + size.width + trailingInset) / 2
-        return min(max(windowMidpoint - leadingInset, 0), size.width)
+    /// The whole window, side insets included: the artwork runs under the
+    /// iPhone Duo's status column too.
+    var windowWidth: CGFloat { leadingInset + size.width + trailingInset }
+
+    /// A 16:9 backdrop across the window, kept short enough that the
+    /// sections below it start on screen.
+    var artworkHeight: CGFloat {
+        min(windowWidth * 9 / 16, size.height * 0.85)
+    }
+
+    /// Moves the artwork's center from the window's center to the middle of
+    /// what the sidebar leaves uncovered, between it and the trailing edge.
+    var artworkShift: CGFloat {
+        let sidebarEnd = leadingInset + sidebarWidth + 2 * PhoneDetailHeroLayout.splitSidebarMargin
+        // (sidebarEnd + windowWidth) / 2, less the window's own center.
+        return sidebarEnd / 2
+    }
+
+    /// Wide enough for the five labelled actions in a row. On iPhone Duo the
+    /// sidebar ends well before the fold.
+    var sidebarWidth: CGFloat {
+        min(max(size.width * 0.37, 340), 400)
     }
 }
 #endif

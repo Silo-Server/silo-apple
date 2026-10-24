@@ -101,6 +101,9 @@ struct PhoneDetailTopChrome: View {
     let onLeadingTap: () -> Void
     let trailingSystemName: String?
     let onTrailingTap: (() -> Void)?
+    /// Replaces the buttons' usual inset (18pt from the sides, 9pt from the
+    /// top) with one distance from both, to sit them in a split page's sidebar.
+    var cornerInset: CGFloat? = nil
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -152,8 +155,8 @@ struct PhoneDetailTopChrome: View {
                     trailingButton
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 9)
+            .padding(.horizontal, cornerInset ?? 18)
+            .padding(.top, cornerInset ?? 9)
         }
         #if os(iOS)
         .overlay(alignment: statusColumn?.edge == .leading ? .topLeading : .topTrailing) {
@@ -700,7 +703,8 @@ private struct ItemDetailPhoneContent: View {
             trailingSystemName: siloControl.remotePlaybackEngaged
                 ? "appletvremote.gen4.fill"
                 : "appletvremote.gen4",
-            onTrailingTap: handleRemoteControlTap
+            onTrailingTap: handleRemoteControlTap,
+            cornerInset: isSplitPage ? PhoneDetailHeroLayout.splitCloseButtonInset : nil
         )
     }
 

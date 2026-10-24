@@ -105,12 +105,20 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     belowFold
                 }
                 .padding(.bottom, 40)
-            } paneHero: { height in
-                hero(paneHeight: height)
+            } paneArtwork: {
+                hero(pane: .artwork)
+            } paneSidebar: {
+                VStack(spacing: 16) {
+                    hero(pane: .sidebar)
+                    playbackSelectors
+                }
             } paneContent: {
                 VStack(alignment: .leading, spacing: 32) {
-                    heroExtras
-                        .padding(.horizontal, SiloTheme.safePadding)
+                    VStack(spacing: 14) {
+                        hero(pane: .overview)
+                        belowOverview()
+                    }
+                    .padding(.horizontal, SiloTheme.safePadding)
                     belowFold
                 }
                 .padding(.bottom, 40)
@@ -178,7 +186,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     // MARK: - Hero
 
-    private func hero(paneHeight: CGFloat? = nil) -> some View {
+    private func hero(pane: PhoneDetailHeroPane? = nil) -> some View {
         PhoneDetailHero(
             title: detail.title,
             logoUrl: detail.logoUrl,
@@ -195,7 +203,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: true,
-            paneHeight: paneHeight,
+            pane: pane,
             actions: { actionStack },
             // Match MovieDetailContent exactly through the playback controls:
             // Play/actions, show overview and credits, translation affordance,
@@ -205,14 +213,19 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         )
     }
 
-    /// Under the overview in one column; atop the content pane in a split.
+    /// Under the overview in one column. A split page places the two parts
+    /// separately: selectors in the sidebar, the translation under the overview.
     private var heroExtras: some View {
         VStack(spacing: 14) {
             belowOverview()
-            playbackSelectorSlot
-                .opacity(isLoadingEpisodes || nextUpEpisode != nil ? 1 : 0)
-                .accessibilityHidden(!isLoadingEpisodes && nextUpEpisode == nil)
+            playbackSelectors
         }
+    }
+
+    private var playbackSelectors: some View {
+        playbackSelectorSlot
+            .opacity(isLoadingEpisodes || nextUpEpisode != nil ? 1 : 0)
+            .accessibilityHidden(!isLoadingEpisodes && nextUpEpisode == nil)
     }
 
     @ViewBuilder

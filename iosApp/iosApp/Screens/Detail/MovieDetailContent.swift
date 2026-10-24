@@ -65,12 +65,22 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     belowFold
                 }
                 .padding(.bottom, 40)
-            } paneHero: { height in
-                hero(paneHeight: height)
+            } paneArtwork: {
+                hero(pane: .artwork)
+            } paneSidebar: {
+                VStack(spacing: 16) {
+                    hero(pane: .sidebar)
+                    if let effectiveVersion {
+                        playbackSelectors(for: effectiveVersion)
+                    }
+                }
             } paneContent: {
                 VStack(alignment: .leading, spacing: 32) {
-                    heroExtras
-                        .padding(.horizontal, SiloTheme.safePadding)
+                    VStack(spacing: 14) {
+                        hero(pane: .overview)
+                        belowOverview()
+                    }
+                    .padding(.horizontal, SiloTheme.safePadding)
                     belowFold
                 }
                 .padding(.bottom, 40)
@@ -100,7 +110,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     // MARK: - Hero
 
-    private func hero(paneHeight: CGFloat? = nil) -> some View {
+    private func hero(pane: PhoneDetailHeroPane? = nil) -> some View {
         PhoneDetailHero(
             title: detail.title,
             logoUrl: detail.logoUrl,
@@ -117,13 +127,14 @@ struct MovieDetailContent<BelowOverview: View>: View {
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),
-            paneHeight: paneHeight,
+            pane: pane,
             actions: { actionStack },
             belowOverview: { heroExtras }
         )
     }
 
-    /// Under the overview in one column; atop the content pane in a split.
+    /// Under the overview in one column. A split page places the two parts
+    /// separately: selectors in the sidebar, the translation under the overview.
     private var heroExtras: some View {
         VStack(spacing: 14) {
             belowOverview()

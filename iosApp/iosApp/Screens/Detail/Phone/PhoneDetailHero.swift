@@ -302,6 +302,16 @@ private struct PhoneDetailParallaxArtwork: View {
     }
 }
 
+/// The parts of `PhoneDetailHero` a split page lays out separately.
+enum PhoneDetailHeroPane {
+    /// The artwork, spread behind the whole page.
+    case artwork
+    /// Title, facts, and actions, for the glass sidebar.
+    case sidebar
+    /// Overview and credits, at the top of the content pane.
+    case overview
+}
+
 /// Chooses between `PhoneDetailHero`'s compact and expanded compositions.
 /// Shared with the floating top chrome, which times its backing strip to the
 /// hero it sits over.
@@ -322,14 +332,23 @@ enum PhoneDetailHeroLayout {
         return horizontalSizeClass == .regular
     }
 
+    /// How far a split page's sidebar floats in from the window's edges.
+    static let splitSidebarMargin: CGFloat = 14
+
+    /// Where the Close button sits in a split page's sidebar: 10pt inside
+    /// both edges, so the 44pt button is concentric with the sidebar's 32pt
+    /// corner (22 + 10).
+    static let splitCloseButtonInset: CGFloat = splitSidebarMargin + 10
+
     /// Narrowest page that splits into a hero pane and a content pane.
     static let splitMinimumWidth: CGFloat = 760
 
     /// A wide, short page — the iPhone Duo's open inner display held in
     /// landscape — leaves a single hero-first column showing little more
-    /// than artwork. It splits instead: the hero holds the leading half and
-    /// the rest of the page scrolls in the trailing half, so the halves meet
-    /// at the fold, and an iPad window in landscape splits the same way.
+    /// than artwork. It splits instead: the artwork spans the window, the
+    /// title and actions hold still in a sidebar, and the rest of the page
+    /// scrolls beside it (see `PhoneDetailPageLayout`). An iPad window in
+    /// landscape splits the same way.
     /// Taller pages (portrait, including iPad page sheets) keep one column,
     /// and so do compact-height ones: an iPhone turned to landscape for the
     /// player also rotates the pages beneath it, which must not re-lay out.
@@ -372,10 +391,10 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let overlayData: OverlayData?
     var enablesArtworkParallax = false
     var artworkStyle: PhoneDetailArtworkStyle = .backdrop
-    /// Set when the hero fills the leading pane of a split page (see
-    /// `PhoneDetailHeroLayout.usesSplitLayout`); `belowOverview` then moves to
-    /// the content pane and is not drawn here.
-    var paneHeight: CGFloat? = nil
+    /// Set when the hero supplies one part of a split page (see
+    /// `PhoneDetailHeroLayout.usesSplitLayout`). `belowOverview` is not drawn
+    /// in any part; the page places it in the content pane.
+    var pane: PhoneDetailHeroPane? = nil
     @ViewBuilder let actions: () -> Actions
     @ViewBuilder let belowOverview: () -> BelowOverview
 
@@ -396,8 +415,12 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             #if os(macOS)
             macHeader
             #else
-            if let paneHeight {
-                paneHeader(height: paneHeight)
+            if let pane {
+                switch pane {
+                case .artwork: paneArtwork
+                case .sidebar: paneSidebar
+                case .overview: paneOverview
+                }
             } else if usesExpandedLayout {
                 expandedHeader
             } else {
@@ -502,67 +525,35 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         min(max(compactArtworkHeight * 0.24, 104), 138)
     }
 
-    // MARK: - Split page hero pane
+    // MARK: - Split page parts
 
-    /// The leading pane of a split page, composed like the compact hero:
-    /// artwork fills the pane and the title, facts, actions, and overview sit
-    /// over its lower part. The pane scrolls only when that block outgrows it
-    /// (large Dynamic Type); otherwise it holds still beside the content pane.
-    private func paneHeader(height: CGFloat) -> some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 16) {
-                // Smaller than the compact logo: the pane is a landscape
-                // display's full height, about 670pt, and shares it with
-                // the facts, actions, and overview.
-                titleBlock(textAlignment: .center, logoHeight: 100)
-                metadataBlock(alignment: .center, textAlignment: .center, isCompact: true)
-                actions()
-                    .padding(.top, 2)
-                overviewBlock
-                creditBlock(alignment: .leading)
-            }
-            .padding(.horizontal, 28)
-            // Keeps the top of the artwork clear when the text block is tall
-            // enough to scroll.
-            .padding(.top, height * 0.22)
-            .padding(.bottom, 24)
-            .frame(maxWidth: .infinity, minHeight: height, alignment: .bottom)
+    /// The sidebar of a split page: title, facts, and actions, aligned to
+    /// the leading edge of the glass panel the page draws around them.
+    private var paneSidebar: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Smaller than the compact logo: the sidebar is narrow and shares
+            // the display's height with the facts, actions, and selectors.
+            titleBlock(textAlignment: .leading, logoHeight: 84)
+            metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: true)
+            actions()
+                .padding(.top, 2)
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .background { paneArtwork }
     }
 
-    /// Darkened under the text, and faded at the trailing edge into the page
-    /// surface that continues behind the content pane.
+    /// The overview and credits, which open the content pane.
+    private var paneOverview: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            overviewBlock
+            creditBlock(alignment: .leading)
+        }
+    }
+
+    /// The artwork the page spreads across the whole window, from edge to
+    /// edge under the sidebar and the content pane.
     private var paneArtwork: some View {
-        ZStack {
-            artwork
-            LinearGradient(
-                stops: [
-                    .init(color: .black.opacity(0.34), location: 0),
-                    .init(color: .clear, location: 0.2),
-                    .init(color: .clear, location: 0.36),
-                    .init(color: .black.opacity(0.7), location: 0.64),
-                    .init(color: .black.opacity(0.88), location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        .clipped()
-        .mask {
-            LinearGradient(
-                stops: [
-                    .init(color: .black, location: 0),
-                    .init(color: .black, location: 0.8),
-                    .init(color: .clear, location: 1),
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        artwork
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     // MARK: - Expanded iPad layout
