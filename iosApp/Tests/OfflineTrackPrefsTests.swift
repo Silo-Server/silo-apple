@@ -82,6 +82,34 @@ final class OfflineTrackPrefsTests: XCTestCase {
         XCTAssertEqual(pick(commentaryIndex, [], fallback: nil), nil, "no inventory, no guess")
     }
 
+    func testFoldedTitlesThatMatchTwoTracksFallBackToTheSavedIndex() {
+        // Source titles both `English`; embedded titles `Commentary` and `Main`.
+        // The manifest folds each to `English`.
+        let source = [track("en", title: "English"), track("en", title: "English")]
+        let main = AudioPrefRequest(
+            audioTrackIndex: 1, audioLanguage: "en",
+            trackSignature: AudioTrackSignature(language: "en", title: "English", embeddedTitle: "Main",
+                                                codec: "eac3", layout: "5.1", channels: 6)
+        )
+        XCTAssertEqual(OfflineTrackPrefs.audioOrdinal(tracks: source, pref: main, sourceOrdinals: true, fallback: 0), 1)
+    }
+
+    func testUndecodableTracksAreSkippedLikeTheServer() {
+        let source = [track("en", codec: ""), track("en", codec: "aac", layout: "stereo", channels: 2),
+                      track("ja", codec: "unknown")]
+        func pick(_ pref: AudioPrefRequest, _ tracks: [OfflineAudioTrack] = source) -> Int? {
+            OfflineTrackPrefs.audioOrdinal(tracks: tracks, pref: pref, sourceOrdinals: true, fallback: 1)
+        }
+        XCTAssertEqual(pick(AudioPrefRequest(audioTrackIndex: 0, audioLanguage: "en", trackSignature: nil)), 1,
+                       "a saved index on a track with no codec moves to a playable one")
+        XCTAssertEqual(pick(AudioPrefRequest(audioTrackIndex: -1, audioLanguage: "ja", trackSignature: nil)), 1,
+                       "the only Japanese track can't be decoded, so the download-time track stays")
+
+        let unnamed = [track("en", codec: ""), track("ja", codec: "")]
+        XCTAssertEqual(pick(AudioPrefRequest(audioTrackIndex: 1, audioLanguage: "ja", trackSignature: nil), unnamed), 1,
+                       "when no track names a codec, none is ruled out")
+    }
+
     func testOfflineAudioPickNeverSendsAPreparedOrdinal() throws {
         let tracks = [AudioTrack(index: nil, codec: "aac", channels: 2, channelLayout: "stereo", bitrate: nil,
                                  sampleRate: nil, language: "ja", title: "Japanese", embeddedTitle: nil, isDefault: true)]

@@ -167,19 +167,34 @@ enum OfflineTrackPrefs {
     /// `sourceOrdinals` says the manifest list is the source file's, in
     /// order (an original download), so the saved index means the same
     /// track. A prepared file's list is filtered and reordered.
+    ///
+    /// Like the server, every step skips tracks no decoder can play while
+    /// the file has one that can.
     static func audioOrdinal(tracks: [OfflineAudioTrack], pref: AudioPrefRequest?,
                              sourceOrdinals: Bool, fallback: Int?) -> Int? {
         guard let pref, !tracks.isEmpty else { return fallback }
+        let decodable = tracks.indices.filter { isDecodable(tracks[$0]) }
+        let candidates = decodable.isEmpty ? Array(tracks.indices) : decodable
         if let signature = pref.trackSignature,
-           let match = bestLanguageTrack(tracks.indices.filter { matches(tracks[$0], signature) },
-                                         in: tracks, language: signature.language ?? "") {
+           let match = soleBestLanguageTrack(candidates.filter { matches(tracks[$0], signature) },
+                                             in: tracks, language: signature.language ?? "") {
             return match
         }
-        if sourceOrdinals, tracks.indices.contains(pref.audioTrackIndex),
+        if sourceOrdinals, candidates.contains(pref.audioTrackIndex),
            languageRank(tracks[pref.audioTrackIndex].language, pref.audioLanguage) != nil {
             return pref.audioTrackIndex
         }
-        return bestLanguageTrack(Array(tracks.indices), in: tracks, language: pref.audioLanguage) ?? fallback
+        return bestLanguageTrack(candidates, in: tracks, language: pref.audioLanguage) ?? fallback
+    }
+
+    /// The server's `AudioTrackDecodable` without the file-level codec,
+    /// which the manifest doesn't carry: ffprobe names no codec, or
+    /// `unknown`, for a stream FFmpeg can't decode. When no track names a
+    /// codec, every track fails here and the caller keeps them all, as the
+    /// server does when every track gets the same verdict.
+    private static func isDecodable(_ track: OfflineAudioTrack) -> Bool {
+        let codec = (track.codec ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        return !codec.isEmpty && codec != "unknown"
     }
 
     /// The manifest folds a track's title and embedded title into `title`,
@@ -193,6 +208,18 @@ enum OfflineTrackPrefs {
         return languageRank(track.language, signature.language ?? "") != nil
             && same(track.title, title) && same(track.codec, signature.codec)
             && same(track.layout, signature.layout) && (track.channels ?? 0) == (signature.channels ?? 0)
+    }
+
+    /// The best language match among signature matches, or nil when two
+    /// share the best rank. Folding the titles can make the saved track and
+    /// another one look the same (title `English`, embedded titles `Main`
+    /// and `Commentary`); the saved index or language decides then.
+    private static func soleBestLanguageTrack(_ candidates: [Int], in tracks: [OfflineAudioTrack],
+                                              language: String) -> Int? {
+        let ranked = candidates.compactMap { index in languageRank(tracks[index].language, language).map { (index, $0) } }
+        guard let best = ranked.map(\.1).min() else { return nil }
+        let top = ranked.filter { $0.1 == best }
+        return top.count == 1 ? top[0].0 : nil
     }
 
     private static func bestLanguageTrack(_ candidates: [Int], in tracks: [OfflineAudioTrack],

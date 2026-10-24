@@ -3885,19 +3885,26 @@ final class DownloadManager {
 
     /// Reads both series rows for `key` into the store, giving up after
     /// `limit` so a slow server doesn't hold up playback.
+    ///
+    /// The reads run unstructured: a token refresh they wait on ignores
+    /// cancellation, so a task group would outlast `limit`. A read that
+    /// lands later still updates the store, fenced by its scope owner.
     func refreshTrackPrefs(key: String, owner: OfflinePlaybackOwner, limit: Duration) async {
         guard ConnectionMonitor.shared.isServerReachable,
               let scopeOwner = await captureScopeOwner(expecting: owner.scope) else { return }
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                async let audio: Void = self.refreshTrackPref(key: key, in: \.audio, owner: scopeOwner)
-                async let subtitle: Void = self.refreshTrackPref(key: key, in: \.subtitle, owner: scopeOwner)
-                _ = await (audio, subtitle)
-            }
-            group.addTask { try? await Task.sleep(for: limit) }
-            await group.next()
-            group.cancelAll()
+        let (done, finish) = AsyncStream<Void>.makeStream()
+        Task {
+            async let audio: Void = self.refreshTrackPref(key: key, in: \.audio, owner: scopeOwner)
+            async let subtitle: Void = self.refreshTrackPref(key: key, in: \.subtitle, owner: scopeOwner)
+            _ = await (audio, subtitle)
+            finish.finish()
         }
+        let deadline = Task {
+            try? await Task.sleep(for: limit)
+            finish.finish()
+        }
+        for await _ in done {}
+        deadline.cancel()
     }
 
     private func refreshTrackPref<Body: TrackPrefBody>(key: String,
