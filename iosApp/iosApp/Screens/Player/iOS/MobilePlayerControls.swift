@@ -713,8 +713,9 @@ private struct MobilePlayerTimeline: View {
     /// or change scrub speed.
     @GestureState private var scrubDrag: MobileScrubDrag?
 
-    /// Space between the scrub bubble's bottom edge and the top of the bar.
-    /// The bubble grows upward from here when it adds a line.
+    /// Space between the scrub bubble's bottom edge and the top of the bar's
+    /// 20pt touch strip, 4pt above the visible bar while scrubbing. The
+    /// bubble grows upward from here when it adds a line.
     private static let scrubBubbleGap: CGFloat = 16
     /// Taller than the bubble ever gets; the bubble sits at its bottom.
     private static let scrubBubbleBoxHeight: CGFloat = 240
