@@ -75,21 +75,20 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
     /// The whole screen, or everything above the fold in the iPhone Duo's
     /// tabletop posture, less the sensor housing when `fitsSafeArea`.
     private func playingFrame(in proxy: GeometryProxy, insets: EdgeInsets) -> CGRect {
-        let screen = CGRect(origin: .zero, size: proxy.size)
+        var frame = CGRect(origin: .zero, size: proxy.size)
         #if os(iOS)
-        // Even insets keep the picture centred. The bottom inset is only the
-        // home indicator, which may overlay video.
-        let side = fitsSafeArea ? max(insets.leading, insets.trailing) : 0
         if let tabletopLayout {
             let videoMaxY = tabletopLayout.videoMaxY - proxy.frame(in: .global).minY
-            return CGRect(x: 0, y: 0, width: screen.width, height: min(max(videoMaxY, 0), screen.height))
-                .insetBy(dx: side, dy: 0)
+            frame.size.height = min(max(videoMaxY, 0), frame.height)
         }
-        let top = fitsSafeArea ? insets.top : 0
-        return screen.insetBy(dx: side, dy: top)
-        #else
-        return screen
+        guard fitsSafeArea else { return frame }
+        // Even side insets keep the picture centred. Only the top edge holds
+        // a sensor housing; the bottom inset is the home indicator, which may
+        // overlay video.
+        let side = max(insets.leading, insets.trailing)
+        frame = frame.inset(by: UIEdgeInsets(top: min(insets.top, frame.height), left: side, bottom: 0, right: side))
         #endif
+        return frame
     }
 }
 

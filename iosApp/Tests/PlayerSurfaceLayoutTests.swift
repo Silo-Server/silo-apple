@@ -334,23 +334,28 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
     }
 
     /// A scope-width video in Fit ran under the Dynamic Island because the
-    /// surface spanned the whole landscape screen.
-    func testFitKeepsThePictureClearOfTheSideSafeArea() async throws {
+    /// surface spanned the whole landscape screen. Only the sides and the top
+    /// edge hold the sensor housing; the home indicator may overlay video.
+    func testFitKeepsThePictureClearOfTheSensorHousing() async throws {
         let engine = try AetherEngine()
         let presentation = Presentation()
         let window = makeWindow(Harness(presentation: presentation, engine: engine)
-            .safeAreaPadding(EdgeInsets(top: 0, leading: 62, bottom: 21, trailing: 62)))
+            .safeAreaPadding(EdgeInsets(top: 30, leading: 62, bottom: 21, trailing: 62)))
         defer { window.isHidden = true; window.rootViewController = nil; engine.stop() }
         try await settle(window)
         let surface = try XCTUnwrap(surfaces(in: window).first)
         let fullWidth = surface.bounds.width
+        let fullFrame = surface.convert(surface.bounds, to: window)
         XCTAssertEqual(fullWidth, window.bounds.width, accuracy: 1)
 
         presentation.fitsSafeArea = true
         try await settle(window) { surface.bounds.width < fullWidth - 1 }
         XCTAssertTrue(surfaces(in: window).first === surface)
         XCTAssertLessThanOrEqual(surface.bounds.width, fullWidth - 124 + 1)
-        XCTAssertEqual(surface.convert(surface.bounds, to: window).midX, window.bounds.midX, accuracy: 1)
+        let fitFrame = surface.convert(surface.bounds, to: window)
+        XCTAssertEqual(fitFrame.midX, window.bounds.midX, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(fitFrame.minY, fullFrame.minY + 30 - 1)
+        XCTAssertEqual(fitFrame.maxY, fullFrame.maxY, accuracy: 1)
 
         presentation.fitsSafeArea = false
         try await settle(window) { abs(surface.bounds.width - fullWidth) < 1 }
