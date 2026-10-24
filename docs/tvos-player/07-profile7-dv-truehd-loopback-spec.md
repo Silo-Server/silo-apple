@@ -135,8 +135,8 @@ Atmos (or whose major sync says Atmos), Aether (upstream #731, after 7.47.0):
 This replaces 7.40's bed split, which built every output from the stream's 7.1 channel
 presentation and left the heights 0.4 to 1.1 dB low.
 
-DTS:X in its standard presentation keeps its four heights one to one in 7.1.4 (or
-9.1.6), decoded by FFmpegBuild's patched `dca` decoder (LibDTSX is gone since 7.44);
+DTS:X in its standard presentation keeps its four heights one to one in Silo's 7.1.4
+bed, decoded by FFmpegBuild's patched `dca` decoder (LibDTSX is gone since 7.44);
 presentations that carry objects are refused and play as 7.1.
 
 The audio is lossy (about 320 kbps per bed channel) instead of lossless 7.1. The
