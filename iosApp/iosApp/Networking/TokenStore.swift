@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 struct RefreshAccountIdentity: Hashable, Sendable {
     let serverId: String
@@ -46,6 +47,19 @@ extension CapturedOrdinaryRequestAuth {
             && credentialOwner == other.credentialOwner
             && profileId == other.profileId
             && profileToken == other.profileToken
+    }
+}
+
+/// Which credentials and profile requests would go out under, read without
+/// awaiting the token store. Work that must run under the owner it was
+/// started by records this when it starts and compares a later
+/// `CapturedOrdinaryRequestAuth` with `matches(_:)`.
+struct CredentialOwnerSnapshot: Equatable, Sendable {
+    let credentialGenerationID: UUID
+    let profileId: String?
+
+    func matches(_ auth: CapturedOrdinaryRequestAuth) -> Bool {
+        auth.account.credentialGenerationID == credentialGenerationID && auth.profileId == profileId
     }
 }
 
@@ -189,7 +203,9 @@ actor TokenStore {
     /// Process-local identity for the persistent credential slot currently
     /// selected by `activeServerId`. Refresh rotation leaves it unchanged;
     /// every session replacement or routing boundary installs a fresh epoch.
-    private var persistentCredentialGenerationID = UUID()
+    private var persistentCredentialGenerationID = UUID() {
+        didSet { publishOwnerMirror() }
+    }
     /// Process-local identity for one installation of the persistent profile
     /// ID and proof. Every activation, deactivation, or direct profile write
     /// replaces it, so selecting the same profile again with the same proof
@@ -197,7 +213,12 @@ actor TokenStore {
     private var profileSelectionGeneration = UUID()
     /// Playback-scoped credentials received by a TV through remote handoff.
     /// They are process-only and never written into normal per-server slots.
-    private var temporaryScope: TemporaryAuthScope?
+    private var temporaryScope: TemporaryAuthScope? {
+        didSet { publishOwnerMirror() }
+    }
+    /// Lock-protected copy of the owner fields `ownerSnapshot` needs beyond
+    /// the persisted profile selection, kept in step by the `didSet`s above.
+    private let ownerMirror: Mutex<(persistentGeneration: UUID, temporary: (generation: UUID, profileId: String)?)>
     /// A terminally rejected temporary generation remains installed until
     /// remote-playback teardown, but it must never submit its refresh token
     /// again or emit duplicate expiry notifications.
@@ -219,6 +240,9 @@ actor TokenStore {
         self.profileKeychain = keychain.withAudience(Self.profileCredentialAudience)
         self.defaults = defaults
         self.sessions = sessionPersistence ?? AccountSessionPersistence(keychain: keychain)
+        let generation = UUID()
+        self.persistentCredentialGenerationID = generation
+        self.ownerMirror = Mutex((persistentGeneration: generation, temporary: nil))
         #if os(iOS)
         self.displayTargets = ApplePushDisplayTargetStore(keychain: keychain.withAudience(Self.profileCredentialAudience))
         #endif
@@ -1358,11 +1382,25 @@ actor TokenStore {
         return defaults.string(forKey: profileIdDefaultsKey)
     }
 
-    /// The persistent profile selection, readable without awaiting the actor,
-    /// for work that must record which profile it was started under at the
-    /// moment it starts. It ignores a temporary remote-playback scope.
-    nonisolated var persistentProfileIdSnapshot: String? {
-        defaults.string(forKey: profileIdDefaultsKey)
+    /// The owner `captureOrdinaryRequestAuth` would report now, readable
+    /// without awaiting the actor: a remote-playback scope's credentials and
+    /// profile while one is installed, otherwise the persistent slot's
+    /// credential generation and the selected profile.
+    nonisolated var ownerSnapshot: CredentialOwnerSnapshot {
+        let mirror = ownerMirror.withLock { $0 }
+        if let temporary = mirror.temporary {
+            return CredentialOwnerSnapshot(credentialGenerationID: temporary.generation, profileId: temporary.profileId)
+        }
+        return CredentialOwnerSnapshot(
+            credentialGenerationID: mirror.persistentGeneration,
+            profileId: defaults.string(forKey: profileIdDefaultsKey)
+        )
+    }
+
+    private func publishOwnerMirror() {
+        let persistent = persistentCredentialGenerationID
+        let temporary = temporaryScope.map { (generation: $0.credentialGenerationID, profileId: $0.profileId) }
+        ownerMirror.withLock { $0 = (persistentGeneration: persistent, temporary: temporary) }
     }
 
     func setProfileId(_ profileId: String?) {

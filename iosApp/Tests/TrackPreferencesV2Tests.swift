@@ -339,21 +339,33 @@ final class TrackPreferencesV2Tests: XCTestCase {
         XCTAssertEqual(stub.requests.last?.header("X-Profile-Id"), "profile-two")
     }
 
-    func testWriteGoesOutOnlyUnderTheProfileThePickWasMadeUnder() {
-        func auth(_ profile: String, temporary: Bool = false) -> CapturedOrdinaryRequestAuth {
+    func testWriteGoesOutOnlyUnderTheOwnerThePickWasMadeUnder() async throws {
+        let persistent = UUID(), scopeA = UUID(), scopeB = UUID()
+        func auth(_ generation: UUID, _ profile: String, temporary: Bool = false) -> CapturedOrdinaryRequestAuth {
             CapturedOrdinaryRequestAuth(
-                account: RefreshAccountIdentity(serverId: "s", serverURL: "https://s.example", credentialGenerationID: UUID()),
+                account: RefreshAccountIdentity(serverId: "s", serverURL: "https://s.example", credentialGenerationID: generation),
                 credentialOwner: temporary ? .temporary : .persistentServer(serverId: "s"),
                 accessToken: "a", profileId: profile, profileToken: nil
             )
         }
-        XCTAssertNotNil(TrackSelectionPersistence.writeOwner(captured: auth("profile-one"), pickedProfile: "profile-one"))
-        XCTAssertNil(TrackSelectionPersistence.writeOwner(captured: auth("profile-two"), pickedProfile: "profile-one"),
-                     "a switch before the write's task ran must not send the pick as the next profile")
-        XCTAssertNotNil(TrackSelectionPersistence.writeOwner(captured: auth("remote", temporary: true),
-                                                             pickedProfile: "profile-one"),
-                        "a remote-playback scope carries its own profile")
-        XCTAssertNil(TrackSelectionPersistence.writeOwner(captured: nil, pickedProfile: "profile-one"))
+        let pickedOne = CredentialOwnerSnapshot(credentialGenerationID: persistent, profileId: "profile-one")
+        XCTAssertNotNil(TrackSelectionPersistence.writeOwner(captured: auth(persistent, "profile-one"), pickedBy: pickedOne))
+        XCTAssertNil(TrackSelectionPersistence.writeOwner(captured: auth(persistent, "profile-two"), pickedBy: pickedOne),
+                     "a profile switch before the write's task ran must not send the pick as the next profile")
+        let pickedInScopeA = CredentialOwnerSnapshot(credentialGenerationID: scopeA, profileId: "remote")
+        XCTAssertNotNil(TrackSelectionPersistence.writeOwner(captured: auth(scopeA, "remote", temporary: true),
+                                                             pickedBy: pickedInScopeA))
+        XCTAssertNil(TrackSelectionPersistence.writeOwner(captured: auth(scopeB, "remote", temporary: true),
+                                                          pickedBy: pickedInScopeA),
+                     "a pick made in one remote-playback scope never goes out under the next")
+        XCTAssertNil(TrackSelectionPersistence.writeOwner(captured: nil, pickedBy: pickedOne))
+
+        // The snapshot read without awaiting agrees with the captured owner.
+        let (_, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        XCTAssertTrue(tokens.ownerSnapshot.matches(try XCTUnwrap(captured)))
+        await tokens.setProfileId("profile-two")
+        XCTAssertFalse(tokens.ownerSnapshot.matches(try XCTUnwrap(captured)))
     }
 
     private static func watchDetail(seriesId: String) -> WatchDetail {

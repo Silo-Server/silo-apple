@@ -220,12 +220,12 @@ enum TrackSelectionPersistence {
         operation: @escaping @Sendable (CapturedOrdinaryRequestAuth) async throws -> Void
     ) -> Task<Void, Never> {
         let pending = pendingWrites
-        // The profile the pick was made under, read now rather than when the
-        // write's task first runs: a profile switch in between must not send
-        // the pick under the next profile's credentials.
-        let pickedProfile = tokenStore.persistentProfileIdSnapshot
-        return pending.enqueue(.init(kind: kind, prefKey: prefKey), profile: pickedProfile, intent: intent) { write, previous in
-            let owner = writeOwner(captured: await tokenStore.captureOrdinaryRequestAuth(), pickedProfile: pickedProfile)
+        // The owner the pick was made under, read now rather than when the
+        // write's task first runs: a profile switch or a new remote-playback
+        // scope in between must not send the pick under the next owner.
+        let pickedBy = tokenStore.ownerSnapshot
+        return pending.enqueue(.init(kind: kind, prefKey: prefKey), profile: pickedBy.profileId, intent: intent) { write, previous in
+            let owner = writeOwner(captured: await tokenStore.captureOrdinaryRequestAuth(), pickedBy: pickedBy)
             pending.bind(write, owner: owner)
             await previous?.value
             guard pending.isLatest(write) else { return }
@@ -243,16 +243,14 @@ enum TrackSelectionPersistence {
     }
 
     /// The owner a write goes out under: the one captured for it, provided
-    /// that is still the profile the pick was made under. A remote-playback
-    /// scope on tvOS carries its own profile, which the persistent selection
-    /// does not name, so a temporary owner is taken as captured.
+    /// it is exactly the owner the pick was made under (same credentials,
+    /// remote-playback scope included, and same profile).
     static func writeOwner(
         captured: CapturedOrdinaryRequestAuth?,
-        pickedProfile: String?
+        pickedBy: CredentialOwnerSnapshot
     ) -> CapturedOrdinaryRequestAuth? {
-        guard let captured else { return nil }
-        if case .temporary = captured.credentialOwner { return captured }
-        return captured.profileId == pickedProfile ? captured : nil
+        guard let captured, pickedBy.matches(captured) else { return nil }
+        return captured
     }
 
     // MARK: - Pending-write barrier
