@@ -283,6 +283,89 @@ final class TrackPreferencesV2Tests: XCTestCase {
         await pick.value
     }
 
+    func testSettledReadFoldsThePicksUnsavedAsOfItsLastRead() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let owner = try XCTUnwrap(captured)
+        let key = "series-settled-read"
+        var reads = 0
+        var held: Task<Void, Never>?
+
+        let detail = try await TrackSelectionPersistence.settledRead(owner: owner, wait: .milliseconds(50)) {
+            reads += 1
+            if reads < 3 {
+                // A write stored while this GET was out: its response may predate it.
+                await TrackSelectionPersistence.clearAudio(prefKey: key, client: api, tokenStore: tokens).value
+            } else {
+                // A newer pick made during the last GET, still unanswered.
+                stub.hold()
+                held = TrackSelectionPersistence.saveSubtitle(
+                    prefKey: key, request: TrackSelectionPersistence.subtitleOffRequest(),
+                    client: api, tokenStore: tokens
+                )
+                await stub.waitUntilHeld()
+            }
+            return Self.watchDetail(seriesId: key)
+        }
+
+        XCTAssertEqual(reads, 3, "two stores during reads, then the bound")
+        XCTAssertEqual(detail.effectiveSubtitleMode, "off", "the pick made during the last GET is carried")
+        stub.release()
+        await held?.value
+    }
+
+    func testOneProfilesPickNeverReplacesAnothersCarriedPick() async throws {
+        let (api, tokens) = try await client()
+        let key = "series-two-profiles"
+        stub.sequence([.failure(URLError(.networkConnectionLost)), .response(.status(204))])
+        await TrackSelectionPersistence.saveSubtitle(
+            prefKey: key, request: TrackSelectionPersistence.subtitleOffRequest(), client: api, tokenStore: tokens
+        ).value
+
+        await tokens.setProfileId("profile-two")
+        await TrackSelectionPersistence.clearSubtitle(prefKey: key, client: api, tokenStore: tokens).value
+        await tokens.setProfileId("profile-one")
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let profileOne = try XCTUnwrap(captured)
+
+        let settlement = await TrackSelectionPersistence.settlePendingWrites(
+            prefKey: key, owner: profileOne, since: TrackSelectionPersistence.pendingWriteMark()
+        )
+        guard case .subtitle(let carried)? = settlement.unsettled[.subtitle] else {
+            return XCTFail("profile-one's failed Off is still carried after profile-two's Auto")
+        }
+        XCTAssertEqual(carried.subtitleMode, "off")
+        XCTAssertEqual(stub.requests.map(\.method), ["PUT", "DELETE"])
+        XCTAssertEqual(stub.requests.last?.header("X-Profile-Id"), "profile-two")
+    }
+
+    func testWriteGoesOutOnlyUnderTheProfileThePickWasMadeUnder() {
+        func auth(_ profile: String, temporary: Bool = false) -> CapturedOrdinaryRequestAuth {
+            CapturedOrdinaryRequestAuth(
+                account: RefreshAccountIdentity(serverId: "s", serverURL: "https://s.example", credentialGenerationID: UUID()),
+                credentialOwner: temporary ? .temporary : .persistentServer(serverId: "s"),
+                accessToken: "a", profileId: profile, profileToken: nil
+            )
+        }
+        XCTAssertNotNil(TrackSelectionPersistence.writeOwner(captured: auth("profile-one"), pickedProfile: "profile-one"))
+        XCTAssertNil(TrackSelectionPersistence.writeOwner(captured: auth("profile-two"), pickedProfile: "profile-one"),
+                     "a switch before the write's task ran must not send the pick as the next profile")
+        XCTAssertNotNil(TrackSelectionPersistence.writeOwner(captured: auth("remote", temporary: true),
+                                                             pickedProfile: "profile-one"),
+                        "a remote-playback scope carries its own profile")
+        XCTAssertNil(TrackSelectionPersistence.writeOwner(captured: nil, pickedProfile: "profile-one"))
+    }
+
+    private static func watchDetail(seriesId: String) -> WatchDetail {
+        WatchDetail(
+            contentId: "ep-1", type: "episode", title: "One", year: nil, overview: nil,
+            versions: [], subtitles: nil, intro: nil, credits: nil, userData: nil,
+            seriesId: seriesId, seriesTitle: nil, seasonNumber: 1, episodeNumber: 1,
+            effectiveSubtitleLanguage: "en", effectiveSubtitleMode: "always",
+            effectiveShowForcedSubtitles: nil, effectiveSubtitleTrackSignature: nil
+        )
+    }
+
     func testCancelledReadStopsWaitingPromptly() async throws {
         let (api, tokens) = try await client()
         let captured = await tokens.captureOrdinaryRequestAuth()

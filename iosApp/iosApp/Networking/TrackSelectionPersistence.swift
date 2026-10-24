@@ -220,14 +220,18 @@ enum TrackSelectionPersistence {
         operation: @escaping @Sendable (CapturedOrdinaryRequestAuth) async throws -> Void
     ) -> Task<Void, Never> {
         let pending = pendingWrites
-        return pending.enqueue(.init(kind: kind, prefKey: prefKey), intent: intent) { write, previous in
-            let auth = await tokenStore.captureOrdinaryRequestAuth()
-            pending.bind(write, owner: auth)
+        // The profile the pick was made under, read now rather than when the
+        // write's task first runs: a profile switch in between must not send
+        // the pick under the next profile's credentials.
+        let pickedProfile = tokenStore.persistentProfileIdSnapshot
+        return pending.enqueue(.init(kind: kind, prefKey: prefKey), profile: pickedProfile, intent: intent) { write, previous in
+            let owner = writeOwner(captured: await tokenStore.captureOrdinaryRequestAuth(), pickedProfile: pickedProfile)
+            pending.bind(write, owner: owner)
             await previous?.value
             guard pending.isLatest(write) else { return }
             do {
-                guard let auth else { throw HTTPError.requestIdentityChanged }
-                try await operation(auth)
+                guard let owner else { throw HTTPError.requestIdentityChanged }
+                try await operation(owner)
                 pending.finish(write, stored: true)
             } catch {
                 pending.finish(write, stored: false)
@@ -236,6 +240,19 @@ enum TrackSelectionPersistence {
                 )
             }
         }
+    }
+
+    /// The owner a write goes out under: the one captured for it, provided
+    /// that is still the profile the pick was made under. A remote-playback
+    /// scope on tvOS carries its own profile, which the persistent selection
+    /// does not name, so a temporary owner is taken as captured.
+    static func writeOwner(
+        captured: CapturedOrdinaryRequestAuth?,
+        pickedProfile: String?
+    ) -> CapturedOrdinaryRequestAuth? {
+        guard let captured else { return nil }
+        if case .temporary = captured.credentialOwner { return captured }
+        return captured.profileId == pickedProfile ? captured : nil
     }
 
     // MARK: - Pending-write barrier
@@ -344,6 +361,36 @@ enum TrackSelectionPersistence {
             rereads: pendingWrites.storedAfter(mark, prefKey: prefKey),
             unsettled: unsettled
         )
+    }
+
+    /// A watch-detail read made safe against track writes for its item.
+    /// Marks before each GET; after the first it waits (bounded) for this
+    /// owner's in-flight writes, after a later one it only looks. It reads
+    /// again while a write was stored after the GET's mark, at most
+    /// `maxReads` GETs in all, and folds the picks still unsaved as of the
+    /// last GET, so a newer pick is carried and a pick the response already
+    /// reflects is not.
+    static func settledRead(
+        owner: CapturedOrdinaryRequestAuth,
+        maxReads: Int = 3,
+        wait: Duration = pendingWriteWait,
+        read: () async throws -> WatchDetail
+    ) async throws -> WatchDetail {
+        var reads = 0
+        while true {
+            let mark = pendingWriteMark()
+            let detail = try await read()
+            reads += 1
+            guard let prefKey = prefKey(seriesId: detail.seriesId, contentId: detail.contentId) else {
+                return detail
+            }
+            let settlement = await settlePendingWrites(
+                prefKey: prefKey, owner: owner, since: mark, timeout: reads == 1 ? wait : .zero
+            )
+            if !settlement.rereads || reads >= maxReads {
+                return settlement.applied(to: detail)
+            }
+        }
     }
 
     /// A language code that names a language: nil for empty and `und`.
@@ -474,26 +521,30 @@ enum TrackSelectionPersistence {
         }
     }
 
-    /// The latest write per kind and key, in dispatch order. Each write
+    /// The latest write per profile, kind and key. Writes for one kind and
+    /// key run one at a time in dispatch order, whoever made them: each
     /// starts only after the one dispatched before it has finished, whatever
-    /// its outcome; callers dispatch synchronously, so dispatch order is pick
-    /// order. An entry is bound to the owner its write captured and leaves
-    /// once that write is stored. A failed one stays until a newer write for
-    /// the key replaces it, and reads under that owner carry it for
-    /// `failedPickLifetime`. Each store also bumps a sequence number, which
-    /// read marks compare against.
-    ///
-    /// Slots are not split by owner: a newer write can only come from the
-    /// owner acting now, and a queued write for an earlier owner would be
-    /// refused by the owner fence anyway.
+    /// its outcome, and callers dispatch synchronously, so dispatch order is
+    /// pick order. The latest intent is kept per profile, so one profile's
+    /// pick never replaces or skips another's. An entry is bound to the owner
+    /// its write captured and leaves once that write is stored. A failed one
+    /// stays until a newer write from that profile replaces it, and reads
+    /// under that owner carry it for `failedPickLifetime`. Each store also
+    /// bumps a sequence number, which read marks compare against.
     private final class PendingWrites: Sendable {
         struct Slot: Hashable {
             let kind: TrackPreferenceKind
             let prefKey: String
         }
 
-        struct WriteID: Sendable {
+        /// A slot for the profile a pick was made under.
+        struct OwnedSlot: Hashable {
             let slot: Slot
+            let profile: String?
+        }
+
+        struct WriteID: Sendable {
+            let owned: OwnedSlot
             let id: UInt64
         }
 
@@ -502,7 +553,7 @@ enum TrackSelectionPersistence {
             let intent: Intent
             let task: Task<Void, Never>
             /// Nil until the write has captured its owner; `.some(nil)` when
-            /// nobody was signed in.
+            /// it has none to go out under.
             var owner: CapturedOrdinaryRequestAuth??
             var failedAt: ContinuousClock.Instant?
 
@@ -516,7 +567,10 @@ enum TrackSelectionPersistence {
         }
 
         private struct State {
-            var latest: [Slot: Entry] = [:]
+            var latest: [OwnedSlot: Entry] = [:]
+            /// The last write dispatched for each kind and key, which the
+            /// next one waits for.
+            var tails: [Slot: (id: UInt64, task: Task<Void, Never>)] = [:]
             var nextId: UInt64 = 0
             var storeSequence: UInt64 = 0
             /// The store sequence of each slot's last stored write.
@@ -527,41 +581,46 @@ enum TrackSelectionPersistence {
 
         func enqueue(
             _ slot: Slot,
+            profile: String?,
             intent: Intent,
             _ body: @escaping @Sendable (_ write: WriteID, _ previous: Task<Void, Never>?) async -> Void
         ) -> Task<Void, Never> {
             state.withLock { state -> Task<Void, Never> in
                 state.nextId += 1
-                let write = WriteID(slot: slot, id: state.nextId)
-                let previous = state.latest[slot]?.task
-                let task = Task { await body(write, previous) }
-                state.latest[slot] = Entry(id: write.id, intent: intent, task: task)
+                let write = WriteID(owned: OwnedSlot(slot: slot, profile: profile), id: state.nextId)
+                let previous = state.tails[slot]?.task
+                let task = Task {
+                    await body(write, previous)
+                    self.releaseTail(slot, write.id)
+                }
+                state.tails[slot] = (write.id, task)
+                state.latest[write.owned] = Entry(id: write.id, intent: intent, task: task)
                 return task
             }
         }
 
         func bind(_ write: WriteID, owner: CapturedOrdinaryRequestAuth?) {
             state.withLock { state in
-                guard state.latest[write.slot]?.id == write.id else { return }
-                state.latest[write.slot]?.owner = .some(owner)
+                guard state.latest[write.owned]?.id == write.id else { return }
+                state.latest[write.owned]?.owner = .some(owner)
             }
         }
 
         func isLatest(_ write: WriteID) -> Bool {
-            state.withLock { $0.latest[write.slot]?.id == write.id }
+            state.withLock { $0.latest[write.owned]?.id == write.id }
         }
 
         func finish(_ write: WriteID, stored: Bool) {
             state.withLock { state in
                 if stored {
                     state.storeSequence += 1
-                    state.lastStored[write.slot] = state.storeSequence
+                    state.lastStored[write.owned.slot] = state.storeSequence
                 }
-                guard state.latest[write.slot]?.id == write.id else { return }
+                guard state.latest[write.owned]?.id == write.id else { return }
                 if stored {
-                    state.latest[write.slot] = nil
+                    state.latest[write.owned] = nil
                 } else {
-                    state.latest[write.slot]?.failedAt = .now
+                    state.latest[write.owned]?.failedAt = .now
                 }
             }
         }
@@ -578,9 +637,10 @@ enum TrackSelectionPersistence {
 
         func inFlightTasks(prefKey: String, owner: CapturedOrdinaryRequestAuth) -> [Task<Void, Never>] {
             state.withLock { state in
-                Self.slots(prefKey).compactMap { slot in
-                    guard let entry = state.latest[slot], entry.failedAt == nil,
-                          entry.belongs(to: owner, includingUnbound: true) else { return nil }
+                Self.entries(state, prefKey: prefKey).compactMap { owned, entry in
+                    guard entry.failedAt == nil,
+                          entry.belongs(to: owner, includingUnbound: owned.profile == owner.profileId)
+                    else { return nil }
                     return entry.task
                 }
             }
@@ -592,15 +652,27 @@ enum TrackSelectionPersistence {
             failedSince cutoff: ContinuousClock.Instant
         ) -> [TrackPreferenceKind: Intent] {
             state.withLock { state in
-                var result: [TrackPreferenceKind: Intent] = [:]
-                for slot in Self.slots(prefKey) {
-                    guard let entry = state.latest[slot],
-                          entry.belongs(to: owner, includingUnbound: false) else { continue }
+                var result: [TrackPreferenceKind: (id: UInt64, intent: Intent)] = [:]
+                for (owned, entry) in Self.entries(state, prefKey: prefKey) {
+                    guard entry.belongs(to: owner, includingUnbound: false) else { continue }
                     if let failedAt = entry.failedAt, failedAt < cutoff { continue }
-                    result[slot.kind] = entry.intent
+                    // One owner's newest pick wins if a temporary scope and
+                    // the persistent selection both wrote for it.
+                    if let kept = result[owned.slot.kind], kept.id > entry.id { continue }
+                    result[owned.slot.kind] = (entry.id, entry.intent)
                 }
-                return result
+                return result.mapValues { $0.intent }
             }
+        }
+
+        private func releaseTail(_ slot: Slot, _ id: UInt64) {
+            state.withLock { state in
+                if state.tails[slot]?.id == id { state.tails[slot] = nil }
+            }
+        }
+
+        private static func entries(_ state: State, prefKey: String) -> [(OwnedSlot, Entry)] {
+            state.latest.filter { $0.key.slot.prefKey == prefKey }.map { ($0.key, $0.value) }
         }
 
         private static func slots(_ prefKey: String) -> [Slot] {

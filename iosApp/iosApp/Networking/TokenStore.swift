@@ -1358,6 +1358,13 @@ actor TokenStore {
         return defaults.string(forKey: profileIdDefaultsKey)
     }
 
+    /// The persistent profile selection, readable without awaiting the actor,
+    /// for work that must record which profile it was started under at the
+    /// moment it starts. It ignores a temporary remote-playback scope.
+    nonisolated var persistentProfileIdSnapshot: String? {
+        defaults.string(forKey: profileIdDefaultsKey)
+    }
+
     func setProfileId(_ profileId: String?) {
         if temporaryScope != nil {
             if let profileId { temporaryScope?.profileId = profileId }
