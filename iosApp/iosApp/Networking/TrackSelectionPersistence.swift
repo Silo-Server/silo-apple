@@ -274,13 +274,20 @@ enum TrackSelectionPersistence {
         /// `detail` with every unsettled pick folded into the server-resolved
         /// fields that detail selectors and playback start read. An unsettled
         /// "Auto" cannot be folded in: the profile defaults it falls back to
-        /// are only resolved by the server.
+        /// are only resolved by the server. Nor can a subtitle track picked
+        /// without a language: the start's resolver finds a subtitle by its
+        /// language (or its title, which another file need not share), and in
+        /// mode `always` an unidentified pick falls back to whichever track
+        /// ranks first. The server's state stands for those.
         func applied(to detail: WatchDetail) -> WatchDetail {
             var detail = detail
             if case .subtitle(let request)? = unsettled[.subtitle] {
-                detail.effectiveSubtitleLanguage = TrackSelectionPersistence.taggedLanguage(request.subtitleLanguage)
-                detail.effectiveSubtitleMode = request.subtitleMode
-                detail.effectiveSubtitleTrackSignature = request.trackSignature
+                let language = TrackSelectionPersistence.taggedLanguage(request.subtitleLanguage)
+                if language != nil || request.subtitleMode == SubtitleMode.off.rawValue {
+                    detail.effectiveSubtitleLanguage = language
+                    detail.effectiveSubtitleMode = request.subtitleMode
+                    detail.effectiveSubtitleTrackSignature = request.trackSignature
+                }
             }
             if case .audio(let request)? = unsettled[.audio] {
                 detail.versions = detail.versions.map { version in

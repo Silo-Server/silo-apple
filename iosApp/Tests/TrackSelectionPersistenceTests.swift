@@ -213,16 +213,40 @@ final class TrackSelectionPersistenceTests: XCTestCase {
                        "only the server can resolve what Auto falls back to")
     }
 
-    func testUnsavedSubtitlePickReplacesTheLanguageEvenWhenUntagged() {
-        let detail = watchDetail(version: decodedVersion(#"{"file_id": 1}"#), subtitleLanguage: "en")
-        let untagged = SubtitlePrefRequest(subtitleLanguage: "und", subtitleTrackIndex: 4, externalSubtitlePath: "",
-                                           subtitleMode: "always", trackSignature: nil)
+    /// The folded detail feeds the start's subtitle intent. An unnamed,
+    /// untagged pick cannot be identified there, and folding it as mode
+    /// `always` started whichever track ranked first (English here).
+    func testUnsavedSubtitlePickStartsThePickedTrackOrLeavesTheServerState() throws {
+        let version = decodedVersion("""
+        {
+          "file_id": 1,
+          "subtitle_tracks": [
+            { "index": 2, "language": "en", "codec": "subrip" },
+            { "index": 3, "codec": "subrip" },
+            { "index": 4, "language": "es", "codec": "subrip" }
+          ]
+        }
+        """)
+        // The server still holds the series' earlier choice: subtitles off.
+        var server = watchDetail(version: version, subtitleLanguage: "ja")
+        server.effectiveSubtitleMode = "off"
+        func startIndex(carrying request: SubtitlePrefRequest) -> Int? {
+            let detail = TrackSelectionPersistence.Settlement(rereads: false, unsettled: [.subtitle: .subtitle(request)])
+                .applied(to: server)
+            return PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: detail.versions[0], explicitFFmpegIndex: nil, explicitCombinedIndex: nil,
+                preferredLanguage: detail.effectiveSubtitleLanguage,
+                mode: SubtitleMode(rawValue: detail.effectiveSubtitleMode ?? ""),
+                showForced: false, trackSignature: detail.effectiveSubtitleTrackSignature,
+                currentAudioLanguage: "ja"
+            ).ffmpegStreamIndex
+        }
 
-        let applied = TrackSelectionPersistence.Settlement(rereads: false, unsettled: [.subtitle: .subtitle(untagged)])
-            .applied(to: detail)
-
-        XCTAssertNil(applied.effectiveSubtitleLanguage, "the old series language must not steer the untagged pick")
-        XCTAssertEqual(applied.effectiveSubtitleMode, "always")
+        let untagged = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 3)
+        XCTAssertNil(startIndex(carrying: try XCTUnwrap(untagged)),
+                     "an unidentifiable pick leaves the server's Off instead of starting English")
+        let spanish = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 4)
+        XCTAssertEqual(startIndex(carrying: try XCTUnwrap(spanish)), 4)
     }
 
     func testUntaggedAudioPickMatchesOnlyAnUntaggedTrackWithItsDetails() {
