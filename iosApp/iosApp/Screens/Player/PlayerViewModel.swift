@@ -7735,7 +7735,10 @@ class PlayerViewModel {
         }
     }
 
-    func selectSubtitle(_ track: PlayerTrack) {
+    /// `savesPreference` is false only for automatic restores (the live AI
+    /// track's teardown): a series preference records what the viewer
+    /// picked, never what the player put back on its own.
+    func selectSubtitle(_ track: PlayerTrack, savesPreference: Bool = true) {
         let prior = captureSubtitleSelection()
         hasExplicitSubtitleChoice = true
         pendingSubtitleFfIndex = nil
@@ -7752,7 +7755,7 @@ class PlayerViewModel {
         if activePreparedProtocolV3 != nil,
            !SubtitleTrackIdSpace.isAILive(track.trackId) {
             if applyLocalProtocolV3SubtitleSelection(track, reason: "user_selection") {
-                persistSubtitleSelection(track)
+                if savesPreference { persistSubtitleSelection(track) }
                 scheduleHideControls()
                 return
             }
@@ -7784,7 +7787,7 @@ class PlayerViewModel {
                 scheduleHideControls()
                 return
             }
-            persistSubtitleSelection(track)
+            if savesPreference { persistSubtitleSelection(track) }
             recordSubtitleTrackSelectionBreadcrumb(
                 track.trackId,
                 reason: "user_selection",
@@ -7794,12 +7797,13 @@ class PlayerViewModel {
             return
         }
         localProtocolV3SubtitleSelection = nil
-        persistSubtitleSelection(track)
+        if savesPreference { persistSubtitleSelection(track) }
         applySubtitleTrackSelection(track.trackId, reason: "user_selection")
         scheduleHideControls()
     }
 
-    func disableSubtitles() {
+    /// See `selectSubtitle(_:savesPreference:)`.
+    func disableSubtitles(savesPreference: Bool = true) {
         let prior = captureSubtitleSelection()
         hasExplicitSubtitleChoice = true
         pendingSubtitleFfIndex = -1
@@ -7813,7 +7817,7 @@ class PlayerViewModel {
         Self.logger.info("[CMP-SUB] disable primary subtitles")
         if activePreparedProtocolV3 != nil {
             if applyLocalProtocolV3SubtitleSelection(nil, reason: "user_selection") {
-                persistSubtitleSelection(nil)
+                if savesPreference { persistSubtitleSelection(nil) }
                 scheduleHideControls()
                 return
             }
@@ -7836,7 +7840,7 @@ class PlayerViewModel {
                 scheduleHideControls()
                 return
             }
-            persistSubtitleSelection(nil)
+            if savesPreference { persistSubtitleSelection(nil) }
             recordSubtitleTrackSelectionBreadcrumb(
                 nil,
                 reason: "user_selection",
@@ -7845,7 +7849,7 @@ class PlayerViewModel {
             scheduleHideControls()
             return
         }
-        persistSubtitleSelection(nil)
+        if savesPreference { persistSubtitleSelection(nil) }
         applySubtitleTrackSelection(nil, reason: "user_selection")
         scheduleHideControls()
     }
@@ -8406,7 +8410,7 @@ class PlayerViewModel {
             self.pendingLiveSubtitleCloseTrackId = nil
             self.closeLiveSubtitleTrackRow(trackId: trackId)
             if self.selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true {
-                self.disableSubtitles()
+                self.disableSubtitles(savesPreference: false)
             }
             Self.logger.warning("[AI-SUB] deferred live-track close fired on fallback timeout (persisted selection never landed)")
         }
@@ -8432,11 +8436,11 @@ class PlayerViewModel {
             // Only actively disable if a live track is still the selection; a
             // restore to "none" shouldn't clobber a selection the user changed.
             if selectedSubtitleId.map(SubtitleTrackIdSpace.isAILive) == true {
-                disableSubtitles()
+                disableSubtitles(savesPreference: false)
             }
             return
         }
-        selectSubtitle(track)
+        selectSubtitle(track, savesPreference: false)
     }
 
     /// The "Preparing subtitles" notice shown while the first live cues land.
