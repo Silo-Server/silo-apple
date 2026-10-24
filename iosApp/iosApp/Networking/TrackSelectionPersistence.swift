@@ -275,15 +275,16 @@ enum TrackSelectionPersistence {
         /// fields that detail selectors and playback start read. An unsettled
         /// "Auto" cannot be folded in: the profile defaults it falls back to
         /// are only resolved by the server. Nor can a subtitle track picked
-        /// without a language: the start's resolver finds a subtitle by its
-        /// language (or its title, which another file need not share), and in
-        /// mode `always` an unidentified pick falls back to whichever track
-        /// ranks first. The server's state stands for those.
+        /// without a language unless its title identifies it: the start's
+        /// resolver finds a subtitle by its language or title, and in mode
+        /// `always` an unidentified pick falls back to whichever track ranks
+        /// first. The server's state stands for those.
         func applied(to detail: WatchDetail) -> WatchDetail {
             var detail = detail
             if case .subtitle(let request)? = unsettled[.subtitle] {
                 let language = TrackSelectionPersistence.taggedLanguage(request.subtitleLanguage)
-                if language != nil || request.subtitleMode == SubtitleMode.off.rawValue {
+                if language != nil || request.subtitleMode == SubtitleMode.off.rawValue
+                    || TrackSelectionPersistence.identifiesUntaggedSubtitle(request, on: detail.versions) {
                     detail.effectiveSubtitleLanguage = language
                     detail.effectiveSubtitleMode = request.subtitleMode
                     detail.effectiveSubtitleTrackSignature = request.trackSignature
@@ -352,6 +353,20 @@ enum TrackSelectionPersistence {
         return code
     }
 
+    /// Whether an untagged subtitle pick's title finds it on every version:
+    /// the start's resolver (`SubtitleAutoResolver.bestSignatureMatch`)
+    /// identifies a track without a language only by a title containing the
+    /// signature's label, so exactly one track may carry it, and that track
+    /// must be untagged.
+    fileprivate static func identifiesUntaggedSubtitle(_ request: SubtitlePrefRequest, on versions: [FileVersion]) -> Bool {
+        guard let label = request.trackSignature?.label, !label.isEmpty, !versions.isEmpty else { return false }
+        return versions.allSatisfy { version in
+            let titled = SubtitleTrackCandidates.playerTracks(from: version.subtitleTracks ?? [])
+                .filter { $0.title?.localizedCaseInsensitiveContains(label) == true }
+            return titled.count == 1 && taggedLanguage(titled[0].lang) == nil
+        }
+    }
+
     /// The ordinal in `version.audioTracks` an audio pick names on another
     /// file of the series. A pick in a language matches the track with its
     /// signature, then its own ordinal when that track has the language,
@@ -382,14 +397,22 @@ enum TrackSelectionPersistence {
                 && matchesTitle(track, signature.title)
                 && matchesTitle(track, signature.embeddedTitle)
         }
+        // Among tracks that all match, the picked ordinal wins (the same file,
+        // or one laid out alike), then the one whose default flag agrees.
+        // The flag only breaks ties: the server's own match ignores it.
+        func best(_ signature: AudioTrackSignature, where matches: (AudioTrack) -> Bool) -> Int? {
+            let candidates = tracks.indices.filter { matches(tracks[$0]) && matchesDetails(tracks[$0], signature) }
+            if candidates.contains(request.audioTrackIndex) { return request.audioTrackIndex }
+            return candidates.first { (tracks[$0].isDefault ?? false) == signature.isDefault } ?? candidates.first
+        }
         guard let language = taggedLanguage(request.audioLanguage) else {
             guard let signature = request.trackSignature,
                   signature.codec != nil || signature.channels != nil || signature.layout != nil
                     || signature.title != nil || signature.embeddedTitle != nil else { return nil }
-            return tracks.firstIndex { taggedLanguage($0.language) == nil && matchesDetails($0, signature) }
+            return best(signature) { taggedLanguage($0.language) == nil }
         }
         if let signature = request.trackSignature,
-           let ordinal = tracks.firstIndex(where: { inLanguage($0, language) && matchesDetails($0, signature) }) {
+           let ordinal = best(signature, where: { inLanguage($0, language) }) {
             return ordinal
         }
         if tracks.indices.contains(request.audioTrackIndex),

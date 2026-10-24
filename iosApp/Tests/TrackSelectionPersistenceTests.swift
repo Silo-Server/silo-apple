@@ -223,7 +223,8 @@ final class TrackSelectionPersistenceTests: XCTestCase {
           "subtitle_tracks": [
             { "index": 2, "language": "en", "codec": "subrip" },
             { "index": 3, "codec": "subrip" },
-            { "index": 4, "language": "es", "codec": "subrip" }
+            { "index": 4, "language": "es", "codec": "subrip" },
+            { "index": 5, "codec": "ass", "title": "Signs & Songs" }
           ]
         }
         """)
@@ -247,6 +248,29 @@ final class TrackSelectionPersistenceTests: XCTestCase {
                      "an unidentifiable pick leaves the server's Off instead of starting English")
         let spanish = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 4)
         XCTAssertEqual(startIndex(carrying: try XCTUnwrap(spanish)), 4)
+        let titled = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 5)
+        XCTAssertEqual(startIndex(carrying: try XCTUnwrap(titled)), 5,
+                       "an untagged pick its title identifies is carried")
+    }
+
+    func testAudioPickPrefersItsOwnOrdinalThenTheMatchingDefaultFlag() throws {
+        let version = decodedVersion("""
+        {
+          "file_id": 5,
+          "audio_tracks": [
+            { "index": 1, "language": "en", "codec": "ac3", "channels": 6, "default": false },
+            { "index": 2, "language": "en", "codec": "ac3", "channels": 6, "default": true }
+          ]
+        }
+        """)
+        let picked = try XCTUnwrap(TrackSelectionPersistence.audioRequest(version: version, ordinal: 1))
+        XCTAssertEqual(TrackSelectionPersistence.audioOrdinal(matching: picked, in: version), 1,
+                       "the same file keeps the picked ordinal")
+
+        // Another file of the series, where the picked ordinal holds nothing.
+        let elsewhere = AudioPrefRequest(audioTrackIndex: 7, audioLanguage: "en", trackSignature: picked.trackSignature)
+        XCTAssertEqual(TrackSelectionPersistence.audioOrdinal(matching: elsewhere, in: version), 1,
+                       "the default flag breaks the tie between otherwise equal tracks")
     }
 
     func testUntaggedAudioPickMatchesOnlyAnUntaggedTrackWithItsDetails() {
