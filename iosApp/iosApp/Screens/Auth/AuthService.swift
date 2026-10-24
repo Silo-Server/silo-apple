@@ -349,7 +349,8 @@ final class AuthService: @unchecked Sendable {
                 throw AccountSessionPersistenceError.unavailable
             }
             let previousProfileID = await tokenStore.getProfileId()
-            await tokenStore.clearTokens()
+            let keepsSavedAccounts = await tokenStore.supportsSavedAccounts
+            if !keepsSavedAccounts { await tokenStore.clearTokens() }
             do {
                 try await tokenStore.installAccountSession(
                     accessToken: accessToken,
@@ -361,6 +362,14 @@ final class AuthService: @unchecked Sendable {
                 _ = await tokenStore.restoreAccountSession(previousSession, for: expectedAccount.serverId)
                 await tokenStore.setProfileId(previousProfileID)
                 throw error
+            }
+            if keepsSavedAccounts {
+                let epoch = await tokenStore.getOrCreateAccountEpoch()
+                guard launchPreferences.activateAccount(for: expectedAccount.serverId, accountEpoch: epoch) else {
+                    _ = await tokenStore.restoreAccountSession(previousSession, for: expectedAccount.serverId)
+                    await tokenStore.setProfileId(previousProfileID)
+                    throw AccountSessionPersistenceError.unavailable
+                }
             }
             launchPreferences.clearRememberedProfile(for: expectedAccount.serverId)
             await clearAllCaches()
@@ -454,6 +463,7 @@ final class AuthService: @unchecked Sendable {
               let accountEpoch = await TokenStore.shared.getOrCreateAccountEpoch() else {
             return false
         }
+        guard launchPreferences.activateAccount(for: serverID, accountEpoch: accountEpoch) else { return false }
         let profileToken = await TokenStore.shared.getProfileToken()
         let knownProfileIDs: Set<String>? = await MainActor.run {
             ResponseCache.shared
@@ -843,6 +853,26 @@ final class AuthService: @unchecked Sendable {
     func deviceLoginCapability(expectedAccount: RefreshAccountIdentity) async throws -> APIv2DeviceCapability {
         try await apiV2Client.deviceLoginCapability(expectedAccount: expectedAccount)
     }
+
+    #if os(tvOS)
+    /// Selecting another account leaves the current saved session intact.
+    /// Only this Apple TV user's selector changes; no logout is sent.
+    func beginAnotherAccount(expectedAccount: RefreshAccountIdentity) async -> Bool {
+        guard !(await tokenStore.hasTemporaryScope()),
+              let lease = await httpClient.beginIdentityTransition() else { return false }
+        await httpClient.cancelInFlightRequests()
+        guard !Task.isCancelled, await tokenStore.refreshAccountIdentity() == expectedAccount else {
+            await httpClient.endIdentityTransition(lease)
+            return false
+        }
+        DiagnosticsCoordinator.activeProfileWillChange()
+        let changed = await tokenStore.deselectSavedAccount()
+        if changed { await clearAllCaches() }
+        await httpClient.endIdentityTransition(lease)
+        DiagnosticsCoordinator.activeProfileDidChange()
+        return changed
+    }
+    #endif
 
     // MARK: - Sign Out
 

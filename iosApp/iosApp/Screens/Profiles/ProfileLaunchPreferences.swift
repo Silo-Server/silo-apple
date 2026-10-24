@@ -13,6 +13,7 @@ final class ProfileLaunchPreferences {
 
     private let defaults: SharedDefaults
     private let persistenceOverride: ((ProfileLaunchState) -> Bool)?
+    private let preservesAccountHistory: Bool
     /// SwiftUI reads this state on the main thread while `AuthService`
     /// updates it from profile-switch tasks, so every access takes the lock.
     @ObservationIgnored private let storedState: Mutex<ProfileLaunchState>
@@ -24,10 +25,12 @@ final class ProfileLaunchPreferences {
 
     init(
         defaults: SharedDefaults = .shared,
-        persistenceOverride: ((ProfileLaunchState) -> Bool)? = nil
+        persistenceOverride: ((ProfileLaunchState) -> Bool)? = nil,
+        preservesAccountHistory: Bool = ProfileLaunchPreferences.defaultPreservesAccountHistory
     ) {
         self.defaults = defaults
         self.persistenceOverride = persistenceOverride
+        self.preservesAccountHistory = preservesAccountHistory
         let state = ProfileLaunchState.load(from: defaults)
         self.storedState = Mutex(state)
         _ = persist(state)
@@ -87,9 +90,30 @@ final class ProfileLaunchPreferences {
         }
     }
 
-    func rememberedProfile(for serverID: String?) -> RememberedProfile? {
+    static var defaultPreservesAccountHistory: Bool {
+        #if os(tvOS)
+        true
+        #else
+        false
+        #endif
+    }
+
+    func rememberedProfile(for serverID: String?, accountEpoch: String? = nil) -> RememberedProfile? {
         guard let serverID else { return nil }
+        if let accountEpoch { return state.rememberedProfile(for: serverID, accountEpoch: accountEpoch) }
         return state.rememberedByServerID[serverID]
+    }
+
+    @discardableResult
+    func activateAccount(for serverID: String, accountEpoch: String?) -> Bool {
+        guard preservesAccountHistory else { return true }
+        return update { state in
+            let previousState = state
+            state.activateAccountHistory(for: serverID, accountEpoch: accountEpoch)
+            guard state != previousState else { return true }
+            guard persist(state) else { state = previousState; return false }
+            return true
+        }
     }
 
     func resolution(
@@ -121,11 +145,17 @@ final class ProfileLaunchPreferences {
     ) -> Bool {
         update { state in
             let previousState = state
+            if preservesAccountHistory { state.activateAccountHistory(for: serverID, accountEpoch: accountEpoch) }
             state.rememberedByServerID[serverID] = RememberedProfile(
                 profileID: profileID,
                 requiredPINAtSelection: requiresPIN,
                 accountEpoch: accountEpoch
             )
+            if preservesAccountHistory {
+                let key = ProfileLaunchState.accountHistoryKey(serverID, accountEpoch)
+                state.rememberedByAccountEpoch?[key] = state.rememberedByServerID[serverID]
+                state.selectionRequiredByAccountEpoch?.remove(key)
+            }
             state.selectionRequiredServerIDs.remove(serverID)
             state.backgroundedAt = nil
             guard persist(state) else {
@@ -176,6 +206,12 @@ final class ProfileLaunchPreferences {
             guard !state.selectionRequiredServerIDs.contains(serverID) else { return true }
             let previousState = state
             state.selectionRequiredServerIDs.insert(serverID)
+            if preservesAccountHistory,
+               let epoch = state.activeAccountEpochByServerID?[serverID] ?? state.rememberedByServerID[serverID]?.accountEpoch {
+                var pending = state.selectionRequiredByAccountEpoch ?? []
+                pending.insert(ProfileLaunchState.accountHistoryKey(serverID, epoch))
+                state.selectionRequiredByAccountEpoch = pending
+            }
             guard persist(state) else {
                 state = previousState
                 return false
@@ -187,14 +223,59 @@ final class ProfileLaunchPreferences {
     func clearSelectionRequired(for serverID: String) {
         update { state in
             guard state.selectionRequiredServerIDs.remove(serverID) != nil else { return }
+            if preservesAccountHistory,
+               let epoch = state.activeAccountEpochByServerID?[serverID] ?? state.rememberedByServerID[serverID]?.accountEpoch {
+                state.selectionRequiredByAccountEpoch?.remove(ProfileLaunchState.accountHistoryKey(serverID, epoch))
+            }
             _ = persist(state)
         }
     }
 
-    @discardableResult
-    func clearRememberedProfile(for serverID: String) -> Bool {
+    /// Persist an exact-epoch gate before a synchronous identity commit. The
+    /// operation must not re-enter these preferences. Holding the same lock as
+    /// public selection changes prevents clearing a concurrent selection request.
+    /// A failed operation or gate removal leaves selection required on relaunch.
+    func withSelectionRequired(for serverID: String, accountEpoch: String,
+                               operation: (_ canRestoreProfile: Bool) -> Bool) -> Bool {
         update { state in
             let previousState = state
+            let wasRequired = state.requiresSelection(for: serverID, accountEpoch: accountEpoch)
+            let key = ProfileLaunchState.accountHistoryKey(serverID, accountEpoch)
+            let projectedEpoch = state.activeAccountEpochByServerID?[serverID]
+                ?? state.rememberedByServerID[serverID]?.accountEpoch
+            var pending = state.selectionRequiredByAccountEpoch ?? []
+            pending.insert(key)
+            state.selectionRequiredByAccountEpoch = pending
+            if projectedEpoch == accountEpoch { state.selectionRequiredServerIDs.insert(serverID) }
+            guard persist(state) else { state = previousState; return false }
+            let pendingState = state
+            guard operation(!wasRequired) else { return false }
+            guard !wasRequired else { return true }
+            state.selectionRequiredByAccountEpoch?.remove(key)
+            if projectedEpoch == accountEpoch { state.selectionRequiredServerIDs.remove(serverID) }
+            guard persist(state) else { state = pendingState; return false }
+            return true
+        }
+    }
+
+    @discardableResult
+    func clearRememberedProfile(for serverID: String, accountEpoch: String? = nil) -> Bool {
+        update { state in
+            let previousState = state
+            if preservesAccountHistory {
+                let activeEpoch = state.activeAccountEpochByServerID?[serverID] ?? state.rememberedByServerID[serverID]?.accountEpoch
+                guard let epoch = accountEpoch ?? activeEpoch else { return true }
+                let key = ProfileLaunchState.accountHistoryKey(serverID, epoch)
+                state.rememberedByAccountEpoch?[key] = nil
+                state.selectionRequiredByAccountEpoch?.remove(key)
+                if activeEpoch == epoch {
+                    state.rememberedByServerID[serverID] = nil
+                    state.selectionRequiredServerIDs.remove(serverID)
+                }
+                guard state != previousState else { return true }
+                guard persist(state) else { state = previousState; return false }
+                return true
+            }
             let removedProfile = state.rememberedByServerID.removeValue(forKey: serverID) != nil
             let removedPending = state.selectionRequiredServerIDs.remove(serverID) != nil
             guard removedProfile || removedPending else { return true }
@@ -206,6 +287,25 @@ final class ProfileLaunchPreferences {
         }
     }
 
+    /// Server removal clears every account's local launch history for it.
+    @discardableResult
+    func clearAllRememberedProfiles(for serverID: String) -> Bool {
+        update { state in
+            let previousState = state
+            let prefix = ProfileLaunchState.accountHistoryPrefix(serverID)
+            state.rememberedByServerID[serverID] = nil
+            state.selectionRequiredServerIDs.remove(serverID)
+            state.rememberedByAccountEpoch = state.rememberedByAccountEpoch?.filter { !$0.key.hasPrefix(prefix) }
+            state.selectionRequiredByAccountEpoch = state.selectionRequiredByAccountEpoch.map {
+                Set($0.filter { !$0.hasPrefix(prefix) })
+            }
+            state.activeAccountEpochByServerID?[serverID] = nil
+            guard state != previousState else { return true }
+            guard persist(state) else { state = previousState; return false }
+            return true
+        }
+    }
+
     @discardableResult
     func migrateLegacyProfile(
         profileID: String?,
@@ -213,7 +313,10 @@ final class ProfileLaunchPreferences {
         accountEpoch: String?,
         for serverID: String
     ) -> Bool {
-        if let existing = rememberedProfile(for: serverID) {
+        let existing = preservesAccountHistory
+            ? accountEpoch.flatMap { rememberedProfile(for: serverID, accountEpoch: $0) }
+            : rememberedProfile(for: serverID)
+        if let existing {
             return existing.profileID == profileID && existing.accountEpoch == accountEpoch
         }
         guard let profileID,
@@ -224,11 +327,17 @@ final class ProfileLaunchPreferences {
         }
         return update { state in
             let previousState = state
+            if preservesAccountHistory { state.activateAccountHistory(for: serverID, accountEpoch: accountEpoch) }
             state.rememberedByServerID[serverID] = RememberedProfile(
                 profileID: profileID,
                 requiredPINAtSelection: requiresPIN,
                 accountEpoch: accountEpoch
             )
+            if preservesAccountHistory {
+                let key = ProfileLaunchState.accountHistoryKey(serverID, accountEpoch)
+                state.rememberedByAccountEpoch?[key] = state.rememberedByServerID[serverID]
+                state.selectionRequiredByAccountEpoch?.remove(key)
+            }
             state.selectionRequiredServerIDs.remove(serverID)
             state.backgroundedAt = nil
             // A device that remembered a profile before launch state was

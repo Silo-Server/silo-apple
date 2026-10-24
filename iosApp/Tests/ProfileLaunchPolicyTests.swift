@@ -1,6 +1,267 @@
 import XCTest
 @testable import Silo
 
+private final class ProfileGateFailureSwitch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var enabled = false
+    var isEnabled: Bool { lock.withLock { enabled } }
+    func enable() { lock.withLock { enabled = true } }
+}
+
+final class TVAccountProfileLaunchHistoryTests: XCTestCase {
+    func testRememberingBPreservesAsProfileAfterRelaunch() throws {
+        let (preferences, defaults) = try harness()
+        preferences.behavior = .automatic
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: false,
+            accountEpoch: "epoch-A", for: "server"))
+        XCTAssertTrue(preferences.remember(profileID: "profile-B", requiresPIN: false,
+            accountEpoch: "epoch-B", for: "server"))
+        let restarted = ProfileLaunchPreferences(defaults: defaults, preservesAccountHistory: true)
+
+        XCTAssertEqual(restarted.resolution(for: "server", accountEpoch: "epoch-A", hasStoredProfileToken: false),
+            .restore(RememberedProfile(profileID: "profile-A", requiredPINAtSelection: false, accountEpoch: "epoch-A")))
+    }
+
+    func testActivatingAccountsProjectsOnlyTheirOwnRememberedProfile() throws {
+        let (preferences, _) = try harness()
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+            accountEpoch: "epoch-A", for: "server"))
+        XCTAssertTrue(preferences.activateAccount(for: "server", accountEpoch: "epoch-B"))
+        XCTAssertNil(preferences.rememberedProfile(for: "server"))
+        XCTAssertEqual(preferences.resolution(for: "server", accountEpoch: "epoch-B", hasStoredProfileToken: true),
+            .needsSelection)
+        XCTAssertTrue(preferences.remember(profileID: "profile-B", requiresPIN: false,
+            accountEpoch: "epoch-B", for: "server"))
+
+        XCTAssertTrue(preferences.activateAccount(for: "server", accountEpoch: "epoch-A"))
+
+        XCTAssertEqual(preferences.rememberedProfile(for: "server")?.profileID, "profile-A")
+        XCTAssertEqual(preferences.rememberedProfile(for: "server", accountEpoch: "epoch-B")?.profileID, "profile-B")
+        preferences.behavior = .automatic
+        XCTAssertEqual(preferences.resolution(for: "server", accountEpoch: "epoch-A", hasStoredProfileToken: false),
+            .needsSelection, "A protected profile still needs its own stored proof")
+    }
+
+    func testPendingSelectionIsRememberedPerAccount() throws {
+        let (preferences, _) = try harness()
+        preferences.behavior = .automatic
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: false,
+            accountEpoch: "epoch-A", for: "server"))
+        XCTAssertTrue(preferences.markSelectionRequired(for: "server"))
+        XCTAssertTrue(preferences.remember(profileID: "profile-B", requiresPIN: false,
+            accountEpoch: "epoch-B", for: "server"))
+        XCTAssertFalse(preferences.state.selectionRequiredServerIDs.contains("server"))
+        XCTAssertEqual(preferences.resolution(for: "server", accountEpoch: "epoch-B", hasStoredProfileToken: false),
+            .restore(RememberedProfile(profileID: "profile-B", requiredPINAtSelection: false, accountEpoch: "epoch-B")))
+
+        XCTAssertTrue(preferences.activateAccount(for: "server", accountEpoch: "epoch-A"))
+
+        XCTAssertTrue(preferences.state.selectionRequiredServerIDs.contains("server"))
+        XCTAssertEqual(preferences.resolution(for: "server", accountEpoch: "epoch-A", hasStoredProfileToken: true), .needsSelection)
+        preferences.clearSelectionRequired(for: "server")
+        XCTAssertEqual(preferences.resolution(for: "server", accountEpoch: "epoch-A", hasStoredProfileToken: false),
+            .restore(RememberedProfile(profileID: "profile-A", requiredPINAtSelection: false, accountEpoch: "epoch-A")))
+    }
+
+    func testProofBindingGatePreservesAnotherEpochsPendingProjection() throws {
+        let (preferences, defaults) = try harness()
+        preferences.behavior = .automatic
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: false,
+            accountEpoch: "epoch-A", for: "server"))
+        XCTAssertTrue(preferences.remember(profileID: "profile-B", requiresPIN: false,
+            accountEpoch: "epoch-B", for: "server"))
+        XCTAssertTrue(preferences.markSelectionRequired(for: "server"))
+
+        XCTAssertTrue(preferences.withSelectionRequired(for: "server", accountEpoch: "epoch-A") { canRestore in
+            XCTAssertTrue(canRestore)
+            let persisted = ProfileLaunchState.load(from: defaults)
+            XCTAssertTrue(persisted.requiresSelection(for: "server", accountEpoch: "epoch-A"))
+            XCTAssertTrue(persisted.requiresSelection(for: "server", accountEpoch: "epoch-B"))
+            XCTAssertEqual(persisted.rememberedByServerID["server"]?.profileID, "profile-B")
+            return true
+        })
+
+        XCTAssertFalse(preferences.state.requiresSelection(for: "server", accountEpoch: "epoch-A"))
+        XCTAssertTrue(preferences.state.requiresSelection(for: "server", accountEpoch: "epoch-B"))
+        XCTAssertEqual(preferences.rememberedProfile(for: "server")?.profileID, "profile-B")
+    }
+
+    func testProofBindingChecksBothPendingGateWrites() throws {
+        for failsBeforeOperation in [true, false] {
+            let (_, defaults) = try harness()
+            let failure = ProfileGateFailureSwitch()
+            let preferences = ProfileLaunchPreferences(defaults: defaults, persistenceOverride: { state in
+                guard failure.isEnabled else { return true }
+                let pending = state.requiresSelection(for: "server", accountEpoch: "epoch-A")
+                return failsBeforeOperation ? !pending : pending
+            }, preservesAccountHistory: true)
+            XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+                accountEpoch: "epoch-A", for: "server"))
+            failure.enable()
+            var operationRan = false
+
+            XCTAssertFalse(preferences.withSelectionRequired(for: "server", accountEpoch: "epoch-A") { _ in
+                operationRan = true
+                return true
+            })
+
+            XCTAssertEqual(operationRan, !failsBeforeOperation)
+            XCTAssertEqual(preferences.state.requiresSelection(for: "server", accountEpoch: "epoch-A"), !failsBeforeOperation)
+            XCTAssertEqual(ProfileLaunchState.load(from: defaults).requiresSelection(for: "server", accountEpoch: "epoch-A"),
+                !failsBeforeOperation)
+        }
+    }
+
+    func testConcurrentSelectionRequestIsNotClearedByProofBinding() throws {
+        let (preferences, _) = try harness()
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+            accountEpoch: "epoch-A", for: "server"))
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        let markReturned = DispatchSemaphore(value: 0)
+        let committed = expectation(description: "proof binding committed")
+        let marked = expectation(description: "concurrent selection retained")
+        DispatchQueue.global().async {
+            XCTAssertTrue(preferences.withSelectionRequired(for: "server", accountEpoch: "epoch-A") { _ in
+                entered.signal()
+                XCTAssertEqual(resume.wait(timeout: .now() + 5), .success)
+                return true
+            })
+            committed.fulfill()
+        }
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        DispatchQueue.global().async {
+            XCTAssertTrue(preferences.markSelectionRequired(for: "server"))
+            markReturned.signal()
+            marked.fulfill()
+        }
+        XCTAssertEqual(markReturned.wait(timeout: .now() + 0.1), .timedOut)
+        resume.signal()
+        wait(for: [committed, marked], timeout: 5)
+
+        XCTAssertTrue(preferences.state.requiresSelection(for: "server", accountEpoch: "epoch-A"))
+    }
+
+    func testClearingAnAccountPreservesOtherAccountsAndFullRemovalOnlyClearsItsServer() throws {
+        let (preferences, _) = try harness()
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: false,
+            accountEpoch: "epoch-A", for: "server"))
+        XCTAssertTrue(preferences.remember(profileID: "profile-B", requiresPIN: false,
+            accountEpoch: "epoch-B", for: "server"))
+        XCTAssertTrue(preferences.remember(profileID: "other", requiresPIN: false,
+            accountEpoch: "epoch-A", for: "server-other"))
+
+        XCTAssertTrue(preferences.clearRememberedProfile(for: "server"))
+
+        XCTAssertNil(preferences.rememberedProfile(for: "server", accountEpoch: "epoch-B"))
+        XCTAssertEqual(preferences.rememberedProfile(for: "server", accountEpoch: "epoch-A")?.profileID, "profile-A")
+        XCTAssertTrue(preferences.activateAccount(for: "server", accountEpoch: "epoch-A"))
+        XCTAssertEqual(preferences.rememberedProfile(for: "server")?.profileID, "profile-A")
+        XCTAssertTrue(preferences.clearAllRememberedProfiles(for: "server"))
+        XCTAssertNil(preferences.rememberedProfile(for: "server", accountEpoch: "epoch-A"))
+        XCTAssertEqual(preferences.rememberedProfile(for: "server-other", accountEpoch: "epoch-A")?.profileID, "other")
+    }
+
+    func testClearingInactiveAccountDoesNotClearActiveProjection() throws {
+        let (preferences, _) = try harness()
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: false,
+            accountEpoch: "epoch-A", for: "server"))
+        XCTAssertTrue(preferences.remember(profileID: "profile-B", requiresPIN: false,
+            accountEpoch: "epoch-B", for: "server"))
+
+        XCTAssertTrue(preferences.clearRememberedProfile(for: "server", accountEpoch: "epoch-A"))
+
+        XCTAssertEqual(preferences.rememberedProfile(for: "server")?.profileID, "profile-B")
+        XCTAssertNil(preferences.rememberedProfile(for: "server", accountEpoch: "epoch-A"))
+    }
+
+    func testLegacyProjectionAndItsPendingSelectionSurviveFirstAccountSwitch() throws {
+        let (_, defaults) = try harness()
+        let profileA = RememberedProfile(profileID: "profile-A", requiredPINAtSelection: false, accountEpoch: "epoch-A")
+        let legacy = ProfileLaunchState(rememberedByServerID: ["server": profileA], selectionRequiredServerIDs: ["server"])
+        defaults.set(try JSONEncoder().encode(legacy), forKey: SharedStorage.profileLaunchStateKey)
+        let preferences = ProfileLaunchPreferences(defaults: defaults, preservesAccountHistory: true)
+
+        XCTAssertTrue(preferences.activateAccount(for: "server", accountEpoch: "epoch-B"))
+        XCTAssertNil(preferences.rememberedProfile(for: "server"))
+        XCTAssertFalse(preferences.state.selectionRequiredServerIDs.contains("server"))
+        XCTAssertTrue(preferences.activateAccount(for: "server", accountEpoch: "epoch-A"))
+
+        XCTAssertEqual(preferences.rememberedProfile(for: "server"), profileA)
+        XCTAssertTrue(preferences.state.selectionRequiredServerIDs.contains("server"))
+    }
+
+    func testFailedAccountActivationAndRememberLeavePriorHistoryUntouched() throws {
+        let (_, defaults) = try harness()
+        var allowsPersistence = true
+        let preferences = ProfileLaunchPreferences(defaults: defaults,
+            persistenceOverride: { _ in allowsPersistence }, preservesAccountHistory: true)
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: false,
+            accountEpoch: "epoch-A", for: "server"))
+        let before = preferences.state
+        allowsPersistence = false
+
+        XCTAssertFalse(preferences.activateAccount(for: "server", accountEpoch: "epoch-B"))
+        XCTAssertEqual(preferences.state, before)
+        XCTAssertFalse(preferences.remember(profileID: "profile-B", requiresPIN: false,
+            accountEpoch: "epoch-B", for: "server"))
+        XCTAssertEqual(preferences.state, before)
+        XCTAssertEqual(ProfileLaunchPreferences(defaults: defaults, preservesAccountHistory: true).state, before)
+    }
+
+    func testNewEpochNeverBorrowsAnOldAccountsProfile() throws {
+        let (preferences, _) = try harness()
+        preferences.behavior = .automatic
+        XCTAssertTrue(preferences.remember(profileID: "old-profile", requiresPIN: false,
+            accountEpoch: "old-epoch", for: "server"))
+
+        XCTAssertTrue(preferences.activateAccount(for: "server", accountEpoch: "new-epoch"))
+
+        XCTAssertNil(preferences.rememberedProfile(for: "server"))
+        XCTAssertEqual(preferences.resolution(for: "server", accountEpoch: "new-epoch", hasStoredProfileToken: true), .needsSelection)
+    }
+
+    func testMigrationForBDoesNotEraseAsRememberedProfile() throws {
+        let (preferences, _) = try harness()
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: true,
+            accountEpoch: "epoch-A", for: "server"))
+
+        XCTAssertTrue(preferences.migrateLegacyProfile(profileID: "profile-B", requiresPIN: false,
+            accountEpoch: "epoch-B", for: "server"))
+
+        XCTAssertEqual(preferences.rememberedProfile(for: "server", accountEpoch: "epoch-A")?.profileID, "profile-A")
+        XCTAssertEqual(preferences.rememberedProfile(for: "server", accountEpoch: "epoch-B")?.profileID, "profile-B")
+    }
+
+    func testNonTVPreferencesKeepSingleServerProjection() throws {
+        let (_, defaults) = try harness()
+        let preferences = ProfileLaunchPreferences(defaults: defaults, preservesAccountHistory: false)
+        preferences.behavior = .automatic
+        XCTAssertTrue(preferences.remember(profileID: "profile-A", requiresPIN: false,
+            accountEpoch: "epoch-A", for: "server"))
+        XCTAssertTrue(preferences.remember(profileID: "profile-B", requiresPIN: false,
+            accountEpoch: "epoch-B", for: "server"))
+        XCTAssertTrue(preferences.activateAccount(for: "server", accountEpoch: "epoch-A"))
+
+        XCTAssertNil(preferences.state.rememberedByAccountEpoch)
+        XCTAssertEqual(preferences.rememberedProfile(for: "server")?.profileID, "profile-B")
+        XCTAssertEqual(preferences.resolution(for: "server", accountEpoch: "epoch-A", hasStoredProfileToken: true), .needsSelection)
+    }
+
+    func testHistoryKeysSeparateServerAndEpochBoundaries() {
+        XCTAssertNotEqual(ProfileLaunchState.accountHistoryKey("ab", "c"), ProfileLaunchState.accountHistoryKey("a", "bc"))
+        XCTAssertFalse(ProfileLaunchState.accountHistoryKey("server-other", "epoch").hasPrefix(ProfileLaunchState.accountHistoryPrefix("server")))
+    }
+
+    private func harness() throws -> (ProfileLaunchPreferences, SharedDefaults) {
+        let name = "TVAccountProfileLaunchHistoryTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        return (ProfileLaunchPreferences(defaults: defaults, preservesAccountHistory: true), defaults)
+    }
+}
+
 final class ProfileLaunchPolicyTests: XCTestCase {
     private let serverID = "server-a"
     private let accountEpoch = "account-a"

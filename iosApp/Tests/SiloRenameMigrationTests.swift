@@ -76,6 +76,57 @@ final class SiloRenameMigrationTests: XCTestCase {
         XCTAssertEqual(current.get(account), "access")
     }
 
+    func testProofMoveConsumesCurrentAndPreRenameSourcesWithoutReplacingDestination() throws {
+        let (current, legacy) = keychains()
+        let source = SharedStorage.profileTokenAccount(for: "server")
+        let destination = source + ".moved"
+        let oldSource = try XCTUnwrap(SharedStorage.legacyKeychainAccount(for: source))
+        XCTAssertTrue(current.set("current-proof", for: source))
+        XCTAssertTrue(legacy.set("old-proof", for: oldSource))
+        XCTAssertTrue(current.set("new-account-proof", for: destination))
+        addTeardownBlock { current.delete(source); current.delete(destination) }
+
+        XCTAssertTrue(current.moveValue(from: source, to: destination))
+
+        XCTAssertEqual(try current.getChecked(destination), "new-account-proof")
+        XCTAssertNil(try current.getChecked(source))
+        XCTAssertNil(try legacy.getChecked(oldSource))
+        XCTAssertTrue(current.delete(destination))
+        XCTAssertTrue(current.moveValue(from: source, to: destination), "An absent source is an idempotent no-op")
+        XCTAssertNil(try current.getChecked(destination))
+    }
+
+    func testProofMoveCanConsumeOnlyThePreRenameSource() throws {
+        let (current, legacy) = keychains()
+        let source = SharedStorage.profileTokenAccount(for: "server")
+        let destination = source + ".moved"
+        let oldSource = try XCTUnwrap(SharedStorage.legacyKeychainAccount(for: source))
+        XCTAssertTrue(legacy.set("old-proof", for: oldSource))
+        addTeardownBlock { current.delete(source); current.delete(destination) }
+
+        XCTAssertTrue(current.moveValue(from: source, to: destination))
+
+        XCTAssertEqual(try current.getChecked(destination), "old-proof")
+        XCTAssertNil(try current.getChecked(source))
+        XCTAssertNil(try legacy.getChecked(oldSource))
+    }
+
+    func testFailedProofMovePreservesTheSourceAndExistingDestination() throws {
+        let (current, _) = keychains()
+        let source = SharedStorage.profileTokenAccount(for: "server")
+        let destination = source + ".moved"
+        XCTAssertTrue(current.set("legacy-proof", for: source))
+        XCTAssertTrue(current.set("account-proof", for: destination))
+        addTeardownBlock { current.delete(source); current.delete(destination) }
+        let inaccessible = SharedKeychain(service: current.service, accessGroup: "invalid.silo.test.group",
+            allowsAppLocalFallback: false)
+
+        XCTAssertFalse(inaccessible.moveValue(from: source, to: destination))
+
+        XCTAssertEqual(try current.getChecked(source), "legacy-proof")
+        XCTAssertEqual(try current.getChecked(destination), "account-proof")
+    }
+
     func testPreRenameFixedNamesAreReadFromTheLegacyService() {
         let (current, legacy) = keychains()
         XCTAssertTrue(legacy.set("old", for: "com.continuum.app.accessToken"))
