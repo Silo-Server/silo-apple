@@ -106,7 +106,10 @@ struct PlayerView: View {
     }
 
     var body: some View {
-        PlayerSurfaceLayout(isPreview: viewModel.showNextUpScreen) {
+        PlayerSurfaceLayout(
+            isPreview: viewModel.showNextUpScreen,
+            fitsSafeArea: viewModel.settings.videoGravity == .fit
+        ) {
             playerSurface()
                 .opacity(viewModel.error == nil ? 1 : 0)
                 .accessibilityHidden(viewModel.error != nil)
