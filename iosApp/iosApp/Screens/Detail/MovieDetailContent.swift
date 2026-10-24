@@ -223,7 +223,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
             subtitleMode: subtitleOverrideCleared ? nil : detail.effectiveSubtitleMode,
             subtitleSignature: subtitleOverrideCleared ? nil : detail.effectiveSubtitleTrackSignature,
-            showForcedSubtitles: detail.showsForcedSubtitles,
+            showForcedSubtitles: subtitleOverrideCleared ? nil : detail.effectiveShowForcedSubtitles,
             onSelectVersion: onSelectVersion,
             onSelectAudioTrack: onSelectAudioTrack,
             onSelectSubtitleTrack: onSelectSubtitleTrack

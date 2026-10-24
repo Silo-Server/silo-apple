@@ -329,7 +329,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     subtitleSignature: nextUpSubtitleOverrideCleared
                         ? nil
                         : nextUpWatchDetail?.effectiveSubtitleTrackSignature,
-                    showForcedSubtitles: nextUpWatchDetail?.showsForcedSubtitles ?? true,
+                    showForcedSubtitles: nextUpSubtitleOverrideCleared
+                        ? nil
+                        : nextUpWatchDetail?.effectiveShowForcedSubtitles,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack

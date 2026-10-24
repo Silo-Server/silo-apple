@@ -138,10 +138,12 @@ struct PhonePlaybackSelectorRow: View {
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
-    /// Inputs for previewing what "Auto" plays, as on tvOS.
+    /// Inputs for previewing what "Auto" plays, as on tvOS. A nil mode or
+    /// forced setting falls back to the profile's, which is what the title
+    /// inherits once the viewer picks Auto.
     var subtitleMode: String? = nil
     var subtitleSignature: SubtitleTrackSignature? = nil
-    var showForcedSubtitles = false
+    var showForcedSubtitles: Bool? = nil
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
@@ -199,13 +201,14 @@ struct PhonePlaybackSelectorRow: View {
     /// caption settings, which the detail page can't predict.
     private var subtitleAutoContext: DetailPlaybackFormatting.SubtitleAutoContext? {
         guard !PlayerSettings.shared.subtitleMatchesSystemAppearance else { return nil }
+        let profile = CurrentProfileStore.shared.profile
         return DetailPlaybackFormatting.SubtitleAutoContext(
             version: currentVersion,
             selectedAudioTrackIndex: selectedAudioTrackIndex,
             preferredLanguage: profilePrefsStore.preferredSubtitleLanguage,
-            mode: subtitleMode,
+            mode: subtitleMode ?? profile?.subtitleMode,
             signature: subtitleSignature,
-            showForced: showForcedSubtitles
+            showForced: showForcedSubtitles ?? profile?.showForcedSubtitles ?? true
         )
     }
 
