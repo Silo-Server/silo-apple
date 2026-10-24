@@ -143,6 +143,40 @@ final class OfflineSubtitleSelectionTests: XCTestCase {
         await model.waitForCleanupCompletion()
     }
 
+    @MainActor
+    func testDeviceCaptionSettingsKeepTheirPolicyOverAStoredChoice() async {
+        let settings = PlayerSettings.shared
+        let wasMatching = settings.subtitleMatchesSystemAppearance
+        settings.setSubtitleMatchesSystemAppearance(true)
+        defer { settings.setSubtitleMatchesSystemAppearance(wasMatching) }
+        let model = PlayerViewModel()
+        model.restoreOfflineSubtitleSelection(.off, subtitles: [])
+        model.selectedSubtitleId = 2
+        model.applyPendingSubtitleSelections(aetherSubtitleTracks: [], publishedSubtitleTracks: [],
+                                             loadIsEstablished: true)
+        XCTAssertEqual(model.selectedSubtitleId, 2)
+        model.cleanup()
+        await model.waitForCleanupCompletion()
+    }
+
+    @MainActor
+    func testARevisionStampKeepsALegacyDownloadsFileButAReplacementDoesNot() {
+        let legacy = makeRecord()
+        var stamped = legacy
+        stamped.revision = 7
+        XCTAssertTrue(DownloadManager.holdsSameLocalFile(stamped, as: legacy))
+
+        var bumped = stamped
+        bumped.revision = 8
+        XCTAssertFalse(DownloadManager.holdsSameLocalFile(bumped, as: stamped))
+        var reformatted = legacy
+        reformatted.format = "1080p"
+        XCTAssertFalse(DownloadManager.holdsSameLocalFile(reformatted, as: legacy))
+        var reset = stamped
+        reset.mediaFilename = nil
+        XCTAssertFalse(DownloadManager.holdsSameLocalFile(reset, as: legacy))
+    }
+
     private func makeRecord() -> DownloadRecord {
         DownloadRecord(id: "download", contentId: "series", episodeId: "episode", batchId: nil,
             mediaFileId: "42", format: "original", serverStatus: "completed", localStatus: .completed,

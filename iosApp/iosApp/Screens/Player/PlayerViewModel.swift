@@ -4333,10 +4333,12 @@ class PlayerViewModel {
         }
     }
 
-    /// Restored local picks are explicit, so automatic device/profile
-    /// caption policy cannot replace them when the inventory arrives.
+    /// Restored local picks are explicit, so automatic profile caption policy
+    /// cannot replace them when the inventory arrives. Device caption
+    /// settings skip them, as they skip the server preference online.
     func restoreOfflineSubtitleSelection(_ selection: OfflineSubtitleSelection?, subtitles: [SubtitleUrl]) {
-        guard !hasExplicitSubtitleChoice, let selection else { return }
+        guard !hasExplicitSubtitleChoice, !settings.subtitleMatchesSystemAppearance,
+              let selection else { return }
         let restored = selection.resolve(subtitles: subtitles)
         guard restored.embeddedIndex != nil || restored.sidecarId != nil else { return }
         pendingSubtitleFfIndex = restored.embeddedIndex
