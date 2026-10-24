@@ -57,13 +57,15 @@ struct MobilePlayerGestureLayer: View {
     /// past fit or stretch shows the toast without a haptic.
     @State private var gravityChangeCount = 0
 
-    /// Width of the brightness/volume strips along each screen edge.
+    /// Width of the brightness/volume strips along each screen edge, past
+    /// that side's safe-area inset. In landscape the inset covers the
+    /// Dynamic Island, which would otherwise eat into the strip.
     private static let edgeZoneWidth: CGFloat = 88
     /// Track height of the brightness/volume gauge.
     private static let gaugeHeight: CGFloat = 130
-    /// Gauge center's distance from its screen edge. Inboard of the edge
-    /// zone, so the thumb dragging along the edge doesn't cover it.
-    private static let gaugeEdgeInset: CGFloat = edgeZoneWidth + 44
+    /// Gauge center's distance past its edge zone, so the thumb dragging
+    /// along the edge doesn't cover it.
+    private static let gaugeZoneOffset: CGFloat = 44
     /// Drag travel for a full 0–100% swing.
     private static let gaugeFullSwing: CGFloat = 160
     /// Haptic ticks across a full gauge swing; matches the 16 hardware
@@ -77,6 +79,10 @@ struct MobilePlayerGestureLayer: View {
     var body: some View {
         GeometryReader { proxy in
             let size = proxy.size
+            // The layer ignores the safe area, so these are the insets it
+            // extends into.
+            let leadingZone = proxy.safeAreaInsets.leading + Self.edgeZoneWidth
+            let trailingZone = proxy.safeAreaInsets.trailing + Self.edgeZoneWidth
 
             ZStack {
                 // Must stay in the window for writes to move the device
@@ -98,10 +104,10 @@ struct MobilePlayerGestureLayer: View {
                             viewModel.endHoldFastForward()
                         }
                     }
-                    .simultaneousGesture(edgeAdjustmentDrag(in: size))
+                    .simultaneousGesture(edgeAdjustmentDrag(in: size, leadingZone: leadingZone, trailingZone: trailingZone))
                     .simultaneousGesture(videoGravityPinchGesture)
 
-                feedbackOverlays(in: size)
+                feedbackOverlays(in: size, leadingZone: leadingZone, trailingZone: trailingZone)
             }
         }
         // These gestures have no button under the finger, so a light haptic
@@ -185,15 +191,15 @@ struct MobilePlayerGestureLayer: View {
         }
     }
 
-    private func edgeAdjustmentDrag(in size: CGSize) -> some Gesture {
+    private func edgeAdjustmentDrag(in size: CGSize, leadingZone: CGFloat, trailingZone: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 14)
             .onChanged { value in
                 if dragBaseline == nil {
                     let startX = value.startLocation.x
-                    if startX < Self.edgeZoneWidth {
+                    if startX < leadingZone {
                         activeAdjustment = .brightness
                         dragBaseline = PlayerScreenBrightness.shared.currentLevel()
-                    } else if startX > size.width - Self.edgeZoneWidth {
+                    } else if startX > size.width - trailingZone {
                         activeAdjustment = .volume
                         viewModel.unmutePlayerGainForLocalVolume()
                         dragBaseline = Double(systemVolume.currentLevel)
@@ -309,7 +315,7 @@ struct MobilePlayerGestureLayer: View {
     }
 
     @ViewBuilder
-    private func feedbackOverlays(in size: CGSize) -> some View {
+    private func feedbackOverlays(in size: CGSize, leadingZone: CGFloat, trailingZone: CGFloat) -> some View {
         if let flash = skipFlash {
             skipFlashView(flash)
                 .position(
@@ -338,7 +344,9 @@ struct MobilePlayerGestureLayer: View {
         if let gauge = visibleGauge {
             edgeGauge(for: gauge)
                 .position(
-                    x: gauge == .brightness ? Self.gaugeEdgeInset : size.width - Self.gaugeEdgeInset,
+                    x: gauge == .brightness
+                        ? leadingZone + Self.gaugeZoneOffset
+                        : size.width - trailingZone - Self.gaugeZoneOffset,
                     y: size.height / 2
                 )
                 .transition(.scale(scale: 0.8).combined(with: .opacity))
