@@ -145,7 +145,7 @@ struct PhonePlaybackSelectorRow: View {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    @Environment(\.detailSelectorPopover) private var popover
+    @Environment(\.detailSelectorPopover) private var selectorPopover
     #endif
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .subheadline) private var rowHeight = PhonePlaybackSelectorMetrics.rowHeight
@@ -164,7 +164,7 @@ struct PhonePlaybackSelectorRow: View {
                     .popover(
                         item: $activeSelector,
                         attachmentAnchor: .rect(.bounds),
-                        arrowEdge: popover.arrowEdge
+                        arrowEdge: selectorPopover.arrowEdge
                     ) { kind in
                         selectorPresentation(for: kind)
                     }
@@ -193,11 +193,20 @@ struct PhonePlaybackSelectorRow: View {
             selectedVersionFileId: selectedVersionFileId,
             selectedAudioTrackIndex: selectedAudioTrackIndex,
             selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
-            popover: usesPopoverLayout ? popover : nil,
+            popover: presentedPopover,
             onSelectVersion: onSelectVersion,
             onSelectAudioTrack: onSelectAudioTrack,
             onSelectSubtitleTrack: onSelectSubtitleTrack
         )
+    }
+
+    /// Nil when the selectors present a sheet.
+    private var presentedPopover: DetailSelectorPopover? {
+        #if os(iOS)
+        usesPopoverLayout ? selectorPopover : nil
+        #else
+        nil
+        #endif
     }
 
     private var usesPopoverLayout: Bool {
