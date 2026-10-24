@@ -7887,23 +7887,18 @@ class PlayerViewModel {
     private func persistSubtitleSelection(_ track: PlayerTrack?) {
         guard let key = trackPrefPersistKey else { return }
         if let track, SubtitleTrackIdSpace.isAILive(track.trackId) { return }
-        let showForced = currentWatchDetail?.effectiveShowForcedSubtitles
         let request: SubtitlePrefRequest
         if let track {
             if !track.isExternal,
                let ffIndex = track.ffIndex,
                let version = currentSelectedVersion,
-               let fromDetail = TrackSelectionPersistence.subtitleRequest(
-                   version: version,
-                   ffIndex: ffIndex,
-                   showForced: showForced
-               ) {
+               let fromDetail = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: ffIndex) {
                 request = fromDetail
             } else {
-                request = TrackSelectionPersistence.subtitleRequest(track: track, showForced: showForced)
+                request = TrackSelectionPersistence.subtitleRequest(track: track)
             }
         } else {
-            request = TrackSelectionPersistence.subtitleOffRequest(showForced: showForced)
+            request = TrackSelectionPersistence.subtitleOffRequest()
         }
         TrackSelectionPersistence.saveSubtitle(prefKey: key, request: request)
     }

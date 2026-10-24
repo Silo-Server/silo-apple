@@ -99,7 +99,7 @@ final class TrackSelectionPersistenceTests: XCTestCase {
         }
         """)
 
-        let request = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 2, showForced: true)
+        let request = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 2)
 
         XCTAssertEqual(request?.subtitleTrackIndex, 2)
         XCTAssertEqual(request?.subtitleLanguage, "en")
@@ -108,7 +108,7 @@ final class TrackSelectionPersistenceTests: XCTestCase {
         XCTAssertEqual(request?.trackSignature?.source, "embedded")
         XCTAssertEqual(request?.trackSignature?.label, "English")
         XCTAssertEqual(request?.trackSignature?.hearingImpaired, true)
-        XCTAssertEqual(request?.showForcedSubtitles, true)
+        XCTAssertNil(request?.showForcedSubtitles ?? nil, "a pick never pins the forced-subtitle setting")
     }
 
     func testSubtitleRequestForExternalTrackCarriesPath() {
@@ -121,7 +121,7 @@ final class TrackSelectionPersistenceTests: XCTestCase {
         }
         """)
 
-        let request = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 5, showForced: nil)
+        let request = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 5)
 
         XCTAssertEqual(request?.trackSignature?.source, "external")
         XCTAssertEqual(request?.externalSubtitlePath, "Movie.es.srt")
@@ -132,7 +132,7 @@ final class TrackSelectionPersistenceTests: XCTestCase {
         { "file_id": 1, "subtitle_tracks": [ { "index": 0, "language": "en", "codec": "subrip" } ] }
         """)
 
-        let request = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: -1, showForced: false)
+        let request = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: -1)
 
         XCTAssertEqual(request?.subtitleTrackIndex, -1)
         XCTAssertEqual(request?.subtitleLanguage, "")
@@ -145,7 +145,7 @@ final class TrackSelectionPersistenceTests: XCTestCase {
         { "file_id": 1, "subtitle_tracks": [ { "index": 0, "language": "en", "codec": "subrip" } ] }
         """)
 
-        XCTAssertNil(TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 3, showForced: nil))
+        XCTAssertNil(TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 3))
     }
 
     func testSubtitleRequestFromPlayerTrackUsesFfIndexAndFlags() {
@@ -158,7 +158,7 @@ final class TrackSelectionPersistenceTests: XCTestCase {
             ffIndex: 4
         )
 
-        let request = TrackSelectionPersistence.subtitleRequest(track: track, showForced: nil)
+        let request = TrackSelectionPersistence.subtitleRequest(track: track)
 
         XCTAssertEqual(request.subtitleTrackIndex, 4)
         XCTAssertEqual(request.subtitleMode, SubtitleMode.always.rawValue)

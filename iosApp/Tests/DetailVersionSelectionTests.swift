@@ -684,7 +684,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             "English · SRT"
         )
         XCTAssertEqual(
-            TrackSelectionPersistence.subtitleRequest(version: versions[0], ffIndex: 0, showForced: nil)?.subtitleTrackIndex,
+            TrackSelectionPersistence.subtitleRequest(version: versions[0], ffIndex: 0)?.subtitleTrackIndex,
             0
         )
     }

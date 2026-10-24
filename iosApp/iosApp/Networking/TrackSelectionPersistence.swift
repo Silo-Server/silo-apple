@@ -85,17 +85,19 @@ enum TrackSelectionPersistence {
         )
     }
 
+    // Ordinary picks never carry `show_forced_subtitles`. The server stores a
+    // present member as a deliberate per-series forced-subtitle override that
+    // outranks the profile toggle, so echoing the resolved value from the
+    // watch detail would pin it on every pick (silo-apple#870). The builders
+    // take no forced argument so no caller can pass an inherited value.
+
     /// Subtitle pick against server file metadata. `ffIndex` matches
     /// `version.subtitleTracks[].selectionIndex` (an embedded track with no
     /// wire index is stream 0); a negative value is the detail page's
     /// explicit "Off".
-    static func subtitleRequest(
-        version: FileVersion,
-        ffIndex: Int,
-        showForced: Bool?
-    ) -> SubtitlePrefRequest? {
+    static func subtitleRequest(version: FileVersion, ffIndex: Int) -> SubtitlePrefRequest? {
         if ffIndex < 0 {
-            return subtitleOffRequest(showForced: showForced)
+            return subtitleOffRequest()
         }
         guard let track = version.subtitleTracks?.first(where: { $0.selectionIndex == ffIndex }) else {
             return nil
@@ -113,14 +115,13 @@ enum TrackSelectionPersistence {
                 label: track.title ?? track.embeddedTitle,
                 forced: track.forced ?? false,
                 hearingImpaired: track.hearingImpaired ?? false
-            ),
-            showForcedSubtitles: showForced
+            )
         )
     }
 
     /// Subtitle pick from a live player track (sidecar / downloaded /
     /// embedded rows the watch detail can't describe).
-    static func subtitleRequest(track: PlayerTrack, showForced: Bool?) -> SubtitlePrefRequest {
+    static func subtitleRequest(track: PlayerTrack) -> SubtitlePrefRequest {
         SubtitlePrefRequest(
             subtitleLanguage: track.normalizedLanguageCode ?? "",
             subtitleTrackIndex: track.ffIndex ?? -1,
@@ -133,21 +134,19 @@ enum TrackSelectionPersistence {
                 label: track.normalizedTitle,
                 forced: track.isForced,
                 hearingImpaired: track.isHearingImpaired
-            ),
-            showForcedSubtitles: showForced
+            )
         )
     }
 
     /// Explicit "subtitles off" — same payload the web writes for a
     /// null selection: empty language, index -1, mode "off".
-    static func subtitleOffRequest(showForced: Bool?) -> SubtitlePrefRequest {
+    static func subtitleOffRequest() -> SubtitlePrefRequest {
         SubtitlePrefRequest(
             subtitleLanguage: "",
             subtitleTrackIndex: -1,
             externalSubtitlePath: "",
             subtitleMode: SubtitleMode.off.rawValue,
-            trackSignature: nil,
-            showForcedSubtitles: showForced
+            trackSignature: nil
         )
     }
 

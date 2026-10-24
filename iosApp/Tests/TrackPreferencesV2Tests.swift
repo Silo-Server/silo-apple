@@ -68,7 +68,7 @@ final class TrackPreferencesV2Tests: XCTestCase {
 
         await TrackSelectionPersistence.saveSubtitle(
             prefKey: "series-9",
-            request: TrackSelectionPersistence.subtitleOffRequest(showForced: nil),
+            request: TrackSelectionPersistence.subtitleOffRequest(),
             client: api, tokenStore: tokens
         ).value
 
@@ -116,7 +116,7 @@ final class TrackPreferencesV2Tests: XCTestCase {
 
     func testAutoAfterAPickWaitsForThePickToFinish() async throws {
         let (api, tokens) = try await client()
-        let request = TrackSelectionPersistence.subtitleOffRequest(showForced: nil)
+        let request = TrackSelectionPersistence.subtitleOffRequest()
         stub.hold()
 
         let pick = TrackSelectionPersistence.saveSubtitle(prefKey: "series-order", request: request,
@@ -149,6 +149,39 @@ final class TrackPreferencesV2Tests: XCTestCase {
         await second.value
 
         XCTAssertEqual(stub.methods, ["DELETE", "DELETE"], "the lost write is dropped, not replayed")
+    }
+
+    func testOrdinaryPicksAndOffNeverSendTheForcedSubtitleOverride() async throws {
+        let (api, tokens) = try await client()
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let version = try decoder.decode(FileVersion.self, from: Data(#"""
+        {"file_id": 1, "subtitle_tracks": [{"index": 2, "language": "en", "codec": "subrip"}]}
+        """#.utf8))
+        let track = PlayerTrack(
+            trackId: 7, kind: .sub, title: "English", lang: "en", codec: "subrip", audioChannelCount: nil,
+            bitrate: nil, isDefault: false, isForced: false, isHearingImpaired: false,
+            isExternal: true, isSelected: false, ffIndex: nil, srcId: nil
+        )
+        // The builders the player, the detail selectors and the Next Up
+        // selectors use for a track pick and for Off.
+        let requests = [
+            try XCTUnwrap(TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: 2)),
+            try XCTUnwrap(TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: -1)),
+            TrackSelectionPersistence.subtitleRequest(track: track),
+            TrackSelectionPersistence.subtitleOffRequest(),
+        ]
+
+        for request in requests {
+            await TrackSelectionPersistence.saveSubtitle(prefKey: "series-forced", request: request,
+                                                         client: api, tokenStore: tokens).value
+        }
+
+        XCTAssertEqual(stub.requests.count, requests.count)
+        for sent in stub.requests {
+            XCTAssertNil(try jsonBody(sent)["show_forced_subtitles"],
+                         "a present member would pin the profile's forced-subtitle toggle on the series")
+        }
     }
 
     func testWriteCapturedForAnotherOwnerIsNeverSent() async throws {
