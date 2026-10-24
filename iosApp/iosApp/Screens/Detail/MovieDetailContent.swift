@@ -221,8 +221,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
             selectedVersionFileId: selectedVersionFileId,
             selectedAudioTrackIndex: selectedAudioTrackIndex,
             selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
-            // The language arrives with the watch-detail enrichment.
-            previewsAutoSubtitle: !subtitleOverrideCleared && detail.effectiveSubtitleLanguage != nil,
+            // The effective settings arrive with the watch-detail enrichment.
+            previewsAutoSubtitle: !subtitleOverrideCleared && detail.hasWatchDetailSubtitlePolicy,
             subtitleLanguage: detail.effectiveSubtitleLanguage,
             subtitleMode: detail.effectiveSubtitleMode,
             subtitleSignature: detail.effectiveSubtitleTrackSignature,

@@ -323,8 +323,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     selectedVersionFileId: selectedNextUpFileId,
                     selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
                     selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
-                    previewsAutoSubtitle: !nextUpSubtitleOverrideCleared
-                        && nextUpWatchDetail?.effectiveSubtitleLanguage != nil,
+                    previewsAutoSubtitle: nextUpWatchDetail != nil && !nextUpSubtitleOverrideCleared,
                     subtitleLanguage: nextUpWatchDetail?.effectiveSubtitleLanguage,
                     subtitleMode: nextUpWatchDetail?.effectiveSubtitleMode,
                     subtitleSignature: nextUpWatchDetail?.effectiveSubtitleTrackSignature,
