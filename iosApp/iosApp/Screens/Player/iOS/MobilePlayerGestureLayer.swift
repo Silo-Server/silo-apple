@@ -139,6 +139,9 @@ struct MobilePlayerGestureLayer: View {
         }
         .onDisappear {
             systemVolume.stopObserving()
+            // The callback captures this view, whose state holds
+            // `systemVolume`; clearing it breaks that cycle.
+            systemVolume.onExternalChange = nil
             // The layer can be torn out mid-gesture (loading state flips,
             // player transitions) without a final onPressingChanged(false).
             viewModel.endHoldFastForward()
