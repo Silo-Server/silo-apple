@@ -61,7 +61,14 @@ struct MobileScrubDrag: Equatable {
             anchorX = x
             anchorFraction = fraction
         }
-        fraction = Self.clamped(anchorFraction + Double((x - anchorX) / width) * speed.rate)
+        let proposed = anchorFraction + Double((x - anchorX) / width) * speed.rate
+        fraction = Self.clamped(proposed)
+        // Below full speed the playhead is no longer under the finger, so
+        // drop any travel past an end; turning back then moves it at once.
+        if speed != .full && fraction != proposed {
+            anchorX = x
+            anchorFraction = fraction
+        }
     }
 
     private static func clamped(_ fraction: Double) -> Double {

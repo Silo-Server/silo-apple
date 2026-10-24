@@ -51,5 +51,16 @@ final class MobileScrubDragTests: XCTestCase {
         drag.move(toX: 390, heightAboveBar: 0, width: width)
         XCTAssertEqual(drag.fraction, 0.975, accuracy: 0.0001)
     }
+
+    /// Below full speed, travel past the end of the bar isn't banked:
+    /// turning back moves the playhead straight away.
+    func testReducedSpeedOvershootDoesNotStickAtTheEnd() {
+        var drag = MobileScrubDrag(startX: 396, width: width)
+        drag.move(toX: 200, heightAboveBar: 160, width: width)
+        drag.move(toX: 300, heightAboveBar: 160, width: width)
+        XCTAssertEqual(drag.fraction, 1)
+        drag.move(toX: 290, heightAboveBar: 160, width: width)
+        XCTAssertEqual(drag.fraction, 0.9975, accuracy: 0.0001)
+    }
 }
 #endif
