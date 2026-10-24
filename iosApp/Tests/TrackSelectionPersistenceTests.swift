@@ -254,6 +254,7 @@ final class TrackSelectionPersistenceTests: XCTestCase {
         {
           "file_id": 3,
           "effective_audio_track_index": 0,
+          "effective_audio_language": "eng",
           "audio_tracks": [
             { "index": 1, "language": "eng", "codec": "ac3", "channels": 6 },
             { "index": 2, "codec": "aac", "channels": 2 },
@@ -273,6 +274,35 @@ final class TrackSelectionPersistenceTests: XCTestCase {
         XCTAssertNil(ordinal(AudioTrackSignature(codec: "dts", channels: 6)),
                      "no matching untagged track leaves the server's audio")
         XCTAssertNil(ordinal(nil, index: 1), "the other file's ordinal is not trusted unchecked")
+
+        let carried = TrackSelectionPersistence.Settlement(rereads: false, unsettled: [.audio: .audio(
+            AudioPrefRequest(audioTrackIndex: 1, audioLanguage: "",
+                             trackSignature: AudioTrackSignature(codec: "aac", channels: 2))
+        )]).applied(to: watchDetail(version: version, subtitleLanguage: nil)).versions[0]
+        XCTAssertEqual(carried.effectiveAudioTrackIndex, 1)
+        XCTAssertNil(carried.effectiveAudioLanguage,
+                     "the untagged track's language replaces English, so Auto subtitles don't judge by it")
+    }
+
+    func testAudioPickMatchesItsEmbeddedTitleAndEquivalentLanguageCodes() throws {
+        let version = decodedVersion("""
+        {
+          "file_id": 4,
+          "audio_tracks": [
+            { "index": 1, "language": "en", "codec": "ac3", "channels": 6, "layout": "5.1", "embedded_title": "Commentary" },
+            { "index": 2, "language": "en", "codec": "ac3", "channels": 6, "layout": "5.1", "embedded_title": "Main audio" },
+            { "index": 3, "language": "jpn", "codec": "aac", "channels": 2 }
+          ]
+        }
+        """)
+        let main = try XCTUnwrap(TrackSelectionPersistence.audioRequest(version: version, ordinal: 1))
+        XCTAssertEqual(TrackSelectionPersistence.audioOrdinal(matching: main, in: version), 1,
+                       "a track that differs only in its embedded title is another pick")
+
+        let japanese = AudioPrefRequest(audioTrackIndex: 0, audioLanguage: "ja",
+                                        trackSignature: AudioTrackSignature(language: "ja", codec: "aac", channels: 2))
+        XCTAssertEqual(TrackSelectionPersistence.audioOrdinal(matching: japanese, in: version), 2,
+                       "ja on one file is jpn on the next")
     }
 
     private func watchDetail(version: FileVersion, subtitleLanguage: String?) -> WatchDetail {

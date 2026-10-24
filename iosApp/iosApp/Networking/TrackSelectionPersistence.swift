@@ -296,7 +296,9 @@ enum TrackSelectionPersistence {
                     }
                     var version = version
                     version.effectiveAudioTrackIndex = ordinal
-                    version.effectiveAudioLanguage = version.audioTracks?[ordinal].language ?? version.effectiveAudioLanguage
+                    // The matched track's own language, nil included: the
+                    // start judges Auto subtitles by the audio's language.
+                    version.effectiveAudioLanguage = version.audioTracks?[ordinal].language
                     return version
                 }
             }
@@ -353,37 +355,48 @@ enum TrackSelectionPersistence {
     /// The ordinal in `version.audioTracks` an audio pick names on another
     /// file of the series. A pick in a language matches the track with its
     /// signature, then its own ordinal when that track has the language,
-    /// then the first track in the language. An untagged pick matches only
-    /// an untagged track with the same codec, channels, layout and title.
-    /// Nil leaves the server's choice alone.
+    /// then the first track in the language; languages compare by meaning,
+    /// so `en` finds `eng`. An untagged pick matches only an untagged track
+    /// with the same codec, channels, layout and titles. Nil leaves the
+    /// server's choice alone.
     static func audioOrdinal(matching request: AudioPrefRequest, in version: FileVersion) -> Int? {
         let tracks = version.audioTracks ?? []
         func same(_ lhs: String?, _ rhs: String?) -> Bool {
             let normalize = { (value: String?) in value?.trimmingCharacters(in: .whitespaces).lowercased() ?? "" }
             return normalize(lhs) == normalize(rhs)
         }
+        func inLanguage(_ track: AudioTrack, _ language: String) -> Bool {
+            taggedLanguage(track.language).map { SubtitleAutoResolver.languagesMatch($0, language) } ?? false
+        }
+        // The signature's two titles are compared separately: tracks that
+        // differ only in their embedded title ("Main audio" / "Commentary")
+        // are different picks. A player-built signature carries one title in
+        // both fields, so each may match either of the track's titles.
+        func matchesTitle(_ track: AudioTrack, _ title: String?) -> Bool {
+            title == nil || same(track.title, title) || same(track.embeddedTitle, title)
+        }
         func matchesDetails(_ track: AudioTrack, _ signature: AudioTrackSignature) -> Bool {
             (signature.codec == nil || same(track.codec, signature.codec))
                 && (signature.channels == nil || track.channels == signature.channels)
                 && (signature.layout == nil || same(track.channelLayout, signature.layout))
-                && (signature.title == nil || same(track.title, signature.title)
-                    || same(track.embeddedTitle, signature.title))
+                && matchesTitle(track, signature.title)
+                && matchesTitle(track, signature.embeddedTitle)
         }
         guard let language = taggedLanguage(request.audioLanguage) else {
             guard let signature = request.trackSignature,
-                  signature.codec != nil || signature.channels != nil
-                    || signature.layout != nil || signature.title != nil else { return nil }
+                  signature.codec != nil || signature.channels != nil || signature.layout != nil
+                    || signature.title != nil || signature.embeddedTitle != nil else { return nil }
             return tracks.firstIndex { taggedLanguage($0.language) == nil && matchesDetails($0, signature) }
         }
         if let signature = request.trackSignature,
-           let ordinal = tracks.firstIndex(where: { same($0.language, language) && matchesDetails($0, signature) }) {
+           let ordinal = tracks.firstIndex(where: { inLanguage($0, language) && matchesDetails($0, signature) }) {
             return ordinal
         }
         if tracks.indices.contains(request.audioTrackIndex),
-           same(tracks[request.audioTrackIndex].language, language) {
+           inLanguage(tracks[request.audioTrackIndex], language) {
             return request.audioTrackIndex
         }
-        return tracks.firstIndex { same($0.language, language) }
+        return tracks.firstIndex { inLanguage($0, language) }
     }
 
     /// Returns when every task has finished, `timeout` has passed, or the
