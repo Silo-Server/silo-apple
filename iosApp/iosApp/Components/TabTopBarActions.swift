@@ -116,8 +116,13 @@ private struct TopBarIconButton: View {
     }
 }
 
-/// Profile avatar opening the account menu (Watch Party, Requests, Settings,
-/// Switch Profile, Switch Server, Sign Out).
+/// Profile avatar opening the account menu: who is signed in and to which
+/// server, then Watch Party, Requests, Settings, Switch Profile, Switch Server
+/// and Sign Out.
+///
+/// On iPhone and iPad the menu is a panel (``ProfileMenuPanel``), because a
+/// system menu cannot show the profile picture or a bold name over the
+/// server. The Mac keeps the system menu.
 struct ProfileAvatarMenu: View {
     @Environment(AppRouter.self) private var router
     let profile: UserProfile?
@@ -130,10 +135,20 @@ struct ProfileAvatarMenu: View {
     let onSwitchServer: () -> Void
     let onSignOut: () -> Void
 
+    #if os(iOS)
+    @State private var isPanelPresented = false
+    /// Runs once the panel has closed, so navigation never starts under it.
+    @State private var pendingAction: (() -> Void)?
+    #endif
+
     /// Capability-gated: the Requests row exists only when the server has
     /// the feature enabled (older servers 404 the probe and read as off).
     private var requestsEnabled: Bool {
         RequestsFeatureStore.shared.isEnabled
+    }
+
+    private var serverName: String? {
+        ServerRegistry.shared.activeServer?.displayName
     }
 
     private var avatarSize: CGFloat {
@@ -151,8 +166,46 @@ struct ProfileAvatarMenu: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        Button {
+            isPanelPresented = true
+        } label: {
+            avatarLabel
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $isPanelPresented, arrowEdge: .top) {
+            ProfileMenuPanel(
+                profile: profile,
+                serverName: serverName,
+                sections: panelSections,
+                choose: { row in
+                    pendingAction = row.action
+                    isPanelPresented = false
+                }
+            )
+            .presentationCompactAdaptation(.popover)
+        }
+        .onChange(of: isPanelPresented) { _, isPresented in
+            guard !isPresented, let action = pendingAction else { return }
+            pendingAction = nil
+            action()
+        }
+        .accessibilityLabel("Profile menu")
+        #else
         Menu {
-            #if os(iOS) || os(tvOS)
+            // Who and where, as the Apple TV profile menu shows them. Not an
+            // action: Switch Profile and Switch Server sit below.
+            Section {
+                Button {} label: {
+                    Text(profile?.name ?? "Profile")
+                    if let serverName {
+                        Text(serverName)
+                    }
+                }
+                .disabled(true)
+            }
+
+            #if os(tvOS)
             if WatchPartyEntry.isAvailable {
                 Button(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3") { router.navigate(to: .watchParty) }
             }
@@ -191,27 +244,7 @@ struct ProfileAvatarMenu: View {
                 Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
             }
         } label: {
-            HStack(spacing: SiloTheme.smallPadding) {
-                ProfileAvatarView(
-                    avatar: profile?.avatarEmoji,
-                    imageUrl: profile?.avatarImageUrl,
-                    name: profile?.name ?? "",
-                    size: avatarSize,
-                    backgroundColor: avatarFill
-                )
-                .frame(
-                    width: showsName ? nil : SiloTheme.topBarIconHitSize,
-                    height: SiloTheme.topBarIconHitSize
-                )
-                if showsName {
-                    Text(profile?.name ?? "")
-                        .font(.siloHeadline)
-                        .foregroundStyle(Color.siloOnSurface)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-            }
-            .contentShape(Rectangle())
+            avatarLabel
         }
         #if os(macOS)
         // The borderless style flattens a Mac menu label to bare text; the
@@ -222,5 +255,138 @@ struct ProfileAvatarMenu: View {
         .menuStyle(.borderlessButton)
         #endif
         .accessibilityLabel("Profile menu")
+        #endif
+    }
+
+    private var avatarLabel: some View {
+        HStack(spacing: SiloTheme.smallPadding) {
+            ProfileAvatarView(
+                avatar: profile?.avatarEmoji,
+                imageUrl: profile?.avatarImageUrl,
+                name: profile?.name ?? "",
+                size: avatarSize,
+                backgroundColor: avatarFill
+            )
+            .frame(
+                width: showsName ? nil : SiloTheme.topBarIconHitSize,
+                height: SiloTheme.topBarIconHitSize
+            )
+            if showsName {
+                Text(profile?.name ?? "")
+                    .font(.siloHeadline)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    #if os(iOS)
+    /// The panel's rows, grouped as the system menu groups them.
+    private var panelSections: [[ProfileMenuPanel.Row]] {
+        var features: [ProfileMenuPanel.Row] = []
+        if WatchPartyEntry.isAvailable {
+            features.append(.init(
+                title: WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party",
+                systemImage: "person.3"
+            ) { router.navigate(to: .watchParty) })
+        }
+        if requestsEnabled {
+            features.append(.init(title: "Requests", systemImage: "sparkles", action: onOpenRequests))
+        }
+        return [
+            features,
+            [.init(title: "Settings", systemImage: "gearshape", action: onOpenSettings)],
+            [
+                .init(title: "Switch Profile", systemImage: "person.2", action: onSwitchProfile),
+                .init(title: "Switch Server", systemImage: "server.rack", action: onSwitchServer),
+                .init(
+                    title: "Sign Out",
+                    systemImage: "rectangle.portrait.and.arrow.right",
+                    isDestructive: true,
+                    action: onSignOut
+                ),
+            ],
+        ].filter { !$0.isEmpty }
+    }
+    #endif
+}
+
+#if os(iOS)
+/// The account menu on iPhone and iPad: the profile picture beside a bold
+/// profile name with the server underneath, as on Apple TV, then the actions.
+struct ProfileMenuPanel: View {
+    struct Row: Identifiable {
+        let title: String
+        let systemImage: String
+        var isDestructive = false
+        let action: () -> Void
+
+        var id: String { title }
+    }
+
+    let profile: UserProfile?
+    let serverName: String?
+    let sections: [[Row]]
+    let choose: (Row) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+
+            ForEach(Array(sections.enumerated()), id: \.offset) { _, rows in
+                Divider()
+                ForEach(rows) { row in
+                    Button {
+                        choose(row)
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: row.systemImage)
+                                .frame(width: 24)
+                            Text(row.title)
+                            Spacer(minLength: 0)
+                        }
+                        .font(.body)
+                        .foregroundStyle(row.isDestructive ? Color.siloErrorInk : Color.siloOnSurface)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+        .frame(width: 290)
+    }
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            ProfileAvatarView(
+                avatar: profile?.avatarEmoji,
+                imageUrl: profile?.avatarImageUrl,
+                name: profile?.name ?? "",
+                size: 44,
+                backgroundColor: .siloIconTile
+            )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(profile?.name ?? "Profile")
+                    .font(.headline)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .lineLimit(1)
+                if let serverName {
+                    Text(serverName)
+                        .font(.subheadline)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
     }
 }
+#endif
