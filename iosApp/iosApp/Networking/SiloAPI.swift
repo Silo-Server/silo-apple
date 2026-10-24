@@ -311,16 +311,27 @@ actor SiloAPI {
                 id: contentId, libraryId: libraryId.map(String.init), artwork: artwork, auth: auth
             )
         }
-        // Before the first GET: a write stored after this point may be
-        // missing from its response.
-        let mark = TrackSelectionPersistence.pendingWriteMark()
+        // Before each GET: a write stored after this point may be missing
+        // from its response.
+        var mark = TrackSelectionPersistence.pendingWriteMark()
         var detail = try await read()
         if let prefKey = TrackSelectionPersistence.prefKey(seriesId: detail.seriesId, contentId: detail.contentId) {
-            let settlement = await TrackSelectionPersistence.settlePendingWrites(
+            var settlement = await TrackSelectionPersistence.settlePendingWrites(
                 prefKey: prefKey, owner: auth, since: mark
             )
             if settlement.rereads {
+                mark = TrackSelectionPersistence.pendingWriteMark()
                 detail = try await read()
+                // A write may have landed, or a newer pick been made, while
+                // the reread was out. Take the carried picks as they are now
+                // without waiting again, and read once more only if a store
+                // could be missing from the reread.
+                settlement = await TrackSelectionPersistence.settlePendingWrites(
+                    prefKey: prefKey, owner: auth, since: mark, timeout: .zero
+                )
+                if settlement.rereads {
+                    detail = try await read()
+                }
             }
             detail = settlement.applied(to: detail)
         }

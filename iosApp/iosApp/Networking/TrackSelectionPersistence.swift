@@ -328,7 +328,7 @@ enum TrackSelectionPersistence {
         now: ContinuousClock.Instant = .now
     ) async -> Settlement {
         let inFlight = pendingWrites.inFlightTasks(prefKey: prefKey, owner: owner)
-        if !inFlight.isEmpty {
+        if !inFlight.isEmpty, timeout > .zero {
             await waitForAll(inFlight, timeout: timeout)
         }
         let unsettled = pendingWrites.unsettled(

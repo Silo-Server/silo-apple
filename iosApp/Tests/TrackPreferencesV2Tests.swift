@@ -256,6 +256,33 @@ final class TrackPreferencesV2Tests: XCTestCase {
         await pick.value
     }
 
+    func testRecheckAfterARereadCarriesANewerPickWithoutWaiting() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let owner = try XCTUnwrap(captured)
+        stub.hold()
+        let pick = TrackSelectionPersistence.saveSubtitle(
+            prefKey: "series-barrier-recheck", request: TrackSelectionPersistence.subtitleOffRequest(),
+            client: api, tokenStore: tokens
+        )
+        await stub.waitUntilHeld()
+        let clock = ContinuousClock()
+        let started = clock.now
+
+        let recheck = await TrackSelectionPersistence.settlePendingWrites(
+            prefKey: "series-barrier-recheck", owner: owner,
+            since: TrackSelectionPersistence.pendingWriteMark(), timeout: .zero
+        )
+
+        XCTAssertLessThan(clock.now - started, .seconds(1), "the re-check after a reread does not wait again")
+        XCTAssertFalse(recheck.rereads)
+        guard case .subtitle? = recheck.unsettled[.subtitle] else {
+            return XCTFail("the pick made while the reread was out is carried")
+        }
+        stub.release()
+        await pick.value
+    }
+
     func testCancelledReadStopsWaitingPromptly() async throws {
         let (api, tokens) = try await client()
         let captured = await tokens.captureOrdinaryRequestAuth()
