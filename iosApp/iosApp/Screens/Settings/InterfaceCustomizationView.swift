@@ -214,6 +214,18 @@ struct InterfaceCustomizationView: View {
             )
 
             Section {
+                NavigationLink {
+                    HomeSectionsCustomizationView()
+                } label: {
+                    Label("Home Sections", systemImage: "rectangle.3.group")
+                }
+            } header: {
+                Text("Home")
+            } footer: {
+                Text("Choose which Home rows are visible and the order they appear in. Changes apply to this profile on every device.")
+            }
+
+            Section {
                 ForEach(rows) { row in
                     let item = row.item
                     HStack(spacing: 12) {

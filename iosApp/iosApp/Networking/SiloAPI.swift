@@ -99,6 +99,23 @@ actor SiloAPI {
         return try await apiV2Client.homeSections(artwork: await artworkQuery(.home), auth: auth)
     }
 
+    /// The acting profile's own Home layout: its rows as it sees them and
+    /// the overrides it saved, read for one owner.
+    func profileHomeLayout() async throws -> APIv2ProfileHomeLayoutRead {
+        let auth = try await detailReadAuth()
+        async let rows = apiV2Client.profileHomeSectionSettings(auth: auth)
+        async let saved = apiV2Client.profileHomeSectionOverrides(auth: auth)
+        let read = try await APIv2ProfileHomeLayoutRead(auth: auth, rows: rows, saved: saved)
+        try await requireCurrentOwner(auth)
+        return read
+    }
+
+    /// Replaces the profile's saved Home overrides with `overrides`, for the
+    /// owner `auth` was read for and nobody else.
+    func saveProfileHomeLayout(_ overrides: [APIv2SectionOverride], auth: CapturedOrdinaryRequestAuth) async throws {
+        try await apiV2Client.replaceProfileHomeSectionOverrides(overrides, auth: auth)
+    }
+
     /// True while `auth` still names the active server, account and profile.
     func isCurrentOwner(_ auth: CapturedOrdinaryRequestAuth) async -> Bool {
         await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil
