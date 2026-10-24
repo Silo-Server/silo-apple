@@ -171,6 +171,9 @@ final class AppRouter {
         /// Set when the card opens on a request detail (a TMDB title) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let request: RequestRoot?
+        /// Set when the card opens on a movie box set; `contentId` is then
+        /// only a page identity.
+        let boxSet: BoxSetRoot?
         /// Presented as large as the window instead of as a page sheet: a
         /// window-sized sheet on iPad, a full-screen cover on iPhone, where
         /// iOS 27.1 caps sheets well short of the iPhone Duo's open display.
@@ -183,11 +186,17 @@ final class AppRouter {
             let tmdbId: Int
         }
 
+        struct BoxSetRoot: Equatable {
+            let id: String
+            let libraryId: Int
+        }
+
         init(contentId: String, libraryId: Int? = nil, resumeContext: SeriesDetailContext? = nil) {
             self.contentId = contentId
             self.libraryId = libraryId
             self.resumeContext = resumeContext
             self.request = nil
+            self.boxSet = nil
         }
 
         init(request: RequestRoot) {
@@ -195,6 +204,15 @@ final class AppRouter {
             self.libraryId = nil
             self.resumeContext = nil
             self.request = request
+            self.boxSet = nil
+        }
+
+        init(boxSet: BoxSetRoot) {
+            self.contentId = "box_set:\(boxSet.libraryId):\(boxSet.id)"
+            self.libraryId = boxSet.libraryId
+            self.resumeContext = nil
+            self.request = nil
+            self.boxSet = boxSet
         }
     }
 
@@ -705,6 +723,18 @@ final class AppRouter {
             }
             return
         }
+        // A box set opens in the title card too; its movies then push inside
+        // the card, so Back returns to the box set.
+        if case .boxSet(let id, let libraryId) = route {
+            recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "present")
+            if presentedItemDetail == nil {
+                itemDetailPath = NavigationPath()
+                openItemDetail(ItemDetailPresentation(boxSet: .init(id: id, libraryId: libraryId)))
+            } else {
+                itemDetailPath.append(route)
+            }
+            return
+        }
         #endif
 
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "navigate")
@@ -1211,6 +1241,8 @@ private extension Route {
             return "itemDetail"
         case .personDetail:
             return "personDetail"
+        case .boxSet:
+            return "boxSet"
         case .player:
             return "player"
         case .playerWithFile:

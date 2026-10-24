@@ -62,6 +62,26 @@ class SearchViewModel {
     /// True while a new search's people lookup is still running, so an empty
     /// title page is not reported as "No results" before people arrive.
     var isSearchingPeople = false
+    /// Box sets matching the query, best match first, shown ahead of the
+    /// titles. Replaced with each new search. Always empty unless
+    /// `includesBoxSets` and `boxSetsEnabled`.
+    var boxSets: [CatalogBoxSet] = []
+    /// True while a new search's box set lookup is still running.
+    var isSearchingBoxSets = false
+    /// Whether any library the profile sees groups box sets
+    /// (`Library.browsesBoxSets`). Servers without box sets never report one,
+    /// so they get no box set lookup at all. A change looks again for the
+    /// current search once it has decided on box sets, even while its titles
+    /// are still loading, so libraries that arrive after that still add
+    /// theirs. Before that point the search itself reads the new value.
+    var boxSetsEnabled = false {
+        didSet {
+            guard boxSetsEnabled != oldValue,
+                  let boxSetQuery,
+                  boxSetQuery.generation == generation else { return }
+            startBoxSetSearch(for: boxSetQuery.text, generation: generation)
+        }
+    }
 
     /// Whether audiobooks participate in this search session. Drives both the
     /// offered filters (`availableMediaTypes`) and what `.all` means. On tvOS
@@ -88,14 +108,19 @@ class SearchViewModel {
     var total = 0
 
     var contentState: SearchContentState {
-        if (isSearching || isSearchingPeople) && results.isEmpty && people.isEmpty { return .loading }
+        let hasNothing = results.isEmpty && people.isEmpty && boxSets.isEmpty
+        if (isSearching || isSearchingPeople || isSearchingBoxSets) && hasNothing { return .loading }
         if let error { return .failed(error) }
-        if results.isEmpty && people.isEmpty { return hasSearched ? .noResults : .prompt }
+        if hasNothing { return hasSearched ? .noResults : .prompt }
         return .results
     }
 
     private var searchTask: Task<Void, Never>?
     private var peopleTask: Task<Void, Never>?
+    private var boxSetTask: Task<Void, Never>?
+    /// The query and search generation the box set lookup last ran or was
+    /// skipped for, so a change to `boxSetsEnabled` can redo it.
+    private var boxSetQuery: (text: String, generation: Int)?
     private let api: SiloAPI
     /// Only the Search screen shows people; pickers that reuse this model
     /// never ask for them.
@@ -103,8 +128,11 @@ class SearchViewModel {
     /// Only the Search screen lists episodes under "All"; pickers that reuse
     /// this model choose movies and series.
     private let includesEpisodes: Bool
+    /// Only the Search screen shows box sets.
+    private let includesBoxSets: Bool
     private let pageSize = 60
     private let peopleLimit = 20
+    private let boxSetLimit = 5
     /// The server's search features; `nil` until a search first needs them.
     /// A failed read is not kept, so the next search asks again.
     private var searchFeatures: CatalogSearchFeatures?
@@ -121,10 +149,16 @@ class SearchViewModel {
     /// cannot append to (or hand its continuation to) the new ones.
     private var generation = 0
 
-    init(api: SiloAPI = .shared, includesPeople: Bool = false, includesEpisodes: Bool = false) {
+    init(
+        api: SiloAPI = .shared,
+        includesPeople: Bool = false,
+        includesEpisodes: Bool = false,
+        includesBoxSets: Bool = false
+    ) {
         self.api = api
         self.includesPeople = includesPeople
         self.includesEpisodes = includesEpisodes
+        self.includesBoxSets = includesBoxSets
     }
 
     /// Debounced search triggered on query change.
@@ -183,6 +217,7 @@ class SearchViewModel {
                 let mediaType = try await mediaScope()
                 guard !Task.isCancelled, myGeneration == generation else { return }
                 startPeopleSearch(for: trimmed, mediaScope: mediaType, generation: myGeneration)
+                startBoxSetSearch(for: trimmed, generation: myGeneration)
                 page = try await api.catalogPage(.search(trimmed, type: mediaType, limit: pageSize))
             }
             guard !Task.isCancelled, myGeneration == generation else { return }
@@ -205,6 +240,7 @@ class SearchViewModel {
             if reset {
                 results = []
                 cancelPeopleSearch()
+                cancelBoxSetSearch()
                 total = 0
                 hasMore = false
                 continuation = nil
@@ -283,10 +319,51 @@ class SearchViewModel {
         }
     }
 
+    /// Box sets are movies, so only All and Movies look for them.
+    private var searchesBoxSets: Bool {
+        includesBoxSets && boxSetsEnabled && (selectedMediaType == .all || selectedMediaType == .movie)
+    }
+
+    /// Loads box sets for a new search on their own task, like people. A
+    /// failed read shows none rather than failing the titles around it.
+    private func startBoxSetSearch(for query: String, generation searchGeneration: Int) {
+        boxSetTask?.cancel()
+        boxSetQuery = (query, searchGeneration)
+        guard searchesBoxSets else {
+            boxSets = []
+            isSearchingBoxSets = false
+            return
+        }
+        isSearchingBoxSets = true
+        boxSetTask = Task {
+            let found: [CatalogBoxSet]
+            do {
+                found = try await api.searchBoxSets(query: query, limit: boxSetLimit)
+            } catch {
+                if !Task.isCancelled {
+                    Self.logger.error("box set search failed: \(error.localizedDescription, privacy: .public)")
+                }
+                found = []
+            }
+            guard !Task.isCancelled, searchGeneration == generation else { return }
+            boxSets = found
+            isSearchingBoxSets = false
+        }
+    }
+
+    private func cancelBoxSetSearch() {
+        boxSetTask?.cancel()
+        boxSetTask = nil
+        boxSetQuery = nil
+        boxSets = []
+        isSearchingBoxSets = false
+    }
+
     private func resetState() {
         generation += 1
         results = []
         cancelPeopleSearch()
+        cancelBoxSetSearch()
         isSearching = false
         error = nil
         hasSearched = false

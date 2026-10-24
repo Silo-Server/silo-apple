@@ -356,6 +356,25 @@ actor SiloAPI {
         return try people.map { try Person(catalog: $0) }
     }
 
+    /// A movie box set with its movies in `libraryId`, in release order.
+    func boxSet(id: String, libraryId: Int) async throws -> CatalogBoxSetDetail {
+        let auth = try await detailReadAuth()
+        let detail = try await apiV2Client.catalogBoxSet(
+            id: id, libraryId: String(libraryId),
+            artwork: await artworkQuery(.detail), auth: auth
+        )
+        try await requireCurrentOwner(auth)
+        return detail
+    }
+
+    /// Box sets matching `query` for the acting profile, best match first.
+    func searchBoxSets(query: String, limit: Int) async throws -> [CatalogBoxSet] {
+        let auth = try await detailReadAuth()
+        let boxSets = try await apiV2Client.searchCatalogBoxSets(query: query, limit: limit, auth: auth)
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return boxSets
+    }
+
     /// Queue a provider refresh of the person. `non_retryable`: one dispatch,
     /// never replayed; see ``APIv2Client/refreshPerson(id:auth:)``.
     func refreshPerson(id: String) async throws {

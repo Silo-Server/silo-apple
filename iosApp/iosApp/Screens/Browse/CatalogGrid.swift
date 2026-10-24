@@ -72,26 +72,7 @@ struct CatalogGrid: View {
                 let item = entry.item
                 // Search can return episodes: caption them with the series
                 // name and "S01E02 · Pilot", as on Home.
-                MediaCard(
-                    title: EpisodeCardCaption.cardTitle(for: item),
-                    posterUrl: item.posterUrl ?? "",
-                    thumbhash: item.posterThumbhash,
-                    episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
-                    imageIsEpisodeStill: item.posterIsEpisodeStill,
-                    mediaType: item.type,
-                    year: item.year,
-                    subtitle: EpisodeCardCaption.line(for: item),
-                    userState: item.userState,
-                    overlayData: OverlayData.from(item),
-                    action: { onItemTap(item) },
-                    playAction: playAction(for: item),
-                    contentId: item.contentId,
-                    seriesContext: SeriesDetailContext(item: SectionItem(browseItem: item)),
-                    aspect: item.isAudiobook ? .square : .poster,
-                    cardWidthOverride: widthOverride,
-                    episodeAccessibilityLabel: EpisodeCardCaption.accessibilityLabel(for: item),
-                    rowTitles: rowTitles(at: entry.index, columnCount: columns.count)
-                )
+                card(for: item, widthOverride: widthOverride, rowTitles: rowTitles(at: entry.index, columnCount: columns.count))
                 .frame(maxWidth: .infinity)
                 .onAppear {
                     if item.id == items.suffix(6).first?.id, hasMore {
@@ -117,6 +98,49 @@ struct CatalogGrid: View {
                     .padding()
                 Spacer()
             }
+        }
+    }
+
+    @ViewBuilder
+    private func card(for item: BrowseItem, widthOverride: CGFloat?, rowTitles: [String]?) -> some View {
+        if let boxSet = item.boxSet, item.isBoxSet {
+            // A box set opens its own page and has no title menu or Play.
+            MediaCard(
+                title: item.title,
+                posterUrl: item.posterUrl ?? boxSet.posterUrl ?? "",
+                thumbhash: item.posterThumbhash ?? boxSet.posterThumbhash,
+                mediaType: "movie",
+                subtitle: boxSet.cardCaption,
+                progress: boxSet.watchedProgress,
+                action: {
+                    if let route = Route.boxSet(boxSet) { router.navigate(to: route) }
+                },
+                aspect: .poster,
+                cardWidthOverride: widthOverride,
+                rowTitles: rowTitles,
+                boxSet: boxSet
+            )
+        } else {
+            MediaCard(
+                title: EpisodeCardCaption.cardTitle(for: item),
+                posterUrl: item.posterUrl ?? "",
+                thumbhash: item.posterThumbhash,
+                episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
+                imageIsEpisodeStill: item.posterIsEpisodeStill,
+                mediaType: item.type,
+                year: item.year,
+                subtitle: EpisodeCardCaption.line(for: item),
+                userState: item.userState,
+                overlayData: OverlayData.from(item),
+                action: { onItemTap(item) },
+                playAction: playAction(for: item),
+                contentId: item.contentId,
+                seriesContext: SeriesDetailContext(item: SectionItem(browseItem: item)),
+                aspect: item.isAudiobook ? .square : .poster,
+                cardWidthOverride: widthOverride,
+                episodeAccessibilityLabel: EpisodeCardCaption.accessibilityLabel(for: item),
+                rowTitles: rowTitles
+            )
         }
     }
 

@@ -28,6 +28,8 @@ class BrowseViewModel {
     private var continuation: APIv2CatalogContinuation?
     private var libraryId: Int?
     private var mediaScope: LibraryVideoScope?
+    /// The library browses with `group=box_set` (see `Library.browsesBoxSets`).
+    private var groupsBoxSets = false
     private var hasConfigured = false
     private var configurationGeneration = 0
     /// Bumped on every reset; a returning fetch from an older generation
@@ -35,10 +37,16 @@ class BrowseViewModel {
     private var generation = 0
 
     @discardableResult
-    func configure(libraryId: Int?, libraryType: String? = nil, mediaScope: LibraryVideoScope? = nil) async -> Bool {
+    func configure(
+        libraryId: Int?,
+        libraryType: String? = nil,
+        mediaScope: LibraryVideoScope? = nil,
+        groupsBoxSets: Bool = false
+    ) async -> Bool {
         configurationGeneration += 1
         let myConfiguration = configurationGeneration
         let libraryChanged = !hasConfigured || self.libraryId != libraryId || self.mediaScope != mediaScope
+            || self.groupsBoxSets != groupsBoxSets
         if libraryChanged {
             // Invalidate before metadata I/O so an old page cannot publish while
             // the next library or type is being configured.
@@ -49,6 +57,7 @@ class BrowseViewModel {
 
         self.libraryId = libraryId
         self.mediaScope = mediaScope
+        self.groupsBoxSets = groupsBoxSets
         hasConfigured = true
         mediaType = mediaScope.map { $0 == .movie ? .movie : .series } ?? resolvedMediaType
 
@@ -99,7 +108,8 @@ class BrowseViewModel {
                 page = try await StartupContentPrefetcher.fetchBrowseFirstPage(
                     libraryId: libraryId,
                     state: filterState,
-                    mediaScope: mediaScope
+                    mediaScope: mediaScope,
+                    groupsBoxSets: groupsBoxSets
                 )
             }
             // Discard if another reset superseded us while we awaited.
@@ -203,7 +213,11 @@ class BrowseViewModel {
     // MARK: - Cache
 
     private var currentCacheKey: String {
-        CacheKey.browse(libraryId: libraryId, filterKey: filterState.cacheKeyFragment, mediaScope: mediaScope?.rawValue)
+        CacheKey.browse(
+            libraryId: libraryId,
+            filterKey: CatalogQueryBuilder.cacheKeyFragment(filterState, groupsBoxSets: groupsBoxSets),
+            mediaScope: mediaScope?.rawValue
+        )
     }
 
     private func hydratePage1FromCache() {
@@ -265,7 +279,9 @@ class BrowseViewModel {
     private func refineMediaType(from response: CatalogResponse) {
         // A mixed library was resolved from the library list in `configure`;
         // refining from a (movie or series) item would hide the Type facet.
-        guard mediaScope == nil, mediaType != .mixed, let first = response.items.first else { return }
+        // A box set card stands for movies but is not a library type itself.
+        guard mediaScope == nil, mediaType != .mixed,
+              let first = response.items.first(where: { !$0.isBoxSet }) else { return }
         mediaType = BrowseMediaType.from(libraryType: first.type)
     }
 }

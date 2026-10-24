@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Full-screen search with debounced query and grid results — Plezy style.
 struct SearchView: View {
-    @State private var viewModel = SearchViewModel(includesPeople: true, includesEpisodes: true)
+    @State private var viewModel = SearchViewModel(includesPeople: true, includesEpisodes: true, includesBoxSets: true)
     @State private var requestsViewModel = RequestSearchSectionViewModel()
     @State private var navPrefs = AppNavPreferences.shared
     @Environment(AppRouter.self) private var router
@@ -98,6 +98,10 @@ struct SearchView: View {
         .onAppear {
             navPrefs.refresh()
             refreshAudiobookAvailability()
+            refreshBoxSetAvailability()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .userLibrariesDidRefresh)) { _ in
+            refreshBoxSetAvailability()
         }
         .onChange(of: navPrefs.showAudiobooks) {
             refreshAudiobookAvailability(applySearch: true)
@@ -134,6 +138,13 @@ struct SearchView: View {
         viewModel.audiobooksEnabled = audiobooksAvailable
         guard applySearch, previous != viewModel.audiobooksEnabled else { return }
         Task { await viewModel.applyMediaType() }
+    }
+
+    /// Box sets are searched only when a library the profile sees groups
+    /// them; a server without box sets never reports one.
+    private func refreshBoxSetAvailability() {
+        let cached: LibrariesResponse? = ResponseCache.shared.get(CacheKey.userLibraries)
+        viewModel.boxSetsEnabled = cached?.libraries.contains(where: \.browsesBoxSets) ?? false
     }
 
     #if os(iOS)
@@ -173,6 +184,11 @@ struct SearchView: View {
             }
         case .results:
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
+                // A matching box set leads, ahead of people and its movies.
+                if !viewModel.boxSets.isEmpty {
+                    boxSetSection
+                }
+
                 if !viewModel.people.isEmpty {
                     peopleSection
                 }
@@ -203,6 +219,31 @@ struct SearchView: View {
         CatalogGrid(items: [], isLoading: true, hasMore: false, onItemTap: { _ in }, onLoadMore: {})
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Searching")
+        #endif
+    }
+
+    /// Matching box sets, drawn as cards in the title grid's columns. Each
+    /// opens its box set page.
+    private var boxSetSection: some View {
+        let cards = viewModel.boxSets.map(BrowseItem.init(boxSet:))
+        #if os(tvOS)
+        return VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
+            TVSectionHeader(title: "Box Sets")
+            TVCatalogGrid(
+                items: cards,
+                isLoading: false,
+                hasMore: false,
+                onItemTap: { _ in },
+                onNearEnd: { _ in },
+                columnCount: 6,
+                cardWidth: 220
+            )
+        }
+        #else
+        return VStack(alignment: .leading, spacing: 14) {
+            PhoneSectionHeader(title: "Box Sets")
+            CatalogGrid(items: cards, isLoading: false, hasMore: false, onItemTap: { _ in }, onLoadMore: {})
+        }
         #endif
     }
 

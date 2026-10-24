@@ -47,6 +47,9 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let lastAirDate: String?
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
+    /// Set on a `box_set` card of a `group=box_set` library browse: the box
+    /// set the card stands for. Absent on every other card.
+    var boxSet: CatalogBoxSet? = nil
     var id: String { contentId }
 }
 
@@ -1302,8 +1305,13 @@ struct Library: Codable, Identifiable, Hashable {
     let type: String
     let sortOrder: Int?
     @ArtworkURL var posterUrl: String? = nil
+    /// The library groups a TMDB collection's movies into one box set card.
+    /// Absent from servers without box sets, and from cached rows they wrote.
+    var boxSetsEnabled: Bool? = nil
 
     var isMovieLibrary: Bool { SiloMediaType.isMovieLibrary(type) }
+    /// Browse this library with `group=box_set`.
+    var browsesBoxSets: Bool { boxSetsEnabled == true }
     var isAudiobookLibrary: Bool { SiloMediaType.isAudiobookLibrary(type) }
     var isSeriesLibrary: Bool { SiloMediaType.isSeries(type) }
     var isMixedLibrary: Bool { SiloMediaType.isMixedLibrary(type) }

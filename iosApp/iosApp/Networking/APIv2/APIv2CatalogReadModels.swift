@@ -484,6 +484,8 @@ struct APIv2UserLibrary: Decodable {
     let type: String
     let sortOrder: Int
     @ArtworkURL var posterUrl: String?
+    /// Browse the library with `group=box_set`; absent before box sets.
+    let boxSetsEnabled: Bool?
 }
 
 /// Complete Discover rows use the same flat catalog-card fields as section shelves.

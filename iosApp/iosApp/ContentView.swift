@@ -3288,6 +3288,8 @@ struct MainTabView: View {
             ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
+        case .boxSet(let id, let libraryId):
+            BoxSetDetailView(id: id, libraryId: libraryId)
         case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion, let libraryId):
             #if os(macOS)
             PlayerView(
@@ -3455,6 +3457,8 @@ private struct ItemDetailSheet: View {
                 tmdbId: request.tmdbId,
                 onClose: router.dismissItemDetail
             )
+        } else if let boxSet = presentation.boxSet {
+            BoxSetDetailView(id: boxSet.id, libraryId: boxSet.libraryId, onClose: router.dismissItemDetail)
         } else {
             ItemDetailView(
                 contentId: presentation.contentId,
@@ -3475,6 +3479,8 @@ private struct ItemDetailSheet: View {
             ItemDetailView(contentId: contentId, libraryId: libraryId, resumeContext: context)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
+        case .boxSet(let id, let libraryId):
+            BoxSetDetailView(id: id, libraryId: libraryId)
         case .requestDetail(let mediaType, let tmdbId):
             RequestDetailView(mediaType: mediaType, tmdbId: tmdbId)
         default:

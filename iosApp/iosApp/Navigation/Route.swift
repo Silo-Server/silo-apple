@@ -16,6 +16,9 @@ enum Route: Hashable {
         seriesContext: SeriesDetailContext? = nil
     )
     case personDetail(personId: String)
+    /// A movie box set: one TMDB collection's movies in one library. On
+    /// iPhone and iPad it opens in the same bottom card as a title.
+    case boxSet(id: String, libraryId: Int)
     /// `prefersLastUsedVersion` is the Continue Watching resume intent: pick
     /// the server's last-used file before the profile-wide quality
     /// preference. Audio and subtitle memory ride on the server's
@@ -180,6 +183,12 @@ extension Route {
             contentId: resolvedID, tvSeed: seed, libraryId: libraryId,
             seriesContext: entryContext
         )
+    }
+
+    /// The box set page, or nil when the server named a library the app
+    /// cannot address.
+    static func boxSet(_ boxSet: CatalogBoxSet) -> Route? {
+        boxSet.appLibraryId.map { .boxSet(id: boxSet.id, libraryId: $0) }
     }
 
     /// Builds the platform-appropriate route from a catalog card. The seed is

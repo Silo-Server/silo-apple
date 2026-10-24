@@ -1382,6 +1382,8 @@ struct TVMainTabView: View {
             ItemDetailView(contentId: contentId, libraryId: libraryId, tvSeed: tvSeed, resumeContext: context)
         case .personDetail(let personId):
             PersonDetailView(personId: personId)
+        case .boxSet(let id, let libraryId):
+            BoxSetDetailView(id: id, libraryId: libraryId)
         case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion, let libraryId):
             PlayerView(
                 contentId: contentId,

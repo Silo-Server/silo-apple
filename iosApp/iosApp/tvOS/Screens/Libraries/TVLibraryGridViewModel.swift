@@ -42,6 +42,8 @@ final class TVLibraryGridViewModel {
     /// Whether to send the `type` media-scope param (video libraries only;
     /// audiobook/music libraries are scoped by `library_id`).
     private let sendsType: Bool
+    /// The library browses with `group=box_set` (see `Library.browsesBoxSets`).
+    private let groupsBoxSets: Bool
     private static let pageSize = 100
 
     /// Where the next page starts; `nil` before the live page 1 arrives and
@@ -53,9 +55,16 @@ final class TVLibraryGridViewModel {
     @ObservationIgnored private var visiblePosterRows: [Int: Range<Int>] = [:]
     private var generation: Int = 0
 
-    init(libraryId: Int, libraryType: String, mediaScope: LibraryVideoScope? = nil, initialFilter: CatalogFilterState = .none) {
+    init(
+        libraryId: Int,
+        libraryType: String,
+        mediaScope: LibraryVideoScope? = nil,
+        initialFilter: CatalogFilterState = .none,
+        groupsBoxSets: Bool = false
+    ) {
         self.libraryId = libraryId
         self.mediaScope = mediaScope
+        self.groupsBoxSets = groupsBoxSets
         self.mediaType = BrowseMediaType.from(libraryType: mediaScope?.rawValue ?? libraryType)
         self.sendsType = Self.sendsType(libraryType: libraryType)
         // A non-default initial filter (a deep-linked landing tap) wins;
@@ -70,7 +79,11 @@ final class TVLibraryGridViewModel {
     }
 
     private var currentCacheKey: String {
-        CacheKey.tvLibrary(libraryId: libraryId, filterKey: (mediaScope.map { "type=\($0.rawValue)|" } ?? "") + filter.cacheKeyFragment)
+        CacheKey.tvLibrary(
+            libraryId: libraryId,
+            filterKey: (mediaScope.map { "type=\($0.rawValue)|" } ?? "")
+                + CatalogQueryBuilder.cacheKeyFragment(filter, groupsBoxSets: groupsBoxSets)
+        )
     }
 
     // MARK: - First page
@@ -83,13 +96,19 @@ final class TVLibraryGridViewModel {
 
     /// Page 1 for `filter`. The startup prefetch sends this same query and
     /// caches the result under the key the grid hydrates from.
-    static func firstPageQuery(libraryId: Int, libraryType: String, filter: CatalogFilterState) -> APIv2CatalogQuery {
+    static func firstPageQuery(
+        libraryId: Int,
+        libraryType: String,
+        filter: CatalogFilterState,
+        groupsBoxSets: Bool = false
+    ) -> APIv2CatalogQuery {
         CatalogQueryBuilder.build(
             filter,
             libraryId: libraryId,
             mediaType: BrowseMediaType.from(libraryType: libraryType),
             limit: pageSize,
-            includeType: sendsType(libraryType: libraryType)
+            includeType: sendsType(libraryType: libraryType),
+            groupsBoxSets: groupsBoxSets
         )
     }
 
@@ -267,7 +286,8 @@ final class TVLibraryGridViewModel {
                     mediaType: mediaType,
                     limit: Self.pageSize,
                     includeType: sendsType,
-                    enforcedScope: mediaScope
+                    enforcedScope: mediaScope,
+                    groupsBoxSets: groupsBoxSets
                 ))
             }
 
