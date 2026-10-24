@@ -399,6 +399,42 @@ final class DownloadManager {
 
     func record(id: String) -> DownloadRecord? { file.records[id] }
 
+    /// The local file and scope this player opened. A late callback cannot
+    /// write into a replacement file or a newly activated profile's store.
+    struct OfflinePlaybackOwner: Sendable {
+        fileprivate let scope: ScopeKey
+        fileprivate let opened: DownloadRecord
+    }
+
+    func offlinePlaybackOwner(for record: DownloadRecord) -> OfflinePlaybackOwner? {
+        guard let scope = loadedScope, let current = file.records[record.id],
+              Self.holdsSameLocalFile(current, as: record) else { return nil }
+        return OfflinePlaybackOwner(scope: scope, opened: record)
+    }
+
+    func isCurrentOfflinePlayback(_ owner: OfflinePlaybackOwner) -> Bool {
+        guard owner.scope == loadedScope, let current = file.records[owner.opened.id] else { return false }
+        return Self.holdsSameLocalFile(current, as: owner.opened)
+    }
+
+    /// Whether `current` still holds the playable file `opened` described.
+    /// A sync stamps a revision on a download saved before revisions existed
+    /// without replacing its file (`shouldReplaceLocalAssets`), so a nil
+    /// revision matches any.
+    static func holdsSameLocalFile(_ current: DownloadRecord, as opened: DownloadRecord) -> Bool {
+        opened.isPlayableOffline && current.isPlayableOffline
+            && current.mediaFileId == opened.mediaFileId
+            && current.format == opened.format
+            && current.mediaFilename == opened.mediaFilename
+            && (opened.revision == nil || current.revision == opened.revision)
+    }
+
+    func saveOfflineSubtitleSelection(_ selection: OfflineSubtitleSelection, owner: OfflinePlaybackOwner) {
+        guard isCurrentOfflinePlayback(owner) else { return }
+        file.records[owner.opened.id]?.subtitleSelection = selection
+        persist()
+    }
+
     func subscription(forSeriesId seriesId: String) -> DownloadSubscription? {
         file.subscriptions.first { $0.seriesId == seriesId }
     }
@@ -2952,7 +2988,7 @@ final class DownloadManager {
 
     /// One activation of a download scope. The generation advances on every
     /// scope change, so a switch away and back gives a different key.
-    private struct ScopeKey: Equatable {
+    fileprivate struct ScopeKey: Equatable, Sendable {
         let serverId: String
         let profileId: String
         let generation: UInt64
@@ -3988,6 +4024,7 @@ final class DownloadManager {
         record.logoFilename = nil
         record.seriesPosterFilename = nil
         record.subtitleFilenames = [:]
+        record.subtitleSelection = nil
         record.subtitleEntityTags = nil
         record.subtitleRevisions = nil
         record.resumeDataFilename = nil

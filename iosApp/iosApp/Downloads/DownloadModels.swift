@@ -665,6 +665,8 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     var seriesPosterFilename: String? = nil
     /// Manifest `fetch_url` → relative on-disk filename.
     var subtitleFilenames: [String: String]
+    /// Explicit primary-subtitle choice for this local copy, including Off.
+    var subtitleSelection: OfflineSubtitleSelection? = nil
     /// Manifest `fetch_url` → ETag of the saved bytes. A subtitle's bytes
     /// change with its timing correction (and an external one's with its
     /// file on disk). Optional keeps stores written before it decodable.
