@@ -401,6 +401,9 @@ private struct ItemDetailPhoneContent: View {
     @State private var preferredAudioTrackIndex: Int?
     @State private var preferredSubtitleTrackIndex: Int?
     @State private var preferredSubtitleTrackWasManuallySelected = false
+    /// Set when the viewer picks Auto on this visit; the next load reads the
+    /// cleared preference from the server.
+    @State private var didClearSubtitleOverride = false
     /// The file a manual subtitle track pick was made on; its index means
     /// nothing on another version.
     @State private var preferredSubtitleTrackFileId: Int?
@@ -408,6 +411,9 @@ private struct ItemDetailPhoneContent: View {
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
     @State private var nextUpWatchDetail: WatchDetail?
+    /// Set when the viewer picks Auto for the selected episode, until the
+    /// next episode load.
+    @State private var didClearNextUpSubtitleOverride = false
     /// Keeps the playback selector's footprint occupied while a newly focused
     /// episode is resolving its files and tracks. The series page renders a
     /// same-size skeleton from this state instead of collapsing the stack.
@@ -496,6 +502,7 @@ private struct ItemDetailPhoneContent: View {
             // and season the page was showing instead of the entry context.
             let isReturning = hasStartedDetailLoad
             hasStartedDetailLoad = true
+            didClearSubtitleOverride = false
             preferredVersionFileId = nil
             preferredAudioTrackIndex = nil
             // A subtitle picked in the selector on this visit, Off included,
@@ -818,6 +825,7 @@ private struct ItemDetailPhoneContent: View {
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                 nextUpWatchDetail: nextUpWatchDetail,
+                nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
                 isLoadingSelectedEpisodePlayback: isLoadingNextUpWatchDetail,
                 selectedEpisodeContentId: playbackEpisode(for: detail)?.contentId,
                 onSelectSeason: { season in
@@ -877,6 +885,7 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 onSelectNextUpSubtitleTrack: { index in
+                    didClearNextUpSubtitleOverride = (index == nil)
                     preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: nextUpWatchDetail,
                         versionFileId: preferredNextUpFileId,
@@ -931,6 +940,7 @@ private struct ItemDetailPhoneContent: View {
                 selectedVersionFileId: preferredVersionFileId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
+                subtitleOverrideCleared: didClearSubtitleOverride,
                 onPlay: { startFromBeginning, resumePosition in
                     // Track picks only travel with a resolved file.
                     let fileId = playbackFileId(for: detail)
@@ -973,6 +983,7 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 onSelectSubtitleTrack: { index in
+                    didClearSubtitleOverride = (index == nil)
                     preferredSubtitleTrackWasManuallySelected = true
                     preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: detail,
@@ -1257,6 +1268,7 @@ private struct ItemDetailPhoneContent: View {
     }
 
     private func loadNextUpWatchDetail(for detail: ItemDetail) async {
+        didClearNextUpSubtitleOverride = false
         guard let nextUp = playbackEpisode(for: detail) else {
             nextUpWatchDetail = nil
             isLoadingNextUpWatchDetail = false

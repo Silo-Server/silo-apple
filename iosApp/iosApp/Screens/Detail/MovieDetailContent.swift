@@ -11,6 +11,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
+    /// The viewer picked Auto on this visit, so the stored pick in `detail`
+    /// no longer applies to the "Auto" preview.
+    let subtitleOverrideCleared: Bool
     /// `resumePosition` is the point the user was offered (nil for a
     /// restart or a title without progress).
     let onPlay: (_ startFromBeginning: Bool, _ resumePosition: Double?) -> Void
@@ -218,6 +221,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
             selectedVersionFileId: selectedVersionFileId,
             selectedAudioTrackIndex: selectedAudioTrackIndex,
             selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+            subtitleMode: subtitleOverrideCleared ? nil : detail.effectiveSubtitleMode,
+            subtitleSignature: subtitleOverrideCleared ? nil : detail.effectiveSubtitleTrackSignature,
+            showForcedSubtitles: detail.showsForcedSubtitles,
             onSelectVersion: onSelectVersion,
             onSelectAudioTrack: onSelectAudioTrack,
             onSelectSubtitleTrack: onSelectSubtitleTrack

@@ -138,10 +138,15 @@ struct PhonePlaybackSelectorRow: View {
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
+    /// Inputs for previewing what "Auto" plays, as on tvOS.
+    var subtitleMode: String? = nil
+    var subtitleSignature: SubtitleTrackSignature? = nil
+    var showForcedSubtitles = false
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
 
+    @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -157,6 +162,13 @@ struct PhonePlaybackSelectorRow: View {
     }
 
     var body: some View {
+        selectors
+            // Observing the store repaints the "Auto" preview once it loads.
+            .task { await profilePrefsStore.hydrateIfNeeded() }
+    }
+
+    @ViewBuilder
+    private var selectors: some View {
         if currentVersion != nil, !selectorKinds.isEmpty {
             #if os(iOS)
             if usesPopoverLayout {
@@ -181,6 +193,20 @@ struct PhonePlaybackSelectorRow: View {
                 }
             #endif
         }
+    }
+
+    /// The "Auto" preview, or nil when the player follows the device's
+    /// caption settings, which the detail page can't predict.
+    private var subtitleAutoContext: DetailPlaybackFormatting.SubtitleAutoContext? {
+        guard !PlayerSettings.shared.subtitleMatchesSystemAppearance else { return nil }
+        return DetailPlaybackFormatting.SubtitleAutoContext(
+            version: currentVersion,
+            selectedAudioTrackIndex: selectedAudioTrackIndex,
+            preferredLanguage: profilePrefsStore.preferredSubtitleLanguage,
+            mode: subtitleMode,
+            signature: subtitleSignature,
+            showForced: showForcedSubtitles
+        )
     }
 
     private func selectorPresentation(
@@ -403,7 +429,8 @@ struct PhonePlaybackSelectorRow: View {
         case .subtitles:
             return DetailPlaybackFormatting.subtitleValueLabel(
                 version: currentVersion,
-                selectedSubtitleTrackIndex: selectedSubtitleTrackIndex
+                selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+                autoContext: subtitleAutoContext
             )
         }
     }

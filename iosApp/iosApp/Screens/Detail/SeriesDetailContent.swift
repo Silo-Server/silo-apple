@@ -24,6 +24,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let selectedNextUpAudioTrackIndex: Int?
     let selectedNextUpSubtitleTrackIndex: Int?
     let nextUpWatchDetail: WatchDetail?
+    /// The viewer picked Auto for this episode, so the stored series pick in
+    /// `nextUpWatchDetail` no longer applies to the "Auto" preview.
+    let nextUpSubtitleOverrideCleared: Bool
     let isLoadingSelectedEpisodePlayback: Bool
     let selectedEpisodeContentId: String?
     let onSelectSeason: (Season) -> Void
@@ -320,6 +323,13 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     selectedVersionFileId: selectedNextUpFileId,
                     selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
                     selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
+                    subtitleMode: nextUpSubtitleOverrideCleared
+                        ? nil
+                        : nextUpWatchDetail?.effectiveSubtitleMode,
+                    subtitleSignature: nextUpSubtitleOverrideCleared
+                        ? nil
+                        : nextUpWatchDetail?.effectiveSubtitleTrackSignature,
+                    showForcedSubtitles: nextUpWatchDetail?.showsForcedSubtitles ?? true,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
