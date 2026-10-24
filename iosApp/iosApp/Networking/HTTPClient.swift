@@ -2214,6 +2214,20 @@ actor HTTPClient {
         return current
     }
 
+    /// Replaces the active account's access token now, through the shared
+    /// refresh flight, however long it has left. A changed temporary password
+    /// needs this: the token that changed it keeps the server's restriction
+    /// until it is replaced. Returns false when no persistent session is
+    /// active, or the token did not rotate: the server was unreachable, or it
+    /// rejected the session, which signs it out as any rejected refresh does.
+    func refreshActiveSession() async throws -> Bool {
+        let revision = try captureRequestDispatchRevision()
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(),
+              case .persistentServer = current.credentialOwner,
+              current.accessToken != nil else { return false }
+        return try await refreshTokens(expected: current, dispatchRevision: revision) != nil
+    }
+
     private static func performRefresh(
         expected: RefreshAccountIdentity,
         tokenStore: TokenStore,

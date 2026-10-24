@@ -52,6 +52,10 @@ final class AppRouter {
         /// the restored session. Credentials remain until an explicit removal
         /// or the existing terminal refresh-rejection path clears them.
         case serverRecovery(ServerRecoveryReason)
+        /// Signed in with a temporary password an administrator set. The
+        /// server refuses everything but the account read, the password
+        /// change and sign-out until the account chooses a new one.
+        case needsPasswordChange
         /// Signed in but no profile has been selected.
         case needsProfile
         /// Fully authenticated with an active profile.
@@ -68,6 +72,7 @@ final class AppRouter {
             case .needsServerSetup: return "needsServerSetup"
             case .needsLogin: return "needsLogin"
             case .serverRecovery(let reason): return "serverRecovery.\(reason.rawValue)"
+            case .needsPasswordChange: return "needsPasswordChange"
             case .needsProfile: return "needsProfile"
             case .authenticated: return "authenticated"
             }
@@ -76,7 +81,7 @@ final class AppRouter {
         /// The first-run screens draw over the shared brand-light backdrop.
         var showsMarqueeBackdrop: Bool {
             switch self {
-            case .needsServerSetup, .needsLogin, .serverRecovery, .needsProfile: true
+            case .needsServerSetup, .needsLogin, .serverRecovery, .needsPasswordChange, .needsProfile: true
             case .loading, .authenticated: false
             }
         }
@@ -863,6 +868,15 @@ final class AppRouter {
         recordScreenBreadcrumb(target: "profileSelection", action: "reset")
         path = NavigationPath()
         setAuthState(.needsProfile, reason: "showProfileSelection")
+    }
+
+    /// The account must replace a temporary password before it can pick a
+    /// profile. Leaving it chooses a profile, or signs out.
+    func showPasswordChange() {
+        loginNotice = nil
+        recordScreenBreadcrumb(target: "passwordChange", action: "reset")
+        path = NavigationPath()
+        setAuthState(.needsPasswordChange, reason: "showPasswordChange")
     }
 
     /// User-initiated profile switching has one persistence and cache
