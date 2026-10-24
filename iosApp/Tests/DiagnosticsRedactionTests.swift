@@ -161,6 +161,216 @@ final class DiagnosticsRedactionTests: XCTestCase {
         XCTAssertTrue(ipv6.contains("[host:"))
     }
 
+    func testBareIPv4AddressIsHashed() throws {
+        let line = try rendered("connect to 192.168.1.20 timed out")
+        XCTAssertFalse(line.contains("192.168.1.20"))
+        XCTAssertTrue(line.contains("connect to [host:"))
+    }
+
+    func testBareIPv6AddressIsHashed() throws {
+        let compressed = try rendered("route via 2001:db8::1234 failed")
+        XCTAssertFalse(compressed.contains("2001:db8::1234"))
+        XCTAssertTrue(compressed.contains("route via [host:"))
+
+        let full = try rendered("peer 2001:0db8:85a3:0000:0000:8a2e:0370:7334 reset")
+        XCTAssertFalse(full.contains("8a2e:0370:7334"))
+        XCTAssertTrue(full.contains("peer [host:"))
+
+        let scoped = try rendered("link-local fe80::1c2b:3a4d%en0 unreachable")
+        XCTAssertFalse(scoped.contains("fe80::1c2b:3a4d"))
+        XCTAssertFalse(scoped.contains("%en0"))
+    }
+
+    /// Sentence and clause punctuation right after an address is not part of
+    /// it: the address is still hashed and the punctuation stays.
+    func testBareIPv6AddressBeforePunctuationIsHashed() throws {
+        let sentence = try rendered("network unreachable 2001:db8::1234.")
+        XCTAssertFalse(sentence.contains("2001:db8::1234"))
+        XCTAssertTrue(sentence.contains(#"unreachable [host:"#))
+        XCTAssertTrue(sentence.contains(#"]."#))
+
+        let clause = try rendered("connect to fd00::5: Connection refused")
+        XCTAssertFalse(clause.contains("fd00::5"))
+        XCTAssertTrue(clause.contains("]: Connection refused"))
+
+        let scoped = try rendered("route to fe80::1%en0. done")
+        XCTAssertFalse(scoped.contains("fe80::1"))
+        XCTAssertTrue(scoped.contains("]. done"))
+
+        let separator = try rendered("module :: init")
+        XCTAssertTrue(separator.contains("module :: init"))
+    }
+
+    func testBareHostAndPortWithoutPathIsHashed() throws {
+        let named = try rendered("socket media.example.com:8096 refused")
+        XCTAssertFalse(named.localizedCaseInsensitiveContains("media.example.com"))
+        XCTAssertFalse(named.contains(":8096"))
+        XCTAssertTrue(named.contains("socket [host:"))
+
+        let ipv4 = try rendered("socket 10.0.0.5:8096 refused")
+        XCTAssertFalse(ipv4.contains("10.0.0.5"))
+        XCTAssertFalse(ipv4.contains(":8096"))
+
+        let ipv6 = try rendered("socket [2001:db8::42]:8096 refused")
+        XCTAssertFalse(ipv6.contains("2001:db8::42"))
+        XCTAssertFalse(ipv6.contains(":8096"))
+    }
+
+    /// The address rules must not eat the text that commonly looks like them.
+    func testAddressLookalikesStayLiteral() throws {
+        let line = try rendered(
+            "PlayerViewModel.swift:812 at 2026-10-04T21:47:24.425Z std::string 3:2 attempt:3 http://127.0.0.1/master.m3u8 127.0.0.1:5000"
+        )
+        XCTAssertTrue(line.contains("PlayerViewModel.swift:812"))
+        XCTAssertTrue(line.contains("21:47:24.425Z"))
+        XCTAssertTrue(line.contains("std::string"))
+        XCTAssertTrue(line.contains("attempt:3"))
+        XCTAssertTrue(line.contains("http://127.0.0.1/master.m3u8"))
+        XCTAssertTrue(line.contains("127.0.0.1:5000"))
+    }
+
+    func testHostAndPortBeforePunctuationIsHashed() throws {
+        let clause = try rendered("connect to nas.local:8096: refused")
+        XCTAssertFalse(clause.contains("nas.local"))
+        XCTAssertFalse(clause.contains("8096"))
+        XCTAssertTrue(clause.contains("]: refused"))
+
+        let sentence = try rendered("socket nas.local:8096.")
+        XCTAssertFalse(sentence.contains("nas.local"))
+        XCTAssertFalse(sentence.contains("8096"))
+        XCTAssertTrue(sentence.contains("socket [host:"))
+        XCTAssertTrue(sentence.contains("]."))
+    }
+
+    func testAddressAfterAColonIsHashed() throws {
+        let ipv4 = try rendered("peer:10.0.0.5 reset")
+        XCTAssertFalse(ipv4.contains("10.0.0.5"))
+        XCTAssertTrue(ipv4.contains("peer:[host:"))
+
+        let ipv6 = try rendered("addr:fd00::5 down")
+        XCTAssertFalse(ipv6.contains("fd00::5"))
+        XCTAssertTrue(ipv6.contains("addr:[host:"))
+    }
+
+    /// Apple's Network framework prints an endpoint as `address.port`.
+    func testNetworkFrameworkIPv6EndpointIsHashed() throws {
+        let line = try rendered("connected to 2001:db8::1.443")
+        XCTAssertFalse(line.contains("2001:db8"))
+        XCTAssertFalse(line.contains("443"))
+        XCTAssertTrue(line.contains("connected to [host:"))
+
+        let sentence = try rendered("connected to 2001:db8::1.443.")
+        XCTAssertFalse(sentence.contains("2001:db8"))
+        XCTAssertTrue(sentence.contains("]."))
+    }
+
+    /// An address inside a path must not stop the path rules short: the
+    /// whole path is redacted, as it is when no address is present.
+    func testPathWithEmbeddedAddressIsRedactedWhole() throws {
+        let unc = try rendered(#"open path=\\192.168.1.42\PrivateShare\Family\index.txt failed"#)
+        XCTAssertFalse(unc.contains("192.168.1.42"))
+        XCTAssertFalse(unc.contains("PrivateShare"))
+        XCTAssertFalse(unc.contains("Family"))
+        XCTAssertTrue(unc.contains("path=[redacted_path] failed"))
+
+        let ipv4 = try rendered("mount /Volumes/192.168.1.42/Family/notes.txt failed")
+        XCTAssertFalse(ipv4.contains("192.168.1.42"))
+        XCTAssertFalse(ipv4.contains("Family"))
+        XCTAssertTrue(ipv4.contains("mount [redacted_path] failed"))
+
+        let hostPort = try rendered("mount /Volumes/nas.local:445/Family/notes.txt failed")
+        XCTAssertFalse(hostPort.contains("nas.local"))
+        XCTAssertFalse(hostPort.contains("Family"))
+        XCTAssertTrue(hostPort.contains("mount [redacted_path] failed"))
+    }
+
+    /// A colon right after an IPv6 address must not leave its zone behind or
+    /// stop it being hashed.
+    func testBareIPv6AddressBeforeAColonIsHashedWhole() throws {
+        let scoped = try rendered("connect fe80::1%en0: Connection refused")
+        XCTAssertFalse(scoped.contains("fe80::1"))
+        XCTAssertFalse(scoped.contains("%en0"))
+        XCTAssertTrue(scoped.contains("]: Connection refused"))
+
+        let joined = try rendered("peer=fd00::5:closed")
+        XCTAssertFalse(joined.contains("fd00::5"))
+        XCTAssertTrue(joined.contains("peer=[host:"))
+
+        let compressedEnd = try rendered("peer=fd00:::closed")
+        XCTAssertFalse(compressedEnd.contains("fd00"))
+        XCTAssertTrue(compressedEnd.contains("peer=[host:"))
+
+        let scopedBeforeSeparator = try rendered("connect fe80::1%en0:: Connection refused")
+        XCTAssertFalse(scopedBeforeSeparator.contains("fe80::1"))
+        XCTAssertFalse(scopedBeforeSeparator.contains("%en0"))
+    }
+
+    /// A long colon-separated hex run that ends in a letter is not an
+    /// address. Matching it must stay fast, since redaction runs on the
+    /// thread that logs.
+    func testLongHexAndColonRunRendersQuickly() throws {
+        let dump = "dump " + String(repeating: "a:", count: 2_000) + "g"
+        let start = Date()
+        _ = try rendered(dump)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+    }
+
+    /// The bare media-name rule redacts a run of words ending in a media
+    /// extension, so it must run after hosts are hashed or it cuts a host in
+    /// two and leaves the rest in clear.
+    func testHostWithMediaExtensionLabelIsHashedWhole() throws {
+        let unregistered = try rendered("socket relay.mp4.home.example.com:8096 refused")
+        XCTAssertFalse(unregistered.contains("home.example.com"))
+        XCTAssertTrue(unregistered.contains("socket [host:"))
+
+        DiagLog.registerSensitiveHost("silo.tail1234.ts.net")
+        let registered = try rendered("reachability silo.tail1234.ts.net timed out")
+        XCTAssertFalse(registered.contains("tail1234"))
+        XCTAssertTrue(registered.contains("reachability [host:"))
+    }
+
+    /// Hashing hosts before media names must leave both markers intact.
+    func testHostsAndMediaNamesKeepTheirOwnMarkers() throws {
+        DiagLog.registerSensitiveHost("media")
+        DiagLog.registerSensitiveHost("path")
+        let named = try rendered("playing Movie (2019).mkv")
+        XCTAssertTrue(named.contains("[redacted_media_name]"))
+        XCTAssertFalse(named.contains("Movie"))
+
+        let path = try rendered("open /Users/person/notes.txt failed")
+        XCTAssertTrue(path.contains("open [redacted_path] failed"))
+
+        // Only a real token is exempt; text that merely starts like one is not.
+        let lookalike = try rendered("playing [host:PrivateMovie].mkv")
+        XCTAssertFalse(lookalike.contains("PrivateMovie"))
+
+        DiagLog.registerSensitiveHost("private.example.net")
+        let fakeToken = try rendered("retry [host: private.example.net] failed")
+        XCTAssertFalse(fakeToken.contains("private.example.net"))
+
+        let address = try rendered("peer 10.0.0.5 sent Movie.mkv")
+        XCTAssertFalse(address.contains("10.0.0.5"))
+        XCTAssertFalse(address.contains("Movie"))
+        XCTAssertTrue(address.contains("peer [host:"))
+        XCTAssertTrue(address.contains("] [redacted_media_name]"))
+    }
+
+    /// Colon-separated text that is not an address stays readable now that
+    /// an address may follow a colon or end in punctuation.
+    func testColonSeparatedLookalikesStayLiteral() throws {
+        let samples = [
+            "elapsed 12:34:56 and 12:34:56.789",
+            "mac aa:bb:cc:dd:ee:ff",
+            "ns::abc::def and std::cerr",
+            "scope dec::face::method",
+            "warning at file.swift:812:4",
+            "crash in PlayerViewModel.swift:812: index out of range",
+        ]
+        for sample in samples {
+            XCTAssertTrue(try rendered(sample).contains(sample), sample)
+        }
+    }
+
     func testQuotedAndEscapedJSONSecretsAreRedacted() throws {
         let accessKey = ["access", "token"].joined(separator: "_")
         let apiKey = ["api", "key"].joined(separator: "_")
