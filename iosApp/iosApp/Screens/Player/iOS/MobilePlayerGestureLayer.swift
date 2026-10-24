@@ -77,38 +77,43 @@ struct MobilePlayerGestureLayer: View {
     private static let skipZoneFraction: CGFloat = 0.35
 
     var body: some View {
-        GeometryReader { proxy in
-            let size = proxy.size
-            // The layer ignores the safe area, so these are the insets it
-            // extends into.
-            let leadingZone = proxy.safeAreaInsets.leading + Self.edgeZoneWidth
-            let trailingZone = proxy.safeAreaInsets.trailing + Self.edgeZoneWidth
+        // A reader that ignores the safe area reports zero insets, so the
+        // outer reader, which respects it, supplies them to the full-screen
+        // inner one.
+        GeometryReader { safeArea in
+            let insets = safeArea.safeAreaInsets
+            GeometryReader { proxy in
+                let size = proxy.size
+                let leadingZone = insets.leading + Self.edgeZoneWidth
+                let trailingZone = insets.trailing + Self.edgeZoneWidth
 
-            ZStack {
-                // Must stay in the window for writes to move the device
-                // volume; its presence also hides the system volume HUD,
-                // which the edge gauge replaces.
-                PlayerSystemVolumeHost(volume: systemVolume)
-                    .frame(width: 1, height: 1)
-                    .opacity(0.0001)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                ZStack {
+                    // Must stay in the window for writes to move the device
+                    // volume; its presence also hides the system volume HUD,
+                    // which the edge gauge replaces.
+                    PlayerSystemVolumeHost(volume: systemVolume)
+                        .frame(width: 1, height: 1)
+                        .opacity(0.0001)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
 
-                Color.clear
-                    .contentShape(Rectangle())
-                    .gesture(doubleTapGesture(in: size).exclusively(before: singleTapGesture))
-                    .onLongPressGesture(minimumDuration: 0.5, maximumDistance: 24) {
-                        viewModel.beginHoldFastForward()
-                    } onPressingChanged: { pressing in
-                        if !pressing {
-                            viewModel.endHoldFastForward()
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .gesture(doubleTapGesture(in: size).exclusively(before: singleTapGesture))
+                        .onLongPressGesture(minimumDuration: 0.5, maximumDistance: 24) {
+                            viewModel.beginHoldFastForward()
+                        } onPressingChanged: { pressing in
+                            if !pressing {
+                                viewModel.endHoldFastForward()
+                            }
                         }
-                    }
-                    .simultaneousGesture(edgeAdjustmentDrag(in: size, leadingZone: leadingZone, trailingZone: trailingZone))
-                    .simultaneousGesture(videoGravityPinchGesture)
+                        .simultaneousGesture(edgeAdjustmentDrag(in: size, leadingZone: leadingZone, trailingZone: trailingZone))
+                        .simultaneousGesture(videoGravityPinchGesture)
 
-                feedbackOverlays(in: size, leadingZone: leadingZone, trailingZone: trailingZone)
+                    feedbackOverlays(in: size, leadingZone: leadingZone, trailingZone: trailingZone)
+                }
             }
+            .ignoresSafeArea()
         }
         // These gestures have no button under the finger, so a light haptic
         // confirms each one landed.
@@ -132,7 +137,6 @@ struct MobilePlayerGestureLayer: View {
         // here as a double-tap skip. Drop out of hit testing entirely while
         // the overlay owns the screen.
         .allowsHitTesting(!viewModel.showControls)
-        .ignoresSafeArea()
         .onAppear {
             systemVolume.onExternalChange = { level in
                 // The drag's own writes echo back here late; the drag
