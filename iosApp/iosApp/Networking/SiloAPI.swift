@@ -299,10 +299,10 @@ actor SiloAPI {
 
     /// The watch detail with this owner's track picks for its series (or
     /// movie) applied. A pick or "Auto" the viewer just made may still be on
-    /// its way to the server: the read waits briefly for it and reads again,
-    /// and a pick that is still unsaved after the wait, or failed, is folded
-    /// in rather than lost. Detail selectors and every playback start,
-    /// including Next Up, read through here.
+    /// its way to the server: the read waits briefly for it and reads again
+    /// once it is stored, and a pick that is still unsaved after the wait, or
+    /// recently failed, is folded in rather than lost. Detail selectors and
+    /// every playback start, including Next Up, read through here.
     func watchDetail(contentId: String, libraryId: Int? = nil) async throws -> WatchDetail {
         let auth = try await detailReadAuth()
         let artwork = await artworkQuery(.watch)
@@ -311,10 +311,15 @@ actor SiloAPI {
                 id: contentId, libraryId: libraryId.map(String.init), artwork: artwork, auth: auth
             )
         }
+        // Before the first GET: a write stored after this point may be
+        // missing from its response.
+        let mark = TrackSelectionPersistence.pendingWriteMark()
         var detail = try await read()
         if let prefKey = TrackSelectionPersistence.prefKey(seriesId: detail.seriesId, contentId: detail.contentId) {
-            let settlement = await TrackSelectionPersistence.settlePendingWrites(prefKey: prefKey, owner: auth)
-            if settlement.waited {
+            let settlement = await TrackSelectionPersistence.settlePendingWrites(
+                prefKey: prefKey, owner: auth, since: mark
+            )
+            if settlement.rereads {
                 detail = try await read()
             }
             detail = settlement.applied(to: detail)

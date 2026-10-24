@@ -185,7 +185,7 @@ final class TrackPreferencesV2Tests: XCTestCase {
 
     // MARK: - Pending-write barrier
 
-    func testReadWaitsForAnInFlightPickAndFindsItStored() async throws {
+    func testReadWaitsForAnInFlightPickAndRereadsOnceItIsStored() async throws {
         let (api, tokens) = try await client()
         let captured = await tokens.captureOrdinaryRequestAuth()
         let owner = try XCTUnwrap(captured)
@@ -195,21 +195,43 @@ final class TrackPreferencesV2Tests: XCTestCase {
             client: api, tokenStore: tokens
         )
         await stub.waitUntilHeld()
+        let mark = TrackSelectionPersistence.pendingWriteMark()
 
         let read = Task {
             await TrackSelectionPersistence.settlePendingWrites(
-                prefKey: "series-barrier-wait", owner: owner, timeout: .seconds(30)
+                prefKey: "series-barrier-wait", owner: owner, since: mark, timeout: .seconds(30)
             )
         }
         stub.release()
         let settlement = await read.value
         await pick.value
 
-        XCTAssertTrue(settlement.waited, "a response fetched before the write landed must be read again")
+        XCTAssertTrue(settlement.rereads, "a response fetched before the write landed must be read again")
         XCTAssertTrue(settlement.unsettled.isEmpty, "the read returned only after the pick was stored")
     }
 
-    func testReadThatOutwaitsTheBoundCarriesThePendingPick() async throws {
+    func testWriteStoredWhileTheFirstReadWasInFlightForcesAReread() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let owner = try XCTUnwrap(captured)
+        let key = "series-barrier-race"
+        await TrackSelectionPersistence.clearAudio(prefKey: key, client: api, tokenStore: tokens).value
+        let mark = TrackSelectionPersistence.pendingWriteMark()
+        let before = await TrackSelectionPersistence.settlePendingWrites(prefKey: key, owner: owner, since: mark)
+        XCTAssertFalse(before.rereads, "a write stored before the read was sent is in its response")
+
+        // The PUT's 204 lands after the mark, before the GET's body: nothing
+        // is in flight any more when the read settles, but it still rereads.
+        await TrackSelectionPersistence.saveSubtitle(
+            prefKey: key, request: TrackSelectionPersistence.subtitleOffRequest(), client: api, tokenStore: tokens
+        ).value
+        let after = await TrackSelectionPersistence.settlePendingWrites(prefKey: key, owner: owner, since: mark)
+
+        XCTAssertTrue(after.rereads)
+        XCTAssertTrue(after.unsettled.isEmpty)
+    }
+
+    func testReadThatOutwaitsTheBoundCarriesThePendingPickWithoutRereading() async throws {
         let (api, tokens) = try await client()
         let captured = await tokens.captureOrdinaryRequestAuth()
         let owner = try XCTUnwrap(captured)
@@ -220,10 +242,11 @@ final class TrackPreferencesV2Tests: XCTestCase {
         await stub.waitUntilHeld()
 
         let settlement = await TrackSelectionPersistence.settlePendingWrites(
-            prefKey: "series-barrier-slow", owner: owner, timeout: .milliseconds(50)
+            prefKey: "series-barrier-slow", owner: owner,
+            since: TrackSelectionPersistence.pendingWriteMark(), timeout: .milliseconds(50)
         )
 
-        XCTAssertTrue(settlement.waited)
+        XCTAssertFalse(settlement.rereads, "a second read cannot see a write still in flight")
         guard case .audio(let carried)? = settlement.unsettled[.audio] else {
             return XCTFail("the unanswered pick is carried into the read")
         }
@@ -233,30 +256,59 @@ final class TrackPreferencesV2Tests: XCTestCase {
         await pick.value
     }
 
-    func testFailedPickIsCarriedUntilANewerWriteIsStored() async throws {
+    func testCancelledReadStopsWaitingPromptly() async throws {
         let (api, tokens) = try await client()
         let captured = await tokens.captureOrdinaryRequestAuth()
         let owner = try XCTUnwrap(captured)
+        stub.hold()
+        let pick = TrackSelectionPersistence.saveSubtitle(
+            prefKey: "series-barrier-cancel", request: TrackSelectionPersistence.subtitleOffRequest(),
+            client: api, tokenStore: tokens
+        )
+        await stub.waitUntilHeld()
+        let clock = ContinuousClock()
+        let started = clock.now
+
+        let read = Task {
+            await TrackSelectionPersistence.settlePendingWrites(
+                prefKey: "series-barrier-cancel", owner: owner,
+                since: TrackSelectionPersistence.pendingWriteMark(), timeout: .seconds(30)
+            )
+        }
+        read.cancel()
+        _ = await read.value
+
+        XCTAssertLessThan(clock.now - started, .seconds(5), "a cancelled read must not sit out the wait")
+        stub.release()
+        await pick.value
+    }
+
+    func testFailedPickIsCarriedForALimitedTimeOrUntilANewerWriteIsStored() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let owner = try XCTUnwrap(captured)
+        let key = "series-barrier-fail"
         stub.sequence([.failure(URLError(.networkConnectionLost)), .response(.status(204))])
 
         await TrackSelectionPersistence.saveSubtitle(
-            prefKey: "series-barrier-fail", request: TrackSelectionPersistence.subtitleOffRequest(),
+            prefKey: key, request: TrackSelectionPersistence.subtitleOffRequest(),
             client: api, tokenStore: tokens
         ).value
-        let failed = await TrackSelectionPersistence.settlePendingWrites(
-            prefKey: "series-barrier-fail", owner: owner, timeout: .seconds(30)
-        )
-        XCTAssertFalse(failed.waited, "nothing is in flight once the write has failed")
+        let mark = TrackSelectionPersistence.pendingWriteMark()
+        let failed = await TrackSelectionPersistence.settlePendingWrites(prefKey: key, owner: owner, since: mark)
+        XCTAssertFalse(failed.rereads, "a failed write changed nothing on the server")
         guard case .subtitle(let carried)? = failed.unsettled[.subtitle] else {
             return XCTFail("the failed Off is carried, not dropped")
         }
         XCTAssertEqual(carried.subtitleMode, "off")
-
-        await TrackSelectionPersistence.clearSubtitle(prefKey: "series-barrier-fail",
-                                                      client: api, tokenStore: tokens).value
-        let cleared = await TrackSelectionPersistence.settlePendingWrites(
-            prefKey: "series-barrier-fail", owner: owner, timeout: .seconds(30)
+        let expired = await TrackSelectionPersistence.settlePendingWrites(
+            prefKey: key, owner: owner, since: mark,
+            now: .now + TrackSelectionPersistence.failedPickLifetime + .seconds(1)
         )
+        XCTAssertTrue(expired.unsettled.isEmpty, "after the lifetime the server's state wins again")
+
+        await TrackSelectionPersistence.clearSubtitle(prefKey: key, client: api, tokenStore: tokens).value
+        let cleared = await TrackSelectionPersistence.settlePendingWrites(prefKey: key, owner: owner, since: mark)
         XCTAssertTrue(cleared.unsettled.isEmpty, "the stored Auto replaces the failed pick")
     }
 
@@ -292,7 +344,9 @@ final class TrackPreferencesV2Tests: XCTestCase {
                        "the queued subtitle pick is skipped; the in-flight one and the newest still go out")
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/subtitle-prefs/\(key)", "/api/v2/audio-prefs/\(key)",
                                              "/api/v2/subtitle-prefs/\(key)"])
-        let settled = await TrackSelectionPersistence.settlePendingWrites(prefKey: key, owner: owner)
+        let settled = await TrackSelectionPersistence.settlePendingWrites(
+            prefKey: key, owner: owner, since: TrackSelectionPersistence.pendingWriteMark()
+        )
         XCTAssertTrue(settled.unsettled.isEmpty)
     }
 
@@ -307,12 +361,15 @@ final class TrackPreferencesV2Tests: XCTestCase {
         await tokens.setProfileId("profile-two")
         let capturedOther = await tokens.captureOrdinaryRequestAuth()
         let other = try XCTUnwrap(capturedOther)
+        let clock = ContinuousClock()
+        let started = clock.now
 
         let settlement = await TrackSelectionPersistence.settlePendingWrites(
-            prefKey: "series-barrier-owner", owner: other, timeout: .seconds(30)
+            prefKey: "series-barrier-owner", owner: other,
+            since: TrackSelectionPersistence.pendingWriteMark(), timeout: .seconds(30)
         )
 
-        XCTAssertFalse(settlement.waited)
+        XCTAssertLessThan(clock.now - started, .seconds(5), "profile-one's write is not waited on")
         XCTAssertTrue(settlement.unsettled.isEmpty, "profile-one's pick never reaches profile-two's reads")
         stub.release()
         await pick.value

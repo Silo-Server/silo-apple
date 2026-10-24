@@ -192,7 +192,7 @@ final class TrackSelectionPersistenceTests: XCTestCase {
                 source: "embedded", language: "en", codec: "subrip", label: nil, forced: false, hearingImpaired: false
             )
         )
-        let settlement = TrackSelectionPersistence.Settlement(waited: true, unsettled: [
+        let settlement = TrackSelectionPersistence.Settlement(rereads: false, unsettled: [
             .audio: .audio(AudioPrefRequest(
                 audioTrackIndex: 1, audioLanguage: "jpn",
                 trackSignature: AudioTrackSignature(language: "jpn", codec: "aac", channels: 2)
@@ -208,9 +208,57 @@ final class TrackSelectionPersistenceTests: XCTestCase {
         XCTAssertNil(applied.effectiveSubtitleTrackSignature)
         XCTAssertEqual(applied.effectiveShowForcedSubtitles, false, "the forced setting is not the pick's to change")
 
-        let auto = TrackSelectionPersistence.Settlement(waited: true, unsettled: [.audio: .cleared])
+        let auto = TrackSelectionPersistence.Settlement(rereads: false, unsettled: [.audio: .cleared])
         XCTAssertEqual(auto.applied(to: detail).versions[0].effectiveAudioTrackIndex, 1,
                        "only the server can resolve what Auto falls back to")
+    }
+
+    func testUnsavedSubtitlePickReplacesTheLanguageEvenWhenUntagged() {
+        let detail = watchDetail(version: decodedVersion(#"{"file_id": 1}"#), subtitleLanguage: "en")
+        let untagged = SubtitlePrefRequest(subtitleLanguage: "und", subtitleTrackIndex: 4, externalSubtitlePath: "",
+                                           subtitleMode: "always", trackSignature: nil)
+
+        let applied = TrackSelectionPersistence.Settlement(rereads: false, unsettled: [.subtitle: .subtitle(untagged)])
+            .applied(to: detail)
+
+        XCTAssertNil(applied.effectiveSubtitleLanguage, "the old series language must not steer the untagged pick")
+        XCTAssertEqual(applied.effectiveSubtitleMode, "always")
+    }
+
+    func testUntaggedAudioPickMatchesOnlyAnUntaggedTrackWithItsDetails() {
+        let version = decodedVersion("""
+        {
+          "file_id": 3,
+          "effective_audio_track_index": 0,
+          "audio_tracks": [
+            { "index": 1, "language": "eng", "codec": "ac3", "channels": 6 },
+            { "index": 2, "codec": "aac", "channels": 2 },
+            { "index": 3, "language": "und", "codec": "ac3", "channels": 6 }
+          ]
+        }
+        """)
+        func ordinal(_ signature: AudioTrackSignature?, index: Int = 0) -> Int? {
+            TrackSelectionPersistence.audioOrdinal(
+                matching: AudioPrefRequest(audioTrackIndex: index, audioLanguage: "", trackSignature: signature),
+                in: version
+            )
+        }
+
+        XCTAssertEqual(ordinal(AudioTrackSignature(codec: "ac3", channels: 6)), 2,
+                       "the tagged English track with the same codec is not an untagged match")
+        XCTAssertNil(ordinal(AudioTrackSignature(codec: "dts", channels: 6)),
+                     "no matching untagged track leaves the server's audio")
+        XCTAssertNil(ordinal(nil, index: 1), "the other file's ordinal is not trusted unchecked")
+    }
+
+    private func watchDetail(version: FileVersion, subtitleLanguage: String?) -> WatchDetail {
+        WatchDetail(
+            contentId: "ep-2", type: "episode", title: "Two", year: nil, overview: nil,
+            versions: [version], subtitles: nil, intro: nil, credits: nil, userData: nil,
+            seriesId: "series-9", seriesTitle: nil, seasonNumber: 1, episodeNumber: 2,
+            effectiveSubtitleLanguage: subtitleLanguage, effectiveSubtitleMode: "auto",
+            effectiveShowForcedSubtitles: nil, effectiveSubtitleTrackSignature: nil
+        )
     }
 
     // MARK: - Helpers

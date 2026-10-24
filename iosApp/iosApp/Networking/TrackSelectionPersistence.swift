@@ -162,8 +162,9 @@ enum TrackSelectionPersistence {
     // override; a write still queued when a newer one arrives is skipped,
     // because the newer one names the state the viewer wants. The writes are
     // `natural_idempotent`, but a failed or unanswered write is logged and
-    // not retried: the next explicit pick sends a fresh one. Until then reads
-    // under the same owner carry it (see `settlePendingWrites`).
+    // not retried: the next explicit pick sends a fresh one. Until then, for
+    // up to `failedPickLifetime`, reads under the same owner carry it (see
+    // `settlePendingWrites`).
 
     @discardableResult
     static func saveAudio(prefKey: String, request: AudioPrefRequest,
@@ -251,13 +252,23 @@ enum TrackSelectionPersistence {
     /// ahead and carries their intent instead.
     static let pendingWriteWait: Duration = .milliseconds(2500)
 
+    /// How long a failed pick is carried into reads. After that the server's
+    /// state wins again, so a choice made since on another device is not
+    /// overridden indefinitely. Matches Android's queued-write expiry.
+    static let failedPickLifetime: Duration = .seconds(600)
+
+    /// Taken before a read is sent: which writes had already been stored.
+    struct ReadMark: Sendable {
+        fileprivate let storedThrough: UInt64
+    }
+
     /// The writes a read of `prefKey` could not see stored.
     struct Settlement: Sendable {
-        /// Some write was in flight when the read asked, so a response
-        /// fetched before this call may predate it.
-        let waited: Bool
+        /// A write to the key was stored after the read's mark, so a response
+        /// fetched since the mark may predate it and must be read again.
+        let rereads: Bool
         /// Latest intent per kind that has not been stored: still in flight
-        /// after the wait, or failed.
+        /// after the wait, or failed within `failedPickLifetime`.
         let unsettled: [TrackPreferenceKind: Intent]
 
         /// `detail` with every unsettled pick folded into the server-resolved
@@ -267,9 +278,7 @@ enum TrackSelectionPersistence {
         func applied(to detail: WatchDetail) -> WatchDetail {
             var detail = detail
             if case .subtitle(let request)? = unsettled[.subtitle] {
-                if !request.subtitleLanguage.isEmpty {
-                    detail.effectiveSubtitleLanguage = request.subtitleLanguage
-                }
+                detail.effectiveSubtitleLanguage = TrackSelectionPersistence.taggedLanguage(request.subtitleLanguage)
                 detail.effectiveSubtitleMode = request.subtitleMode
                 detail.effectiveSubtitleTrackSignature = request.trackSignature
             }
@@ -288,82 +297,137 @@ enum TrackSelectionPersistence {
         }
     }
 
+    /// Mark taken before a read of server track state is sent, for
+    /// `settlePendingWrites`. A write stored after it may or may not be in
+    /// the read's response.
+    static func pendingWriteMark() -> ReadMark {
+        pendingWrites.mark()
+    }
+
     /// The barrier a read of server track state passes before it trusts the
     /// response. Waits up to `timeout` for this owner's in-flight writes to
-    /// `prefKey`, then reports what is still not stored so the caller can
-    /// carry it rather than block on it. Writes under another owner are
-    /// neither waited on nor reported.
+    /// `prefKey` (returning early if the caller is cancelled), then reports
+    /// whether one was stored after `mark`, so the response must be read
+    /// again, and what is still not stored, so the caller can carry it
+    /// rather than block on it. Writes under another owner are neither
+    /// waited on nor reported.
     static func settlePendingWrites(
         prefKey: String,
         owner: CapturedOrdinaryRequestAuth,
-        timeout: Duration = pendingWriteWait
+        since mark: ReadMark,
+        timeout: Duration = pendingWriteWait,
+        now: ContinuousClock.Instant = .now
     ) async -> Settlement {
         let inFlight = pendingWrites.inFlightTasks(prefKey: prefKey, owner: owner)
         if !inFlight.isEmpty {
             await waitForAll(inFlight, timeout: timeout)
         }
-        let unsettled = pendingWrites.unsettled(prefKey: prefKey, owner: owner)
+        let unsettled = pendingWrites.unsettled(
+            prefKey: prefKey, owner: owner, failedSince: now - failedPickLifetime
+        )
         for kind in unsettled.keys {
             logger.info(
                 "carrying unsaved \(kind.rawValue, privacy: .public) pref key=\(prefKey, privacy: .public)"
             )
         }
-        return Settlement(waited: !inFlight.isEmpty, unsettled: unsettled)
+        return Settlement(
+            rereads: pendingWrites.storedAfter(mark, prefKey: prefKey),
+            unsettled: unsettled
+        )
+    }
+
+    /// A language code that names a language: nil for empty and `und`.
+    fileprivate static func taggedLanguage(_ code: String?) -> String? {
+        guard let code = code?.trimmingCharacters(in: .whitespaces), !code.isEmpty,
+              code.lowercased() != "und" else { return nil }
+        return code
     }
 
     /// The ordinal in `version.audioTracks` an audio pick names on another
-    /// file of the series: the track matching its signature, then its own
-    /// ordinal when that track has the pick's language, then the first track
-    /// in that language. Nil leaves the server's choice alone.
+    /// file of the series. A pick in a language matches the track with its
+    /// signature, then its own ordinal when that track has the language,
+    /// then the first track in the language. An untagged pick matches only
+    /// an untagged track with the same codec, channels, layout and title.
+    /// Nil leaves the server's choice alone.
     static func audioOrdinal(matching request: AudioPrefRequest, in version: FileVersion) -> Int? {
         let tracks = version.audioTracks ?? []
         func same(_ lhs: String?, _ rhs: String?) -> Bool {
             let normalize = { (value: String?) in value?.trimmingCharacters(in: .whitespaces).lowercased() ?? "" }
             return normalize(lhs) == normalize(rhs)
         }
+        func matchesDetails(_ track: AudioTrack, _ signature: AudioTrackSignature) -> Bool {
+            (signature.codec == nil || same(track.codec, signature.codec))
+                && (signature.channels == nil || track.channels == signature.channels)
+                && (signature.layout == nil || same(track.channelLayout, signature.layout))
+                && (signature.title == nil || same(track.title, signature.title)
+                    || same(track.embeddedTitle, signature.title))
+        }
+        guard let language = taggedLanguage(request.audioLanguage) else {
+            guard let signature = request.trackSignature,
+                  signature.codec != nil || signature.channels != nil
+                    || signature.layout != nil || signature.title != nil else { return nil }
+            return tracks.firstIndex { taggedLanguage($0.language) == nil && matchesDetails($0, signature) }
+        }
         if let signature = request.trackSignature,
-           let ordinal = tracks.firstIndex(where: { track in
-               same(track.language, signature.language)
-                   && (signature.codec == nil || same(track.codec, signature.codec))
-                   && (signature.channels == nil || track.channels == signature.channels)
-                   && (signature.title == nil || same(track.title, signature.title)
-                       || same(track.embeddedTitle, signature.title))
-           }) {
+           let ordinal = tracks.firstIndex(where: { same($0.language, language) && matchesDetails($0, signature) }) {
             return ordinal
         }
-        let language = request.audioLanguage
         if tracks.indices.contains(request.audioTrackIndex),
-           language.isEmpty || same(tracks[request.audioTrackIndex].language, language) {
+           same(tracks[request.audioTrackIndex].language, language) {
             return request.audioTrackIndex
         }
-        guard !language.isEmpty else { return nil }
         return tracks.firstIndex { same($0.language, language) }
     }
 
-    /// Returns when every task has finished or `timeout` has passed,
-    /// whichever comes first. The tasks keep running either way.
+    /// Returns when every task has finished, `timeout` has passed, or the
+    /// calling task is cancelled, whichever comes first. The tasks keep
+    /// running either way.
     private static func waitForAll(_ tasks: [Task<Void, Never>], timeout: Duration) async {
-        let once = ResumeOnce()
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let timer = Task {
-                try? await Task.sleep(for: timeout)
-                if once.claim() { continuation.resume() }
-            }
-            Task {
-                for task in tasks { await task.value }
-                timer.cancel()
-                if once.claim() { continuation.resume() }
-            }
+        let gate = OneShot()
+        let timer = Task {
+            try? await Task.sleep(for: timeout)
+            gate.fire()
         }
+        let waiter = Task {
+            for task in tasks { await task.value }
+            gate.fire()
+        }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { gate.install($0) }
+        } onCancel: {
+            gate.fire()
+        }
+        timer.cancel()
+        waiter.cancel()
     }
 
-    private final class ResumeOnce: Sendable {
-        private let claimed = Mutex(false)
-        func claim() -> Bool {
-            claimed.withLock { claimed in
-                defer { claimed = true }
-                return !claimed
+    /// Resumes one continuation once, whether it fires before or after the
+    /// continuation is installed.
+    private final class OneShot: Sendable {
+        private struct State {
+            var continuation: CheckedContinuation<Void, Never>?
+            var fired = false
+        }
+
+        private let state = Mutex(State())
+
+        func install(_ continuation: CheckedContinuation<Void, Never>) {
+            let firedAlready = state.withLock { state -> Bool in
+                if state.fired { return true }
+                state.continuation = continuation
+                return false
             }
+            if firedAlready { continuation.resume() }
+        }
+
+        func fire() {
+            let continuation = state.withLock { state -> CheckedContinuation<Void, Never>? in
+                guard !state.fired else { return nil }
+                state.fired = true
+                defer { state.continuation = nil }
+                return state.continuation
+            }
+            continuation?.resume()
         }
     }
 
@@ -372,7 +436,9 @@ enum TrackSelectionPersistence {
     /// its outcome; callers dispatch synchronously, so dispatch order is pick
     /// order. An entry is bound to the owner its write captured and leaves
     /// once that write is stored. A failed one stays until a newer write for
-    /// the key replaces it, so later reads under that owner still carry it.
+    /// the key replaces it, and reads under that owner carry it for
+    /// `failedPickLifetime`. Each store also bumps a sequence number, which
+    /// read marks compare against.
     ///
     /// Slots are not split by owner: a newer write can only come from the
     /// owner acting now, and a queued write for an earlier owner would be
@@ -395,7 +461,7 @@ enum TrackSelectionPersistence {
             /// Nil until the write has captured its owner; `.some(nil)` when
             /// nobody was signed in.
             var owner: CapturedOrdinaryRequestAuth??
-            var failed = false
+            var failedAt: ContinuousClock.Instant?
 
             func belongs(to reader: CapturedOrdinaryRequestAuth, includingUnbound: Bool) -> Bool {
                 switch owner {
@@ -409,6 +475,9 @@ enum TrackSelectionPersistence {
         private struct State {
             var latest: [Slot: Entry] = [:]
             var nextId: UInt64 = 0
+            var storeSequence: UInt64 = 0
+            /// The store sequence of each slot's last stored write.
+            var lastStored: [Slot: UInt64] = [:]
         }
 
         private let state = Mutex(State())
@@ -441,31 +510,50 @@ enum TrackSelectionPersistence {
 
         func finish(_ write: WriteID, stored: Bool) {
             state.withLock { state in
+                if stored {
+                    state.storeSequence += 1
+                    state.lastStored[write.slot] = state.storeSequence
+                }
                 guard state.latest[write.slot]?.id == write.id else { return }
                 if stored {
                     state.latest[write.slot] = nil
                 } else {
-                    state.latest[write.slot]?.failed = true
+                    state.latest[write.slot]?.failedAt = .now
                 }
+            }
+        }
+
+        func mark() -> ReadMark {
+            state.withLock { ReadMark(storedThrough: $0.storeSequence) }
+        }
+
+        func storedAfter(_ mark: ReadMark, prefKey: String) -> Bool {
+            state.withLock { state in
+                Self.slots(prefKey).contains { (state.lastStored[$0] ?? 0) > mark.storedThrough }
             }
         }
 
         func inFlightTasks(prefKey: String, owner: CapturedOrdinaryRequestAuth) -> [Task<Void, Never>] {
             state.withLock { state in
                 Self.slots(prefKey).compactMap { slot in
-                    guard let entry = state.latest[slot], !entry.failed,
+                    guard let entry = state.latest[slot], entry.failedAt == nil,
                           entry.belongs(to: owner, includingUnbound: true) else { return nil }
                     return entry.task
                 }
             }
         }
 
-        func unsettled(prefKey: String, owner: CapturedOrdinaryRequestAuth) -> [TrackPreferenceKind: Intent] {
+        func unsettled(
+            prefKey: String,
+            owner: CapturedOrdinaryRequestAuth,
+            failedSince cutoff: ContinuousClock.Instant
+        ) -> [TrackPreferenceKind: Intent] {
             state.withLock { state in
                 var result: [TrackPreferenceKind: Intent] = [:]
                 for slot in Self.slots(prefKey) {
                     guard let entry = state.latest[slot],
                           entry.belongs(to: owner, includingUnbound: false) else { continue }
+                    if let failedAt = entry.failedAt, failedAt < cutoff { continue }
                     result[slot.kind] = entry.intent
                 }
                 return result
