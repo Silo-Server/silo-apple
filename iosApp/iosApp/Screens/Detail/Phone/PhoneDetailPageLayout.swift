@@ -6,8 +6,9 @@ import SwiftUI
 /// `PhoneDetailHeroLayout.usesSplitLayout`) instead spreads the artwork
 /// across the whole window, holds the title and actions still in a glass
 /// sidebar over its leading side, and scrolls the sections beside it. The
-/// sections start low enough to leave the top of the artwork clear, and the
-/// artwork blurs and darkens behind them as they scroll up.
+/// sections start low enough to leave the top of the artwork clear, but
+/// high enough to show all of a section marked with `splitPaneLeadEnd()`,
+/// and the artwork blurs and darkens behind them as they scroll up.
 ///
 /// Place it in a `PhoneDetailPageSurface` that keeps the side safe area: the
 /// split reads those insets, and the single column extends back under them.
@@ -24,6 +25,7 @@ struct PhoneDetailPageLayout<Column: View, PaneArtwork: View, PaneSidebar: View,
 
     @State private var page = PageGeometry()
     @State private var contentScroll = ContentPaneScroll()
+    @State private var leadEnd: CGFloat?
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.detailPageTopSafeArea) private var topSafeArea
 
@@ -31,6 +33,8 @@ struct PhoneDetailPageLayout<Column: View, PaneArtwork: View, PaneSidebar: View,
     /// top edge and are 44pt tall. The content pane scrolls beneath this inset
     /// rather than under the buttons, so it needs no backing strip.
     static var contentPaneTopInset: CGFloat { 9 + SiloTheme.topBarIconHitSize + 12 }
+    /// Room left below the lead section when it pulls the sections up.
+    static var contentPaneBottomInset: CGFloat { 20 }
 
     var body: some View {
         Group {
@@ -83,8 +87,11 @@ struct PhoneDetailPageLayout<Column: View, PaneArtwork: View, PaneSidebar: View,
 
     private var split: some View {
         let artworkHeight = page.artworkHeight
-        // The sections begin where the artwork starts fading out.
-        let contentTop = max(topSafeArea + Self.contentPaneTopInset, artworkHeight * 0.66)
+        // The sections begin where the artwork starts fading out, or higher
+        // when the marked lead section would otherwise end below the window.
+        let fadeTop = artworkHeight * 0.66
+        let leadTop = leadEnd.map { page.size.height - Self.contentPaneBottomInset - $0 } ?? fadeTop
+        let contentTop = max(topSafeArea + Self.contentPaneTopInset, min(fadeTop, leadTop))
         return HStack(alignment: .top, spacing: 0) {
             ScrollView(.vertical, showsIndicators: false) {
                 paneSidebar()
@@ -104,7 +111,11 @@ struct PhoneDetailPageLayout<Column: View, PaneArtwork: View, PaneSidebar: View,
 
             ScrollView(.vertical, showsIndicators: false) {
                 paneContent()
+                    .coordinateSpace(name: SplitPaneLeadEndKey.space)
                     .padding(.top, contentTop)
+            }
+            .onPreferenceChange(SplitPaneLeadEndKey.self) { end in
+                leadEnd = end
             }
             .onScrollGeometryChange(for: CGFloat.self) { geometry in
                 geometry.contentOffset.y + geometry.contentInsets.top
@@ -129,6 +140,7 @@ struct PhoneDetailPageLayout<Column: View, PaneArtwork: View, PaneSidebar: View,
                 scroll: contentScroll,
                 size: CGSize(width: page.windowWidth, height: artworkHeight),
                 shift: page.artworkShift,
+                contentStart: contentTop / max(artworkHeight, 1),
                 artwork: paneArtwork
             )
             .offset(x: -page.leadingInset)
@@ -161,12 +173,17 @@ private struct SplitPageArtwork<Artwork: View>: View {
     let size: CGSize
     /// How far right of the window's center the artwork's center sits.
     let shift: CGFloat
+    /// Where the sections start, as a fraction of the artwork's height.
+    let contentStart: CGFloat
     let artwork: () -> Artwork
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         let progress = scroll.progress
+        // The lower shade reaches full strength just above the sections.
+        let shadeStart = max(contentStart - 0.26, 0.05)
+        let shadeFull = max(contentStart - 0.04, shadeStart + 0.01)
         artwork()
             .frame(width: size.width, height: size.height)
             .clipped()
@@ -184,14 +201,14 @@ private struct SplitPageArtwork<Artwork: View>: View {
             .clipped()
             .overlay {
                 // Darkens the top for the time, connection status, and
-                // floating buttons, and the lower part for the sections that
-                // start over it, so both read over bright artwork.
+                // floating buttons, and the part from just above the sections
+                // down, so both read over bright artwork.
                 LinearGradient(
                     stops: [
                         .init(color: .black.opacity(0.3), location: 0),
-                        .init(color: .clear, location: 0.3),
-                        .init(color: .clear, location: 0.4),
-                        .init(color: .black.opacity(0.62), location: 0.62),
+                        .init(color: .clear, location: min(0.3, shadeStart)),
+                        .init(color: .clear, location: shadeStart),
+                        .init(color: .black.opacity(0.62), location: shadeFull),
                         .init(color: .black.opacity(0.8), location: 1),
                     ],
                     startPoint: .top,
@@ -235,6 +252,32 @@ struct DetailSelectorPopover {
 
     static let standard = DetailSelectorPopover(arrowEdge: .top, isCompact: false)
     static let sidebar = DetailSelectorPopover(arrowEdge: .bottom, isCompact: true)
+}
+
+extension View {
+    /// Marks the end of the section a split page's content pane shows whole
+    /// before any scrolling, such as a series' episode rail with its titles.
+    func splitPaneLeadEnd() -> some View {
+        background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: SplitPaneLeadEndKey.self,
+                    value: proxy.frame(in: .named(SplitPaneLeadEndKey.space)).maxY
+                )
+            }
+        }
+    }
+}
+
+/// Where the marked lead section ends, measured from the top of the content
+/// pane's sections.
+private struct SplitPaneLeadEndKey: PreferenceKey {
+    static let space = "splitPaneContent"
+    static let defaultValue: CGFloat? = nil
+
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = nextValue() ?? value
+    }
 }
 
 private struct PageGeometry: Equatable {

@@ -665,6 +665,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     }
                 }
             }
+            // On a split page, the sections start high enough to show the
+            // episode titles under the thumbnails.
+            .splitPaneLeadEnd()
         }
     }
 
