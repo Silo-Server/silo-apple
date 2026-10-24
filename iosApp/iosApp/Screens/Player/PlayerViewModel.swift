@@ -4744,10 +4744,6 @@ class PlayerViewModel {
         applySettingsToPlayer()
     }
 
-    var currentUserVolume: Float {
-        userMuted ? 0 : userVolume
-    }
-
     func applyUserVolume(_ volume: Float) {
         userVolume = min(max(volume, 0), 1)
         if userVolume > 0 { userMuted = false }
