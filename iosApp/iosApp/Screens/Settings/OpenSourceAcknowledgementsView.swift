@@ -50,7 +50,6 @@ enum OpenSourceAcknowledgements {
         Resource(title: "libdovi — MIT", name: "libdovi-MIT"),
         Resource(title: "LibTrueHD — MIT", name: "LibTrueHD-MIT"),
         Resource(title: "truehd and oamd — Apache 2.0", name: "truehd-Apache-2.0"),
-        Resource(title: "LibDTSX and dca — LGPL 3", name: "LibDTSX-LGPL-3.0"),
         Resource(title: "Nuke and NukeUI — MIT", name: "Nuke-MIT"),
         Resource(title: "SwiftAssRenderer — MIT", name: "SwiftAssRenderer-MIT"),
         Resource(title: "SwiftLibass — MIT", name: "SwiftLibass-MIT"),

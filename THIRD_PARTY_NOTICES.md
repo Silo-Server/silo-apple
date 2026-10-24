@@ -17,10 +17,9 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 7.40.1 + Silo subtitle, HLS authorization and playback recovery patches, object-audio traits on | `185be1f52486f548086b4c0f5e70624885056e74` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
-| FFmpegBuild 3.7.1 | `013c48bd4d3073428f31cade039ec4ed958d0ceb` | Nine separately embedded dynamic frameworks | See the component table below |
-| LibTrueHD 3.0.0 | `aebd5ffe1046dadbea833ce87a75d00fd8b1edd1` | Static `TrueHD.xcframework` linked through AetherEngine | MIT; embedded `truehd` and `oamd` crates are Apache-2.0 |
-| LibDTSX 3.0.0 | `7d68c8bbda348a10e169b9bb9619c8b2b7a0c642` | Dynamic `DTSX.framework` embedded in each app | Built library LGPL-3.0-or-later (its `dca` decoder is a port of FFmpeg's); LibDTSX source Apache-2.0 |
+| AetherEngine 7.47.0 and upstream `main` through `def48fe8` + Silo subtitle, HLS authorization and playback recovery patches, object-audio traits on | `ff6262316d2376868542acb429beab38c59e5eec` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| FFmpegBuild 3.10.0 | `28cd8757ff5338396326d9eea296c33e777b05cc` | Nine separately embedded dynamic frameworks | See the component table below |
+| LibTrueHD 3.1.0 | `73bee84d7ac7b8619db570e36490b92761fe91a6` | Static `TrueHD.xcframework` linked through AetherEngine | MIT; embedded `truehd` and `oamd` crates are Apache-2.0 |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
 
@@ -36,23 +35,25 @@ Copyright (C) 2026 Vincent Herbst.
 
 AetherEngine is licensed under GNU LGPL version 3 with its upstream Apple
 Store / DRM exception. Silo builds a published fork revision: upstream release
-`7.40.1` (upstream commit `93d54e50`), plus Silo patches for complete native subtitle
+`7.47.0` and upstream `main` through commit `def48fe8`, which adds the exact TrueHD
+Atmos object render (upstream #731), plus Silo patches for complete native subtitle
 renditions, source timing after a media reanchor, ASS subtitle routing, refreshable
 authorization for native HLS, sidecar subtitles and font bundles, and audio-switch
 tracking. Upstream compiles TrueHD Atmos and DTS:X object rendering only for a host
 that enables its `TrueHDObjectAudio` and `DTSXObjectAudio` package traits, noting that
 those components may need third-party patent licenses. The Silo fork turns those two
-traits on by default, so LibTrueHD and LibDTSX are linked and the Playback setting can
-deliver TrueHD Atmos and DTS:X heights as Apple Positional Audio. The Profile 7
+traits on by default, so LibTrueHD is linked, FFmpegBuild's `dca` decoder reads DTS:X
+heights, and the Playback setting can deliver TrueHD Atmos and DTS:X heights as Apple
+Positional Audio. The Profile 7
 dual-layer and Profile 5 still components stay off. Raw ASS events stay on the
-primary local overlay; secondary subtitles and software PiP receive normalized
-text, and packaged HLS retains
+primary local overlay; secondary subtitles, secondary sidecars included, and software
+PiP receive normalized text, and packaged HLS retains
 its native text rendition for PiP and AirPlay. These modifications are
 published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/185be1f52486f548086b4c0f5e70624885056e74>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/ff6262316d2376868542acb429beab38c59e5eec>
   (engine pull requests: <https://github.com/Silo-Server/AetherEngine/pull/2>,
   <https://github.com/Silo-Server/AetherEngine/pull/6>,
   <https://github.com/Silo-Server/AetherEngine/pull/15>,
@@ -63,8 +64,10 @@ the GNU GPL version 3 text incorporated by LGPLv3.
   <https://github.com/Silo-Server/AetherEngine/pull/21>,
   <https://github.com/Silo-Server/AetherEngine/pull/22>,
   <https://github.com/Silo-Server/AetherEngine/pull/23>,
-  <https://github.com/Silo-Server/AetherEngine/pull/24>)
-- Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/93d54e5067ca0ad856259c0ebc1693aeafa20677>
+  <https://github.com/Silo-Server/AetherEngine/pull/24>,
+  <https://github.com/Silo-Server/AetherEngine/pull/25>,
+  <https://github.com/Silo-Server/AetherEngine/pull/26>)
+- Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/def48fe8ada812002c3d7b49d5d111c7d125f106>
 - Rebuild input: `Package.swift` and the source tree at that revision
 - Bundled texts: `AetherEngine-LGPL-3.0-App-Store-Exception.txt`,
   `GPL-3.0.txt`
@@ -97,11 +100,18 @@ support for the `dav1` (Dolby Vision AV1) MP4 sample entry. 3.5.0 moved to FFmpe
 `n8.1.3`, and 3.6.0 enabled the `dts`, `truehd` and `loas` raw demuxers and added a
 local patch that probes the payload of an MPEG-TS audio PID labelled MPEG-1 audio.
 3.7.0 patches the mp4 muxer's `dec3` box so an E-AC-3 track that carries its height
-channels and Atmos objects in a dependent substream keeps them, and the pinned 3.7.1
-release patches the mp4 muxer so a packet still queued behind a fragment's written
-samples cannot end that fragment's track early. Both releases keep FFmpeg `n8.1.3`
-and the same component set. The exact FFmpegBuild 3.7.1 `build.sh` is the rebuild
-recipe and patch record:
+channels and Atmos objects in a dependent substream keeps them, and 3.7.1 patches the
+mp4 muxer so a packet still queued behind a fragment's written samples cannot end that
+fragment's track early. 3.8.0 adds FFmpeg's native RealMedia, 3GP, Theora, VobSub and
+DVD LPCM support. 3.9.0 adds a local patch (`patches/dca-xll-x-heights.patch`) that
+lets FFmpeg's `dca` decoder read the height channels of DTS:X's standard presentation,
+which AetherEngine uses in place of LibDTSX. The pinned 3.10.0 release adds FFmpeg's
+native AAC and ALAC encoders, which pad an audio track that ends before its video.
+Every release keeps FFmpeg `n8.1.3`, the same dav1d, zimg and libzvbi sources and the
+same nine frameworks, with no external codec library. The exact FFmpegBuild 3.10.0
+`build.sh` and `patches/` are the rebuild recipe and patch record, and its
+`BUILD-INFO.txt` records the upstream commits, patch hashes, toolchain, configure
+lines and binary hashes of the published build:
 
 - it builds FFmpeg with dynamic linkage and does not enable GPL, version-3,
   or nonfree FFmpeg components;
@@ -126,11 +136,11 @@ in the table under `SiloTV.app/Frameworks/`. Its `AetherLibavcodec` configure
 string contained `--enable-shared` without `--enable-gpl`, `--enable-version3`, or
 nonfree enablement, and the app binary exported no `avcodec_`/`avformat_`
 symbols of its own. These observations describe that older debug artifact;
-they are not a binary inventory of the current 3.7.1 dependency. Repeat this
+they are not a binary inventory of the current 3.10.0 dependency. Repeat this
 inventory against each release archive; debug evidence is not a release substitute.
 
 - Exact packaging source and rebuild script:
-  <https://github.com/superuser404notfound/FFmpegBuild/tree/013c48bd4d3073428f31cade039ec4ed958d0ceb>
+  <https://github.com/superuser404notfound/FFmpegBuild/tree/28cd8757ff5338396326d9eea296c33e777b05cc>
 - Current upstream tag resolutions:
   [FFmpeg](https://github.com/FFmpeg/FFmpeg/tree/1041abdc962f4cc4f394aa8de9dc5236c0c3b9e7),
   [dav1d](https://code.videolan.org/videolan/dav1d/-/tree/54706fc6bc0cdecab7e9593974a4039cc038fca7),
@@ -175,38 +185,19 @@ Copyright (c) 2026 Quick104, with packaging changes since 2.0.0 Copyright (c) 20
 Vincent Herbst. Its static `TrueHD.xcframework` contains the `truehd` crate (TrueHD/MLP
 decoder) from the truehdd project, Copyright Rainbaby and the truehdd contributors,
 built from the exact commit `33bae1657ceb25b5fe0347f42c544c3414e2760e` (upstream
-`02d29cd0` with harletty's performance changes and a build feature that discards matrix
-interpolation values), and the `oamd` crate 0.1.0 (object audio metadata), Copyright
+`02d29cd0` with harletty's performance changes and an optional feature that discards
+matrix interpolation values; 3.1.0 builds the exact decode, matrix interpolation
+included), and the `oamd` crate 0.1.0 (object audio metadata), Copyright
 Rainbaby, both under the Apache License 2.0. It also compiles in the Rust standard
 library and the crates its NOTICE lists, each under the MIT license or the Apache
 License 2.0. The bundled texts reproduce LibTrueHD's MIT license, its NOTICE, and the
 Apache License.
 
 - Exact source and rebuild script:
-  <https://github.com/superuser404notfound/LibTrueHD/tree/aebd5ffe1046dadbea833ce87a75d00fd8b1edd1>
+  <https://github.com/superuser404notfound/LibTrueHD/tree/73bee84d7ac7b8619db570e36490b92761fe91a6>
 - Embedded decoder source: <https://github.com/superuser404notfound/truehdd/tree/33bae1657ceb25b5fe0347f42c544c3414e2760e>
 - Embedded metadata parser source: <https://crates.io/crates/oamd/0.1.0>
 - Bundled texts: `LibTrueHD-MIT.txt`, `truehd-Apache-2.0.txt`
-
-## LibDTSX and dca
-
-LibDTSX is the DTS:X decoder AetherEngine uses for DTS:X heights. Its C API, DTS:X
-reconstruction and Apple packaging are Apache-2.0, Copyright 2026 kristofferR. The
-built library compiles in, unmodified, the `dca` crate 0.8.0 from the harletty-bridge
-project at the exact commit `a717bae441b116485f0254603dc20a6ede65d8c6`. That crate is
-labelled Apache-2.0 but is a port of FFmpeg's LGPL-2.1-or-later `dca` decoder, so the
-built library is distributed under the GNU LGPL version 3 or later. It ships as the
-dynamic `DTSX.framework`, embedded in each app beside the FFmpeg frameworks, so a user
-can replace it with a modified version. It also compiles in the Rust standard library
-and the crates its NOTICE lists, each under the MIT license or the Apache License 2.0.
-The bundled text reproduces LibDTSX's NOTICE, the LGPL version 3 and LibDTSX's Apache
-License; the GPL version 3 that LGPLv3 incorporates and the LGPL 2.1 FFmpeg grants are
-bundled with AetherEngine and FFmpegBuild.
-
-- Exact source and rebuild script (corresponding source with the `dca` commit above):
-  <https://github.com/superuser404notfound/LibDTSX/tree/7d68c8bbda348a10e169b9bb9619c8b2b7a0c642>
-- Embedded decoder source: <https://github.com/harletty/harletty-bridge/tree/a717bae441b116485f0254603dc20a6ede65d8c6/dca>
-- Bundled text: `LibDTSX-LGPL-3.0.txt`
 
 ## Nuke and NukeUI
 
