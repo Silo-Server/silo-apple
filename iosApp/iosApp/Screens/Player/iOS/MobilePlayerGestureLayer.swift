@@ -201,7 +201,6 @@ struct MobilePlayerGestureLayer: View {
                         dragBaseline = PlayerScreenBrightness.shared.currentLevel()
                     } else if startX > size.width - trailingZone {
                         activeAdjustment = .volume
-                        viewModel.unmutePlayerGainForLocalVolume()
                         dragBaseline = Double(systemVolume.currentLevel)
                     } else {
                         activeAdjustment = nil
@@ -218,6 +217,7 @@ struct MobilePlayerGestureLayer: View {
                 case .volume:
                     // No feedback for a level the route won't take.
                     guard systemVolume.apply(Float(fraction)) else { return }
+                    viewModel.unmutePlayerGainForLocalVolume()
                 }
                 showGauge(adjustment, fraction: fraction)
                 gaugeHapticStep = Self.gaugeHapticStep(for: fraction)
