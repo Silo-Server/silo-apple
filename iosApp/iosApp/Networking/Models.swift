@@ -500,7 +500,9 @@ struct ItemDetail: Codable {
     /// during playback enrichment (absent on the raw catalog payload).
     /// The signature is only present when an explicit per-series /
     /// per-movie subtitle override is stored, so it doubles as the
-    /// "user picked a track" marker for selector seeding.
+    /// "user picked a track" marker for selector seeding. The language comes
+    /// only from the watch detail.
+    var effectiveSubtitleLanguage: String? = nil
     let effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
     let effectiveSubtitleTrackSignature: SubtitleTrackSignature?

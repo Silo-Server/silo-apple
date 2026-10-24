@@ -24,8 +24,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let selectedNextUpAudioTrackIndex: Int?
     let selectedNextUpSubtitleTrackIndex: Int?
     let nextUpWatchDetail: WatchDetail?
-    /// The viewer picked Auto for this episode, so the stored series pick in
-    /// `nextUpWatchDetail` no longer applies to the "Auto" preview.
+    /// The viewer picked Auto for this episode, so `nextUpWatchDetail`'s
+    /// effective subtitle settings no longer describe what Auto plays.
     let nextUpSubtitleOverrideCleared: Bool
     let isLoadingSelectedEpisodePlayback: Bool
     let selectedEpisodeContentId: String?
@@ -323,15 +323,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     selectedVersionFileId: selectedNextUpFileId,
                     selectedAudioTrackIndex: selectedNextUpAudioTrackIndex,
                     selectedSubtitleTrackIndex: selectedNextUpSubtitleTrackIndex,
-                    subtitleMode: nextUpSubtitleOverrideCleared
-                        ? nil
-                        : nextUpWatchDetail?.effectiveSubtitleMode,
-                    subtitleSignature: nextUpSubtitleOverrideCleared
-                        ? nil
-                        : nextUpWatchDetail?.effectiveSubtitleTrackSignature,
-                    showForcedSubtitles: nextUpSubtitleOverrideCleared
-                        ? nil
-                        : nextUpWatchDetail?.effectiveShowForcedSubtitles,
+                    previewsAutoSubtitle: !nextUpSubtitleOverrideCleared
+                        && nextUpWatchDetail?.effectiveSubtitleLanguage != nil,
+                    subtitleLanguage: nextUpWatchDetail?.effectiveSubtitleLanguage,
+                    subtitleMode: nextUpWatchDetail?.effectiveSubtitleMode,
+                    subtitleSignature: nextUpWatchDetail?.effectiveSubtitleTrackSignature,
+                    showForcedSubtitles: nextUpWatchDetail?.showsForcedSubtitles ?? true,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
