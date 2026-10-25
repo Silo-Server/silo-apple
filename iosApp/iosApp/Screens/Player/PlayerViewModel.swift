@@ -5688,6 +5688,10 @@ class PlayerViewModel {
             }
 
             await pendingNaturalEndProgressTask?.value
+            guard !Task.isCancelled,
+                  !self.isDisposed,
+                  currentFreshLoadGeneration == self.freshLoadGeneration,
+                  currentStreamLoadGeneration == self.streamLoadGeneration else { return }
             if let snapshotPosition, snapshotPosition.isFinite, snapshotPosition >= 0 {
                 if shouldFinalizeCurrentSession {
                     await self.sessionBridge.stopSession(position: snapshotPosition, isPaused: true)
