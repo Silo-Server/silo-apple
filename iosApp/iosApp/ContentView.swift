@@ -899,6 +899,8 @@ struct ContentView: View {
     ///   invitation (see `WatchPartyInvitation`)
     /// - `silo://search?q={term}` — open Search with `term` filled in
     ///   (Siri's in-app search; see `SiriSearchLink`)
+    /// - `silo://cast?host=…&port=…&id=…` — connect the remote to the Roku
+    ///   whose pairing code was scanned (iOS; see `SiloControlPairingLink`)
     ///
     /// If the auth state isn't ready yet, the link is queued in
     /// `pendingDeepLink` until startup commits its initial route.
@@ -972,6 +974,17 @@ struct ContentView: View {
                 return
             }
             deviceApprovalLink = link
+            return
+        }
+        // A Roku's pairing code, scanned with the Camera. The remote needs a
+        // profile on the Roku's server to connect under.
+        if let link = SiloControlPairingLink(url: url) {
+            guard router.authState == .authenticated,
+                  !launchPreferences.requiresSelectionAfterBackground() else {
+                pendingDeepLink = url
+                return
+            }
+            Task { await siloControl.connect(pairingLink: link) }
             return
         }
         #endif

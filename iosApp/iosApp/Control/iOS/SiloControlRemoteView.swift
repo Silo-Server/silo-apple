@@ -112,6 +112,7 @@ struct SiloControlRemoteView: View {
         .onDisappear { volumeButtons.stop() }
         .onChange(of: scenePhase) { updateVolumeInterception() }
         .onChange(of: hasActivePlayback) { updateVolumeInterception() }
+        .onChange(of: controller.volumeIsMuteOnly) { updateVolumeInterception() }
         .task(id: controller.state?.contentId) {
             await artwork.resolve(contentId: controller.state?.contentId)
         }
@@ -126,9 +127,10 @@ struct SiloControlRemoteView: View {
 
     /// Hardware-volume interception is live only while the scene is active and
     /// the TV is actually playing something: an inactive scene must return the
-    /// buttons to the phone, and without playback a press reaches nothing.
+    /// buttons to the phone, and without playback a press reaches nothing. A
+    /// TV that can only mute has no level for the buttons to step.
     private func updateVolumeInterception() {
-        if scenePhase == .active, hasActivePlayback {
+        if scenePhase == .active, hasActivePlayback, !controller.volumeIsMuteOnly {
             volumeButtons.start()
         } else {
             volumeButtons.stop()
@@ -152,6 +154,8 @@ struct SiloControlRemoteView: View {
                 skipIntervals: controller.skipIntervals,
                 onSeek: { controller.seekOptimistic(to: $0) },
                 onPlayNext: { controller.playNext() },
+                volumeIsMuteOnly: controller.volumeIsMuteOnly,
+                supportsPlaybackSpeed: controller.supportsPlaybackSpeed,
                 onSetVolume: { controller.setVolume($0) },
                 onSetMuted: { controller.setMuted($0) }
             )
@@ -182,7 +186,9 @@ struct SiloControlRemoteView: View {
             Text("Reconnecting to \(controller.lastTarget?.name ?? "Silo TV")…")
                 .font(.headline)
                 .foregroundStyle(Color.siloSecondaryText)
-            Text("Make sure the TV is on and on the same network.")
+            Text(controller.lastTarget?.transport.isRoku == true
+                 ? "Make sure Silo is open on the Roku and it's on the same network."
+                 : "Make sure the TV is on and on the same network.")
                 .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Color.siloSecondaryText)
@@ -244,6 +250,10 @@ private struct RemoteNowPlayingContent: View {
     let skipIntervals: SeekIntervalPair
     let onSeek: (Double) -> Void
     let onPlayNext: () -> Void
+    /// The TV can mute but not set a level: a mute toggle replaces the slider.
+    var volumeIsMuteOnly = false
+    /// False for a TV that can't change speed: the speed menu is hidden.
+    var supportsPlaybackSpeed = true
     let onSetVolume: (Double) -> Void
     let onSetMuted: (Bool) -> Void
 
@@ -499,7 +509,29 @@ private struct RemoteNowPlayingContent: View {
         .buttonStyle(.plain)
     }
 
+    @ViewBuilder
     private var volumeRow: some View {
+        if volumeIsMuteOnly {
+            muteToggle
+        } else {
+            volumeSlider
+        }
+    }
+
+    private var muteToggle: some View {
+        Button { onSetMuted(!state.isMuted) } label: {
+            Label(state.isMuted ? "Unmute" : "Mute",
+                  systemImage: state.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(Capsule().fill(Color.siloChromeRestingFill))
+        }
+        .foregroundStyle(Color.siloOnSurface)
+        .buttonStyle(.plain)
+    }
+
+    private var volumeSlider: some View {
         HStack(spacing: 14) {
             Button { onSetMuted(!state.isMuted) } label: {
                 Image(systemName: state.isMuted || state.volume <= 0.001
@@ -531,7 +563,8 @@ private struct RemoteNowPlayingContent: View {
     }
 
     private var secondaryControls: some View {
-        RemoteOptionMenus(model: RemoteMenuModel(state: state), onCommand: onCommand)
+        RemoteOptionMenus(model: RemoteMenuModel(state: state, supportsPlaybackSpeed: supportsPlaybackSpeed),
+                          onCommand: onCommand)
             .equatable()
     }
 
@@ -561,8 +594,9 @@ struct RemoteMenuModel: Equatable {
     let activeQualityId: String
     let isQualitySwitching: Bool
     let playbackSpeed: Double
+    let supportsPlaybackSpeed: Bool
 
-    init(state: SiloControlPlaybackState) {
+    init(state: SiloControlPlaybackState, supportsPlaybackSpeed: Bool = true) {
         audioTracks = state.audioTracks
         subtitleTracks = state.subtitleTracks
         selectedAudioTrackId = state.selectedAudioTrackId
@@ -571,6 +605,7 @@ struct RemoteMenuModel: Equatable {
         activeQualityId = state.activeQualityId
         isQualitySwitching = state.isQualitySwitching
         playbackSpeed = state.playbackSpeed
+        self.supportsPlaybackSpeed = supportsPlaybackSpeed
     }
 }
 
@@ -594,7 +629,7 @@ private struct RemoteOptionMenus: View, Equatable {
             // Subtitle delay and position stay on the TV's own player menu;
             // from the couch the remote only switches the language.
             if !model.subtitleTracks.isEmpty { subtitleMenu }
-            speedMenu
+            if model.supportsPlaybackSpeed { speedMenu }
         }
         // These menus open upward from the bottom of the screen, where iOS
         // would otherwise list their items in reverse.

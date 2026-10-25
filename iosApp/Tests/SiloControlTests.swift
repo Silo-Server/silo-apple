@@ -1,3 +1,4 @@
+import Network
 import XCTest
 @testable import Silo
 
@@ -407,4 +408,133 @@ final class SiloControlPhoneMultiControllerTests: XCTestCase {
         contentId: "c2", fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil,
         startFromBeginning: false, resumePosition: nil
     )
+}
+
+/// Finding and dialing a Roku (silo-roku `docs/silocontrol.md` sections 4.4,
+/// 5.1 and 5.3).
+final class SiloControlRokuTargetTests: XCTestCase {
+    private let endpoint = NWEndpoint.hostPort(host: "192.168.1.20", port: 52817)
+
+    private func rokuTXT(_ extra: [String: String] = [:]) -> [String: String] {
+        ["v": "2", "name": "Den Roku", "id": "roku-1", "server": "c2VydmVy", "serverName": "Home", "playing": "0"]
+            .merging(extra) { $1 }
+    }
+
+    func testARokuIsDialedAsItsTXTSays() throws {
+        let plain = try XCTUnwrap(SiloControlBrowser.makeTarget(txt: rokuTXT(), endpoint: endpoint,
+            serviceType: SiloControlProtocol.rokuServiceType))
+        XCTAssertEqual(plain.transport, .plain)
+        XCTAssertEqual(plain.name, "Den Roku")
+        XCTAssertNil(plain.keyId)
+
+        let sealed = try XCTUnwrap(SiloControlBrowser.makeTarget(txt: rokuTXT(["sec": "sealed", "kid": "BE45CB26"]),
+            endpoint: endpoint, serviceType: SiloControlProtocol.rokuServiceType))
+        XCTAssertEqual(sealed.transport, .sealed)
+        XCTAssertEqual(sealed.keyId, "be45cb26")
+
+        XCTAssertNil(SiloControlBrowser.makeTarget(txt: rokuTXT(["sec": "sealed"]), endpoint: endpoint,
+            serviceType: SiloControlProtocol.rokuServiceType), "sealed without a key ID")
+        XCTAssertNil(SiloControlBrowser.makeTarget(txt: rokuTXT(["sec": "quantum"]), endpoint: endpoint,
+            serviceType: SiloControlProtocol.rokuServiceType), "a level this build can't speak")
+    }
+
+    /// Nothing in a `_silocast._tcp` TXT record moves a TV off TLS.
+    func testATLSTVStaysOnTLSWhateverItsTXTSays() throws {
+        let target = try XCTUnwrap(SiloControlBrowser.makeTarget(txt: rokuTXT(["sec": "plain"]), endpoint: endpoint,
+            serviceType: SiloControlProtocol.serviceType))
+        XCTAssertEqual(target.transport, .tls)
+    }
+
+    func testRokusAndOtherTVsShareOneListByName() {
+        func target(_ id: String, _ name: String, _ transport: SiloControlTransport) -> SiloControlTarget {
+            SiloControlTarget(id: id, name: name, endpoint: endpoint, serverId: "s", serverName: nil,
+                protocolVersion: 2, transport: transport)
+        }
+        let merged = SiloControlBrowser.merged([
+            SiloControlProtocol.serviceType: [target("a", "Living Room", .tls)],
+            SiloControlProtocol.rokuServiceType: [target("b", "Bedroom", .plain), target("a", "Living Room", .plain)],
+        ])
+        XCTAssertEqual(merged.map(\.id), ["b", "a"])
+        XCTAssertEqual(merged.last?.transport, .tls, "a device listed under both types keeps TLS")
+    }
+
+    func testReadsAPlainPairingLink() throws {
+        let link = try XCTUnwrap(SiloControlPairingLink(url: URL(string:
+            "silo://cast?v=2&host=192.168.1.20&port=52817&id=roku-1&name=Den%20Roku&server=c2VydmVy&security=plain&future=1")!))
+        XCTAssertEqual(link.transport, .plain)
+        XCTAssertNil(link.key)
+        let target = link.target
+        XCTAssertEqual(target.id, "roku-1")
+        XCTAssertEqual(target.name, "Den Roku")
+        XCTAssertEqual(target.serverId, "c2VydmVy")
+        XCTAssertEqual(target.endpoint, .hostPort(host: .ipv4(IPv4Address("192.168.1.20")!), port: 52817))
+        XCTAssertEqual(target.transport, .plain)
+    }
+
+    func testReadsASealedPairingLinksKey() throws {
+        let link = try XCTUnwrap(SiloControlPairingLink(url: URL(string:
+            "silo://cast?v=2&host=10.0.0.5&port=52818&id=roku-1&name=Den&server=c2VydmVy&security=sealed&key=AAAQEAYEAUDAOCAJBIFQYDIOB4")!))
+        XCTAssertEqual(link.transport, .sealed)
+        XCTAssertEqual(link.key?.count, 16)
+        XCTAssertEqual(link.target.keyId, "be45cb26")
+    }
+
+    func testRefusesLinksARokuNeverShows() {
+        func link(_ query: String) -> SiloControlPairingLink? {
+            SiloControlPairingLink(url: URL(string: "silo://cast?v=2&id=roku-1&server=s&\(query)")!)
+        }
+        XCTAssertNotNil(link("host=172.16.0.9&port=52817"))
+        XCTAssertNotNil(link("host=169.254.3.4&port=52817"))
+        XCTAssertNil(link("host=8.8.8.8&port=52817"), "a public address")
+        XCTAssertNil(link("host=roku.example&port=52817"), "a host name")
+        XCTAssertNil(link("host=172.32.0.1&port=52817"), "outside 172.16/12")
+        XCTAssertNil(link("host=192.168.1.20&port=0"))
+        XCTAssertNil(link("host=192.168.1.20&port=52817&security=sealed"), "sealed without a key")
+        XCTAssertNil(link("host=192.168.1.20&port=52817&security=sealed&key=AAAA"), "a short key")
+        XCTAssertNil(SiloControlPairingLink(url: URL(string: "silo://item/abc?host=192.168.1.20&port=1&id=r&server=s")!))
+    }
+
+    /// A Roku takes the server's combined subtitle ordinal (external tracks
+    /// first); the phone picks by FFmpeg stream index.
+    func testARokuLaunchCarriesTheServersSubtitleOrdinal() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let version = try decoder.decode(FileVersion.self, from: Data("""
+        {
+          "file_id": 7,
+          "audio_tracks": [{ "index": 1, "codec": "aac" }, { "index": 2, "codec": "ac3" }],
+          "subtitle_tracks": [
+            { "index": 3, "codec": "subrip", "language": "eng" },
+            { "codec": "srt", "language": "fra", "external": true, "external_path": "movie.fr.srt" },
+            { "index": 5, "codec": "ass", "language": "spa" }
+          ]
+        }
+        """.utf8))
+        func launch(subtitle: Int?, audio: Int? = 1) -> SiloControlPlaybackRequest {
+            SiloControlPlaybackRequest(contentId: "c", fileId: 7, audioTrackIndex: audio, subtitleTrackIndex: subtitle,
+                startFromBeginning: false, resumePosition: 42, pinsVersion: true)
+        }
+
+        let converted = SiloControlRokuLaunch.playback(launch(subtitle: 5), version: version)
+        XCTAssertEqual(converted.subtitleTrackIndex, 2, "after one external and one earlier embedded track")
+        XCTAssertEqual(converted.audioTrackIndex, 1, "the audio position is already the server's ordinal")
+        XCTAssertEqual(converted.resumePosition, 42)
+        XCTAssertEqual(converted.pinsVersion, true)
+        XCTAssertEqual(SiloControlRokuLaunch.playback(launch(subtitle: 3), version: version).subtitleTrackIndex, 1)
+        XCTAssertEqual(SiloControlRokuLaunch.playback(launch(subtitle: -1), version: version).subtitleTrackIndex, -1, "off")
+        XCTAssertNil(SiloControlRokuLaunch.playback(launch(subtitle: nil), version: version).subtitleTrackIndex)
+        XCTAssertNil(SiloControlRokuLaunch.playback(launch(subtitle: 9), version: version).subtitleTrackIndex,
+            "a stream the version doesn't list")
+        XCTAssertNil(SiloControlRokuLaunch.playback(launch(subtitle: 5), version: nil).subtitleTrackIndex,
+            "no track list to convert against")
+    }
+
+    func testOnlyARokuAsksToHaveSiloOpened() {
+        let roku = SiloControlTarget(id: "r", name: "Den Roku", endpoint: endpoint, serverId: "s", serverName: nil,
+            protocolVersion: 2, transport: .plain)
+        let appleTV = SiloControlTarget(id: "a", name: "Living Room", endpoint: endpoint, serverId: "s",
+            serverName: nil, protocolVersion: 2)
+        XCTAssertEqual(SiloControlClient.unreachableMessage(for: roku), "Couldn't reach Den Roku. Open Silo on your Roku.")
+        XCTAssertEqual(SiloControlClient.unreachableMessage(for: appleTV), "Couldn't reach Living Room.")
+    }
 }
