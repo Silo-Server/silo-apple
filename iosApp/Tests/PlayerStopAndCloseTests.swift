@@ -40,6 +40,30 @@ final class PlayerStopAndCloseTests: XCTestCase {
         XCTAssertTrue(player.needsReplacementForPresentation)
     }
 
+    func testRemoteReplacementClearsTheOutgoingTitleAndEpisodeMetadata() {
+        let player = PlayerViewModel()
+        defer { player.cleanup() }
+        player.loadAndPlay(contentId: "outgoing", startFromBeginning: false)
+        player.title = "Outgoing title"
+        player.metadata = PlayerMetadata(
+            seriesTitle: "Outgoing series", episodeTag: "S1 · E2",
+            primaryTitle: "Outgoing episode", year: nil,
+            overview: "Outgoing overview", badges: ["HD"]
+        )
+
+        player.replaceSiloControlPlayback(SiloControlPlaybackRequest(
+            contentId: "incoming", fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil,
+            startFromBeginning: false, resumePosition: nil
+        ))
+
+        let state = player.makeSiloControlPlaybackState(contentId: "outgoing")
+        XCTAssertEqual(state.contentId, "incoming")
+        XCTAssertEqual(state.title, "Loading")
+        XCTAssertNil(state.subtitle)
+        XCTAssertTrue(player.title.isEmpty)
+        XCTAssertEqual(player.metadata, .empty)
+    }
+
     func testStopsAtOnceWithoutWaitingForTheViewToDisappear() {
         let player = PlayerViewModel()
         player.stopAndClose()

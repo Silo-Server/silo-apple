@@ -6564,7 +6564,8 @@ class PlayerViewModel {
         resumePositionOverride: Double? = nil,
         prefersLastUsedVersion: Bool = false,
         offlineDownloadId: String? = nil,
-        shuffle: APIv2Shuffle? = nil
+        shuffle: APIv2Shuffle? = nil,
+        finalizeCurrentSession: Bool = false
     ) {
         guard !isWatchPartyPlayback else { return }
         if let shuffle {
@@ -6592,7 +6593,8 @@ class PlayerViewModel {
         request.startsAtFirstPart = shuffleState != nil
         beginFreshLoad(
             request: request,
-            progressPosition: currentTime,
+            progressPosition: finalizeCurrentSession ? completionProgressPositionForCurrentItem() : currentTime,
+            finalizeCurrentSession: finalizeCurrentSession,
             resumePositionOverride: resumePositionOverride,
             viewerQualityChange: switchesVersion
         )
@@ -10200,6 +10202,8 @@ extension PlayerViewModel {
     func replaceSiloControlPlayback(_ request: SiloControlPlaybackRequest) {
         guard !isDisposed, !isWatchPartyPlayback else { return }
         leaveShuffle()
+        title = ""
+        metadata = .empty
         loadAndPlay(
             contentId: request.contentId,
             preferredFileId: request.fileId,
@@ -10207,7 +10211,8 @@ extension PlayerViewModel {
             preferredAudioTrackIndex: request.audioTrackIndex,
             preferredSubtitleTrackIndex: request.subtitleTrackIndex,
             startFromBeginning: request.startFromBeginning,
-            resumePositionOverride: request.resumePosition
+            resumePositionOverride: request.resumePosition,
+            finalizeCurrentSession: true
         )
     }
 
