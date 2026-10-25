@@ -247,12 +247,14 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         channel: FakePairingChannel,
         api: FakePairingAPI,
         servers: [ServerEntry],
-        endpoints: [ServerEndpoint]? = nil
+        endpoints: [ServerEndpoint]? = nil,
+        isRoku: Bool = false
     ) -> CompanionPairingCoordinator {
         let coordinator = CompanionPairingCoordinator(
             channel: channel,
             stream: channel.stream,
             tvName: "Living Room",
+            isRoku: isRoku,
             api: api,
             deviceModel: "iPhone",
             availableServers: { servers },
@@ -392,6 +394,49 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         XCTAssertNil(CompanionPairingCard.olderTVLine(matchWords: nil))
         XCTAssertNil(CompanionPairingCard.olderTVLine(matchWords: " "))
         await coordinator.cancel()
+    }
+
+    /// A Roku keeps one server: however many the chooser hands over, one is
+    /// pushed, and the confirm step shows the code alone (a Roku always
+    /// shows its user code).
+    func testARokuIsPushedOneServerAndShownItsCodeAlone() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.lookupMatchCode = "warm pony"
+        let coordinator = makeCoordinator(channel: channel, api: api,
+            servers: [entry("a", name: "Home"), entry("b", name: "Cabin")], isRoku: true)
+        channel.deliver(hello())
+        await expectEventually("picker") {
+            if case .pickServers = coordinator.state { return true }
+            return false
+        }
+        guard case let .pickServers(_, servers) = coordinator.state else {
+            return XCTFail("expected pickServers, got \(coordinator.state)")
+        }
+        await coordinator.pushSelected(servers)
+        channel.deliver(.deviceStarted(serverURL: "https://a.example", userCode: "4821-7730", matchCode: "warm pony"))
+        await expectEventually("the code to compare") {
+            coordinator.state == .confirmMatch(tvName: "Living Room", serverName: "Home", serverHost: "a.example",
+                                               accountName: "laura", code: "4821-7730", matchWords: nil)
+        }
+        await coordinator.confirmMatch()
+        channel.deliver(.serverResult(serverURL: "https://a.example", status: .signedIn, error: nil))
+        await expectEventually("finished after one server") {
+            coordinator.state == .finished(signedIn: ["Home"], failed: [])
+        }
+        let pushes = channel.sent.filter {
+            if case .pushServer = $0 { return true }
+            return false
+        }
+        XCTAssertEqual(pushes.count, 1)
+    }
+
+    /// The chooser is single-select for a Roku and multi-select otherwise.
+    func testTheChooserPicksOneServerForARoku() {
+        XCTAssertEqual(CompanionPairingCard.toggling("b", in: ["a"], singleSelect: true), ["b"])
+        XCTAssertEqual(CompanionPairingCard.toggling("b", in: ["a"], singleSelect: false), ["a", "b"])
+        XCTAssertEqual(CompanionPairingCard.toggling("a", in: ["a"], singleSelect: true), [])
+        XCTAssertEqual(CompanionPairingCard.toggling("a", in: ["a", "b"], singleSelect: false), ["b"])
     }
 
     /// Regression: servers after the first are auto-approved, so the code the

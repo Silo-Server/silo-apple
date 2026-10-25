@@ -7,6 +7,11 @@ enum PairingProtocol {
     static let version = 1
     /// Bonjour service type the TV advertises and the phone browses for.
     static let serviceType = "_silopair._tcp"
+    /// What a Roku advertises instead. Roku has no TLS on sockets an app
+    /// listens on, so it takes the same messages over plain TCP; the
+    /// separate type keeps phones that only dial TLS from offering it.
+    /// silo-roku `docs/companion-pairing.md`.
+    static let rokuServiceType = "_silopair-roku._tcp"
 
     /// Rollout gate for sign-in TVs: whether the TV sign-in screen
     /// advertises `st=login`. Both phone apps must accept `login` TVs before

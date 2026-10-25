@@ -362,6 +362,7 @@ final class TVApprovalModel {
         switch platform?.lowercased().replacingOccurrences(of: "-", with: "_") {
         case "tvos"?: return "Apple TV"
         case "androidtv"?, "android_tv"?, "googletv"?, "google_tv"?: return "Android TV"
+        case "roku"?: return "Roku"
         default: return nil
         }
     }

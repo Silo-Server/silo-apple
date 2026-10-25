@@ -4,7 +4,8 @@ import Network
 import OSLog
 
 /// A discovered TV waiting to be set up (`st=setup`) or signed in
-/// (`st=login`). Apple TVs and Android TVs advertise the same record.
+/// (`st=login`). Apple TVs and Android TVs advertise the same record; a
+/// Roku advertises it under its own service type.
 struct DiscoveredTV: Identifiable, Equatable {
     let id: String          // TXT `id` (stable device id), or endpoint string.
     let name: String        // TXT `name`.
@@ -14,13 +15,17 @@ struct DiscoveredTV: Identifiable, Equatable {
     /// TXT `srv`: for a `login` TV, the deployment identity of the server
     /// it is signed out of.
     var serverIdentity: String? = nil
+    /// Found as `_silopair-roku._tcp`: dialed over plain TCP, and signed in
+    /// to one server only.
+    var isRoku = false
     // id-only equality is intentional: `sid`/`state` changes are surfaced via the
     // Optional nil↔value transition in CompanionPairingCardModifier's onChange latch,
     // not by field equality. Don't make this field-sensitive without revisiting that.
     static func == (a: DiscoveredTV, b: DiscoveredTV) -> Bool { a.id == b.id }
 }
 
-/// Browses `_silopair._tcp` and publishes discovered TVs. Drives the
+/// Browses `_silopair._tcp` and `_silopair-roku._tcp` and publishes the
+/// discovered TVs as one list. Drives the
 /// hands-off card. Owns the Local Network permission prompt (triggered on
 /// first browse).
 ///
@@ -31,7 +36,9 @@ struct DiscoveredTV: Identifiable, Equatable {
 @Observable
 final class TVPairingBrowser {
     private(set) var found: [DiscoveredTV] = []
-    private var browser: NWBrowser?
+    private var browsers: [NWBrowser] = []
+    private var foundByType: [String: [DiscoveredTV]] = [:]
+    private nonisolated static let serviceTypes = [PairingProtocol.serviceType, PairingProtocol.rokuServiceType]
     /// Active between `start()` and `stop()`, so a deliberate stop stays
     /// stopped.
     private let selfHeal: BonjourSelfHeal
@@ -45,30 +52,41 @@ final class TVPairingBrowser {
     }
 
     func start() {
-        guard browser == nil else { return }
+        guard browsers.isEmpty else { return }
         isBrowsing = true
-        startBrowser()
+        startBrowsers()
     }
 
-    private func startBrowser() {
+    private func startBrowsers() {
         let gen = selfHeal.activate()
-        let params = NWParameters()
-        params.includePeerToPeer = true
-        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: PairingProtocol.serviceType, domain: nil), using: params)
-        // Both handlers run on `.main` (see `start(queue:)` below).
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
-            MainActor.assumeIsolated {
-                guard let self, self.selfHeal.isCurrent(gen) else { return }
-                self.found = results.compactMap(Self.makeTV)
+        browsers = Self.serviceTypes.map { type in
+            let params = NWParameters()
+            params.includePeerToPeer = true
+            let browser = NWBrowser(for: .bonjourWithTXTRecord(type: type, domain: nil), using: params)
+            // Both handlers run on `.main` (see `start(queue:)` below).
+            browser.browseResultsChangedHandler = { [weak self] results, _ in
+                MainActor.assumeIsolated {
+                    // A cancelled browser can still deliver results before
+                    // the restart moves the generation on.
+                    guard let self, self.selfHeal.isCurrent(gen), !self.browsers.isEmpty else { return }
+                    self.foundByType[type] = results.compactMap { Self.makeTV($0, serviceType: type) }
+                    self.found = Self.merged(self.foundByType)
+                }
             }
-        }
-        browser.stateUpdateHandler = { [weak self] state in
-            MainActor.assumeIsolated {
-                self?.handleStateUpdate(state, generation: gen)
+            browser.stateUpdateHandler = { [weak self] state in
+                MainActor.assumeIsolated {
+                    self?.handleStateUpdate(state, generation: gen)
+                }
             }
+            browser.start(queue: .main)
+            return browser
         }
-        browser.start(queue: .main)
-        self.browser = browser
+    }
+
+    /// Every type's TVs in one list, each device once (the TLS record first).
+    nonisolated static func merged(_ byType: [String: [DiscoveredTV]]) -> [DiscoveredTV] {
+        var seen = Set<String>()
+        return serviceTypes.flatMap { byType[$0] ?? [] }.filter { seen.insert($0.id).inserted }
     }
 
     func handleStateUpdate(_ state: NWBrowser.State, generation: Int) {
@@ -77,32 +95,41 @@ final class TVPairingBrowser {
         scheduleBrowserRestart()
     }
 
+    /// Either type failing restarts both, so the lists never fall out of
+    /// step.
     private func scheduleBrowserRestart() {
-        browser?.cancel()
-        browser = nil
-        found = []
+        cancelBrowsers()
         selfHeal.scheduleRestart { [weak self] in
-            guard let self, self.browser == nil else { return }
-            self.startBrowser()
+            guard let self, self.browsers.isEmpty else { return }
+            self.startBrowsers()
         }
     }
 
     func stop() {
         isBrowsing = false
         selfHeal.deactivate()
-        browser?.cancel()
-        browser = nil
+        cancelBrowsers()
+    }
+
+    private func cancelBrowsers() {
+        browsers.forEach { $0.cancel() }
+        browsers = []
+        foundByType = [:]
         found = []
     }
 
-    private static func makeTV(_ result: NWBrowser.Result) -> DiscoveredTV? {
+    private static func makeTV(_ result: NWBrowser.Result, serviceType: String) -> DiscoveredTV? {
         guard case let .bonjour(txt) = result.metadata else { return nil }
-        return makeTV(txt: txt.dictionary, endpoint: result.endpoint)
+        return makeTV(txt: txt.dictionary, endpoint: result.endpoint, serviceType: serviceType)
     }
 
     /// Reads one advertisement. A TV that names no state is a first-run TV
     /// (older TVs); an unknown state is not offered at all.
-    nonisolated static func makeTV(txt: [String: String], endpoint: NWEndpoint) -> DiscoveredTV? {
+    nonisolated static func makeTV(
+        txt: [String: String],
+        endpoint: NWEndpoint,
+        serviceType: String = PairingProtocol.serviceType
+    ) -> DiscoveredTV? {
         typealias Key = PairingProtocol.TXTKey
         guard let state = PairingReceiverState(rawValue: txt[Key.state] ?? PairingReceiverState.setup.rawValue) else {
             return nil
@@ -110,7 +137,8 @@ final class TVPairingBrowser {
         let name = ServerIdentity.usable(txt[Key.name]) ?? "TV"
         let id = txt[Key.deviceId] ?? "\(endpoint)"
         return DiscoveredTV(id: id, name: name, state: state, endpoint: endpoint, sid: txt[Key.sessionNonce],
-            serverIdentity: ServerIdentity.usable(txt[Key.serverIdentity]))
+            serverIdentity: ServerIdentity.usable(txt[Key.serverIdentity]),
+            isRoku: serviceType == PairingProtocol.rokuServiceType)
     }
 }
 #endif

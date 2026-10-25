@@ -219,6 +219,36 @@ final class TVSignInTests: XCTestCase {
         XCTAssertEqual(CompanionPairingOffer.make(for: loginTV, signedIn: [other, home])?.server, home)
         XCTAssertNil(CompanionPairingOffer.make(for: legacyTV, signedIn: []), "a signed-out phone offers nothing")
     }
+
+    /// A Roku advertises the same record under `_silopair-roku._tcp` and is
+    /// dialed without TLS (silo-roku `docs/companion-pairing.md`).
+    func testRokusAreFoundUnderTheirOwnTypeAndDialedOverPlainTCP() throws {
+        let endpoint = NWEndpoint.hostPort(host: "192.168.1.20", port: 52827)
+        let txt = ["v": "1", "name": "Den Roku", "id": "roku-1", "sid": "s9", "st": "login", "srv": "srv-home"]
+        let roku = try XCTUnwrap(TVPairingBrowser.makeTV(txt: txt, endpoint: endpoint,
+            serviceType: PairingProtocol.rokuServiceType))
+        XCTAssertTrue(roku.isRoku)
+        XCTAssertEqual(roku.state, .login)
+        XCTAssertEqual(roku.serverIdentity, "srv-home")
+        XCTAssertEqual(roku.sid, "s9")
+        let appleTV = try XCTUnwrap(TVPairingBrowser.makeTV(txt: ["id": "tv-1", "name": "Living Room"], endpoint: endpoint))
+        XCTAssertFalse(appleTV.isRoku)
+
+        let merged = TVPairingBrowser.merged([
+            PairingProtocol.serviceType: [appleTV],
+            PairingProtocol.rokuServiceType: [roku, DiscoveredTV(id: "tv-1", name: "Living Room", state: .setup,
+                endpoint: endpoint, sid: nil, isRoku: true)],
+        ])
+        XCTAssertEqual(merged.map(\.id), ["tv-1", "roku-1"])
+        XCTAssertEqual(merged.first?.isRoku, false, "a device under both types keeps TLS")
+
+        func usesTLS(_ parameters: NWParameters) -> Bool {
+            parameters.defaultProtocolStack.applicationProtocols.contains { $0 is NWProtocolTLS.Options }
+        }
+        XCTAssertFalse(usesTLS(PairingSession.parameters(isRoku: true)))
+        XCTAssertTrue(usesTLS(PairingSession.parameters(isRoku: false)))
+        XCTAssertEqual(TVApprovalModel.platformLabel("roku"), "Roku")
+    }
     #endif
 
     // MARK: Approval card

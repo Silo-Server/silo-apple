@@ -131,7 +131,9 @@ struct CompanionPairingCard: View {
                 Text("Set Up \(tv.name)")
                     .font(.siloTitle)
                     .multilineTextAlignment(.center)
-                Text("Sign \(tv.name) in to your servers from this \(UIDevice.current.model).")
+                Text(tv.isRoku
+                     ? "Sign \(tv.name) in to a server from this \(UIDevice.current.model)."
+                     : "Sign \(tv.name) in to your servers from this \(UIDevice.current.model).")
                     .font(.siloCaption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -144,7 +146,8 @@ struct CompanionPairingCard: View {
 
     private func serverPicker(_ servers: [ServerEntry]) -> some View {
         VStack(spacing: 0) {
-            compactHeader(title: "Choose servers", subtitle: "Sign \(tv.name) in to…")
+            // A Roku keeps one server, so its chooser picks one.
+            compactHeader(title: tv.isRoku ? "Choose a server" : "Choose servers", subtitle: "Sign \(tv.name) in to…")
             VStack(spacing: 8) {
                 ForEach(servers) { server in serverRow(server) }
             }
@@ -162,7 +165,7 @@ struct CompanionPairingCard: View {
     private func serverRow(_ server: ServerEntry) -> some View {
         let isOn = selection.contains(server.id)
         return Button {
-            if isOn { selection.remove(server.id) } else { selection.insert(server.id) }
+            selection = Self.toggling(server.id, in: selection, singleSelect: tv.isRoku)
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: "server.rack")
@@ -197,6 +200,13 @@ struct CompanionPairingCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isOn ? [.isSelected] : [])
+    }
+
+    /// The chooser's selection after tapping `id`. Single-select (a Roku)
+    /// picks only `id`; tapping the chosen row again clears it.
+    static func toggling(_ id: String, in selection: Set<String>, singleSelect: Bool) -> Set<String> {
+        if selection.contains(id) { return selection.subtracting([id]) }
+        return singleSelect ? [id] : selection.union([id])
     }
 
     /// The sign-in offer's body. It reports what the TV says, not a fact.

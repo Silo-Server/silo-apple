@@ -117,6 +117,9 @@ final class CompanionPairingCoordinator {
     private var tvName: String
     /// A sign-in TV's own server: pushed alone, with no chooser.
     private let fixedServer: ServerEntry?
+    /// A Roku keeps one server, so it is pushed one, and it shows its user
+    /// code on every screen.
+    let isRoku: Bool
     private var queue: [ServerEntry] = []
     private var confirmed = false
     private var isFirstPush = true
@@ -136,6 +139,7 @@ final class CompanionPairingCoordinator {
         stream: AsyncThrowingStream<PairingMessage, Error>,
         tvName: String = "TV",
         fixedServer: ServerEntry? = nil,
+        isRoku: Bool = false,
         api: any PairingDeviceAuthorizing = PairingDeviceAPI(),
         deviceModel: String? = nil,
         availableServers: @escaping @MainActor () async -> [ServerEntry] = CompanionPairingCoordinator.serversWithTokens,
@@ -151,6 +155,7 @@ final class CompanionPairingCoordinator {
         self.stream = stream
         self.tvName = tvName
         self.fixedServer = fixedServer
+        self.isRoku = isRoku
         self.api = api
         self.deviceModel = deviceModel ?? UIDevice.current.model
         self.availableServers = availableServers
@@ -163,9 +168,10 @@ final class CompanionPairingCoordinator {
     /// The view never touches the session; it renders `state` and forwards
     /// user intent.
     static func connect(to tv: DiscoveredTV, server: ServerEntry? = nil) async -> CompanionPairingCoordinator {
-        let session = PairingSession(endpoint: tv.endpoint)
+        let session = PairingSession(endpoint: tv.endpoint, isRoku: tv.isRoku)
         let stream = await session.open()
-        let coordinator = CompanionPairingCoordinator(channel: session, stream: stream, tvName: tv.name, fixedServer: server)
+        let coordinator = CompanionPairingCoordinator(channel: session, stream: stream, tvName: tv.name,
+            fixedServer: server, isRoku: tv.isRoku)
         coordinator.start()
         return coordinator
     }
@@ -289,7 +295,7 @@ final class CompanionPairingCoordinator {
                     serverHost: TVSignInPresentation.host(of: server.url),
                     accountName: account,
                     code: shown,
-                    matchWords: isSignIn ? nil : serverCode
+                    matchWords: isSignIn || isRoku ? nil : serverCode
                 )
             }
         } catch {
@@ -299,10 +305,12 @@ final class CompanionPairingCoordinator {
 
     // MARK: - User actions
 
-    /// User tapped a set of servers to push (order = approval order).
+    /// User tapped a set of servers to push (order = approval order). A Roku
+    /// gets the first alone: it answers a second push after a sign-in with
+    /// `auth_failed`.
     func pushSelected(_ servers: [ServerEntry]) async {
         guard case .pickServers = state, !servers.isEmpty else { return }
-        queue = servers
+        queue = isRoku ? Array(servers.prefix(1)) : servers
         await pushNext()
     }
 
