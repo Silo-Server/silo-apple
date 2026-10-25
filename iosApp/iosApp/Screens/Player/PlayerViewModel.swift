@@ -4920,7 +4920,10 @@ class PlayerViewModel {
                   let url = URL(string: candidate) else {
                 return
             }
-            self?.nowPlaying.setArtworkURL(url)
+            guard let self, !self.isDisposed,
+                  self.lastLoadRequest?.contentId == contentId,
+                  self.currentWatchDetail?.contentId == contentId else { return }
+            self.nowPlaying.setArtworkURL(url)
         }
     }
 
@@ -10204,6 +10207,9 @@ extension PlayerViewModel {
         leaveShuffle()
         title = ""
         metadata = .empty
+        artworkPosterURLHint = nil
+        artworkBackdropURLHint = nil
+        nowPlaying.setArtworkURL(nil)
         loadAndPlay(
             contentId: request.contentId,
             preferredFileId: request.fileId,
@@ -10316,6 +10322,10 @@ extension PlayerViewModel {
     @MainActor
     func makeSiloControlPlaybackState(contentId: String?) -> SiloControlPlaybackState {
         let liveContentId = lastLoadRequest?.contentId ?? contentId
+        // Keep the outgoing timeline internally for its final progress save,
+        // but don't publish it under a selection that hasn't been prepared.
+        let hasPreparedContent = lastLoadRequest == nil
+            || currentWatchDetail?.contentId == liveContentId
         let titleText = metadata.primaryTitle.isEmpty ? title : metadata.primaryTitle
         let subtitleText = [metadata.seriesTitle, metadata.episodeTag]
             .compactMap { value -> String? in
@@ -10326,14 +10336,14 @@ extension PlayerViewModel {
 
         return SiloControlPlaybackState(
             contentId: liveContentId,
-            sessionId: activePlaybackSessionId,
+            sessionId: hasPreparedContent ? activePlaybackSessionId : nil,
             title: titleText.isEmpty ? "Loading" : titleText,
             subtitle: subtitleText.isEmpty ? nil : subtitleText,
-            isPlaying: isPlaying,
+            isPlaying: hasPreparedContent && isPlaying,
             isLoading: isLoading,
-            isBuffering: isBuffering,
-            currentTime: currentTime,
-            duration: duration,
+            isBuffering: hasPreparedContent && isBuffering,
+            currentTime: hasPreparedContent ? currentTime : 0,
+            duration: hasPreparedContent ? duration : 0,
             audioTracks: makeSiloControlTracks(audioTracks),
             subtitleTracks: makeSiloControlTracks(subtitleTracks),
             selectedAudioTrackId: selectedAudioId,
