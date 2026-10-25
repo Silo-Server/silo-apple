@@ -70,6 +70,17 @@ enum SiloControlReceiverPolicy {
         return readyGeneration == activeGeneration
     }
 
+    /// Keep the presented player when a phone replaces a title under the
+    /// same handoff. Rebuilding its view would run the outgoing player's
+    /// identity teardown while the replacement is starting.
+    static func canReplaceInPlayer(
+        playerGeneration: UUID?, activeGeneration: UUID?,
+        playerIsDisposed: Bool, playerIsWatchParty: Bool
+    ) -> Bool {
+        !playerIsDisposed && !playerIsWatchParty
+            && canLaunch(readyGeneration: playerGeneration, activeGeneration: activeGeneration)
+    }
+
     /// Whether an offer that matches the active identity (same server,
     /// profile and device ID) may reuse it without a new approval. Device IDs
     /// are self-reported, so the match alone proves nothing: reuse needs the

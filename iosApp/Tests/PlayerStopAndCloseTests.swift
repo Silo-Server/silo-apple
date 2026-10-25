@@ -7,6 +7,39 @@ import XCTest
 /// to disappear, and the view must be told to close.
 @MainActor
 final class PlayerStopAndCloseTests: XCTestCase {
+    func testRemoteReplacementKeepsPlayerAliveAndPublishesTheNewSelection() {
+        let player = PlayerViewModel()
+        defer { player.cleanup() }
+        player.loadAndPlay(contentId: "outgoing", startFromBeginning: false)
+        player.error = "old failure"
+
+        player.replaceSiloControlPlayback(SiloControlPlaybackRequest(
+            contentId: "incoming", fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil,
+            startFromBeginning: true, resumePosition: 42
+        ))
+
+        let state = player.makeSiloControlPlaybackState(contentId: "outgoing")
+        XCTAssertEqual(state.contentId, "incoming")
+        XCTAssertNil(state.error)
+        XCTAssertTrue(state.isLoading)
+        XCTAssertFalse(player.needsReplacementForPresentation)
+        XCTAssertNil(player.remoteDismissToken)
+    }
+
+    func testRemoteReplacementCannotReviveADisposedPlayer() {
+        let player = PlayerViewModel()
+        player.loadAndPlay(contentId: "outgoing", startFromBeginning: false)
+        player.cleanup()
+
+        player.replaceSiloControlPlayback(SiloControlPlaybackRequest(
+            contentId: "incoming", fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil,
+            startFromBeginning: false, resumePosition: nil
+        ))
+
+        XCTAssertEqual(player.makeSiloControlPlaybackState(contentId: nil).contentId, "outgoing")
+        XCTAssertTrue(player.needsReplacementForPresentation)
+    }
+
     func testStopsAtOnceWithoutWaitingForTheViewToDisappear() {
         let player = PlayerViewModel()
         player.stopAndClose()

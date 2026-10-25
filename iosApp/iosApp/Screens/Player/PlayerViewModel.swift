@@ -10193,6 +10193,24 @@ private enum SiloControlPlayerError: LocalizedError {
 }
 
 extension PlayerViewModel {
+    /// A new phone selection replaces the content, keeping the player and
+    /// its temporary profile alive. This uses the same session transition as
+    /// Next Up rather than dismissing and presenting another player view.
+    @MainActor
+    func replaceSiloControlPlayback(_ request: SiloControlPlaybackRequest) {
+        guard !isDisposed, !isWatchPartyPlayback else { return }
+        leaveShuffle()
+        loadAndPlay(
+            contentId: request.contentId,
+            preferredFileId: request.fileId,
+            pinsVersion: request.pinsVersion == true,
+            preferredAudioTrackIndex: request.audioTrackIndex,
+            preferredSubtitleTrackIndex: request.subtitleTrackIndex,
+            startFromBeginning: request.startFromBeginning,
+            resumePositionOverride: request.resumePosition
+        )
+    }
+
     @MainActor
     func applySiloControlCommand(_ command: SiloControlCommand) throws {
         if isWatchPartyPlayback {
