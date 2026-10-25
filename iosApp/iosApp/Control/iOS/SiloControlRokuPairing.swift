@@ -14,17 +14,44 @@ struct SiloControlPairingKeys {
     /// advertises now (TXT `kid`). A Roku whose pairing code was reset
     /// needs a new scan.
     func key(for target: SiloControlTarget) -> Data? {
-        guard let kid = target.keyId,
-              let stored = keychain.get(Self.accountPrefix + target.id),
-              let key = Data(base64Encoded: stored),
-              key.count == SiloControlSealed.keyBytes,
+        guard let kid = target.keyId, let key = storedKey(forTV: target.id),
               SiloControlSealed.keyId(key) == kid else { return nil }
         return key
+    }
+
+    /// `target` as this phone dials it (`pinned(_:key:)`).
+    func pinned(_ target: SiloControlTarget) -> SiloControlTarget {
+        Self.pinned(target, key: storedKey(forTV: target.id))
+    }
+
+    /// `target`, dialed sealed with `key` when it is a Roku that advertises
+    /// `plain`. A Roku paired at level `sealed` stays sealed when an
+    /// advertisement with its ID says `plain`: anyone on the network can
+    /// advertise that, so only a new pairing link drops the key. A Roku that
+    /// really went to `plain` refuses the sealed hello, and the user is asked
+    /// to scan its new code.
+    static func pinned(_ target: SiloControlTarget, key: Data?) -> SiloControlTarget {
+        guard target.transport == .plain, let key else { return target }
+        var pinned = target
+        pinned.transport = .sealed
+        pinned.keyId = SiloControlSealed.keyId(key)
+        return pinned
     }
 
     @discardableResult
     func store(_ key: Data, forTV id: String) -> Bool {
         keychain.set(key.base64EncodedString(), for: Self.accountPrefix + id)
+    }
+
+    @discardableResult
+    func forget(tv id: String) -> Bool {
+        keychain.delete(Self.accountPrefix + id)
+    }
+
+    private func storedKey(forTV id: String) -> Data? {
+        guard let stored = keychain.get(Self.accountPrefix + id), let key = Data(base64Encoded: stored),
+              key.count == SiloControlSealed.keyBytes else { return nil }
+        return key
     }
 }
 

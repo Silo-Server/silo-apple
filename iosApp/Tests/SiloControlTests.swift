@@ -529,6 +529,50 @@ final class SiloControlRokuTargetTests: XCTestCase {
             "no track list to convert against")
     }
 
+    /// A plain advertisement with a paired Roku's ID can't move it to plain
+    /// TCP; only a new pairing link drops the key. Never a TLS TV.
+    func testAPairedRokuStaysSealedWhenAdvertisedPlain() {
+        func target(_ transport: SiloControlTransport) -> SiloControlTarget {
+            SiloControlTarget(id: "roku-1", name: "Den Roku", endpoint: endpoint, serverId: "s", serverName: nil,
+                protocolVersion: 2, transport: transport)
+        }
+        let key = Data(repeating: 7, count: SiloControlSealed.keyBytes)
+
+        let pinned = SiloControlPairingKeys.pinned(target(.plain), key: key)
+        XCTAssertEqual(pinned.transport, .sealed)
+        XCTAssertEqual(pinned.keyId, SiloControlSealed.keyId(key))
+        XCTAssertEqual(SiloControlPairingKeys.pinned(target(.plain), key: nil), target(.plain), "never paired")
+        XCTAssertEqual(SiloControlPairingKeys.pinned(target(.tls), key: key), target(.tls))
+    }
+
+    /// The track list read for a Roku subtitle pick belongs to the server
+    /// and profile the launch started under; a launch whose scope changed
+    /// during the read stops instead of using it.
+    @MainActor
+    func testARokuLaunchStopsWhenTheScopeChangesDuringItsDetailRead() async throws {
+        let request = SiloControlPlaybackRequest(contentId: "roku-scope-\(UUID().uuidString)", fileId: 7,
+            audioTrackIndex: 1, subtitleTrackIndex: 5, startFromBeginning: false, resumePosition: nil,
+            pinsVersion: true)
+        var scopeChanged = false
+        var reads = 0
+        let fetch: (String) async -> ItemDetail? = { _ in
+            reads += 1
+            scopeChanged = true
+            return nil
+        }
+        do {
+            _ = try await SiloControlClient.rokuPlayback(request, fetchDetail: fetch, ensureIdentity: {
+                if scopeChanged { throw SiloControlHandoffError.identityChanged }
+            })
+            XCTFail("a launch whose scope changed mid-read must not continue")
+        } catch SiloControlHandoffError.identityChanged {
+        }
+        XCTAssertEqual(reads, 1)
+
+        let unchanged = try await SiloControlClient.rokuPlayback(request, fetchDetail: { _ in nil }, ensureIdentity: {})
+        XCTAssertNil(unchanged.subtitleTrackIndex, "no track list to convert against")
+    }
+
     func testOnlyARokuAsksToHaveSiloOpened() {
         let roku = SiloControlTarget(id: "r", name: "Den Roku", endpoint: endpoint, serverId: "s", serverName: nil,
             protocolVersion: 2, transport: .plain)

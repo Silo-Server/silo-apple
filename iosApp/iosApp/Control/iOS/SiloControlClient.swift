@@ -196,6 +196,7 @@ final class SiloControlClient {
             errorMessage = "Choose a server before controlling a TV."
             return false
         }
+        let target = pairingKeys.pinned(target)
         let targetsActiveServer = target.targetsActiveServer
         guard targetsActiveServer || (allowCrossServer && target.protocolVersion >= 2) else {
             errorMessage = "That TV is connected to a different server."
@@ -284,10 +285,13 @@ final class SiloControlClient {
     }
 
     /// Connects to the Roku a scanned pairing link names, first keeping its
-    /// pairing key. The remote opens to show how it went.
+    /// pairing key, or dropping the old one when the link says `plain`. The
+    /// remote opens to show how it went.
     func connect(pairingLink link: SiloControlPairingLink) async {
         if let key = link.key {
             pairingKeys.store(key, forTV: link.deviceId)
+        } else {
+            pairingKeys.forget(tv: link.deviceId)
         }
         isShowingRemoteControl = true
         await connect(to: link.target)
@@ -350,7 +354,11 @@ final class SiloControlClient {
         let handshake = self.handshake
         let isRoku = activeTarget?.transport.isRoku == true
         do {
-            let playback = isRoku ? await Self.rokuPlayback(request) : request
+            let playback = isRoku
+                ? try await Self.rokuPlayback(request, ensureIdentity: {
+                    try self.ensureActiveIdentity(serverId: activeServer.id, profileId: profileId)
+                })
+                : request
             // Display name only; the shared store has it cached after launch.
             await CurrentProfileStore.shared.refresh()
             let profileName = CurrentProfileStore.shared.profile
@@ -395,13 +403,20 @@ final class SiloControlClient {
 
     /// `request` as a Roku reads it (`SiloControlRokuLaunch`). Only a
     /// subtitle pick needs the version's track list, from the cached detail
-    /// or one read.
-    private static func rokuPlayback(_ request: SiloControlPlaybackRequest) async -> SiloControlPlaybackRequest {
+    /// or one read. `ensureIdentity` runs after the read and throws when the
+    /// server or profile changed meanwhile, so the launch stops rather than
+    /// map the subtitle with another scope's track list.
+    static func rokuPlayback(
+        _ request: SiloControlPlaybackRequest,
+        fetchDetail: (String) async -> ItemDetail? = { try? await SiloAPI.shared.itemDetail(contentId: $0) },
+        ensureIdentity: () throws -> Void
+    ) async throws -> SiloControlPlaybackRequest {
         var version: FileVersion?
         if let fileId = request.fileId, let subtitle = request.subtitleTrackIndex, subtitle >= 0 {
             var detail: ItemDetail? = ResponseCache.shared.get(CacheKey.itemDetail(request.contentId))
             if detail == nil {
-                detail = try? await SiloAPI.shared.itemDetail(contentId: request.contentId)
+                detail = await fetchDetail(request.contentId)
+                try ensureIdentity()
             }
             version = detail?.versions?.first { $0.fileId == fileId }
         }
