@@ -5263,7 +5263,9 @@ class PlayerViewModel {
     private func handleNowPlayingPlay() {
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(.play) == true { return }
-        aetherPlaybackController.play()
+        if !holdPlayIntentForFreshLoad(true) {
+            aetherPlaybackController.play()
+        }
         #if os(tvOS)
         scheduleHideControls()
         #endif
@@ -5271,7 +5273,9 @@ class PlayerViewModel {
 
     private func handleNowPlayingPause() {
         if watchPartyAdapter?.request(.pause) == true { return }
-        aetherPlaybackController.pause()
+        if !holdPlayIntentForFreshLoad(false) {
+            aetherPlaybackController.pause()
+        }
         #if os(tvOS)
         scheduleHideControls()
         #endif
@@ -6700,8 +6704,9 @@ class PlayerViewModel {
     #endif
 
     /// While a fresh load prepares and no transport is listening yet, keeps
-    /// a Play or Pause for the replacement, and shows it, since no engine
-    /// event will. False once the load has handed the engine a transport,
+    /// a Play or Pause (on-screen, timeline Select and its exit, Now Playing,
+    /// SiloControl) for the replacement, and shows it, since no engine event
+    /// will. False once the load has handed the engine a transport,
     /// which then takes the command itself.
     private func holdPlayIntentForFreshLoad(_ play: Bool) -> Bool {
         guard freshLoadTask != nil, activeAetherLoadEpoch == nil else { return false }
