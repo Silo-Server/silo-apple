@@ -278,6 +278,7 @@ struct PlayerView: View {
                                 timeDisplayMode: timelineTimeDisplayMode,
                                 timelineSelectionRequest: timelineSelectionRequest,
                                 bufferingPillFocus: $focusedBufferingAction,
+                                showsCornerCapsule: showsWatchPartySyncCapsule,
                                 onToggleTimeDisplayMode: {
                                     withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                                         timelineTimeDisplayMode.toggle()
@@ -380,7 +381,7 @@ struct PlayerView: View {
                     // pill, which already says playback is buffering, takes its
                     // place while it shows.
                     #if os(tvOS)
-                    if !showsBufferingPill, let message = watchPartySyncMessage {
+                    if showsWatchPartySyncCapsule, let message = watchPartySyncMessage {
                         PlayerBufferingCapsule(message: message)
                     }
                     #endif
@@ -752,6 +753,12 @@ struct PlayerView: View {
     }
 
     #if os(tvOS)
+    /// The sync capsule is drawn in the top-trailing corner; the buffering
+    /// pill takes that corner while it shows.
+    private var showsWatchPartySyncCapsule: Bool {
+        !showsBufferingPill && watchPartySyncMessage != nil
+    }
+
     private var watchPartySyncMessage: LocalizedStringKey? {
         guard let context = watchPartyContext, viewModel.error == nil,
               let room = WatchPartySession.shared.room,

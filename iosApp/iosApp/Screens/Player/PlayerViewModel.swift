@@ -1424,6 +1424,11 @@ class PlayerViewModel {
     /// it stood then: Play or Pause may have changed it during the load, and
     /// tearing the load down clears it from the controller.
     private var abandonedLoadPlayIntent: Bool?
+    /// Play or Pause pressed while a fresh load prepares, before it hands the
+    /// engine a transport: the replacement starts that way. The controls stay
+    /// up through a same-item reload, and the stopped outgoing transport
+    /// would drop the press.
+    private var freshLoadPlayIntent: Bool?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -5593,6 +5598,7 @@ class PlayerViewModel {
         PosterImageCache.trimDecodedMemory()
         #endif
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
+        freshLoadPlayIntent = nil
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
@@ -5916,7 +5922,8 @@ class PlayerViewModel {
                     prepared: prepared,
                     streamRequest: streamRequest,
                     expectedStreamLoadGeneration: currentStreamLoadGeneration,
-                    shouldPlayWhenReady: !self.isWatchPartyPlayback && (reconnectResume ?? true)
+                    shouldPlayWhenReady: !self.isWatchPartyPlayback
+                        && (self.freshLoadPlayIntent ?? reconnectResume ?? true)
                 )
                 // Seeks made while the reconnect's start was out, or while
                 // this transport loaded, are applied once it is committed.
@@ -6659,6 +6666,14 @@ class PlayerViewModel {
         // Nothing can play until the reconnect hands over a new transport.
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(isPlaying ? .pause : .play) == true { return }
+        if freshLoadTask != nil && activeAetherLoadEpoch == nil {
+            // No transport is listening yet: keep the choice for the
+            // replacement, and show it, since no engine event will.
+            freshLoadPlayIntent = !isPlaying
+            isPlaying.toggle()
+            scheduleHideControls()
+            return
+        }
         // `isPlaying` is driven by the backend's `onPauseChange` callback;
         // let that be the single writer so the UI can't drift out of sync
         // with the actual pipeline state on error paths.

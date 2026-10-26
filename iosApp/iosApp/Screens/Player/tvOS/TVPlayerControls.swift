@@ -31,6 +31,9 @@ struct TVPlayerControls: View {
     /// position, outside this overlay, but it follows the intro pill's focus
     /// rules, which live here.
     let bufferingPillFocus: FocusState<TVBufferingQualityPill.Action?>.Binding
+    /// The shell's Watch Party sync capsule holds the top-trailing corner,
+    /// so the status column starts below it.
+    let showsCornerCapsule: Bool
     let onToggleTimeDisplayMode: () -> Void
     /// Reports the explicit timeline scrub, so the shell can take the
     /// buffering pill out of the focus graph during it as `introSkipLayer`
@@ -338,7 +341,7 @@ struct TVPlayerControls: View {
         ZStack(alignment: .bottom) {
             bottomGradient.ignoresSafeArea()
             statusColumn
-                .padding(.top, 64)
+                .padding(.top, showsCornerCapsule ? 120 : 64)
                 .padding(.horizontal, 80)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             TVScrubPreviewLayer(viewModel: viewModel)
