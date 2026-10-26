@@ -124,7 +124,7 @@ enum CalendarBadge: String {
 
     var label: String {
         switch self {
-        case .seriesPremiere: return "SERIES PREMIERE"
+        case .seriesPremiere: return "PREMIERE"
         case .seasonPremiere: return "NEW SEASON"
         case .finale: return "FINALE"
         }

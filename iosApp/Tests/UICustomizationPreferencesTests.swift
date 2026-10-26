@@ -136,7 +136,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         XCTAssertEqual(
             calendarEventAccessibilityLabel(event),
-            "The Show, S1 · E8, Finale, SERIES PREMIERE, FINALE, Watched"
+            "The Show, S1 · E8, Finale, PREMIERE, FINALE, Watched"
         )
 
         let collection = LibraryCollection(
