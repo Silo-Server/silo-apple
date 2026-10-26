@@ -1429,10 +1429,12 @@ class PlayerViewModel {
     /// up through a same-item reload, and the stopped outgoing transport
     /// would drop the press.
     private var freshLoadPlayIntent: Bool?
-    /// A seek made while a fresh load prepares, before it hands the engine a
-    /// transport: the replacement seeks there once it is committed, instead
-    /// of the outgoing transport that is about to go.
-    private var freshLoadSeekTarget: Double?
+    /// A seek made while a same-item fresh load prepares, before it hands
+    /// the engine a transport: the replacement seeks there once it is
+    /// committed, instead of the outgoing transport that is about to go. A
+    /// room seek is replayed as one, so it moves this transport rather than
+    /// asking the room again. A later seek that reaches a transport drops it.
+    private var freshLoadHeldSeek: (target: Double, roomCommand: Bool)?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -5607,7 +5609,7 @@ class PlayerViewModel {
         #endif
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
         freshLoadPlayIntent = nil
-        freshLoadSeekTarget = nil
+        freshLoadHeldSeek = nil
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
@@ -5937,8 +5939,9 @@ class PlayerViewModel {
                 // Seeks made while the reconnect's start was out, or while
                 // this load prepared or loaded, are applied once it is
                 // committed.
-                let reconnectSeekTarget = self.reconnectCycle.finishHandoff() ?? self.freshLoadSeekTarget
-                self.freshLoadSeekTarget = nil
+                let reconnectSeekTarget = self.reconnectCycle.finishHandoff()
+                let heldSeek = self.freshLoadHeldSeek
+                self.freshLoadHeldSeek = nil
                 if prepared.protocolV3 != nil {
                     guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
                         throw CancellationError()
@@ -5963,6 +5966,11 @@ class PlayerViewModel {
                 if let seekTarget = reconnectSeekTarget {
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.commitSeek(to: seekTarget, source: "reconnectSeek")
+                } else if let heldSeek {
+                    try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
+                    self.commitSeek(
+                        to: heldSeek.target, source: "freshLoadHeldSeek", roomCommand: heldSeek.roomCommand
+                    )
                 }
             } catch is CancellationError {
                 // Tear the abandoned Aether load down before retiring its
@@ -7222,13 +7230,16 @@ class PlayerViewModel {
             // A same-item reload is replacing the outgoing transport; the
             // replacement seeks here once it is committed. Another item's
             // load is not this item's timeline, so it keeps no seek.
-            freshLoadSeekTarget = clampedTarget
+            freshLoadHeldSeek = (clampedTarget, roomCommand)
             currentTime = clampedTarget
             scrubPreviewTime = clampedTarget
             isScrubbing = false
             scrubPreviewProvider.endInteraction()
             return false
         }
+        // This seek reaches a transport, which a held one must not undo once
+        // the load that kept it returns.
+        freshLoadHeldSeek = nil
         let requiresReplan: Bool = {
             guard let timeline = aetherPlaybackController.activeSpec?.timeline else { return true }
             if case .replan = timeline.seekDisposition(forSourceTime: clampedTarget) {
