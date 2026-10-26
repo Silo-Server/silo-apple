@@ -16,9 +16,12 @@ struct SiloPageBackdrop: View {
             ZStack {
                 Color.siloPageCanvas
                 if let wash = SiloPageWash.image(size: geo.size, scale: displayScale) {
+                    // Drawn at its own size, which can run past the page's
+                    // bottom and right edges; see `SiloPageWash.sizeStep`.
                     Image(decorative: wash, scale: displayScale / SiloPageWash.downsample)
-                        .resizable()
                         .interpolation(.none)
+                        .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                        .clipped()
                 }
             }
         }
@@ -50,15 +53,29 @@ enum SiloPageWash {
     /// displays and this quarters the work.
     static let downsample: CGFloat = 2
 
+    /// Bitmaps round up to this many points, so a window being resized reuses
+    /// one bitmap across many layout passes instead of drawing a new one for
+    /// each. The wash is laid out for the size that first drew the bitmap;
+    /// within one step the difference is too soft to see.
+    static let sizeStep: CGFloat = 64
+
     private static var cache: [String: CGImage] = [:]
 
     static func image(size: CGSize, scale: CGFloat) -> CGImage? {
-        let width = Int((size.width * scale / downsample).rounded(.up))
-        let height = Int((size.height * scale / downsample).rounded(.up))
+        let pointWidth = (size.width / sizeStep).rounded(.up) * sizeStep
+        let pointHeight = (size.height / sizeStep).rounded(.up) * sizeStep
+        let width = Int((pointWidth * scale / downsample).rounded(.up))
+        let height = Int((pointHeight * scale / downsample).rounded(.up))
         guard width > 0, height > 0 else { return nil }
         let key = "\(width)x\(height)@\(scale)"
         if let cached = cache[key] { return cached }
-        guard let image = render(width: width, height: height, pointsPerPixel: downsample / scale) else {
+        let pixelsPerPoint = scale / downsample
+        guard let image = render(
+            width: width,
+            height: height,
+            layout: CGSize(width: size.width * pixelsPerPoint, height: size.height * pixelsPerPoint),
+            pointsPerPixel: 1 / pixelsPerPoint
+        ) else {
             return nil
         }
         // Sizes come from rotation and window changes; a handful is plenty.
@@ -67,13 +84,20 @@ enum SiloPageWash {
         return image
     }
 
-    nonisolated private static func render(width: Int, height: Int, pointsPerPixel: CGFloat) -> CGImage? {
+    /// `layout` is the page size in bitmap pixels; the wash is positioned
+    /// for it, and the bitmap may extend past it.
+    nonisolated private static func render(
+        width: Int,
+        height: Int,
+        layout: CGSize,
+        pointsPerPixel: CGFloat
+    ) -> CGImage? {
         var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
         UIColor(Color.siloPageCanvas).getRed(&red, green: &green, blue: &blue, alpha: &alpha)
         let base = Float(red + green + blue) / 3
 
-        let centerX = Float(width) * 0.46
-        let centerY = Float(height) * 0.42
+        let centerX = Float(layout.width) * 0.46
+        let centerY = Float(layout.height) * 0.42
         let endRadius = Float(520 / pointsPerPixel)
         var state: UInt32 = 0x9E37_79B9
         func noise() -> Float {
@@ -83,7 +107,7 @@ enum SiloPageWash {
 
         var bytes = [UInt8](repeating: 255, count: width * height * 4)
         for y in 0..<height {
-            let t = Float(y) / Float(max(height - 1, 1))
+            let t = min(Float(y) / Float(max(layout.height - 1, 1)), 1)
             // Top-to-bottom wash: faint white, then clear at 45%, then a
             // light black at the bottom.
             let topWhite = t < 0.45 ? 0.012 * (1 - t / 0.45) : 0
