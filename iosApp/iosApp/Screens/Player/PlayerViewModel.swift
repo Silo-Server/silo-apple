@@ -5940,8 +5940,6 @@ class PlayerViewModel {
                 // this load prepared or loaded, are applied once it is
                 // committed.
                 let reconnectSeekTarget = self.reconnectCycle.finishHandoff()
-                let heldSeek = self.freshLoadHeldSeek
-                self.freshLoadHeldSeek = nil
                 if prepared.protocolV3 != nil {
                     guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
                         throw CancellationError()
@@ -5966,7 +5964,10 @@ class PlayerViewModel {
                 if let seekTarget = reconnectSeekTarget {
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.commitSeek(to: seekTarget, source: "reconnectSeek")
-                } else if let heldSeek {
+                } else if let heldSeek = self.freshLoadHeldSeek {
+                    // Read only now: a seek during the commit above reached
+                    // the replacement and dropped it.
+                    self.freshLoadHeldSeek = nil
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     self.commitSeek(
                         to: heldSeek.target, source: "freshLoadHeldSeek", roomCommand: heldSeek.roomCommand
