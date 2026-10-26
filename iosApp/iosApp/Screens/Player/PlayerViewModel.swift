@@ -6666,11 +6666,7 @@ class PlayerViewModel {
         // Nothing can play until the reconnect hands over a new transport.
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(isPlaying ? .pause : .play) == true { return }
-        if freshLoadTask != nil && activeAetherLoadEpoch == nil {
-            // No transport is listening yet: keep the choice for the
-            // replacement, and show it, since no engine event will.
-            freshLoadPlayIntent = !isPlaying
-            isPlaying.toggle()
+        if holdPlayIntentForFreshLoad(!isPlaying) {
             scheduleHideControls()
             return
         }
@@ -6696,12 +6692,23 @@ class PlayerViewModel {
             return
         }
         guard !isStartingPlayback, !hasReachedEndOfFile else { return }
-        if isPlaying {
+        if isPlaying, !holdPlayIntentForFreshLoad(false) {
             aetherPlaybackController.pause()
         }
         pinControlsVisible()
     }
     #endif
+
+    /// While a fresh load prepares and no transport is listening yet, keeps
+    /// a Play or Pause for the replacement, and shows it, since no engine
+    /// event will. False once the load has handed the engine a transport,
+    /// which then takes the command itself.
+    private func holdPlayIntentForFreshLoad(_ play: Bool) -> Bool {
+        guard freshLoadTask != nil, activeAetherLoadEpoch == nil else { return false }
+        freshLoadPlayIntent = play
+        isPlaying = play
+        return true
+    }
 
     func switchQuality(_ qualityId: String) {
         // One switch at a time, from any surface or SiloRemote: a second
