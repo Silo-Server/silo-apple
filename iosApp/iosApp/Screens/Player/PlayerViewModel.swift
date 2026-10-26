@@ -390,11 +390,12 @@ class PlayerViewModel {
     var title: String = ""
     var isLoading = true
     var isBuffering = false
-    /// Whether the current load has shown a frame. A fresh load (another
-    /// item, a retry, a new session) clears it with the rest of the published
-    /// state; a replan, credential reload or seek keeps it.
+    /// Whether the current item has shown a frame. Only a load of another
+    /// item clears it; a retry, reconnect, session renewal, version switch,
+    /// seek reload or replan of the same item keeps it, so those stalls keep
+    /// the controls.
     private(set) var hasStartedPlayback = false
-    /// Loading before the current load's first frame: the player shows only
+    /// Loading before the current item's first frame: the player shows only
     /// the spinner and a way out. Loading after it is a stall, which keeps
     /// the controls.
     var isStartingPlayback: Bool { isLoading && !hasStartedPlayback }
@@ -5279,7 +5280,6 @@ class PlayerViewModel {
     ) {
         isLoadingSubtitles = false
         isLoading = true
-        hasStartedPlayback = false
         error = nil
         errorIsRetryable = true
         noticeDismissTask?.cancel()
@@ -5617,6 +5617,7 @@ class PlayerViewModel {
             resetBufferingQuality()
             autoSkippedRecapKeys = []
             viewingHasPlayed = false
+            hasStartedPlayback = false
             reconnectLoadRequest = nil
             // Other content starts with a full reconnect budget.
             cancelReconnect()
