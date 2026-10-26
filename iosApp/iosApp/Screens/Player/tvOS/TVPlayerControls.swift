@@ -338,7 +338,7 @@ struct TVPlayerControls: View {
         ZStack(alignment: .bottom) {
             bottomGradient.ignoresSafeArea()
             statusColumn
-                .padding(.top, viewModel.isBuffering ? 120 : 64)
+                .padding(.top, 64)
                 .padding(.horizontal, 80)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             TVScrubPreviewLayer(viewModel: viewModel)

@@ -249,7 +249,7 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
     private func mobileControlsWindow(model: PlayerViewModel, size: CGSize, insets: EdgeInsets) -> UIWindow {
         let content = ZStack {
             Color(red: 0.2, green: 0.3, blue: 0.4)
-            MobilePlayerControls(viewModel: model, onDismiss: {})
+            MobilePlayerControls(viewModel: model, showsLoadingSpinner: false, onDismiss: {})
                 .safeAreaPadding(insets)
         }
         .frame(width: size.width, height: size.height)

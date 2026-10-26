@@ -1,8 +1,8 @@
 import AetherEngine
 import Foundation
 
-/// Whether the player presents as loading (the "Loading…" capsule, hidden
-/// controls) for an engine playback phase.
+/// Whether the player presents as loading (the centered spinner) for an
+/// engine playback phase.
 ///
 /// Aether reports a source outage as `.stalled` the moment its reader starts
 /// reconnecting, ahead of every other phase, while the player keeps playing

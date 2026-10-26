@@ -390,6 +390,19 @@ class PlayerViewModel {
     var title: String = ""
     var isLoading = true
     var isBuffering = false
+    /// Whether the current load has shown a frame. A fresh load (another
+    /// item, a retry, a new session) clears it with the rest of the published
+    /// state; a replan, credential reload or seek keeps it.
+    private(set) var hasStartedPlayback = false
+    /// Loading before the current load's first frame: the player shows only
+    /// the spinner and a way out. Loading after it is a stall, which keeps
+    /// the controls.
+    var isStartingPlayback: Bool { isLoading && !hasStartedPlayback }
+    /// Loading, a stall or a reconnect, with no error on screen: what the
+    /// loading spinner shows.
+    var isWaitingToPlay: Bool {
+        (isLoading || isBuffering || isReconnecting) && error == nil
+    }
     /// The engine phase last reported for the active load. Kept so a source
     /// stall can be re-judged as the playhead moves or stops.
     @ObservationIgnored
@@ -2155,8 +2168,15 @@ class PlayerViewModel {
             "[CMP-SUB] file loaded engine=AetherEngine route=\(self.activeRouteLabel, privacy: .public) pendingExternal=\(self.pendingExternalSubtitles.count, privacy: .public) tracks=\(self.subtitleTracks.count, privacy: .public)"
         )
         loadPendingExternalSubtitles()
-        hideControlsTask?.cancel()
-        showControls = false
+        if hasStartedPlayback {
+            // A replan's first frame leaves the controls as the viewer has
+            // them, with a fresh auto-hide if they show.
+            if showControls { scheduleHideControls() }
+        } else {
+            hideControlsTask?.cancel()
+            showControls = false
+            hasStartedPlayback = true
+        }
         nowPlaying.update(
             title: title,
             duration: duration,
@@ -5259,6 +5279,7 @@ class PlayerViewModel {
     ) {
         isLoadingSubtitles = false
         isLoading = true
+        hasStartedPlayback = false
         error = nil
         errorIsRetryable = true
         noticeDismissTask?.cancel()
@@ -5288,7 +5309,7 @@ class PlayerViewModel {
         // The HUD belongs to the outgoing item. Replans deliberately bypass
         // this reset so the HUD survives them; a replacement load must close
         // it, both because its content is stale and because the tvOS controls
-        // host stays mounted through `isLoading` whenever this flag is up.
+        // host stays mounted through a starting load whenever this flag is up.
         isHUDPresented = false
         showNextUpScreen = isNextUpTransitioning
         if !isNextUpTransitioning {
@@ -6658,7 +6679,7 @@ class PlayerViewModel {
             pinControlsVisible()
             return
         }
-        guard !isLoading, !hasReachedEndOfFile else { return }
+        guard !isStartingPlayback, !hasReachedEndOfFile else { return }
         if isPlaying {
             aetherPlaybackController.pause()
         }
@@ -11035,10 +11056,10 @@ extension PlayerViewModel {
     }
 
     /// The iPhone and iPad controls, and the sheets they present, are on
-    /// screen: not while a load, Next Up or an error replaces them. A sheet
-    /// that went away with them covers nothing.
+    /// screen: not while a starting load, Next Up or an error replaces them.
+    /// A sheet that went away with them covers nothing.
     private var playerControlsAreMounted: Bool {
-        !isLoading && !showNextUpScreen && error == nil
+        !isStartingPlayback && !showNextUpScreen && error == nil
     }
 
     /// The sheet over the iPhone and iPad player opened or closed.

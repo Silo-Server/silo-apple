@@ -18,6 +18,9 @@ import SwiftUI
 /// swipes) live in `MobilePlayerGestureLayer` underneath this overlay.
 struct MobilePlayerControls: View {
     let viewModel: PlayerViewModel
+    /// The player's loading spinner is up; it takes the play/pause button's
+    /// place while the controls show.
+    let showsLoadingSpinner: Bool
     let onDismiss: () -> Void
 
     @State private var activeSheet: PlayerSheet?
@@ -328,19 +331,30 @@ struct MobilePlayerControls: View {
             .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward))
             .disabled(!viewModel.canRequestSeek)
 
+            // Still play/pause while it shows the spinner.
             Button {
                 viewModel.togglePlayPause()
             } label: {
-                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(.black.opacity(0.85))
-                    // play.fill reads left-heavy inside a circle;
-                    // nudge it toward the optical center.
-                    .offset(x: viewModel.isPlaying ? 0 : 2)
-                    .frame(width: Self.playButtonSize, height: Self.playButtonSize)
+                Group {
+                    if showsLoadingSpinner {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(.black.opacity(0.85))
+                            .scaleEffect(1.4)
+                    } else {
+                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(.black.opacity(0.85))
+                            // play.fill reads left-heavy inside a circle;
+                            // nudge it toward the optical center.
+                            .offset(x: viewModel.isPlaying ? 0 : 2)
+                    }
+                }
+                .frame(width: Self.playButtonSize, height: Self.playButtonSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9), size: Self.playButtonSize))
             .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
+            .accessibilityValue(showsLoadingSpinner ? "Loading" : "")
             .disabled(!viewModel.canRequestPlayPause)
 
             Button {

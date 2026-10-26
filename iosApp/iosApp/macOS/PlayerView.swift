@@ -74,6 +74,8 @@ private struct MacPlayerScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var isOptionsPresented = false
     @State private var selectedOptionsTab: MacPlayerOptionsPanel.Tab = .audio
+    /// The loading spinner is up, on its show delay and minimum time.
+    @State private var showsLoadingSpinner = false
 
     var body: some View {
         ZStack {
@@ -117,11 +119,10 @@ private struct MacPlayerScreen: View {
                     .transition(.opacity)
                 }
 
-                // The buffering pill, which already says playback is
-                // buffering, replaces this capsule while it shows.
-                if (viewModel.isLoading || viewModel.isBuffering || viewModel.isReconnecting) &&
-                    viewModel.bufferingPill == nil {
-                    PlayerBufferingCapsule()
+                if showsLoadingSpinner {
+                    PlayerLoadingSpinner()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.opacity)
                 }
 
                 // The notice position, below the window's title bar. The
@@ -160,6 +161,7 @@ private struct MacPlayerScreen: View {
                 .frame(width: 0, height: 0)
             }
         }
+        .playerLoadingSpinnerVisibility(isActive: viewModel.isWaitingToPlay, isVisible: $showsLoadingSpinner)
         .onHover { hovering in
             if hovering {
                 viewModel.revealControls()
@@ -203,12 +205,11 @@ private struct MacPlayerScreen: View {
         .animation(.easeOut(duration: 0.2), value: viewModel.showBufferingPill)
     }
 
+    /// The controls come in at the first frame; a later stall leaves them as
+    /// they are.
     private var shouldShowControls: Bool {
-        viewModel.showControls
-            || !viewModel.isPlaying
-            || viewModel.isLoading
-            || viewModel.isBuffering
-            || isOptionsPresented
+        guard !viewModel.isStartingPlayback else { return false }
+        return viewModel.showControls || !viewModel.isPlaying || isOptionsPresented
     }
 
     private var playerSurface: some View {

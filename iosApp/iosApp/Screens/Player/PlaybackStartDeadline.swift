@@ -3,8 +3,8 @@ import Foundation
 /// The player's own start deadline for a plan whose route has none in the
 /// engine. AetherEngine fails a server-HLS load that is still not ready
 /// after 45 s (`noPlayableTrackWithinBudget`), but nothing bounds a start on
-/// direct play or the software route: one too slow for its link would wait
-/// on "Loading…" until a frame or an engine failure. A plan that has shown
+/// direct play or the software route: one too slow for its link would show
+/// the loading spinner until a frame or an engine failure. A plan that has shown
 /// no first frame within the same budget of its adoption has missed its
 /// start, not counting time the viewer held it paused or an outage held it:
 /// an outage never ends playback by itself, so a start that waits one out
