@@ -1429,6 +1429,10 @@ class PlayerViewModel {
     /// up through a same-item reload, and the stopped outgoing transport
     /// would drop the press.
     private var freshLoadPlayIntent: Bool?
+    /// A seek made while a fresh load prepares, before it hands the engine a
+    /// transport: the replacement seeks there once it is committed, instead
+    /// of the outgoing transport that is about to go.
+    private var freshLoadSeekTarget: Double?
     private static let nextUpCountdownDefaultSeconds = 10
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
@@ -5603,6 +5607,7 @@ class PlayerViewModel {
         #endif
         isNextUpTransitioning = origin == .autoplay && showNextUpScreen
         freshLoadPlayIntent = nil
+        freshLoadSeekTarget = nil
         recordCurrentPlaybackMutation()
         let pendingNaturalEndProgressTask = naturalEndProgressTask
         naturalEndProgressTask = nil
@@ -5930,8 +5935,10 @@ class PlayerViewModel {
                         && (self.freshLoadPlayIntent ?? reconnectResume ?? true)
                 )
                 // Seeks made while the reconnect's start was out, or while
-                // this transport loaded, are applied once it is committed.
-                let reconnectSeekTarget = self.reconnectCycle.finishHandoff()
+                // this load prepared or loaded, are applied once it is
+                // committed.
+                let reconnectSeekTarget = self.reconnectCycle.finishHandoff() ?? self.freshLoadSeekTarget
+                self.freshLoadSeekTarget = nil
                 if prepared.protocolV3 != nil {
                     guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
                         throw CancellationError()
@@ -7205,6 +7212,17 @@ class PlayerViewModel {
             // The transport is dead, or its replacement is not installed
             // yet; the reconnect resumes where the viewer wants to be.
             reconnectCycle.updatePosition(clampedTarget)
+            currentTime = clampedTarget
+            scrubPreviewTime = clampedTarget
+            isScrubbing = false
+            scrubPreviewProvider.endInteraction()
+            return false
+        }
+        if hasStartedPlayback && freshLoadTask != nil && activeAetherLoadEpoch == nil {
+            // A same-item reload is replacing the outgoing transport; the
+            // replacement seeks here once it is committed. Another item's
+            // load is not this item's timeline, so it keeps no seek.
+            freshLoadSeekTarget = clampedTarget
             currentTime = clampedTarget
             scrubPreviewTime = clampedTarget
             isScrubbing = false
