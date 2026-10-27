@@ -131,4 +131,39 @@ final class PlayerStopAndCloseTests: XCTestCase {
 
         await expectEventually("the view is asked to close") { player.remoteDismissToken != nil }
     }
+
+    #if os(tvOS)
+    /// A suspended tvOS app plays nothing, and one killed while suspended
+    /// could never stop its session, so the next launch showed a second
+    /// stream from the same Apple TV. Leaving the app stops and closes.
+    func testLeavingTheAppStopsAndCloses() async {
+        let player = PlayerViewModel()
+        defer { player.cleanup() }
+        player.loadAndPlay(contentId: "movie", startFromBeginning: false)
+
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+
+        await expectEventually("the view is asked to close") { player.remoteDismissToken != nil }
+        XCTAssertTrue(player.needsReplacementForPresentation, "cleanup, which stops the session, ran")
+    }
+
+    func testLeavingTheAppKeepsAWatchPartyPlayer() async {
+        let player = PlayerViewModel()
+        let adapter = WatchPartyPlaybackAdapter(player: player)
+        defer {
+            adapter.stop()
+            player.cleanup()
+        }
+        adapter.prepare(WatchPartyPlaybackContext(
+            roomId: "room", selectionRevision: 1, contentId: "movie",
+            fileId: 42, libraryId: nil, startPosition: 0
+        ))
+
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+
+        let closed = await eventually(timeout: .milliseconds(300)) { player.remoteDismissToken != nil }
+        XCTAssertFalse(closed, "the room needs this session")
+        XCTAssertFalse(player.needsReplacementForPresentation)
+    }
+    #endif
 }

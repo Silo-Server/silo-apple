@@ -979,8 +979,10 @@ final class BufferingQualityPlayerTests: XCTestCase {
         XCTAssertEqual(model.bufferingPill?.kind, .prompt)
     }
 
+    #if !os(tvOS)
     /// Picture in picture or the app in the background shows no pills, so a
-    /// pill waits with the rest of its timer, as behind another pill.
+    /// pill waits with the rest of its timer, as behind another pill. A tvOS
+    /// player closes when the app leaves the foreground instead.
     func testABackgroundedPlayerHoldsTheBufferingPill() async throws {
         let clock = ManualBufferingQualityClock()
         let model = PlayerViewModel(bufferingQualityClock: clock)
@@ -996,6 +998,7 @@ final class BufferingQualityPlayerTests: XCTestCase {
         await eventually { model.bufferingPill != nil }
         XCTAssertEqual(model.bufferingPill?.kind, .prompt, "its timer did not run out unseen")
     }
+    #endif
 
     /// A sheet over the player hides its pills the same way.
     func testASheetOverThePlayerHoldsTheBufferingPill() async throws {

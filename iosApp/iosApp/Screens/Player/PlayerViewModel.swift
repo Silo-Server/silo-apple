@@ -1486,7 +1486,8 @@ class PlayerViewModel {
     /// foreground time. The periodic reporter ticks every 10s, so without
     /// this a backgrounded (or terminated) player loses up to that much
     /// progress. Deliberately does not stop the session — PiP and background
-    /// audio keep playing after this fires.
+    /// audio keep playing after this fires. tvOS has neither, so there the
+    /// player closes instead, outside a Watch Party (``closeForBackground()``).
     private var foregroundExitObserverToken: NSObjectProtocol?
     /// Moves playback between the main and cellular quality pairs when the
     /// connection changes (iPhone and iPad). Set at the end of `init`.
@@ -1652,6 +1653,11 @@ class PlayerViewModel {
             object: nil,
             queue: .main
         ) { [weak self] _ in
+            #if os(tvOS)
+            // In the handler itself: the background task has to be held
+            // before tvOS can suspend the app.
+            if MainActor.assumeIsolated({ self?.closeForBackground() }) == true { return }
+            #endif
             Task { @MainActor [weak self] in
                 self?.flushPlaybackProgressNow(reason: "foreground_exit")
                 #if os(iOS) || os(tvOS)
@@ -9223,6 +9229,26 @@ class PlayerViewModel {
         cleanup()
         requestRemoteDismiss()
     }
+
+    #if os(tvOS)
+    /// Leaving the app ends the viewing, as on Android TV: the player stops
+    /// its session and closes back to the screen it was opened from. tvOS
+    /// has no background playback or Picture in Picture, so a kept session
+    /// only held its server slot through the suspension, and a process
+    /// killed while suspended never stopped it: the next launch's playback
+    /// then showed as a second stream from the same Apple TV. A Watch Party
+    /// keeps its session for the room. Returns whether the player closed.
+    private func closeForBackground() -> Bool {
+        guard !isDisposed, !isWatchPartyPlayback else { return false }
+        let work = BackgroundWork(name: "SiloPlayerBackgroundClose")
+        stopAndClose()
+        Task { [cleanupCompletionTask] in
+            await cleanupCompletionTask?.value
+            work.end()
+        }
+        return true
+    }
+    #endif
 
     private func requestRemoteDismiss(after delay: TimeInterval = 0) {
         noticeDismissTask?.cancel()

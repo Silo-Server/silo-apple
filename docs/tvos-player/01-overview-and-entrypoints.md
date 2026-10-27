@@ -133,16 +133,13 @@ for Profile 5." The load path carries typed route data all the way through.
 - disposes the active backend
 - sends a final stop request through `PlaybackSessionBridge.stopSession(...)`
 
-Separately, tvOS scene transitions now split into two paths:
-
-- `.inactive`: transient interruption only; pause the active backend and allow
-  quick foreground recovery if the player was already running
-- `.background`: hard suspend; snapshot resume context, stop the server
-  playback session, unbind realtime control, detach Now Playing, dispose the
-  backend, and wait for an explicit user resume after wake
-
-The player route stays mounted after a background suspend. Playback does not
-auto-resume on wake, and tvOS Picture in Picture is currently unsupported.
+When the app enters the background on tvOS (sleep, the TV button), the player
+runs the same `cleanup()` under a background-task assertion and closes back to
+the screen it was opened from, as Android TV's player does. tvOS has no
+background playback or Picture in Picture, so a session kept open would only
+hold its server slot while the app is suspended, and a process killed in that
+state could never stop it. A Watch Party player stays open and keeps its
+session for the room.
 
 ## 7. Current truths and caveats
 

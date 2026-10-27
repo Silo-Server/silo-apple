@@ -278,8 +278,9 @@ struct TVPlayerControls: View {
         .onChange(of: bufferingPillFocus.wrappedValue) { _, target in
             if target != nil { rearmAutoHideOnFocusMove() }
         }
-        // TV sleep discards the app's focus state, and the background-suspend
-        // path keeps `showControls` true — so on wake the idle overlay is
+        // TV sleep discards the app's focus state, and a Watch Party player
+        // stays open through it (others close when the app leaves the
+        // foreground) with `showControls` true — so on wake the idle overlay is
         // already mounted, its `onAppear` seed never re-fires, and nothing is
         // focused. With no focused descendant, Menu presses never reach the
         // shell-level `onExitCommand` in PlayerView, stranding the user until
