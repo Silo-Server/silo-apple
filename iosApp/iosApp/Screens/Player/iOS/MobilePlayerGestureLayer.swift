@@ -10,8 +10,8 @@ import SwiftUI
 ///   ripple flash at the tap side)
 /// - double tap center     → play/pause
 /// - touch & hold          → 2× playback while held (chip at top center)
-/// - drag on left edge     → screen brightness (vertical gauge)
-/// - drag on right edge    → device volume (vertical gauge)
+/// - drag on left edge     → screen brightness (percentage chip at top center)
+/// - drag on right edge    → device volume (slider pill at top right)
 /// - pinch                 → cycle video gravity (fit / fill / stretch)
 ///
 /// Center drags never dismiss playback. Exit is an explicit close-button
@@ -61,11 +61,11 @@ struct MobilePlayerGestureLayer: View {
     /// that side's safe-area inset. In landscape the inset covers the
     /// Dynamic Island, which would otherwise eat into the strip.
     private static let edgeZoneWidth: CGFloat = 88
-    /// Track height of the brightness/volume gauge.
-    private static let gaugeHeight: CGFloat = 130
-    /// Gauge center's distance past its edge zone, so the thumb dragging
-    /// along the edge doesn't cover it.
-    private static let gaugeZoneOffset: CGFloat = 44
+    /// Track width of the volume pill's slider.
+    private static let volumeTrackWidth: CGFloat = 112
+    private static let volumeThumbSize: CGFloat = 12
+    /// Distance from the top safe area to the center of the top chips.
+    private static let topChipCenterY: CGFloat = 46
     /// Drag travel for a full 0–100% swing.
     private static let gaugeFullSwing: CGFloat = 160
     /// Haptic ticks across a full gauge swing; matches the 16 hardware
@@ -90,7 +90,7 @@ struct MobilePlayerGestureLayer: View {
                 ZStack {
                     // Must stay in the window for writes to move the device
                     // volume; its presence also hides the system volume HUD,
-                    // which the edge gauge replaces.
+                    // which the volume pill replaces.
                     PlayerSystemVolumeHost(volume: systemVolume)
                         .frame(width: 1, height: 1)
                         .opacity(0.0001)
@@ -110,7 +110,7 @@ struct MobilePlayerGestureLayer: View {
                         .simultaneousGesture(edgeAdjustmentDrag(in: size, leadingZone: leadingZone, trailingZone: trailingZone))
                         .simultaneousGesture(videoGravityPinchGesture)
 
-                    feedbackOverlays(in: size, leadingZone: leadingZone, trailingZone: trailingZone)
+                    feedbackOverlays(in: size, insets: insets)
                 }
             }
             .ignoresSafeArea()
@@ -319,7 +319,7 @@ struct MobilePlayerGestureLayer: View {
     }
 
     @ViewBuilder
-    private func feedbackOverlays(in size: CGSize, leadingZone: CGFloat, trailingZone: CGFloat) -> some View {
+    private func feedbackOverlays(in size: CGSize, insets: EdgeInsets) -> some View {
         if let flash = skipFlash {
             skipFlashView(flash)
                 .position(
@@ -345,16 +345,23 @@ struct MobilePlayerGestureLayer: View {
                 .allowsHitTesting(false)
         }
 
-        if let gauge = visibleGauge {
-            edgeGauge(for: gauge)
-                .position(
-                    x: gauge == .brightness
-                        ? leadingZone + Self.gaugeZoneOffset
-                        : size.width - trailingZone - Self.gaugeZoneOffset,
-                    y: size.height / 2
-                )
-                .transition(.scale(scale: 0.8).combined(with: .opacity))
+        // Up top, clear of the thumb dragging along either edge.
+        switch visibleGauge {
+        case .brightness:
+            brightnessChip
+                .position(x: size.width / 2, y: insets.top + Self.topChipCenterY)
+                .transition(.move(edge: .top).combined(with: .opacity))
                 .allowsHitTesting(false)
+        case .volume:
+            volumePill
+                .frame(height: Self.topChipCenterY * 2)
+                .padding(.top, insets.top)
+                .padding(.trailing, insets.trailing + 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .allowsHitTesting(false)
+        case nil:
+            EmptyView()
         }
     }
 
@@ -407,44 +414,63 @@ struct MobilePlayerGestureLayer: View {
         .siloPlayerGlass(in: Capsule())
     }
 
-    private func edgeGauge(for adjustment: EdgeAdjustment) -> some View {
-        let isDragging = activeAdjustment == adjustment
-        // Stretch a little past the rail being pushed against, toward the
-        // drag, like the system sliders do.
-        let atRail = isDragging && (gaugeFraction <= 0 || gaugeFraction >= 1)
-        return VStack(spacing: 10) {
-            ZStack(alignment: .bottom) {
+    private var gaugePercentText: some View {
+        Text("\(Int((gaugeFraction * 100).rounded()))%")
+            .font(.system(size: 17, weight: .medium))
+            .monospacedDigit()
+    }
+
+    private var brightnessChip: some View {
+        HStack(spacing: 14) {
+            gaugeIcon(for: .brightness)
+                .font(.system(size: 20, weight: .semibold))
+                .frame(width: 24, height: 24)
+                .contentTransition(.symbolEffect(.replace))
+            gaugePercentText
+                .frame(minWidth: 44, alignment: .leading)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .siloPlayerGlass(in: Capsule())
+    }
+
+    private var volumePill: some View {
+        let isDragging = activeAdjustment == .volume
+        let thumbTravel = Self.volumeTrackWidth - Self.volumeThumbSize
+        return HStack(spacing: 12) {
+            gaugePercentText
+                .frame(minWidth: 44, alignment: .leading)
+            ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.white.opacity(0.25))
                 Capsule()
                     .fill(Color.white)
-                    .frame(height: max(Self.gaugeHeight * gaugeFraction, 8))
+                    .frame(width: Self.volumeThumbSize / 2 + thumbTravel * gaugeFraction)
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: Self.volumeThumbSize, height: Self.volumeThumbSize)
+                    .offset(x: thumbTravel * gaugeFraction)
             }
-            .frame(width: isDragging ? 10 : 8, height: Self.gaugeHeight)
+            .frame(width: Self.volumeTrackWidth, height: isDragging ? 6 : 5)
             .animation(.spring(response: 0.22, dampingFraction: 0.85), value: gaugeFraction)
-
-            gaugeIcon(for: adjustment)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 18)
+            gaugeIcon(for: .volume)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 26, height: 20)
                 .contentTransition(.symbolEffect(.replace))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 14)
+        .foregroundStyle(.white)
+        .padding(.leading, 16)
+        .padding(.trailing, 14)
+        .padding(.vertical, 11)
         .siloPlayerGlass(in: Capsule())
-        .scaleEffect(
-            x: atRail ? 0.96 : 1,
-            y: atRail ? 1.06 : 1,
-            anchor: gaugeFraction <= 0 ? .top : .bottom
-        )
-        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: atRail)
         .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isDragging)
     }
 
     private func gaugeIcon(for adjustment: EdgeAdjustment) -> Image {
         switch adjustment {
         case .brightness:
-            return Image(systemName: gaugeFraction < 0.5 ? "sun.min.fill" : "sun.max.fill")
+            return Image(systemName: gaugeFraction < 0.5 ? "sun.min" : "sun.max")
         case .volume:
             if gaugeFraction <= 0.01 {
                 return Image(systemName: "speaker.slash.fill")
