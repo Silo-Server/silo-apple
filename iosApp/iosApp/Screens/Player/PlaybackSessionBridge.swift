@@ -989,12 +989,26 @@ actor PlaybackSessionBridge {
             guard explicitFFmpegIndex >= 0 else {
                 return InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: nil)
             }
+            let embeddedCombinedIndex = ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                ffmpegStreamIndex: explicitFFmpegIndex,
+                in: version
+            )
+            // Detail pages pass the catalog's selection index, which for a
+            // sidecar names no stream; read as one, the start asked for no
+            // subtitle and played with subtitles off.
+            if embeddedCombinedIndex == nil,
+               let externalCombinedIndex = ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                   externalSelectionIndex: explicitFFmpegIndex,
+                   in: version
+               ) {
+                return InitialProtocolV3SubtitleIntent(
+                    ffmpegStreamIndex: nil,
+                    combinedIndex: externalCombinedIndex
+                )
+            }
             return InitialProtocolV3SubtitleIntent(
                 ffmpegStreamIndex: explicitFFmpegIndex,
-                combinedIndex: ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
-                    ffmpegStreamIndex: explicitFFmpegIndex,
-                    in: version
-                )
+                combinedIndex: embeddedCombinedIndex
             )
         }
 

@@ -358,6 +358,31 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(intent(showForced: true, audio: "en", explicitCombinedIndex: -1), "an explicit Off stays off")
     }
 
+    /// A detail page passes the catalog's selection index. For a sidecar the
+    /// catalog numbers it after the file's streams, so the start must send the
+    /// sidecar's combined ordinal (externals first) rather than look for a
+    /// stream with that number and start with subtitles off (#910).
+    func testInitialIntentMapsAnExplicitSidecarPickToItsCombinedIndex() {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac", subtitleTracks: [
+            makeSubtitle(index: 2, codec: "subrip", external: false, path: nil),
+            makeSubtitle(index: 3, codec: "subrip", external: false, path: nil),
+            makeSubtitle(index: 4, codec: "srt", external: true, path: "Show.S01E01.pl.srt", language: "pl"),
+            makeSubtitle(index: 5, codec: "srt", external: true, path: "Show.S01E01.en.srt"),
+        ])
+        func intent(_ explicit: Int) -> PlaybackSessionBridge.InitialProtocolV3SubtitleIntent {
+            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version, explicitFFmpegIndex: explicit, explicitCombinedIndex: nil,
+                preferredLanguage: "en", mode: .always, showForced: false,
+                trackSignature: nil, currentAudioLanguage: "en"
+            )
+        }
+        XCTAssertEqual(intent(5).combinedIndex, 1)
+        XCTAssertNil(intent(5).ffmpegStreamIndex, "a sidecar is not a stream in the file")
+        XCTAssertEqual(intent(4).combinedIndex, 0)
+        XCTAssertEqual(intent(3).combinedIndex, 3, "an embedded pick still maps after the two sidecars")
+        XCTAssertEqual(intent(3).ffmpegStreamIndex, 3)
+    }
+
     /// The next-episode fixture: video at stream 0, English audio at stream 1
     /// (ordinal 0), and English full, Spanish and English forced subtitles.
     /// The effective audio index is an ordinal, so the start must read the

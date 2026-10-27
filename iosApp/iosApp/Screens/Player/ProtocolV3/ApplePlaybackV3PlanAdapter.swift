@@ -369,6 +369,20 @@ enum ApplePlaybackV3PlanAdapter {
         return externalCount + embeddedOrdinal
     }
 
+    /// An external row's catalog `index` is not a stream in the file: the
+    /// catalog numbers sidecars after the file's streams so every row has a
+    /// selection index. Its V3 identity is its position among the external
+    /// rows, which the combined space lists first and in catalog order. Nil
+    /// when no external row carries `selectionIndex`.
+    static func serverCombinedSubtitleIndex(
+        externalSelectionIndex selectionIndex: Int,
+        in version: FileVersion
+    ) -> Int? {
+        (version.subtitleTracks ?? [])
+            .filter { $0.external == true }
+            .firstIndex { $0.index == selectionIndex }
+    }
+
     /// Resolves an embedded FFmpeg stream index against the server's published
     /// combined ordinals instead of deriving one.
     ///
