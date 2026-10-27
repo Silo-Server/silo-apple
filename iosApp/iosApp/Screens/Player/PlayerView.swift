@@ -317,6 +317,10 @@ struct PlayerView: View {
                             // hold-2×, edge swipes, pinch) live in a dedicated
                             // layer under the button overlay.
                             MobilePlayerGestureLayer(viewModel: viewModel)
+                                // Above the controls while they show, so the
+                                // volume buttons' chip isn't dimmed by the
+                                // scrim. The layer takes no touches then.
+                                .zIndex(viewModel.showControls ? 1 : 0)
                             MobilePlayerControls(
                                 viewModel: viewModel,
                                 showsLoadingSpinner: showsLoadingSpinner,
@@ -936,8 +940,9 @@ struct PlayerView: View {
     private static let playerMenuPanelBottom: CGFloat = 560
     #else
     /// Where the top bar ends while it shows: two rows in portrait, one in
-    /// landscape. The buffering pill and the subtitle-sync card sit below it.
-    private static func topBarBottom(portrait: Bool) -> CGFloat {
+    /// landscape. The buffering pill, the subtitle-sync card, and the volume
+    /// chip sit below it.
+    static func topBarBottom(portrait: Bool) -> CGFloat {
         portrait ? 112 : 64
     }
     #endif
