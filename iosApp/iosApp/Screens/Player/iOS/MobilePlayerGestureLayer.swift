@@ -14,7 +14,9 @@ import SwiftUI
 /// - drag on right edge    → device volume (vertical gauge)
 /// - pinch                 → cycle video gravity (fit / fill / stretch)
 ///
-/// Center drags never dismiss playback. Exit is an explicit close-button
+/// Hold, edge drag, and pinch are exclusive: the first to start owns the
+/// touch until it ends, so a slipping thumb holding 2× can't also move the
+/// volume. Center drags never dismiss playback. Exit is an explicit close-button
 /// action; edge brightness/volume gestures remain available.
 ///
 /// The layer is mounted only while playback is loaded. When the controls
@@ -32,6 +34,7 @@ struct MobilePlayerGestureLayer: View {
     }
 
     @State private var skipFlash: SkipFlash?
+    @State private var gestureOwnership = PlayerGestureOwnership()
     @State private var skipFlashHideTask: Task<Void, Never>?
 
     /// Which edge gauge the in-flight drag is adjusting, decided once from
@@ -101,9 +104,14 @@ struct MobilePlayerGestureLayer: View {
                         .contentShape(Rectangle())
                         .gesture(doubleTapGesture(in: size).exclusively(before: singleTapGesture))
                         .onLongPressGesture(minimumDuration: 0.5, maximumDistance: 24) {
+                            guard gestureOwnership.claim(.hold) else { return }
                             viewModel.beginHoldFastForward()
+                            // A paused player refuses 2×; leave the touch
+                            // free for an edge drag.
+                            if !viewModel.isHoldFastForwarding { gestureOwnership.release(.hold) }
                         } onPressingChanged: { pressing in
                             if !pressing {
+                                gestureOwnership.release(.hold)
                                 viewModel.endHoldFastForward()
                             }
                         }
@@ -137,6 +145,15 @@ struct MobilePlayerGestureLayer: View {
         // here as a double-tap skip. Drop out of hit testing entirely while
         // the overlay owns the screen.
         .allowsHitTesting(!viewModel.showControls)
+        // Dropping out of hit testing cancels in-flight gestures without
+        // their end callbacks; release the touch so the next one starts clean.
+        .onChange(of: viewModel.showControls) { _, showing in
+            guard showing else { return }
+            gestureOwnership.reset()
+            activeAdjustment = nil
+            dragBaseline = nil
+            gaugeHapticStep = nil
+        }
         .onAppear {
             systemVolume.onExternalChange = { level in
                 // The drag's own writes echo back here late; the drag
@@ -155,6 +172,7 @@ struct MobilePlayerGestureLayer: View {
             // The layer can be torn out mid-gesture (loading state flips,
             // player transitions) without a final onPressingChanged(false).
             viewModel.endHoldFastForward()
+            gestureOwnership.reset()
             skipFlashHideTask?.cancel()
             gaugeHideTask?.cancel()
             gravityToastHideTask?.cancel()
@@ -199,11 +217,13 @@ struct MobilePlayerGestureLayer: View {
         DragGesture(minimumDistance: 14)
             .onChanged { value in
                 if dragBaseline == nil {
+                    // Decided once per drag, so a drag that starts during a
+                    // hold or pinch stays inert after that gesture ends.
                     let startX = value.startLocation.x
-                    if startX < leadingZone {
+                    if startX < leadingZone, gestureOwnership.claim(.edgeAdjustment) {
                         activeAdjustment = .brightness
                         dragBaseline = PlayerScreenBrightness.shared.currentLevel()
-                    } else if startX > size.width - trailingZone {
+                    } else if startX > size.width - trailingZone, gestureOwnership.claim(.edgeAdjustment) {
                         activeAdjustment = .volume
                         dragBaseline = Double(systemVolume.currentLevel)
                     } else {
@@ -230,6 +250,7 @@ struct MobilePlayerGestureLayer: View {
                 if activeAdjustment != nil {
                     scheduleGaugeHide()
                 }
+                gestureOwnership.release(.edgeAdjustment)
                 activeAdjustment = nil
                 dragBaseline = nil
                 gaugeHapticStep = nil
@@ -246,7 +267,12 @@ struct MobilePlayerGestureLayer: View {
 
     private var videoGravityPinchGesture: some Gesture {
         MagnifyGesture()
+            .onChanged { _ in
+                _ = gestureOwnership.claim(.pinch)
+            }
             .onEnded { value in
+                guard gestureOwnership.owner == .pinch else { return }
+                gestureOwnership.release(.pinch)
                 let scale = value.magnification
                 let current = viewModel.settings.videoGravity
                 let gravity: VideoGravity
