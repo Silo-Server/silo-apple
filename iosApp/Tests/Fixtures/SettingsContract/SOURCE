@@ -1,6 +1,6 @@
 repository=https://github.com/Silo-Server/silo-server
 path=contracts/settings/v1
-manifest_revision=23
+manifest_revision=24
 fixture_version=1
 
 Both files are byte-identical copies of the server's canonical settings
@@ -14,13 +14,14 @@ vendored manifest's revision, and the generated SettingKey.revision stop
 agreeing, which is the whole point of carrying the pair rather than the
 fixture alone.
 
-conformance.json commit=5d8e25b2b9b01f75b18add9ded776febece968c6
-manifest.json    commit=5d8e25b2b9b01f75b18add9ded776febece968c6
-copied from      commit=4ab2b8e95bacfcec27f266de4c5c1823ea7f8b2e
-generated with   commit=4ab2b8e95bacfcec27f266de4c5c1823ea7f8b2e (cmd/settingsgen -lang swift)
+conformance.json commit=fc9d53792b0d7a13a4500d3ab0178710b0542748
+manifest.json    commit=fc9d53792b0d7a13a4500d3ab0178710b0542748
+copied from      commit=fc9d53792b0d7a13a4500d3ab0178710b0542748 (branch retire-card-caption)
+generated with   commit=fc9d53792b0d7a13a4500d3ab0178710b0542748 (cmd/settingsgen -lang swift)
 
-5d8e25b2b merged the server's main (revision 22) into the buffering-quality
-branch, which moved playback.buffering_quality_mode to revision 23.
+Revision 24 retires the ui.card_presentation caption choice: caption stays
+required on the wire, current clients write title_metadata and ignore the
+stored member.
 
 manifest.json is vendored whole, including the maintainer `notes` the server
 strips before serving /api/v1/settings/contract. Keeping it byte-identical is
@@ -35,4 +36,4 @@ contract rather than by a hand-copied table.
 
 Android vendors the same pair at
 shared/src/commonTest/resources/settings/v1/ in silo-android; the two SOURCE
-notes are meant to stay in step. This copy is revision 23.
+notes are meant to stay in step. This copy is revision 24.

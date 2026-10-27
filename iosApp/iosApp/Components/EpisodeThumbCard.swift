@@ -37,7 +37,6 @@ struct EpisodeThumbCard: View {
 
     @Environment(\.browseLibraryId) private var browseLibraryId
     @State private var personalState = MediaCardPersonalState()
-    @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -77,29 +76,26 @@ struct EpisodeThumbCard: View {
         VStack(alignment: .leading, spacing: Self.captionSpacing) {
             thumbnailButton
 
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(displayTitle)
-                        .font(.siloPosterTitle)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(displayTitle)
+                    .font(.siloPosterTitle)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .tvCardTitleFocus(isFocused: isFocused)
+                    .frame(width: cardWidth, alignment: .leading)
+
+                if let subtitle = subtitleLine {
+                    Text(subtitle)
+                        .font(.siloPosterMetadata)
+                        .tvCardSubtitleFocus(isFocused: isFocused)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .tvCardTitleFocus(isFocused: isFocused)
                         .frame(width: cardWidth, alignment: .leading)
-
-                    if uiCustomization.cardPresentation.caption.showsMetadata,
-                       let subtitle = subtitleLine {
-                        Text(subtitle)
-                            .font(.siloPosterMetadata)
-                            .tvCardSubtitleFocus(isFocused: isFocused)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(width: cardWidth, alignment: .leading)
-                            .clipped()
-                    }
+                        .clipped()
                 }
-                .frame(width: cardWidth, alignment: .leading)
-                .tvCardCaptionFocus(isFocused: isFocused, spacing: Self.captionSpacing)
             }
+            .frame(width: cardWidth, alignment: .leading)
+            .tvCardCaptionFocus(isFocused: isFocused, spacing: Self.captionSpacing)
         }
         .frame(width: cardWidth)
         .focusSection()
@@ -138,14 +134,11 @@ struct EpisodeThumbCard: View {
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 thumbnail
-                if uiCustomization.cardPresentation.caption.showsTitle {
-                    Text(displayTitle)
-                        .font(.siloCardTitle)
-                        .foregroundStyle(Color.siloOnSurface)
-                        .lineLimit(1)
-                }
-                if uiCustomization.cardPresentation.caption.showsMetadata,
-                   let subtitle = subtitleLine {
+                Text(displayTitle)
+                    .font(.siloCardTitle)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .lineLimit(1)
+                if let subtitle = subtitleLine {
                     Text(subtitle)
                         .font(.siloCardMetadata)
                         .foregroundColor(.siloSecondaryText)

@@ -122,8 +122,6 @@ struct MediaCard: View {
     @Environment(\.browseLibraryId) private var browseLibraryId
     #endif
 
-    private var uiCustomization: UICustomizationPreferences { .shared }
-
     private var cardWidth: CGFloat { artworkSize.width }
     private var cardHeight: CGFloat { artworkSize.height }
     private var artworkSize: CGSize {
@@ -155,7 +153,6 @@ struct MediaCard: View {
             year: year,
             subtitle: subtitle,
             episodeAccessibilityLabel: episodeAccessibilityLabel,
-            captionStyle: uiCustomization.cardPresentation.caption,
             cardWidth: cardWidth,
             action: action,
             playAction: playAction,
@@ -296,12 +293,8 @@ struct MediaCard: View {
     private var cardContent: some View {
         VStack(alignment: .leading, spacing: 4) {
             posterImage
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                titleText
-            }
-            if uiCustomization.cardPresentation.caption.showsMetadata {
-                yearText
-            }
+            titleText
+            yearText
         }
     }
 
@@ -468,7 +461,6 @@ private struct FocusableMediaCard<Content: View>: View {
     /// Replaces the year on the metadata line when present.
     let subtitle: String?
     let episodeAccessibilityLabel: String?
-    let captionStyle: CardCaptionStyle
     let cardWidth: CGFloat
     let action: () -> Void
     let playAction: (() -> Void)?
@@ -509,17 +501,14 @@ private struct FocusableMediaCard<Content: View>: View {
                 standaloneFocused: standaloneFocused
             )
 
-            if captionStyle.showsTitle {
-                TVMediaCardCaption(
-                    title: title,
-                    secondLine: subtitle ?? year.map(String.init),
-                    showsMetadata: captionStyle.showsMetadata,
-                    cardWidth: cardWidth,
-                    focusedItemId: focusedItemId,
-                    itemId: itemId,
-                    standaloneFocused: standaloneFocused
-                )
-            }
+            TVMediaCardCaption(
+                title: title,
+                secondLine: subtitle ?? year.map(String.init),
+                cardWidth: cardWidth,
+                focusedItemId: focusedItemId,
+                itemId: itemId,
+                standaloneFocused: standaloneFocused
+            )
         }
         .frame(width: cardWidth)
     }
@@ -618,7 +607,6 @@ private struct TVStandaloneCardFocus<Content: View>: View {
 private struct TVMediaCardCaption: View {
     let title: String
     let secondLine: String?
-    let showsMetadata: Bool
     let cardWidth: CGFloat
     let focusedItemId: FocusState<String?>.Binding?
     let itemId: String?
@@ -638,7 +626,7 @@ private struct TVMediaCardCaption: View {
                 .tvCardTitleFocus(isFocused: isFocused)
                 .frame(width: cardWidth, alignment: .leading)
 
-            if showsMetadata, let secondLine {
+            if let secondLine {
                 Text(secondLine)
                     .font(.siloPosterMetadata)
                     .tvCardSubtitleFocus(isFocused: isFocused)

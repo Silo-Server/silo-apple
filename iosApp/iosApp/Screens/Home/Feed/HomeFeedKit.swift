@@ -274,8 +274,6 @@ private struct HomeWatchedCheck: View {
 struct HomePosterCard: View {
     let item: SectionItem
     var width: CGFloat = HomeFeedMetrics.posterWidth
-    var showsCaption: Bool = true
-    var showsMetadata: Bool = true
     /// Draws the resume rail across the bottom of the artwork.
     var showsProgress: Bool = false
     var opensResumeContext = false
@@ -319,7 +317,7 @@ struct HomePosterCard: View {
         ) {
             VStack(alignment: .leading, spacing: 7) {
                 artwork
-                if showsCaption { caption }
+                caption
             }
             .frame(width: width, alignment: .leading)
         }
@@ -402,7 +400,7 @@ struct HomePosterCard: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            if showsMetadata, let secondLine = secondLineOverride ?? HomeFeedMeta.cardSecondLine(for: item) {
+            if let secondLine = secondLineOverride ?? HomeFeedMeta.cardSecondLine(for: item) {
                 Text(secondLine)
                     .font(HomeFeedMetrics.captionMetadataFont)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.5))
@@ -436,8 +434,6 @@ struct HomePosterCard: View {
 struct HomeStillCard: View {
     let item: SectionItem
     var width: CGFloat = HomeFeedMetrics.stillWidth
-    var showsCaption: Bool = true
-    var showsMetadata: Bool = true
     var opensResumeContext = false
     var onRemoveFromContinueWatching: (() -> Void)? = nil
     var onSetWatched: ((Bool) async -> Bool)? = nil
@@ -488,7 +484,7 @@ struct HomeStillCard: View {
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 artwork
-                if showsCaption { caption }
+                caption
             }
             .frame(width: width, alignment: .leading)
         }
@@ -619,21 +615,18 @@ struct HomeStillCard: View {
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(1)
 
-            if showsMetadata {
-                // Episode code + title (or the year for movies). Space is
-                // reserved even when empty so a row mixing episodes and
-                // movies keeps one caption height.
-                Text(HomeFeedMeta.cardSecondLine(for: item) ?? "")
-                    .font(HomeFeedMetrics.captionMetadataFont)
-                    .foregroundStyle(Color.siloOnSurface.opacity(0.7))
-                    .monospacedDigit()
-                    .lineLimit(1, reservesSpace: true)
-                    .truncationMode(.tail)
-            }
+            // Episode code + title (or the year for movies). Space is
+            // reserved even when empty so a row mixing episodes and
+            // movies keeps one caption height.
+            Text(HomeFeedMeta.cardSecondLine(for: item) ?? "")
+                .font(HomeFeedMetrics.captionMetadataFont)
+                .foregroundStyle(Color.siloOnSurface.opacity(0.7))
+                .monospacedDigit()
+                .lineLimit(1, reservesSpace: true)
+                .truncationMode(.tail)
 
-            if showsMetadata,
-               (opensResumeContext && HorizontalMediaRailLayout.isPhone)
-                   || HomeFeedMeta.resumeCaption(for: item) != nil {
+            if (opensResumeContext && HorizontalMediaRailLayout.isPhone)
+                || HomeFeedMeta.resumeCaption(for: item) != nil {
                 // Keep phone resume cards the same height when only some items have
                 // a remaining-time caption, including as lazy cards enter/leave.
                 Text(HomeFeedMeta.resumeCaption(for: item) ?? "0m left")

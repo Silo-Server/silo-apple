@@ -63,7 +63,7 @@ struct TVGeneralSettingsPane: View {
                 TVSettingsSectionHeader("SYNC SOURCE")
                 if preferences.cardPresentationUsesDeviceOverride {
                     familySettingsButton
-                        .focused(detailFocus, equals: .generalCardPreset)
+                        .focused(detailFocus, equals: .generalPosterSize)
                 } else {
                     familySettingsButton
                 }
@@ -92,25 +92,7 @@ struct TVGeneralSettingsPane: View {
                 }
             }
 
-            presetRow
-
-            TVSettingsPickerRow(
-                title: "Poster Size",
-                value: preferences.cardPresentation.posterSize.title
-            ) { activePicker = .posterSize }
-            .disabled(
-                !preferences.allowsEditing
-                    || preferences.cardPresentationUsesDeviceOverride
-            )
-
-            TVSettingsPickerRow(
-                title: "Captions",
-                value: preferences.cardPresentation.caption.title
-            ) { activePicker = .caption }
-            .disabled(
-                !preferences.allowsEditing
-                    || preferences.cardPresentationUsesDeviceOverride
-            )
+            posterSizeRow
 
             if preferences.cardPresentationUsesFamilyOverride {
                 Button("Use Profile Default") {
@@ -120,7 +102,7 @@ struct TVGeneralSettingsPane: View {
                 .disabled(preferences.isSaving || !preferences.allowsEditing)
             }
 
-            TVSettingsFooter("Start with Balanced, Compact, Cinema, or Artwork Only, then fine-tune size and captions. These choices sync with other TV-family devices on this profile.")
+            TVSettingsFooter("Poster size syncs with other TV-family devices on this profile.")
 
             TVSettingsSectionHeader("TOP MENU")
 
@@ -285,16 +267,16 @@ struct TVGeneralSettingsPane: View {
     }
 
     @ViewBuilder
-    private var presetRow: some View {
+    private var posterSizeRow: some View {
         let row = TVSettingsPickerRow(
-            title: "Preset",
-            value: preferences.cardPresentation.preset?.title ?? "Custom"
-        ) { activePicker = .preset }
+            title: "Poster Size",
+            value: preferences.cardPresentation.posterSize.title
+        ) { activePicker = .posterSize }
 
         if preferences.cardPresentationUsesDeviceOverride || !preferences.allowsEditing {
             row.disabled(true)
         } else {
-            row.focused(detailFocus, equals: .generalCardPreset)
+            row.focused(detailFocus, equals: .generalPosterSize)
         }
     }
 
@@ -315,26 +297,6 @@ struct TVGeneralSettingsPane: View {
                 options: TVSettingsOptions.profileLaunch,
                 selection: $launchPreferences.behaviorID
             )
-        case .preset:
-            TVSettingsPickerSheet(
-                title: "Card Preset",
-                options: CardPresentationPreset.allCases.map {
-                    TVSettingsOption(id: $0.rawValue, label: $0.title)
-                } + (preferences.cardPresentation.preset == nil
-                    ? [TVSettingsOption(id: Self.customPresetId, label: "Custom")]
-                    : []),
-                selection: Binding(
-                    get: {
-                        preferences.cardPresentation.preset?.rawValue ?? Self.customPresetId
-                    },
-                    set: { value in
-                        guard let preset = CardPresentationPreset(rawValue: value) else { return }
-                        preferences.setCardPresentation(preset.presentation)
-                    }
-                ),
-                allowsSelection: preferences.allowsEditing,
-                disabledMessage: preferences.capabilityMessage
-            )
         case .posterSize:
             TVSettingsPickerSheet(
                 title: "Poster Size",
@@ -351,30 +313,12 @@ struct TVGeneralSettingsPane: View {
                 allowsSelection: preferences.allowsEditing,
                 disabledMessage: preferences.capabilityMessage
             )
-        case .caption:
-            TVSettingsPickerSheet(
-                title: "Card Captions",
-                options: CardCaptionStyle.allCases.map {
-                    TVSettingsOption(id: $0.rawValue, label: $0.title)
-                },
-                selection: Binding(
-                    get: { preferences.cardPresentation.caption.rawValue },
-                    set: { value in
-                        guard let style = CardCaptionStyle(rawValue: value) else { return }
-                        preferences.setCaptionStyle(style)
-                    }
-                ),
-                allowsSelection: preferences.allowsEditing,
-                disabledMessage: preferences.capabilityMessage
-            )
         }
     }
 
     private enum PickerKind: String, Identifiable {
         case profileLaunch
-        case preset
         case posterSize
-        case caption
         var id: String { rawValue }
     }
 
@@ -402,8 +346,6 @@ struct TVGeneralSettingsPane: View {
             // failed closed above.
         }
     }
-
-    private static let customPresetId = "custom"
 }
 
 private struct TVMenuCustomizationSheet: View {

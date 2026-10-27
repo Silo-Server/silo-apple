@@ -9,7 +9,6 @@ struct PhoneEpisodeCarousel: View {
     var onPlay: ((String) -> Void)? = nil
     var currentContentId: String? = nil
     var selectsCenteredEpisode = false
-    var captionStyleOverride: CardCaptionStyle? = nil
     var onSetWatched: ((EpisodeListItem, Bool) -> Void)? = nil
     var isUpdatingWatched = false
     var favoriteStates: [String: Bool] = [:]
@@ -26,7 +25,7 @@ struct PhoneEpisodeCarousel: View {
     var body: some View {
         Group {
             if isLoading, episodes.isEmpty {
-                PhoneEpisodeRailSkeleton(captionStyleOverride: captionStyleOverride)
+                PhoneEpisodeRailSkeleton()
             } else if episodes.isEmpty {
                 Text("No episodes available")
                     .font(.subheadline)
@@ -40,7 +39,6 @@ struct PhoneEpisodeCarousel: View {
                     onPlay: onPlay,
                     currentContentId: currentContentId,
                     selectsCenteredEpisode: selectsCenteredEpisode,
-                    captionStyleOverride: captionStyleOverride,
                     onSetWatched: onSetWatched,
                     isUpdatingWatched: isUpdatingWatched,
                     favoriteStates: favoriteStates,

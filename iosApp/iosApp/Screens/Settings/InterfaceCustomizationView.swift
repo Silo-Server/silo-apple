@@ -176,24 +176,9 @@ struct InterfaceCustomizationView: View {
             }
 
             Section {
-                Picker("Preset", selection: presetSelection) {
-                    ForEach(CardPresentationPreset.allCases) { preset in
-                        Text(preset.title).tag(preset.rawValue)
-                    }
-                    if preferences.cardPresentation.preset == nil {
-                        Text("Custom").tag(Self.customPresetId)
-                    }
-                }
-
                 Picker("Poster Size", selection: posterSize) {
                     ForEach(CardPosterSize.allCases) { size in
                         Text(size.title).tag(size)
-                    }
-                }
-
-                Picker("Captions", selection: captionStyle) {
-                    ForEach(CardCaptionStyle.allCases) { style in
-                        Text(style.title).tag(style)
                     }
                 }
 
@@ -206,7 +191,7 @@ struct InterfaceCustomizationView: View {
             } header: {
                 Text("Cards & Posters")
             } footer: {
-                Text("Start with Balanced, Compact, Cinema, or Artwork Only, then fine-tune size and captions. These choices sync with other \(familyLabel) devices on this profile.")
+                Text("Poster size syncs with other \(familyLabel) devices on this profile.")
             }
             .disabled(
                 !preferences.allowsEditing
@@ -364,23 +349,6 @@ struct InterfaceCustomizationView: View {
         )
     }
 
-    private var presetSelection: Binding<String> {
-        Binding(
-            get: { preferences.cardPresentation.preset?.rawValue ?? Self.customPresetId },
-            set: { rawValue in
-                guard let preset = CardPresentationPreset(rawValue: rawValue) else { return }
-                preferences.setCardPresentation(preset.presentation)
-            }
-        )
-    }
-
-    private var captionStyle: Binding<CardCaptionStyle> {
-        Binding(
-            get: { preferences.cardPresentation.caption },
-            set: { preferences.setCaptionStyle($0) }
-        )
-    }
-
     private static let candidates: [PrimaryMenuItem] = [
         .builtin(.home),
         .builtin(.movies),
@@ -390,7 +358,6 @@ struct InterfaceCustomizationView: View {
         .builtin(.forYou),
         .builtin(.calendar),
     ]
-    private static let customPresetId = "custom"
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
         MainTabLibraryAuthority(

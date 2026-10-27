@@ -8,7 +8,6 @@ struct HomeFeedRow: View {
     /// Long-press actions, forwarded to every card in the row.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
-    @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var visibleItemId: String?
     @Environment(AppRouter.self) private var router
 
@@ -93,8 +92,6 @@ struct HomeFeedRow: View {
                             HomeStillCard(
                                 item: item,
                                 width: Self.stillWidth,
-                                showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
-                                showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 opensResumeContext: isResume,
                                 onRemoveFromContinueWatching: removalAction(for: item),
                                 onSetWatched: watchedAction(for: item)
@@ -103,8 +100,6 @@ struct HomeFeedRow: View {
                             HomePosterCard(
                                 item: item,
                                 width: Self.posterWidth,
-                                showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
-                                showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                 showsProgress: isResume,
                                 opensResumeContext: isResume,
                                 aspect: isAudiobookRow ? .square : .poster,

@@ -40,9 +40,7 @@ struct TVCollectionPosterCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Self.captionSpacing) {
             posterButton
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                caption.tvCardCaptionFocus(isFocused: isFocused, spacing: Self.captionSpacing)
-            }
+            caption.tvCardCaptionFocus(isFocused: isFocused, spacing: Self.captionSpacing)
         }
         .frame(width: resolvedCardWidth)
     }
@@ -109,7 +107,7 @@ struct TVCollectionPosterCard: View {
                 .tvCardTitleFocus(isFocused: isFocused)
                 .frame(width: resolvedCardWidth, alignment: .center)
 
-            if uiCustomization.cardPresentation.caption.showsMetadata, let countText {
+            if let countText {
                 Text(countText)
                     .font(.siloPosterMetadata)
                     .tvCardSubtitleFocus(isFocused: isFocused)

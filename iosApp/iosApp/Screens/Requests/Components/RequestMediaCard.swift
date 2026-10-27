@@ -95,18 +95,14 @@ struct RequestMediaCard: View {
             // would announce an image-only "Button".
             .accessibilityLabel(accessibilityTitle)
 
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                caption
-            }
+            caption
         }
         .frame(width: width)
         #else
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 4) {
                 posterImage
-                if uiCustomization.cardPresentation.caption.showsTitle {
-                    caption
-                }
+                caption
             }
         }
         .buttonStyle(.plain)
@@ -165,7 +161,7 @@ struct RequestMediaCard: View {
 
             if showsStatusInCaption, let progress {
                 RequestStatusLabel(progress: progress)
-            } else if uiCustomization.cardPresentation.caption.showsMetadata, let year, year > 0 {
+            } else if let year, year > 0 {
                 Text(String(year))
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)

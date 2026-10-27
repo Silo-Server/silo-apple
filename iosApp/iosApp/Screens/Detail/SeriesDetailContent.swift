@@ -630,7 +630,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             .padding(.horizontal, SiloTheme.safePadding)
 
             ZStack(alignment: .topLeading) {
-                PhoneEpisodeRailSkeleton(captionStyleOverride: .titleMetadata)
+                PhoneEpisodeRailSkeleton()
                     .hidden()
                 VStack(alignment: .leading, spacing: 14) {
                     if let hierarchyError {
@@ -662,7 +662,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                             },
                             currentContentId: nextUpEpisode?.contentId,
                             selectsCenteredEpisode: true,
-                            captionStyleOverride: .titleMetadata,
                             onSetWatched: setEpisodeWatched,
                             isUpdatingWatched: isUpdatingWatched,
                             favoriteStates: episodeFavoriteStates,

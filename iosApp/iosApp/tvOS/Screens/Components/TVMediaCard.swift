@@ -54,7 +54,6 @@ struct TVMediaCard: View {
 
     @FocusState private var isFocused: Bool
     @State private var personalState = MediaCardPersonalState()
-    @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
 
     private static let captionSpacing: CGFloat = 16
@@ -86,13 +85,11 @@ struct TVMediaCard: View {
         VStack(alignment: .leading, spacing: Self.captionSpacing) {
             posterButton
                 .mediaStateContextMenu(hasPersonalActions ? stateMenu : nil)
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                caption.tvCardCaptionFocus(
-                    isFocused: isFocused,
-                    posterOverhang: focusedPosterOverhang,
-                    spacing: Self.captionSpacing
-                )
-            }
+            caption.tvCardCaptionFocus(
+                isFocused: isFocused,
+                posterOverhang: focusedPosterOverhang,
+                spacing: Self.captionSpacing
+            )
         }
         .frame(width: resolvedCardWidth)
         .mediaActionFeedback(personalState.feedback)
@@ -224,8 +221,7 @@ struct TVMediaCard: View {
                 .tvCardTitleFocus(isFocused: isFocused)
                 .frame(width: resolvedCardWidth, alignment: .center)
 
-            if uiCustomization.cardPresentation.caption.showsMetadata,
-               let secondLine = subtitle ?? year.map(String.init) {
+            if let secondLine = subtitle ?? year.map(String.init) {
                 Text(secondLine)
                     .font(.siloPosterMetadata)
                     .tvCardSubtitleFocus(isFocused: isFocused)

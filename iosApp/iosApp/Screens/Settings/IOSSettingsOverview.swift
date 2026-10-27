@@ -115,7 +115,7 @@ struct IOSSettingsOverview: View {
                             title: "Interface",
                             subtitle: "Navigation, cards, and poster presentation",
                             systemImage: "rectangle.3.group.fill",
-                            value: uiCustomization.cardPresentation.preset?.title ?? "Custom"
+                            value: uiCustomization.cardPresentation.posterSize.title
                         )
                     }
                 }
@@ -330,7 +330,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesInterface: Bool {
-        matches("interface", "appearance", "navigation", "menu", "cards", "posters", "captions", "theme music", "theme song")
+        matches("interface", "appearance", "navigation", "menu", "cards", "posters", "theme music", "theme song")
     }
 
     private var matchesGeneral: Bool {

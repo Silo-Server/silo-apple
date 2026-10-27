@@ -217,15 +217,12 @@ private struct PhonePosterCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             poster
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                Text(item.title)
-                    .font(.siloSubheadline)
-                    .foregroundStyle(Color.siloOnSurface)
-                    .lineLimit(2, reservesSpace: true)
-                    .multilineTextAlignment(.leading)
-            }
-            if uiCustomization.cardPresentation.caption.showsMetadata,
-               let caption = item.subtitle ?? item.year.map(String.init) {
+            Text(item.title)
+                .font(.siloSubheadline)
+                .foregroundStyle(Color.siloOnSurface)
+                .lineLimit(2, reservesSpace: true)
+                .multilineTextAlignment(.leading)
+            if let caption = item.subtitle ?? item.year.map(String.init) {
                 Text(caption)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)

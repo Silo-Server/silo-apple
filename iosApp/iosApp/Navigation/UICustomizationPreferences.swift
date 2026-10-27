@@ -30,75 +30,31 @@ enum CardPosterSize: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum CardCaptionStyle: String, Codable, CaseIterable, Identifiable, Sendable {
-    case titleMetadata = "title_metadata"
-    case title
-    case artwork
+/// `ui.card_presentation`. Revision 24 of the settings contract retired the
+/// caption choice, so every card shows its title and details. The schema still
+/// requires `caption`: encoding always writes `title_metadata`, and decoding
+/// ignores whatever an older client stored.
+struct CardPresentationPreference: Equatable, Sendable {
+    var posterSize: CardPosterSize
 
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .titleMetadata: return "Title & Metadata"
-        case .title: return "Title Only"
-        case .artwork: return "Artwork Only"
-        }
-    }
-
-    var showsTitle: Bool { self != .artwork }
-    var showsMetadata: Bool { self == .titleMetadata }
+    static let standard = CardPresentationPreference(posterSize: .standard)
 }
 
-struct CardPresentationPreference: Codable, Equatable, Sendable {
-    var posterSize: CardPosterSize
-    var caption: CardCaptionStyle
-
-    enum CodingKeys: String, CodingKey {
+extension CardPresentationPreference: Codable {
+    private enum CodingKeys: String, CodingKey {
         case posterSize = "poster_size"
         case caption
     }
 
-    static let standard = CardPresentationPreference(
-        posterSize: .standard,
-        caption: .titleMetadata
-    )
-
-    var preset: CardPresentationPreset? {
-        CardPresentationPreset.allCases.first(where: { $0.presentation == self })
-    }
-}
-
-/// Friendly cross-client recipes over the two contract axes. The server keeps
-/// the normalized size/caption object, so a user can start from a preset and
-/// still fine-tune either control without inventing another wire format.
-enum CardPresentationPreset: String, CaseIterable, Identifiable, Sendable {
-    case balanced
-    case compact
-    case cinema
-    case artworkOnly = "artwork_only"
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .balanced: return "Balanced"
-        case .compact: return "Compact"
-        case .cinema: return "Cinema"
-        case .artworkOnly: return "Artwork Only"
-        }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        posterSize = try container.decode(CardPosterSize.self, forKey: .posterSize)
     }
 
-    var presentation: CardPresentationPreference {
-        switch self {
-        case .balanced:
-            return .standard
-        case .compact:
-            return .init(posterSize: .compact, caption: .title)
-        case .cinema:
-            return .init(posterSize: .large, caption: .title)
-        case .artworkOnly:
-            return .init(posterSize: .large, caption: .artwork)
-        }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(posterSize, forKey: .posterSize)
+        try container.encode("title_metadata", forKey: .caption)
     }
 }
 
@@ -905,12 +861,6 @@ final class UICustomizationPreferences {
     func setPosterSize(_ value: CardPosterSize) {
         var updated = cardPresentation
         updated.posterSize = value
-        setCardPresentation(updated)
-    }
-
-    func setCaptionStyle(_ value: CardCaptionStyle) {
-        var updated = cardPresentation
-        updated.caption = value
         setCardPresentation(updated)
     }
 

@@ -168,7 +168,7 @@ struct SettingsView: View {
                     title: "Interface",
                     systemImage: "rectangle.3.group.fill",
                     color: .indigo,
-                    value: uiCustomization.cardPresentation.preset?.title ?? "Custom"
+                    value: uiCustomization.cardPresentation.posterSize.title
                 )
             }
 

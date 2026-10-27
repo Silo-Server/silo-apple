@@ -9,7 +9,6 @@ struct PhoneEpisodeRail: View {
     var onPlay: ((String) -> Void)? = nil
     var currentContentId: String? = nil
     var selectsCenteredEpisode = false
-    var captionStyleOverride: CardCaptionStyle? = nil
     var onSetWatched: ((EpisodeListItem, Bool) -> Void)? = nil
     var isUpdatingWatched = false
     var favoriteStates: [String: Bool] = [:]
@@ -39,7 +38,6 @@ struct PhoneEpisodeRail: View {
                         cardWidth: cardWidth,
                         stillHeight: stillHeight,
                         stillCornerRadius: stillCornerRadius,
-                        captionStyle: captionStyleOverride ?? uiCustomization.cardPresentation.caption,
                         onSelect: { onSelect(episode.contentId) },
                         onPlay: onPlay.map { play in
                             { play(episode.contentId) }
@@ -149,7 +147,6 @@ private struct PhoneEpisodeCard: View {
     let cardWidth: CGFloat
     let stillHeight: CGFloat
     let stillCornerRadius: CGFloat
-    let captionStyle: CardCaptionStyle
     let onSelect: () -> Void
     let onPlay: (() -> Void)?
     let onSetWatched: ((EpisodeListItem, Bool) -> Void)?
@@ -166,14 +163,12 @@ private struct PhoneEpisodeCard: View {
         VStack(alignment: .leading, spacing: 8) {
             thumbnailControls
 
-            if captionStyle.showsTitle {
-                Button(action: onSelect) {
-                    caption
-                }
-                .buttonStyle(.plain)
-                // The thumbnail exposes the same action and full episode description.
-                .accessibilityHidden(true)
+            Button(action: onSelect) {
+                caption
             }
+            .buttonStyle(.plain)
+            // The thumbnail exposes the same action and full episode description.
+            .accessibilityHidden(true)
         }
         .frame(width: cardWidth, alignment: .leading)
         .mediaActionFeedback(actionFeedback)
@@ -241,36 +236,34 @@ private struct PhoneEpisodeCard: View {
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 .multilineTextAlignment(.leading)
 
-            if captionStyle.showsMetadata {
-                if let metadataLine = EpisodeCardCaption.railMetadata(for: episode) {
-                    HStack(spacing: 6) {
-                        Text(metadataLine)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Color.siloSecondaryText)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                            .multilineTextAlignment(.leading)
-                        if showsMachineTranslationMarker {
-                            MachineTranslatedLabel(compact: true)
-                        }
-                    }
-                } else if showsMachineTranslationMarker {
-                    MachineTranslatedLabel(compact: true)
-                }
-
-                // A hidden description is left out; the title and metadata
-                // stay so the card still identifies the episode.
-                if !spoilers.hidesOverview(for: watchState),
-                   let overview = episode.overview, !overview.isEmpty {
-                    let description = Text(overview)
-                        .font(.caption)
+            if let metadataLine = EpisodeCardCaption.railMetadata(for: episode) {
+                HStack(spacing: 6) {
+                    Text(metadataLine)
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(Color.siloSecondaryText)
-                        .lineSpacing(2)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                         .multilineTextAlignment(.leading)
-                    if dynamicTypeSize.isAccessibilitySize {
-                        description
-                    } else {
-                        description.lineLimit(3, reservesSpace: true)
+                    if showsMachineTranslationMarker {
+                        MachineTranslatedLabel(compact: true)
                     }
+                }
+            } else if showsMachineTranslationMarker {
+                MachineTranslatedLabel(compact: true)
+            }
+
+            // A hidden description is left out; the title and metadata
+            // stay so the card still identifies the episode.
+            if !spoilers.hidesOverview(for: watchState),
+               let overview = episode.overview, !overview.isEmpty {
+                let description = Text(overview)
+                    .font(.caption)
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .lineSpacing(2)
+                    .multilineTextAlignment(.leading)
+                if dynamicTypeSize.isAccessibilitySize {
+                    description
+                } else {
+                    description.lineLimit(3, reservesSpace: true)
                 }
             }
         }

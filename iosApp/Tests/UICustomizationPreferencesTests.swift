@@ -3,25 +3,6 @@ import XCTest
 
 @MainActor
 final class UICustomizationPreferencesTests: XCTestCase {
-    func testNamedPresetsMatchTheCrossClientRecipes() {
-        XCTAssertEqual(
-            CardPresentationPreset.balanced.presentation,
-            .init(posterSize: .standard, caption: .titleMetadata)
-        )
-        XCTAssertEqual(
-            CardPresentationPreset.compact.presentation,
-            .init(posterSize: .compact, caption: .title)
-        )
-        XCTAssertEqual(
-            CardPresentationPreset.cinema.presentation,
-            .init(posterSize: .large, caption: .title)
-        )
-        XCTAssertEqual(
-            CardPresentationPreset.artworkOnly.presentation,
-            .init(posterSize: .large, caption: .artwork)
-        )
-    }
-
     func testPosterSizeAdjustsTVGridDensityAndArtworkScale() {
         XCTAssertEqual(
             AdaptiveColumns.tvPosterCount(standardCount: 6, posterSize: .compact),
@@ -81,15 +62,6 @@ final class UICustomizationPreferencesTests: XCTestCase {
             .none,
             "a pushed route must not re-arm hidden root content"
         )
-    }
-
-    func testCaptionStylesGateTitleAndMetadataIndependently() {
-        XCTAssertTrue(CardCaptionStyle.titleMetadata.showsTitle)
-        XCTAssertTrue(CardCaptionStyle.titleMetadata.showsMetadata)
-        XCTAssertTrue(CardCaptionStyle.title.showsTitle)
-        XCTAssertFalse(CardCaptionStyle.title.showsMetadata)
-        XCTAssertFalse(CardCaptionStyle.artwork.showsTitle)
-        XCTAssertFalse(CardCaptionStyle.artwork.showsMetadata)
     }
 
     func testCardAccessibilityLabelsRetainHiddenIdentityAndStatus() {
@@ -190,10 +162,19 @@ final class UICustomizationPreferencesTests: XCTestCase {
     }
 
     func testCustomizationModelsUseTheExactSettingsContractShape() throws {
-        let cards = CardPresentationPreference(posterSize: .large, caption: .artwork)
+        // caption is retired but still required: always written as
+        // title_metadata, and a stored value from an older client is ignored.
+        let cards = CardPresentationPreference(posterSize: .large)
         XCTAssertEqual(
             String(data: try SettingsWireCoding.makeEncoder().encode(cards), encoding: .utf8),
-            #"{"caption":"artwork","poster_size":"large"}"#
+            #"{"caption":"title_metadata","poster_size":"large"}"#
+        )
+        XCTAssertEqual(
+            try SettingsWireCoding.makeDecoder().decode(
+                CardPresentationPreference.self,
+                from: Data(#"{"poster_size":"large","caption":"artwork"}"#.utf8)
+            ),
+            cards
         )
 
         let menu = PrimaryMenuPreference(items: [
@@ -1233,8 +1214,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
             initialCapabilityState: .supported
         )
 
-        preferences.setCardPresentation(CardPresentationPreset.compact.presentation)
-        preferences.setCardPresentation(CardPresentationPreset.artworkOnly.presentation)
+        preferences.setCardPresentation(CardPresentationPreference(posterSize: .compact))
+        preferences.setCardPresentation(CardPresentationPreference(posterSize: .large))
         XCTAssertTrue(preferences.isSaving)
 
         let release = Task {
@@ -1255,8 +1236,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(
             presentations,
             [
-                CardPresentationPreset.compact.presentation,
-                CardPresentationPreset.artworkOnly.presentation,
+                CardPresentationPreference(posterSize: .compact),
+                CardPresentationPreference(posterSize: .large),
             ]
         )
         XCTAssertFalse(preferences.isSaving, "saving ends only after the queue drains")
@@ -1285,7 +1266,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             requestIdentity: { testRequestIdentity(for: cacheKey) },
             initialCapabilityState: .supported
         )
-        let desired = CardPresentationPreset.artworkOnly.presentation
+        let desired = CardPresentationPreference(posterSize: .large)
 
         preferences.setCardPresentation(desired)
         await transport.waitForStarted(.put, count: 1)
@@ -2759,7 +2740,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             requestIdentity: { testRequestIdentity(for: cacheKey) },
             initialCapabilityState: .supported
         )
-        let desired = CardPresentationPreset.artworkOnly.presentation
+        let desired = CardPresentationPreference(posterSize: .large)
 
         offline.setCardPresentation(desired)
         await transport.waitForStarted(.put, count: 1)
@@ -2827,7 +2808,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             initialCapabilityState: .supported,
             writeRetryPolicy: .init(maximumAutomaticRetries: 2, base: .milliseconds(5), maximum: .milliseconds(5))
         )
-        let desired = CardPresentationPreset.artworkOnly.presentation
+        let desired = CardPresentationPreference(posterSize: .large)
 
         preferences.setCardPresentation(desired)
         await transport.waitForStarted(.put, count: 3)
@@ -2907,7 +2888,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             initialCapabilityState: .supported,
             writeRetryPolicy: .init(maximumAutomaticRetries: 0)
         )
-        let desired = CardPresentationPreset.artworkOnly.presentation
+        let desired = CardPresentationPreference(posterSize: .large)
 
         preferences.setCardPresentation(desired)
         await transport.waitForStarted(.put, count: 1)
@@ -2955,7 +2936,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             effectiveResponse: FakeUICustomizationTransport.emptyResponse
         )
         await transport.fail(.puts)
-        let desired = CardPresentationPreset.artworkOnly.presentation
+        let desired = CardPresentationPreference(posterSize: .large)
         let authored = UICustomizationPreferences(
             defaults: defaults,
             transport: transport,
@@ -3109,7 +3090,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
                 try .init(
                     .uiCardPresentation,
                     .profileClient,
-                    encoding: CardPresentationPreset.compact.presentation
+                    encoding: CardPresentationPreference(posterSize: .compact)
                 ),
             ],
             persistsPuts: false
@@ -3124,7 +3105,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
 
         await preferences.refresh()
         XCTAssertTrue(preferences.cardPresentationUsesFamilyOverride)
-        XCTAssertEqual(preferences.cardPresentation, CardPresentationPreset.compact.presentation)
+        XCTAssertEqual(preferences.cardPresentation, CardPresentationPreference(posterSize: .compact))
 
         let mark = await transport.steps().count
         preferences.resetCardPresentationToInherited()
@@ -3175,8 +3156,8 @@ final class UICustomizationPreferencesTests: XCTestCase {
             initialCapabilityState: .supported
         )
 
-        preferences.setCardPresentation(CardPresentationPreset.compact.presentation)
-        preferences.setCardPresentation(CardPresentationPreset.artworkOnly.presentation)
+        preferences.setCardPresentation(CardPresentationPreference(posterSize: .compact))
+        preferences.setCardPresentation(CardPresentationPreference(posterSize: .large))
         await transport.waitForStarted(.put, count: 1)
 
         identity.value = HTTPRequestIdentity(
@@ -3221,7 +3202,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
                 ),
                 EffectiveSettingValue(
                     key: SettingKey.uiCardPresentation.rawValue,
-                    value: try SettingJSONValue.encoding(CardPresentationPreset.compact.presentation),
+                    value: try SettingJSONValue.encoding(CardPresentationPreference(posterSize: .compact)),
                     source: .scope(.profileDevice),
                     scope: .profileDevice,
                     profileId: "profile",
@@ -3421,7 +3402,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
                 EffectiveSettingValue(
                     key: SettingKey.uiCardPresentation.rawValue,
                     value: try SettingJSONValue.encoding(
-                        CardPresentationPreset.compact.presentation
+                        CardPresentationPreference(posterSize: .compact)
                     ),
                     source: .scope(.profileDevice),
                     scope: .profileDevice,
@@ -3478,7 +3459,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         XCTAssertEqual(preferences.primaryMenu, updatedMenu)
         XCTAssertFalse(preferences.primaryMenuUsesDeviceOverride)
         XCTAssertEqual(preferences.shortcuts, updatedShortcuts)
-        XCTAssertEqual(preferences.cardPresentation, CardPresentationPreset.compact.presentation)
+        XCTAssertEqual(preferences.cardPresentation, CardPresentationPreference(posterSize: .compact))
         XCTAssertTrue(
             preferences.cardPresentationUsesDeviceOverride,
             "a failed decode must retain the matching prior source with its prior value"
@@ -3506,7 +3487,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
                 EffectiveSettingValue(
                     key: SettingKey.uiCardPresentation.rawValue,
                     value: try SettingJSONValue.encoding(
-                        CardPresentationPreset.artworkOnly.presentation
+                        CardPresentationPreference(posterSize: .large)
                     ),
                     source: .scope(.profileClient),
                     scope: .profileClient,
@@ -3525,7 +3506,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         XCTAssertEqual(
             preferences.cardPresentation,
-            CardPresentationPreset.artworkOnly.presentation
+            CardPresentationPreference(posterSize: .large)
         )
         XCTAssertFalse(preferences.cardPresentationUsesDeviceOverride)
         XCTAssertNotNil(preferences.syncErrorMessage)
@@ -3539,7 +3520,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
         )
         XCTAssertEqual(cached.primaryMenu, updatedMenu)
         XCTAssertEqual(cached.shortcuts, updatedShortcuts)
-        XCTAssertEqual(cached.cardPresentation, CardPresentationPreset.artworkOnly.presentation)
+        XCTAssertEqual(cached.cardPresentation, CardPresentationPreference(posterSize: .large))
         XCTAssertFalse(cached.primaryMenuUsesDeviceOverride)
         XCTAssertFalse(cached.cardPresentationUsesDeviceOverride)
     }
@@ -3708,7 +3689,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             .builtin(.calendar), // Invalid for nav.shortcuts and must be discarded.
             .section(libraryId: 7, sectionId: "recently-added", label: "Recently Added"),
         ])
-        let cards = CardPresentationPreference(posterSize: .large, caption: .artwork)
+        let cards = CardPresentationPreference(posterSize: .large)
         let response = EffectiveSettingValuesResponse(
             settings: [
                 try effective(.navPrimaryMenu, menu, scope: .profileClient),
@@ -3786,7 +3767,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             try .init(
                 .uiCardPresentation,
                 .profileDevice,
-                encoding: CardPresentationPreset.compact.presentation
+                encoding: CardPresentationPreference(posterSize: .compact)
             ),
         ]
     }
