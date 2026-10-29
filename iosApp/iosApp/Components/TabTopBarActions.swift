@@ -154,11 +154,13 @@ struct ProfileAvatarMenu: View {
                 }
             )
             .presentationCompactAdaptation(.popover)
-        }
-        .onChange(of: isPanelPresented) { _, isPresented in
-            guard !isPresented, let action = pendingAction else { return }
-            pendingAction = nil
-            action()
+            // The panel disappears once the popover has finished closing;
+            // isPanelPresented turns false when it starts to.
+            .onDisappear {
+                guard let action = pendingAction else { return }
+                pendingAction = nil
+                action()
+            }
         }
         .accessibilityLabel("Profile menu")
         #else
