@@ -608,6 +608,18 @@ struct HomeStillCard: View {
         )
     }
 
+    /// Keep iOS resume cards the same height when only some items have a
+    /// remaining-time caption, including as lazy cards enter/leave. iPad rails
+    /// centre their cards, so a shorter card sits lower. macOS rails align to
+    /// the top and need no placeholder line.
+    private var reservesResumeCaption: Bool {
+        #if os(iOS)
+        opensResumeContext
+        #else
+        false
+        #endif
+    }
+
     private var caption: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(HomeFeedMeta.cardTitle(for: item))
@@ -625,10 +637,7 @@ struct HomeStillCard: View {
                 .lineLimit(1, reservesSpace: true)
                 .truncationMode(.tail)
 
-            if opensResumeContext || HomeFeedMeta.resumeCaption(for: item) != nil {
-                // Keep resume cards the same height when only some items have a
-                // remaining-time caption, including as lazy cards enter/leave.
-                // iPad rails centre their cards, so a shorter card sits lower.
+            if reservesResumeCaption || HomeFeedMeta.resumeCaption(for: item) != nil {
                 Text(HomeFeedMeta.resumeCaption(for: item) ?? "0m left")
                     .font(HomeFeedMetrics.captionMetadataFont)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.55))
