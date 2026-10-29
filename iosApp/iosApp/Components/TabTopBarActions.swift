@@ -304,6 +304,19 @@ struct ProfileMenuPanel: View {
     let choose: (Row) -> Void
 
     var body: some View {
+        // Scrolls only when the panel is taller than the room below the
+        // button, as at the largest accessibility text sizes.
+        ViewThatFits(in: .vertical) {
+            content
+            ScrollView {
+                content
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+        .frame(width: 290)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
 
@@ -330,7 +343,6 @@ struct ProfileMenuPanel: View {
             }
         }
         .padding(.vertical, 6)
-        .frame(width: 290)
     }
 
     private var header: some View {
