@@ -104,6 +104,10 @@ struct CompanionPairingCardModifier: ViewModifier {
                         dismissed.insert(CompanionPairingDismissal.key(id: tv.id, sid: tv.sid))
                         active = nil
                     }, offerWithdrawn: offerWithdrawn)
+                    // One card per offer: closing re-latches the next TV in the
+                    // same update, so without a new identity SwiftUI keeps the
+                    // closed card's state (off screen, tap-swallowing backdrop).
+                    .id(CompanionPairingDismissal.key(id: tv.id, sid: tv.sid))
                 }
             }
     }
