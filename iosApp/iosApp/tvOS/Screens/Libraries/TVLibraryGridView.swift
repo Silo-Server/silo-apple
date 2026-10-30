@@ -13,6 +13,8 @@ struct TVLibraryGridView: View {
     let libraryType: String
     let mediaScope: LibraryVideoScope?
     let initialFilter: CatalogFilterState
+    /// The library reports `box_sets_enabled`; browse it with `group=box_set`.
+    let groupsBoxSets: Bool
     let subtitle: String?
     /// Pushed full-screen entries render the big library header; Skyline
     /// pill embeds hide it — the top bar + pill row already say where the
@@ -50,6 +52,7 @@ struct TVLibraryGridView: View {
         libraryType: String,
         mediaScope: LibraryVideoScope? = nil,
         initialFilter: CatalogFilterState = .none,
+        groupsBoxSets: Bool = false,
         subtitle: String? = nil,
         showsHeader: Bool = true,
         showsAlphabetRail: Bool = true,
@@ -63,6 +66,7 @@ struct TVLibraryGridView: View {
         self.libraryType = libraryType
         self.mediaScope = mediaScope
         self.initialFilter = initialFilter
+        self.groupsBoxSets = groupsBoxSets
         self.subtitle = subtitle
         self.showsHeader = showsHeader
         self.showsAlphabetRail = showsAlphabetRail
@@ -79,7 +83,8 @@ struct TVLibraryGridView: View {
                 libraryId: libraryId,
                 libraryType: libraryType,
                 mediaScope: mediaScope,
-                initialFilter: initialFilter
+                initialFilter: initialFilter,
+                groupsBoxSets: groupsBoxSets
             )
         }
     }

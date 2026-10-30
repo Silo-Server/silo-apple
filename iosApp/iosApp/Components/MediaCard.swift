@@ -114,6 +114,13 @@ struct MediaCard: View {
     /// when one title wraps and has no empty second line when none does.
     /// Nil reserves two lines, for rows that can't be grouped.
     var rowTitles: [String]? = nil
+    /// Draws the card as this movie box set: its label and film count over
+    /// the poster. Pass `progress` for its watched share and no `contentId`,
+    /// so a tap runs `action` and the card has no title menu.
+    var boxSet: CatalogBoxSet? = nil
+    /// Outlines the poster and labels it THIS FILM: the movie whose page
+    /// shows this card in its box set row.
+    var marksCurrentFilm = false
 
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -327,6 +334,11 @@ struct MediaCard: View {
                     .frame(width: cardWidth, height: cardHeight)
             }
 
+            if let boxSet {
+                BoxSetCardBadges(boxSet: boxSet)
+                    .frame(width: cardWidth, height: cardHeight)
+            }
+
             if let progress, progress > 0 {
                 ProgressBar(value: progress)
             }
@@ -357,17 +369,29 @@ struct MediaCard: View {
         // One mask for every layer, so overlays and the progress bar stay
         // inside the rounded corners.
         .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+        .overlay {
+            if marksCurrentFilm {
+                BoxSetCurrentFilmMarker()
+            }
+        }
+        .background(alignment: .top) {
+            if boxSet != nil {
+                BoxSetCardSleeves(width: cardWidth)
+            }
+        }
     }
 
     private var isPlayed: Bool { personalState.isPlayed(userState) }
 
     private var accessibilityDescription: String {
-        mediaCardAccessibilityLabel(
+        if let boxSet { return boxSet.accessibilityLabel }
+        let label = mediaCardAccessibilityLabel(
             title: title,
             episodeLabel: episodeAccessibilityLabel,
             year: year,
             isWatched: isPlayed
         )
+        return marksCurrentFilm ? label + ", This film" : label
     }
 
     @ViewBuilder

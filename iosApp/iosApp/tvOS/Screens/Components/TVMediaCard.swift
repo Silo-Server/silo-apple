@@ -46,6 +46,14 @@ struct TVMediaCard: View {
     /// Catalog identity for the long-press favorite/watchlist menu.
     /// `nil` (or a nil `userState`) leaves the card without a menu.
     var contentId: String? = nil
+    /// Draws the card as this movie box set: its label, film count and
+    /// watched progress over the poster. Leave `contentId` nil so the card
+    /// has no title menu.
+    var boxSet: CatalogBoxSet? = nil
+    /// Outlines the poster and labels it THIS FILM: the movie whose page
+    /// shows this card in its box set row. The focus ring replaces the
+    /// outline while focused.
+    var marksCurrentFilm = false
 
     enum FocusTreatment {
         case nativeCard
@@ -85,6 +93,16 @@ struct TVMediaCard: View {
         VStack(alignment: .leading, spacing: Self.captionSpacing) {
             posterButton
                 .mediaStateContextMenu(hasPersonalActions ? stateMenu : nil)
+                // Outside the button, which clips its label to the poster;
+                // scaled with the focus lift so they stay above the poster.
+                .background {
+                    if boxSet != nil {
+                        BoxSetCardSleeves(width: resolvedCardWidth)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .scaleEffect(isFocused ? 1 + 2 * focusedPosterOverhang / cardHeight : 1)
+                            .animation(.easeOut(duration: 0.2), value: isFocused)
+                    }
+                }
             caption.tvCardCaptionFocus(
                 isFocused: isFocused,
                 posterOverhang: focusedPosterOverhang,
@@ -201,9 +219,25 @@ struct TVMediaCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
+            if let boxSet {
+                ZStack(alignment: .bottom) {
+                    BoxSetCardBadges(boxSet: boxSet)
+                    if let progress = boxSet.watchedProgress {
+                        ProgressBar(value: progress)
+                    }
+                }
+                .frame(width: resolvedCardWidth, height: cardHeight)
+                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+            }
+
             if isPlayed {
                 watchedBadge
                     .padding(12)
+            }
+
+            if marksCurrentFilm {
+                BoxSetCurrentFilmMarker(showsOutline: !isFocused)
+                    .frame(width: resolvedCardWidth, height: cardHeight)
             }
         }
         .frame(width: resolvedCardWidth, height: cardHeight)
@@ -248,6 +282,7 @@ struct TVMediaCard: View {
     }
 
     private var accessibilityDescription: String {
+        if let boxSet { return boxSet.accessibilityLabel }
         let secondLine = subtitle ?? year.map(String.init)
         var components = [title]
         if let secondLine {
@@ -255,6 +290,9 @@ struct TVMediaCard: View {
         }
         if isPlayed {
             components.append("Watched")
+        }
+        if marksCurrentFilm {
+            components.append("This film")
         }
         return components.joined(separator: ", ")
     }

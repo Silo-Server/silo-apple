@@ -24,6 +24,9 @@ actor SiloAPI {
     private let imageSizeCapability: ImageSizeCapability?
     /// Test seam for row sizes; production reads `SectionItemLimitSupport.shared`.
     private let sectionItemLimitSupport: SectionItemLimitSupport?
+    /// Whether the server at `serverUrl` advertised `box_sets`, so movie
+    /// pages do not reread the search capabilities on every visit.
+    private var boxSetSupport: (serverUrl: String, supported: Bool)?
 
     init(
         http: HTTPClient = .shared,
@@ -400,6 +403,60 @@ actor SiloAPI {
         let people = try await apiV2Client.searchPeople(query: query, limit: limit, mediaScope: mediaScope, auth: auth)
         guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
         return try people.map { try Person(catalog: $0) }
+    }
+
+    /// A movie box set with its movies in `libraryId`, in release order.
+    func boxSet(id: String, libraryId: Int) async throws -> CatalogBoxSetDetail {
+        let auth = try await detailReadAuth()
+        let detail = try await apiV2Client.catalogBoxSet(
+            id: id, libraryId: String(libraryId),
+            artwork: await artworkQuery(.detail), auth: auth
+        )
+        try await requireCurrentOwner(auth)
+        return detail
+    }
+
+    /// The box set the movie `contentId` belongs to for the acting profile,
+    /// opened from `libraryId` when known. Nil when it is in none the viewer
+    /// sees, and without a request when the server does not advertise
+    /// `box_sets`.
+    func itemBoxSet(contentId: String, libraryId: Int?) async throws -> CatalogBoxSetDetail? {
+        guard try await serverHasBoxSets() else { return nil }
+        let auth = try await detailReadAuth()
+        let detail: CatalogBoxSetDetail?
+        do {
+            detail = try await apiV2Client.catalogItemBoxSet(
+                id: contentId, libraryId: libraryId.map(String.init),
+                artwork: await artworkQuery(.detail), auth: auth
+            )
+        } catch let error as APIv2Error {
+            // A server with box sets from before this read.
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404): detail = nil
+            case .problem(let problem) where problem.status == 404: detail = nil
+            default: throw error
+            }
+        }
+        try await requireCurrentOwner(auth)
+        return detail
+    }
+
+    /// The `box_sets` search capability, kept per server once read. A failed
+    /// read is not kept, so the next movie page asks again.
+    private func serverHasBoxSets() async throws -> Bool {
+        let serverUrl = await tokenStore.getServerUrl()
+        if let boxSetSupport, boxSetSupport.serverUrl == serverUrl { return boxSetSupport.supported }
+        let supported = try await catalogSearchFeatures().boxSets
+        boxSetSupport = (serverUrl, supported)
+        return supported
+    }
+
+    /// Box sets matching `query` for the acting profile, best match first.
+    func searchBoxSets(query: String, limit: Int) async throws -> [CatalogBoxSet] {
+        let auth = try await detailReadAuth()
+        let boxSets = try await apiV2Client.searchCatalogBoxSets(query: query, limit: limit, auth: auth)
+        guard await isCurrentOwner(auth) else { throw HTTPError.requestIdentityChanged }
+        return boxSets
     }
 
     /// Queue a provider refresh of the person. `non_retryable`: one dispatch,

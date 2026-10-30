@@ -182,6 +182,9 @@ final class AppRouter {
         /// Set when the card opens on a row's full page (Explore all) rather
         /// than a catalog item; `contentId` is then only a page identity.
         let section: SectionCatalogTarget?
+        /// Set when the card opens on a movie box set; `contentId` is then
+        /// only a page identity.
+        let boxSet: BoxSetRoot?
         /// Presented as large as the window instead of as a page sheet: a
         /// window-sized sheet on iPad, a full-screen cover on iPhone, where
         /// iOS 27.1 caps sheets well short of the iPhone Duo's open display.
@@ -194,12 +197,18 @@ final class AppRouter {
             let tmdbId: Int
         }
 
+        struct BoxSetRoot: Equatable {
+            let id: String
+            let libraryId: Int
+        }
+
         init(contentId: String, libraryId: Int? = nil, resumeContext: SeriesDetailContext? = nil) {
             self.contentId = contentId
             self.libraryId = libraryId
             self.resumeContext = resumeContext
             self.request = nil
             self.section = nil
+            self.boxSet = nil
         }
 
         init(request: RequestRoot) {
@@ -208,6 +217,7 @@ final class AppRouter {
             self.resumeContext = nil
             self.request = request
             self.section = nil
+            self.boxSet = nil
         }
 
         init(section: SectionCatalogTarget) {
@@ -216,6 +226,16 @@ final class AppRouter {
             self.resumeContext = nil
             self.request = nil
             self.section = section
+            self.boxSet = nil
+        }
+
+        init(boxSet: BoxSetRoot) {
+            self.contentId = "box_set:\(boxSet.libraryId):\(boxSet.id)"
+            self.libraryId = boxSet.libraryId
+            self.resumeContext = nil
+            self.request = nil
+            self.section = nil
+            self.boxSet = boxSet
         }
     }
 
@@ -244,6 +264,8 @@ final class AppRouter {
             .requestDetail(mediaType: request.mediaType, tmdbId: request.tmdbId)
         } else if let section = presentedItemDetail.section {
             .sectionCatalog(section)
+        } else if let boxSet = presentedItemDetail.boxSet {
+            .boxSet(id: boxSet.id, libraryId: boxSet.libraryId)
         } else {
             .itemDetail(contentId: presentedItemDetail.contentId, libraryId: presentedItemDetail.libraryId)
         }
@@ -737,6 +759,18 @@ final class AppRouter {
             if presentedItemDetail == nil {
                 itemDetailPath = NavigationPath()
                 openItemDetail(ItemDetailPresentation(section: target))
+            } else {
+                appendToItemDetail(route)
+            }
+            return
+        }
+        // A box set opens in the title card too; its movies then push inside
+        // the card, so Back returns to the box set.
+        if case .boxSet(let id, let libraryId) = route {
+            recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "present")
+            if presentedItemDetail == nil {
+                itemDetailPath = NavigationPath()
+                openItemDetail(ItemDetailPresentation(boxSet: .init(id: id, libraryId: libraryId)))
             } else {
                 appendToItemDetail(route)
             }
@@ -1321,6 +1355,8 @@ private extension Route {
             return "personDetail"
         case .sectionCatalog:
             return "sectionCatalog"
+        case .boxSet:
+            return "boxSet"
         case .player:
             return "player"
         case .playerWithFile:

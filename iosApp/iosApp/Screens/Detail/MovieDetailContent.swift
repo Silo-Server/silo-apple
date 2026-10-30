@@ -1,13 +1,15 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Phone movie detail: artwork hero, then cast, trailers, Details and More
-/// Like This. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
+/// Phone movie detail: artwork hero, then cast, trailers and extras, the
+/// box set, More Like This and Details. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
 struct MovieDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The box set the movie belongs to; nil draws no row.
+    let boxSet: CatalogBoxSetDetail?
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
@@ -290,10 +292,14 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
             trailersSection
 
-            detailsSection
-                .padding(.horizontal, SiloTheme.safePadding)
+            if let boxSet {
+                PhoneBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
+            }
 
             similarSection
+
+            detailsSection
+                .padding(.horizontal, SiloTheme.safePadding)
         }
     }
 

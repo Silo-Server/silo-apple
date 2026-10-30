@@ -1435,6 +1435,8 @@ struct TVMainTabView: View {
             PersonDetailView(personId: personId)
         case .sectionCatalog(let target):
             SectionCatalogView(target: target)
+        case .boxSet(let id, let libraryId):
+            BoxSetDetailView(id: id, libraryId: libraryId)
         case .player(let contentId, let startFromBeginning, let resumePosition, let prefersLastUsedVersion, let libraryId):
             PlayerView(
                 contentId: contentId,

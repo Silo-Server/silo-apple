@@ -43,6 +43,9 @@ struct APIv2CatalogSearchCapabilities: Decodable {
     /// episodes) on the query source, and people search accepts it as
     /// `media_scope`. Older servers omit it and ignore or reject the value.
     let videoWithEpisodesScope: Bool?
+    /// Searching and opening box sets is supported (`searchCatalogBoxSets`,
+    /// `getCatalogBoxSet`). Older servers omit it.
+    let boxSets: Bool?
 
     var isAvailable: Bool { allowed && state == "available" }
 }
@@ -55,16 +58,21 @@ struct CatalogSearchFeatures: Equatable {
     var peopleMediaScope = false
     /// Search accepts the `video_with_episodes` media scope.
     var videoWithEpisodesScope = false
+    /// The server searches box sets. It lists only those of libraries with
+    /// box sets in search, so this alone decides whether to ask.
+    var boxSets = false
 
-    init(peopleMediaScope: Bool = false, videoWithEpisodesScope: Bool = false) {
+    init(peopleMediaScope: Bool = false, videoWithEpisodesScope: Bool = false, boxSets: Bool = false) {
         self.peopleMediaScope = peopleMediaScope
         self.videoWithEpisodesScope = videoWithEpisodesScope
+        self.boxSets = boxSets
     }
 
     init(_ capabilities: APIv2CatalogSearchCapabilities) {
         self.init(
             peopleMediaScope: capabilities.peopleMediaScope == true,
-            videoWithEpisodesScope: capabilities.videoWithEpisodesScope == true
+            videoWithEpisodesScope: capabilities.videoWithEpisodesScope == true,
+            boxSets: capabilities.boxSets == true
         )
     }
 }

@@ -395,6 +395,15 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// `PhoneDetailHeroLayout.usesSplitLayout`). `belowOverview` is not drawn
     /// in any part; the page places it in the content pane.
     var pane: PhoneDetailHeroPane? = nil
+    /// Scales the compact (iPhone) artwork's height. A page whose content
+    /// matters more than its art, such as a box set's movies, passes less
+    /// than 1 so that content starts in the first screen.
+    var compactArtworkHeightFactor: CGFloat = 1
+    /// Sizes the regular-width (iPad and Mac) hero to its text and actions
+    /// rather than the fixed backdrop height, with the backdrop filling
+    /// whatever height that is. For the same pages as
+    /// `compactArtworkHeightFactor`.
+    var fitsRegularHeroToContent = false
     @ViewBuilder let actions: () -> Actions
     @ViewBuilder let belowOverview: () -> BelowOverview
 
@@ -518,7 +527,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private var compactArtworkHeight: CGFloat {
         let width = availableWidth > 0 ? availableWidth : 390
-        return min(max(width * 1.18, 430), 540)
+        return min(max(width * 1.18, 430), 540) * compactArtworkHeightFactor
     }
 
     private var compactLogoHeight: CGFloat {
@@ -558,50 +567,65 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     // MARK: - Expanded iPad layout
 
+    @ViewBuilder
     private var expandedHeader: some View {
-        ZStack(alignment: .topLeading) {
-            expandedArtwork
-
-            VStack(alignment: .leading, spacing: 15) {
-                if let eyebrow, !eyebrow.isEmpty {
-                    Text(eyebrow.uppercased())
-                        .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
-                        .tracking(1.2)
-                        .foregroundStyle(Color.siloOnSurface.opacity(0.7))
-                }
-
-                titleBlock(textAlignment: .leading, logoHeight: 122)
-                    .frame(maxWidth: 430, alignment: .leading)
-
-                metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
-                overviewBlock
-                creditBlock(alignment: .leading)
-                belowOverview()
-
-                actions()
-                    .padding(.top, 2)
+        if fitsRegularHeroToContent {
+            expandedText
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(alignment: .topLeading) { expandedArtwork(fillsHeight: true) }
+                .clipped()
+        } else {
+            ZStack(alignment: .topLeading) {
+                expandedArtwork(fillsHeight: false)
+                expandedText
             }
-            .frame(maxWidth: expandedEditorialWidth, alignment: .leading)
-            .padding(.leading, expandedHorizontalPadding)
-            .padding(.top, 88)
-            .padding(.bottom, 38)
+            .frame(maxWidth: .infinity, minHeight: 550, alignment: .topLeading)
+            .clipped()
         }
-        .frame(maxWidth: .infinity, minHeight: 550, alignment: .topLeading)
-        .clipped()
     }
 
-    private var expandedArtwork: some View {
+    private var expandedText: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            if let eyebrow, !eyebrow.isEmpty {
+                Text(eyebrow.uppercased())
+                    .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
+                    .tracking(1.2)
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.7))
+            }
+
+            titleBlock(textAlignment: .leading, logoHeight: 122)
+                .frame(maxWidth: 430, alignment: .leading)
+
+            metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
+            overviewBlock
+            creditBlock(alignment: .leading)
+            belowOverview()
+
+            actions()
+                .padding(.top, 2)
+        }
+        .frame(maxWidth: expandedEditorialWidth, alignment: .leading)
+        .padding(.leading, expandedHorizontalPadding)
+        .padding(.top, 88)
+        .padding(.bottom, 38)
+    }
+
+    /// `fillsHeight` stretches the artwork to the hero's full height; otherwise
+    /// it keeps a 16:9 frame inside the fixed 550pt hero.
+    private func expandedArtwork(fillsHeight: Bool) -> some View {
         GeometryReader { geometry in
             artwork
                 .frame(
                     width: geometry.size.width * 0.66,
-                    height: min(550, geometry.size.width * 0.66 * 9 / 16)
+                    height: fillsHeight
+                        ? geometry.size.height
+                        : min(550, geometry.size.width * 0.66 * 9 / 16)
                 )
                 .clipped()
                 .mask(expandedArtworkMask)
                 .frame(
                     width: geometry.size.width,
-                    height: 550,
+                    height: fillsHeight ? geometry.size.height : 550,
                     alignment: .topTrailing
                 )
         }
@@ -645,38 +669,48 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     /// Desktop composition: the backdrop runs the full width behind the
     /// header, with the poster on the leading side and the title, facts,
     /// synopsis, and actions in a column beside it.
+    @ViewBuilder
     private var macHeader: some View {
-        ZStack(alignment: .topLeading) {
-            macBackdrop
-
-            HStack(alignment: .top, spacing: SiloTheme.largePadding) {
-                macPoster
-
-                VStack(alignment: .leading, spacing: 15) {
-                    if let eyebrow, !eyebrow.isEmpty {
-                        Text(eyebrow.uppercased())
-                            .font(.siloCaption.weight(.bold))
-                            .tracking(SiloTheme.macSidebarHeadingTracking)
-                            .foregroundStyle(Color.siloOnSurface.opacity(0.7))
-                    }
-
-                    macTitle
-                    metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
-                    overviewBlock
-                    creditBlock(alignment: .leading)
-                    belowOverview()
-
-                    actions()
-                        .padding(.top, 2)
-                }
-                .frame(maxWidth: SiloTheme.macDetailTextWidth, alignment: .leading)
+        if fitsRegularHeroToContent {
+            macContent
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(alignment: .top) { macBackdrop }
+        } else {
+            ZStack(alignment: .topLeading) {
+                macBackdrop
+                macContent
             }
-            // Same gutter as the rows below, so the poster lines up with them.
-            .padding(.horizontal, SiloTheme.padding)
-            .padding(.top, SiloTheme.macDetailTopInset)
-            .padding(.bottom, SiloTheme.largePadding)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var macContent: some View {
+        HStack(alignment: .top, spacing: SiloTheme.largePadding) {
+            macPoster
+
+            VStack(alignment: .leading, spacing: 15) {
+                if let eyebrow, !eyebrow.isEmpty {
+                    Text(eyebrow.uppercased())
+                        .font(.siloCaption.weight(.bold))
+                        .tracking(SiloTheme.macSidebarHeadingTracking)
+                        .foregroundStyle(Color.siloOnSurface.opacity(0.7))
+                }
+
+                macTitle
+                metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
+                overviewBlock
+                creditBlock(alignment: .leading)
+                belowOverview()
+
+                actions()
+                    .padding(.top, 2)
+            }
+            .frame(maxWidth: SiloTheme.macDetailTextWidth, alignment: .leading)
+        }
+        // Same gutter as the rows below, so the poster lines up with them.
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.top, SiloTheme.macDetailTopInset)
+        .padding(.bottom, SiloTheme.largePadding)
     }
 
     /// The backdrop behind the header, faded out at the bottom and dimmed on
@@ -687,7 +721,9 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
         if case .backdrop = artworkStyle, let url = nonEmpty(backdropUrl) {
             AsyncImageView(url: url, thumbhash: backdropThumbhash, contentMode: .fill)
                 .frame(maxWidth: .infinity)
-                .frame(height: SiloTheme.macDetailBackdropHeight)
+                // Fills the header when it fits its content, else a fixed height.
+                .frame(height: fitsRegularHeroToContent ? nil : SiloTheme.macDetailBackdropHeight)
+                .frame(maxHeight: fitsRegularHeroToContent ? .infinity : nil)
                 .clipped()
                 .overlay {
                     LinearGradient(
