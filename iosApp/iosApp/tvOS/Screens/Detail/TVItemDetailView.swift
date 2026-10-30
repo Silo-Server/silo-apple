@@ -445,7 +445,7 @@ struct TVItemDetailView: View {
                     }
                 },
                 onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    router.openRelatedTitle(contentId: id)
                 },
                 synopsisStatus: viewModel.descriptionTranslationStatus,
                 isTranslatingEpisodes: viewModel.isTranslatingSeasonEpisodes,
@@ -575,7 +575,7 @@ struct TVItemDetailView: View {
                     }
                 },
                 onNavigateToItem: { id in
-                    router.navigate(to: .itemDetail(contentId: id))
+                    router.openRelatedTitle(contentId: id)
                 },
                 synopsisStatus: viewModel.descriptionTranslationStatus,
                 onTranslateDescription: translateDescriptionAction

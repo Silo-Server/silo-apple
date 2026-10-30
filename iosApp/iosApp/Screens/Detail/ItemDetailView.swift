@@ -918,7 +918,7 @@ private struct ItemDetailPhoneContent: View {
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
                 onPersonTap: { openPerson($0) },
-                onNavigateToItem: { openItem($0) },
+                onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
@@ -1004,7 +1004,7 @@ private struct ItemDetailPhoneContent: View {
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
                 onPersonTap: { openPerson($0) },
-                onNavigateToItem: { openItem($0) },
+                onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
