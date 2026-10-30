@@ -488,6 +488,30 @@ final class PlaybackNetworkQualityTests: XCTestCase {
         XCTAssertEqual(player.replans, [cellularPair])
     }
 
+    /// Wi-Fi Assist or a roam between access points can put the phone's path
+    /// on cellular for several seconds while Wi-Fi stays connected. Each
+    /// follow is a full reload, so a blip of that length must reload nothing.
+    func testABlipOfSeveralSecondsReloadsNothing() async throws {
+        let player = FakePlayer(main: mainPair, cellular: cellularPair)
+        let controller = PlaybackNetworkQualityController(
+            isMetered: { player.metered },
+            pair: { player.pairs[$0]! },
+            replan: { player.replan($0) }
+        )
+        defer { controller.stop() }
+        controller.sessionStarted(onMeteredNetwork: false, keepsViewerPick: false)
+
+        player.metered = true
+        controller.connectionDidChange()
+        try await Task.sleep(for: .seconds(5))
+        XCTAssertTrue(player.replans.isEmpty, "a five-second blip did not hold long enough to follow")
+        XCTAssertTrue(controller.hasPendingCheck)
+
+        player.metered = false
+        controller.connectionDidChange()
+        XCTAssertTrue(player.replans.isEmpty)
+    }
+
     func testPairsThatMatchNeedNoReplan() {
         let (controller, player) = makeController()
         player.pairs[true] = mainPair
