@@ -187,6 +187,9 @@ actor PlaybackV3CapabilityGate {
         /// media path, takes probe results, and reports the probe and the
         /// Auto budget on the connection endpoint.
         var connectionSpeed = false
+        /// `hls_subtitle_renditions_all_v1`: an HLS plan may carry every
+        /// embedded text track as a rendition of its stream.
+        var subtitleRenditionsAll = false
     }
 
     private let tokenStore: TokenStore
@@ -230,7 +233,10 @@ actor PlaybackV3CapabilityGate {
                             PlaybackProtocolV3.authorizedMediaOriginsFeature
                         ),
                         bufferingQuality: capabilities.features.contains(PlaybackProtocolV3.bufferingQualityFeature),
-                        connectionSpeed: capabilities.features.contains(PlaybackProtocolV3.connectionSpeedFeature)
+                        connectionSpeed: capabilities.features.contains(PlaybackProtocolV3.connectionSpeedFeature),
+                        subtitleRenditionsAll: capabilities.features.contains(
+                            PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature
+                        )
                     )
                 } catch {
                     throw Self.terminalFailure(for: error)
@@ -471,6 +477,8 @@ actor PlaybackSessionBridge {
         /// state on a replan, so every replan repeats what the start request
         /// negotiated. Changing it means a new attempt, not a replan.
         let negotiatedAuthorizedMediaOrigins: Bool
+        /// Attempt-sticky like the origin state.
+        let negotiatedSubtitleRenditionsAll: Bool
         let fixedMediaFileId: Int?
         var plan: PlaybackV3Plan
     }
@@ -494,6 +502,7 @@ actor PlaybackSessionBridge {
         let snapshot: ApplePlaybackV3CapabilitySnapshot
         let serverFeatures: [String]
         let negotiatedAuthorizedMediaOrigins: Bool
+        let negotiatedSubtitleRenditionsAll: Bool
         let fixedMediaFileId: Int?
         let plan: PlaybackV3Plan
         let sessionId: String
@@ -1147,7 +1156,8 @@ actor PlaybackSessionBridge {
             // carries learned_limit "ignore".
             let buffering = PlaybackV3BufferingQualityRequest(
                 baseFeatures: ApplePlaybackV3Capabilities.startFeatures(
-                    authorizedMediaOrigins: capability.authorizedMediaOrigins
+                    authorizedMediaOrigins: capability.authorizedMediaOrigins,
+                    subtitleRenditionsAll: capability.subtitleRenditionsAll
                 ),
                 serverAdvertisesFeature: capability.bufferingQuality,
                 mode: bufferingQualityMode,
@@ -1204,6 +1214,7 @@ actor PlaybackSessionBridge {
         // Optional opt-in: on a server that never advertises it the token is
         // simply absent and the attempt stays entirely on the API origin.
         let requestsAuthorizedMediaOrigins = capability.authorizedMediaOrigins
+        let requestsSubtitleRenditionsAll = capability.subtitleRenditionsAll
 
         switch response.validatedForApple() {
         case .terminal(let terminal):
@@ -1295,6 +1306,8 @@ actor PlaybackSessionBridge {
                     && response.serverFeatures.contains(
                         PlaybackProtocolV3.authorizedMediaOriginsFeature
                     ),
+                negotiatedSubtitleRenditionsAll: requestsSubtitleRenditionsAll
+                    && response.serverFeatures.contains(PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature),
                 fixedMediaFileId: fixedSource ? selectedVersion.fileId : nil,
                 plan: plan,
                 sessionId: resolvedSessionId,
@@ -1329,6 +1342,7 @@ actor PlaybackSessionBridge {
             snapshot: staged.snapshot,
             serverFeatures: staged.serverFeatures,
             negotiatedAuthorizedMediaOrigins: staged.negotiatedAuthorizedMediaOrigins,
+            negotiatedSubtitleRenditionsAll: staged.negotiatedSubtitleRenditionsAll,
             fixedMediaFileId: staged.fixedMediaFileId,
             plan: staged.plan
         )
@@ -1644,7 +1658,8 @@ actor PlaybackSessionBridge {
             // Sticky: a replan may neither add nor drop the negotiated origin
             // token, so it repeats the attempt's captured state verbatim.
             baseFeatures: ApplePlaybackV3Capabilities.startFeatures(
-                authorizedMediaOrigins: active.negotiatedAuthorizedMediaOrigins
+                authorizedMediaOrigins: active.negotiatedAuthorizedMediaOrigins,
+                subtitleRenditionsAll: active.negotiatedSubtitleRenditionsAll
             ),
             serverAdvertisesFeature: active.serverFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature),
             mode: bufferingQualityMode,

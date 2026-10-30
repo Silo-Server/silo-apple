@@ -1,3 +1,4 @@
+import AetherEngine
 import Foundation
 import XCTest
 @testable import Silo
@@ -136,7 +137,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let rowID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)
         XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
         XCTAssertTrue(spec.externalSubtitleAppTrackIDs.isEmpty)
-        XCTAssertEqual(spec.hlsSubtitleRenditionAppTrackID, rowID)
+        XCTAssertEqual(spec.hlsSubtitleRenditions, [rowID: HLSSubtitleRenditionSlot(name: "Subtitles", index: 1)])
         XCTAssertTrue(spec.options.nativeRemoteHLS)
 
         let request = PlayerViewModel.LoadRequest(contentId: "movie", preferredFileId: nil, preferredAudioTrackIndex: nil,
@@ -181,7 +182,7 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
         XCTAssertTrue(spec.externalSubtitleAppTrackIDs.isEmpty)
         XCTAssertFalse(spec.declaresEmbeddedTrackExtract)
-        XCTAssertEqual(spec.hlsSubtitleRenditionAppTrackID, SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7))
+        XCTAssertEqual(spec.hlsSubtitleRenditions.keys.sorted(), [SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7)])
         XCTAssertTrue(spec.options.nativeRemoteHLS)
     }
 
@@ -306,6 +307,284 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let row = try XCTUnwrap(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan).first)
         let choice = try XCTUnwrap(ProtocolV3SubtitleSelection(track: row, plan: plan))
         XCTAssertEqual(choice.embeddedStreamIndex(for: row, in: plan), 12)
+    }
+
+    // MARK: Every embedded text track as a rendition (hls_subtitle_renditions_all_v1)
+
+    private static let renditionsAllFixture = "hls-subtitle-renditions-all-decision_response"
+
+    /// The server fixture's plan, edited through `edit` before decoding.
+    private func renditionsAllPlan(_ edit: (inout [String: Any]) throws -> Void = { _ in }) throws -> PlaybackV3Plan {
+        var plan = try XCTUnwrap(try fixtureObject(named: Self.renditionsAllFixture)["playback_plan"] as? [String: Any])
+        try edit(&plan)
+        return try HTTPClient.makeJSONDecoder().decode(
+            PlaybackV3Plan.self, from: JSONSerialization.data(withJSONObject: plan))
+    }
+
+    /// The fixture's plan after the viewer switched to the English rendition
+    /// and the server kept the stream: only the subtitle decision changes.
+    private func renditionsAllSwitchedToEnglish(_ edit: (inout [String: Any]) throws -> Void = { _ in }) throws -> PlaybackV3Plan {
+        try renditionsAllPlan { plan in
+            plan["plan_id"] = "plan:switched"
+            plan["plan_attempt_key"] = "v3:switched"
+            plan["selected_tracks"] = ["audio": ["id": "file:42:audio:0", "index": 0],
+                                       "subtitle": ["id": "file:42:subtitle:0", "index": 0]]
+            var subtitle = try XCTUnwrap(plan["subtitle"] as? [String: Any])
+            subtitle["track_id"] = "file:42:subtitle:0"
+            subtitle["hls_rendition"] = ["group_id": "subs", "name": "English", "format": "vtt",
+                                         "mime_type": "text/vtt", "index": 1]
+            plan["subtitle"] = subtitle
+            try edit(&plan)
+        }
+    }
+
+    func testRenditionsAllFeatureIsSentOnlyWhenNegotiated() {
+        XCTAssertFalse(ApplePlaybackV3Capabilities.features.contains(PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature),
+                       "a server that does not advertise it never sees it")
+        XCTAssertFalse(ApplePlaybackV3Capabilities.audiobookFeatures.contains(PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature))
+        XCTAssertEqual(ApplePlaybackV3Capabilities.startFeatures(authorizedMediaOrigins: false, subtitleRenditionsAll: false),
+                       ApplePlaybackV3Capabilities.features)
+        let negotiated = ApplePlaybackV3Capabilities.startFeatures(authorizedMediaOrigins: false, subtitleRenditionsAll: true)
+        XCTAssertEqual(negotiated.filter { $0 != PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature },
+                       ApplePlaybackV3Capabilities.features)
+        XCTAssertTrue(negotiated.contains(PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature))
+        // The token extends both rendition features, which every video start sends.
+        XCTAssertTrue(negotiated.contains(PlaybackProtocolV3.hlsSubtitleRenditionsFeature))
+        XCTAssertTrue(negotiated.contains(PlaybackProtocolV3.hlsRemuxSubtitleRenditionsFeature))
+    }
+
+    /// Every listed row is a legible option of the stream; the plan's own
+    /// rendition is the one it starts on, and none mounts a sidecar.
+    func testServerRenditionsAllDecisionListsEveryRowAsALegibleOption() throws {
+        let decision = try PlaybackV3FixtureTestSupport.decode(
+            PlaybackV3DecisionResponse.self, named: Self.renditionsAllFixture, bundleClass: Self.self)
+        XCTAssertTrue(decision.serverFeatures.contains(PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature))
+        guard case .playable(let plan, _) = decision.validatedForApple() else {
+            return XCTFail("the fixture decision must be playable")
+        }
+        XCTAssertNoThrow(try ApplePlaybackV3PlanAdapter.validate(plan))
+        XCTAssertEqual(plan.subtitle.hlsRendition?.index, 2)
+        XCTAssertEqual(plan.subtitle.inventory.map(\.hlsRendition),
+                       [PlaybackV3InventoryHLSRendition(groupId: "subs", name: "English", index: 1),
+                        PlaybackV3InventoryHLSRendition(groupId: "subs", name: "Español", index: 2)])
+        XCTAssertEqual(plan.subtitle.inventory.map(\.containerTrackId), ["4", "5"])
+
+        let english = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 0)
+        let spanish = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 1)
+        let spec = try AetherLoadSpec(
+            validating: plan, sessionID: "session-v3", matchContentEnabled: false,
+            sourceURLOverride: URL(string: "https://example.test/master.m3u8")
+        )
+        XCTAssertEqual(spec.hlsSubtitleRenditions, [english: HLSSubtitleRenditionSlot(name: "English", index: 1),
+                                                    spanish: HLSSubtitleRenditionSlot(name: "Español", index: 2)])
+        XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
+
+        let controller = try AetherPlaybackController()
+        defer { controller.stop() }
+        controller.beginLoad(spec)
+        for row in [english, spanish] {
+            XCTAssertTrue(controller.isHLSSubtitleRendition(appTrackID: row))
+            XCTAssertTrue(controller.containsSubtitle(appTrackID: row), "a listed row never mounts its sidecar")
+        }
+        controller.selectSubtitleTrack(id: english)
+        XCTAssertTrue(controller.hasPendingHLSSubtitleRenditionSelection)
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertFalse(controller.hasPendingHLSSubtitleRenditionSelection)
+
+        // The v2 surface spells the file ids as opaque strings.
+        var object = try fixtureObject(named: Self.renditionsAllFixture)
+        var v2Plan = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        var source = try XCTUnwrap(v2Plan["source"] as? [String: Any])
+        source["media_file_id"] = "42"
+        v2Plan["source"] = source
+        v2Plan["requested_media_file_id"] = "42"
+        v2Plan["effective_media_file_id"] = "42"
+        object["playback_plan"] = v2Plan
+        XCTAssertEqual(try PlaybackV3FixtureTestSupport.v2Plan(v2Plan).subtitle.inventory.map(\.hlsRendition?.index), [1, 2])
+    }
+
+    func testRenditionDecisionMustAgreeWithItsRow() throws {
+        let plan = try renditionsAllPlan { plan in
+            var subtitle = try XCTUnwrap(plan["subtitle"] as? [String: Any])
+            subtitle["hls_rendition"] = ["group_id": "subs", "name": "English", "format": "vtt",
+                                         "mime_type": "text/vtt", "index": 1]
+            plan["subtitle"] = subtitle
+        }
+        XCTAssertThrowsError(try ApplePlaybackV3PlanAdapter.validate(plan)) { error in
+            guard case ApplePlaybackV3PlanError.invalidHLSSubtitleRendition = error else {
+                return XCTFail("Expected invalidHLSSubtitleRendition, got \(error)")
+            }
+        }
+        // A decision that omits the index names its row by NAME alone.
+        XCTAssertNoThrow(try ApplePlaybackV3PlanAdapter.validate(try renditionsAllPlan { plan in
+            var subtitle = try XCTUnwrap(plan["subtitle"] as? [String: Any])
+            subtitle["hls_rendition"] = ["group_id": "subs", "name": "Español", "format": "vtt", "mime_type": "text/vtt"]
+            plan["subtitle"] = subtitle
+        }))
+    }
+
+    private func renditionsAllController() throws -> AetherPlaybackController {
+        let spec = try AetherLoadSpec(
+            validating: try renditionsAllPlan(), sessionID: "session-v3", matchContentEnabled: false,
+            sourceURLOverride: URL(string: "https://example.test/master.m3u8")
+        )
+        let controller = try AetherPlaybackController()
+        controller.beginLoad(spec)
+        return controller
+    }
+
+    /// Off on a stream whose renditions are all AUTOSELECT=YES is held, so the
+    /// controller keeps AVPlayer from showing one by itself; a pick ends it.
+    func testRenditionStreamHoldsOffUntilATrackIsPicked() throws {
+        let controller = try renditionsAllController()
+        defer { controller.stop() }
+        XCTAssertTrue(controller.hasHLSSubtitleRenditions)
+        controller.selectSubtitleTrack(id: nil)
+        XCTAssertTrue(controller.holdsHLSSubtitleRenditionsOff)
+        controller.selectSubtitleTrack(id: SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 1))
+        XCTAssertFalse(controller.holdsHLSSubtitleRenditionsOff)
+    }
+
+    /// A listed row other than the one showing can be the secondary subtitle,
+    /// from its inventory sidecar, without becoming that row's primary route.
+    func testRenditionRowsOtherThanTheShowingOnePlayAsSecondarySidecars() throws {
+        let controller = try renditionsAllController()
+        defer { controller.stop() }
+        let english = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 0)
+        let spanish = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 1)
+        controller.selectSubtitleTrack(id: spanish)
+        XCTAssertTrue(controller.isShowingHLSSubtitleRendition(appTrackID: spanish), "the pick waits for its option")
+        XCTAssertFalse(controller.isShowingHLSSubtitleRendition(appTrackID: english))
+
+        controller.registerHLSRenditionSecondarySidecar(
+            ExternalSubtitleTrack(url: URL(string: "https://example.test/stream/s/subtitles/0.vtt")!, language: "en"),
+            appTrackID: english
+        )
+        XCTAssertNil(controller.aetherSubtitleID(forAppID: english),
+                     "the row's primary route stays its rendition, not the sidecar")
+        let sidecar = try XCTUnwrap(controller.engine.subtitleTracks.first { $0.isExternal }?.id)
+        XCTAssertEqual(controller.appSubtitleID(forAetherID: sidecar), english)
+    }
+
+    /// A row selects the option carrying its playlist NAME; the 1-based index
+    /// answers until the names are read, or when the item exposes none.
+    func testRenditionRowsResolveToLegibleOptionsByNameThenIndex() {
+        let english: Int64 = 10, spanish: Int64 = 11
+        let slots = [english: HLSSubtitleRenditionSlot(name: "English", index: 1),
+                     spanish: HLSSubtitleRenditionSlot(name: "Español", index: 2)]
+        let options = [200_000, 200_001]
+        let resolve = { (names: [String?]?) in
+            AetherPlaybackController.hlsSubtitleRenditionEngineIDs(
+                slots: slots, playlistNames: names, legibleOptionTrackIDs: options)
+        }
+        XCTAssertEqual(resolve(nil), [english: 200_000, spanish: 200_001])
+        XCTAssertEqual(resolve(["Español", "English"]), [english: 200_001, spanish: 200_000],
+                       "AVFoundation may list options in another order")
+        XCTAssertEqual(resolve([nil, nil]), [english: 200_000, spanish: 200_001])
+        XCTAssertEqual(resolve(["English"]), [english: 200_000, spanish: 200_001],
+                       "names that cannot be lined up with the options are ignored")
+        XCTAssertEqual(AetherPlaybackController.hlsSubtitleRenditionEngineIDs(
+            slots: slots, playlistNames: nil, legibleOptionTrackIDs: [200_000]), [english: 200_000],
+            "a row past the published options stays unresolved")
+        XCTAssertEqual(AetherPlaybackController.hlsSubtitleRenditionEngineIDs(
+            slots: [english: .init(name: "English", index: 1), spanish: .init(name: "English", index: 1)],
+            playlistNames: ["English", "English (2)"], legibleOptionTrackIDs: options).count, 1,
+            "two rows never share one option")
+        XCTAssertEqual(AetherPlaybackController.legibleOptionTrackIDs(in: [
+            TrackInfo(id: 200_001, name: "Spanish", codec: "webvtt", language: "es", isDefault: false,
+                      isNativelyRenderedSubtitle: true),
+            TrackInfo(id: 100_000, name: "Sidecar", codec: "srt", language: nil, isDefault: false, isExternal: true),
+            TrackInfo(id: 200_000, name: "English", codec: "webvtt", language: "en", isDefault: false,
+                      isNativelyRenderedSubtitle: true),
+        ]), [200_000, 200_001])
+    }
+
+    /// The server keeps the stream for a switch among its renditions: same
+    /// session, stream, timeline origin, expiry, media, audio and renditions.
+    func testSameTransportPlanIsRecognizedOnlyWhenTheStreamIsKept() throws {
+        let prior = try renditionsAllPlan()
+        let sessionId = "11111111-1111-4111-8111-111111111111"
+        let next = try renditionsAllSwitchedToEnglish()
+        XCTAssertTrue(ApplePlaybackV3PlanAdapter.keepsHLSTransport(
+            prior: prior, priorSessionId: sessionId, next: next, nextSessionId: sessionId))
+        XCTAssertEqual(ApplePlaybackV3PlanAdapter.sameTransportSubtitleSelection(in: next), .track("file:42:subtitle:0"))
+        XCTAssertFalse(ApplePlaybackV3PlanAdapter.keepsHLSTransport(
+            prior: prior, priorSessionId: "another-session", next: next, nextSessionId: sessionId))
+
+        let changes: [(String, (inout [String: Any]) throws -> Void)] = [
+            ("a new transport has a new expiry", { $0["expires_at"] = "2030-01-01T00:05:00Z" }),
+            ("another stream", { plan in
+                var stream = try XCTUnwrap(plan["stream"] as? [String: Any])
+                stream["url"] = "/playback/transcode/22222222-2222-4222-8222-222222222222/master.m3u8"
+                plan["stream"] = stream
+            }),
+            ("a restarted generation", { plan in
+                var timeline = try XCTUnwrap(plan["timeline"] as? [String: Any])
+                timeline["stream_origin_seconds"] = 600
+                plan["timeline"] = timeline
+            }),
+            ("another rendition set", { plan in
+                var subtitle = try XCTUnwrap(plan["subtitle"] as? [String: Any])
+                var inventory = try XCTUnwrap(subtitle["inventory"] as? [[String: Any]])
+                inventory[1]["hls_rendition"] = nil
+                subtitle["inventory"] = inventory
+                plan["subtitle"] = subtitle
+            }),
+        ]
+        for (reason, change) in changes {
+            XCTAssertFalse(ApplePlaybackV3PlanAdapter.keepsHLSTransport(
+                prior: prior, priorSessionId: sessionId,
+                next: try renditionsAllSwitchedToEnglish(change), nextSessionId: sessionId), reason)
+        }
+
+        // Off is applied on the stream too; a sidecar answer needs a load.
+        let off = try renditionsAllPlan { plan in
+            plan["selected_tracks"] = ["audio": ["id": "file:42:audio:0", "index": 0]]
+            var subtitle = try XCTUnwrap(plan["subtitle"] as? [String: Any])
+            subtitle["mode"] = "off"
+            subtitle["track_id"] = nil
+            subtitle["hls_rendition"] = nil
+            plan["subtitle"] = subtitle
+        }
+        XCTAssertTrue(ApplePlaybackV3PlanAdapter.keepsHLSTransport(
+            prior: prior, priorSessionId: sessionId, next: off, nextSessionId: sessionId))
+        XCTAssertEqual(ApplePlaybackV3PlanAdapter.sameTransportSubtitleSelection(in: off), .off)
+        let sidecar = try renditionsAllPlan { plan in
+            var subtitle = try XCTUnwrap(plan["subtitle"] as? [String: Any])
+            subtitle["hls_rendition"] = nil
+            subtitle["artifact"] = ["url": "/stream/s/subtitles/1.vtt", "format": "vtt",
+                                    "mime_type": "text/vtt", "timing_origin_seconds": 0]
+            plan["subtitle"] = subtitle
+        }
+        XCTAssertNil(ApplePlaybackV3PlanAdapter.sameTransportSubtitleSelection(in: sidecar))
+    }
+
+    /// A local switch among the stream's renditions, or to Off, is reported;
+    /// one that changes nothing, or a plan without listed rows, is not.
+    func testOnlySwitchesAmongStreamRenditionsAreReported() throws {
+        let plan = try renditionsAllPlan()
+        XCTAssertTrue(ProtocolV3SubtitleSelection.track("file:42:subtitle:0").switchesAmongStreamRenditions(of: plan))
+        XCTAssertFalse(ProtocolV3SubtitleSelection.track("file:42:subtitle:1").switchesAmongStreamRenditions(of: plan))
+        XCTAssertTrue(ProtocolV3SubtitleSelection.off.switchesAmongStreamRenditions(of: plan))
+
+        let off = try renditionsAllPlan { plan in
+            plan["selected_tracks"] = ["audio": ["id": "file:42:audio:0", "index": 0]]
+            var subtitle = try XCTUnwrap(plan["subtitle"] as? [String: Any])
+            subtitle["mode"] = "off"
+            subtitle["track_id"] = nil
+            subtitle["hls_rendition"] = nil
+            plan["subtitle"] = subtitle
+        }
+        XCTAssertFalse(ProtocolV3SubtitleSelection.off.switchesAmongStreamRenditions(of: off))
+        XCTAssertTrue(ProtocolV3SubtitleSelection.track("file:42:subtitle:1").switchesAmongStreamRenditions(of: off))
+        XCTAssertFalse(ProtocolV3SubtitleSelection.track("file:42:subtitle:0")
+            .switchesAmongStreamRenditions(of: makeHLSRenditionPlan()), "a single rendition is not a set to switch in")
+
+        // A pick made while a report is out is queued whether or not it
+        // differs from the plan that report started from.
+        XCTAssertTrue(ProtocolV3SubtitleSelection.track("file:42:subtitle:1").isStreamRenditionChoice(in: plan))
+        XCTAssertTrue(ProtocolV3SubtitleSelection.off.isStreamRenditionChoice(in: off))
+        XCTAssertFalse(ProtocolV3SubtitleSelection.off.isStreamRenditionChoice(in: makeHLSRenditionPlan()))
     }
 
     func testNativePickerIdentityRemainsResolvableForSecondaryAfterPrimaryClears() throws {

@@ -51,6 +51,30 @@ enum ProtocolV3SubtitleSelection: Equatable {
         return streamIndex
     }
 
+    /// Whether this choice moves among the renditions a stream lists for
+    /// every embedded text track (`hls_subtitle_renditions_all_v1`), or to
+    /// Off, away from what the plan selects. The player switches those
+    /// itself, and the server keeps the stream when it hears of the change.
+    func switchesAmongStreamRenditions(of plan: PlaybackV3Plan) -> Bool {
+        guard isStreamRenditionChoice(in: plan) else { return false }
+        let planSelection = plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off
+            ? nil : plan.selectedSubtitleInventoryItem?.combinedIndex
+        return inventoryItem(in: plan)?.combinedIndex != planSelection
+    }
+
+    /// Whether this choice is one the stream itself carries: a listed
+    /// rendition row, or Off, on a plan whose group lists every embedded
+    /// text track.
+    func isStreamRenditionChoice(in plan: PlaybackV3Plan) -> Bool {
+        guard plan.subtitle.mode != PlaybackProtocolV3.SubtitleMode.burnIn,
+              plan.subtitle.inventory.contains(where: { $0.hlsRendition != nil }),
+              !ApplePlaybackV3PlanAdapter.hlsSubtitleRenditionSlots(plan: plan).isEmpty else { return false }
+        switch self {
+        case .off: return true
+        case .track: return inventoryItem(in: plan)?.hlsRendition != nil
+        }
+    }
+
     /// `serverCarriesSubtitleRenditions`: the attempt's server negotiated
     /// `hls_subtitle_renditions_v1`, so it can carry an embedded text track in
     /// a transcode's own stream. `serverCarriesRemuxSubtitleRenditions`: it
