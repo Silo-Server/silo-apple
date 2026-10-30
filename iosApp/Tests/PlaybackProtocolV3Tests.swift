@@ -755,6 +755,29 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(ApplePlaybackV3Capabilities.normalizedSubtitleCodec("srt"), "subrip")
     }
 
+    func testNativeCapabilityClaimsOnlyPGSInTransportStreams() throws {
+        let native = ApplePlaybackV3Capabilities.nativeEmbeddedSubtitleCapabilities(
+            containers: ["ts", "m2ts", "mpegts", "mts"])
+        XCTAssertEqual(native.map(\.container), ["ts", "m2ts"])
+        XCTAssertTrue(native.allSatisfy { $0.codecs == ["hdmv_pgs_subtitle"] && $0.trackIdentity == "ffmpeg_stream_index" })
+
+        for container in ["ts", "m2ts"] {
+            for (codec, native) in [("pgs", true), ("dvb_subtitle", false)] {
+                let row = PlaybackV3SubtitleInventoryItem(
+                    trackId: "file:42:subtitle:7", combinedIndex: 7, source: "embedded", codec: codec,
+                    language: "en", label: "English", forced: false, default: false, hearingImpaired: false,
+                    delivery: "sidecar", url: "/api/v2/stream/session-v3/subtitles/7", fontBundleUrl: nil)
+                let plan = makePlan(container: container, selectedSubtitleIndex: 7, subtitleMode: "render",
+                    subtitleInventory: [row], embeddedSubtitle: PlaybackV3EmbeddedSubtitle(streamIndex: 3))
+                if native {
+                    XCTAssertNoThrow(try ApplePlaybackV3PlanAdapter.validate(plan), "\(container) \(codec)")
+                } else {
+                    XCTAssertThrowsError(try ApplePlaybackV3PlanAdapter.validate(plan), "\(container) \(codec)")
+                }
+            }
+        }
+    }
+
     func testSubtitleClocksKeepAbsoluteSidecarsAlignedAfterReanchor() {
         XCTAssertEqual(AetherSubtitleOverlay.renderClock(movieTime: 605, engineTime: 5,
                                                         usesMovieTimeline: true, delaySeconds: 0.5), 604.5)
