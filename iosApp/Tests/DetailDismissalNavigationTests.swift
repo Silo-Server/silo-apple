@@ -105,6 +105,44 @@ final class DetailDismissalNavigationTests: XCTestCase {
         XCTAssertTrue(router.path.isEmpty)
     }
 
+    func testMoreLikeThisHopsReplaceEachOtherSoBackLeavesInTwoSteps() {
+        let router = AppRouter()
+        router.presentItemDetail(contentId: "a")
+        for contentId in ["b", "c", "d"] {
+            router.openRelatedTitle(contentId: contentId)
+        }
+        XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a"), .itemDetail(contentId: "d")])
+
+        // Picking the title the chain started from goes back to it.
+        router.openRelatedTitle(contentId: "a")
+        XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a")])
+    }
+
+    func testTitlesOpenedAnotherWayKeepTheirPageUnderMoreLikeThis() {
+        let router = AppRouter()
+        router.presentItemDetail(contentId: "a")
+        router.navigate(to: .personDetail(personId: "p"))
+        // A title from the person's filmography, or from a link, is where
+        // the viewer chose to go; the first recommendation pushes over it.
+        router.presentItemDetail(contentId: "b")
+        router.openRelatedTitle(contentId: "c")
+        router.openRelatedTitle(contentId: "d")
+        XCTAssertEqual(router.visibleItemDetailRoutes, [
+            .itemDetail(contentId: "a"),
+            .personDetail(personId: "p"),
+            .itemDetail(contentId: "b"),
+            .itemDetail(contentId: "d"),
+        ])
+
+        // Back from a person page reached from a recommendation returns to
+        // that recommendation, which the next hop still replaces.
+        router.navigate(to: .personDetail(personId: "q"))
+        router.itemDetailPath.removeLast()
+        router.openRelatedTitle(contentId: "e")
+        XCTAssertEqual(router.visibleItemDetailRoutes.last, .itemDetail(contentId: "e"))
+        XCTAssertEqual(router.visibleItemDetailRoutes.count, 4)
+    }
+
     func testPartyWaitsForPickerDismissalAndCannotReopenAfterTermination() {
         let router = AppRouter()
         let context = WatchPartyPlaybackContext(roomId: "room", selectionRevision: 1,
