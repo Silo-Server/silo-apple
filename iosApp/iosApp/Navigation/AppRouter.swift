@@ -143,9 +143,9 @@ final class AppRouter {
     /// A route pushed through the router. `fromRelatedRail` marks a title
     /// opened from another title's "More like this" rail (see
     /// `openRelatedTitle`).
-    struct PushedRoute: Equatable {
+    struct PushedRoute {
         let route: Route
-        var fromRelatedRail = false
+        let fromRelatedRail: Bool
     }
 
     /// Routes pushed through the router, mirrored because `NavigationPath` is
@@ -809,8 +809,13 @@ final class AppRouter {
             presentItemDetail(contentId: contentId)
             return
         }
-        let top = itemDetailPushedRoutes.prefix(itemDetailPath.count).last
-        switch Self.relatedTitleStep(to: contentId, top: top, start: visibleItemDetailRoutes.dropLast().last) {
+        let visible = visibleItemDetailRoutes
+        let inViewFromRail = itemDetailPushedRoutes.prefix(itemDetailPath.count).last?.fromRelatedRail ?? false
+        switch Self.relatedTitleStep(
+            to: contentId, inView: visible.last, inViewFromRail: inViewFromRail, start: visible.dropLast().last
+        ) {
+        case .alreadyShowing:
+            break
         case .push:
             recordScreenBreadcrumb(target: "itemDetail", action: "present")
             appendToItemDetail(route, fromRelatedRail: true)
@@ -824,16 +829,18 @@ final class AppRouter {
         }
         #else
         let visible = pushedRoutes.prefix(path.count)
-        switch Self.relatedTitleStep(to: contentId, top: visible.last, start: visible.dropLast().last?.route) {
+        switch Self.relatedTitleStep(
+            to: contentId, inView: visible.last?.route,
+            inViewFromRail: visible.last?.fromRelatedRail ?? false, start: visible.dropLast().last?.route
+        ) {
+        case .alreadyShowing:
+            break
         case .push:
             recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "navigate")
             recordPush(route, fromRelatedRail: true)
             path.append(route)
         case .replaceTop:
-            recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "replace")
-            recordPush(route, replacingTop: true, fromRelatedRail: true)
-            path.removeLast()
-            path.append(route)
+            replaceCurrent(with: route, fromRelatedRail: true)
         case .returnToStart:
             goBack()
         }
@@ -841,16 +848,18 @@ final class AppRouter {
     }
 
     private enum RelatedTitleStep {
-        case push, replaceTop, returnToStart
+        case alreadyShowing, push, replaceTop, returnToStart
     }
 
-    /// `top` is the page in view and `start` the page under it.
-    private static func relatedTitleStep(to contentId: String, top: PushedRoute?, start: Route?) -> RelatedTitleStep {
-        guard let top, top.fromRelatedRail else { return .push }
-        if case .itemDetail(let startContentId, _, _, _) = start, startContentId == contentId {
-            return .returnToStart
-        }
-        return .replaceTop
+    /// `inView` is the page on screen and `start` the page under it. A
+    /// second tap on the same card, or on the title just returned to, can
+    /// arrive while the page is still changing; it opens nothing.
+    private static func relatedTitleStep(
+        to contentId: String, inView: Route?, inViewFromRail: Bool, start: Route?
+    ) -> RelatedTitleStep {
+        if inView?.itemDetailContentId == contentId { return .alreadyShowing }
+        guard inViewFromRail else { return .push }
+        return start?.itemDetailContentId == contentId ? .returnToStart : .replaceTop
     }
 
     /// Close the complete bottom-presented detail flow and discard any nested
@@ -864,11 +873,11 @@ final class AppRouter {
     }
 
     /// Swap the top route instead of pushing, so sideways hops between
-    /// sibling pages (e.g. episode → episode on the tvOS detail rail) don't
-    /// stack up — Back exits the chain in one step.
-    func replaceCurrent(with route: Route) {
+    /// sibling pages (e.g. one recommendation to the next, see
+    /// `openRelatedTitle`) don't stack up — Back exits the chain in one step.
+    func replaceCurrent(with route: Route, fromRelatedRail: Bool = false) {
         recordScreenBreadcrumb(target: route.diagnosticsTarget, action: "replace")
-        recordPush(route, replacingTop: true)
+        recordPush(route, replacingTop: true, fromRelatedRail: fromRelatedRail)
         if !path.isEmpty {
             path.removeLast()
         }
@@ -1292,6 +1301,10 @@ struct SessionReturnPoint {
 }
 
 private extension Route {
+    var itemDetailContentId: String? {
+        if case .itemDetail(let contentId, _, _, _) = self { contentId } else { nil }
+    }
+
     var diagnosticsTarget: String {
         switch self {
         case .serverSetup:

@@ -113,7 +113,13 @@ final class DetailDismissalNavigationTests: XCTestCase {
         }
         XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a"), .itemDetail(contentId: "d")])
 
-        // Picking the title the chain started from goes back to it.
+        // A second tap on the card just opened opens nothing.
+        router.openRelatedTitle(contentId: "d")
+        XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a"), .itemDetail(contentId: "d")])
+
+        // Picking the title the chain started from goes back to it, and a
+        // second tap there opens no copy.
+        router.openRelatedTitle(contentId: "a")
         router.openRelatedTitle(contentId: "a")
         XCTAssertEqual(router.visibleItemDetailRoutes, [.itemDetail(contentId: "a")])
     }
