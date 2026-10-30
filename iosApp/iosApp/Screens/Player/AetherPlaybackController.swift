@@ -124,6 +124,9 @@ final class AetherPlaybackController {
     private(set) var appliedRequestHeaders: [String: String] = [:]
     private var requestHeaderAsks: UInt64 = 0
     private var appliedRequestHeaderAsk: UInt64 = 0
+    /// Silo's appearance for the subtitles AVPlayer draws itself
+    /// (`HLSRenditionTextStyle`); nil leaves the device's caption style.
+    private var hlsRenditionTextStyleRules: [AVTextStyleRule]?
     /// The last `[CMP-AUDIO]` line's load and pipeline.
     private struct LoggedAudioPipeline: Equatable {
         let epoch: LoadEpoch?
@@ -375,6 +378,19 @@ final class AetherPlaybackController {
             let outcome = engine.updateRequestHeaders(headers)
             cmpLog("[CMP-AUTH] media headers replaced \(afterRefusal ? "after a refusal" : "after rotation"): \(outcome)")
         }
+    }
+
+    /// Styles the subtitles AVPlayer draws on the current item and on every
+    /// item the engine installs after it. Only a server HLS stream's own
+    /// renditions are drawn there; the overlay draws the rest.
+    func setHLSRenditionTextStyleRules(_ rules: [AVTextStyleRule]?) {
+        hlsRenditionTextStyleRules = rules
+        applyHLSRenditionTextStyle(to: engine.currentAVPlayerItem)
+    }
+
+    private func applyHLSRenditionTextStyle(to item: AVPlayerItem?) {
+        guard let item, activeSpec?.options.nativeRemoteHLS == true else { return }
+        item.textStyleRules = hlsRenditionTextStyleRules
     }
 
     func finishLoad(_ epoch: LoadEpoch) async throws {
@@ -1128,6 +1144,7 @@ final class AetherPlaybackController {
             .sink { [weak self] item in
                 guard let self else { return }
                 bindItemStalls(to: item)
+                applyHLSRenditionTextStyle(to: item)
                 configureExternalPlaybackPolicy()
                 refreshExternalPlaybackState()
                 publishSystemMediaChanged()
