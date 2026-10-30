@@ -48,6 +48,10 @@ enum PlaybackProtocolV3 {
     /// (`subtitle.hls_rendition`). AVPlayer then plays it from the
     /// multivariant playlist, so no whole-file sidecar is fetched.
     static let hlsSubtitleRenditionsFeature = "hls_subtitle_renditions_v1"
+    /// Extends `hls_subtitle_renditions_v1`, which it requires, to
+    /// `server_remux_hls`: a copy remux carries its embedded text track as the
+    /// same rendition instead of a sidecar extracted from the whole file.
+    static let hlsRemuxSubtitleRenditionsFeature = "hls_remux_subtitle_renditions_v1"
     static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
     /// Native v2 only. The server accepts `bandwidth_estimate_source` and
     /// `learned_limit` on a start or replan whose `client_features` names it,
