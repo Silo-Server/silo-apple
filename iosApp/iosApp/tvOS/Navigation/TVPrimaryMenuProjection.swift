@@ -29,6 +29,32 @@ enum TVPrimaryMenuProjection {
         }
     }
 
+    /// Whether search includes audiobooks: the bar shows an audiobook
+    /// destination (the Audiobooks tab or a pinned audiobook library), or the
+    /// legacy per-device "Show Audiobooks" opt-in is on. The opt-in still
+    /// counts when a synced menu leaves audiobooks out, so turning on the menu
+    /// sync never hides audiobooks from search for someone who opted in.
+    /// Either way an audiobook library must exist.
+    static func searchIncludesAudiobooks(
+        menuItems: [PrimaryMenuItem],
+        libraries: [Library],
+        legacyOptIn: Bool
+    ) -> Bool {
+        if legacyOptIn, libraries.contains(where: { $0.isAudiobookLibrary }) {
+            return true
+        }
+        return roots(for: menuItems, libraries: libraries).contains { root in
+            switch root {
+            case .libraryType(.audiobooks):
+                return true
+            case .libraryShortcut(let libraryId, _):
+                return libraries.contains { $0.id == libraryId && $0.isAudiobookLibrary }
+            default:
+                return false
+            }
+        }
+    }
+
     /// Bar roots in menu order, deduplicated, with Home forced first when absent.
     static func roots(
         for items: [PrimaryMenuItem],
