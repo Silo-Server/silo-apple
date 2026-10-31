@@ -91,7 +91,9 @@ enum MediaLogRedactor {
 
     /// Filesystem and media-identity rules, shared with `DiagnosticsRedactor`
     /// so the diagnostics ring covers the same ground as the OSLog boundary.
-    private static let filesystemAndMediaRules: [Rule] = [
+    /// They are two groups because `DiagnosticsRedactor` hashes hosts between
+    /// them.
+    private static let filesystemPathRules: [Rule] = [
         Rule(
             #"(["'])\#(pathRoot)/[^\r\n]*?\1"#,
             replacement: "$1[redacted-path]$1"
@@ -109,11 +111,15 @@ enum MediaLogRedactor {
             #"\\\\[A-Za-z0-9._$-]+\\[^\s'"<>,;]*"#,
             replacement: "[redacted-path]"
         ),
+    ]
+
+    private static let mediaNameRules: [Rule] = [
         // Bare media filenames. The match may neither start inside nor span a
         // `[redacted…]` marker, so `playing [redacted-url] Movie.mkv` loses
-        // only the filename instead of collapsing the whole line.
+        // only the filename instead of collapsing the whole line. Nor may it
+        // start inside a diagnostics `[host:<12 hex>]` token.
         Rule(
-            #"(?<![A-Za-z0-9._~-])(?!redacted[a-z0-9-]*\])"#
+            #"(?<![A-Za-z0-9._~-])(?!(?<=\[host:)[0-9a-f]{12}\])(?!redacted[a-z0-9-]*\])"#
                 + #"(?!(?:\#(genericMediaStems))\.(?:\#(mediaExtensions))\b)"#
                 + #"[A-Za-z0-9](?:(?!\[redacted)[A-Za-z0-9 _().,'&%+\-\[\]]){0,240}\.(?:\#(mediaExtensions))\b"#,
             replacement: "[redacted-media-name]"
@@ -133,7 +139,7 @@ enum MediaLogRedactor {
     ]
 
     private static let rules: [Rule] =
-        credentialAndURLRules + filesystemAndMediaRules + trailingCredentialRules
+        credentialAndURLRules + filesystemPathRules + mediaNameRules + trailingCredentialRules
 
     /// Anchored form of the bare-media-name rule, used to classify a single URL
     /// path component. Generic manifest names are deliberately preserved.
@@ -156,12 +162,18 @@ enum MediaLogRedactor {
         sanitize(String(describing: error), maxLength: maxLength)
     }
 
-    /// Applies only the filesystem-path and media-filename rules, leaving URL
-    /// and credential handling to the caller. `DiagnosticsRedactor` composes
-    /// this because its URL treatment (hashed host, surviving API path) is
-    /// deliberately different from the OSLog boundary's blanket redaction.
-    static func sanitizeFilesystemAndMediaIdentity(_ value: String) -> String {
-        apply(filesystemAndMediaRules, to: value)
+    /// Apply only the filesystem-path rules, or only the bare media-filename
+    /// rule, leaving URL and credential handling to the caller.
+    /// `DiagnosticsRedactor` composes these because its URL treatment (hashed
+    /// host, surviving API path) is deliberately different from the OSLog
+    /// boundary's blanket redaction. Paths come before media names, as in
+    /// `sanitize`.
+    static func sanitizeFilesystemPaths(_ value: String) -> String {
+        apply(filesystemPathRules, to: value)
+    }
+
+    static func sanitizeMediaNames(_ value: String) -> String {
+        apply(mediaNameRules, to: value)
     }
 
     /// True when a single filename or URL path component names user media
