@@ -623,9 +623,9 @@ class PlayerViewModel {
     /// The temporary rate is applied straight to the backend and never
     /// persisted, so releasing always restores `settings.playbackSpeed`.
     var isHoldFastForwarding = false
-    /// Seconds of media buffered ahead of `currentTime`, projected from
-    /// Aether's public telemetry. The scrubber omits its buffered layer when
-    /// the active route cannot report a comparable value.
+    /// Seconds of media buffered ahead of `currentTime`, from Aether's
+    /// buffered position and loaded ranges. The scrubber omits its buffered
+    /// layer when the active route cannot report a comparable value.
     var bufferedAheadSeconds: Double = 0
     /// End of the buffered range as a fraction of `duration`, clamped to 0...1.
     var bufferedEndFraction: Double {
@@ -2000,11 +2000,17 @@ class PlayerViewModel {
 
     /// Publishes the forward buffer for the scrubbers and invalidates the
     /// stats panels. Clock ticks (`force == false`) invalidate at most about
-    /// once a second.
+    /// once a second. The scrubbers draw the engine's buffered position, which
+    /// includes the segment cache that Buffer Ahead fills; telemetry's forward
+    /// buffer is only what AVPlayer has loaded, a few seconds at most.
     private func refreshPlaybackStats(force: Bool = false) {
         let buffered = aetherPlaybackController.activeSpec == nil
             ? 0
-            : max(0, aetherPlaybackController.engine.liveTelemetry?.forwardBufferSeconds ?? 0)
+            : max(
+                0,
+                aetherPlaybackController.engine.liveTelemetry?.forwardBufferSeconds ?? 0,
+                engineBufferMatchesPlayhead ? engineBufferedAheadSeconds ?? 0 : 0
+            )
         if bufferedAheadSeconds != buffered { bufferedAheadSeconds = buffered }
 
         let now = Date()
@@ -10824,14 +10830,32 @@ extension PlayerViewModel {
     /// demuxed packet. On server HLS, where the engine tracks no buffered
     /// position, it is what AVPlayer has loaded. Nil for an audio-only load,
     /// whose buffered position mirrors the clock.
-    private var engineBufferedAheadMs: Int? {
+    private var engineBufferedAheadSeconds: Double? {
         guard !isAudioOnlyAetherLoad else { return nil }
         let engine = aetherPlaybackController.engine
         var ahead = engine.bufferedPosition - engine.currentTime
         if let loaded = aetherPlaybackController.nativeTransport?.loadedAheadSeconds {
             ahead = ahead.isFinite ? max(ahead, loaded) : loaded
         }
-        return ahead.isFinite ? Int((ahead * 1000).rounded()) : nil
+        return ahead.isFinite ? ahead : nil
+    }
+
+    private var engineBufferedAheadMs: Int? {
+        engineBufferedAheadSeconds.map { Int(($0 * 1000).rounded()) }
+    }
+
+    /// Whether the engine's buffered band starts at the playhead the
+    /// scrubbers show. The engine measures it from the last rendered frame,
+    /// so until a seek lands, and while the timeline shows a target the
+    /// engine has not been sent to yet, it would draw the old position's
+    /// cache from the new one.
+    private var engineBufferMatchesPlayhead: Bool {
+        !aetherPlaybackController.engine.isSeeking
+            && seekTargetTime == nil
+            && freshLoadHeldSeek == nil
+            && seekReplanTask == nil
+            && connectionState == .connected
+            && !reconnectCycle.isHandingOff
     }
 
     private func pollBufferingSignals() {
