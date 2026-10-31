@@ -2939,9 +2939,8 @@ class PlayerViewModel {
                             trackTarget: queuedTrackChange.target
                         )
                     }
-                } else if let report = self.pendingProtocolV3SubtitleReport {
-                    self.pendingProtocolV3SubtitleReport = nil
-                    if !self.isDisposed { self.reportProtocolV3SubtitleSwitch(report) }
+                } else if self.sendPendingProtocolV3SubtitleReport() {
+                    // That report's own completion drains what is still queued.
                 } else if let queuedTarget = self.pendingProtocolV3SeekReanchorPosition {
                     self.pendingProtocolV3SeekReanchorPosition = nil
                     if !self.isDisposed, self.activePreparedProtocolV3 != nil {
@@ -3260,10 +3259,21 @@ class PlayerViewModel {
 
     /// Reports a switch the player made among the stream's renditions, or to
     /// Off, when it still differs from what the plan selects.
-    private func reportProtocolV3SubtitleSwitch(_ selection: ProtocolV3SubtitleSelection) {
+    /// Sends the report a pick made during the last one left waiting. False
+    /// when nothing went out, because there was none or the plan already
+    /// selects that pick, so the caller drains its other queued work.
+    private func sendPendingProtocolV3SubtitleReport() -> Bool {
+        guard let report = pendingProtocolV3SubtitleReport else { return false }
+        pendingProtocolV3SubtitleReport = nil
+        return !isDisposed && reportProtocolV3SubtitleSwitch(report)
+    }
+
+    /// Whether a report went out.
+    @discardableResult
+    private func reportProtocolV3SubtitleSwitch(_ selection: ProtocolV3SubtitleSelection) -> Bool {
         guard let plan = activePreparedProtocolV3?.plan,
-              selection.switchesAmongStreamRenditions(of: plan) else { return }
-        attemptProtocolV3Replan(
+              selection.switchesAmongStreamRenditions(of: plan) else { return false }
+        return attemptProtocolV3Replan(
             position: currentTime,
             classification: "subtitle_track_changed",
             message: "Subtitle switched among the stream's renditions.",
