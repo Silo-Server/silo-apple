@@ -70,9 +70,14 @@ enum ApplePlaybackV3Capabilities {
     /// surface and every capability report stay opted out. Audio validates
     /// media URLs as API-relative only, and adding the token there would let a
     /// plan hand it an absolute URL its resolver must reject anyway.
-    static func startFeatures(authorizedMediaOrigins: Bool) -> [String] {
-        guard authorizedMediaOrigins else { return features }
-        return features + [PlaybackProtocolV3.authorizedMediaOriginsFeature]
+    ///
+    /// `hls_subtitle_renditions_all_v1` is negotiated the same way: sent only to
+    /// a server that advertises it, then repeated unchanged by every replan of
+    /// the attempt.
+    static func startFeatures(authorizedMediaOrigins: Bool, subtitleRenditionsAll: Bool = false) -> [String] {
+        features
+            + (authorizedMediaOrigins ? [PlaybackProtocolV3.authorizedMediaOriginsFeature] : [])
+            + (subtitleRenditionsAll ? [PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature] : [])
     }
 
     /// The audiobook surface is migrated separately but uses the same Aether

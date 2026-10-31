@@ -52,6 +52,11 @@ enum PlaybackProtocolV3 {
     /// `server_remux_hls`: a copy remux carries its embedded text track as the
     /// same rendition instead of a sidecar extracted from the whole file.
     static let hlsRemuxSubtitleRenditionsFeature = "hls_remux_subtitle_renditions_v1"
+    /// Extends both: every embedded text track the source's index can read is
+    /// a rendition of the plan's HLS stream, listed on its inventory row as
+    /// `hls_rendition`, and switching among them keeps the stream. /api/v2
+    /// only, attempt-sticky, and sent only to a server that advertises it.
+    static let hlsSubtitleRenditionsAllFeature = "hls_subtitle_renditions_all_v1"
     static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
     /// Native v2 only. The server accepts `bandwidth_estimate_source` and
     /// `learned_limit` on a start or replan whose `client_features` names it,
@@ -648,6 +653,17 @@ struct PlaybackV3SubtitleInventoryItem: Codable, Equatable {
     var streamIndex: Int? = nil
     var containerTrackId: String? = nil
     var nativeSelectable: Bool? = nil
+    /// Under `hls_subtitle_renditions_all_v1`: the row's WebVTT rendition in
+    /// the plan's HLS stream.
+    var hlsRendition: PlaybackV3InventoryHLSRendition? = nil
+}
+
+/// Where an inventory row's track sits in the HLS stream's SUBTITLES group:
+/// the EXT-X-MEDIA named `name` (unique in the group), at 1-based `index`.
+struct PlaybackV3InventoryHLSRendition: Codable, Equatable {
+    let groupId: String
+    let name: String
+    let index: Int
 }
 
 extension PlaybackV3SubtitleInventoryItem {
@@ -677,6 +693,9 @@ struct PlaybackV3HLSSubtitleRendition: Codable, Equatable {
     let name: String
     let format: String
     let mimeType: String
+    /// The selected row's `hls_rendition.index` when the group lists every
+    /// embedded text track; nil for the single pipeline rendition.
+    var index: Int? = nil
 }
 
 struct PlaybackV3SubtitleDecision: Codable, Equatable {

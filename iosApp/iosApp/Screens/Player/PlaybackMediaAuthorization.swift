@@ -56,7 +56,9 @@ enum PlaybackMediaAuthorization {
             }
             // A transcode carrying its subtitle in the stream answers master.m3u8
             // with a multivariant playlist whose variant and subtitle playlists
-            // are the same route under `silo_rendition`.
+            // are the same route under `silo_rendition`. A stream with a
+            // rendition per embedded track names each subtitle playlist's track
+            // with `silo_track`.
             if hlsPrefix != nil, path == sourcePath, Self.hasRenditionQuery(components) { return true }
             guard Self.hasAllowedQuery(components) else { return false }
             if path == sourcePath { return true }
@@ -109,9 +111,25 @@ enum PlaybackMediaAuthorization {
         }
 
         private static func hasRenditionQuery(_ components: URLComponents) -> Bool {
-            guard let items = components.queryItems, items.count == 1,
-                  items[0].name == "silo_rendition" else { return false }
-            return ["video", "subtitles"].contains(items[0].value)
+            guard let items = components.queryItems,
+                  let rendition = items.first(where: { $0.name == "silo_rendition" }) else { return false }
+            switch items.count {
+            case 1:
+                return ["video", "subtitles"].contains(rendition.value)
+            case 2:
+                guard rendition.value == "subtitles",
+                      let track = items.first(where: { $0.name == "silo_track" })?.value else { return false }
+                return isContainerTrackNumber(track)
+            default:
+                return false
+            }
+        }
+
+        /// A container track number as the server writes it: decimal, no
+        /// leading zero, at most 20 digits.
+        private static func isContainerTrackNumber(_ value: String) -> Bool {
+            guard let first = value.utf8.first, first != UInt8(ascii: "0"), value.utf8.count <= 20 else { return false }
+            return value.utf8.allSatisfy { (48...57).contains($0) }
         }
 
         private static func hasAllowedQuery(_ components: URLComponents) -> Bool {
