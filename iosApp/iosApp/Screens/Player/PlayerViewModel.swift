@@ -1059,6 +1059,11 @@ class PlayerViewModel {
     /// The replan in flight only reports a subtitle switch the player
     /// already made on the running stream (`keepsPlaying`).
     private var protocolV3ReplanIsReport = false
+    /// A replan in flight that may replace the running transport. A subtitle
+    /// report keeps it, unless its answer turns the report into a load.
+    private var isPreparingProtocolV3Replacement: Bool {
+        protocolV3ReplanTask != nil && !protocolV3ReplanIsReport
+    }
     /// A newer switch among the stream's renditions, made while a report was
     /// in flight: applied locally at once, reported when that one settles.
     /// Latest wins.
@@ -1806,8 +1811,9 @@ class PlayerViewModel {
             playheadMovedAt: playheadSample?.movedAt,
             bufferEmptySince: stalledBufferEmptySince,
             // Both set `isLoading` before awaiting the server, while the
-            // outgoing load still reports its phase.
-            preparingReplacement: protocolV3ReplanTask != nil || freshLoadTask != nil,
+            // outgoing load still reports its phase. A subtitle report
+            // doesn't, since it keeps the running stream.
+            preparingReplacement: isPreparingProtocolV3Replacement || freshLoadTask != nil,
             now: .now
         )
     }
@@ -11819,9 +11825,7 @@ extension PlayerViewModel {
         let position = aetherPlaybackController.activeSpec?.timeline.sourcePosition(
             forPlayerTime: engine.clock.currentTime
         ) ?? 0
-        // A subtitle report keeps the running stream, so it is no transition
-        // unless its answer turns it into a load.
-        let transitioning = freshLoadTask != nil || (protocolV3ReplanTask != nil && !protocolV3ReplanIsReport)
+        let transitioning = freshLoadTask != nil || isPreparingProtocolV3Replacement
         let seeking = seekReplanTask != nil || engine.playbackPhase == .seeking
         let waitingForMedia: Bool
         switch engine.playbackPhase {
