@@ -123,7 +123,9 @@ enum ApplePlaybackV3PlanAdapter {
             }
         }
         if let rendition = plan.subtitle.hlsRendition {
-            guard plan.delivery == PlanDelivery.transcodeHLS,
+            // A copy remux carries the rendition the same way once the attempt
+            // negotiated `hls_remux_subtitle_renditions_v1`.
+            guard plan.delivery == PlanDelivery.transcodeHLS || plan.delivery == PlanDelivery.remuxHLS,
                   plan.stream.protocol == "hls",
                   PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
                   plan.subtitle.artifact == nil,

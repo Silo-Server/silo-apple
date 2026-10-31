@@ -162,10 +162,38 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(controller.hasPendingHLSSubtitleRenditionSelection)
     }
 
+    func testHLSRemuxSubtitleRenditionFeatureIsAdvertisedForVideoOnly() {
+        XCTAssertTrue(ApplePlaybackV3Capabilities.features.contains(PlaybackProtocolV3.hlsRemuxSubtitleRenditionsFeature))
+        XCTAssertTrue(ApplePlaybackV3Capabilities.features.contains(PlaybackProtocolV3.hlsSubtitleRenditionsFeature),
+                      "the server ignores the remux token without the one it extends")
+        XCTAssertFalse(ApplePlaybackV3Capabilities.audiobookFeatures.contains(PlaybackProtocolV3.hlsRemuxSubtitleRenditionsFeature))
+    }
+
+    /// A copy remux carries its selected embedded text track in the stream the
+    /// way a transcode does, so nothing mounts the whole-file sidecar.
+    func testHLSRemuxSubtitleRenditionPlanMountsNoSidecar() throws {
+        let plan = makeHLSRenditionPlan(delivery: "server_remux_hls")
+        XCTAssertNoThrow(try ApplePlaybackV3PlanAdapter.validate(plan))
+        let spec = try AetherLoadSpec(
+            validating: plan, sessionID: "session-v3", matchContentEnabled: false,
+            sourceURLOverride: URL(string: "https://example.test/master.m3u8")
+        )
+        XCTAssertTrue(spec.options.externalSubtitles.isEmpty)
+        XCTAssertTrue(spec.externalSubtitleAppTrackIDs.isEmpty)
+        XCTAssertFalse(spec.declaresEmbeddedTrackExtract)
+        XCTAssertEqual(spec.hlsSubtitleRenditionAppTrackID, SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: 7))
+        XCTAssertTrue(spec.options.nativeRemoteHLS)
+    }
+
     func testHLSSubtitleRenditionRejectsContradictoryPlans() {
         for plan in [
-            makeHLSRenditionPlan(delivery: "server_remux_hls"),
             makeHLSRenditionPlan(source: "external"),
+            makePlan(
+                delivery: "server_remux_progressive", streamProtocol: "http_progressive", container: "mp4",
+                selectedSubtitleIndex: 7, subtitleMode: "render",
+                subtitleInventory: [makeInventoryItem(combinedIndex: 7, source: "embedded")],
+                hlsRendition: Self.hlsRendition
+            ),
         ] {
             XCTAssertThrowsError(try ApplePlaybackV3PlanAdapter.validate(plan)) { error in
                 guard case ApplePlaybackV3PlanError.invalidHLSSubtitleRendition = error else {
@@ -203,6 +231,20 @@ final class PlaybackProtocolV3Tests: XCTestCase {
             subtitleInventory: [makeInventoryItem(combinedIndex: 8, source: "embedded")]
         )
         XCTAssertTrue(other.canApplyLocally(to: original, isMounted: false))
+    }
+
+    /// A remux replans for another embedded text track only when the attempt
+    /// negotiated remux renditions; otherwise the server would answer with the
+    /// same sidecar, so the client keeps mounting it locally.
+    func testEmbeddedTextPickOnRemuxReplansOnlyWhenRemuxRenditionsWereNegotiated() {
+        let remux = makeHLSRenditionPlan(delivery: "server_remux_hls")
+        let other = ProtocolV3SubtitleSelection.track("file:42:subtitle:8")
+        XCTAssertFalse(other.canApplyLocally(to: remux, isMounted: false, serverCarriesSubtitleRenditions: true,
+                                             serverCarriesRemuxSubtitleRenditions: true))
+        XCTAssertTrue(other.canApplyLocally(to: remux, isMounted: true, serverCarriesSubtitleRenditions: true,
+                                            serverCarriesRemuxSubtitleRenditions: true))
+        XCTAssertTrue(other.canApplyLocally(to: remux, isMounted: false, serverCarriesSubtitleRenditions: true))
+        XCTAssertTrue(other.canApplyLocally(to: remux, isMounted: false, serverCarriesRemuxSubtitleRenditions: true))
     }
 
     func testNativePickerIdentityRemainsResolvableForSecondaryAfterPrimaryClears() throws {
