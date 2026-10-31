@@ -119,6 +119,12 @@ final class AetherPlaybackController {
 
     private(set) var activeSpec: AetherLoadSpec?
     private(set) var activeLoadEpoch: LoadEpoch?
+    /// The engine's latest seek while its picture has not reached the
+    /// target, or nil. A native seek that spends its budget stops being
+    /// `isSeeking` with the clock held at the target and the picture still
+    /// at the old position; it stays here until a later `.landed` under its
+    /// id, or the next load.
+    private(set) var unlandedSeekID: UInt64?
     /// The headers Aether holds for the active direct-play source, and which
     /// resolver answer installed them, so answers land in the order asked.
     private(set) var appliedRequestHeaders: [String: String] = [:]
@@ -319,6 +325,7 @@ final class AetherPlaybackController {
         let epoch = LoadEpoch(rawValue: generation)
         applyBackgroundPlaybackPreference()
         activeLoadEpoch = epoch
+        unlandedSeekID = nil
         hasCommittedActiveLoad = false
         activeSpec = spec
         appliedRequestHeaders = spec.options.httpHeaders
@@ -862,6 +869,7 @@ final class AetherPlaybackController {
         transportRestoreTask?.cancel()
         transportRestoreTask = nil
         activeLoadEpoch = nil
+        unlandedSeekID = nil
         hasCommittedActiveLoad = false
         activeSpec = nil
         configureExternalPlaybackPolicy()
@@ -1009,6 +1017,22 @@ final class AetherPlaybackController {
 
         engine.$playbackPhase
             .sink { [weak self] phase in self?.publish(.phase(phase)) }
+            .store(in: &subscriptions)
+
+        engine.seekEvents
+            .sink { [weak self] event in
+                guard let self else { return }
+                switch event.outcome {
+                case .began:
+                    unlandedSeekID = event.id
+                case .landed:
+                    if unlandedSeekID == event.id { unlandedSeekID = nil }
+                case .stalled, .superseded, .rejected:
+                    // A stalled seek can still land later under its id; a
+                    // superseding one has already replaced it with `.began`.
+                    break
+                }
+            }
             .store(in: &subscriptions)
 
         engine.clock.$currentTime

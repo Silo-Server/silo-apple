@@ -10848,9 +10848,11 @@ extension PlayerViewModel {
     /// scrubbers show. The engine measures it from the last rendered frame,
     /// so until a seek lands, and while the timeline shows a target the
     /// engine has not been sent to yet, it would draw the old position's
-    /// cache from the new one.
+    /// cache from the new one. A seek that ran out of budget is no longer
+    /// `isSeeking` but has still not landed.
     private var engineBufferMatchesPlayhead: Bool {
         !aetherPlaybackController.engine.isSeeking
+            && aetherPlaybackController.unlandedSeekID == nil
             && seekTargetTime == nil
             && freshLoadHeldSeek == nil
             && seekReplanTask == nil
