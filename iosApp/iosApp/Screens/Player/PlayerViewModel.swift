@@ -9899,6 +9899,10 @@ class PlayerViewModel {
         if protocolV3ReplanTask != nil {
             protocolV3LocalPickDuringReport = true
             pendingProtocolV3SubtitleReport = selection.isStreamRenditionChoice(in: plan) ? selection : nil
+            // A subtitle change queued behind the report is older than this
+            // pick and would bring the superseded track back. A queued audio
+            // change still runs.
+            if case .subtitle? = pendingProtocolV3TrackChange?.target { pendingProtocolV3TrackChange = nil }
         } else {
             reportProtocolV3SubtitleSwitch(selection)
         }
