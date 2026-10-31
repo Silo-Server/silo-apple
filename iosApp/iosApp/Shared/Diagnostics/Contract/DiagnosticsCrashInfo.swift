@@ -6,6 +6,8 @@ enum CrashSource: String, Codable, Equatable, CaseIterable {
     case exitInfo = "exit_info"
     case metrickit
     case exitSentinel = "exit_sentinel"
+    /// The in-app main-thread watchdog (`HangWatchdog`).
+    case watchdog
 }
 
 enum Provenance: String, Codable, Equatable, CaseIterable {
