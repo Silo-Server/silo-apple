@@ -239,8 +239,9 @@ enum ApplePlaybackV3PlanAdapter {
     /// registering its URL with Aether. The active plan's single artifact is
     /// mounted separately by `AetherLoadSpec`.
     ///
-    /// `version` is only needed to give embedded rows their FFmpeg stream
-    /// index. Without it those rows persist as the explicit-Off sentinel,
+    /// An embedded row's FFmpeg stream index comes from the row itself when
+    /// the server names it; `version` is the fallback for one that does not.
+    /// Without either those rows persist as the explicit-Off sentinel,
     /// because `TrackSelectionPersistence` identifies an embedded pick by that
     /// index; the combined ordinal alone cannot stand in for it.
     static func subtitlePickerTracks(
@@ -262,7 +263,7 @@ enum ApplePlaybackV3PlanAdapter {
             let ffIndex: Int? = item.combinedIndex == plan.selectedSubtitleCombinedIndex && plan.subtitle.embedded != nil
                 ? plan.subtitle.embedded?.streamIndex
                 : item.source == "embedded"
-                ? version.flatMap {
+                ? item.embeddedStreamIndex ?? version.flatMap {
                     ffmpegSubtitleStreamIndex(
                         serverCombinedIndex: item.combinedIndex,
                         in: $0,
@@ -388,11 +389,13 @@ enum ApplePlaybackV3PlanAdapter {
     /// Resolves an embedded FFmpeg stream index against the server's published
     /// combined ordinals instead of deriving one.
     ///
-    /// The inventory's `embedded` entries are in container stream order, which
-    /// is the same order the catalog lists them in, so the *n*-th embedded
-    /// catalog track is the *n*-th embedded inventory entry — and that entry
-    /// carries the authoritative `combined_index`. An empty inventory means no
-    /// plan has published one yet, so the counted derivation stands in.
+    /// A row that names its stream (`PlaybackV3SubtitleInventoryItem
+    /// .embeddedStreamIndex`) answers directly. Otherwise the inventory's
+    /// `embedded` entries are in container stream order, which is the same
+    /// order the catalog lists them in, so the *n*-th embedded catalog track is
+    /// the *n*-th embedded inventory entry — and that entry carries the
+    /// authoritative `combined_index`. An empty inventory means no plan has
+    /// published one yet, so the counted derivation stands in.
     static func serverCombinedSubtitleIndex(
         ffmpegStreamIndex: Int,
         in version: FileVersion,
@@ -401,6 +404,9 @@ enum ApplePlaybackV3PlanAdapter {
         guard !inventory.isEmpty else {
             return serverCombinedSubtitleIndex(ffmpegStreamIndex: ffmpegStreamIndex, in: version)
         }
+        if let named = inventory.first(where: { $0.embeddedStreamIndex == ffmpegStreamIndex }) {
+            return named.combinedIndex
+        }
         guard let embeddedOrdinal = embeddedSubtitleOrdinal(
             ffmpegStreamIndex: ffmpegStreamIndex,
             in: version
@@ -408,7 +414,9 @@ enum ApplePlaybackV3PlanAdapter {
             return nil
         }
         let embeddedInventory = inventory.filter { $0.source == "embedded" }
-        guard embeddedInventory.indices.contains(embeddedOrdinal) else { return nil }
+        guard embeddedInventory.indices.contains(embeddedOrdinal),
+              // A row that names another stream is not this one.
+              embeddedInventory[embeddedOrdinal].embeddedStreamIndex == nil else { return nil }
         return embeddedInventory[embeddedOrdinal].combinedIndex
     }
 
@@ -469,6 +477,12 @@ enum ApplePlaybackV3PlanAdapter {
             // Not an embedded track: external and downloaded ordinals have no
             // FFmpeg stream to select.
             return nil
+        }
+        // The row's own identity wins. Counting catalog tracks is the last
+        // resort: any disagreement between the two lists would name another
+        // stream, or none, and send the pick to a whole-file server extract.
+        if let named = embeddedInventory[embeddedOrdinal].embeddedStreamIndex {
+            return named
         }
         let embedded = (version.subtitleTracks ?? []).filter { $0.external != true }
         guard embedded.indices.contains(embeddedOrdinal) else { return nil }

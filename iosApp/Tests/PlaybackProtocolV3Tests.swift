@@ -247,6 +247,67 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertTrue(other.canApplyLocally(to: remux, isMounted: false, serverCarriesRemuxSubtitleRenditions: true))
     }
 
+    func testInventoryRowsDecodeStreamIdentityAndFallBackToTheSidecarURL() throws {
+        let object = try PlaybackV3FixtureTestSupport.v2DecisionObject(bundleClass: Self.self)
+        let original = try XCTUnwrap(object["playback_plan"] as? [String: Any])
+        var plan = original
+        var subtitle = try XCTUnwrap(plan["subtitle"] as? [String: Any])
+        var inventory = try XCTUnwrap(subtitle["inventory"] as? [[String: Any]])
+        inventory[1]["stream_index"] = 3
+        inventory[1]["container_track_id"] = "4"
+        inventory[1]["native_selectable"] = true
+        subtitle["inventory"] = inventory
+        plan["subtitle"] = subtitle
+        let row = try PlaybackV3FixtureTestSupport.v2Plan(plan).subtitle.inventory[1]
+        XCTAssertEqual(row.streamIndex, 3)
+        XCTAssertEqual(row.containerTrackId, "4")
+        XCTAssertEqual(row.nativeSelectable, true)
+        XCTAssertEqual(row.embeddedStreamIndex, 3, "the published index outranks the URL's")
+
+        // A server without the fields still names each embedded stream on its
+        // sidecar URL; external, downloaded and URL-less rows name none.
+        let older = try PlaybackV3FixtureTestSupport.v2Plan(original).subtitle.inventory
+        XCTAssertNil(older[1].streamIndex)
+        XCTAssertNil(older[1].containerTrackId)
+        XCTAssertNil(older[1].nativeSelectable)
+        XCTAssertEqual(older.map(\.embeddedStreamIndex), [nil, 0, 1, nil, nil])
+    }
+
+    /// Counting catalog tracks against inventory rows is the last resort: a
+    /// catalog that disagrees with the server would move the pick to another
+    /// stream, or to none, which mounts the whole-file server extract.
+    func testEmbeddedRowsUseTheirOwnStreamIdentityBeforeCountingCatalogTracks() throws {
+        let version = makeVersion(container: "mkv", videoCodec: "h264", audioCodec: "aac", subtitleTracks: [
+            makeSubtitle(index: 11, codec: "srt", external: false, path: nil),
+            makeSubtitle(index: 12, codec: "srt", external: false, path: nil),
+            makeSubtitle(index: 13, codec: "srt", external: false, path: nil),
+        ])
+        let inventory = [
+            makeInventoryItem(combinedIndex: 7, source: "embedded", streamIndex: 12),
+            makeInventoryItem(combinedIndex: 8, source: "embedded", urlQuery: "file_id=42&embedded_stream_index=14"),
+            makeInventoryItem(combinedIndex: 9, source: "embedded"),
+        ]
+        let plan = makePlan(container: "mkv", subtitleInventory: inventory)
+        XCTAssertEqual(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan, version: version).map(\.ffIndex),
+                       [12, 14, 13])
+        XCTAssertEqual(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan).map(\.ffIndex), [12, 14, nil])
+
+        XCTAssertEqual(ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
+            serverCombinedIndex: 8, in: version, inventory: inventory), 14)
+        XCTAssertEqual(ApplePlaybackV3PlanAdapter.ffmpegSubtitleStreamIndex(
+            serverCombinedIndex: 9, in: version, inventory: inventory), 13)
+        for (stream, combined) in [(12, 7), (14, 8), (13, 9), (11, nil)] as [(Int, Int?)] {
+            XCTAssertEqual(ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
+                ffmpegStreamIndex: stream, in: version, inventory: inventory), combined, "stream \(stream)")
+        }
+
+        // A local switch on the open file reads the row, even from a picker
+        // row built without a catalog version.
+        let row = try XCTUnwrap(ApplePlaybackV3PlanAdapter.subtitlePickerTracks(plan: plan).first)
+        let choice = try XCTUnwrap(ProtocolV3SubtitleSelection(track: row, plan: plan))
+        XCTAssertEqual(choice.embeddedStreamIndex(for: row, in: plan), 12)
+    }
+
     func testNativePickerIdentityRemainsResolvableForSecondaryAfterPrimaryClears() throws {
         let nativePlan = makePlan(
             container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
@@ -3354,22 +3415,29 @@ final class PlaybackProtocolV3Tests: XCTestCase {
     private func makeInventoryItem(
         combinedIndex: Int,
         source: String,
-        delivery: String = "sidecar"
+        delivery: String = "sidecar",
+        codec: String = "srt",
+        streamIndex: Int? = nil,
+        urlQuery: String? = nil
     ) -> PlaybackV3SubtitleInventoryItem {
-        PlaybackV3SubtitleInventoryItem(
+        var item = PlaybackV3SubtitleInventoryItem(
             trackId: "file:42:subtitle:\(combinedIndex)",
             combinedIndex: combinedIndex,
             source: source,
-            codec: "srt",
+            codec: codec,
             language: "en",
             label: "English",
             forced: false,
             default: false,
             hearingImpaired: false,
             delivery: delivery,
-            url: delivery == "sidecar" ? "/api/v2/stream/session-v3/subtitles/\(combinedIndex)" : nil,
+            url: delivery == "sidecar"
+                ? "/api/v2/stream/session-v3/subtitles/\(combinedIndex)" + (urlQuery.map { "?" + $0 } ?? "")
+                : nil,
             fontBundleUrl: nil
         )
+        item.streamIndex = streamIndex
+        return item
     }
 
     private func makePlayerSubtitle(

@@ -35,15 +35,16 @@ enum ProtocolV3SubtitleSelection: Equatable {
     }
 
     /// Original-file playback already demuxes every embedded subtitle. The
-    /// inventory's combined ordinal is a menu identity; only the catalog's
-    /// FFmpeg index can identify a stream in that opened file.
+    /// inventory's combined ordinal is a menu identity; only an FFmpeg index
+    /// can identify a stream in that opened file: the row's own, else the
+    /// picker row's catalog-derived one.
     func embeddedStreamIndex(for track: PlayerTrack, in plan: PlaybackV3Plan) -> Int? {
         guard plan.delivery == PlaybackProtocolV3.PlanDelivery.originalHTTP,
               plan.subtitle.mode != PlaybackProtocolV3.SubtitleMode.burnIn,
               appTrackID(in: plan) == track.trackId,
               let item = inventoryItem(in: plan), item.source == "embedded",
               let codec = item.codec, let container = plan.stream.container,
-              let streamIndex = track.ffIndex, streamIndex >= 0,
+              let streamIndex = item.embeddedStreamIndex ?? track.ffIndex, streamIndex >= 0,
               ApplePlaybackV3Capabilities.nativeEmbeddedSubtitleCapabilities(containers: [container])
                 .contains(where: { $0.codecs.contains(ApplePlaybackV3Capabilities.normalizedSubtitleCodec(codec)) })
         else { return nil }
