@@ -1748,6 +1748,7 @@ class PlayerViewModel {
             return upstreamMeter.linkThroughputKbps
         }
         observeBufferingHostInputs()
+        observeHLSRenditionTextStyle()
         observeBufferingConnectivity()
         observeBufferingSurfaceVisibility()
     }
@@ -11336,6 +11337,21 @@ extension PlayerViewModel {
                 eventId: entry.summaryEventId, planStartedAt: entry.adoptedAt
             )
         }
+    }
+
+    /// Hands Silo's subtitle appearance to the subtitles AVPlayer draws itself,
+    /// a server HLS stream's renditions, whenever the appearance changes.
+    private func observeHLSRenditionTextStyle() {
+        guard !isDisposed else { return }
+        let rules = withObservationTracking {
+            HLSRenditionTextStyle.rules(
+                appearance: settings.effectiveSubtitleAppearance,
+                matchesSystemAppearance: settings.subtitleMatchesSystemAppearance
+            )
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.observeHLSRenditionTextStyle() }
+        }
+        aetherPlaybackController.setHLSRenditionTextStyleRules(rules)
     }
 
     /// Keeps the controller's mode, Watch Party suspension and competing-pill
