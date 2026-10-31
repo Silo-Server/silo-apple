@@ -101,7 +101,8 @@ class ServerSetupViewModel {
         do {
             candidates = try buildCandidateURLs()
         } catch {
-            self.error = FormError(error.localizedDescription)
+            let invalidPort = (error as? ServerSetupValidationError) == .invalidPort
+            self.error = FormError(error.localizedDescription, field: invalidPort ? .port : nil)
             return
         }
 
