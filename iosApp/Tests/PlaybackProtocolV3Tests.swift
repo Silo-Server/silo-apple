@@ -1,4 +1,5 @@
 import AetherEngine
+import AVFoundation
 import Foundation
 import XCTest
 @testable import Silo
@@ -431,6 +432,30 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let controller = try AetherPlaybackController()
         controller.beginLoad(spec)
         return controller
+    }
+
+    /// The rendition deselect turns automatic media selection off on Aether's
+    /// native player, which later streams reuse, so the player's own value
+    /// comes back with the release.
+    func testAutomaticMediaSelectionComesBackWhenTheRenditionStreamGoes() {
+        let player = AVPlayer()
+        var hold = AetherPlaybackController.AutomaticMediaSelectionHold()
+        hold.suspend(on: player)
+        hold.suspend(on: player)
+        XCTAssertFalse(player.appliesMediaSelectionCriteriaAutomatically)
+        hold.release()
+        XCTAssertTrue(player.appliesMediaSelectionCriteriaAutomatically,
+                      "a second deselect on the same player keeps the value from before the first")
+        hold.release()
+        XCTAssertTrue(player.appliesMediaSelectionCriteriaAutomatically, "a second release changes nothing")
+
+        let next = AVPlayer()
+        next.appliesMediaSelectionCriteriaAutomatically = false
+        hold.suspend(on: player)
+        hold.suspend(on: next)
+        XCTAssertTrue(player.appliesMediaSelectionCriteriaAutomatically, "moving to another player releases the first")
+        hold.release()
+        XCTAssertFalse(next.appliesMediaSelectionCriteriaAutomatically, "a player that had it off keeps it off")
     }
 
     /// Off on a stream whose renditions are all AUTOSELECT=YES is held, so the
