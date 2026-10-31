@@ -464,6 +464,9 @@ final class PlaybackProtocolV3Tests: XCTestCase {
                      "the row's primary route stays its rendition, not the sidecar")
         let sidecar = try XCTUnwrap(controller.engine.subtitleTracks.first { $0.isExternal }?.id)
         XCTAssertEqual(controller.appSubtitleID(forAetherID: sidecar), english)
+        // The sidecar's cues are on the movie timeline, unlike the rendition.
+        XCTAssertTrue(controller.subtitleUsesMovieTimeline(appTrackID: english, slot: .secondary))
+        XCTAssertFalse(controller.subtitleUsesMovieTimeline(appTrackID: english, slot: .primary))
     }
 
     /// A row selects the option carrying its playlist NAME; the 1-based index

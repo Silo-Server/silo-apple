@@ -866,7 +866,10 @@ final class AetherPlaybackController {
     func subtitleUsesMovieTimeline(appTrackID: Int64?, slot: SubtitleSlot) -> Bool {
         let engineID: Int?
         if let appTrackID {
-            engineID = aetherSubtitleID(forAppID: appTrackID)
+            // A listed rendition row plays in the secondary slot from its
+            // sidecar, not from the rendition its primary id resolves to.
+            let secondarySidecar = slot == .secondary ? hlsRenditionSecondarySidecarIDByAppID[appTrackID] : nil
+            engineID = secondarySidecar ?? aetherSubtitleID(forAppID: appTrackID)
         } else {
             // Only the primary slot has an engine-published active identity.
             engineID = slot == .primary ? engine.activeSubtitleTrackIndex : nil
