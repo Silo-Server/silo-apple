@@ -3073,6 +3073,10 @@ class PlayerViewModel {
                         throw CancellationError()
                     }
                     uncommittedPrepared = nil
+                    // A new item or a teardown may have replaced this one
+                    // while the commit was out; its state is not this plan's.
+                    try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
+                    guard self.activeAetherLoadEpoch == priorAetherLoadEpoch else { throw CancellationError() }
                     keepsCurrentPlan = true
                     self.adoptSameTransportProtocolV3Plan(next, selection: selection)
                     self.adoptBufferingPlan(
