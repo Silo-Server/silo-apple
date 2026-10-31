@@ -27,6 +27,9 @@ enum APIv2Error: LocalizedError, Sendable {
     /// A favorites or watchlist read ran past its page budget.
     case incompletePersonalList
     case incompleteCatalogRead
+    /// The profile's Home layout came back with rows that cannot be told
+    /// apart, so it cannot be edited safely.
+    case incompleteHomeLayout
     case unsupportedCatalogReadValue
     /// A settings write answered with a row other than the one it addressed.
     /// The server did something, but not provably what was asked.
@@ -49,6 +52,8 @@ enum APIv2Error: LocalizedError, Sendable {
             return "This item uses a value this client cannot support. Please update the client."
         case .incompleteCatalogRead:
             return "The server returned an incomplete catalog list. Reload to try again."
+        case .incompleteHomeLayout:
+            return "The server returned an incomplete Home layout. Reload to try again."
         case .unexpectedSettingReceipt:
             return "The server's reply to a settings change did not match the change."
         case .invalidCatalogQuery:
