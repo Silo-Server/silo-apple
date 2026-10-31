@@ -2171,17 +2171,7 @@ class PlayerViewModel {
                 )
                 return
             }
-            if protocolV3ReplanIsReport {
-                // A subtitle report would refuse this recovery as busy, then
-                // keep the failed item in place. It runs once the report settles.
-                protocolV3FailureDuringReport = (sourcePlayhead, failure.kind.rawValue, failure.message)
-                return
-            }
-            attemptProtocolV3Replan(
-                position: sourcePlayhead,
-                classification: failure.kind.rawValue,
-                message: failure.message
-            )
+            recoverFailedProtocolV3Item(classification: failure.kind.rawValue, message: failure.message)
             return
         }
         if failure.kind == .sourceRateLimited {
@@ -2329,11 +2319,22 @@ class PlayerViewModel {
     }
 
     private func attemptProtocolV3Recovery(after message: String) {
-        attemptProtocolV3Replan(
-            position: sourcePlayhead,
-            classification: protocolV3FailureClassification(message),
-            message: message
-        )
+        recoverFailedProtocolV3Item(classification: protocolV3FailureClassification(message), message: message)
+    }
+
+    /// A subtitle report in flight would refuse this recovery as busy, and
+    /// its answer would keep the failed item in place. The recovery runs once
+    /// the report settles, and the answer is dropped.
+    private func recoverFailedProtocolV3Item(classification: String, message: String) {
+        guard protocolV3ReplanIsReport else {
+            attemptProtocolV3Replan(position: sourcePlayhead, classification: classification, message: message)
+            return
+        }
+        protocolV3FailureDuringReport = (sourcePlayhead, classification, message)
+        // Playback has stopped, so the room and the player show it.
+        protocolV3ReplanIsReport = false
+        showProtocolV3ReplanLoading()
+        publishWatchPartySnapshot()
     }
 
     /// Rebuilds the committed plan with the account bearer currently held by
@@ -2606,7 +2607,7 @@ class PlayerViewModel {
     /// id recorded before it can vanish or land on a different stream by drain
     /// time; the server identity is what `resolvedAudioTrackIndexForResume` /
     /// `resolvedProtocolV3SubtitleIndexForResume` send, and it survives that.
-    private enum QueuedProtocolV3TrackTarget {
+    enum QueuedProtocolV3TrackTarget {
         case audio(trackId: Int64, selectionIndex: Int?)
         case subtitle(trackId: Int64?, combinedIndex: Int?)
     }
@@ -2649,10 +2650,20 @@ class PlayerViewModel {
     /// the user's tap wrote has been overwritten by the interim plan's. A
     /// deferred replan that re-read the selection would therefore ask the
     /// server for the track the user was already on and silently drop the tap.
-    private struct QueuedProtocolV3TrackChange {
+    struct QueuedProtocolV3TrackChange {
         let classification: String
         let message: String
         let target: QueuedProtocolV3TrackTarget?
+    }
+
+    /// What stays queued once a newer subtitle pick lands: a subtitle change
+    /// queued before it would bring the superseded track back, and a queued
+    /// audio change still runs.
+    static func queuedTrackChangeAfterSubtitlePick(
+        _ queued: QueuedProtocolV3TrackChange?
+    ) -> QueuedProtocolV3TrackChange? {
+        if case .subtitle? = queued?.target { return nil }
+        return queued
     }
 
     /// Re-publishes a queued track pick just before the deferred replan reads
@@ -3026,7 +3037,10 @@ class PlayerViewModel {
                 uncommittedPrepared = prepared
                 guard !Task.isCancelled,
                       !self.isDisposed,
-                      currentStreamLoadGeneration == self.streamLoadGeneration else {
+                      currentStreamLoadGeneration == self.streamLoadGeneration,
+                      // The item this report kept failed while it was out:
+                      // the failure's recovery replaces it as this task exits.
+                      self.protocolV3FailureDuringReport == nil else {
                     throw CancellationError()
                 }
                 // The server answered with a plan: any reconnect ends here,
@@ -8094,11 +8108,11 @@ class PlayerViewModel {
         }
         if protocolV3ReplanIsReport {
             // Newer than the rendition the report in flight names, so its
-            // answer must not select over this track. Nor may an older
-            // subtitle change queued behind it; a queued audio change runs.
+            // answer must not select over this track, nor may an older
+            // subtitle change queued behind it.
             protocolV3LocalPickDuringReport = true
             pendingProtocolV3SubtitleReport = nil
-            if case .subtitle? = pendingProtocolV3TrackChange?.target { pendingProtocolV3TrackChange = nil }
+            pendingProtocolV3TrackChange = Self.queuedTrackChangeAfterSubtitlePick(pendingProtocolV3TrackChange)
         }
         localProtocolV3SubtitleSelection = nil
         if savesPreference { persistSubtitleSelection(track) }
@@ -9952,10 +9966,7 @@ class PlayerViewModel {
         if protocolV3ReplanTask != nil {
             protocolV3LocalPickDuringReport = true
             pendingProtocolV3SubtitleReport = selection.isStreamRenditionChoice(in: plan) ? selection : nil
-            // A subtitle change queued behind the report is older than this
-            // pick and would bring the superseded track back. A queued audio
-            // change still runs.
-            if case .subtitle? = pendingProtocolV3TrackChange?.target { pendingProtocolV3TrackChange = nil }
+            pendingProtocolV3TrackChange = Self.queuedTrackChangeAfterSubtitlePick(pendingProtocolV3TrackChange)
         } else {
             reportProtocolV3SubtitleSwitch(selection)
         }

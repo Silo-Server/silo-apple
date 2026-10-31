@@ -592,6 +592,23 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(ProtocolV3SubtitleSelection.off.isStreamRenditionChoice(in: makeHLSRenditionPlan()))
     }
 
+    /// A subtitle pick made while a report is out, local or live AI, is newer
+    /// than a subtitle change queued behind that report. A queued audio
+    /// change still runs.
+    func testASubtitlePickDropsOnlyAQueuedSubtitleChange() {
+        typealias Change = PlayerViewModel.QueuedProtocolV3TrackChange
+        let after = PlayerViewModel.queuedTrackChangeAfterSubtitlePick
+        XCTAssertNil(after(Change(classification: "subtitle_track_changed", message: "",
+                                  target: .subtitle(trackId: 7, combinedIndex: 3))))
+        XCTAssertNil(after(Change(classification: "subtitle_track_changed", message: "",
+                                  target: .subtitle(trackId: nil, combinedIndex: nil))),
+                     "a queued Off is a subtitle change too")
+        XCTAssertEqual(after(Change(classification: "audio_track_changed", message: "",
+                                    target: .audio(trackId: 2, selectionIndex: 1)))?.classification,
+                       "audio_track_changed")
+        XCTAssertNil(after(nil))
+    }
+
     func testNativePickerIdentityRemainsResolvableForSecondaryAfterPrimaryClears() throws {
         let nativePlan = makePlan(
             container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",
