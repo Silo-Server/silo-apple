@@ -641,6 +641,29 @@ struct PlaybackV3SubtitleInventoryItem: Codable, Equatable {
     /// and downloaded SRT, WebVTT, ASS, and SSA tracks. Opaque, and stable
     /// across sessions and inventory order.
     var syncKey: String? = nil
+    /// Embedded rows only, on servers that publish them: the row's absolute
+    /// probed stream index (the FFmpeg id `embedded.stream_index` uses), its
+    /// container track id (Matroska TrackNumber or MP4 `tkhd` ID), and
+    /// whether selecting it on this plan's stream would plan `embedded`.
+    var streamIndex: Int? = nil
+    var containerTrackId: String? = nil
+    var nativeSelectable: Bool? = nil
+}
+
+extension PlaybackV3SubtitleInventoryItem {
+    /// The FFmpeg stream an embedded row names, from the row itself: its
+    /// `stream_index`, else the `embedded_stream_index` the server puts on
+    /// every embedded sidecar URL. Nil for other sources, or when the server
+    /// published neither; only then may a caller count catalog tracks.
+    var embeddedStreamIndex: Int? {
+        guard source == "embedded" else { return nil }
+        if let streamIndex { return streamIndex >= 0 ? streamIndex : nil }
+        guard let url,
+              let value = URLComponents(string: url)?.queryItems?
+                .first(where: { $0.name == "embedded_stream_index" })?.value,
+              let index = Int(value), index >= 0 else { return nil }
+        return index
+    }
 }
 
 struct PlaybackV3EmbeddedSubtitle: Codable, Equatable {
