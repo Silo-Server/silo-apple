@@ -486,6 +486,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(resolve([nil, nil]), [english: 200_000, spanish: 200_001])
         XCTAssertEqual(resolve(["English"]), [english: 200_000, spanish: 200_001],
                        "names that cannot be lined up with the options are ignored")
+        XCTAssertEqual(resolve(["Español", nil]), [spanish: 200_000],
+                       "an index fallback never takes an option another row matched by NAME")
         XCTAssertEqual(AetherPlaybackController.hlsSubtitleRenditionEngineIDs(
             slots: slots, playlistNames: nil, legibleOptionTrackIDs: [200_000]), [english: 200_000],
             "a row past the published options stays unresolved")

@@ -2865,11 +2865,14 @@ class PlayerViewModel {
                     self.restoreReplacedMarkers(replacedMarkers)
                 }
                 // A pick made while a report was out is newer than anything
-                // this replan replaced, and already showing.
+                // this replan replaced, and already showing, so it stays the
+                // local selection: none, for a live AI pick.
                 let newerLocalPick = self.protocolV3LocalPickDuringReport
                     ? self.localProtocolV3SubtitleSelection : nil
                 self.activePreparedProtocolV3 = priorPreparedProtocolV3
-                self.localProtocolV3SubtitleSelection = newerLocalPick ?? priorLocalSubtitleSelection
+                if !self.protocolV3LocalPickDuringReport {
+                    self.localProtocolV3SubtitleSelection = priorLocalSubtitleSelection
+                }
                 self.lastLoadRequest = priorLastLoadRequest
                 if let newerLocalPick, let plan = priorPreparedProtocolV3?.plan {
                     self.lastLoadRequest = self.lastLoadRequest?.adoptingLocalProtocolV3SubtitleSelection(newerLocalPick, plan: plan)
@@ -8057,6 +8060,12 @@ class PlayerViewModel {
             )
             scheduleHideControls()
             return
+        }
+        if protocolV3ReplanIsReport {
+            // Newer than the rendition the report in flight names, so its
+            // answer must not select over this track.
+            protocolV3LocalPickDuringReport = true
+            pendingProtocolV3SubtitleReport = nil
         }
         localProtocolV3SubtitleSelection = nil
         if savesPreference { persistSubtitleSelection(track) }
