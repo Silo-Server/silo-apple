@@ -1,4 +1,5 @@
 import AetherEngine
+import AVFoundation
 import Foundation
 import XCTest
 @testable import Silo
@@ -433,6 +434,30 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         return controller
     }
 
+    /// The rendition deselect turns automatic media selection off on Aether's
+    /// native player, which later streams reuse, so the player's own value
+    /// comes back with the release.
+    func testAutomaticMediaSelectionComesBackWhenTheRenditionStreamGoes() {
+        let player = AVPlayer()
+        var hold = AetherPlaybackController.AutomaticMediaSelectionHold()
+        hold.suspend(on: player)
+        hold.suspend(on: player)
+        XCTAssertFalse(player.appliesMediaSelectionCriteriaAutomatically)
+        hold.release()
+        XCTAssertTrue(player.appliesMediaSelectionCriteriaAutomatically,
+                      "a second deselect on the same player keeps the value from before the first")
+        hold.release()
+        XCTAssertTrue(player.appliesMediaSelectionCriteriaAutomatically, "a second release changes nothing")
+
+        let next = AVPlayer()
+        next.appliesMediaSelectionCriteriaAutomatically = false
+        hold.suspend(on: player)
+        hold.suspend(on: next)
+        XCTAssertTrue(player.appliesMediaSelectionCriteriaAutomatically, "moving to another player releases the first")
+        hold.release()
+        XCTAssertFalse(next.appliesMediaSelectionCriteriaAutomatically, "a player that had it off keeps it off")
+    }
+
     /// Off on a stream whose renditions are all AUTOSELECT=YES is held, so the
     /// controller keeps AVPlayer from showing one by itself; a pick ends it.
     func testRenditionStreamHoldsOffUntilATrackIsPicked() throws {
@@ -486,6 +511,8 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertEqual(resolve([nil, nil]), [english: 200_000, spanish: 200_001])
         XCTAssertEqual(resolve(["English"]), [english: 200_000, spanish: 200_001],
                        "names that cannot be lined up with the options are ignored")
+        XCTAssertEqual(resolve(["Español", nil]), [spanish: 200_000],
+                       "an index fallback never takes an option another row matched by NAME")
         XCTAssertEqual(AetherPlaybackController.hlsSubtitleRenditionEngineIDs(
             slots: slots, playlistNames: nil, legibleOptionTrackIDs: [200_000]), [english: 200_000],
             "a row past the published options stays unresolved")
@@ -588,6 +615,23 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertTrue(ProtocolV3SubtitleSelection.track("file:42:subtitle:1").isStreamRenditionChoice(in: plan))
         XCTAssertTrue(ProtocolV3SubtitleSelection.off.isStreamRenditionChoice(in: off))
         XCTAssertFalse(ProtocolV3SubtitleSelection.off.isStreamRenditionChoice(in: makeHLSRenditionPlan()))
+    }
+
+    /// A subtitle pick made while a report is out, local or live AI, is newer
+    /// than a subtitle change queued behind that report. A queued audio
+    /// change still runs.
+    func testASubtitlePickDropsOnlyAQueuedSubtitleChange() {
+        typealias Change = PlayerViewModel.QueuedProtocolV3TrackChange
+        let after = PlayerViewModel.queuedTrackChangeAfterSubtitlePick
+        XCTAssertNil(after(Change(classification: "subtitle_track_changed", message: "",
+                                  target: .subtitle(trackId: 7, combinedIndex: 3))))
+        XCTAssertNil(after(Change(classification: "subtitle_track_changed", message: "",
+                                  target: .subtitle(trackId: nil, combinedIndex: nil))),
+                     "a queued Off is a subtitle change too")
+        XCTAssertEqual(after(Change(classification: "audio_track_changed", message: "",
+                                    target: .audio(trackId: 2, selectionIndex: 1)))?.classification,
+                       "audio_track_changed")
+        XCTAssertNil(after(nil))
     }
 
     func testNativePickerIdentityRemainsResolvableForSecondaryAfterPrimaryClears() throws {

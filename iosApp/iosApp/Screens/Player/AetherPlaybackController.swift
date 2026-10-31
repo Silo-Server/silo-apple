@@ -266,6 +266,9 @@ final class AetherPlaybackController {
     /// The current item's playlist `NAME`s once read, so a later option
     /// publication resolves with them instead of falling back to the index.
     private var hlsSubtitleRenditionPlaylistNames: PlaylistNames?
+    /// AVPlayer's automatic media selection, turned off while a stream's
+    /// renditions are deselected and put back when that stream goes.
+    private var automaticMediaSelectionHold = AutomaticMediaSelectionHold()
     private struct PlaylistNames {
         weak var item: AVPlayerItem?
         let names: [String?]
@@ -682,7 +685,7 @@ final class AetherPlaybackController {
     private func deselectHLSSubtitleRenditions(on newItem: AVPlayerItem? = nil) {
         guard hasHLSSubtitleRenditions,
               let player = engine.currentAVPlayer, let item = newItem ?? player.currentItem else { return }
-        player.appliesMediaSelectionCriteriaAutomatically = false
+        automaticMediaSelectionHold.suspend(on: player)
         Task { @MainActor [weak self] in
             guard let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
                   let self, player.currentItem === item,
@@ -772,6 +775,31 @@ final class AetherPlaybackController {
         hlsSubtitleRenditionPlaylistNames = nil
         holdsHLSSubtitleRenditionsOff = false
         hlsRenditionSecondarySidecarIDByAppID = [:]
+        automaticMediaSelectionHold.release()
+    }
+
+    /// Turns a player's automatic media selection off and later puts back the
+    /// value it had. Aether keeps its native player across consecutive loads,
+    /// so without the release a later stream, renditions or not, would start
+    /// with automatic selection still off.
+    @MainActor
+    struct AutomaticMediaSelectionHold {
+        private weak var player: AVPlayer?
+        private var wasOn = true
+
+        mutating func suspend(on player: AVPlayer) {
+            if self.player !== player {
+                release()
+                self.player = player
+                wasOn = player.appliesMediaSelectionCriteriaAutomatically
+            }
+            player.appliesMediaSelectionCriteriaAutomatically = false
+        }
+
+        mutating func release() {
+            player?.appliesMediaSelectionCriteriaAutomatically = wasOn
+            player = nil
+        }
     }
 
     /// A replacement item starts on AVPlayer's own selection again. Called as
@@ -849,9 +877,10 @@ final class AetherPlaybackController {
     /// option whose playlist `NAME` it carries, else the option at its group
     /// index. `playlistNames` is in group order, nil when the item exposes
     /// none; a list whose length differs from the published options cannot be
-    /// lined up with them and is ignored. A row matching no option, or one
-    /// another row already took, stays unresolved rather than selecting the
-    /// wrong track.
+    /// lined up with them and is ignored. Every NAME match is placed before
+    /// any index fallback, and the fallback never takes an option named for
+    /// a row. A row matching no option, or one another row already took, stays
+    /// unresolved rather than selecting the wrong track.
     nonisolated static func hlsSubtitleRenditionEngineIDs(
         slots: [Int64: HLSSubtitleRenditionSlot],
         playlistNames: [String?]?,
@@ -860,9 +889,20 @@ final class AetherPlaybackController {
         let names = playlistNames?.count == legibleOptionTrackIDs.count ? playlistNames : nil
         var resolved: [Int64: Int] = [:]
         var taken = Set<Int>()
+        var unmatched: [(appID: Int64, slot: HLSSubtitleRenditionSlot)] = []
         for (appID, slot) in slots.sorted(by: { $0.value.index < $1.value.index }) {
-            let ordinal = names?.firstIndex(where: { $0 == slot.name }) ?? (slot.index - 1)
-            guard legibleOptionTrackIDs.indices.contains(ordinal), taken.insert(ordinal).inserted else { continue }
+            if let ordinal = names?.firstIndex(where: { $0 == slot.name }), taken.insert(ordinal).inserted {
+                resolved[appID] = legibleOptionTrackIDs[ordinal]
+            } else {
+                unmatched.append((appID, slot))
+            }
+        }
+        let slotNames = Set(slots.values.map(\.name))
+        for (appID, slot) in unmatched {
+            let ordinal = slot.index - 1
+            guard legibleOptionTrackIDs.indices.contains(ordinal),
+                  names?[ordinal].map(slotNames.contains) != true,
+                  taken.insert(ordinal).inserted else { continue }
             resolved[appID] = legibleOptionTrackIDs[ordinal]
         }
         return resolved
