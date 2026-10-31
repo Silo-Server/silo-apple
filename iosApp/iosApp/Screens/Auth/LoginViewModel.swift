@@ -97,7 +97,7 @@ final class LoginViewModel {
     @MainActor
     func login(router: AppRouter) async -> Bool {
         guard !username.trimmingCharacters(in: .whitespaces).isEmpty else {
-            error = FormError("Please enter your username.")
+            error = FormError("Please enter your username.", field: .username)
             return false
         }
         guard !password.isEmpty else {
