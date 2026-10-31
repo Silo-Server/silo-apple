@@ -313,6 +313,7 @@ class PlayerViewModel {
         pendingProtocolV3TrackChange = nil
         pendingProtocolV3SubtitleReport = nil
         protocolV3LocalPickDuringReport = false
+        protocolV3FailureDuringReport = nil
         if forReplacement {
             aetherPlaybackController.prepareForReplacement()
         } else {
@@ -1066,6 +1067,10 @@ class PlayerViewModel {
     /// It is newer than the answer that report gets, so that answer must not
     /// select over it.
     private var protocolV3LocalPickDuringReport = false
+    /// A failure of the item a report keeps playing. The busy replan gate
+    /// refuses its recovery while the report is out, so it is recovered once
+    /// the report settles, unless the answer replaced the item.
+    private var protocolV3FailureDuringReport: (position: Double, classification: String, message: String)?
     /// The running mid-stream reconnect (§6.2), its pending attempt timer,
     /// and the start request a new session uses when the old one is gone.
     @ObservationIgnored
@@ -2160,6 +2165,12 @@ class PlayerViewModel {
                 )
                 return
             }
+            if protocolV3ReplanIsReport {
+                // A subtitle report would refuse this recovery as busy, then
+                // keep the failed item in place. It runs once the report settles.
+                protocolV3FailureDuringReport = (sourcePlayhead, failure.kind.rawValue, failure.message)
+                return
+            }
             attemptProtocolV3Replan(
                 position: sourcePlayhead,
                 classification: failure.kind.rawValue,
@@ -2926,7 +2937,12 @@ class PlayerViewModel {
                 // A start-deadline lowering that left the failed load
                 // installed hands that load's failure to the usual recovery.
                 let heldRecovery = issuedByBufferingQuality ? self.takeHeldStartDeadlineRecovery() : nil
-                if let recovery = chainedLoadFailureRecovery ?? heldRecovery {
+                // The item a report kept failed while it was out. Recovered
+                // only if nothing has replaced that item since.
+                let keptItemFailure = currentStreamLoadGeneration == self.streamLoadGeneration
+                    ? self.protocolV3FailureDuringReport : nil
+                self.protocolV3FailureDuringReport = nil
+                if let recovery = chainedLoadFailureRecovery ?? heldRecovery ?? keptItemFailure {
                     self.attemptProtocolV3Replan(
                         position: recovery.position,
                         classification: recovery.classification,
@@ -3090,7 +3106,15 @@ class PlayerViewModel {
                     adoptedBufferingPlan = true
                     return
                 }
-                if keepsPlaying { self.showProtocolV3ReplanLoading() }
+                if keepsPlaying {
+                    // The answer needs a new transport, so the report becomes
+                    // a load like any other replan, and that load replaces a
+                    // failed item.
+                    self.protocolV3ReplanIsReport = false
+                    self.protocolV3FailureDuringReport = nil
+                    self.showProtocolV3ReplanLoading()
+                    self.publishWatchPartySnapshot()
+                }
                 // Set only for a load: the item kept in place keeps playing
                 // from where it is, not from where the request was sent.
                 self.pendingExternalSubtitles = prepared.session.subtitleUrls ?? []
@@ -5849,6 +5873,7 @@ class PlayerViewModel {
         pendingProtocolV3TrackChange = nil
         pendingProtocolV3SubtitleReport = nil
         protocolV3LocalPickDuringReport = false
+        protocolV3FailureDuringReport = nil
         seekReplanTask?.cancel()
         seekReplanTask = nil
         cancelNextUpFlow()
@@ -11792,7 +11817,9 @@ extension PlayerViewModel {
         let position = aetherPlaybackController.activeSpec?.timeline.sourcePosition(
             forPlayerTime: engine.clock.currentTime
         ) ?? 0
-        let transitioning = freshLoadTask != nil || protocolV3ReplanTask != nil
+        // A subtitle report keeps the running stream, so it is no transition
+        // unless its answer turns it into a load.
+        let transitioning = freshLoadTask != nil || (protocolV3ReplanTask != nil && !protocolV3ReplanIsReport)
         let seeking = seekReplanTask != nil || engine.playbackPhase == .seeking
         let waitingForMedia: Bool
         switch engine.playbackPhase {
