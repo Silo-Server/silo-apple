@@ -141,19 +141,30 @@ enum ApplePlaybackV3Capabilities {
 
     // The pinned Aether demuxer exposes FFmpeg stream ids and drains text and
     // bitmap packets from the original source. XSUB has no shipped decoder.
+    // Transport streams (`ts`, and `m2ts` for Blu-ray BDAV) claim PGS only:
+    // Aether reassembles a PGS display set split across MPEG-TS PES packets
+    // before decoding it. Other codecs in a transport stream keep the server's
+    // sidecar or burn-in route.
     static func nativeEmbeddedSubtitleCapabilities(containers: [String]) -> [PlaybackV3NativeEmbeddedSubtitleCapability] {
         var seen = Set<String>()
         return containers.map { $0.lowercased() == "matroska" ? "mkv" : $0.lowercased() }
-            .filter { ["mkv", "mp4", "mov", "m4v", "webm"].contains($0) && seen.insert($0).inserted }.map {
+            .filter { ["mkv", "mp4", "mov", "m4v", "webm", "ts", "m2ts"].contains($0) && seen.insert($0).inserted }.map {
             PlaybackV3NativeEmbeddedSubtitleCapability(
                 container: $0,
-                codecs: $0 == "mkv"
-                    ? ["subrip", "ass", "ssa", "webvtt", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]
-                    : ($0 == "webm" ? ["webvtt"] : ["mov_text"]),
+                codecs: nativeEmbeddedSubtitleCodecs(container: $0),
                 trackIdentity: "ffmpeg_stream_index",
                 assStyling: true,
                 fontAttachments: true
             )
+        }
+    }
+
+    private static func nativeEmbeddedSubtitleCodecs(container: String) -> [String] {
+        switch container {
+        case "mkv": return ["subrip", "ass", "ssa", "webvtt", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]
+        case "webm": return ["webvtt"]
+        case "ts", "m2ts": return ["hdmv_pgs_subtitle"]
+        default: return ["mov_text"]
         }
     }
 

@@ -366,14 +366,16 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertEqual(englishPick([externalPGS, xsub, externalText]), .select(externalText))
     }
 
-    /// Native embedded bitmap rendering is per container: MKV only. Embedded
-    /// PGS in MP4 or a Blu-ray M2TS needs a burn-in, so a sidecar wins there.
-    func testEmbeddedPGSOutsideMKVLosesToExternalText() {
+    /// Native embedded bitmap rendering is per container: PGS plays from MKV
+    /// and from a transport stream (TS, Blu-ray M2TS). Embedded PGS in MP4
+    /// needs a burn-in, so a sidecar wins there.
+    func testEmbeddedPGSLosesToExternalTextOnlyWhereItNeedsABurnIn() {
         let external = track(id: 0, lang: "eng", codec: "srt", external: true)
         let pgs = track(id: 3, lang: "eng", codec: "hdmv_pgs_subtitle")
         XCTAssertEqual(englishPick([external, pgs], sourceContainer: "mkv"), .select(pgs))
+        XCTAssertEqual(englishPick([external, pgs], sourceContainer: "m2ts"), .select(pgs))
+        XCTAssertEqual(englishPick([external, pgs], sourceContainer: "ts"), .select(pgs))
         XCTAssertEqual(englishPick([external, pgs], sourceContainer: "mp4"), .select(external))
-        XCTAssertEqual(englishPick([external, pgs], sourceContainer: "m2ts"), .select(external))
     }
 
     func testBurnInTrackStillWinsWhenItIsTheOnlyMatch() {
