@@ -329,7 +329,8 @@ struct TVLoginView: View {
                     text: $loginVM.username,
                     focus: $focusedField,
                     equals: .username,
-                    content: .username
+                    content: .username,
+                    isError: loginVM.error?.field == .username
                 )
                 // Advance to the password field once the username is entered.
                 .submitLabel(.next)
@@ -343,7 +344,7 @@ struct TVLoginView: View {
                         equals: .password,
                         content: .password,
                         isSecure: !showPassword,
-                        isError: loginVM.error != nil
+                        isError: loginVM.error != nil && loginVM.error?.field != .username
                     )
                     // Hand focus to the Sign In button once the password is entered.
                     .submitLabel(.done)
@@ -567,7 +568,7 @@ struct TVLoginView: View {
             qrVM.finishPasswordSignIn(succeeded: succeeded)
             if !succeeded {
                 passwordFailures += 1
-                focusedField = .password
+                focusedField = loginVM.error?.field == .username ? .username : .password
             }
         }
     }

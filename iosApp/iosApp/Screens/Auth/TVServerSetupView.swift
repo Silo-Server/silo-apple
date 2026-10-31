@@ -162,7 +162,7 @@ struct TVServerSetupView: View {
                 focus: $focusedField,
                 equals: .host,
                 content: .url,
-                isError: viewModel.error != nil
+                isError: viewModel.error != nil && viewModel.error?.field != .port
             )
             .frame(width: 760)
             .padding(.top, 40)
@@ -209,7 +209,8 @@ struct TVServerSetupView: View {
                         text: $viewModel.port,
                         focus: $focusedField,
                         equals: .port,
-                        content: .number
+                        content: .number,
+                        isError: viewModel.error?.field == .port
                     )
                     .frame(width: 250)
                     .onSubmit { focusAfterKeyboard = .connect }
