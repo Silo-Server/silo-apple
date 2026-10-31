@@ -203,7 +203,7 @@ final class LibraryDetailScopeTests: XCTestCase {
     }
 
     @MainActor
-    func testAutoplayIntoOnDeckPickClearsScope() throws {
+    func testPlayingAnOnDeckPickClearsScope() throws {
         let model = PlayerViewModel(libraryId: 7)
         defer { model.cleanup() }
         model.loadAndPlay(contentId: "finale", startFromBeginning: false)
