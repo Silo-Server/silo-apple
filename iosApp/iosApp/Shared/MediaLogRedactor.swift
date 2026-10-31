@@ -12,7 +12,7 @@ import Foundation
 /// whitespace, which is exactly how each replacement token begins or is
 /// introduced, so no rule can re-consume another rule's `[redacted…]` marker.
 enum MediaLogRedactor {
-    private static let workingInputLimit = 16_384
+    static let workingInputLimit = 16_384
 
     private struct Rule {
         let regex: NSRegularExpression
