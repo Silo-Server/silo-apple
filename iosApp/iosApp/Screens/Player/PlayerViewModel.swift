@@ -8088,9 +8088,11 @@ class PlayerViewModel {
         }
         if protocolV3ReplanIsReport {
             // Newer than the rendition the report in flight names, so its
-            // answer must not select over this track.
+            // answer must not select over this track. Nor may an older
+            // subtitle change queued behind it; a queued audio change runs.
             protocolV3LocalPickDuringReport = true
             pendingProtocolV3SubtitleReport = nil
+            if case .subtitle? = pendingProtocolV3TrackChange?.target { pendingProtocolV3TrackChange = nil }
         }
         localProtocolV3SubtitleSelection = nil
         if savesPreference { persistSubtitleSelection(track) }
