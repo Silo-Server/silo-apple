@@ -417,9 +417,9 @@ struct SubtitleAutoResolver {
     /// Whether showing the track needs a server burn-in on this player. The
     /// original-file route declares no bitmap sidecars, and renders an embedded
     /// bitmap track only when the container's native capability lists its
-    /// codec (`ApplePlaybackV3Capabilities`): PGS/DVD/DVB in MKV, none in MP4
-    /// or MPEG-TS. So a bitmap sidecar or download qualifies, as does embedded
-    /// bitmap in another container or XSUB. A nil container assumes MKV. The
+    /// codec (`ApplePlaybackV3Capabilities`): PGS/DVD/DVB in MKV, PGS only in
+    /// MPEG-TS and M2TS, none in MP4. So a bitmap sidecar or download
+    /// qualifies, as does other embedded bitmap or XSUB. A nil container assumes MKV. The
     /// inventory's `burn_in_only` is not used: it also marks embedded DVD/DVB,
     /// which play here without one.
     ///
