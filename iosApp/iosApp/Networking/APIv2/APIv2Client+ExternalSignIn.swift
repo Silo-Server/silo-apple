@@ -167,8 +167,9 @@ extension APIv2Client {
     // MARK: Internals
 
     /// An account-scoped request: the bearer only, never `X-Profile-Id`, and
-    /// refused when the active account changed while it ran.
-    private func accountRequest(method: String, path: String, body: Data? = nil,
+    /// refused when the active account changed while it ran. Shared with the
+    /// account password operations (`APIv2Client+AccountPassword.swift`).
+    func accountRequest(method: String, path: String, body: Data? = nil,
                                 expectedAccount: RefreshAccountIdentity) async throws -> HTTPRawResponse {
         try await gate()
         let response = try await mapErrors {
@@ -179,7 +180,7 @@ extension APIv2Client {
         return response
     }
 
-    private func accountJSON<T: Decodable>(method: String, path: String, body: Data? = nil, status: Int,
+    func accountJSON<T: Decodable>(method: String, path: String, body: Data? = nil, status: Int,
                                            expectedAccount: RefreshAccountIdentity) async throws -> T {
         let response = try await accountRequest(method: method, path: path, body: body, expectedAccount: expectedAccount)
         guard response.statusCode == status else { throw APIv2Error.incompleteAuthResponse }
