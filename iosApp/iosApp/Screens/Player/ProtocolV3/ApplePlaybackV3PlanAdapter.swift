@@ -27,6 +27,14 @@ extension PreparedPlaybackV3 {
     }
 }
 
+/// A subtitle rendition of a server HLS stream that a picker row selects: the
+/// EXT-X-MEDIA `NAME` (unique in the group) and its 1-based place in the
+/// SUBTITLES group.
+struct HLSSubtitleRenditionSlot: Equatable {
+    let name: String
+    let index: Int
+}
+
 enum ApplePlaybackV3PlanError: LocalizedError, Equatable {
     case unsupportedDelivery(String)
     case invalidTransport(String)
@@ -135,7 +143,13 @@ enum ApplePlaybackV3PlanAdapter {
                   let selected = plan.selectedSubtitleInventoryItem,
                   selected.trackId == plan.subtitle.trackId,
                   selected.trackId == plan.selectedTracks.subtitle?.id,
-                  selected.source == "embedded" else {
+                  selected.source == "embedded",
+                  // A group listing every track names the selected one twice:
+                  // on the decision and on its row. They must agree.
+                  // A decision without an index names its row by NAME alone.
+                  selected.hlsRendition.map({
+                      $0.name == rendition.name && (rendition.index == nil || $0.index == rendition.index)
+                  }) ?? true else {
                 throw ApplePlaybackV3PlanError.invalidHLSSubtitleRendition("unsupported delivery, mode, or track identity")
             }
         }
@@ -291,6 +305,73 @@ enum ApplePlaybackV3PlanAdapter {
                 isDownloaded: item.source == "downloaded"
             )
         }
+    }
+
+    /// Every picker row the plan's server HLS stream carries as a subtitle
+    /// rendition, keyed by picker id. Under `hls_subtitle_renditions_all_v1`
+    /// that is each embedded row with `hls_rendition`; a plan's single
+    /// pipeline rendition is its group's only option, for the selected row.
+    static func hlsSubtitleRenditionSlots(plan: PlaybackV3Plan) -> [Int64: HLSSubtitleRenditionSlot] {
+        guard plan.stream.protocol == "hls",
+              [PlaybackProtocolV3.PlanDelivery.remuxHLS, PlaybackProtocolV3.PlanDelivery.transcodeHLS]
+                .contains(plan.delivery) else { return [:] }
+        var slots: [Int64: HLSSubtitleRenditionSlot] = [:]
+        for item in plan.subtitle.inventory {
+            guard item.source == "embedded", let rendition = item.hlsRendition, rendition.index >= 1 else { continue }
+            slots[SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: item.combinedIndex)] =
+                HLSSubtitleRenditionSlot(name: rendition.name, index: rendition.index)
+        }
+        if slots.isEmpty,
+           let rendition = plan.subtitle.hlsRendition,
+           PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
+           let combinedIndex = plan.selectedSubtitleCombinedIndex {
+            slots[SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: combinedIndex)] =
+                HLSSubtitleRenditionSlot(name: rendition.name, index: rendition.index ?? 1)
+        }
+        return slots
+    }
+
+    /// Whether `next`, the answer to a replan of `prior`, plays on the HLS
+    /// transport `prior` already plays. The server keeps the running stream
+    /// for a subtitle change among on-demand renditions (§8): it hands back
+    /// the same stream, timeline origin and expiry, the same media and audio,
+    /// and the same renditions, and changes only the subtitle decision. Any
+    /// other difference is a new transport, which the player loads.
+    static func keepsHLSTransport(
+        prior: PlaybackV3Plan,
+        priorSessionId: String?,
+        next: PlaybackV3Plan,
+        nextSessionId: String
+    ) -> Bool {
+        guard priorSessionId == nextSessionId,
+              next.stream.protocol == "hls",
+              next.stream == prior.stream,
+              next.delivery == prior.delivery,
+              next.effectiveMediaFileId == prior.effectiveMediaFileId,
+              next.expiresAt != nil, next.expiresAt == prior.expiresAt,
+              next.timeline.streamOriginSeconds == prior.timeline.streamOriginSeconds,
+              next.timeline.timelineOffsetSeconds == prior.timeline.timelineOffsetSeconds,
+              next.effectiveRecipe == prior.effectiveRecipe,
+              next.selectedTracks.audio == prior.selectedTracks.audio else { return false }
+        let renditions = renditionRows(next)
+        return !renditions.isEmpty && renditions == renditionRows(prior)
+    }
+
+    /// The subtitle choice a plan that keeps its transport makes, when the
+    /// player can apply it there: one of the stream's renditions, or Off. Nil
+    /// for anything else (a sidecar, burn-in), which needs a load.
+    static func sameTransportSubtitleSelection(in plan: PlaybackV3Plan) -> ProtocolV3SubtitleSelection? {
+        if plan.subtitle.mode == PlaybackProtocolV3.SubtitleMode.off { return .off }
+        guard plan.subtitle.hlsRendition != nil,
+              PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
+              let selected = plan.selectedSubtitleInventoryItem,
+              selected.hlsRendition != nil else { return nil }
+        return .track(selected.trackId)
+    }
+
+    private static func renditionRows(_ plan: PlaybackV3Plan) -> [String: PlaybackV3InventoryHLSRendition] {
+        Dictionary(plan.subtitle.inventory.compactMap { item in item.hlsRendition.map { (item.trackId, $0) } },
+                   uniquingKeysWith: { first, _ in first })
     }
 
     /// Server HLS carries only the audio the server packaged for the plan.
