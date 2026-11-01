@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Collection poster card (Skyline §6.3): a standard 2:3 poster built from the
 /// collection's own artwork, sharing the library Browse poster grammar
-/// (`TVMediaCard` — native `.card` focus lift, `cornerRadius`, centered caption)
+/// (`TVMediaCard` — outlined card focus lift, `cornerRadius`, centered caption)
 /// so a collection reads as a first-class browseable tile rather than a
 /// bespoke surface. The caption carries the collection name with an item-count
 /// line beneath it, paralleling the title/year caption on media cards.
@@ -40,14 +40,18 @@ struct TVCollectionPosterCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Self.captionSpacing) {
             posterButton
-            caption.tvCardCaptionFocus(isFocused: isFocused, spacing: Self.captionSpacing)
+            caption.tvCardCaptionFocus(
+                isFocused: isFocused,
+                posterOverhang: TVCardOutlineButtonStyle.focusedOverhang(forHeight: cardHeight),
+                spacing: Self.captionSpacing
+            )
         }
         .frame(width: resolvedCardWidth)
     }
 
     private var posterButton: some View {
         Button(action: action) { poster }
-            .buttonStyle(.card)
+            .buttonStyle(TVCardOutlineButtonStyle())
             .focused($isFocused)
             .applyDefaultFocusIfNeeded(prefersDefaultFocus, namespace: defaultFocusNamespace)
             .tvFocused(focusBinding, equals: focusContentId)

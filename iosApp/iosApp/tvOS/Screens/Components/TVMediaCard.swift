@@ -1,9 +1,9 @@
 #if os(tvOS)
 import SwiftUI
 
-/// tvOS poster card on the cached Nuke renderer. `.nativeCard` uses the system
-/// `.card` lift and parallax; `.ring` uses a white ring and scale to match the
-/// episode and cast rails. The caption below highlights on focus.
+/// tvOS poster card on the cached Nuke renderer. `.nativeCard` uses the shared
+/// card lift and outline; `.ring` uses a smaller scale to match the episode
+/// and cast rails. The caption below highlights on focus.
 struct TVMediaCard: View {
     let title: String
     let posterUrl: String
@@ -31,11 +31,10 @@ struct TVMediaCard: View {
     var aspect: MediaCardAspect = .poster
     var prefersDefaultFocus: Bool = false
     var defaultFocusNamespace: Namespace.ID? = nil
-    /// Focus visual. `.nativeCard` keeps tvOS's `.card` lift + parallax
-    /// (library grids, search). `.ring` matches the white-ring + scale
-    /// treatment of the episode and cast rails so the detail-page
-    /// "Recommended / More Like This" rail reads consistently with its
-    /// neighbours instead of using the subtler native lift.
+    /// Focus visual. `.nativeCard` uses the shared card lift and outline
+    /// (library grids, search). `.ring` matches the smaller scale of the
+    /// episode and cast rails so the detail-page "Recommended / More Like
+    /// This" rail reads consistently with its neighbours.
     var focusTreatment: FocusTreatment = .nativeCard
     /// Optional external focus hook so a parent rail can make this card a
     /// `.defaultFocus` target on d-pad entry. The focusable element is the
@@ -62,11 +61,11 @@ struct TVMediaCard: View {
     private var cardHeight: CGFloat { artworkSize.height }
     private var artworkSize: CGSize { Self.artworkSize(cardWidth: cardWidth, aspect: aspect) }
 
-    /// How far the focused poster extends below its frame: the native lift,
-    /// or half of what the ring style's scale adds.
+    /// How far the focused poster extends below its frame: half of what
+    /// either style's scale adds.
     private var focusedPosterOverhang: CGFloat {
         switch focusTreatment {
-        case .nativeCard: TVCardCaption.cardLiftOverhang
+        case .nativeCard: TVCardOutlineButtonStyle.focusedOverhang(forHeight: cardHeight)
         case .ring: (TVCardFocusButtonStyle().scale - 1) / 2 * cardHeight
         }
     }
@@ -147,15 +146,14 @@ struct TVMediaCard: View {
     private var posterButton: some View {
         switch focusTreatment {
         case .nativeCard:
-            wired(Button(action: action) { posterImage }.buttonStyle(.card))
+            wired(Button(action: action) { posterImage }.buttonStyle(TVCardOutlineButtonStyle()))
         case .ring:
             // The ring is the focus cue; the style suppresses the system halo.
             wired(
                 Button(action: action) {
                     posterImage.tvFocusRing(
                         isFocused: isFocused,
-                        cornerRadius: SiloTheme.cornerRadius,
-                        lineWidth: 4
+                        cornerRadius: SiloTheme.cornerRadius
                     )
                 }
                 .buttonStyle(TVCardFocusButtonStyle(

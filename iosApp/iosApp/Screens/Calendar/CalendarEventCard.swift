@@ -279,7 +279,7 @@ private struct CalendarCardCaption: View {
 
 #if os(tvOS)
 /// Mirrors `MediaCard`'s tvOS structure: the poster lives inside a
-/// `.card`-styled button (native focus lift + parallax) and the caption
+/// `TVCardOutlineButtonStyle` button (focus lift + outline) and the caption
 /// sits outside, brightening when the card is focused.
 private struct FocusableCalendarCard<Content: View>: View {
     let event: CalendarEvent
@@ -295,7 +295,7 @@ private struct FocusableCalendarCard<Content: View>: View {
             Button(action: action) {
                 content()
             }
-            .buttonStyle(.card)
+            .buttonStyle(TVCardOutlineButtonStyle())
             .focused($isFocused)
             .applyShelfFocus(focusedItemId, itemId: event.contentId)
             .accessibilityElement(children: .ignore)

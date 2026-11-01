@@ -33,7 +33,7 @@ struct SectionExploreAllCard: View {
     private var button: some View {
         #if os(tvOS)
         Button(action: action) { tile }
-            .buttonStyle(.card)
+            .buttonStyle(TVCardOutlineButtonStyle(cornerRadius: cornerRadius))
             .applyRowFocus(focusedItemId)
             .accessibilityLabel("\(Self.label), \(rowTitle)")
         #else

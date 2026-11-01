@@ -88,9 +88,9 @@ struct RequestMediaCard: View {
             Button(action: onTap) {
                 posterImage
             }
-            .buttonStyle(.card)
+            .buttonStyle(TVCardOutlineButtonStyle())
             .modifier(OptionalCardFocus(binding: focusBinding, id: focusId))
-            // The caption lives outside the button (so the .card style
+            // The caption lives outside the button (so the card style
             // lifts only the poster) — without an explicit label VoiceOver
             // would announce an image-only "Button".
             .accessibilityLabel(accessibilityTitle)

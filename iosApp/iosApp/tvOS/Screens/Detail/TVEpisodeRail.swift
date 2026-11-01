@@ -501,47 +501,16 @@ private extension View {
     func episodeHomeHoverEffect(
         enabled: Bool,
         isFocused: Bool,
-        reduceMotion: Bool,
-        cornerRadius: CGFloat
+        reduceMotion: Bool
     ) -> some View {
         if enabled {
             self
-                .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.10),
-                                    Color.clear,
-                                    Color.black.opacity(0.04)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .opacity(isFocused ? 1 : 0)
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(isFocused ? 0.45 : 0),
-                                    Color.white.opacity(isFocused ? 0.10 : 0)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: isFocused ? 1.5 : 0
-                        )
-                }
                 .scaleEffect(
                     isFocused && !reduceMotion ? EpisodeHomeHoverMetrics.scale : 1,
                     // Grow evenly around the artwork instead of adding all of
                     // the focused width on its trailing side.
                     anchor: .center
                 )
-                .brightness(isFocused ? 0.035 : 0)
                 .shadow(
                     color: .black.opacity(isFocused ? 0.62 : 0.2),
                     radius: isFocused ? 26 : 8,
@@ -571,8 +540,8 @@ struct TVEpisodeCard: View {
 
     var initialInWatchlist = false
     var cardHeightRatio: CGFloat = 9 / 16
-    /// The Series carousel's look: compact caption, Home's artwork-only
-    /// lift, and no focus or current outline.
+    /// The Series carousel's look: compact caption and Home's artwork-only
+    /// lift.
     var usesAnchoredStyle = false
 
     @State private var actionFeedback = MediaActionFeedback()
@@ -720,14 +689,12 @@ private struct EpisodeCardLabel: View {
     let cardWidth: CGFloat
     let stillHeight: CGFloat
     let stillCornerRadius: CGFloat
-    /// The Series carousel's look: compact caption, Home's artwork-only lift,
-    /// and no focus or current outline.
+    /// The Series carousel's look: compact caption and Home's artwork-only
+    /// lift.
     let usesAnchoredStyle: Bool
 
     @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var showsOutlines: Bool { !usesAnchoredStyle }
 
     var body: some View {
         VStack(alignment: .leading, spacing: TVEpisodeCardCaptionMetrics.gap) {
@@ -815,16 +782,11 @@ private struct EpisodeCardLabel: View {
         }
         .frame(width: cardWidth, height: stillHeight)
         .clipShape(RoundedRectangle(cornerRadius: stillCornerRadius))
+        // Also outline the episode the Play button acts on while focus is
+        // elsewhere, such as on Play itself after opening it from Up Next.
         .tvFocusRing(
-            isFocused: showsOutlines && isFocused,
+            isFocused: isFocused || isCurrent,
             cornerRadius: stillCornerRadius
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: stillCornerRadius)
-                .stroke(
-                    Color.white.opacity(showsOutlines && isCurrent && !isFocused ? 0.7 : 0),
-                    lineWidth: showsOutlines && isCurrent && !isFocused ? 2 : 0
-                )
         )
         // Home lifts only the artwork button, not its caption. Doing the same
         // here keeps caption geometry and carousel offsets perfectly stable.
@@ -833,8 +795,7 @@ private struct EpisodeCardLabel: View {
         .episodeHomeHoverEffect(
             enabled: usesAnchoredStyle,
             isFocused: isFocused,
-            reduceMotion: reduceMotion,
-            cornerRadius: stillCornerRadius
+            reduceMotion: reduceMotion
         )
     }
 
