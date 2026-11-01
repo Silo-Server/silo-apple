@@ -9017,23 +9017,26 @@ class PlayerViewModel {
         selectAudio(audioTracks[nextIndex])
     }
 
+    /// Unsupported rows can't be selected, so cycling skips them rather than
+    /// stopping on one.
     func cycleSubtitleTrack() {
-        guard !subtitleTracks.isEmpty else { return }
+        let playable = subtitleTracks.filter { !$0.hasUnsupportedFormat }
+        guard !playable.isEmpty else { return }
 
         if selectedSubtitleId == nil {
-            selectSubtitle(subtitleTracks[0])
+            selectSubtitle(playable[0])
             return
         }
 
         guard let selectedSubtitleId,
-              let currentIndex = subtitleTracks.firstIndex(where: { $0.trackId == selectedSubtitleId }) else {
+              let currentIndex = playable.firstIndex(where: { $0.trackId == selectedSubtitleId }) else {
             disableSubtitles()
             return
         }
 
-        let nextIndex = subtitleTracks.index(after: currentIndex)
-        if nextIndex < subtitleTracks.count {
-            selectSubtitle(subtitleTracks[nextIndex])
+        let nextIndex = playable.index(after: currentIndex)
+        if nextIndex < playable.count {
+            selectSubtitle(playable[nextIndex])
         } else {
             disableSubtitles()
         }
@@ -9042,7 +9045,7 @@ class PlayerViewModel {
     func toggleSubtitles() {
         if selectedSubtitleId != nil {
             disableSubtitles()
-        } else if let first = subtitleTracks.first {
+        } else if let first = subtitleTracks.first(where: { !$0.hasUnsupportedFormat }) {
             selectSubtitle(first)
         }
     }
