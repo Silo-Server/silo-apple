@@ -603,6 +603,26 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "2", "3", "3"])
     }
 
+    /// A teardown's `off` never takes the installation back. When one
+    /// server is saved under two addresses and the older one is removed,
+    /// its mismatch means the other address owns the installation; a reset
+    /// there would turn that address's pushes off.
+    func testTeardownOffOnAKeyMismatchIsHeldWithoutAReset() async throws {
+        let h = try await makeHarness()
+        h.server.setCapability(Self.resetCapability)
+        let registrar = h.registrar()
+        let owner = try await h.owner()
+        _ = await registrar.register(Self.body(), owner: owner)
+        h.server.enqueueRetirement(.status(503))
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+
+        let result = await registrar.unregister(serverID: Self.serverID, activeOwner: owner)
+
+        XCTAssertEqual(result, .held(reason: "http_403_push_installation_key_mismatch"))
+        XCTAssertTrue(h.server.resets.isEmpty)
+        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "3"])
+    }
+
     func testReceiptForAnotherGenerationIsRefusedAndStoresNoDisplayToken() async throws {
         let h = try await makeHarness()
         h.server.enqueue(.receipt(generation: "7"))

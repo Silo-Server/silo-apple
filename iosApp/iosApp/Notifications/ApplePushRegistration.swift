@@ -154,9 +154,9 @@ enum ApplePushRegistrationWire {
 ///   again. The next changed intent (APNs token, account, login, profile)
 ///   takes the next generation. There is no generation rebase and no new key.
 /// - Reset (403 `push_installation_key_mismatch` from a server that reports
-///   `installation_reset_available`, for a new or pending intent): the key
-///   the server holds is not this record's, and this account owns the
-///   installation. The registrar resets the installation with this record's
+///   `installation_reset_available`, for a new or pending intent other than
+///   a teardown's `off`): the key the server holds is not this record's,
+///   and this account owns the installation. The registrar resets the installation with this record's
 ///   key, allocates the next generation above the journal's with the same
 ///   key, and sends the intent once more. That send never resets again. A
 ///   refused reset holds the refused generation; a reset with no answer
@@ -524,8 +524,12 @@ actor ApplePushRegistrar {
             // server saved under a second address) registered since. A
             // renewal does not take the installation back; only a new intent
             // does, which keeps two such records from trading it on every
-            // renewal.
-            if mayResetInstallation, !command.isRenewal, Self.isInstallationKeyMismatch(error) {
+            // renewal. A teardown's `off` never does either: the record that
+            // holds the installation is the one still saved, and a reset
+            // would turn its pushes off.
+            if mayResetInstallation, !command.isRenewal,
+               command.intent.body.pushMode != ApplePushRegistrationWire.offPushMode,
+               Self.isInstallationKeyMismatch(error) {
                 return await resetInstallation(after: command, body: body, through: channel)
             }
             if let reason = Self.refusalReason(error), !command.isRenewal || Self.isGenerationConflict(error) {
