@@ -101,6 +101,16 @@ struct PlaybackV3TerminalFailure: LocalizedError, Equatable {
     var errorDescription: String? { message }
 }
 
+/// The server refused a subtitle switch: it has no route for the requested
+/// track. Only the switch failed. The session and its current plan keep
+/// playing, so the bridge reports no terminal and keeps its attempt state.
+struct PlaybackV3SubtitleRefusal: LocalizedError, Equatable {
+    let reason: String
+    let message: String
+
+    var errorDescription: String? { message }
+}
+
 /// Secondary metadata shown in the tvOS player overlay's hero strip.
 /// Populated from the playback session at load time via
 /// `PreparedPlayback.playerMetadata(primaryAudioLayout:)` — everything here
@@ -1524,6 +1534,9 @@ actor PlaybackSessionBridge {
         qualityAxes: AppleQualityAxes? = nil,
         audioTrackIndex: Int? = nil,
         subtitleTrackIndex: Int? = nil,
+        // Set by a subtitle switch the player can survive: the current plan
+        // keeps playing if the server refuses the new track.
+        keepsSessionOnSubtitleRefusal: Bool = false,
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil,
         bufferingQualityMode: BufferingQualityMode,
         bandwidthEstimateKbps: Int? = nil,
@@ -1712,6 +1725,13 @@ actor PlaybackSessionBridge {
         }
         switch validatedResponse {
         case .terminal(let terminal):
+            if keepsSessionOnSubtitleRefusal,
+               Self.isSubtitleSwitchRefusal(operation: operation, reason: terminal.reason) {
+                // A refused track ends only the switch. The server kept the
+                // session as it was, and `activeProtocolV3` was never
+                // updated, so the current plan's attempt state still holds.
+                throw PlaybackV3SubtitleRefusal(reason: terminal.reason, message: terminal.message)
+            }
             await emitProtocolV3Terminal(
                 active: active,
                 sessionId: currentSessionId,
@@ -1886,6 +1906,23 @@ actor PlaybackSessionBridge {
             message: message,
             retryable: !replanRefusalsThatFailAFreshStart.contains(reason)
         )
+    }
+
+    /// Terminal reasons the server's subtitle policy gives when it has no
+    /// route for the requested track (`subtitle_policy_v3.go`).
+    nonisolated static let subtitleRefusalReasons: Set<String> = [
+        "subtitle_codec_unsupported",
+        "subtitle_conversion_unsupported",
+        "subtitle_burn_in_source_unsupported",
+        "subtitle_track_unavailable",
+        "subtitle_track_invalid",
+    ]
+
+    /// Whether a terminal answer refused only a track change's subtitle,
+    /// rather than the route the session plays on.
+    nonisolated static func isSubtitleSwitchRefusal(operation: String, reason: String) -> Bool {
+        operation == PlaybackProtocolV3.ReplanOperation.trackChange
+            && subtitleRefusalReasons.contains(reason)
     }
 
     /// Replan dead ends that `stageProtocolV3Start` refuses with

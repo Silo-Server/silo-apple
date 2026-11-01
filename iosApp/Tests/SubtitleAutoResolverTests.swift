@@ -331,6 +331,23 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertEqual(englishPick([external, embedded]), .select(embedded))
     }
 
+    /// The server refuses an embedded track whose format its probe didn't
+    /// recognize, so automatic selection never picks one, even when it is
+    /// the only track in the language or matches a saved pick.
+    func testUnsupportedFormatTrackIsNeverPicked() {
+        var unsupported = track(id: 3, lang: "eng", codec: "")
+        unsupported.hasUnsupportedFormat = true
+        let external = track(id: 0, lang: "eng", codec: "srt", external: true)
+        XCTAssertEqual(englishPick([unsupported, external]), .select(external))
+        XCTAssertEqual(englishPick([unsupported]), .noChange)
+        let saved = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "en", mode: .always, showForced: false,
+            tracks: [unsupported, external], audioLanguage: "ja",
+            signature: SubtitleTrackSignature(source: "embedded", language: "eng")
+        ))
+        XCTAssertEqual(saved, .select(external))
+    }
+
     func testExternalBeatsDownloaded() {
         let downloaded = track(id: 0, lang: "eng", codec: "srt", downloaded: true)
         let external = track(id: 1, lang: "eng", codec: "srt", external: true)
