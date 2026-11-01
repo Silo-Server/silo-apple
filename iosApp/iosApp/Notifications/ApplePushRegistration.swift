@@ -157,11 +157,11 @@ enum ApplePushRegistrationWire {
 ///   `installation_reset_available`, for a new or pending intent): the key
 ///   the server holds is not this record's, and this account owns the
 ///   installation. The registrar resets the installation with this record's
-///   key, restarts the journal at generation 1 with the same key, and sends
-///   the intent once more. That send never resets again. A refused reset
-///   holds the refused generation; a reset with no answer leaves the intent
-///   pending, and the next trigger resets again, which the contract makes
-///   safe.
+///   key, allocates the next generation above the journal's with the same
+///   key, and sends the intent once more. That send never resets again. A
+///   refused reset holds the refused generation; a reset with no answer
+///   leaves the intent pending, and the next trigger resets again, which the
+///   contract makes safe.
 /// - Held (403, or a refused display-token renewal other than 409): the
 ///   journal keeps what it had, `pending` or `accepted`, and the same
 ///   generation is not sent again for `heldGenerationRetryInterval`. The
@@ -485,8 +485,8 @@ actor ApplePushRegistrar {
     /// Persists `allocating` (the record holding `command`'s new generation)
     /// when given, sends `command`, and records the answer.
     /// `mayResetInstallation` allows one owner reset after a
-    /// `push_installation_key_mismatch`, followed by a registration from
-    /// generation 1; the registration after a reset never resets again.
+    /// `push_installation_key_mismatch`, followed by a registration at the
+    /// next generation; the registration after a reset never resets again.
     private func dispatch(_ command: ApplePushRegistrationCommand, allocating: ApplePushInstallationRecord?,
                           body: APIv2ApplePushRegistrationBody, through channel: ApplePushRegistrationChannel,
                           mayResetInstallation: Bool) async -> Result {
@@ -580,8 +580,12 @@ actor ApplePushRegistrar {
     }
 
     /// Recovers from a lost installation key: the owner resets the
-    /// server's installation with `command`'s key, the journal starts over
-    /// with that key, and the same intent registers at generation 1. A
+    /// server's installation with `command`'s key, and the same intent
+    /// registers at the next generation with that key. The server's cleared
+    /// installation accepts any positive generation, but one above
+    /// everything this record sent keeps a retirement or registration still
+    /// in flight from before the reset below the new registration, and a
+    /// held generation from an earlier attempt from matching it. A
     /// refused reset holds `command`'s generation as any 403 would; one with
     /// no answer leaves it pending for the next trigger.
     private func resetInstallation(after command: ApplePushRegistrationCommand, body: APIv2ApplePushRegistrationBody,
@@ -602,9 +606,11 @@ actor ApplePushRegistrar {
         }
         let restarted: (record: ApplePushInstallationRecord, command: ApplePushRegistrationCommand?, allocated: Bool)
         do {
-            // The same key, and no generation: the server accepts any
-            // positive generation now, and this record starts again at 1.
-            let fresh = ApplePushInstallationRecord(installationKey: command.installationKey, generation: 0, latest: nil)
+            // The same key, from `command`'s generation: the turn keeps any
+            // retirement from allocating past it, so the next one is above
+            // everything this record has sent.
+            let fresh = ApplePushInstallationRecord(installationKey: command.installationKey,
+                generation: command.generation, latest: nil)
             restarted = try ApplePushInstallationJournal.plan(fresh, desired: command.intent, renewDisplayToken: false)
         } catch {
             return .notSent(reason: "journal_\(error)")

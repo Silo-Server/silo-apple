@@ -118,7 +118,7 @@ struct ApplePushRegistrationCommand: Equatable, Sendable {
 /// registration for this device. A server that offers the owner reset
 /// answers its owner with 403 `push_installation_key_mismatch`; the
 /// registrar then resets the installation with the current key and
-/// registers again from generation 1, once per attempt.
+/// registers again at the next generation, once per attempt.
 /// Otherwise the client does not guess: a 409 is recorded as a refusal, a
 /// 403 holds the intent and is retried after a back-off (the server also
 /// answers 403 for transient login-authority failures and for another

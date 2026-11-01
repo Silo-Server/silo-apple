@@ -463,8 +463,9 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
 
     /// A reinstall keeps the device ID but loses the journal, so the server
     /// refuses the new key. Its owner resets the installation with the
-    /// current key and registers again from generation 1.
-    func testKeyMismatchResetsTheInstallationAndRegistersAgainFromGenerationOne() async throws {
+    /// current key and registers again above the generation it had reached,
+    /// so nothing it sent before the reset can outrank the new registration.
+    func testKeyMismatchResetsTheInstallationAndRegistersAgainAboveItsGeneration() async throws {
         let h = try await makeHarness()
         h.server.setCapability(Self.resetCapability)
         let key = try XCTUnwrap(ApplePushInstallationJournal.randomInstallationKey())
@@ -485,9 +486,9 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(reset.body)) as? [String: String])
         XCTAssertEqual(sent, ["device_id": "device-1"])
         let sends = h.server.registrations
-        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["6", "1"])
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["6", "7"])
         XCTAssertEqual(sends.map { $0.header("X-Push-Installation-Key") }, [key, key])
-        XCTAssertEqual(try h.record()?.generation, 1)
+        XCTAssertEqual(try h.record()?.generation, 7)
         XCTAssertEqual(h.targets.targets(), [Self.target()])
     }
 
@@ -518,8 +519,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     }
 
     /// `reset: false` means the server held nothing to clear; the
-    /// registration from generation 1 binds the key all the same.
-    func testResetThatClearedNothingStillRegistersFromGenerationOne() async throws {
+    /// registration after it binds the key all the same.
+    func testResetThatClearedNothingStillRegistersAgain() async throws {
         let h = try await makeHarness()
         h.server.setCapability(Self.resetCapability)
         let key = try XCTUnwrap(ApplePushInstallationJournal.randomInstallationKey())
@@ -532,7 +533,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let result = await h.registrar().register(Self.body(), owner: owner)
 
         XCTAssertEqual(result, Self.accepted)
-        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["6", "1"])
+        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["6", "7"])
     }
 
     /// One reset per attempt: a registration refused again after the reset,
@@ -551,7 +552,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
 
         XCTAssertEqual(result, .held(reason: "http_403_push_installation_key_mismatch"))
         XCTAssertEqual(h.server.resets.count, 1)
-        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "1"])
+        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "2"])
         let held = await registrar.register(Self.body(), owner: owner)
         XCTAssertEqual(held, .notSent(reason: "held"))
 
@@ -570,9 +571,36 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(refused, .held(reason: "http_403_push_installation_key_mismatch"))
         XCTAssertEqual(h.server.resets.count, 3)
         XCTAssertEqual(h.server.registrations.count, 4)
-        XCTAssertEqual(try h.record()?.generation, 1)
+        XCTAssertEqual(try h.record()?.generation, 2)
         let afterRefusal = await registrar.register(Self.body(), owner: owner)
         XCTAssertEqual(afterRefusal, .notSent(reason: "held"))
+    }
+
+    /// A hold left by an earlier refused reset sits below the generation
+    /// registered after a later reset, so it does not block that
+    /// registration's replay when its answer is lost.
+    func testHoldFromAnEarlierRefusedResetDoesNotBlockTheRegistrationAfterAReset() async throws {
+        let h = try await makeHarness()
+        h.server.setCapability(Self.resetCapability)
+        let registrar = h.registrar(clock: Clock())
+        let owner = try await h.owner()
+
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        h.server.enqueueReset(.problem(403, "permission_denied"))
+        let refused = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(refused, .held(reason: "http_403_push_installation_key_mismatch"))
+
+        // A new token allocates generation 2; the reset succeeds and the
+        // registration at generation 3 gets no answer.
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        h.server.enqueue(.transportFailure)
+        let unanswered = await registrar.register(Self.body(token: Self.tokenB), owner: owner)
+        XCTAssertEqual(unanswered, .uncertain)
+        XCTAssertEqual(try h.record()?.generation, 3)
+
+        let replayed = await registrar.register(Self.body(token: Self.tokenB), owner: owner)
+        XCTAssertEqual(replayed, Self.accepted)
+        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "2", "3", "3"])
     }
 
     func testReceiptForAnotherGenerationIsRefusedAndStoresNoDisplayToken() async throws {
