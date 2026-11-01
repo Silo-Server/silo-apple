@@ -155,6 +155,9 @@ struct ApplePushInstallationJournal: Sendable {
         case writeFailed
         case keyUnavailable
         case generationExhausted
+        /// The server's link changed after a command was planned from its
+        /// record. Nothing was written.
+        case linkChanged
     }
 
     static func account(for serverID: String) -> String {
@@ -208,11 +211,14 @@ struct ApplePushInstallationJournal: Sendable {
     /// registry id comes from the address, and a different server saved
     /// later at that address must not get the shared key. It starts again
     /// with a record of its own: anything left in its own slot, such as a
-    /// copy an interrupted `link` did not delete, goes first.
-    func dropLink(of serverID: String, unlessProvenFor identity: String) throws {
-        guard let link = try storedLink(of: serverID), link.provenServerID != identity else { return }
+    /// copy an interrupted `link` did not delete, goes first. Returns
+    /// whether a link was dropped.
+    @discardableResult
+    func dropLink(of serverID: String, unlessProvenFor identity: String) throws -> Bool {
+        guard let link = try storedLink(of: serverID), link.provenServerID != identity else { return false }
         guard keychain.delete(Self.account(for: serverID)) else { throw JournalError.writeFailed }
         guard keychain.delete(Self.linkAccount(for: serverID)) else { throw JournalError.writeFailed }
+        return true
     }
 
     /// Makes `serverID` share `other`'s record from now on, after the two

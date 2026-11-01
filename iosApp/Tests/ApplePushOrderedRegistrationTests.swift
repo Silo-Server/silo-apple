@@ -13,6 +13,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     private static let serverID = ServerRegistry.serverId(for: serverURL)
     private static let otherServerURL = "https://other.example"
     private static let otherServerID = ServerRegistry.serverId(for: otherServerURL)
+    private static let thirdServerURL = "https://third.example"
+    private static let thirdServerID = ServerRegistry.serverId(for: thirdServerURL)
     private static let tokenExpiry = "2099-01-01T00:00:00Z"
     /// A day before the stub's tokens expire, inside the renewal window.
     private static let renewalDue = ISO8601DateFormatter().date(from: tokenExpiry)!.addingTimeInterval(-86_400)
@@ -196,6 +198,16 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         func identity(of serverID: String) -> String? { lock.withLock { reported[serverID] } }
     }
 
+    /// Whether the registrar's next deployment lookups wait on a gate.
+    private final class Pause: @unchecked Sendable {
+        private let lock = NSLock()
+        private var on = false
+        var isOn: Bool {
+            get { lock.withLock { on } }
+            set { lock.withLock { on = newValue } }
+        }
+    }
+
     private final class Clock: @unchecked Sendable {
         private let lock = NSLock()
         private var current = Date(timeIntervalSince1970: 1_800_000_000)
@@ -219,7 +231,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         func registrar(clock: Clock? = nil, savedServerIdentity: String? = nil,
                        savedServerIDs: [String] = [ApplePushOrderedRegistrationTests.serverID,
                                                    ApplePushOrderedRegistrationTests.otherServerID],
-                       retirementBudget: Duration = .seconds(2)) -> ApplePushRegistrar {
+                       retirementBudget: Duration = .seconds(2),
+                       beforeIdentityLookup: @escaping @Sendable () async -> Void = {}) -> ApplePushRegistrar {
             let now: @Sendable () -> Date = clock.map { clock in { clock.now } } ?? { Date() }
             let session = server.handler.makeSession()
             let retirements = ApplePushRetirementQueue(store: retirementStore, journal: journal, now: now) {
@@ -229,7 +242,10 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             return ApplePushRegistrar(api: api, tokenStore: tokens, journal: journal, displayTargets: targets,
                 savedServers: ApplePushSavedServerClient(http: http, tokenStore: tokens,
                     session: session),
-                savedServerIdentity: { [identities] in identities.identity(of: $0) ?? savedServerIdentity },
+                savedServerIdentity: { [identities] serverID in
+                    await beforeIdentityLookup()
+                    return identities.identity(of: serverID) ?? savedServerIdentity
+                },
                 savedServerIDs: { savedServerIDs },
                 retirements: retirements,
                 retirementBudget: retirementBudget, now: now)
@@ -288,7 +304,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let keychain = SharedKeychain(service: name, accessGroup: nil)
         let journal = ApplePushInstallationJournal(keychain: keychain.withAudience(.userIndependent))
         addTeardownBlock {
-            let perServer = [Self.serverID, Self.otherServerID].flatMap { serverID in [
+            let perServer = [Self.serverID, Self.otherServerID, Self.thirdServerID].flatMap { serverID in [
                 TokenStore.accessTokenKey(for: serverID),
                 TokenStore.refreshTokenKey(for: serverID),
                 TokenStore.profileTokenKey(for: serverID),
@@ -808,6 +824,157 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(renewed.url?.host, "silo.example")
         XCTAssertEqual(renewed.header("X-Profile-Id"), "profile-a")
         XCTAssertEqual(h.targets.targets().map(\.registryServerID), [Self.serverID])
+    }
+
+    /// The address that registered last moves to another server. When its
+    /// link ends, its display target for the old server goes with it, so
+    /// the other address's registration leaves that server one target and
+    /// its pushes keep their text.
+    func testUnlinkingAMovedAddressDropsItsDisplayTarget() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        XCTAssertEqual(h.targets.targets().map(\.registryServerID), [Self.otherServerID])
+        // Nothing has run for the second address since it moved.
+        h.identities.set("deployment-z", for: Self.otherServerID)
+        await h.tokens.switchActiveServer(serverId: Self.serverID)
+        await h.tokens.setServerUrl(Self.serverURL)
+
+        await registrar.registerSavedServers(Self.body(), among: [Self.serverID], skipping: nil)
+
+        XCTAssertEqual(h.server.registrations.last?.url?.host, "silo.example")
+        XCTAssertEqual(h.targets.targets().map(\.registryServerID), [Self.serverID])
+        let reader = ApplePushDisplayStateReader(defaults: h.defaults, keychain: h.targets.keychain)
+        XCTAssertNotEqual(reader.route(for: [
+            "silo_delivery_id": "delivery-1", "silo_server_id": "deployment-a", "silo_profile_id": "profile-a",
+        ]), .ambiguousTarget)
+    }
+
+    /// A saved address whose link was proven for another deployment does
+    /// not lend that record: a third address on the deployment it reaches
+    /// now, even one that address's session list vouches for, never gets
+    /// the old deployment's key and resets with its own.
+    func testAddressWithAStaleLinkLendsNoRecord() async throws {
+        let h = try await makeHarness()
+        let first = try await joinSecondAddress(h)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        _ = first
+        // The second address now reaches another server, and nothing has
+        // run for it since; the third address reaches that server too.
+        h.identities.set("deployment-b", for: Self.otherServerID)
+        h.identities.set("deployment-b", for: Self.thirdServerID)
+        await h.tokens.switchActiveServer(serverId: Self.thirdServerID)
+        await h.tokens.setServerUrl(Self.thirdServerURL)
+        let saved = await h.tokens.saveTokens(accessToken: "third-access", refreshToken: "third-refresh")
+        XCTAssertTrue(saved)
+        await h.tokens.setProfileId("profile-a")
+        let proofStored = await h.tokens.setProfileToken("proof-a")
+        XCTAssertTrue(proofStored)
+        let captured = await h.tokens.captureOrdinaryRequestAuth()
+        try await h.tokens.bindVerifiedAccount("12", expected: XCTUnwrap(captured))
+        h.server.setSessions(host: "third.example", current: "session-3", pages: [["session-3"]])
+        h.server.setSessions(host: "other.example", current: "session-2", pages: [["session-2", "session-3"]])
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        let registrar = h.registrar(savedServerIdentity: "deployment-a",
+            savedServerIDs: [Self.serverID, Self.otherServerID, Self.thirdServerID])
+
+        let result = await registrar.register(Self.body(), owner: try await h.owner())
+
+        XCTAssertEqual(result, Self.accepted)
+        let third = h.server.handler.requests.filter { $0.url?.host == "third.example" }
+        XCTAssertFalse(third.contains { $0.header("X-Push-Installation-Key") == key })
+        XCTAssertEqual(h.server.resets.count, 1)
+        XCTAssertNotEqual(try h.journal.load(serverID: Self.thirdServerID)?.installationKey, key)
+    }
+
+    /// A `restore` that runs while `unregister` is still looking up the
+    /// address's deployment wins: the older teardown sends nothing, and the
+    /// account still saved there keeps its pushes.
+    func testRestoreWhileTheTeardownLooksUpTheAddressWins() async throws {
+        let h = try await makeHarness()
+        let gate = StubURLProtocol.Gate()
+        let pause = Pause()
+        let registrar = h.registrar(savedServerIdentity: "deployment-a", beforeIdentityLookup: {
+            if pause.isOn { await gate.wait() }
+        })
+        let owner = try await h.owner()
+        let registered = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(registered, Self.accepted)
+        let sent = h.server.handler.requests.count
+        pause.isOn = true
+        let removal = Task { await registrar.unregister(serverID: Self.serverID, activeOwner: owner) }
+        while await gate.waiterCount == 0 { await Task.yield() }
+        pause.isOn = false
+
+        _ = await registrar.restore(serverID: Self.serverID)
+        await gate.open()
+        _ = await removal.value
+
+        XCTAssertTrue(h.server.retirements.isEmpty)
+        XCTAssertFalse(h.server.handler.requests.dropFirst(sent).contains { Self.pushMode(of: $0) == "off" })
+        let changed = await registrar.register(Self.body(token: Self.tokenB), owner: owner)
+        XCTAssertEqual(changed, Self.accepted)
+    }
+
+    /// The other address registers the shared installation while the
+    /// holder's removal waits on its retirement. That registration ends the
+    /// removal's teardown: no `off` follows it with the shared key, so the
+    /// address still saved keeps its pushes.
+    func testRegistrationFromTheOtherAddressEndsTheHoldersTeardown() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        let firstOwner = try XCTUnwrap(h.record()?.owners?[Self.serverID])
+        let holder = try await h.owner()
+        let gate = StubURLProtocol.Gate()
+        h.server.enqueueRetirement(.gated(gate, status: 503))
+        let sent = h.server.handler.requests.count
+        let removal = Task { await registrar.unregister(serverID: Self.otherServerID, activeOwner: holder) }
+        while h.server.retirements.isEmpty { await Task.yield() }
+
+        let taken = await registrar.register(Self.body(token: Self.tokenB), savedServer: firstOwner)
+        await gate.open()
+        _ = await removal.value
+
+        XCTAssertEqual(taken, Self.accepted)
+        XCTAssertFalse(h.server.handler.requests.dropFirst(sent).contains { Self.pushMode(of: $0) == "off" })
+    }
+
+    /// A registration planned from the shared record waits on the server
+    /// while its address moves to another server and another pass ends the
+    /// link. It then neither copies the shared record into the address's own
+    /// slot nor sends the shared key there.
+    func testRegistrationPlannedBeforeTheLinkEndedDoesNotKeepTheSharedKey() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        let second = try await h.owner()
+        let gate = StubURLProtocol.Gate()
+        h.server.gateCapability(gate)
+        let pending = Task { await registrar.register(Self.body(token: Self.tokenB), owner: second) }
+        while await gate.waiterCount == 0 { await Task.yield() }
+        let sent = h.server.registrations.count
+        h.identities.set("deployment-z", for: Self.otherServerID)
+        let maintenance = Task {
+            await registrar.registerSavedServers(Self.body(), among: [Self.serverID], skipping: nil)
+        }
+        while try h.journal.recordSlot(for: Self.otherServerID) != Self.otherServerID { await Task.yield() }
+
+        await gate.open()
+        let result = await pending.value
+        await maintenance.value
+
+        XCTAssertNotEqual(result, Self.accepted)
+        let moved = h.server.registrations.dropFirst(sent).filter { $0.url?.host == "other.example" }
+        XCTAssertFalse(moved.contains { $0.header("X-Push-Installation-Key") == key })
+        XCTAssertNotEqual(try h.journal.load(serverID: Self.otherServerID)?.installationKey, key)
+        XCTAssertEqual(try h.record()?.installationKey, key)
+    }
+
+    private static func pushMode(of request: StubURLProtocol.Request) -> String? {
+        guard request.method == "POST", request.path == registrationPath,
+              let sent = (try? JSONSerialization.jsonObject(with: request.body ?? Data())) as? [String: Any] else {
+            return nil
+        }
+        return sent["push_mode"] as? String
     }
 
     /// Registers the first address, signs in to the second, and registers it
