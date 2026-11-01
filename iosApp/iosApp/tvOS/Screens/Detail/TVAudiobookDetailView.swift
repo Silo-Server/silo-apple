@@ -18,6 +18,10 @@ import SwiftUI
 struct TVAudiobookDetailView: View {
     let detail: ItemDetail
     let libraryId: Int?
+    let isFavorite: Bool
+    let isFinished: Bool
+    let onToggleFavorite: () -> Void
+    let onToggleFinished: () -> Void
     let onNavigateToItem: (String) -> Void
 
     @Environment(AudioPlaybackStore.self) private var audioStore
@@ -26,16 +30,28 @@ struct TVAudiobookDetailView: View {
     @State private var showChapters = false
     @State private var didClaimInitialActionFocus = false
 
-    private enum Action: Hashable { case primary, chapters, startOver }
+    private enum Action: Hashable { case primary, chapters, startOver, favorite, finished }
 
     /// Stored, not computed: the model stitches the whole part/chapter
     /// timeline in its init, so building it per access would redo that work
     /// for every `model.` read in `body`.
     private let model: TVAudiobookViewModel
 
-    init(detail: ItemDetail, libraryId: Int? = nil, onNavigateToItem: @escaping (String) -> Void) {
+    init(
+        detail: ItemDetail,
+        libraryId: Int? = nil,
+        isFavorite: Bool,
+        isFinished: Bool,
+        onToggleFavorite: @escaping () -> Void,
+        onToggleFinished: @escaping () -> Void,
+        onNavigateToItem: @escaping (String) -> Void
+    ) {
         self.detail = detail
         self.libraryId = libraryId
+        self.isFavorite = isFavorite
+        self.isFinished = isFinished
+        self.onToggleFavorite = onToggleFavorite
+        self.onToggleFinished = onToggleFinished
         self.onNavigateToItem = onNavigateToItem
         self.model = TVAudiobookViewModel(detail: detail)
     }
@@ -284,6 +300,32 @@ struct TVAudiobookDetailView: View {
                 audioStore.play(contentId: detail.contentId, restart: true, libraryId: libraryId)
             }
             .focused($focusedAction, equals: .startOver)
+
+            // Same circle toggles as the movie/series action rows, with the
+            // iOS audiobook labels; the filled icon carries the state. The
+            // page's view model sends the change and the detail host shows
+            // its failure alert.
+            TVCircleActionButton(
+                icon: "heart",
+                iconActive: "heart.fill",
+                isActive: isFavorite,
+                title: "Favorite",
+                accessibilityLabel: isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                stabilizesFocusMotion: true,
+                action: onToggleFavorite
+            )
+            .focused($focusedAction, equals: .favorite)
+
+            TVCircleActionButton(
+                icon: "checkmark.circle",
+                iconActive: "checkmark.circle.fill",
+                isActive: isFinished,
+                title: "Finished",
+                accessibilityLabel: isFinished ? "Mark as Not Finished" : "Mark as Finished",
+                stabilizesFocusMotion: true,
+                action: onToggleFinished
+            )
+            .focused($focusedAction, equals: .finished)
         }
         .defaultFocus($focusedAction, .primary)
     }

@@ -274,6 +274,10 @@ struct TVItemDetailView: View {
             TVAudiobookDetailView(
                 detail: detail,
                 libraryId: libraryId,
+                isFavorite: viewModel.isFavorite,
+                isFinished: viewModel.isWatched,
+                onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
+                onToggleFinished: { Task { await viewModel.toggleWatched() } },
                 onNavigateToItem: { id in
                     router.navigate(to: .itemDetail(contentId: id))
                 }
