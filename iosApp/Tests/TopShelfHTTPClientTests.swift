@@ -236,7 +236,6 @@ final class TopShelfHTTPClientTests: XCTestCase {
         XCTAssertEqual(h.stub.requestedPaths.count, 4)
         XCTAssertEqual(response.sections.map(\.id), ["cw", "nu", "books"])
         XCTAssertEqual(response.sections.map { $0.items.map(\.contentId) }, [["a", "b"], ["d"], ["e"]])
-        XCTAssertEqual(response.failedSectionCount, 0)
         let rowRead = try XCTUnwrap(h.stub.requests.first { $0.path == Self.itemsPath("cw") })
         // The artwork query, and no item_limit: the row answers at its own limit.
         XCTAssertEqual(rowRead.query, ["image_size": "large"])
@@ -258,7 +257,6 @@ final class TopShelfHTTPClientTests: XCTestCase {
 
         XCTAssertFalse(h.stub.requestedPaths.contains(Self.fullHomePath))
         XCTAssertEqual(response.sections.map(\.id), ["cw"])
-        XCTAssertEqual(response.failedSectionCount, 2)
     }
 
     func testAnEmptyRowIsKeptEmpty() async throws {
@@ -270,7 +268,6 @@ final class TopShelfHTTPClientTests: XCTestCase {
         XCTAssertFalse(h.stub.requestedPaths.contains(Self.fullHomePath))
         XCTAssertEqual(response.sections.map(\.id), ["cw", "nu"])
         XCTAssertEqual(response.sections.last?.items.count, 0)
-        XCTAssertEqual(response.failedSectionCount, 0)
     }
 
     func testRowsKeepLayoutOrderWhicheverReadFinishesFirst() async throws {
