@@ -57,10 +57,52 @@ private struct TVCardFocusButtonStyleBody: View {
     }
 }
 
+/// The white outline that marks a focused card, and the Series row's
+/// current episode.
+enum TVCardOutline {
+    static let lineWidth: CGFloat = 4
+    static let opacity: Double = 0.7
+}
+
+/// Stands in for tvOS's `.card` style: a small lift with a white outline
+/// instead of the system's glass highlight and parallax.
+struct TVCardOutlineButtonStyle: ButtonStyle {
+    /// Matches `TVCardFocusButtonStyle`'s default, used by the detail rails.
+    static let scale: CGFloat = 1.05
+
+    var cornerRadius: CGFloat = SiloTheme.cornerRadius
+
+    /// How far focused artwork of `height` extends below its layout frame.
+    static func focusedOverhang(forHeight height: CGFloat) -> CGFloat {
+        (scale - 1) / 2 * height
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        TVCardOutlineButtonStyleBody(configuration: configuration, cornerRadius: cornerRadius)
+    }
+}
+
+private struct TVCardOutlineButtonStyleBody: View {
+    let configuration: ButtonStyleConfiguration
+    let cornerRadius: CGFloat
+
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        configuration.label
+            .tvFocusRing(isFocused: isFocused, cornerRadius: cornerRadius)
+            .tvCardLift(isFocused: isFocused, isPressed: configuration.isPressed)
+            .focusEffectDisabled()
+            .animation(
+                reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration),
+                value: isFocused
+            )
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
+    }
+}
+
 enum TVCardCaption {
-    /// tvOS's `.card` lift grows artwork by a near-constant ~38pt in height
-    /// at every card size, so it overhangs its bottom edge by about 19pt.
-    static let cardLiftOverhang: CGFloat = 19
     /// Visible space kept between a focused poster and its title.
     static let focusedClearance: CGFloat = 8
     /// Unfocused captions dim well back so the focused one stands out.
@@ -68,8 +110,8 @@ enum TVCardCaption {
     static let unfocusedSubtitleOpacity: Double = 0.32
 }
 
-/// With Reduce Motion on, the caption still drops clear of the lifted poster
-/// but snaps there instead of sliding; the glow keeps its fade.
+/// With Reduce Motion on, cards don't lift, so the caption stays put; the
+/// glow keeps its fade.
 private struct TVCardCaptionFocusModifier: ViewModifier {
     let isFocused: Bool
     let drop: CGFloat
@@ -78,53 +120,82 @@ private struct TVCardCaptionFocusModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .shadow(color: .white.opacity(isFocused ? 0.45 : 0), radius: 10)
-            .shadow(color: .white.opacity(isFocused ? 0.25 : 0), radius: 3)
+            .shadow(color: .white.opacity(isFocused ? 0.22 : 0), radius: 8)
+            .shadow(color: .white.opacity(isFocused ? 0.12 : 0), radius: 3)
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
-            .offset(y: isFocused ? drop : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .offset(y: isFocused && !reduceMotion ? drop : 0)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+    }
+}
+
+/// The focused card's lift and shadow, shared by `TVCardOutlineButtonStyle`
+/// and the Series episode row. Callers own the animation. With Reduce Motion
+/// on, cards don't scale; the shadow and outline still mark focus.
+private struct TVCardLiftModifier: ViewModifier {
+    let isFocused: Bool
+    let isPressed: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(scale)
+            .shadow(
+                color: .black.opacity(isFocused ? 0.45 : 0),
+                radius: isFocused ? 18 : 0,
+                y: isFocused ? 8 : 0
+            )
+    }
+
+    private var scale: CGFloat {
+        guard !reduceMotion else { return 1 }
+        let base = isFocused ? TVCardOutlineButtonStyle.scale : 1
+        return isPressed ? base * 0.97 : base
     }
 }
 
 extension View {
+    func tvCardLift(isFocused: Bool, isPressed: Bool = false) -> some View {
+        modifier(TVCardLiftModifier(isFocused: isFocused, isPressed: isPressed))
+    }
+
     func tvFocusRing(
         isFocused: Bool,
         cornerRadius: CGFloat,
-        lineWidth: CGFloat = 3
+        lineWidth: CGFloat = TVCardOutline.lineWidth
     ) -> some View {
         overlay(
             RoundedRectangle(cornerRadius: cornerRadius)
                 .stroke(
-                    Color.white.opacity(isFocused ? 0.9 : 0),
+                    Color.white.opacity(isFocused ? TVCardOutline.opacity : 0),
                     lineWidth: isFocused ? lineWidth : 0
                 )
         )
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 
-    /// Focused card title: brighter and heavier than its dimmed neighbours.
-    /// Pair with `tvCardSubtitleFocus` and `tvCardCaptionFocus` so the whole
-    /// caption highlights as one block.
+    /// Focused card title: brighter than its dimmed neighbours. The weight
+    /// stays fixed so a truncated title doesn't reflow on focus. Pair with
+    /// `tvCardSubtitleFocus` and `tvCardCaptionFocus` so the whole caption
+    /// highlights as one block.
     func tvCardTitleFocus(isFocused: Bool) -> some View {
-        fontWeight(isFocused ? .semibold : nil)
-            .foregroundStyle(
-                isFocused
-                    ? Color.white
-                    : Color.siloOnSurface.opacity(TVCardCaption.unfocusedTitleOpacity)
-            )
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+        foregroundStyle(
+            isFocused
+                ? Color.white
+                : Color.siloOnSurface.opacity(TVCardCaption.unfocusedTitleOpacity)
+        )
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 
     /// A card's second caption line (year, count, episode) follows the
     /// title's highlight.
     func tvCardSubtitleFocus(isFocused: Bool) -> some View {
-        fontWeight(isFocused ? .medium : nil)
-            .foregroundStyle(
-                isFocused
-                    ? Color.white.opacity(0.92)
-                    : Color.siloOnSurface.opacity(TVCardCaption.unfocusedSubtitleOpacity)
-            )
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+        foregroundStyle(
+            isFocused
+                ? Color.white.opacity(0.92)
+                : Color.siloOnSurface.opacity(TVCardCaption.unfocusedSubtitleOpacity)
+        )
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 
     /// Highlights a focused card's whole caption block with a soft glow and
@@ -134,7 +205,7 @@ extension View {
     /// layout is unchanged. Don't clip the caption, or the glow is cut off.
     func tvCardCaptionFocus(
         isFocused: Bool,
-        posterOverhang: CGFloat = TVCardCaption.cardLiftOverhang,
+        posterOverhang: CGFloat,
         spacing: CGFloat
     ) -> some View {
         modifier(TVCardCaptionFocusModifier(

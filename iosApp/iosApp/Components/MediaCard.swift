@@ -53,8 +53,8 @@ func episodeRailAccessibilityLabel(
 }
 
 /// A poster-style media card with title, year, and optional progress.
-/// On tvOS the card uses `.buttonStyle(.card)` which gives proper focus lift,
-/// parallax, and title reveal — no manual focus effects required.
+/// On tvOS the card uses `TVCardOutlineButtonStyle`, which lifts and
+/// outlines the poster on focus.
 struct MediaCard: View {
     let title: String
     let posterUrl: String
@@ -146,7 +146,7 @@ struct MediaCard: View {
 
     private var cardBody: some View {
         #if os(tvOS)
-        // tvOS: button label is just the poster (so .card style lifts the image),
+        // tvOS: button label is just the poster (so the card style lifts the image),
         // then a title caption lives outside the button and reacts to focus via FocusState.
         FocusableMediaCard(
             title: title,
@@ -154,6 +154,7 @@ struct MediaCard: View {
             subtitle: subtitle,
             episodeAccessibilityLabel: episodeAccessibilityLabel,
             cardWidth: cardWidth,
+            cardHeight: cardHeight,
             action: action,
             playAction: playAction,
             focusedItemId: focusedItemId,
@@ -453,8 +454,8 @@ struct MediaCard: View {
 // MARK: - tvOS Focusable wrapper
 
 #if os(tvOS)
-/// Wraps a poster inside a `.card` button so the image gets the native focus
-/// lift/parallax, and renders a title + year below that highlights on focus.
+/// Wraps a poster inside an outlined card button so the image lifts on
+/// focus, and renders a title + year below that highlights on focus.
 private struct FocusableMediaCard<Content: View>: View {
     let title: String
     let year: Int?
@@ -462,6 +463,7 @@ private struct FocusableMediaCard<Content: View>: View {
     let subtitle: String?
     let episodeAccessibilityLabel: String?
     let cardWidth: CGFloat
+    let cardHeight: CGFloat
     let action: () -> Void
     let playAction: (() -> Void)?
     /// Parent row's focus tracking binding. When paired with `itemId`,
@@ -505,6 +507,7 @@ private struct FocusableMediaCard<Content: View>: View {
                 title: title,
                 secondLine: subtitle ?? year.map(String.init),
                 cardWidth: cardWidth,
+                cardHeight: cardHeight,
                 focusedItemId: focusedItemId,
                 itemId: itemId,
                 standaloneFocused: standaloneFocused
@@ -522,7 +525,7 @@ private struct FocusableMediaCard<Content: View>: View {
         let button = Button(action: action) {
             content()
         }
-        .buttonStyle(.card)
+        .buttonStyle(TVCardOutlineButtonStyle())
         .applyCardFocus(
             focusedItemId,
             itemId: itemId,
@@ -602,12 +605,13 @@ private struct TVStandaloneCardFocus<Content: View>: View {
     }
 }
 
-/// Only the caption reads focus. The native card button owns its lift and
-/// parallax without rebuilding its artwork and menu when a caption highlights.
+/// Only the caption reads focus. The card button owns its lift and
+/// outline without rebuilding its artwork and menu when a caption highlights.
 private struct TVMediaCardCaption: View {
     let title: String
     let secondLine: String?
     let cardWidth: CGFloat
+    let cardHeight: CGFloat
     let focusedItemId: FocusState<String?>.Binding?
     let itemId: String?
     let standaloneFocused: FocusState<Bool>.Binding?
@@ -637,7 +641,11 @@ private struct TVMediaCardCaption: View {
             }
         }
         .frame(width: cardWidth, alignment: .leading)
-        .tvCardCaptionFocus(isFocused: isFocused, spacing: tvMediaCardCaptionSpacing)
+        .tvCardCaptionFocus(
+            isFocused: isFocused,
+            posterOverhang: TVCardOutlineButtonStyle.focusedOverhang(forHeight: cardHeight),
+            spacing: tvMediaCardCaptionSpacing
+        )
     }
 }
 
