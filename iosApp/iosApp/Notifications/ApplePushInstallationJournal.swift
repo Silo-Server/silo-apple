@@ -97,7 +97,10 @@ struct ApplePushRegistrationCommand: Equatable, Sendable {
 }
 
 /// Ordered installation state for `POST /api/v2/devices/push/apple`, one
-/// Keychain item per server.
+/// Keychain item per deployment. A saved server starts with its own record;
+/// one proven to reach the same deployment as another (the same server
+/// saved under two addresses) is linked to that server's record and shares
+/// its key and generations.
 ///
 /// The server keys an Apple installation by `device_id` and checks two
 /// headers on every registration. `X-Push-Installation-Key` proves this is the
@@ -116,8 +119,10 @@ struct ApplePushRegistrationCommand: Equatable, Sendable {
 /// saved again under another address (a new record, so a new key, for the
 /// same device ID), the server's proof check refuses every later
 /// registration for this device. A server that offers the owner reset
-/// answers its owner with 403 `push_installation_key_mismatch`; the
-/// registrar then resets the installation with the current key and
+/// answers its owner with 403 `push_installation_key_mismatch`. The
+/// registrar then links the record to another saved address's when that
+/// address proves it is the same deployment, and registers with its key;
+/// otherwise it resets the installation with the current key. Either way it
 /// registers again at the next generation, once per attempt.
 /// Otherwise the client does not guess: a 409 is recorded as a refusal, a
 /// 403 holds the intent and is retried after a back-off (the server also
@@ -152,11 +157,51 @@ struct ApplePushInstallationJournal: Sendable {
         SharedStorage.keychainAccountPrefix + "push.apple.installation.\(serverID)"
     }
 
+    /// Where a saved server proven to reach the same deployment as another
+    /// names the saved server whose record it shares.
+    static func linkAccount(for serverID: String) -> String {
+        SharedStorage.keychainAccountPrefix + "push.apple.installation.link.\(serverID)"
+    }
+
+    /// Links followed at most; a longer chain, or a loop, is unreadable.
+    private static let maximumLinks = 8
+
+    /// The saved server whose Keychain item holds `serverID`'s record:
+    /// `serverID` itself unless it was linked to another's.
+    func recordOwner(for serverID: String) throws -> String {
+        var current = serverID
+        for _ in 0...Self.maximumLinks {
+            let next: String?
+            do {
+                next = try keychain.getChecked(Self.linkAccount(for: current))
+            } catch {
+                throw JournalError.unreadable
+            }
+            guard let next, !next.isEmpty, next != current else { return current }
+            current = next
+        }
+        throw JournalError.unreadable
+    }
+
+    /// Makes `serverID` share `other`'s record from now on, after the two
+    /// were proven to reach one deployment (`sharesBackend`). The server
+    /// keys an installation by device ID, so one deployment holds one
+    /// installation for this device whichever address registers it, and
+    /// only one key can prove it. `serverID`'s own record, whose key the
+    /// server does not hold, is deleted. A link is kept like a record: it
+    /// outlives sign-out and removal.
+    func link(_ serverID: String, toRecordOf other: String) throws {
+        let target = try recordOwner(for: other)
+        guard target != serverID else { return }
+        guard keychain.set(target, for: Self.linkAccount(for: serverID)) else { throw JournalError.writeFailed }
+        keychain.delete(Self.account(for: serverID))
+    }
+
     /// The stored record, `nil` only when no record exists for `serverID`.
     func load(serverID: String) throws -> ApplePushInstallationRecord? {
         let raw: String?
         do {
-            raw = try keychain.getChecked(Self.account(for: serverID))
+            raw = try keychain.getChecked(Self.account(for: recordOwner(for: serverID)))
         } catch {
             throw JournalError.unreadable
         }
@@ -170,7 +215,8 @@ struct ApplePushInstallationJournal: Sendable {
 
     func save(_ record: ApplePushInstallationRecord, serverID: String) throws {
         let data = try JSONEncoder().encode(record)
-        guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.account(for: serverID)) else {
+        let owner = try recordOwner(for: serverID)
+        guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.account(for: owner)) else {
             throw JournalError.writeFailed
         }
     }

@@ -64,6 +64,25 @@ struct APIv2ApplePushResetReceipt: Decodable, Equatable, Sendable {
     let reset: Bool
 }
 
+/// `GET /api/v2/auth/sessions` (`LoginSessionCollection`), reduced to what
+/// the push registrar's same-backend check reads.
+struct APIv2LoginSessionPage: Decodable, Equatable, Sendable {
+    struct Session: Decodable, Equatable, Sendable {
+        let id: String
+        let current: Bool
+    }
+
+    struct Page: Decodable, Equatable, Sendable {
+        let hasMore: Bool
+        let nextCursor: String?
+    }
+
+    /// Null for API-key callers.
+    let currentSession: Session?
+    let items: [Session]
+    let page: Page?
+}
+
 /// `GET /api/v2/devices/push/apple/capabilities`.
 struct APIv2ApplePushCapability: Decodable, Equatable, Sendable {
     let allowed: Bool

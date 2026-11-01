@@ -11,9 +11,36 @@ struct ApplePushRegistrationChannel: Sendable {
                          _ generation: Int64) async throws -> APIv2ApplePushRegistrationReceipt
     /// `resetApplePushInstallation` with the owner's session.
     let reset: @Sendable (_ deviceID: String, _ installationKey: String) async throws -> APIv2ApplePushResetReceipt
+    /// One page of the owner's account's login sessions (`listSessions`).
+    let loginSessions: @Sendable (_ cursor: String?) async throws -> APIv2LoginSessionPage
     /// Runs the write only while `owner` still holds the server's
     /// credentials; throws otherwise.
     let commit: @Sendable (_ write: @Sendable () throws -> Void) async throws -> Void
+}
+
+extension ApplePushRegistrationChannel {
+    /// Pages `listSessions` reads through at most when looking for a session.
+    static let maximumSessionPages = 10
+
+    /// Whether `holder`'s backend stores this channel's own login session,
+    /// which proves both addresses reach one deployment. A `server_id` is
+    /// self-asserted, so it only picks the addresses to ask. A session ID is
+    /// a random UUID that only the backend that issued it knows, and each
+    /// address is asked only about its own sessions, with its own
+    /// credentials. An address that is not that backend, or a proxy for it,
+    /// cannot list this session. Any failure counts as no proof.
+    func sharesBackend(with holder: ApplePushRegistrationChannel) async -> Bool {
+        guard let own = try? await loginSessions(nil).currentSession?.id, !own.isEmpty else { return false }
+        var cursor: String?
+        for _ in 0..<Self.maximumSessionPages {
+            guard let page = try? await holder.loginSessions(cursor) else { return false }
+            // The holder's own session is never this channel's.
+            if page.items.contains(where: { $0.id == own && !$0.current }) { return true }
+            guard let next = page.page?.nextCursor, page.page?.hasMore == true else { return false }
+            cursor = next
+        }
+        return false
+    }
 }
 
 enum ApplePushSavedServerError: Error, Equatable {
@@ -63,13 +90,19 @@ struct ApplePushSavedServerClient: Sendable {
                     owner: owner, serverURL: serverURL)
                 return try APIv2Client.applePushResetReceipt(from: data)
             },
+            loginSessions: { cursor in
+                let data = try await send("GET", APIv2Client.loginSessionsPath,
+                    query: APIv2Client.loginSessionsQuery(cursor: cursor), owner: owner, serverURL: serverURL)
+                return try HTTPClient.makeJSONDecoder().decode(APIv2LoginSessionPage.self, from: data)
+            },
             commit: { try await tokenStore.withSavedServerAuthority(owner, operation: $0) }
         )
     }
 
     /// Throws `APIv2Error` for a non-200 answer, as `APIv2Client` does, so
     /// the registrar classifies refusals the same way for every server.
-    private func send(_ method: String, _ path: String, body: Data? = nil, headers: [String: String] = [:],
+    private func send(_ method: String, _ path: String, query: [String: String] = [:], body: Data? = nil,
+                      headers: [String: String] = [:],
                       owner: ApplePushIntentOwner, serverURL: String) async throws -> Data {
         // The stored session must still be the registering account's: a
         // later sign-in on that server would register under someone else.
@@ -80,7 +113,11 @@ struct ApplePushSavedServerClient: Sendable {
         guard let bearer = await http.freshAccessToken(serverId: owner.serverID).token else {
             throw ApplePushSavedServerError.noCredential
         }
-        guard let url = URL(string: serverURL + path) else { throw HTTPError.invalidURL(serverURL) }
+        guard var components = URLComponents(string: serverURL + path) else { throw HTTPError.invalidURL(serverURL) }
+        if !query.isEmpty {
+            components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        }
+        guard let url = components.url else { throw HTTPError.invalidURL(serverURL) }
         var request = URLRequest(url: url, timeoutInterval: Self.requestTimeout)
         request.httpMethod = method
         AppleDeviceIdentity.current.applyHeaders(to: &request)
