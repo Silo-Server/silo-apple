@@ -1,26 +1,13 @@
 import Foundation
 
 /// The Home rows Top Shelf shows, in display order, trimmed to the fields
-/// the Top Shelf surface actually uses. We keep this in Shared so the
-/// extension and artwork regression tests can use it without compiling the
-/// full app DTO surface.
-struct TopShelfSectionsResponse: Decodable {
+/// the Top Shelf surface actually uses. We keep these models in Shared so the
+/// extension and artwork regression tests can use them without compiling
+/// the full app DTO surface.
+struct TopShelfSectionsResponse {
     let sections: [TopShelfSection]
     /// Rows the layout listed whose read failed or changed type.
     let failedSectionCount: Int
-
-    enum CodingKeys: String, CodingKey { case sections }
-
-    init(sections: [TopShelfSection], failedSectionCount: Int) {
-        self.sections = sections
-        self.failedSectionCount = failedSectionCount
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        sections = try c.decodeIfPresent([TopShelfSection].self, forKey: .sections) ?? []
-        failedSectionCount = 0
-    }
 }
 
 /// The rows Top Shelf shows, by `section_type`.
