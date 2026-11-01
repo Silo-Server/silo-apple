@@ -35,6 +35,7 @@ struct TVBoxSetRow: View {
         let films = shownFilms(endsWithExploreAll: route != nil)
         return HStack(alignment: .top, spacing: cardSpacing) {
             ForEach(films) { movie in
+                let isCurrent = movie.contentId == currentContentId
                 TVMediaCard(
                     title: movie.title,
                     posterUrl: movie.posterUrl ?? "",
@@ -48,8 +49,10 @@ struct TVBoxSetRow: View {
                     focusTreatment: .ring,
                     focusBinding: $focusedItemId,
                     focusContentId: movie.contentId,
-                    contentId: movie.contentId,
-                    marksCurrentFilm: movie.contentId == currentContentId
+                    // The current film's card has no title menu, as on the
+                    // phone: the page's own actions own its personal state.
+                    contentId: isCurrent ? nil : movie.contentId,
+                    marksCurrentFilm: isCurrent
                 )
             }
             if let route {
