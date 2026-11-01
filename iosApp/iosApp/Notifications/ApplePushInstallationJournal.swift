@@ -212,6 +212,31 @@ struct ApplePushInstallationJournal: Sendable {
         guard keychain.delete(Self.linkAccount(for: serverID)) else { throw JournalError.writeFailed }
     }
 
+    /// Hands the record `owner` holds to the saved servers in `candidates`
+    /// linked to it when `owner` now reports `identity`, a deployment other
+    /// than the one they were proven to reach. The first such server takes
+    /// the record, the others linked for the same deployment follow it, and
+    /// `owner` starts over with a record of its own, so a different server
+    /// later saved at its address never gets their key.
+    func handOver(recordOf owner: String, unlessProvenFor identity: String, among candidates: [String]) throws {
+        guard try storedLink(of: owner) == nil else { return }
+        let linked = try candidates.compactMap { id -> (id: String, link: Link)? in
+            guard let link = try storedLink(of: id), link.recordOwner == owner else { return nil }
+            return (id, link)
+        }
+        guard let heir = linked.first(where: { $0.link.provenServerID != identity }),
+              let raw = try keychain.getChecked(Self.account(for: owner)) else { return }
+        guard keychain.set(raw, for: Self.account(for: heir.id)) else { throw JournalError.writeFailed }
+        guard keychain.delete(Self.linkAccount(for: heir.id)) else { throw JournalError.writeFailed }
+        for other in linked where other.id != heir.id && other.link.provenServerID == heir.link.provenServerID {
+            let data = try JSONEncoder().encode(Link(recordOwner: heir.id, provenServerID: other.link.provenServerID))
+            guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.linkAccount(for: other.id)) else {
+                throw JournalError.writeFailed
+            }
+        }
+        guard keychain.delete(Self.account(for: owner)) else { throw JournalError.writeFailed }
+    }
+
     /// Makes `serverID` share `other`'s record from now on, after the two
     /// were proven to reach one deployment (`sharesBackend`). The server
     /// keys an installation by device ID, so one deployment holds one

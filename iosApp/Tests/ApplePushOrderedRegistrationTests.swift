@@ -626,6 +626,47 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(try h.record()?.installationKey, key)
     }
 
+    /// Once the second address reports another server, its link ends, but
+    /// the first address's record still names it as the last to register.
+    /// Removing the first address then retires the installation with its
+    /// own key rather than leaving it to an address that left.
+    func testRemovingTheFirstAddressAfterTheSecondLeftTheServerRetiresIt() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        h.identities.set("deployment-z", for: Self.otherServerID)
+        _ = await registrar.register(Self.body(token: Self.tokenB), owner: try await h.owner())
+        let key = try XCTUnwrap(h.record()?.installationKey)
+
+        let removed = await registrar.unregister(serverID: Self.serverID, activeOwner: try await h.owner())
+
+        XCTAssertEqual(removed, .retirement(.retired))
+        let retirement = try XCTUnwrap(h.server.retirements.last)
+        XCTAssertEqual(retirement.url?.host, "silo.example")
+        XCTAssertEqual(retirement.header("X-Push-Installation-Key"), key)
+    }
+
+    /// When the address that owns the shared record later reports another
+    /// server, the address linked to it keeps the record, its key and its
+    /// display target, and the first address starts over with its own key.
+    func testRecordOwnerReportingAnotherDeploymentHandsTheRecordToTheOtherAddress() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        let shared = try XCTUnwrap(h.journal.load(serverID: Self.otherServerID))
+        h.identities.set("deployment-z", for: Self.serverID)
+        await h.tokens.switchActiveServer(serverId: Self.serverID)
+        await h.tokens.setServerUrl(Self.serverURL)
+        let sent = h.server.registrations.count
+
+        let result = await registrar.register(Self.body(token: Self.tokenB), owner: try await h.owner())
+
+        XCTAssertEqual(result, Self.accepted)
+        let after = h.server.registrations.dropFirst(sent)
+        XCTAssertEqual(after.map { $0.header("X-Push-Generation") }, ["1"])
+        XCTAssertFalse(after.contains { $0.header("X-Push-Installation-Key") == shared.installationKey })
+        XCTAssertEqual(try h.journal.load(serverID: Self.otherServerID), shared)
+        XCTAssertTrue(h.targets.targets().map(\.registryServerID).contains(Self.otherServerID))
+    }
+
     /// Two addresses that registered before either could prove it each hold
     /// a target, and pushes for that server fall back to generic text. The
     /// first address's next renewal is refused for the other's key; once

@@ -305,11 +305,15 @@ actor ApplePushRegistrar {
             guard !Task.isCancelled else { return }
             guard let record = try? journal.load(serverID: serverID), let latest = record.latest else { continue }
             var owner = latest.intent.owner
-            // Another address of the same server registered last. Once it no
-            // longer holds that session (removed, signed out, expired), this
-            // address registers the shared installation again as itself.
-            if owner.serverID != serverID, let own = record.owners?[serverID], !(await holdsSavedSession(owner)) {
-                owner = own
+            // Another address registered last. Once it no longer shares this
+            // record, or no longer holds that session (removed, signed out,
+            // expired), this address registers again as itself.
+            if owner.serverID != serverID, let own = record.owners?[serverID] {
+                if !sharesRecord(owner.serverID, with: serverID) {
+                    owner = own
+                } else if !(await holdsSavedSession(owner)) {
+                    owner = own
+                }
             }
             let result = await register(body, savedServer: owner)
             if result != .unchanged {
@@ -341,13 +345,23 @@ actor ApplePushRegistrar {
     /// go on. It goes ahead of queued registrations.
     func unregister(serverID: String, activeOwner: CapturedDurableAccountAuth?) async -> Result {
         await dropStaleLink(of: serverID)
-        let latest = try? journal.load(serverID: serverID)?.latest
+        let record = try? journal.load(serverID: serverID)
+        let latest = record?.latest
+        // The owner of this server's last intent: the record's latest, unless
+        // another address registered after it. While that address still
+        // shares the record it holds the installation, and its pushes go on.
+        var lastOwner = latest?.intent.owner
+        var heldElsewhere = false
+        if let holder = lastOwner, holder.serverID != serverID {
+            heldElsewhere = sharesRecord(holder.serverID, with: serverID)
+            lastOwner = record?.owners?[serverID]
+        }
         let activeIntentOwner = activeOwner.flatMap(ApplePushIntentOwner.init)
         let usesActiveSession = activeIntentOwner?.serverID == serverID
-        if let owner = usesActiveSession ? activeIntentOwner : latest?.intent.owner {
+        if let owner = usesActiveSession ? activeIntentOwner : lastOwner {
             departing[serverID] = (owner.accountID, owner.accountEpoch)
         }
-        guard let latest, latest.intent.owner.serverID == serverID else { return .unchanged }
+        guard let latest, !heldElsewhere else { return .unchanged }
         if case .accepted(let registration) = latest.outcome, !registration.isActive { return .unchanged }
         // A server already retired by an earlier sign-out is retired again at
         // the same generation: its entry may be gone (a `restore` whose
@@ -376,7 +390,7 @@ actor ApplePushRegistrar {
         if let activeOwner, usesActiveSession {
             channel = activeChannel(for: activeOwner)
         } else {
-            channel = savedServers.channel(for: latest.intent.owner)
+            channel = lastOwner.flatMap { savedServers.channel(for: $0) }
         }
         guard let channel else { return .notSent(reason: "server_url") }
         let off = Self.body(latest.intent.body, pushMode: ApplePushRegistrationWire.offPushMode)
@@ -684,14 +698,24 @@ actor ApplePushRegistrar {
     }
 
     /// Unlinks `serverID` from a shared record once the address reports
-    /// another deployment than the one it was proven to reach.
+    /// another deployment than the one it was proven to reach, and hands the
+    /// record it owns to the addresses linked to it in that case.
     private func dropStaleLink(of serverID: String) async {
         guard let identity = ServerIdentity.usable(await savedServerIdentity(serverID)) else { return }
         do {
             try journal.dropLink(of: serverID, unlessProvenFor: identity)
+            try journal.handOver(recordOf: serverID, unlessProvenFor: identity,
+                                 among: await savedServerIDs().filter { $0 != serverID })
         } catch {
             Self.logger.error("Could not unlink the Apple push installation record: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    /// Whether `other` and `serverID` share one record.
+    private func sharesRecord(_ other: String, with serverID: String) -> Bool {
+        guard let theirs = try? journal.recordOwner(for: other),
+              let mine = try? journal.recordOwner(for: serverID) else { return false }
+        return theirs == mine
     }
 
     /// Whether `owner` still holds its saved server's stored session.
