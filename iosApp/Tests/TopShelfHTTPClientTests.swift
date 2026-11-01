@@ -316,6 +316,25 @@ final class TopShelfHTTPClientTests: XCTestCase {
         XCTAssertFalse(h.stub.requestedPaths.contains(Self.fullHomePath))
     }
 
+    func testProfileChangeBeforeARowFailsReturnsNothing() async throws {
+        let h = try harness()
+        stubHome(h, [("cw", "continue_watching", ["a"]), ("nu", "next_up", ["b"])])
+        h.stub.reply(path: Self.itemsPath("nu"), 500, "{}")
+        h.stub.hold(path: Self.itemsPath("nu"))
+
+        let fetch = Task { try await h.client.fetchHomeSections(imageSizeQuery: [:]) }
+        await h.stub.waitUntilHeld()
+        // Let the Continue Watching read finish under the first profile.
+        let deadline = Date().addingTimeInterval(5)
+        while !h.stub.requestedPaths.contains(Self.itemsPath("cw")), Date() < deadline { await Task.yield() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        h.switchProfile()
+        h.stub.release()
+
+        // The previous profile's Continue Watching row must not come back.
+        await assertNotAuthenticated(fetch)
+    }
+
     private func assertNotAuthenticated<T>(
         _ fetch: Task<T, Error>,
         file: StaticString = #filePath,

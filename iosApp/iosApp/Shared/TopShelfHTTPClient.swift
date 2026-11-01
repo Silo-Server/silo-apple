@@ -188,6 +188,8 @@ struct TopShelfHTTPClient {
             for try await (index, result) in group { results[index] = result }
             return results.compactMap { $0 }
         }
+        // A row that failed after a scope change was never scope-checked.
+        guard isCurrentScope else { throw Error.notAuthenticated }
         let sections = results.compactMap { try? $0.get() }
         if sections.isEmpty, case .failure(let error)? = results.first { throw error }
         return TopShelfSectionsResponse(sections: sections, failedSectionCount: results.count - sections.count)
