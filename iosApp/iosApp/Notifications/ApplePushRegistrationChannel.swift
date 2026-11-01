@@ -28,7 +28,9 @@ extension ApplePushRegistrationChannel {
     /// a random UUID that only the backend that issued it knows, and each
     /// address is asked only about its own sessions, with its own
     /// credentials. An address that is not that backend, or a proxy for it,
-    /// cannot list this session. Any failure counts as no proof.
+    /// cannot list this session unless it signs in to `holder` with the
+    /// person's own credentials, which already give it the account. Any
+    /// failure counts as no proof.
     func sharesBackend(with holder: ApplePushRegistrationChannel) async -> Bool {
         guard let own = try? await loginSessions(nil).currentSession?.id, !own.isEmpty else { return false }
         var cursor: String?

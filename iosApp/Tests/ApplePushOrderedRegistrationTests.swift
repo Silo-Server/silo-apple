@@ -177,6 +177,14 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         }
     }
 
+    /// The deployment identity each saved server reports, changeable mid-test.
+    private final class Identities: @unchecked Sendable {
+        private let lock = NSLock()
+        private var reported: [String: String] = [:]
+        func set(_ identity: String, for serverID: String) { lock.withLock { reported[serverID] = identity } }
+        func identity(of serverID: String) -> String? { lock.withLock { reported[serverID] } }
+    }
+
     private final class Clock: @unchecked Sendable {
         private let lock = NSLock()
         private var current = Date(timeIntervalSince1970: 1_800_000_000)
@@ -194,6 +202,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let api: APIv2Client
         let defaults: SharedDefaults
         let retirementStore: ApplePushRetirementStore
+        let identities = Identities()
 
         /// A new registrar is a new process: only the Keychain carries over.
         func registrar(clock: Clock? = nil, savedServerIdentity: String? = nil,
@@ -209,7 +218,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             return ApplePushRegistrar(api: api, tokenStore: tokens, journal: journal, displayTargets: targets,
                 savedServers: ApplePushSavedServerClient(http: http, tokenStore: tokens,
                     session: session),
-                savedServerIdentity: { _ in savedServerIdentity }, savedServerIDs: { savedServerIDs },
+                savedServerIdentity: { [identities] in identities.identity(of: $0) ?? savedServerIdentity },
+                savedServerIDs: { savedServerIDs },
                 retirements: retirements,
                 retirementBudget: retirementBudget, now: now)
         }
@@ -226,7 +236,6 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             try await tokens.bindVerifiedAccount("12", expected: XCTUnwrap(captured))
         }
 
-        /// Signs in to a second saved server, which becomes the active one.
         /// Signs in to the same deployment, and the same account, under a
         /// second address, which becomes the active one.
         func signInToSecondAddress() async throws {
@@ -241,6 +250,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             try await tokens.bindVerifiedAccount("12", expected: XCTUnwrap(captured))
         }
 
+        /// Signs in to a second saved server, which becomes the active one.
         func signInToOtherServer() async throws {
             await tokens.switchActiveServer(serverId: ApplePushOrderedRegistrationTests.otherServerID)
             await tokens.setServerUrl(ApplePushOrderedRegistrationTests.otherServerURL)
@@ -572,6 +582,48 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(removed, .unchanged)
         XCTAssertEqual(h.server.handler.requests.count, sent)
         XCTAssertEqual(h.targets.targets().map(\.registryServerID), [Self.otherServerID])
+    }
+
+    /// Once the address that registered last is removed, its retirement
+    /// stops the shared installation, and the other address, still saved and
+    /// signed in, registers it again under its own last owner with the
+    /// shared key, without being the active server.
+    func testSurvivingAddressTakesTheSharedInstallationBackAfterTheHolderIsRemoved() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        let removed = await registrar.unregister(serverID: Self.otherServerID, activeOwner: try await h.owner())
+        XCTAssertEqual(removed, .retirement(.retired))
+        await h.tokens.switchActiveServer(serverId: Self.serverID)
+        await h.tokens.setServerUrl(Self.serverURL)
+        await h.tokens.deleteTokens(for: Self.otherServerID)
+
+        await registrar.registerSavedServers(Self.body(), among: [Self.serverID], skipping: nil)
+
+        let renewed = try XCTUnwrap(h.server.registrations.last)
+        XCTAssertEqual(renewed.url?.host, "silo.example")
+        XCTAssertEqual(renewed.header("X-Push-Installation-Key"), key)
+        XCTAssertEqual(renewed.header("X-Push-Generation"), "4")
+        XCTAssertEqual(h.targets.targets().map(\.registryServerID), [Self.serverID])
+    }
+
+    /// A link is keyed by the address. When that address later reports
+    /// another deployment (a reassigned LAN address, a new install), it
+    /// stops sharing the record and starts over with a key of its own.
+    func testAddressReportingAnotherDeploymentStopsSharingTheKey() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        h.identities.set("deployment-z", for: Self.otherServerID)
+        let sent = h.server.registrations.count
+
+        let result = await registrar.register(Self.body(token: Self.tokenB), owner: try await h.owner())
+
+        XCTAssertEqual(result, Self.accepted)
+        let after = h.server.registrations.dropFirst(sent)
+        XCTAssertEqual(after.map { $0.header("X-Push-Generation") }, ["1"])
+        XCTAssertFalse(after.contains { $0.header("X-Push-Installation-Key") == key })
+        XCTAssertEqual(try h.record()?.installationKey, key)
     }
 
     /// Two addresses that registered before either could prove it each hold

@@ -84,6 +84,10 @@ struct ApplePushInstallationRecord: Codable, Equatable, Sendable {
     /// The intent that holds `generation`, or, when its outcome is
     /// `retired`, the last intent before the retirement that holds it.
     var latest: Latest?
+    /// Per saved server sharing this record, the owner of its last intent,
+    /// so one can register again once the server that registered last no
+    /// longer holds its session. Absent in records from earlier builds.
+    var owners: [String: ApplePushIntentOwner]? = nil
 }
 
 /// A registration ready to send.
@@ -163,6 +167,25 @@ struct ApplePushInstallationJournal: Sendable {
         SharedStorage.keychainAccountPrefix + "push.apple.installation.link.\(serverID)"
     }
 
+    /// A shared record, and the deployment identity the address reported
+    /// when it proved it reaches that deployment.
+    struct Link: Codable, Equatable, Sendable {
+        let recordOwner: String
+        let serverID: String
+    }
+
+    private func storedLink(of serverID: String) throws -> Link? {
+        let raw: String?
+        do {
+            raw = try keychain.getChecked(Self.linkAccount(for: serverID))
+        } catch {
+            throw JournalError.unreadable
+        }
+        guard let raw else { return nil }
+        guard let link = try? JSONDecoder().decode(Link.self, from: Data(raw.utf8)) else { throw JournalError.unreadable }
+        return link
+    }
+
     /// Links followed at most; a longer chain, or a loop, is unreadable.
     private static let maximumLinks = 8
 
@@ -171,16 +194,22 @@ struct ApplePushInstallationJournal: Sendable {
     func recordOwner(for serverID: String) throws -> String {
         var current = serverID
         for _ in 0...Self.maximumLinks {
-            let next: String?
-            do {
-                next = try keychain.getChecked(Self.linkAccount(for: current))
-            } catch {
-                throw JournalError.unreadable
+            guard let next = try storedLink(of: current)?.recordOwner, !next.isEmpty, next != current else {
+                return current
             }
-            guard let next, !next.isEmpty, next != current else { return current }
             current = next
         }
         throw JournalError.unreadable
+    }
+
+    /// Ends `serverID`'s share of another server's record when it now
+    /// reports a deployment other than the one it was proven to reach: the
+    /// registry id comes from the address, and a different server saved
+    /// later at that address must not get the shared key. It starts again
+    /// with a record of its own.
+    func dropLink(of serverID: String, unlessProvenFor identity: String) throws {
+        guard let link = try storedLink(of: serverID), link.serverID != identity else { return }
+        guard keychain.delete(Self.linkAccount(for: serverID)) else { throw JournalError.writeFailed }
     }
 
     /// Makes `serverID` share `other`'s record from now on, after the two
@@ -189,11 +218,15 @@ struct ApplePushInstallationJournal: Sendable {
     /// installation for this device whichever address registers it, and
     /// only one key can prove it. `serverID`'s own record, whose key the
     /// server does not hold, is deleted. A link is kept like a record: it
-    /// outlives sign-out and removal.
-    func link(_ serverID: String, toRecordOf other: String) throws {
+    /// outlives sign-out and removal, until the address reports another
+    /// deployment (`dropLink`).
+    func link(_ serverID: String, toRecordOf other: String, provenFor identity: String) throws {
         let target = try recordOwner(for: other)
         guard target != serverID else { return }
-        guard keychain.set(target, for: Self.linkAccount(for: serverID)) else { throw JournalError.writeFailed }
+        let data = try JSONEncoder().encode(Link(recordOwner: target, serverID: identity))
+        guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.linkAccount(for: serverID)) else {
+            throw JournalError.writeFailed
+        }
         keychain.delete(Self.account(for: serverID))
     }
 
@@ -265,6 +298,7 @@ struct ApplePushInstallationJournal: Sendable {
         var next = record
         next.generation += 1
         next.latest = .init(intent: desired, outcome: .pending)
+        next.owners = (record.owners ?? [:]).merging([desired.owner.serverID: desired.owner]) { _, new in new }
         let command = ApplePushRegistrationCommand(installationKey: next.installationKey,
             generation: next.generation, intent: desired, isRenewal: false)
         return (next, command, true)

@@ -303,8 +303,15 @@ actor ApplePushRegistrar {
                               skipping activeServerID: String?) async {
         for serverID in serverIDs where serverID != activeServerID {
             guard !Task.isCancelled else { return }
-            guard let latest = try? journal.load(serverID: serverID)?.latest else { continue }
-            let result = await register(body, savedServer: latest.intent.owner)
+            guard let record = try? journal.load(serverID: serverID), let latest = record.latest else { continue }
+            var owner = latest.intent.owner
+            // Another address of the same server registered last. Once it no
+            // longer holds that session (removed, signed out, expired), this
+            // address registers the shared installation again as itself.
+            if owner.serverID != serverID, let own = record.owners?[serverID], !(await holdsSavedSession(owner)) {
+                owner = own
+            }
+            let result = await register(body, savedServer: owner)
             if result != .unchanged {
                 Self.logger.info("Saved-server Apple push registration: \(String(describing: result), privacy: .public)")
             }
@@ -333,6 +340,7 @@ actor ApplePushRegistrar {
     /// registered last: that address holds the installation, and its pushes
     /// go on. It goes ahead of queued registrations.
     func unregister(serverID: String, activeOwner: CapturedDurableAccountAuth?) async -> Result {
+        await dropStaleLink(of: serverID)
         let latest = try? journal.load(serverID: serverID)?.latest
         let activeIntentOwner = activeOwner.flatMap(ApplePushIntentOwner.init)
         let usesActiveSession = activeIntentOwner?.serverID == serverID
@@ -466,6 +474,7 @@ actor ApplePushRegistrar {
         if let field = ApplePushRegistrationWire.contractViolation(in: body) {
             return .notSent(reason: "invalid_\(field)")
         }
+        await dropStaleLink(of: channel.owner.serverID)
         let intentOwner = channel.owner
         let serverID = intentOwner.serverID
         let desired = ApplePushInstallationIntent(owner: intentOwner, body: body)
@@ -635,7 +644,7 @@ actor ApplePushRegistrar {
                   let holderChannel = savedServers.channel(for: holder),
                   await channel.sharesBackend(with: holderChannel) else { continue }
             do {
-                try journal.link(serverID, toRecordOf: candidate)
+                try journal.link(serverID, toRecordOf: candidate, provenFor: identity)
                 guard let record = try journal.load(serverID: serverID) else { return nil }
                 // A retirement queued for the replaced record must not be
                 // sent with the shared record's key.
@@ -672,6 +681,23 @@ actor ApplePushRegistrar {
         guard let retry = planned.command else { return .unchanged }
         return await dispatch(retry, allocating: planned.allocated ? planned.record : nil, body: body,
                               through: channel, mayResetInstallation: mayResetInstallation, mayShareRecord: false)
+    }
+
+    /// Unlinks `serverID` from a shared record once the address reports
+    /// another deployment than the one it was proven to reach.
+    private func dropStaleLink(of serverID: String) async {
+        guard let identity = ServerIdentity.usable(await savedServerIdentity(serverID)) else { return }
+        do {
+            try journal.dropLink(of: serverID, unlessProvenFor: identity)
+        } catch {
+            Self.logger.error("Could not unlink the Apple push installation record: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Whether `owner` still holds its saved server's stored session.
+    private func holdsSavedSession(_ owner: ApplePushIntentOwner) async -> Bool {
+        guard let account = await tokenStore.savedSessionAccount(for: owner.serverID) else { return false }
+        return account.accountID == owner.accountID && account.epoch == owner.accountEpoch
     }
 
     /// The other saved servers whose record is `serverID`'s.
@@ -713,7 +739,8 @@ actor ApplePushRegistrar {
             // retirement from allocating past it, so the next one is above
             // everything this record has sent.
             let fresh = ApplePushInstallationRecord(installationKey: command.installationKey,
-                generation: command.generation, latest: nil)
+                generation: command.generation, latest: nil,
+                owners: (try? journal.load(serverID: serverID))?.owners)
             restarted = try ApplePushInstallationJournal.plan(fresh, desired: command.intent, renewDisplayToken: false)
         } catch {
             return .notSent(reason: "journal_\(error)")
