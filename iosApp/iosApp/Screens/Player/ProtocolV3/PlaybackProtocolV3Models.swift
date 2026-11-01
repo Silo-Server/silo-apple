@@ -48,6 +48,15 @@ enum PlaybackProtocolV3 {
     /// (`subtitle.hls_rendition`). AVPlayer then plays it from the
     /// multivariant playlist, so no whole-file sidecar is fetched.
     static let hlsSubtitleRenditionsFeature = "hls_subtitle_renditions_v1"
+    /// Extends `hls_subtitle_renditions_v1`, which it requires, to
+    /// `server_remux_hls`: a copy remux carries its embedded text track as the
+    /// same rendition instead of a sidecar extracted from the whole file.
+    static let hlsRemuxSubtitleRenditionsFeature = "hls_remux_subtitle_renditions_v1"
+    /// Extends both: every embedded text track the source's index can read is
+    /// a rendition of the plan's HLS stream, listed on its inventory row as
+    /// `hls_rendition`, and switching among them keeps the stream. /api/v2
+    /// only, attempt-sticky, and sent only to a server that advertises it.
+    static let hlsSubtitleRenditionsAllFeature = "hls_subtitle_renditions_all_v1"
     static let clientSelectedAudioTrackClaim = "client_selected_audio_track_v1"
     /// Native v2 only. The server accepts `bandwidth_estimate_source` and
     /// `learned_limit` on a start or replan whose `client_features` names it,
@@ -637,6 +646,40 @@ struct PlaybackV3SubtitleInventoryItem: Codable, Equatable {
     /// and downloaded SRT, WebVTT, ASS, and SSA tracks. Opaque, and stable
     /// across sessions and inventory order.
     var syncKey: String? = nil
+    /// Embedded rows only, on servers that publish them: the row's absolute
+    /// probed stream index (the FFmpeg id `embedded.stream_index` uses), its
+    /// container track id (Matroska TrackNumber or MP4 `tkhd` ID), and
+    /// whether selecting it on this plan's stream would plan `embedded`.
+    var streamIndex: Int? = nil
+    var containerTrackId: String? = nil
+    var nativeSelectable: Bool? = nil
+    /// Under `hls_subtitle_renditions_all_v1`: the row's WebVTT rendition in
+    /// the plan's HLS stream.
+    var hlsRendition: PlaybackV3InventoryHLSRendition? = nil
+}
+
+/// Where an inventory row's track sits in the HLS stream's SUBTITLES group:
+/// the EXT-X-MEDIA named `name` (unique in the group), at 1-based `index`.
+struct PlaybackV3InventoryHLSRendition: Codable, Equatable {
+    let groupId: String
+    let name: String
+    let index: Int
+}
+
+extension PlaybackV3SubtitleInventoryItem {
+    /// The FFmpeg stream an embedded row names, from the row itself: its
+    /// `stream_index`, else the `embedded_stream_index` the server puts on
+    /// every embedded sidecar URL. Nil for other sources, or when the server
+    /// published neither; only then may a caller count catalog tracks.
+    var embeddedStreamIndex: Int? {
+        guard source == "embedded" else { return nil }
+        if let streamIndex { return streamIndex >= 0 ? streamIndex : nil }
+        guard let url,
+              let value = URLComponents(string: url)?.queryItems?
+                .first(where: { $0.name == "embedded_stream_index" })?.value,
+              let index = Int(value), index >= 0 else { return nil }
+        return index
+    }
 }
 
 struct PlaybackV3EmbeddedSubtitle: Codable, Equatable {
@@ -650,6 +693,9 @@ struct PlaybackV3HLSSubtitleRendition: Codable, Equatable {
     let name: String
     let format: String
     let mimeType: String
+    /// The selected row's `hls_rendition.index` when the group lists every
+    /// embedded text track; nil for the single pipeline rendition.
+    var index: Int? = nil
 }
 
 struct PlaybackV3SubtitleDecision: Codable, Equatable {

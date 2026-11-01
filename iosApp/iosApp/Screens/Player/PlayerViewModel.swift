@@ -284,6 +284,10 @@ class PlayerViewModel {
     /// re-read at drain time — playback moved on while we waited.
     @ObservationIgnored
     private var pendingProtocolV3TrackChange: QueuedProtocolV3TrackChange?
+    /// Counts the viewer's subtitle picks, so a pick waiting on its replan
+    /// can tell whether a newer one has replaced it.
+    @ObservationIgnored
+    private var subtitlePickGeneration = 0
     private let scrubPreviewProvider: AetherScrubPreviewProvider
     /// Fetches the server's seek-bar previews for `serverTrickplayKey`, the
     /// item and file they belong to.
@@ -311,6 +315,9 @@ class PlayerViewModel {
         pendingProtocolV3FirstFrameEpoch = nil
         pendingProtocolV3SeekReanchorPosition = nil
         pendingProtocolV3TrackChange = nil
+        pendingProtocolV3SubtitleReport = nil
+        protocolV3LocalPickDuringReport = false
+        protocolV3FailureDuringReport = nil
         if forReplacement {
             aetherPlaybackController.prepareForReplacement()
         } else {
@@ -1053,6 +1060,26 @@ class PlayerViewModel {
     /// reload whose only change is a refreshed bearer. Reusing this gate keeps
     /// credential recovery from racing route replans, seeks, or track changes.
     private var protocolV3ReplanTask: Task<Void, Never>?
+    /// The replan in flight only reports a subtitle switch the player
+    /// already made on the running stream (`keepsPlaying`).
+    private var protocolV3ReplanIsReport = false
+    /// A replan in flight that may replace the running transport. A subtitle
+    /// report keeps it, unless its answer turns the report into a load.
+    private var isPreparingProtocolV3Replacement: Bool {
+        protocolV3ReplanTask != nil && !protocolV3ReplanIsReport
+    }
+    /// A newer switch among the stream's renditions, made while a report was
+    /// in flight: applied locally at once, reported when that one settles.
+    /// Latest wins.
+    private var pendingProtocolV3SubtitleReport: ProtocolV3SubtitleSelection?
+    /// A local pick, of any kind, made while the report in flight was out.
+    /// It is newer than the answer that report gets, so that answer must not
+    /// select over it.
+    private var protocolV3LocalPickDuringReport = false
+    /// A failure of the item a report keeps playing. The busy replan gate
+    /// refuses its recovery while the report is out, so it is recovered once
+    /// the report settles, unless the answer replaced the item.
+    private var protocolV3FailureDuringReport: (position: Double, classification: String, message: String)?
     /// The running mid-stream reconnect (§6.2), its pending attempt timer,
     /// and the start request a new session uses when the old one is gone.
     @ObservationIgnored
@@ -1735,6 +1762,7 @@ class PlayerViewModel {
             return upstreamMeter.linkThroughputKbps
         }
         observeBufferingHostInputs()
+        observeHLSRenditionTextStyle()
         observeBufferingConnectivity()
         observeBufferingSurfaceVisibility()
     }
@@ -1787,8 +1815,9 @@ class PlayerViewModel {
             playheadMovedAt: playheadSample?.movedAt,
             bufferEmptySince: stalledBufferEmptySince,
             // Both set `isLoading` before awaiting the server, while the
-            // outgoing load still reports its phase.
-            preparingReplacement: protocolV3ReplanTask != nil || freshLoadTask != nil,
+            // outgoing load still reports its phase. A subtitle report
+            // doesn't, since it keeps the running stream.
+            preparingReplacement: isPreparingProtocolV3Replacement || freshLoadTask != nil,
             now: .now
         )
     }
@@ -2146,11 +2175,7 @@ class PlayerViewModel {
                 )
                 return
             }
-            attemptProtocolV3Replan(
-                position: sourcePlayhead,
-                classification: failure.kind.rawValue,
-                message: failure.message
-            )
+            recoverFailedProtocolV3Item(classification: failure.kind.rawValue, message: failure.message)
             return
         }
         if failure.kind == .sourceRateLimited {
@@ -2298,11 +2323,22 @@ class PlayerViewModel {
     }
 
     private func attemptProtocolV3Recovery(after message: String) {
-        attemptProtocolV3Replan(
-            position: sourcePlayhead,
-            classification: protocolV3FailureClassification(message),
-            message: message
-        )
+        recoverFailedProtocolV3Item(classification: protocolV3FailureClassification(message), message: message)
+    }
+
+    /// A subtitle report in flight would refuse this recovery as busy, and
+    /// its answer would keep the failed item in place. The recovery runs once
+    /// the report settles, and the answer is dropped.
+    private func recoverFailedProtocolV3Item(classification: String, message: String) {
+        guard protocolV3ReplanIsReport else {
+            attemptProtocolV3Replan(position: sourcePlayhead, classification: classification, message: message)
+            return
+        }
+        protocolV3FailureDuringReport = (sourcePlayhead, classification, message)
+        // Playback has stopped, so the room and the player show it.
+        protocolV3ReplanIsReport = false
+        showProtocolV3ReplanLoading()
+        publishWatchPartySnapshot()
     }
 
     /// Rebuilds the committed plan with the account bearer currently held by
@@ -2458,7 +2494,8 @@ class PlayerViewModel {
                             classification: queuedTrackChange.classification,
                             message: queuedTrackChange.message,
                             requeueWhenBusy: true,
-                            trackTarget: queuedTrackChange.target
+                            trackTarget: queuedTrackChange.target,
+                            subtitlePick: queuedTrackChange.subtitlePick
                         )
                     } else if let queuedTarget = self.pendingProtocolV3SeekReanchorPosition {
                         self.pendingProtocolV3SeekReanchorPosition = nil
@@ -2575,7 +2612,7 @@ class PlayerViewModel {
     /// id recorded before it can vanish or land on a different stream by drain
     /// time; the server identity is what `resolvedAudioTrackIndexForResume` /
     /// `resolvedProtocolV3SubtitleIndexForResume` send, and it survives that.
-    private enum QueuedProtocolV3TrackTarget {
+    enum QueuedProtocolV3TrackTarget {
         case audio(trackId: Int64, selectionIndex: Int?)
         case subtitle(trackId: Int64?, combinedIndex: Int?)
     }
@@ -2618,10 +2655,103 @@ class PlayerViewModel {
     /// the user's tap wrote has been overwritten by the interim plan's. A
     /// deferred replan that re-read the selection would therefore ask the
     /// server for the track the user was already on and silently drop the tap.
-    private struct QueuedProtocolV3TrackChange {
+    struct QueuedProtocolV3TrackChange {
         let classification: String
         let message: String
         let target: QueuedProtocolV3TrackTarget?
+        var subtitlePick: ReplannedSubtitlePick? = nil
+    }
+
+    /// A viewer's subtitle pick that the server switches. If the server
+    /// refuses the track, the selection it replaced comes back and nothing
+    /// is saved; otherwise its preference is saved once its plan is adopted.
+    struct ReplannedSubtitlePick {
+        let generation: Int
+        var rollback: SubtitleSelectionRollback
+        let preference: SubtitlePreferenceWrite?
+        /// The preference of the adopted pick `rollback` goes back to, which
+        /// this newer pick kept from being saved. A refusal saves it.
+        var rollbackPreference: SubtitlePreferenceWrite? = nil
+        /// An audio pick queued with this one. The player already shows it,
+        /// so this pick's request carries it, and a refusal asks for it on
+        /// its own.
+        var audioPick: QueuedProtocolV3TrackTarget? = nil
+    }
+
+    /// An audio pick made while a subtitle pick is queued joins that pick's
+    /// request, which keeps the subtitle pick's rollback and refusal
+    /// handling. Nil when no subtitle pick is queued.
+    static func subtitleChange(
+        _ queued: QueuedProtocolV3TrackChange?,
+        joinedBy audio: QueuedProtocolV3TrackTarget
+    ) -> QueuedProtocolV3TrackChange? {
+        guard var queued, case .subtitle? = queued.target, var pick = queued.subtitlePick else { return nil }
+        pick.audioPick = audio
+        queued.subtitlePick = pick
+        return queued
+    }
+
+    /// A subtitle pick queued in place of `replaced`, which never runs. A
+    /// replaced subtitle pick never took effect, so a refusal goes back to
+    /// what that one replaced.
+    static func subtitlePick(
+        _ pick: ReplannedSubtitlePick,
+        queuedOver replaced: QueuedProtocolV3TrackChange?
+    ) -> ReplannedSubtitlePick {
+        var pick = pick
+        switch replaced?.target {
+        case .audio?:
+            pick.audioPick = replaced?.target
+        case .subtitle?:
+            guard let older = replaced?.subtitlePick else { break }
+            pick.rollback = older.rollback
+            pick.rollbackPreference = older.rollbackPreference
+            pick.audioPick = older.audioPick
+        case nil:
+            break
+        }
+        return pick
+    }
+
+    /// A queued pick once the older pick it waited behind settles. Adopted,
+    /// the older pick is what a refusal of this one goes back to, and its
+    /// preference is saved then. Otherwise the older pick never took effect,
+    /// so this one goes back to what that one replaced.
+    static func queuedSubtitlePick(
+        _ queued: ReplannedSubtitlePick,
+        after older: ReplannedSubtitlePick,
+        adopted: Bool
+    ) -> ReplannedSubtitlePick {
+        var queued = queued
+        if adopted {
+            queued.rollbackPreference = older.preference
+        } else {
+            queued.rollback = older.rollback
+            queued.rollbackPreference = older.rollbackPreference
+            queued.audioPick = queued.audioPick ?? older.audioPick
+        }
+        return queued
+    }
+
+    struct SubtitlePreferenceWrite {
+        let prefKey: String
+        let request: SubtitlePrefRequest
+    }
+
+    /// What stays queued once a newer subtitle pick lands: a subtitle change
+    /// queued before it would bring the superseded track back, and a queued
+    /// audio change still runs, including one that joined the dropped
+    /// subtitle change.
+    static func queuedTrackChangeAfterSubtitlePick(
+        _ queued: QueuedProtocolV3TrackChange?
+    ) -> QueuedProtocolV3TrackChange? {
+        guard case .subtitle? = queued?.target else { return queued }
+        guard let audioPick = queued?.subtitlePick?.audioPick else { return nil }
+        return QueuedProtocolV3TrackChange(
+            classification: "audio_track_changed",
+            message: "User selected an audio track.",
+            target: audioPick
+        )
     }
 
     /// Re-publishes a queued track pick just before the deferred replan reads
@@ -2693,7 +2823,14 @@ class PlayerViewModel {
         issuedByBufferingQuality: Bool = false,
         // The viewer's quality change: pending from the send until its plan
         // is adopted, refused if it never is.
-        viewerQualityChange: Bool = false
+        viewerQualityChange: Bool = false,
+        // The player already applied the change on the running stream and
+        // only reports it: playback is not shown loading unless the answer
+        // needs a new transport, and a failed report leaves it playing.
+        keepsPlaying: Bool = false,
+        // The viewer's subtitle pick this replan switches to. A refusal of
+        // that track leaves the current plan playing.
+        subtitlePick: ReplannedSubtitlePick? = nil
     ) -> Bool {
         // One classification of the user's target. A track change must have a
         // stable server ordinal before it is queued or issued: falling back to
@@ -2730,6 +2867,11 @@ class PlayerViewModel {
                 return true
             }
             if requeueWhenBusy {
+                if case .audio? = trackTarget, let trackTarget,
+                   let joined = Self.subtitleChange(pendingProtocolV3TrackChange, joinedBy: trackTarget) {
+                    pendingProtocolV3TrackChange = joined
+                    return true
+                }
                 // A user track change. The UI already shows the new
                 // selection, so dropping the switch here would leave the
                 // player permanently disagreeing with itself. Latest-wins,
@@ -2738,8 +2880,12 @@ class PlayerViewModel {
                 pendingProtocolV3TrackChange = QueuedProtocolV3TrackChange(
                     classification: classification,
                     message: message,
-                    target: trackTarget
+                    target: trackTarget,
+                    subtitlePick: subtitlePick.map {
+                        Self.subtitlePick($0, queuedOver: pendingProtocolV3TrackChange)
+                    }
                 )
+                if targetsSubtitle { pendingProtocolV3SubtitleReport = nil }
                 return true
             }
             if qualitySwitchOnMeteredNetwork != nil { isQualitySwitching = false }
@@ -2754,6 +2900,10 @@ class PlayerViewModel {
         // interim plan's inventory while the user's pick waited, so reassert
         // the pick first. On the direct path the pick is already published and
         // this is a no-op.
+        // Audio first: restoring it can reapply the system subtitle policy.
+        if let audioPick = subtitlePick?.audioPick {
+            restoreQueuedProtocolV3TrackSelection(audioPick)
+        }
         if let trackTarget {
             restoreQueuedProtocolV3TrackSelection(trackTarget)
         }
@@ -2805,17 +2955,11 @@ class PlayerViewModel {
         if classification != PlaybackReconnectPolicy.classification {
             lastEndReconnect = nil
         }
-        progressTask?.cancel()
-        isLoading = true
-        isBuffering = false
-        isLoadingSubtitles = false
-        bufferingProgress = nil
-        // The replan is prepared before any engine event; hold the intro
-        // pill's timer through it like any other stall.
-        syncIntroSkipPrompt()
+        if !keepsPlaying { showProtocolV3ReplanLoading() }
         streamLoadGeneration &+= 1
         let currentStreamLoadGeneration = streamLoadGeneration
         let qualityChange = viewerQualityChange ? sendViewerQualityChange() : nil
+        protocolV3ReplanIsReport = keepsPlaying
         protocolV3ReplanTask = Task { @MainActor [weak self] in
             guard let self, !self.isDisposed else { return }
             let priorActivePlaybackSessionId = self.activePlaybackSessionId
@@ -2851,9 +2995,19 @@ class PlayerViewModel {
                 if let replacedMarkers {
                     self.restoreReplacedMarkers(replacedMarkers)
                 }
+                // A pick made while a report was out is newer than anything
+                // this replan replaced, and already showing, so it stays the
+                // local selection: none, for a live AI pick.
+                let newerLocalPick = self.protocolV3LocalPickDuringReport
+                    ? self.localProtocolV3SubtitleSelection : nil
                 self.activePreparedProtocolV3 = priorPreparedProtocolV3
-                self.localProtocolV3SubtitleSelection = priorLocalSubtitleSelection
+                if !self.protocolV3LocalPickDuringReport {
+                    self.localProtocolV3SubtitleSelection = priorLocalSubtitleSelection
+                }
                 self.lastLoadRequest = priorLastLoadRequest
+                if let newerLocalPick, let plan = priorPreparedProtocolV3?.plan {
+                    self.lastLoadRequest = self.lastLoadRequest?.adoptingLocalProtocolV3SubtitleSelection(newerLocalPick, plan: plan)
+                }
                 self.pendingAudioFfIndex = priorPendingAudioFfIndex
                 self.pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
                 self.pendingSidecarSubtitleTrackId = priorPendingSidecarSubtitleTrackId
@@ -2877,8 +3031,16 @@ class PlayerViewModel {
             // that plan keeps playing, as the spec requires.
             var keepsCurrentPlan = false
             var adoptedBufferingPlan = false
+            // The plan now owns the session, with the subtitle it asked for.
+            var adoptedPlan = false
+            var refusedSubtitlePick = false
             defer {
+                if let subtitlePick, !refusedSubtitlePick {
+                    self.settleSubtitlePick(subtitlePick, adopted: adoptedPlan)
+                }
                 self.protocolV3ReplanTask = nil
+                self.protocolV3ReplanIsReport = false
+                self.protocolV3LocalPickDuringReport = false
                 if keepsCurrentPlan {
                     // Undo what the request set up: the old load still plays.
                     self.isLoading = self.currentPhaseIsLoading()
@@ -2901,7 +3063,12 @@ class PlayerViewModel {
                 // A start-deadline lowering that left the failed load
                 // installed hands that load's failure to the usual recovery.
                 let heldRecovery = issuedByBufferingQuality ? self.takeHeldStartDeadlineRecovery() : nil
-                if let recovery = chainedLoadFailureRecovery ?? heldRecovery {
+                // The item a report kept failed while it was out. Recovered
+                // only if nothing has replaced that item since.
+                let keptItemFailure = currentStreamLoadGeneration == self.streamLoadGeneration
+                    ? self.protocolV3FailureDuringReport : nil
+                self.protocolV3FailureDuringReport = nil
+                if let recovery = chainedLoadFailureRecovery ?? heldRecovery ?? keptItemFailure {
                     self.attemptProtocolV3Replan(
                         position: recovery.position,
                         classification: recovery.classification,
@@ -2921,9 +3088,12 @@ class PlayerViewModel {
                             classification: queuedTrackChange.classification,
                             message: queuedTrackChange.message,
                             requeueWhenBusy: true,
-                            trackTarget: queuedTrackChange.target
+                            trackTarget: queuedTrackChange.target,
+                            subtitlePick: queuedTrackChange.subtitlePick
                         )
                     }
+                } else if self.sendPendingProtocolV3SubtitleReport() {
+                    // That report's own completion drains what is still queued.
                 } else if let queuedTarget = self.pendingProtocolV3SeekReanchorPosition {
                     self.pendingProtocolV3SeekReanchorPosition = nil
                     if !self.isDisposed, self.activePreparedProtocolV3 != nil {
@@ -2947,6 +3117,7 @@ class PlayerViewModel {
                     qualityAxes: qualityAxes,
                     audioTrackIndex: requestedAudioTrackIndex,
                     subtitleTrackIndex: requestedSubtitleTrackIndex,
+                    keepsSessionOnSubtitleRefusal: subtitlePick != nil,
                     outputRouteSnapshot: outputRouteSnapshot,
                     bufferingQualityMode: self.settings.bufferingQualityMode,
                     bandwidthEstimateKbps: requestedEstimateKbps,
@@ -2959,7 +3130,7 @@ class PlayerViewModel {
                         self.scheduleReconnectSessionStart()
                         return
                     }
-                    if issuedByBufferingQuality {
+                    if issuedByBufferingQuality || keepsPlaying {
                         keepsCurrentPlan = true
                         return
                     }
@@ -2977,7 +3148,10 @@ class PlayerViewModel {
                 uncommittedPrepared = prepared
                 guard !Task.isCancelled,
                       !self.isDisposed,
-                      currentStreamLoadGeneration == self.streamLoadGeneration else {
+                      currentStreamLoadGeneration == self.streamLoadGeneration,
+                      // The item this report kept failed while it was out:
+                      // the failure's recovery replaces it as this task exits.
+                      self.protocolV3FailureDuringReport == nil else {
                     throw CancellationError()
                 }
                 // The server answered with a plan: any reconnect ends here,
@@ -2992,7 +3166,8 @@ class PlayerViewModel {
                 replacedMarkers = self.adoptReplannedVersion(prepared.selectedVersion)
                 self.activePreparedProtocolV3 = prepared.protocolV3
                 if targetsSubtitle || classification == "subtitle_track_changed" {
-                    self.localProtocolV3SubtitleSelection = nil
+                    // A pick made while this report was out stays the selection.
+                    if !self.protocolV3LocalPickDuringReport { self.localProtocolV3SubtitleSelection = nil }
                 } else if priorPreparedProtocolV3?.plan.effectiveMediaFileId != prepared.protocolV3?.plan.effectiveMediaFileId,
                           case .track? = self.localProtocolV3SubtitleSelection {
                     // A non-seek replan can choose another edition. The server
@@ -3025,16 +3200,58 @@ class PlayerViewModel {
                 case nil:
                     break
                 }
-                self.pendingExternalSubtitles = prepared.session.subtitleUrls ?? []
-                self.knownExternalSubtitles = self.pendingExternalSubtitles
                 self.duration = prepared.session.durationSeconds ?? prepared.selectedVersion.duration ?? self.duration
-                self.currentTime = self.movieTime(for: prepared.session)
                 self.activeQualityId = prepared.activeQualityId
                 self.qualityOptions = ApplePlaybackQuality.playbackOptions(
                     serverQualities: prepared.protocolV3?.plan.availableQualities ?? [],
                     bandwidthLimit: prepared.protocolV3?.plan.bandwidthLimit
                 )
 
+                // The server kept the running stream and changed only the
+                // subtitle decision, which the stream's own renditions carry:
+                // adopt the plan without loading the stream again.
+                if targetsSubtitle || classification == "subtitle_track_changed",
+                   let next = prepared.protocolV3, let prior = priorPreparedProtocolV3,
+                   let selection = ApplePlaybackV3PlanAdapter.sameTransportSubtitleSelection(in: next.plan),
+                   ApplePlaybackV3PlanAdapter.keepsHLSTransport(
+                       prior: prior.plan, priorSessionId: previousSessionId,
+                       next: next.plan, nextSessionId: prepared.session.sessionId),
+                   self.isAetherLoadEstablished,
+                   self.activeAetherLoadEpoch == priorAetherLoadEpoch {
+                    try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
+                    guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
+                        throw CancellationError()
+                    }
+                    uncommittedPrepared = nil
+                    // A new item or a teardown may have replaced this one
+                    // while the commit was out; its state is not this plan's.
+                    try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
+                    guard self.activeAetherLoadEpoch == priorAetherLoadEpoch else { throw CancellationError() }
+                    keepsCurrentPlan = true
+                    adoptedPlan = true
+                    self.adoptSameTransportProtocolV3Plan(next, selection: selection)
+                    self.adoptBufferingPlan(
+                        prepared,
+                        requestedEstimateKbps: requestedEstimateKbps,
+                        controllerInitiated: issuedByBufferingQuality
+                    )
+                    adoptedBufferingPlan = true
+                    return
+                }
+                if keepsPlaying {
+                    // The answer needs a new transport, so the report becomes
+                    // a load like any other replan, and that load replaces a
+                    // failed item.
+                    self.protocolV3ReplanIsReport = false
+                    self.protocolV3FailureDuringReport = nil
+                    self.showProtocolV3ReplanLoading()
+                    self.publishWatchPartySnapshot()
+                }
+                // Set only for a load: the item kept in place keeps playing
+                // from where it is, not from where the request was sent.
+                self.pendingExternalSubtitles = prepared.session.subtitleUrls ?? []
+                self.knownExternalSubtitles = self.pendingExternalSubtitles
+                self.currentTime = self.movieTime(for: prepared.session)
                 try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                 guard let streamRequest = await self.makeStreamRequest(
                     session: prepared.session,
@@ -3068,6 +3285,7 @@ class PlayerViewModel {
                 }
                 self.markProtocolV3AetherLoadCommitted()
                 uncommittedPrepared = nil
+                adoptedPlan = true
                 self.settleViewerQualityChange(qualityChange, adopted: true)
                 self.adoptBufferingPlan(
                     prepared,
@@ -3136,6 +3354,7 @@ class PlayerViewModel {
                             }
                             // The new quality now owns the session, so a
                             // viewer's switch counts as their pick.
+                            adoptedPlan = true
                             self.settleViewerQualityChange(qualityChange, adopted: true)
                             if let onMeteredNetwork = qualitySwitchOnMeteredNetwork {
                                 self.recordViewerQualityPick(
@@ -3158,6 +3377,25 @@ class PlayerViewModel {
                     restorePriorReplanState()
                 }
                 guard !Task.isCancelled, !self.isDisposed else { return }
+                if let refusal = error as? PlaybackV3SubtitleRefusal {
+                    // The server can't deliver the picked track. Nothing
+                    // was loaded for it, so the current plan still plays.
+                    refusedSubtitlePick = true
+                    let audioPick = self.undoRefusedSubtitlePick(subtitlePick, reason: refusal.reason)
+                    if !self.reconnectCycle.isActive,
+                       self.activeAetherLoadEpoch == priorAetherLoadEpoch {
+                        if let audioPick, self.pendingProtocolV3TrackChange == nil {
+                            // This task's exit asks for it.
+                            self.pendingProtocolV3TrackChange = QueuedProtocolV3TrackChange(
+                                classification: "audio_track_changed",
+                                message: "User selected an audio track.",
+                                target: audioPick
+                            )
+                        }
+                        keepsCurrentPlan = true
+                        return
+                    }
+                }
                 Self.logger.error(
                     "Protocol V3 replan failed: \(MediaLogRedactor.sanitize(error), privacy: .public)"
                 )
@@ -3184,7 +3422,7 @@ class PlayerViewModel {
                    ) {
                     return
                 }
-                if issuedByBufferingQuality, self.activeAetherLoadEpoch == priorAetherLoadEpoch {
+                if issuedByBufferingQuality || keepsPlaying, self.activeAetherLoadEpoch == priorAetherLoadEpoch {
                     keepsCurrentPlan = true
                     return
                 }
@@ -3196,6 +3434,88 @@ class PlayerViewModel {
         }
         syncBufferingQualitySignals()
         return true
+    }
+
+    /// Whether the engine must be told about `trackID`: it shows something
+    /// else, a rendition pick still waits for its option, or the choice is
+    /// Off on a stream whose renditions AVPlayer may have selected by itself.
+    private func needsSubtitleTrackApplication(_ trackID: Int64?) -> Bool {
+        let controller = aetherPlaybackController
+        let engineID = trackID.flatMap { controller.aetherSubtitleID(forAppID: $0) }
+        return trackID != nil && engineID == nil
+            || controller.engine.activeSubtitleTrackIndex != engineID
+            || controller.hasPendingHLSSubtitleRenditionSelection
+            || trackID == nil && controller.hasHLSSubtitleRenditions && !controller.holdsHLSSubtitleRenditionsOff
+    }
+
+    /// Reports a switch the player made among the stream's renditions, or to
+    /// Off, when it still differs from what the plan selects.
+    /// Sends the report a pick made during the last one left waiting. False
+    /// when nothing went out, because there was none or the plan already
+    /// selects that pick, so the caller drains its other queued work.
+    private func sendPendingProtocolV3SubtitleReport() -> Bool {
+        guard let report = pendingProtocolV3SubtitleReport else { return false }
+        pendingProtocolV3SubtitleReport = nil
+        return !isDisposed && reportProtocolV3SubtitleSwitch(report)
+    }
+
+    /// Whether a report went out.
+    @discardableResult
+    private func reportProtocolV3SubtitleSwitch(_ selection: ProtocolV3SubtitleSelection) -> Bool {
+        guard let plan = activePreparedProtocolV3?.plan,
+              selection.switchesAmongStreamRenditions(of: plan) else { return false }
+        return attemptProtocolV3Replan(
+            position: currentTime,
+            classification: "subtitle_track_changed",
+            message: "Subtitle switched among the stream's renditions.",
+            trackTarget: .subtitle(trackId: selection.appTrackID(in: plan),
+                                   combinedIndex: selection.inventoryItem(in: plan)?.combinedIndex),
+            keepsPlaying: true
+        )
+    }
+
+    /// What a replan that may replace the transport shows while it runs.
+    private func showProtocolV3ReplanLoading() {
+        progressTask?.cancel()
+        isLoading = true
+        isBuffering = false
+        isLoadingSubtitles = false
+        bufferingProgress = nil
+        // The replan is prepared before any engine event; hold the intro
+        // pill's timer through it like any other stall.
+        syncIntroSkipPrompt()
+    }
+
+    /// Adopts a plan that keeps the running HLS stream
+    /// (`ApplePlaybackV3PlanAdapter.keepsHLSTransport`): its subtitle choice
+    /// is one of the stream's renditions or Off, so it is applied as a media
+    /// selection on the item that is already playing. The plan's frame is the
+    /// one on screen, so its first frame is reported now.
+    private func adoptSameTransportProtocolV3Plan(
+        _ prepared: PreparedPlaybackV3,
+        selection: ProtocolV3SubtitleSelection
+    ) {
+        pendingSubtitleFfIndex = nil
+        pendingSidecarSubtitleTrackId = nil
+        pendingServerRenderedSubtitleTrackId = nil
+        // A newer pick, already showing, outranks the selection this plan
+        // answered: it is kept as the local choice.
+        if !protocolV3LocalPickDuringReport {
+            let trackID = selection.appTrackID(in: prepared.plan)
+            selectedSubtitleId = trackID
+            if needsSubtitleTrackApplication(trackID) {
+                applySubtitleTrackSelection(trackID, reason: "same_transport_plan")
+            }
+        }
+        adoptAetherInventory()
+        cmpLog("[CMP-SUB] phase=same_transport_plan plan=\(prepared.plan.planId) "
+               + "selected=" + (prepared.plan.selectedTracks.subtitle?.index.map(String.init) ?? "off"))
+        if let sessionId = activePlaybackSessionId {
+            let planId = prepared.plan.planId
+            Task { [sessionBridge] in
+                await sessionBridge.reportProtocolV3FirstFrame(planId: planId, sessionId: sessionId, milliseconds: nil)
+            }
+        }
     }
 
     private func protocolV3FailureClassification(_ message: String) -> String {
@@ -4753,7 +5073,7 @@ class PlayerViewModel {
             if wantedIndex < 0 {
                 switch DeferredTrackSelectionGate.outcome(
                     isLoadEstablished: loadIsEstablished,
-                    engineAlreadyMatches: engine.activeSubtitleTrackIndex == nil
+                    engineAlreadyMatches: !needsSubtitleTrackApplication(nil)
                 ) {
                 case .deferUntilEstablished:
                     break
@@ -5709,6 +6029,9 @@ class PlayerViewModel {
         // the incoming one.
         pendingProtocolV3SeekReanchorPosition = nil
         pendingProtocolV3TrackChange = nil
+        pendingProtocolV3SubtitleReport = nil
+        protocolV3LocalPickDuringReport = false
+        protocolV3FailureDuringReport = nil
         seekReplanTask?.cancel()
         seekReplanTask = nil
         cancelNextUpFlow()
@@ -7824,7 +8147,7 @@ class PlayerViewModel {
 
     /// Subtitle selection state a user pick changes optimistically, so the
     /// V3 branch can undo it if the server switch never gets issued.
-    private struct SubtitleSelectionRollback {
+    struct SubtitleSelectionRollback {
         let selectedSubtitleId: Int64?
         let selectedSecondarySubtitleId: Int64?
         let pendingSubtitleFfIndex: Int?
@@ -7863,7 +8186,13 @@ class PlayerViewModel {
     /// track's teardown): a series preference records what the viewer
     /// picked, never what the player put back on its own.
     func selectSubtitle(_ track: PlayerTrack, savesPreference: Bool = true) {
+        if track.hasUnsupportedFormat {
+            // The picker shows it disabled; a remote can still name it.
+            showUnsupportedSubtitleNotice()
+            return
+        }
         let prior = captureSubtitleSelection()
+        subtitlePickGeneration &+= 1
         hasExplicitSubtitleChoice = true
         subtitlePickedDuringPlayback = true
         pendingSubtitleFfIndex = nil
@@ -7894,13 +8223,19 @@ class PlayerViewModel {
                 )
             }
             // The replan is what actually switches the track, so nothing is
-            // persisted or recorded until one is under way.
+            // recorded until one is under way, and the preference is saved
+            // only once the server hasn't refused the track.
             guard attemptProtocolV3Replan(
                 position: currentTime,
                 classification: "subtitle_track_changed",
                 message: "User selected subtitle track \(track.title ?? String(track.trackId)).",
                 requeueWhenBusy: true,
-                trackTarget: trackTarget
+                trackTarget: trackTarget,
+                subtitlePick: ReplannedSubtitlePick(
+                    generation: subtitlePickGeneration,
+                    rollback: prior,
+                    preference: savesPreference ? subtitlePreferenceWrite(track) : nil
+                )
             ) else {
                 restoreSubtitleSelection(prior)
                 showNotice(
@@ -7912,7 +8247,6 @@ class PlayerViewModel {
                 scheduleHideControls()
                 return
             }
-            if savesPreference { persistSubtitleSelection(track) }
             recordSubtitleTrackSelectionBreadcrumb(
                 track.trackId,
                 reason: "user_selection",
@@ -7920,6 +8254,14 @@ class PlayerViewModel {
             )
             scheduleHideControls()
             return
+        }
+        if protocolV3ReplanIsReport {
+            // Newer than the rendition the report in flight names, so its
+            // answer must not select over this track, nor may an older
+            // subtitle change queued behind it.
+            protocolV3LocalPickDuringReport = true
+            pendingProtocolV3SubtitleReport = nil
+            pendingProtocolV3TrackChange = Self.queuedTrackChangeAfterSubtitlePick(pendingProtocolV3TrackChange)
         }
         localProtocolV3SubtitleSelection = nil
         if savesPreference { persistSubtitleSelection(track) }
@@ -7930,6 +8272,7 @@ class PlayerViewModel {
     /// See `selectSubtitle(_:savesPreference:)`.
     func disableSubtitles(savesPreference: Bool = true) {
         let prior = captureSubtitleSelection()
+        subtitlePickGeneration &+= 1
         hasExplicitSubtitleChoice = true
         subtitlePickedDuringPlayback = true
         pendingSubtitleFfIndex = -1
@@ -7954,7 +8297,12 @@ class PlayerViewModel {
                 classification: "subtitle_track_changed",
                 message: "User disabled subtitles.",
                 requeueWhenBusy: true,
-                trackTarget: .subtitle(trackId: nil, combinedIndex: nil)
+                trackTarget: .subtitle(trackId: nil, combinedIndex: nil),
+                subtitlePick: ReplannedSubtitlePick(
+                    generation: subtitlePickGeneration,
+                    rollback: prior,
+                    preference: savesPreference ? subtitlePreferenceWrite(nil) : nil
+                )
             ) else {
                 restoreSubtitleSelection(prior)
                 showNotice(
@@ -7966,7 +8314,6 @@ class PlayerViewModel {
                 scheduleHideControls()
                 return
             }
-            if savesPreference { persistSubtitleSelection(nil) }
             recordSubtitleTrackSelectionBreadcrumb(
                 nil,
                 reason: "user_selection",
@@ -8015,8 +8362,15 @@ class PlayerViewModel {
     /// "Off" when `track` is nil). Live AI translation tracks are
     /// session-scoped and never persisted.
     private func persistSubtitleSelection(_ track: PlayerTrack?) {
-        guard let key = trackPrefPersistKey else { return }
-        if let track, SubtitleTrackIdSpace.isAILive(track.trackId) { return }
+        guard let write = subtitlePreferenceWrite(track) else { return }
+        TrackSelectionPersistence.saveSubtitle(prefKey: write.prefKey, request: write.request)
+    }
+
+    /// The preference write for a subtitle pick, built when the viewer makes
+    /// it: the replan that switches the track may change the version first.
+    private func subtitlePreferenceWrite(_ track: PlayerTrack?) -> SubtitlePreferenceWrite? {
+        guard let key = trackPrefPersistKey else { return nil }
+        if let track, SubtitleTrackIdSpace.isAILive(track.trackId) { return nil }
         let request: SubtitlePrefRequest
         if let track {
             if !track.isExternal,
@@ -8030,7 +8384,55 @@ class PlayerViewModel {
         } else {
             request = TrackSelectionPersistence.subtitleOffRequest()
         }
-        TrackSelectionPersistence.saveSubtitle(prefKey: key, request: request)
+        return SubtitlePreferenceWrite(prefKey: key, request: request)
+    }
+
+    /// Saves a server-switched pick's preference once its plan is adopted.
+    /// A newer pick saves its own, so one queued behind this pick learns
+    /// how it settled instead.
+    private func settleSubtitlePick(_ pick: ReplannedSubtitlePick, adopted: Bool) {
+        guard pick.generation == subtitlePickGeneration else {
+            rebaseQueuedSubtitlePick(after: pick, adopted: adopted)
+            return
+        }
+        guard adopted, let write = pick.preference else { return }
+        TrackSelectionPersistence.saveSubtitle(prefKey: write.prefKey, request: write.request)
+    }
+
+    private func rebaseQueuedSubtitlePick(after older: ReplannedSubtitlePick, adopted: Bool) {
+        guard let queued = pendingProtocolV3TrackChange?.subtitlePick else { return }
+        pendingProtocolV3TrackChange?.subtitlePick = Self.queuedSubtitlePick(queued, after: older, adopted: adopted)
+    }
+
+    /// The server refused the track a subtitle pick asked for. The picker
+    /// goes back to the selection the pick replaced, unless a newer pick has
+    /// replaced it already. Returns an audio pick the refused request
+    /// carried, which still has to be asked for.
+    private func undoRefusedSubtitlePick(
+        _ pick: ReplannedSubtitlePick?,
+        reason: String
+    ) -> QueuedProtocolV3TrackTarget? {
+        cmpLog("[CMP-SUB] phase=replan_refused reason=\(reason)")
+        guard let pick else { return nil }
+        guard pick.generation == subtitlePickGeneration else {
+            rebaseQueuedSubtitlePick(after: pick, adopted: false)
+            return nil
+        }
+        restoreSubtitleSelection(pick.rollback)
+        if let write = pick.rollbackPreference {
+            TrackSelectionPersistence.saveSubtitle(prefKey: write.prefKey, request: write.request)
+        }
+        showUnsupportedSubtitleNotice()
+        return pick.audioPick
+    }
+
+    private func showUnsupportedSubtitleNotice() {
+        showNotice(
+            title: "This subtitle can't be shown",
+            message: "The server can't deliver this track, so your subtitles haven't changed.",
+            tone: .warning,
+            duration: 5
+        )
     }
 
     func selectSecondarySubtitle(_ track: PlayerTrack) {
@@ -8620,23 +9022,26 @@ class PlayerViewModel {
         selectAudio(audioTracks[nextIndex])
     }
 
+    /// Unsupported rows can't be selected, so cycling skips them rather than
+    /// stopping on one.
     func cycleSubtitleTrack() {
-        guard !subtitleTracks.isEmpty else { return }
+        let playable = subtitleTracks.filter { !$0.hasUnsupportedFormat }
+        guard !playable.isEmpty else { return }
 
         if selectedSubtitleId == nil {
-            selectSubtitle(subtitleTracks[0])
+            selectSubtitle(playable[0])
             return
         }
 
         guard let selectedSubtitleId,
-              let currentIndex = subtitleTracks.firstIndex(where: { $0.trackId == selectedSubtitleId }) else {
+              let currentIndex = playable.firstIndex(where: { $0.trackId == selectedSubtitleId }) else {
             disableSubtitles()
             return
         }
 
-        let nextIndex = subtitleTracks.index(after: currentIndex)
-        if nextIndex < subtitleTracks.count {
-            selectSubtitle(subtitleTracks[nextIndex])
+        let nextIndex = playable.index(after: currentIndex)
+        if nextIndex < playable.count {
+            selectSubtitle(playable[nextIndex])
         } else {
             disableSubtitles()
         }
@@ -8645,7 +9050,7 @@ class PlayerViewModel {
     func toggleSubtitles() {
         if selectedSubtitleId != nil {
             disableSubtitles()
-        } else if let first = subtitleTracks.first {
+        } else if let first = subtitleTracks.first(where: { !$0.hasUnsupportedFormat }) {
             selectSubtitle(first)
         }
     }
@@ -9656,6 +10061,21 @@ class PlayerViewModel {
             aetherPlaybackController.selectSecondarySubtitleTrack(id: nil)
             return
         }
+        if aetherPlaybackController.isHLSSubtitleRendition(appTrackID: trackId) {
+            // AVPlayer draws the primary rendition; another listed row plays
+            // on the overlay from its inventory sidecar.
+            guard trackId != selectedSubtitleId,
+                  !aetherPlaybackController.isShowingHLSSubtitleRendition(appTrackID: trackId),
+                  let sidecar = protocolV3InventorySidecarTrack(for: track) else {
+                selectedSecondarySubtitleId = nil
+                aetherPlaybackController.selectSecondarySubtitleTrack(id: nil)
+                return
+            }
+            aetherPlaybackController.registerHLSRenditionSecondarySidecar(
+                sidecar.track, appTrackID: trackId, fontRequest: sidecar.fontRequest)
+            aetherPlaybackController.selectSecondarySubtitleTrack(id: trackId)
+            return
+        }
         registerProtocolV3SubtitleWithAetherIfNeeded(track)
         // Only a track Aether actually holds can be rendered as the secondary
         // one. Under V3 the plan mounts a single artifact, so an inventory row
@@ -9688,10 +10108,20 @@ class PlayerViewModel {
         if let plan = activePreparedProtocolV3?.plan,
            registerProtocolV3EmbeddedSubtitleIfAvailable(track, plan: plan) { return }
         guard !aetherPlaybackController.containsSubtitle(appTrackID: track.trackId),
-              let url = protocolV3InventorySidecarURL(for: track) else {
+              let sidecar = protocolV3InventorySidecarTrack(for: track) else {
             return
         }
         aetherPlaybackController.addExternalSubtitleTrack(
+            sidecar.track, appTrackID: track.trackId, fontRequest: sidecar.fontRequest
+        )
+    }
+
+    /// The inventory sidecar of a picker row, with its font bundle request.
+    private func protocolV3InventorySidecarTrack(
+        for track: PlayerTrack
+    ) -> (track: ExternalSubtitleTrack, fontRequest: URLRequest?)? {
+        guard let url = protocolV3InventorySidecarURL(for: track) else { return nil }
+        return (
             makeExternalSubtitleTrack(
                 url: url,
                 name: track.title,
@@ -9702,8 +10132,7 @@ class PlayerViewModel {
                 formatHint: ["vtt", "ass", "ssa", "srt", "sup"].contains(url.pathExtension.lowercased())
                     ? url.pathExtension.lowercased() : track.codec
             ),
-            appTrackID: track.trackId,
-            fontRequest: activePreparedProtocolV3?.plan.subtitle.inventory
+            activePreparedProtocolV3?.plan.subtitle.inventory
                 .first(where: { $0.combinedIndex == track.srcId })?
                 .fontBundleUrl.flatMap { resolveServerUrl($0, serverUrl: resolvedServerUrl) }
                 .map(makeSubtitleFontRequest)
@@ -9712,16 +10141,19 @@ class PlayerViewModel {
 
     private func applyLocalProtocolV3SubtitleSelection(_ track: PlayerTrack?, reason: String) -> Bool {
         guard let plan = activePreparedProtocolV3?.plan,
-              protocolV3ReplanTask == nil, isAetherLoadEstablished,
+              protocolV3ReplanTask == nil || protocolV3ReplanIsReport, isAetherLoadEstablished,
               let selection = ProtocolV3SubtitleSelection(track: track, plan: plan) else { return false }
         let isMounted = track.map {
             registerProtocolV3EmbeddedSubtitleIfAvailable($0, plan: plan)
                 || aetherPlaybackController.containsSubtitle(appTrackID: $0.trackId)
         } ?? false
-        let serverCarriesSubtitleRenditions = activePreparedProtocolV3?.serverFeatures
-            .contains(PlaybackProtocolV3.hlsSubtitleRenditionsFeature) == true
+        let serverFeatures = activePreparedProtocolV3?.serverFeatures ?? []
         guard selection.canApplyLocally(
-            to: plan, isMounted: isMounted, serverCarriesSubtitleRenditions: serverCarriesSubtitleRenditions
+            to: plan, isMounted: isMounted,
+            serverCarriesSubtitleRenditions: serverFeatures.contains(PlaybackProtocolV3.hlsSubtitleRenditionsFeature),
+            serverCarriesRemuxSubtitleRenditions: serverFeatures.contains(
+                PlaybackProtocolV3.hlsRemuxSubtitleRenditionsFeature
+            )
         ) else { return false }
         let priorSelection = localProtocolV3SubtitleSelection
         localProtocolV3SubtitleSelection = selection
@@ -9736,12 +10168,20 @@ class PlayerViewModel {
                 return false
             }
         }
-        let engineID = track.flatMap { aetherPlaybackController.aetherSubtitleID(forAppID: $0.trackId) }
-        if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID
-            || aetherPlaybackController.hasPendingHLSSubtitleRenditionSelection {
+        if needsSubtitleTrackApplication(track?.trackId) {
             applySubtitleTrackSelection(track?.trackId, reason: reason)
         }
         lastLoadRequest = lastLoadRequest?.adoptingLocalProtocolV3SubtitleSelection(selection, plan: plan)
+        // The stream serves every rendition, so the switch already happened.
+        // The server still hears it, and keeps the stream for the answer. One
+        // report is out at a time; the newest pick waits for it.
+        if protocolV3ReplanTask != nil {
+            protocolV3LocalPickDuringReport = true
+            pendingProtocolV3SubtitleReport = selection.isStreamRenditionChoice(in: plan) ? selection : nil
+            pendingProtocolV3TrackChange = Self.queuedTrackChangeAfterSubtitlePick(pendingProtocolV3TrackChange)
+        } else {
+            reportProtocolV3SubtitleSwitch(selection)
+        }
         return true
     }
 
@@ -9780,8 +10220,7 @@ class PlayerViewModel {
         if !isBurnedIn, trackID == nil || engineID != nil || isPendingRendition {
             // An unpublished rendition still has to reach the controller, which
             // holds the pick until AVPlayer offers the option.
-            if aetherPlaybackController.engine.activeSubtitleTrackIndex != engineID || isPendingRendition && engineID == nil
-                || aetherPlaybackController.hasPendingHLSSubtitleRenditionSelection {
+            if needsSubtitleTrackApplication(trackID) {
                 applySubtitleTrackSelection(trackID, reason: "restored_local_selection")
             }
         } else if committedProtocolV3LoadEpoch != nil {
@@ -9820,9 +10259,14 @@ class PlayerViewModel {
     private func canRenderAsSecondarySubtitle(_ track: PlayerTrack) -> Bool {
         guard let plan = activePreparedProtocolV3?.plan else { return true }
         if SubtitleTrackIdSpace.isAILive(track.trackId) { return false }
-        // AVPlayer draws the stream's rendition itself; the overlay that
-        // renders secondary subtitles never receives its cues.
-        if aetherPlaybackController.isHLSSubtitleRendition(appTrackID: track.trackId) { return false }
+        // AVPlayer draws the primary rendition itself, so the overlay that
+        // renders secondary subtitles never receives its cues. Any other
+        // listed row plays there from its inventory sidecar.
+        if aetherPlaybackController.isHLSSubtitleRendition(appTrackID: track.trackId) {
+            return track.trackId != selectedSubtitleId
+                && !aetherPlaybackController.isShowingHLSSubtitleRendition(appTrackID: track.trackId)
+                && protocolV3InventorySidecarURL(for: track) != nil
+        }
         if let selection = ProtocolV3SubtitleSelection(track: track, plan: plan),
            let streamIndex = selection.embeddedStreamIndex(for: track, in: plan),
            let codec = track.codec,
@@ -11164,6 +11608,21 @@ extension PlayerViewModel {
         }
     }
 
+    /// Hands Silo's subtitle appearance to the subtitles AVPlayer draws itself,
+    /// a server HLS stream's renditions, whenever the appearance changes.
+    private func observeHLSRenditionTextStyle() {
+        guard !isDisposed else { return }
+        let rules = withObservationTracking {
+            HLSRenditionTextStyle.rules(
+                appearance: settings.effectiveSubtitleAppearance,
+                matchesSystemAppearance: settings.subtitleMatchesSystemAppearance
+            )
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.observeHLSRenditionTextStyle() }
+        }
+        aetherPlaybackController.setHLSRenditionTextStyleRules(rules)
+    }
+
     /// Keeps the controller's mode, Watch Party suspension and competing-pill
     /// state current. Observation re-arms itself after every change, so a
     /// pill that hides on its own timer is seen too.
@@ -11589,7 +12048,7 @@ extension PlayerViewModel {
         let position = aetherPlaybackController.activeSpec?.timeline.sourcePosition(
             forPlayerTime: engine.clock.currentTime
         ) ?? 0
-        let transitioning = freshLoadTask != nil || protocolV3ReplanTask != nil
+        let transitioning = freshLoadTask != nil || isPreparingProtocolV3Replacement
         let seeking = seekReplanTask != nil || engine.playbackPhase == .seeking
         let waitingForMedia: Bool
         switch engine.playbackPhase {

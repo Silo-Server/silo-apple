@@ -40,6 +40,23 @@ final class PlayerTerminalFailureRetryTests: XCTestCase {
         }
     }
 
+    /// A subtitle the server can't deliver ends only the switch that asked
+    /// for it; the session keeps playing. Any other refusal, or a subtitle
+    /// refusal outside a track change, is still a dead end.
+    func testOnlyATrackChangesSubtitleRefusalKeepsTheSession() {
+        let trackChange = PlaybackProtocolV3.ReplanOperation.trackChange
+        for reason in [
+            "subtitle_codec_unsupported", "subtitle_conversion_unsupported",
+            "subtitle_burn_in_source_unsupported", "subtitle_track_unavailable", "subtitle_track_invalid",
+        ] {
+            XCTAssertTrue(PlaybackSessionBridge.isSubtitleSwitchRefusal(operation: trackChange, reason: reason), reason)
+        }
+        XCTAssertFalse(PlaybackSessionBridge.isSubtitleSwitchRefusal(
+            operation: trackChange, reason: "adaptation_unavailable"))
+        XCTAssertFalse(PlaybackSessionBridge.isSubtitleSwitchRefusal(
+            operation: PlaybackProtocolV3.ReplanOperation.failureRecovery, reason: "subtitle_codec_unsupported"))
+    }
+
     func testTransportFailureStaysRetryable() {
         XCTAssertTrue(PlayerViewModel.isRetryablePlaybackFailure(URLError(.cannotConnectToHost)))
     }

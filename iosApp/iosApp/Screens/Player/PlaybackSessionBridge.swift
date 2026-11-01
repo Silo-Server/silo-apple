@@ -101,6 +101,16 @@ struct PlaybackV3TerminalFailure: LocalizedError, Equatable {
     var errorDescription: String? { message }
 }
 
+/// The server refused a subtitle switch: it has no route for the requested
+/// track. Only the switch failed. The session and its current plan keep
+/// playing, so the bridge reports no terminal and keeps its attempt state.
+struct PlaybackV3SubtitleRefusal: LocalizedError, Equatable {
+    let reason: String
+    let message: String
+
+    var errorDescription: String? { message }
+}
+
 /// Secondary metadata shown in the tvOS player overlay's hero strip.
 /// Populated from the playback session at load time via
 /// `PreparedPlayback.playerMetadata(primaryAudioLayout:)` — everything here
@@ -187,6 +197,9 @@ actor PlaybackV3CapabilityGate {
         /// media path, takes probe results, and reports the probe and the
         /// Auto budget on the connection endpoint.
         var connectionSpeed = false
+        /// `hls_subtitle_renditions_all_v1`: an HLS plan may carry every
+        /// embedded text track as a rendition of its stream.
+        var subtitleRenditionsAll = false
     }
 
     private let tokenStore: TokenStore
@@ -230,7 +243,10 @@ actor PlaybackV3CapabilityGate {
                             PlaybackProtocolV3.authorizedMediaOriginsFeature
                         ),
                         bufferingQuality: capabilities.features.contains(PlaybackProtocolV3.bufferingQualityFeature),
-                        connectionSpeed: capabilities.features.contains(PlaybackProtocolV3.connectionSpeedFeature)
+                        connectionSpeed: capabilities.features.contains(PlaybackProtocolV3.connectionSpeedFeature),
+                        subtitleRenditionsAll: capabilities.features.contains(
+                            PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature
+                        )
                     )
                 } catch {
                     throw Self.terminalFailure(for: error)
@@ -471,6 +487,8 @@ actor PlaybackSessionBridge {
         /// state on a replan, so every replan repeats what the start request
         /// negotiated. Changing it means a new attempt, not a replan.
         let negotiatedAuthorizedMediaOrigins: Bool
+        /// Attempt-sticky like the origin state.
+        let negotiatedSubtitleRenditionsAll: Bool
         let fixedMediaFileId: Int?
         var plan: PlaybackV3Plan
     }
@@ -494,6 +512,7 @@ actor PlaybackSessionBridge {
         let snapshot: ApplePlaybackV3CapabilitySnapshot
         let serverFeatures: [String]
         let negotiatedAuthorizedMediaOrigins: Bool
+        let negotiatedSubtitleRenditionsAll: Bool
         let fixedMediaFileId: Int?
         let plan: PlaybackV3Plan
         let sessionId: String
@@ -986,7 +1005,16 @@ actor PlaybackSessionBridge {
         trackSignature: SubtitleTrackSignature?,
         currentAudioLanguage: String?
     ) -> InitialProtocolV3SubtitleIntent {
+        // An explicit pick of a track the server can't deliver, such as a
+        // choice saved before the pickers disabled it, would refuse the whole
+        // start. Start without subtitles instead.
+        let none = InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: nil)
         if let explicitCombinedIndex {
+            let candidates = SubtitleTrackCandidates.playerTracks(from: version.subtitleTracks ?? [])
+            if candidates.indices.contains(explicitCombinedIndex),
+               candidates[explicitCombinedIndex].hasUnsupportedFormat {
+                return none
+            }
             return InitialProtocolV3SubtitleIntent(
                 ffmpegStreamIndex: explicitFFmpegIndex.flatMap { $0 >= 0 ? $0 : nil },
                 combinedIndex: explicitCombinedIndex >= 0 ? explicitCombinedIndex : nil
@@ -994,7 +1022,12 @@ actor PlaybackSessionBridge {
         }
         if let explicitFFmpegIndex {
             guard explicitFFmpegIndex >= 0 else {
-                return InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: nil)
+                return none
+            }
+            if (version.subtitleTracks ?? []).contains(where: {
+                $0.external != true && $0.selectionIndex == explicitFFmpegIndex && $0.hasUnsupportedFormat
+            }) {
+                return none
             }
             let embeddedCombinedIndex = ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
                 ffmpegStreamIndex: explicitFFmpegIndex,
@@ -1042,9 +1075,11 @@ actor PlaybackSessionBridge {
         case .noChange:
             // "Leave the player alone" means its demuxer keeps the media's
             // default track; the sidecar route also promotes a forced track.
-            // Freeze that deterministic choice into the plan up front.
-            selected = candidates.first(where: { $0.isDefault })
-                ?? candidates.first(where: { $0.isForced })
+            // Freeze that deterministic choice into the plan up front. A
+            // track the server can't deliver would refuse the whole start.
+            let deliverable = candidates.filter { !$0.hasUnsupportedFormat }
+            selected = deliverable.first(where: { $0.isDefault })
+                ?? deliverable.first(where: { $0.isForced })
         }
         guard let selected else {
             return InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: nil)
@@ -1147,7 +1182,8 @@ actor PlaybackSessionBridge {
             // carries learned_limit "ignore".
             let buffering = PlaybackV3BufferingQualityRequest(
                 baseFeatures: ApplePlaybackV3Capabilities.startFeatures(
-                    authorizedMediaOrigins: capability.authorizedMediaOrigins
+                    authorizedMediaOrigins: capability.authorizedMediaOrigins,
+                    subtitleRenditionsAll: capability.subtitleRenditionsAll
                 ),
                 serverAdvertisesFeature: capability.bufferingQuality,
                 mode: bufferingQualityMode,
@@ -1204,6 +1240,7 @@ actor PlaybackSessionBridge {
         // Optional opt-in: on a server that never advertises it the token is
         // simply absent and the attempt stays entirely on the API origin.
         let requestsAuthorizedMediaOrigins = capability.authorizedMediaOrigins
+        let requestsSubtitleRenditionsAll = capability.subtitleRenditionsAll
 
         switch response.validatedForApple() {
         case .terminal(let terminal):
@@ -1295,6 +1332,8 @@ actor PlaybackSessionBridge {
                     && response.serverFeatures.contains(
                         PlaybackProtocolV3.authorizedMediaOriginsFeature
                     ),
+                negotiatedSubtitleRenditionsAll: requestsSubtitleRenditionsAll
+                    && response.serverFeatures.contains(PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature),
                 fixedMediaFileId: fixedSource ? selectedVersion.fileId : nil,
                 plan: plan,
                 sessionId: resolvedSessionId,
@@ -1329,6 +1368,7 @@ actor PlaybackSessionBridge {
             snapshot: staged.snapshot,
             serverFeatures: staged.serverFeatures,
             negotiatedAuthorizedMediaOrigins: staged.negotiatedAuthorizedMediaOrigins,
+            negotiatedSubtitleRenditionsAll: staged.negotiatedSubtitleRenditionsAll,
             fixedMediaFileId: staged.fixedMediaFileId,
             plan: staged.plan
         )
@@ -1510,6 +1550,9 @@ actor PlaybackSessionBridge {
         qualityAxes: AppleQualityAxes? = nil,
         audioTrackIndex: Int? = nil,
         subtitleTrackIndex: Int? = nil,
+        // Set by a subtitle switch the player can survive: the current plan
+        // keeps playing if the server refuses the new track.
+        keepsSessionOnSubtitleRefusal: Bool = false,
         outputRouteSnapshot: ApplePlaybackV3CapabilitySnapshot? = nil,
         bufferingQualityMode: BufferingQualityMode,
         bandwidthEstimateKbps: Int? = nil,
@@ -1644,7 +1687,8 @@ actor PlaybackSessionBridge {
             // Sticky: a replan may neither add nor drop the negotiated origin
             // token, so it repeats the attempt's captured state verbatim.
             baseFeatures: ApplePlaybackV3Capabilities.startFeatures(
-                authorizedMediaOrigins: active.negotiatedAuthorizedMediaOrigins
+                authorizedMediaOrigins: active.negotiatedAuthorizedMediaOrigins,
+                subtitleRenditionsAll: active.negotiatedSubtitleRenditionsAll
             ),
             serverAdvertisesFeature: active.serverFeatures.contains(PlaybackProtocolV3.bufferingQualityFeature),
             mode: bufferingQualityMode,
@@ -1697,6 +1741,13 @@ actor PlaybackSessionBridge {
         }
         switch validatedResponse {
         case .terminal(let terminal):
+            if keepsSessionOnSubtitleRefusal,
+               Self.isSubtitleSwitchRefusal(operation: operation, reason: terminal.reason) {
+                // A refused track ends only the switch. The server kept the
+                // session as it was, and `activeProtocolV3` was never
+                // updated, so the current plan's attempt state still holds.
+                throw PlaybackV3SubtitleRefusal(reason: terminal.reason, message: terminal.message)
+            }
             await emitProtocolV3Terminal(
                 active: active,
                 sessionId: currentSessionId,
@@ -1871,6 +1922,23 @@ actor PlaybackSessionBridge {
             message: message,
             retryable: !replanRefusalsThatFailAFreshStart.contains(reason)
         )
+    }
+
+    /// Terminal reasons the server's subtitle policy gives when it has no
+    /// route for the requested track (`subtitle_policy_v3.go`).
+    nonisolated static let subtitleRefusalReasons: Set<String> = [
+        "subtitle_codec_unsupported",
+        "subtitle_conversion_unsupported",
+        "subtitle_burn_in_source_unsupported",
+        "subtitle_track_unavailable",
+        "subtitle_track_invalid",
+    ]
+
+    /// Whether a terminal answer refused only a track change's subtitle,
+    /// rather than the route the session plays on.
+    nonisolated static func isSubtitleSwitchRefusal(operation: String, reason: String) -> Bool {
+        operation == PlaybackProtocolV3.ReplanOperation.trackChange
+            && subtitleRefusalReasons.contains(reason)
     }
 
     /// Replan dead ends that `stageProtocolV3Start` refuses with

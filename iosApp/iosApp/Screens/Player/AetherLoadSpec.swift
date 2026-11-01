@@ -157,10 +157,12 @@ struct AetherLoadSpec {
     /// inside the media file. That response streams until the server has
     /// demuxed the whole file, which takes tens of seconds on a large remux.
     let declaresEmbeddedTrackExtract: Bool
-    /// The selected picker row of an `hls_rendition` plan. The track is a
-    /// legible option of the stream's own playlist, so it has no declared
-    /// external slot and no Aether id until AVPlayer publishes the option.
-    let hlsSubtitleRenditionAppTrackID: Int64?
+    /// Every picker row the stream carries as a legible option, selected or
+    /// not (`ApplePlaybackV3PlanAdapter.hlsSubtitleRenditionSlots`). Such a
+    /// track has no declared external slot and no Aether id until AVPlayer
+    /// publishes the option; switching among them is AVPlayer's own media
+    /// selection, and none needs a sidecar.
+    let hlsSubtitleRenditions: [Int64: HLSSubtitleRenditionSlot]
 
     /// The bridge for codecs Aether cannot stream-copy, when a caller does not
     /// name one. Lossless rather than Aether's `.surroundCompat` default;
@@ -250,7 +252,7 @@ struct AetherLoadSpec {
         })
         embeddedSubtitleAlias = nil
         declaresEmbeddedTrackExtract = false
-        hlsSubtitleRenditionAppTrackID = nil
+        hlsSubtitleRenditions = [:]
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -335,7 +337,7 @@ struct AetherLoadSpec {
         })
         embeddedSubtitleAlias = nil
         declaresEmbeddedTrackExtract = false
-        hlsSubtitleRenditionAppTrackID = nil
+        hlsSubtitleRenditions = [:]
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -521,13 +523,7 @@ struct AetherLoadSpec {
         } else {
             embeddedSubtitleAlias = nil
         }
-        if plan.subtitle.hlsRendition != nil,
-           PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
-           let combinedIndex = plan.selectedSubtitleCombinedIndex {
-            hlsSubtitleRenditionAppTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: combinedIndex)
-        } else {
-            hlsSubtitleRenditionAppTrackID = nil
-        }
+        hlsSubtitleRenditions = ApplePlaybackV3PlanAdapter.hlsSubtitleRenditionSlots(plan: plan)
         let isServerHLS = [
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,

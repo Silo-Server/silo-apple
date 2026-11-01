@@ -117,8 +117,16 @@ final class PlaybackMediaAuthorizationTests: XCTestCase {
             XCTAssertTrue(scope.allows(url(master + "?silo_rendition=subtitles")), master)
             let segments = String(master.dropLast("master.m3u8".count)) + "segment/"
             XCTAssertTrue(scope.allows(url(segments + "sub_00012.vtt")), master)
+            // A rendition per embedded track names its track's playlist.
+            XCTAssertTrue(scope.allows(url(master + "?silo_rendition=subtitles&silo_track=4")), master)
+            XCTAssertTrue(scope.allows(url(master + "?silo_track=12&silo_rendition=subtitles")), master)
+            XCTAssertTrue(scope.allows(url(segments + "sub_4_00012.vtt")), master)
             for suffix in ["?silo_rendition=other", "?silo_rendition=", "?silo_rendition=video&st=secret",
-                           "?silo_rendition=video&silo_rendition=subtitles"] {
+                           "?silo_rendition=video&silo_rendition=subtitles",
+                           "?silo_rendition=video&silo_track=4", "?silo_rendition=subtitles&silo_track=04",
+                           "?silo_rendition=subtitles&silo_track=", "?silo_rendition=subtitles&silo_track=4a",
+                           "?silo_track=4", "?silo_rendition=subtitles&silo_track=4&st=secret",
+                           "?silo_rendition=subtitles&silo_track=4&silo_track=5"] {
                 XCTAssertFalse(scope.allows(url(master + suffix)), master + suffix)
             }
             XCTAssertFalse(scope.allows(url(segments + "seg_00001.ts?silo_rendition=video")), master)

@@ -686,6 +686,85 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertEqual(label, "Auto: English · SRT", "embedded stream 0 must remain a preview candidate; got \(label)")
     }
 
+    func testDetailNeverOffersOrStartsOnASubtitleTheServerCannotDeliver() {
+        // An embedded track the server stored with no codec (a Matroska
+        // S_TEXT/WEBVTT track) is refused when a start asks for it, so the
+        // detail page can't offer it, Auto can't land on it even as the
+        // file's default, and an explicit pick of it starts without
+        // subtitles instead of failing the start.
+        let versions = decodedVersions("""
+        [
+          {
+            "file_id": 1,
+            "subtitle_tracks": [
+              { "index": 2, "language": "eng", "default": true },
+              { "codec": "srt", "language": "eng", "file_name": "/subs/en.srt", "external": true }
+            ]
+          }
+        ]
+        """)
+        let version = versions[0]
+        XCTAssertEqual(version.subtitleTracks?[0].hasUnsupportedFormat, true)
+        XCTAssertEqual(version.subtitleTracks?[1].hasUnsupportedFormat, false)
+
+        let options = DetailPlaybackFormatting.subtitleOptions(
+            version: version, selectedSubtitleTrackIndex: nil, preferredLanguage: nil
+        )
+        guard let embedded = options.first(where: { $0.selectionIndex == 2 }) else {
+            return XCTFail("missing embedded option")
+        }
+        XCTAssertFalse(embedded.isSelectable)
+        XCTAssertTrue(embedded.detail.contains("Unsupported format"), embedded.detail)
+
+        func intent(mode: SubtitleMode, explicitFFmpeg: Int? = nil, explicitCombined: Int? = nil) -> PlaybackSessionBridge.InitialProtocolV3SubtitleIntent {
+            PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+                version: version, explicitFFmpegIndex: explicitFFmpeg, explicitCombinedIndex: explicitCombined,
+                preferredLanguage: "en", mode: mode, showForced: false, trackSignature: nil,
+                currentAudioLanguage: "ja"
+            )
+        }
+        // Auto in English lands on the external sidecar, the only English
+        // track the server can deliver.
+        XCTAssertEqual(intent(mode: .always).combinedIndex, 0)
+        XCTAssertEqual(
+            DetailPlaybackFormatting.subtitleValueLabel(
+                version: version, selectedSubtitleTrackIndex: nil,
+                autoContext: .init(preferredLanguage: "en", mode: "always", audioLanguage: "ja")
+            ),
+            "Auto: English · SRT"
+        )
+        // Left to the file, playback would start its default track; that one
+        // can't be delivered, so it starts without subtitles.
+        let fileDefault = PlaybackSessionBridge.initialProtocolV3SubtitleIntent(
+            version: version, explicitFFmpegIndex: nil, explicitCombinedIndex: nil,
+            preferredLanguage: nil, mode: .auto, showForced: false, trackSignature: nil,
+            currentAudioLanguage: "ja"
+        )
+        XCTAssertNil(fileDefault.ffmpegStreamIndex)
+        XCTAssertNil(fileDefault.combinedIndex)
+        XCTAssertEqual(
+            DetailPlaybackFormatting.subtitleValueLabel(
+                version: version, selectedSubtitleTrackIndex: nil,
+                autoContext: .init(preferredLanguage: nil, mode: "auto", audioLanguage: "ja")
+            ),
+            "Auto: Off"
+        )
+        // A saved explicit pick of it, by stream or by combined ordinal.
+        for explicit in [intent(mode: .always, explicitFFmpeg: 2), intent(mode: .always, explicitCombined: 1)] {
+            XCTAssertNil(explicit.ffmpegStreamIndex)
+            XCTAssertNil(explicit.combinedIndex)
+        }
+        // A remembered pick of it doesn't seed the selector with it.
+        XCTAssertNotEqual(
+            DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                version: version,
+                signature: SubtitleTrackSignature(source: "embedded", language: "eng"),
+                mode: "always", showForced: false, usesDeviceSettings: false
+            ),
+            2
+        )
+    }
+
     func testSubtitleOptionsKeepEmbeddedStreamZeroSelectable() {
         // The wire omits a zero stream index. The selector, sanitization and
         // persistence paths must all read an embedded nil index as stream 0
