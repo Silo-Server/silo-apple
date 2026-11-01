@@ -614,6 +614,9 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let h = try await makeHarness()
         let registrar = try await joinSecondAddress(h)
         let key = try XCTUnwrap(h.record()?.installationKey)
+        // A copy left in the address's own slot by an interrupted link.
+        let leftover = try String(decoding: JSONEncoder().encode(XCTUnwrap(h.record())), as: UTF8.self)
+        XCTAssertTrue(h.journal.keychain.set(leftover, for: ApplePushInstallationJournal.account(for: Self.otherServerID)))
         h.identities.set("deployment-z", for: Self.otherServerID)
         let sent = h.server.registrations.count
 
@@ -627,16 +630,16 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     }
 
     /// Once the second address reports another server, its link ends, but
-    /// the first address's record still names it as the last to register.
+    /// the shared record still names it as the last to register.
     /// Removing the first address then retires the installation with its
     /// own key rather than leaving it to an address that left, and a
     /// removal that did not happen turns it back on as the first address.
     func testRemovingTheFirstAddressAfterTheSecondLeftTheServerRetiresIt() async throws {
         let h = try await makeHarness()
         let registrar = try await joinSecondAddress(h)
-        h.identities.set("deployment-z", for: Self.otherServerID)
-        _ = await registrar.register(Self.body(token: Self.tokenB), owner: try await h.owner())
         let key = try XCTUnwrap(h.record()?.installationKey)
+        // Nothing has run for the second address since it moved.
+        h.identities.set("deployment-z", for: Self.otherServerID)
 
         let removed = await registrar.unregister(serverID: Self.serverID, activeOwner: try await h.owner())
 

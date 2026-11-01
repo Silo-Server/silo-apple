@@ -101,10 +101,10 @@ struct ApplePushRegistrationCommand: Equatable, Sendable {
 }
 
 /// Ordered installation state for `POST /api/v2/devices/push/apple`, one
-/// Keychain item per deployment. A saved server starts with its own record;
-/// one proven to reach the same deployment as another (the same server
-/// saved under two addresses) is linked to that server's record and shares
-/// its key and generations.
+/// Keychain item per deployment. A saved server starts with its own record.
+/// Two proven to reach the same deployment (the same server saved under two
+/// addresses) are both linked to one shared record, in a Keychain item no
+/// address owns, and share its key and generations.
 ///
 /// The server keys an Apple installation by `device_id` and checks two
 /// headers on every registration. `X-Push-Installation-Key` proves this is the
@@ -162,15 +162,16 @@ struct ApplePushInstallationJournal: Sendable {
     }
 
     /// Where a saved server proven to reach the same deployment as another
-    /// names the saved server whose record it shares.
+    /// names the shared record it uses.
     static func linkAccount(for serverID: String) -> String {
         SharedStorage.keychainAccountPrefix + "push.apple.installation.link.\(serverID)"
     }
 
-    /// A shared record, and the deployment identity the address reported
-    /// when it proved it reaches that deployment.
+    /// The Keychain slot of a shared record (`sharedRecordPrefix`), and the
+    /// deployment identity the address reported when it proved it reaches
+    /// that deployment.
     struct Link: Codable, Equatable, Sendable {
-        let recordOwner: String
+        let record: String
         let provenServerID: String
     }
 
@@ -189,12 +190,12 @@ struct ApplePushInstallationJournal: Sendable {
     /// Links followed at most; a longer chain, or a loop, is unreadable.
     private static let maximumLinks = 8
 
-    /// The saved server whose Keychain item holds `serverID`'s record:
-    /// `serverID` itself unless it was linked to another's.
-    func recordOwner(for serverID: String) throws -> String {
+    /// The Keychain slot that holds `serverID`'s record: `serverID`'s own
+    /// unless it was linked to a shared record.
+    func recordSlot(for serverID: String) throws -> String {
         var current = serverID
         for _ in 0...Self.maximumLinks {
-            guard let next = try storedLink(of: current)?.recordOwner, !next.isEmpty, next != current else {
+            guard let next = try storedLink(of: current)?.record, !next.isEmpty, next != current else {
                 return current
             }
             current = next
@@ -206,9 +207,11 @@ struct ApplePushInstallationJournal: Sendable {
     /// reports a deployment other than the one it was proven to reach: the
     /// registry id comes from the address, and a different server saved
     /// later at that address must not get the shared key. It starts again
-    /// with a record of its own.
+    /// with a record of its own: anything left in its own slot, such as a
+    /// copy an interrupted `link` did not delete, goes first.
     func dropLink(of serverID: String, unlessProvenFor identity: String) throws {
         guard let link = try storedLink(of: serverID), link.provenServerID != identity else { return }
+        guard keychain.delete(Self.account(for: serverID)) else { throw JournalError.writeFailed }
         guard keychain.delete(Self.linkAccount(for: serverID)) else { throw JournalError.writeFailed }
     }
 
@@ -229,8 +232,8 @@ struct ApplePushInstallationJournal: Sendable {
     /// others. A link is kept like a record: it outlives sign-out and
     /// removal.
     func link(_ serverID: String, toRecordOf other: String, provenFor identity: String) throws {
-        var target = try recordOwner(for: other)
-        guard try recordOwner(for: serverID) != target, var shared = try load(serverID: other) else { return }
+        var target = try recordSlot(for: other)
+        guard try recordSlot(for: serverID) != target, var shared = try load(serverID: other) else { return }
         let own = try load(serverID: serverID)
         var owners = shared.owners ?? [:]
         for record in [shared, own].compactMap({ $0 }) {
@@ -260,7 +263,7 @@ struct ApplePushInstallationJournal: Sendable {
     static let sharedRecordPrefix = "shared-"
 
     private func writeLink(_ serverID: String, to record: String, provenFor identity: String) throws {
-        let data = try JSONEncoder().encode(Link(recordOwner: record, provenServerID: identity))
+        let data = try JSONEncoder().encode(Link(record: record, provenServerID: identity))
         guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.linkAccount(for: serverID)) else {
             throw JournalError.writeFailed
         }
@@ -270,7 +273,7 @@ struct ApplePushInstallationJournal: Sendable {
     func load(serverID: String) throws -> ApplePushInstallationRecord? {
         let raw: String?
         do {
-            raw = try keychain.getChecked(Self.account(for: recordOwner(for: serverID)))
+            raw = try keychain.getChecked(Self.account(for: recordSlot(for: serverID)))
         } catch {
             throw JournalError.unreadable
         }
@@ -284,7 +287,7 @@ struct ApplePushInstallationJournal: Sendable {
 
     func save(_ record: ApplePushInstallationRecord, serverID: String) throws {
         let data = try JSONEncoder().encode(record)
-        let owner = try recordOwner(for: serverID)
+        let owner = try recordSlot(for: serverID)
         guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.account(for: owner)) else {
             throw JournalError.writeFailed
         }
