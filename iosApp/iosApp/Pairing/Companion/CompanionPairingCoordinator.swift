@@ -375,9 +375,13 @@ final class CompanionPairingCoordinator {
                 : "\(tvName) stopped responding."
         )
         do {
+            // The TV saves this as the server's advertised name, so it gets
+            // that name and never this device's nickname or URL fallback. The
+            // TV may belong to someone else; nicknames reach the user's own
+            // devices through iCloud.
             try await channel.send(.pushServer(
                 serverURL: server.url,
-                serverName: server.displayName,
+                serverName: server.serverName,
                 serverIdentity: server.verifiedServerId,
                 endpoints: endpoints
             ))
