@@ -7,6 +7,9 @@ class ProfileSelectionViewModel {
     var isLoading: Bool = false
     var isRefreshing: Bool = false
     var error: ErrorState?
+    /// The account holds a temporary password: the server refuses profiles
+    /// until it is replaced, so the picker hands over to the password change.
+    private(set) var requiresPasswordChange = false
     private(set) var isUsingTemporaryManagementContext: Bool = false
     private(set) var isClearingTemporaryManagementContext: Bool = false
     private var temporaryManagementProfileID: String?
@@ -42,7 +45,9 @@ class ProfileSelectionViewModel {
             let fresh = try await StartupContentPrefetcher.fetchProfiles()
             profiles = fresh
         } catch {
-            if profiles.isEmpty {
+            if PasswordChangeModel.isRequired(by: error) {
+                requiresPasswordChange = true
+            } else if profiles.isEmpty {
                 self.error = ErrorState(error)
             }
         }
@@ -66,7 +71,11 @@ class ProfileSelectionViewModel {
         do {
             try await select(profile, pin: nil, router: router)
         } catch {
-            self.error = ErrorState(error)
+            if PasswordChangeModel.isRequired(by: error) {
+                requiresPasswordChange = true
+            } else {
+                self.error = ErrorState(error)
+            }
         }
     }
 
