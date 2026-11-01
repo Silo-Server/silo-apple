@@ -1167,6 +1167,15 @@ struct SubtitleTrack: Codable, Identifiable, Hashable {
         return external == true ? nil : 0
     }
 
+    /// An embedded track the server stored with no codec: its probe didn't
+    /// recognize the format (a Matroska S_TEXT/WEBVTT track, for one), so the
+    /// server can neither deliver nor burn it in, and a start or switch that
+    /// asks for it is refused (`subtitle_codec_unsupported`). The same rule
+    /// marks the player's inventory rows (`ApplePlaybackV3PlanAdapter`).
+    var hasUnsupportedFormat: Bool {
+        external != true && (codec?.trimmingCharacters(in: .whitespaces) ?? "").isEmpty
+    }
+
     enum CodingKeys: String, CodingKey {
         case index
         case codec

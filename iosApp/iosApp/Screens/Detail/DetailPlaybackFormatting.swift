@@ -260,8 +260,10 @@ enum DetailPlaybackFormatting {
         if SubtitleMode(rawValue: mode ?? "") == .off {
             return showForced ? nil : -1
         }
+        // The player's resolver never restores a track the server can't
+        // deliver, so the selector doesn't show one either.
         if let signature,
-           let tracks = version?.subtitleTracks,
+           let tracks = version?.subtitleTracks?.filter({ !$0.hasUnsupportedFormat }),
            let match = bestSignatureMatch(signature, in: tracks) {
             return match.selectionIndex
         }
@@ -393,9 +395,11 @@ enum DetailPlaybackFormatting {
             pick = nil
         case .noChange:
             // Playback then starts the file's default track, else a forced
-            // one (`PlaybackSessionBridge.initialProtocolV3SubtitleIntent`).
-            pick = candidates.first(where: { $0.isDefault })
-                ?? candidates.first(where: { $0.isForced })
+            // one (`PlaybackSessionBridge.initialProtocolV3SubtitleIntent`),
+            // skipping one the server can't deliver.
+            let deliverable = candidates.filter { !$0.hasUnsupportedFormat }
+            pick = deliverable.first(where: { $0.isDefault })
+                ?? deliverable.first(where: { $0.isForced })
         }
         guard let pick, let position = candidates.firstIndex(of: pick) else {
             return nil
@@ -428,9 +432,10 @@ enum DetailPlaybackFormatting {
         }
         return ordered.map { ordinal, track in
             // `selectionIndex` reads an embedded nil index as stream 0, so
-            // only external sidecars without a stream index are unselectable.
+            // only external sidecars without a stream index, and tracks the
+            // server can't deliver, are unselectable.
             let index = track.selectionIndex
-            let isSelectable = index != nil
+            let isSelectable = index != nil && !track.hasUnsupportedFormat
             return SubtitleOption(
                 selectionIndex: index,
                 title: subtitleTitle(track, ordinal: ordinal),
@@ -515,7 +520,9 @@ enum DetailPlaybackFormatting {
         if track.external == true {
             tokens.append("External")
         }
-        if !isSelectable {
+        if track.hasUnsupportedFormat {
+            tokens.append("Unsupported format")
+        } else if !isSelectable {
             tokens.append("Available in player")
         }
         return tokens.joined(separator: " · ")

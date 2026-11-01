@@ -302,7 +302,9 @@ enum ApplePlaybackV3PlanAdapter {
                 isSelected: item.combinedIndex == selectedIndex,
                 ffIndex: ffIndex,
                 srcId: item.combinedIndex,
-                isDownloaded: item.source == "downloaded"
+                isDownloaded: item.source == "downloaded",
+                hasUnsupportedFormat: item.source == "embedded"
+                    && (item.codec?.trimmingCharacters(in: .whitespaces) ?? "").isEmpty
             )
         }
     }

@@ -94,12 +94,32 @@ struct SubtitleAutoResolver {
             self.currentAudioLanguage = currentAudioLanguage
             self.sourceContainer = sourceContainer
         }
+
+        func with(availableSubtitles: [PlayerTrack]) -> Inputs {
+            Inputs(
+                preferredLanguage: preferredLanguage,
+                additionalPreferredLanguages: additionalPreferredLanguages,
+                mode: mode,
+                showForced: showForced,
+                forcedOnly: forcedOnly,
+                preferAccessibilityTracks: preferAccessibilityTracks,
+                disableWhenNoLanguageMatch: disableWhenNoLanguageMatch,
+                trackSignature: trackSignature,
+                availableSubtitles: availableSubtitles,
+                currentAudioLanguage: currentAudioLanguage,
+                sourceContainer: sourceContainer
+            )
+        }
     }
 
     /// Resolve a subtitle pick. Caller is expected to skip this when
     /// the user already chose something explicit (e.g. via the route
     /// arguments) — the resolver is for the "no override" case.
     static func resolve(_ inputs: Inputs) -> SubtitleAutoSelection {
+        // A track the server refuses to deliver is never an automatic pick.
+        let inputs = inputs.availableSubtitles.contains(where: \.hasUnsupportedFormat)
+            ? inputs.with(availableSubtitles: inputs.availableSubtitles.filter { !$0.hasUnsupportedFormat })
+            : inputs
         if inputs.availableSubtitles.isEmpty {
             return inputs.disableWhenNoLanguageMatch ? .disable : .noChange
         }
