@@ -23,6 +23,8 @@ struct TopShelfHTTPClient {
         case notAuthenticated
         case invalidURL
         case unexpectedStatus(Int)
+        /// A Home row read answered another `section_type` than the layout.
+        case sectionTypeChanged
     }
 
     let defaults: SharedDefaults
@@ -161,8 +163,58 @@ struct TopShelfHTTPClient {
         )
     }
 
+    /// The Continue Watching and Next Up rows, in display order. Reads the
+    /// layout, then only those rows: the whole of Home runs to about 1 MB on
+    /// a large server, too much for the extension's memory limit. A row read
+    /// answers at the row's own limit, as the full list does, so the shelf's
+    /// sort and cap pick the same cards; `item_limit` would cut each row in
+    /// the server's order first.
+    ///
+    /// A row whose read fails, or whose type no longer matches the layout (an
+    /// admin can retype a section and keep its id), is left out and counted,
+    /// as the full list answers a failed row empty. When every row fails, the
+    /// first row's error is thrown, as is a failed layout read, a scope
+    /// change during any read, or cancellation.
     func fetchHomeSections(imageSizeQuery: [String: String]) async throws -> TopShelfSectionsResponse {
-        try await get("/api/v2/home/sections", query: imageSizeQuery)
+        let layout: TopShelfHomeLayout = try await get("/api/v2/home/layout")
+        let entries = layout.sections.filter { TopShelfRow.isShown($0.sectionType) }
+        let results = try await withThrowingTaskGroup(of: (Int, Result<TopShelfSection, Swift.Error>).self) { group in
+            for (index, entry) in entries.enumerated() {
+                group.addTask { (index, try await fetchRow(entry, imageSizeQuery: imageSizeQuery)) }
+            }
+            // Layout order, whichever read finishes first: rows without
+            // progress timestamps keep this order through the shelf's sort.
+            var results = [Result<TopShelfSection, Swift.Error>?](repeating: nil, count: entries.count)
+            for try await (index, result) in group { results[index] = result }
+            return results.compactMap { $0 }
+        }
+        // A row that failed after a scope change was never scope-checked.
+        guard isCurrentScope else { throw Error.notAuthenticated }
+        let sections = results.compactMap { try? $0.get() }
+        if sections.isEmpty, case .failure(let error)? = results.first { throw error }
+        return TopShelfSectionsResponse(sections: sections, failedSectionCount: results.count - sections.count)
+    }
+
+    /// One row read's outcome. Throws only what ends the whole read: a scope
+    /// change or cancellation.
+    private func fetchRow(
+        _ entry: TopShelfHomeLayout.Entry,
+        imageSizeQuery: [String: String]
+    ) async throws -> Result<TopShelfSection, Swift.Error> {
+        guard let segment = CatalogPathSegment.encode(entry.id) else { return .failure(Error.invalidURL) }
+        do {
+            let row: TopShelfSection = try await get(
+                "/api/v2/home/sections/\(segment)/items",
+                query: imageSizeQuery
+            )
+            return row.sectionType == entry.sectionType ? .success(row) : .failure(Error.sectionTypeChanged)
+        } catch Error.notAuthenticated {
+            throw Error.notAuthenticated
+        } catch _ where Task.isCancelled {
+            throw CancellationError()
+        } catch {
+            return .failure(error)
+        }
     }
 
     func fetchSeasons(

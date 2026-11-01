@@ -57,8 +57,8 @@ final class ContentProvider: TVTopShelfContentProvider {
             return nil
         }
 
-        let cwItems = items(from: response, matching: Self.isContinueWatching)
-        let nuItems = items(from: response, matching: Self.isNextUp)
+        let cwItems = items(from: response, matching: TopShelfRow.isContinueWatching)
+        let nuItems = items(from: response, matching: TopShelfRow.isNextUp)
         let seriesPosters = await fetchSeriesPosters(
             for: cwItems + nuItems,
             using: http,
@@ -89,7 +89,7 @@ final class ContentProvider: TVTopShelfContentProvider {
         let cwCount = continueWatching?.items.count ?? 0
         let nuCount = nextUp?.items.count ?? 0
         defaults.set(
-            "ok: sections=\(response.sections.count) cw=\(cwCount) nu=\(nuCount) types=\(response.sections.map(\.sectionType).joined(separator: ","))",
+            "ok: sections=\(response.sections.count) failed=\(response.failedSectionCount) cw=\(cwCount) nu=\(nuCount) types=\(response.sections.map(\.sectionType).joined(separator: ","))",
             forKey: SharedStorage.topShelfLastStatusKey
         )
         guard !collections.isEmpty else { return nil }
@@ -202,28 +202,15 @@ final class ContentProvider: TVTopShelfContentProvider {
         return posters
     }
 
-    // MARK: - Section selection
-
-    /// Matches the home screen's `ResolvedSection.isContinueWatchingSection`.
-    private static func isContinueWatching(_ section: TopShelfSection) -> Bool {
-        let type = section.sectionType.lowercased()
-        return type == "continue_watching" || type == "in_progress"
-    }
-
-    /// Matches the next-up half of the home screen's `SectionRow.isEpisodeRow`.
-    private static func isNextUp(_ section: TopShelfSection) -> Bool {
-        section.sectionType.lowercased().contains("next")
-    }
-
     // MARK: - Item construction
 
     private func items(
         from response: TopShelfSectionsResponse,
-        matching predicate: (TopShelfSection) -> Bool
+        matching predicate: (String) -> Bool
     ) -> [TopShelfItem] {
         Array(
             response.sections
-                .filter(predicate)
+                .filter { predicate($0.sectionType) }
                 .flatMap { $0.items }
                 .sorted { lhs, rhs in
                     sortKey(lhs) > sortKey(rhs)

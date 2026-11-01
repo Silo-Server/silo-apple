@@ -1,20 +1,45 @@
 import Foundation
 
-/// Minimal mirror of the server's `/api/v2/home/sections` response,
-/// trimmed to the fields the Top Shelf surface actually uses. We keep
-/// this in Shared so the extension and artwork regression tests can use it
-/// without compiling the full app DTO surface.
-struct TopShelfSectionsResponse: Decodable {
+/// The Home rows Top Shelf shows, in display order, trimmed to the fields
+/// the Top Shelf surface actually uses. We keep these models in Shared so the
+/// extension and artwork regression tests can use them without compiling
+/// the full app DTO surface.
+struct TopShelfSectionsResponse {
     let sections: [TopShelfSection]
+    /// Rows the layout listed whose read failed or changed type.
+    let failedSectionCount: Int
+}
 
-    enum CodingKeys: String, CodingKey { case sections }
+/// The rows Top Shelf shows, by `section_type`.
+enum TopShelfRow {
+    /// Matches the home screen's `ResolvedSection.isContinueWatchingSection`.
+    static func isContinueWatching(_ sectionType: String) -> Bool {
+        let type = sectionType.lowercased()
+        return type == "continue_watching" || type == "in_progress"
+    }
 
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        sections = try c.decodeIfPresent([TopShelfSection].self, forKey: .sections) ?? []
+    /// Matches the next-up half of the home screen's `SectionRow.isEpisodeRow`.
+    static func isNextUp(_ sectionType: String) -> Bool {
+        sectionType.lowercased().contains("next")
+    }
+
+    static func isShown(_ sectionType: String) -> Bool {
+        isContinueWatching(sectionType) || isNextUp(sectionType)
     }
 }
 
+/// `GET /api/v2/home/layout` without cards: every Home row in display order.
+struct TopShelfHomeLayout: Decodable {
+    struct Entry: Decodable {
+        let id: String
+        let sectionType: String
+    }
+
+    let sections: [Entry]
+}
+
+/// One Home row with its cards, as `GET /api/v2/home/sections/{id}/items`
+/// answers it.
 struct TopShelfSection: Decodable {
     let id: String
     let sectionType: String
