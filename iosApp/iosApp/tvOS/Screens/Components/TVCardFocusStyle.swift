@@ -92,25 +92,13 @@ private struct TVCardOutlineButtonStyleBody: View {
     var body: some View {
         configuration.label
             .tvFocusRing(isFocused: isFocused, cornerRadius: cornerRadius)
-            .scaleEffect(currentScale)
-            .shadow(
-                color: .black.opacity(isFocused ? 0.45 : 0),
-                radius: isFocused ? 18 : 0,
-                y: isFocused ? 8 : 0
-            )
+            .tvCardLift(isFocused: isFocused, isPressed: configuration.isPressed)
             .focusEffectDisabled()
             .animation(
                 reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration),
                 value: isFocused
             )
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: configuration.isPressed)
-    }
-
-    /// Captions drop clear of the lift even with Reduce Motion on, so the
-    /// lift stays and only its animation goes.
-    private var currentScale: CGFloat {
-        let base = isFocused ? TVCardOutlineButtonStyle.scale : 1
-        return configuration.isPressed ? base * 0.97 : base
     }
 }
 
@@ -141,6 +129,20 @@ private struct TVCardCaptionFocusModifier: ViewModifier {
 }
 
 extension View {
+    /// The focused card's lift and shadow, shared by
+    /// `TVCardOutlineButtonStyle` and the Series episode row. Callers own
+    /// the animation. Captions drop clear of the lift even with Reduce
+    /// Motion on, so the lift stays and only its animation goes.
+    func tvCardLift(isFocused: Bool, isPressed: Bool = false) -> some View {
+        let scale = isFocused ? TVCardOutlineButtonStyle.scale : 1
+        return scaleEffect(isPressed ? scale * 0.97 : scale)
+            .shadow(
+                color: .black.opacity(isFocused ? 0.45 : 0),
+                radius: isFocused ? 18 : 0,
+                y: isFocused ? 8 : 0
+            )
+    }
+
     func tvFocusRing(
         isFocused: Bool,
         cornerRadius: CGFloat,

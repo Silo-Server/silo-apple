@@ -2,10 +2,8 @@
 import SwiftUI
 
 private enum EpisodeHomeHoverMetrics {
-    static let scale: CGFloat = 1.08
-
     static func leadingInset(for cardWidth: CGFloat) -> CGFloat {
-        cardWidth * (scale - 1) / 2 + 2
+        cardWidth * (TVCardOutlineButtonStyle.scale - 1) / 2 + 2
     }
 }
 
@@ -495,8 +493,8 @@ private extension View {
         }
     }
 
-    /// Reproduce Home's artwork-only lift for the anchored episode buttons.
-    /// Plain rails use `TVCardFocusButtonStyle`.
+    /// Home's artwork-only lift for the anchored episode buttons. Plain
+    /// rails use `TVCardFocusButtonStyle`.
     @ViewBuilder
     func episodeHomeHoverEffect(
         enabled: Bool,
@@ -505,17 +503,7 @@ private extension View {
     ) -> some View {
         if enabled {
             self
-                .scaleEffect(
-                    isFocused && !reduceMotion ? EpisodeHomeHoverMetrics.scale : 1,
-                    // Grow evenly around the artwork instead of adding all of
-                    // the focused width on its trailing side.
-                    anchor: .center
-                )
-                .shadow(
-                    color: .black.opacity(isFocused ? 0.62 : 0.2),
-                    radius: isFocused ? 26 : 8,
-                    y: isFocused ? 14 : 4
-                )
+                .tvCardLift(isFocused: isFocused)
                 .animation(
                     reduceMotion ? nil : .smooth(duration: 0.30, extraBounce: 0),
                     value: isFocused
@@ -705,29 +693,32 @@ private struct EpisodeCardLabel: View {
                 captionLine(
                     EpisodeCardCaption.railTitle(for: episode),
                     font: .system(size: usesAnchoredStyle ? 20 : 24, weight: .semibold),
-                    color: titleColor,
                     height: usesAnchoredStyle
                         ? TVEpisodeCardCaptionMetrics.anchoredTitleHeight
                         : TVEpisodeCardCaptionMetrics.titleHeight
                 )
+                .tvCardTitleFocus(isFocused: isHighlighted)
                 if let metadata = EpisodeCardCaption.railMetadata(for: episode) {
                     captionLine(
                         metadata,
                         font: .system(size: usesAnchoredStyle ? 17 : 18, weight: .medium),
-                        color: .siloSecondaryText,
                         height: TVEpisodeCardCaptionMetrics.metadataHeight
                     )
+                    .tvCardSubtitleFocus(isFocused: isHighlighted)
                 }
             }
-            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .tvCardCaptionFocus(
+                isFocused: isHighlighted,
+                posterOverhang: captionOverhang,
+                spacing: TVEpisodeCardCaptionMetrics.gap
+            )
         }
         .frame(width: cardWidth, alignment: .leading)
     }
 
-    private func captionLine(_ text: String, font: Font, color: Color, height: CGFloat) -> some View {
+    private func captionLine(_ text: String, font: Font, height: CGFloat) -> some View {
         Text(text)
             .font(font)
-            .foregroundStyle(color)
             .lineLimit(1)
             .truncationMode(.tail)
             .frame(width: cardWidth, height: height, alignment: .topLeading)
@@ -741,9 +732,14 @@ private struct EpisodeCardLabel: View {
             }
     }
 
-    private var titleColor: Color {
-        if isCurrent { return .siloOnSurface }
-        return isFocused ? .siloOnSurface : Color.siloOnSurface.opacity(0.92)
+    /// The focused card, or the episode Play acts on while focus is
+    /// elsewhere, gets the outline and the bright caption.
+    private var isHighlighted: Bool { isFocused || isCurrent }
+
+    /// How far the lifted still extends below its frame. Only the anchored
+    /// style lifts the still alone; the plain style lifts the whole card.
+    private var captionOverhang: CGFloat {
+        usesAnchoredStyle ? TVCardOutlineButtonStyle.focusedOverhang(forHeight: stillHeight) : 0
     }
 
     private var still: some View {
@@ -785,7 +781,7 @@ private struct EpisodeCardLabel: View {
         // Also outline the episode the Play button acts on while focus is
         // elsewhere, such as on Play itself after opening it from Up Next.
         .tvFocusRing(
-            isFocused: isFocused || isCurrent,
+            isFocused: isHighlighted,
             cornerRadius: stillCornerRadius
         )
         // Home lifts only the artwork button, not its caption. Doing the same
