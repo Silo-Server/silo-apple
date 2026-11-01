@@ -2672,10 +2672,23 @@ class PlayerViewModel {
         /// The preference of the adopted pick `rollback` goes back to, which
         /// this newer pick kept from being saved. A refusal saves it.
         var rollbackPreference: SubtitlePreferenceWrite? = nil
-        /// A queued audio pick this one replaced. The player already shows
-        /// it, so this pick's request carries it, and a refusal asks for it
-        /// on its own.
-        var replacedAudioPick: QueuedProtocolV3TrackTarget? = nil
+        /// An audio pick queued with this one. The player already shows it,
+        /// so this pick's request carries it, and a refusal asks for it on
+        /// its own.
+        var audioPick: QueuedProtocolV3TrackTarget? = nil
+    }
+
+    /// An audio pick made while a subtitle pick is queued joins that pick's
+    /// request, which keeps the subtitle pick's rollback and refusal
+    /// handling. Nil when no subtitle pick is queued.
+    static func subtitleChange(
+        _ queued: QueuedProtocolV3TrackChange?,
+        joinedBy audio: QueuedProtocolV3TrackTarget
+    ) -> QueuedProtocolV3TrackChange? {
+        guard var queued, case .subtitle? = queued.target, var pick = queued.subtitlePick else { return nil }
+        pick.audioPick = audio
+        queued.subtitlePick = pick
+        return queued
     }
 
     /// A subtitle pick queued in place of `replaced`, which never runs. A
@@ -2688,12 +2701,12 @@ class PlayerViewModel {
         var pick = pick
         switch replaced?.target {
         case .audio?:
-            pick.replacedAudioPick = replaced?.target
+            pick.audioPick = replaced?.target
         case .subtitle?:
             guard let older = replaced?.subtitlePick else { break }
             pick.rollback = older.rollback
             pick.rollbackPreference = older.rollbackPreference
-            pick.replacedAudioPick = older.replacedAudioPick
+            pick.audioPick = older.audioPick
         case nil:
             break
         }
@@ -2715,7 +2728,7 @@ class PlayerViewModel {
         } else {
             queued.rollback = older.rollback
             queued.rollbackPreference = older.rollbackPreference
-            queued.replacedAudioPick = queued.replacedAudioPick ?? older.replacedAudioPick
+            queued.audioPick = queued.audioPick ?? older.audioPick
         }
         return queued
     }
@@ -2848,6 +2861,11 @@ class PlayerViewModel {
                 return true
             }
             if requeueWhenBusy {
+                if case .audio? = trackTarget, let trackTarget,
+                   let joined = Self.subtitleChange(pendingProtocolV3TrackChange, joinedBy: trackTarget) {
+                    pendingProtocolV3TrackChange = joined
+                    return true
+                }
                 // A user track change. The UI already shows the new
                 // selection, so dropping the switch here would leave the
                 // player permanently disagreeing with itself. Latest-wins,
@@ -2876,6 +2894,10 @@ class PlayerViewModel {
         // interim plan's inventory while the user's pick waited, so reassert
         // the pick first. On the direct path the pick is already published and
         // this is a no-op.
+        // Audio first: restoring it can reapply the system subtitle policy.
+        if let audioPick = subtitlePick?.audioPick {
+            restoreQueuedProtocolV3TrackSelection(audioPick)
+        }
         if let trackTarget {
             restoreQueuedProtocolV3TrackSelection(trackTarget)
         }
@@ -8390,7 +8412,7 @@ class PlayerViewModel {
             TrackSelectionPersistence.saveSubtitle(prefKey: write.prefKey, request: write.request)
         }
         showUnsupportedSubtitleNotice()
-        return pick.replacedAudioPick
+        return pick.audioPick
     }
 
     private func showUnsupportedSubtitleNotice() {

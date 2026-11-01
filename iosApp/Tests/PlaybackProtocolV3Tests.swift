@@ -676,12 +676,24 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         let queuedAudio = Change(classification: "audio_track_changed", message: "",
                                  target: .audio(trackId: 9, selectionIndex: 1))
         let overAudio = PlayerViewModel.subtitlePick(b, queuedOver: queuedAudio)
-        guard case .audio(let trackId, let selectionIndex)? = overAudio.replacedAudioPick else {
+        guard case .audio(let trackId, let selectionIndex)? = overAudio.audioPick else {
             return XCTFail("the replaced audio pick was dropped")
         }
         XCTAssertEqual(trackId, 9)
         XCTAssertEqual(selectionIndex, 1)
         XCTAssertEqual(overAudio.rollback.selectedSubtitleId, 2)
+
+        // An audio pick after a queued subtitle pick joins it instead of
+        // dropping it.
+        let joined = PlayerViewModel.subtitleChange(queuedB, joinedBy: .audio(trackId: 9, selectionIndex: 1))
+        XCTAssertEqual(joined?.classification, "subtitle_track_changed")
+        XCTAssertEqual(joined?.subtitlePick?.rollbackPreference?.prefKey, "a")
+        guard case .audio(let joinedTrackId, _)? = joined?.subtitlePick?.audioPick else {
+            return XCTFail("the audio pick didn't join the queued subtitle pick")
+        }
+        XCTAssertEqual(joinedTrackId, 9)
+        XCTAssertNil(PlayerViewModel.subtitleChange(queuedAudio, joinedBy: .audio(trackId: 4, selectionIndex: 0)))
+        XCTAssertNil(PlayerViewModel.subtitleChange(nil, joinedBy: .audio(trackId: 4, selectionIndex: 0)))
     }
 
     func testNativePickerIdentityRemainsResolvableForSecondaryAfterPrimaryClears() throws {
