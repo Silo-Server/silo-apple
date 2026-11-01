@@ -48,8 +48,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             case gated(StubURLProtocol.Gate, status: Int)
         }
 
-        /// Answers to `resetApplePushInstallation`; `nil` answers 200 with
-        /// `reset: true`.
+        /// Answers to `resetApplePushInstallation`; with none queued the
+        /// server answers 200 with `reset: true`.
         enum ResetReply {
             case reset(Bool)
             case problem(Int, String)
@@ -536,8 +536,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     }
 
     /// One reset per attempt: a registration refused again after the reset,
-    /// or a reset that fails, holds the generation like any 403, so the two
-    /// can never loop.
+    /// or a refused reset, holds the generation like any 403, so the two can
+    /// never loop. A reset with no answer is tried again on the next attempt.
     func testMismatchIsResetAtMostOncePerAttempt() async throws {
         let h = try await makeHarness()
         h.server.setCapability(Self.resetCapability)
@@ -555,16 +555,24 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let held = await registrar.register(Self.body(), owner: owner)
         XCTAssertEqual(held, .notSent(reason: "held"))
 
-        // A failed reset holds the generation that was refused.
+        // A reset with no answer keeps the intent pending, unheld.
         clock.advance(by: ApplePushRegistrar.heldGenerationRetryInterval + 1)
         h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
         h.server.enqueueReset(.problem(503, "service_unavailable"))
-        let failed = await registrar.register(Self.body(), owner: owner)
-        XCTAssertEqual(failed, .held(reason: "http_403_push_installation_key_mismatch"))
-        XCTAssertEqual(h.server.resets.count, 2)
-        XCTAssertEqual(h.server.registrations.count, 3)
-        XCTAssertEqual(try h.record()?.generation, 1)
+        let unanswered = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(unanswered, .uncertain)
         XCTAssertEqual(try h.record()?.latest?.outcome, .pending)
+
+        // A refused reset holds the generation that was refused.
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        h.server.enqueueReset(.problem(403, "permission_denied"))
+        let refused = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(refused, .held(reason: "http_403_push_installation_key_mismatch"))
+        XCTAssertEqual(h.server.resets.count, 3)
+        XCTAssertEqual(h.server.registrations.count, 4)
+        XCTAssertEqual(try h.record()?.generation, 1)
+        let afterRefusal = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(afterRefusal, .notSent(reason: "held"))
     }
 
     func testReceiptForAnotherGenerationIsRefusedAndStoresNoDisplayToken() async throws {

@@ -1299,7 +1299,7 @@ struct APIv2Client: Sendable {
         let data = try await applePushRequest(method: "POST", path: Self.applePushResetPath,
             body: Self.applePushResetBody(deviceID: deviceID),
             headers: Self.applePushResetHeaders(installationKey: installationKey), auth: auth)
-        return try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushResetReceipt.self, from: data)
+        return try Self.applePushResetReceipt(from: data)
     }
 
     static let applePushCapabilityPath = "/api/v2/devices/push/apple/capabilities"
@@ -1395,6 +1395,10 @@ struct APIv2Client: Sendable {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         return try encoder.encode(APIv2ApplePushResetBody(deviceId: deviceID))
+    }
+
+    static func applePushResetReceipt(from data: Data) throws -> APIv2ApplePushResetReceipt {
+        try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushResetReceipt.self, from: data)
     }
 
     /// Sorted keys, so a replay sends the same bytes whichever server

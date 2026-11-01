@@ -153,6 +153,15 @@ enum ApplePushRegistrationWire {
 ///   generation): the journal records the refusal and the intent is not sent
 ///   again. The next changed intent (APNs token, account, login, profile)
 ///   takes the next generation. There is no generation rebase and no new key.
+/// - Reset (403 `push_installation_key_mismatch` from a server that reports
+///   `installation_reset_available`, for a new or pending intent): the key
+///   the server holds is not this record's, and this account owns the
+///   installation. The registrar resets the installation with this record's
+///   key, restarts the journal at generation 1 with the same key, and sends
+///   the intent once more. That send never resets again. A refused reset
+///   holds the refused generation; a reset with no answer leaves the intent
+///   pending, and the next trigger resets again, which the contract makes
+///   safe.
 /// - Held (403, or a refused display-token renewal other than 409): the
 ///   journal keeps what it had, `pending` or `accepted`, and the same
 ///   generation is not sent again for `heldGenerationRetryInterval`. The
@@ -180,7 +189,8 @@ actor ApplePushRegistrar {
         /// The server refused this send without a verdict on the intent. The
         /// journal is unchanged and the generation is held for a while.
         case held(reason: String)
-        /// Sent, but the answer was lost or discarded. Kept for exact replay.
+        /// Sent, but the answer was lost or discarded (the registration's,
+        /// or the reset's after a key mismatch). Kept for exact replay.
         case uncertain
         /// Nothing was sent.
         case notSent(reason: String)
@@ -511,8 +521,10 @@ actor ApplePushRegistrar {
         } catch {
             // A renewal replays an intent this key had accepted, so a
             // mismatch there means another record on this device (the same
-            // server saved under a second address) registered since. Taking
-            // the installation back would only start a tug of war.
+            // server saved under a second address) registered since. A
+            // renewal does not take the installation back; only a new intent
+            // does, which keeps two such records from trading it on every
+            // renewal.
             if mayResetInstallation, !command.isRenewal, Self.isInstallationKeyMismatch(error) {
                 return await resetInstallation(after: command, body: body, through: channel)
             }
@@ -569,8 +581,9 @@ actor ApplePushRegistrar {
 
     /// Recovers from a lost installation key: the owner resets the
     /// server's installation with `command`'s key, the journal starts over
-    /// with that key, and the same intent registers at generation 1. A reset
-    /// that fails holds `command`'s generation as any 403 would.
+    /// with that key, and the same intent registers at generation 1. A
+    /// refused reset holds `command`'s generation as any 403 would; one with
+    /// no answer leaves it pending for the next trigger.
     private func resetInstallation(after command: ApplePushRegistrationCommand, body: APIv2ApplePushRegistrationBody,
                                    through channel: ApplePushRegistrationChannel) async -> Result {
         let serverID = channel.owner.serverID
@@ -579,8 +592,12 @@ actor ApplePushRegistrar {
             let receipt = try await channel.reset(command.intent.body.deviceId, command.installationKey)
             Self.logger.info("Apple push installation reset after a key mismatch: generation=\(command.generation, privacy: .public) reset=\(receipt.reset, privacy: .public)")
         } catch {
+            guard Self.refusalReason(error) != nil || Self.forbiddenReason(error) != nil else {
+                Self.logger.info("Apple push installation reset outcome unknown; keeping generation \(command.generation, privacy: .public) pending: \(String(describing: error), privacy: .public)")
+                return .uncertain
+            }
             held[serverID] = (command.generation, now())
-            Self.logger.error("Apple push installation reset failed; holding generation \(command.generation, privacy: .public): \(String(describing: error), privacy: .public)")
+            Self.logger.error("Apple push installation reset refused; holding generation \(command.generation, privacy: .public): \(String(describing: error), privacy: .public)")
             return .held(reason: mismatch)
         }
         let restarted: (record: ApplePushInstallationRecord, command: ApplePushRegistrationCommand?, allocated: Bool)

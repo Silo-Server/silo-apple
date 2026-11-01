@@ -61,7 +61,7 @@ struct ApplePushSavedServerClient: Sendable {
                     body: APIv2Client.applePushResetBody(deviceID: deviceID),
                     headers: APIv2Client.applePushResetHeaders(installationKey: installationKey),
                     owner: owner, serverURL: serverURL)
-                return try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushResetReceipt.self, from: data)
+                return try APIv2Client.applePushResetReceipt(from: data)
             },
             commit: { try await tokenStore.withSavedServerAuthority(owner, operation: $0) }
         )
