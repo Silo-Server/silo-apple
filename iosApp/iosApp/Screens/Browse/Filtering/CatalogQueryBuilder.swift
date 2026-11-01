@@ -19,7 +19,11 @@ enum CatalogQueryBuilder {
         /// the wrong scope (e.g. `movie` for an audiobook library) would
         /// filter every item out. tvOS sends it (it knows the library type).
         includeType: Bool = true,
-        enforcedScope: LibraryVideoScope? = nil
+        enforcedScope: LibraryVideoScope? = nil,
+        /// The library reports `box_sets_enabled`: ask the server to stand one
+        /// box set card in for each TMDB collection's movies. The server
+        /// groups before paging, so the client never regroups a page.
+        groupsBoxSets: Bool = false
     ) -> APIv2CatalogQuery {
         var state = state
         if enforcedScope != nil { state.mediaScope = nil }
@@ -34,6 +38,7 @@ enum CatalogQueryBuilder {
         }
         if let enforcedScope { q.type = enforcedScope.rawValue }
         q.namePrefix = state.namePrefix
+        if groupsBoxSets { q.group = boxSetGroup }
 
         var groups = GroupAccumulator()
         // A user-chosen Type facet (mixed libraries) is a filter facet, not an
@@ -61,6 +66,16 @@ enum CatalogQueryBuilder {
         q.groups = groups.encoded()
 
         return q
+    }
+
+    /// The `group` value of a box set browse.
+    static let boxSetGroup = "box_set"
+
+    /// Page-1 cache keys of a box set browse differ from the ungrouped
+    /// browse of the same library and filter, so turning box sets on or off
+    /// never paints the other list from cache.
+    static func cacheKeyFragment(_ state: CatalogFilterState, groupsBoxSets: Bool) -> String {
+        (groupsBoxSets ? "group=box_set|" : "") + state.cacheKeyFragment
     }
 
     /// One unfiltered item of a library, used to tell an empty library from

@@ -328,7 +328,10 @@ struct LibrariesTabView: View {
                     selectedLibraryId = id
                     persistLibrarySelection(id)
                     showPicker = false
-                    StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
+                    StartupContentPrefetcher.prefetchLibraryLanding(
+                        libraryId: id,
+                        groupsBoxSets: visibleLibraries.first { $0.id == id }?.browsesBoxSets ?? false
+                    )
                 }
             )
         }
@@ -365,7 +368,14 @@ struct LibrariesTabView: View {
         case .recommended:
             LibraryRecommendedView(libraryId: activeLibrary.id, mediaScope: videoScope(for: activeLibrary))
         case .library:
-            BrowseView(libraryId: activeLibrary.id, title: nil, showsSearchShortcut: false, libraryType: activeLibrary.type, mediaScope: videoScope(for: activeLibrary))
+            BrowseView(
+                libraryId: activeLibrary.id,
+                title: nil,
+                showsSearchShortcut: false,
+                libraryType: activeLibrary.type,
+                mediaScope: videoScope(for: activeLibrary),
+                groupsBoxSets: activeLibrary.browsesBoxSets
+            )
         case .collections:
             LibraryCollectionsView(libraryId: activeLibrary.id, mediaScope: videoScope(for: activeLibrary))
         }
@@ -501,7 +511,10 @@ struct LibrariesTabView: View {
         applyLibrarySelection()
         onLibrariesLoaded?(libraryAuthority, response.libraries)
         if let selectedLibraryId {
-            StartupContentPrefetcher.prefetchLibraryLanding(libraryId: selectedLibraryId)
+            StartupContentPrefetcher.prefetchLibraryLanding(
+                libraryId: selectedLibraryId,
+                groupsBoxSets: response.libraries.first { $0.id == selectedLibraryId }?.browsesBoxSets ?? false
+            )
         }
     }
 
