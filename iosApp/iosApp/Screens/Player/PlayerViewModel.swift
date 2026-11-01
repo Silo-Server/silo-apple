@@ -2740,12 +2740,18 @@ class PlayerViewModel {
 
     /// What stays queued once a newer subtitle pick lands: a subtitle change
     /// queued before it would bring the superseded track back, and a queued
-    /// audio change still runs.
+    /// audio change still runs, including one that joined the dropped
+    /// subtitle change.
     static func queuedTrackChangeAfterSubtitlePick(
         _ queued: QueuedProtocolV3TrackChange?
     ) -> QueuedProtocolV3TrackChange? {
-        if case .subtitle? = queued?.target { return nil }
-        return queued
+        guard case .subtitle? = queued?.target else { return queued }
+        guard let audioPick = queued?.subtitlePick?.audioPick else { return nil }
+        return QueuedProtocolV3TrackChange(
+            classification: "audio_track_changed",
+            message: "User selected an audio track.",
+            target: audioPick
+        )
     }
 
     /// Re-publishes a queued track pick just before the deferred replan reads

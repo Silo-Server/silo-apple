@@ -628,6 +628,20 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(after(Change(classification: "subtitle_track_changed", message: "",
                                   target: .subtitle(trackId: nil, combinedIndex: nil))),
                      "a queued Off is a subtitle change too")
+        var joined = PlayerViewModel.ReplannedSubtitlePick(
+            generation: 1,
+            rollback: .init(selectedSubtitleId: 1, selectedSecondarySubtitleId: nil, pendingSubtitleFfIndex: nil,
+                            pendingSidecarSubtitleTrackId: nil, pendingServerRenderedSubtitleTrackId: nil,
+                            hasExplicitSubtitleChoice: true, subtitlePickedDuringPlayback: true),
+            preference: nil)
+        joined.audioPick = .audio(trackId: 2, selectionIndex: 1)
+        let kept = after(Change(classification: "subtitle_track_changed", message: "",
+                                target: .subtitle(trackId: 7, combinedIndex: 3), subtitlePick: joined))
+        XCTAssertEqual(kept?.classification, "audio_track_changed",
+                       "an audio pick that joined the dropped subtitle change still runs")
+        XCTAssertNil(kept?.subtitlePick)
+        guard case .audio(let trackId, _)? = kept?.target else { return XCTFail("expected the joined audio pick") }
+        XCTAssertEqual(trackId, 2)
         XCTAssertEqual(after(Change(classification: "audio_track_changed", message: "",
                                     target: .audio(trackId: 2, selectionIndex: 1)))?.classification,
                        "audio_track_changed")
