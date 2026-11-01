@@ -308,15 +308,24 @@ actor ApplePushRegistrar {
             // Another address registered last. Once it no longer shares this
             // record, or no longer holds that session (removed, signed out,
             // expired), this address registers again as itself.
+            var fallback: ApplePushIntentOwner?
             if owner.serverID != serverID, let own = record.owners?[serverID] {
                 await dropStaleLink(of: owner.serverID)
                 if !sharesRecord(owner.serverID, with: serverID) {
                     owner = own
                 } else if !(await holdsSavedSession(owner)) {
                     owner = own
+                } else {
+                    fallback = own
                 }
             }
-            let result = await register(body, savedServer: owner)
+            var result = await register(body, savedServer: owner)
+            // The other address keeps its session, but the server refused
+            // its refresh: register as this one. An unreachable server or
+            // provider leaves the installation where it is.
+            if let fallback, result == .notSent(reason: Self.credentialRejectedReason) {
+                result = await register(body, savedServer: fallback)
+            }
             if result != .unchanged {
                 Self.logger.info("Saved-server Apple push registration: \(String(describing: result), privacy: .public)")
             }
@@ -515,6 +524,9 @@ actor ApplePushRegistrar {
                 return .unavailable
             }
         } catch {
+            if error as? ApplePushSavedServerError == .credentialRejected {
+                return .notSent(reason: Self.credentialRejectedReason)
+            }
             return .notSent(reason: "capability_\(String(describing: error))")
         }
         return await dispatch(command, allocating: planned.allocated ? planned.record : nil, body: body,
@@ -660,6 +672,9 @@ actor ApplePushRegistrar {
                 // A retirement queued for the replaced record must not be
                 // sent with the shared record's key.
                 await retirements.cancel(serverID: serverID, reason: "record_shared")
+                // A hold names a generation of the record just replaced, which
+                // the shared record may reach with a different intent.
+                held[serverID] = nil
                 Self.logger.info("Apple push installation record shared with another address of the same server")
                 return record
             } catch {
@@ -865,6 +880,9 @@ actor ApplePushRegistrar {
     }
 
     private static let installationKeyMismatch = "push_installation_key_mismatch"
+    /// `notSent` reason for a saved server whose session refresh the server
+    /// refused (`ApplePushSavedServerError.credentialRejected`).
+    static let credentialRejectedReason = "credential_rejected"
 
     /// The server's owner-only 403: this account owns the installation, but
     /// it is bound to another key.

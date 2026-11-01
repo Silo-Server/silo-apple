@@ -48,6 +48,9 @@ extension ApplePushRegistrationChannel {
 enum ApplePushSavedServerError: Error, Equatable {
     /// No current bearer for the server's stored session (`ApproverBearer`).
     case noCredential
+    /// The server refused the stored session's refresh: it needs a new
+    /// sign-in, though the session stays saved.
+    case credentialRejected
 }
 
 /// Registration requests for a saved server sent with that server's own
@@ -112,8 +115,9 @@ struct ApplePushSavedServerClient: Sendable {
               account.accountID == owner.accountID, account.epoch == owner.accountEpoch else {
             throw HTTPError.authorityChanged
         }
-        guard let bearer = await http.freshAccessToken(serverId: owner.serverID).token else {
-            throw ApplePushSavedServerError.noCredential
+        let fresh = await http.freshAccessToken(serverId: owner.serverID)
+        guard let bearer = fresh.token else {
+            throw fresh == .rejected ? ApplePushSavedServerError.credentialRejected : ApplePushSavedServerError.noCredential
         }
         guard var components = URLComponents(string: serverURL + path) else { throw HTTPError.invalidURL(serverURL) }
         if !query.isEmpty {

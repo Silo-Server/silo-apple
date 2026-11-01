@@ -66,6 +66,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         /// Per address: the caller's own login session, and the account's
         /// sessions one page at a time (`listSessions`).
         private var sessions: [String: (current: String, pages: [[String]])] = [:]
+        /// Addresses whose `/api/v2/auth/refresh` answers 401.
+        private var refusingRefresh: Set<String> = []
 
         init() {
             handler.route(StubURLProtocol.method("GET", path: ApplePushOrderedRegistrationTests.capabilityPath)) { [self] _ in
@@ -105,6 +107,13 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                 case .transportFailure, .gated:
                     throw URLError(.networkConnectionLost)
                 }
+            }
+            handler.route(StubURLProtocol.method("POST", path: HTTPClient.refreshPath)) { [self] request in
+                guard let host = request.url?.host, lock.withLock({ refusingRefresh.contains(host) }) else {
+                    return .status(503)
+                }
+                return .json(#"{"type":"https://silo.example/problems/unauthorized","title":"t","status":401,"detail":"d"}"#,
+                    status: 401, headers: ["Content-Type": "application/problem+json"])
             }
             handler.route(StubURLProtocol.method("GET", path: ApplePushOrderedRegistrationTests.sessionsPath)) { [self] request in
                 guard let host = request.url?.host, let listing = lock.withLock({ sessions[host] }) else {
@@ -158,6 +167,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         func enqueue(_ reply: Reply) { lock.withLock { replies.append(reply) } }
         func enqueueRetirement(_ reply: RetirementReply) { lock.withLock { retirementReplies.append(reply) } }
         func enqueueReset(_ reply: ResetReply) { lock.withLock { resetReplies.append(reply) } }
+        /// Makes `/api/v2/auth/refresh` at `host` answer 401; otherwise 503.
+        func refuseRefresh(host: String) { lock.withLock { _ = refusingRefresh.insert(host) } }
         /// What `listSessions` answers at `host`: the caller's session
         /// `current`, and `pages` of the account's session IDs.
         func setSessions(host: String, current: String, pages: [[String]]) {
@@ -238,10 +249,10 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
 
         /// Signs in to the same deployment, and the same account, under a
         /// second address, which becomes the active one.
-        func signInToSecondAddress() async throws {
+        func signInToSecondAddress(accessToken: String = "second-access") async throws {
             await tokens.switchActiveServer(serverId: ApplePushOrderedRegistrationTests.otherServerID)
             await tokens.setServerUrl(ApplePushOrderedRegistrationTests.otherServerURL)
-            let saved = await tokens.saveTokens(accessToken: "second-access", refreshToken: "second-refresh")
+            let saved = await tokens.saveTokens(accessToken: accessToken, refreshToken: "second-refresh")
             XCTAssertTrue(saved)
             await tokens.setProfileId("profile-a")
             let proofStored = await tokens.setProfileToken("proof-a")
@@ -684,6 +695,73 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(second.header("X-Push-Installation-Key"), shared.installationKey)
     }
 
+    /// A hold on the address's own record names a generation the shared
+    /// record can reach with another intent, so it ends with the link: a
+    /// registration after the link whose answer is lost is replayed.
+    func testHoldOnTheReplacedRecordDoesNotBlockTheSharedRegistration() async throws {
+        let h = try await makeHarness()
+        h.server.setCapability(Self.resetCapability)
+        let registrar = h.registrar(clock: Clock(), savedServerIdentity: "deployment-a")
+        _ = await registrar.register(Self.body(), owner: try await h.owner())
+        try await h.signInToSecondAddress()
+        let second = try await h.owner()
+        h.server.enqueue(.problem(403, "permission_denied"))
+        _ = await registrar.register(Self.body(), owner: second)
+        h.server.enqueue(.problem(403, "permission_denied"))
+        let held = await registrar.register(Self.body(token: Self.tokenB), owner: second)
+        XCTAssertEqual(held, .held(reason: "http_403_permission_denied"))
+        h.server.setSessions(host: "other.example", current: "session-2", pages: [["session-2"]])
+        h.server.setSessions(host: "silo.example", current: "session-1", pages: [["session-1", "session-2"]])
+        let tokenC = String(repeating: "ef", count: 32)
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        h.server.enqueue(.transportFailure)
+        let lost = await registrar.register(Self.body(token: tokenC), owner: second)
+        XCTAssertEqual(lost, .uncertain)
+
+        let replayed = await registrar.register(Self.body(token: tokenC), owner: second)
+
+        XCTAssertEqual(replayed, Self.accepted)
+        XCTAssertEqual(h.server.registrations.suffix(2).map { $0.header("X-Push-Generation") }, ["2", "2"])
+    }
+
+    /// The address that registered last can keep its session after its
+    /// refresh is refused. With no usable credential there, the other
+    /// address registers the shared installation as itself; a refresh that
+    /// only failed for now does not move it.
+    func testSurvivingAddressRegistersAsItselfWhenTheHolderHasNoCredential() async throws {
+        let h = try await makeHarness()
+        // The second address's access token lapses ten seconds after
+        // sign-in, long enough to link, and its server refuses the refresh:
+        // its session stays saved under the same owner, with no credential
+        // to send. A refresh that fails before then keeps the token.
+        func segment(_ json: String) -> String {
+            Data(json.utf8).base64EncodedString().replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        }
+        let issued = Int(Date().timeIntervalSince1970)
+        let lapsing = segment(#"{"alg":"HS256"}"#) + "." + segment(#"{"exp":\#(issued + 10),"iat":\#(issued)}"#) + ".sig"
+        let registrar = try await joinSecondAddress(h, accessToken: lapsing)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        while !MediaAccessTokenExpiry.isExpired(lapsing, now: Date()) {
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        await h.tokens.switchActiveServer(serverId: Self.serverID)
+        await h.tokens.setServerUrl(Self.serverURL)
+        let sent = h.server.registrations.count
+
+        // A refresh the server could not answer (503) leaves the
+        // installation with the second address.
+        await registrar.registerSavedServers(Self.body(token: Self.tokenB), among: [Self.serverID], skipping: nil)
+        XCTAssertEqual(h.server.registrations.count, sent)
+
+        h.server.refuseRefresh(host: "other.example")
+        await registrar.registerSavedServers(Self.body(token: Self.tokenB), among: [Self.serverID], skipping: nil)
+
+        let registration = try XCTUnwrap(h.server.registrations.last)
+        XCTAssertEqual(registration.url?.host, "silo.example")
+        XCTAssertEqual(registration.header("X-Push-Installation-Key"), key)
+    }
+
     /// Two addresses that registered before either could prove it each hold
     /// a target, and pushes for that server fall back to generic text. The
     /// first address's next renewal is refused for the other's key; once
@@ -735,12 +813,13 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     /// Registers the first address, signs in to the second, and registers it
     /// through a key mismatch the first address's session list resolves. The
     /// second address's session is on the first address's second page.
-    private func joinSecondAddress(_ h: Harness) async throws -> ApplePushRegistrar {
+    private func joinSecondAddress(_ h: Harness, accessToken: String = "second-access") async throws
+        -> ApplePushRegistrar {
         h.server.setCapability(Self.resetCapability)
         let registrar = h.registrar(savedServerIdentity: "deployment-a")
         let first = try await h.owner()
         _ = await registrar.register(Self.body(), owner: first)
-        try await h.signInToSecondAddress()
+        try await h.signInToSecondAddress(accessToken: accessToken)
         let second = try await h.owner()
         h.server.setSessions(host: "other.example", current: "session-2", pages: [["session-2"]])
         h.server.setSessions(host: "silo.example", current: "session-1", pages: [["session-1"], ["session-2"]])
