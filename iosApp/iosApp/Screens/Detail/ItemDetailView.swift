@@ -1110,7 +1110,9 @@ private struct ItemDetailPhoneContent: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
+        // A remembered pick of a track the server can't deliver falls back
+        // to Auto: starting on it would be refused.
+        let available = version.subtitleTracks?.filter { !$0.hasUnsupportedFormat }.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 
@@ -1124,7 +1126,9 @@ private struct ItemDetailPhoneContent: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
+        // A remembered pick of a track the server can't deliver falls back
+        // to Auto: starting on it would be refused.
+        let available = version.subtitleTracks?.filter { !$0.hasUnsupportedFormat }.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 

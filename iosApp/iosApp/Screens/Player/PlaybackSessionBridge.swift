@@ -1005,7 +1005,16 @@ actor PlaybackSessionBridge {
         trackSignature: SubtitleTrackSignature?,
         currentAudioLanguage: String?
     ) -> InitialProtocolV3SubtitleIntent {
+        // An explicit pick of a track the server can't deliver, such as a
+        // choice saved before the pickers disabled it, would refuse the whole
+        // start. Start without subtitles instead.
+        let none = InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: nil)
         if let explicitCombinedIndex {
+            let candidates = SubtitleTrackCandidates.playerTracks(from: version.subtitleTracks ?? [])
+            if candidates.indices.contains(explicitCombinedIndex),
+               candidates[explicitCombinedIndex].hasUnsupportedFormat {
+                return none
+            }
             return InitialProtocolV3SubtitleIntent(
                 ffmpegStreamIndex: explicitFFmpegIndex.flatMap { $0 >= 0 ? $0 : nil },
                 combinedIndex: explicitCombinedIndex >= 0 ? explicitCombinedIndex : nil
@@ -1013,7 +1022,12 @@ actor PlaybackSessionBridge {
         }
         if let explicitFFmpegIndex {
             guard explicitFFmpegIndex >= 0 else {
-                return InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: nil)
+                return none
+            }
+            if (version.subtitleTracks ?? []).contains(where: {
+                $0.external != true && $0.selectionIndex == explicitFFmpegIndex && $0.hasUnsupportedFormat
+            }) {
+                return none
             }
             let embeddedCombinedIndex = ApplePlaybackV3PlanAdapter.serverCombinedSubtitleIndex(
                 ffmpegStreamIndex: explicitFFmpegIndex,
@@ -1061,9 +1075,11 @@ actor PlaybackSessionBridge {
         case .noChange:
             // "Leave the player alone" means its demuxer keeps the media's
             // default track; the sidecar route also promotes a forced track.
-            // Freeze that deterministic choice into the plan up front.
-            selected = candidates.first(where: { $0.isDefault })
-                ?? candidates.first(where: { $0.isForced })
+            // Freeze that deterministic choice into the plan up front. A
+            // track the server can't deliver would refuse the whole start.
+            let deliverable = candidates.filter { !$0.hasUnsupportedFormat }
+            selected = deliverable.first(where: { $0.isDefault })
+                ?? deliverable.first(where: { $0.isForced })
         }
         guard let selected else {
             return InitialProtocolV3SubtitleIntent(ffmpegStreamIndex: nil, combinedIndex: nil)
