@@ -212,31 +212,6 @@ struct ApplePushInstallationJournal: Sendable {
         guard keychain.delete(Self.linkAccount(for: serverID)) else { throw JournalError.writeFailed }
     }
 
-    /// Hands the record `owner` holds to the saved servers in `candidates`
-    /// linked to it when `owner` now reports `identity`, a deployment other
-    /// than the one they were proven to reach. The first such server takes
-    /// the record, the others linked for the same deployment follow it, and
-    /// `owner` starts over with a record of its own, so a different server
-    /// later saved at its address never gets their key.
-    func handOver(recordOf owner: String, unlessProvenFor identity: String, among candidates: [String]) throws {
-        guard try storedLink(of: owner) == nil else { return }
-        let linked = try candidates.compactMap { id -> (id: String, link: Link)? in
-            guard let link = try storedLink(of: id), link.recordOwner == owner else { return nil }
-            return (id, link)
-        }
-        guard let heir = linked.first(where: { $0.link.provenServerID != identity }),
-              let raw = try keychain.getChecked(Self.account(for: owner)) else { return }
-        guard keychain.set(raw, for: Self.account(for: heir.id)) else { throw JournalError.writeFailed }
-        guard keychain.delete(Self.linkAccount(for: heir.id)) else { throw JournalError.writeFailed }
-        for other in linked where other.id != heir.id && other.link.provenServerID == heir.link.provenServerID {
-            let data = try JSONEncoder().encode(Link(recordOwner: heir.id, provenServerID: other.link.provenServerID))
-            guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.linkAccount(for: other.id)) else {
-                throw JournalError.writeFailed
-            }
-        }
-        guard keychain.delete(Self.account(for: owner)) else { throw JournalError.writeFailed }
-    }
-
     /// Makes `serverID` share `other`'s record from now on, after the two
     /// were proven to reach one deployment (`sharesBackend`). The server
     /// keys an installation by device ID, so one deployment holds one
@@ -244,27 +219,51 @@ struct ApplePushInstallationJournal: Sendable {
     /// only one key can prove it. `serverID`'s own record, whose key the
     /// server does not hold, is deleted; the owners both records know are
     /// kept in the shared one, so either address can register again as
-    /// itself once the other leaves. A link is kept like a record: it
-    /// outlives sign-out and removal, until the address reports another
-    /// deployment (`dropLink`).
+    /// itself once the other leaves.
+    ///
+    /// A shared record sits in a Keychain item of its own that no address
+    /// owns: the first time `other`'s record is shared, it moves there and
+    /// `other` is linked to it as well. Every address sharing a record
+    /// therefore holds a link, and one that later reports another
+    /// deployment ends only its own (`dropLink`); the record stays with the
+    /// others. A link is kept like a record: it outlives sign-out and
+    /// removal.
     func link(_ serverID: String, toRecordOf other: String, provenFor identity: String) throws {
-        let target = try recordOwner(for: other)
-        guard target != serverID else { return }
-        if var shared = try load(serverID: target) {
-            let own = try load(serverID: serverID)
-            var owners = shared.owners ?? [:]
-            for record in [shared, own].compactMap({ $0 }) {
-                for (id, owner) in record.owners ?? [:] { owners[id] = owner }
-                if let latest = record.latest { owners[latest.intent.owner.serverID] = latest.intent.owner }
-            }
-            shared.owners = owners
+        var target = try recordOwner(for: other)
+        guard try recordOwner(for: serverID) != target, var shared = try load(serverID: other) else { return }
+        let own = try load(serverID: serverID)
+        var owners = shared.owners ?? [:]
+        for record in [shared, own].compactMap({ $0 }) {
+            for (id, owner) in record.owners ?? [:] { owners[id] = owner }
+            if let latest = record.latest { owners[latest.intent.owner.serverID] = latest.intent.owner }
+        }
+        shared.owners = owners
+        // Written before any link names it, and the address slots are
+        // deleted last, so an interrupted link leaves every address with a
+        // record whose key it already held.
+        var vacated: String?
+        if !target.hasPrefix(Self.sharedRecordPrefix) {
+            vacated = target
+            target = Self.sharedRecordPrefix + UUID().uuidString
+            try save(shared, serverID: target)
+            try writeLink(other, to: target, provenFor: identity)
+        } else {
             try save(shared, serverID: target)
         }
-        let data = try JSONEncoder().encode(Link(recordOwner: target, provenServerID: identity))
+        try writeLink(serverID, to: target, provenFor: identity)
+        keychain.delete(Self.account(for: serverID))
+        if let vacated { keychain.delete(Self.account(for: vacated)) }
+    }
+
+    /// The prefix of a shared record's Keychain item, which no registry id
+    /// (base64url of an address) can start with.
+    static let sharedRecordPrefix = "shared-"
+
+    private func writeLink(_ serverID: String, to record: String, provenFor identity: String) throws {
+        let data = try JSONEncoder().encode(Link(recordOwner: record, provenServerID: identity))
         guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.linkAccount(for: serverID)) else {
             throw JournalError.writeFailed
         }
-        keychain.delete(Self.account(for: serverID))
     }
 
     /// The stored record, `nil` only when no record exists for `serverID`.

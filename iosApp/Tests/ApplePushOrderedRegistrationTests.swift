@@ -629,7 +629,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     /// Once the second address reports another server, its link ends, but
     /// the first address's record still names it as the last to register.
     /// Removing the first address then retires the installation with its
-    /// own key rather than leaving it to an address that left.
+    /// own key rather than leaving it to an address that left, and a
+    /// removal that did not happen turns it back on as the first address.
     func testRemovingTheFirstAddressAfterTheSecondLeftTheServerRetiresIt() async throws {
         let h = try await makeHarness()
         let registrar = try await joinSecondAddress(h)
@@ -643,12 +644,19 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let retirement = try XCTUnwrap(h.server.retirements.last)
         XCTAssertEqual(retirement.url?.host, "silo.example")
         XCTAssertEqual(retirement.header("X-Push-Installation-Key"), key)
+
+        let restored = await registrar.restore(serverID: Self.serverID)
+
+        XCTAssertEqual(restored, Self.accepted)
+        let registration = try XCTUnwrap(h.server.registrations.last)
+        XCTAssertEqual(registration.url?.host, "silo.example")
+        XCTAssertEqual(registration.header("X-Push-Installation-Key"), key)
     }
 
-    /// When the address that owns the shared record later reports another
-    /// server, the address linked to it keeps the record, its key and its
-    /// display target, and the first address starts over with its own key.
-    func testRecordOwnerReportingAnotherDeploymentHandsTheRecordToTheOtherAddress() async throws {
+    /// When the first address later reports another server, the second
+    /// keeps the shared record, its key and its display target, and goes on
+    /// registering with that key; the first starts over with its own key.
+    func testFirstAddressReportingAnotherDeploymentLeavesTheSharedRecordToTheSecond() async throws {
         let h = try await makeHarness()
         let registrar = try await joinSecondAddress(h)
         let shared = try XCTUnwrap(h.journal.load(serverID: Self.otherServerID))
@@ -665,6 +673,12 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertFalse(after.contains { $0.header("X-Push-Installation-Key") == shared.installationKey })
         XCTAssertEqual(try h.journal.load(serverID: Self.otherServerID), shared)
         XCTAssertTrue(h.targets.targets().map(\.registryServerID).contains(Self.otherServerID))
+
+        await registrar.registerSavedServers(Self.body(token: Self.tokenB), among: [Self.otherServerID], skipping: nil)
+
+        let second = try XCTUnwrap(h.server.registrations.last)
+        XCTAssertEqual(second.url?.host, "other.example")
+        XCTAssertEqual(second.header("X-Push-Installation-Key"), shared.installationKey)
     }
 
     /// Two addresses that registered before either could prove it each hold
