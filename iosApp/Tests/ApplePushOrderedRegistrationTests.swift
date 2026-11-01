@@ -232,7 +232,8 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                        savedServerIDs: [String] = [ApplePushOrderedRegistrationTests.serverID,
                                                    ApplePushOrderedRegistrationTests.otherServerID],
                        retirementBudget: Duration = .seconds(2),
-                       beforeIdentityLookup: @escaping @Sendable () async -> Void = {}) -> ApplePushRegistrar {
+                       beforeIdentityLookup: @escaping @Sendable () async -> Void = {},
+                       beforeSavedServerIDs: @escaping @Sendable () async -> Void = {}) -> ApplePushRegistrar {
             let now: @Sendable () -> Date = clock.map { clock in { clock.now } } ?? { Date() }
             let session = server.handler.makeSession()
             let retirements = ApplePushRetirementQueue(store: retirementStore, journal: journal, now: now) {
@@ -246,7 +247,10 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                     await beforeIdentityLookup()
                     return identities.identity(of: serverID) ?? savedServerIdentity
                 },
-                savedServerIDs: { savedServerIDs },
+                savedServerIDs: {
+                    await beforeSavedServerIDs()
+                    return savedServerIDs
+                },
                 retirements: retirements,
                 retirementBudget: retirementBudget, now: now)
         }
@@ -967,6 +971,64 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertFalse(moved.contains { $0.header("X-Push-Installation-Key") == key })
         XCTAssertNotEqual(try h.journal.load(serverID: Self.otherServerID)?.installationKey, key)
         XCTAssertEqual(try h.record()?.installationKey, key)
+    }
+
+    /// The moved address's registration was answered after maintenance for
+    /// the other address unlinked it. The late answer does not bring back
+    /// its target for the server it left, so that server keeps one target.
+    func testLateAnswerAfterTheLinkEndedStoresNoTarget() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        let second = try await h.owner()
+        let gate = StubURLProtocol.Gate()
+        h.server.enqueue(.gated(gate))
+        let pending = Task { await registrar.register(Self.body(token: Self.tokenB), owner: second) }
+        while await gate.waiterCount == 0 { await Task.yield() }
+        h.identities.set("deployment-z", for: Self.otherServerID)
+        let maintenance = Task {
+            await registrar.registerSavedServers(Self.body(), among: [Self.serverID], skipping: nil)
+        }
+        while try h.journal.recordSlot(for: Self.otherServerID) != Self.otherServerID { await Task.yield() }
+
+        await gate.open()
+        _ = await pending.value
+        await maintenance.value
+
+        XCTAssertEqual(h.targets.targets().map(\.registryServerID), [Self.serverID])
+    }
+
+    /// The holder's removal falls back to an `off` after an unanswered
+    /// retirement, while the other address is registering the shared
+    /// installation. Once that registration ends the teardown, the `off`
+    /// still waiting for its turn is not sent.
+    func testFallbackOffWaitingForItsTurnYieldsToTheOtherAddress() async throws {
+        let h = try await makeHarness()
+        _ = try await joinSecondAddress(h)
+        let firstOwner = try XCTUnwrap(h.record()?.owners?[Self.serverID])
+        let holder = try await h.owner()
+        let lookup = StubURLProtocol.Gate()
+        let pause = Pause()
+        let registrar = h.registrar(savedServerIdentity: "deployment-a", beforeSavedServerIDs: {
+            if pause.isOn { await lookup.wait() }
+        })
+        let retirementGate = StubURLProtocol.Gate()
+        h.server.enqueueRetirement(.gated(retirementGate, status: 503))
+        let sent = h.server.handler.requests.count
+        let removal = Task { await registrar.unregister(serverID: Self.otherServerID, activeOwner: holder) }
+        while h.server.retirements.isEmpty { await Task.yield() }
+        pause.isOn = true
+        let taking = Task { await registrar.register(Self.body(token: Self.tokenB), savedServer: firstOwner) }
+        while await lookup.waiterCount == 0 { await Task.yield() }
+        pause.isOn = false
+        await retirementGate.open()
+        try await Task.sleep(for: .milliseconds(300))
+
+        await lookup.open()
+        let taken = await taking.value
+        _ = await removal.value
+
+        XCTAssertEqual(taken, Self.accepted)
+        XCTAssertFalse(h.server.handler.requests.dropFirst(sent).contains { Self.pushMode(of: $0) == "off" })
     }
 
     private static func pushMode(of request: StubURLProtocol.Request) -> String? {

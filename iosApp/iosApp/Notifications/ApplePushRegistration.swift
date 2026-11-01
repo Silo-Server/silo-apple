@@ -408,7 +408,7 @@ actor ApplePushRegistrar {
         }
         guard let channel else { return .notSent(reason: "server_url") }
         let off = Self.body(latest.intent.body, pushMode: ApplePushRegistrationWire.offPushMode)
-        let result = await register(off, through: channel, ahead: true)
+        let result = await register(off, through: channel, ahead: true, teardown: teardown)
         if case .registered = result {
             // The receipt names `off`, so the server has stopped pushing.
             await retirements.cancel(serverID: serverID, reason: "turned_off")
@@ -496,10 +496,16 @@ actor ApplePushRegistrar {
         )
     }
 
+    /// `teardown` is the `unregister` a fallback `off` belongs to; it is not
+    /// sent once a `restore` or another registration ended that teardown
+    /// while it waited for its turn.
     private func register(_ body: APIv2ApplePushRegistrationBody, through channel: ApplePushRegistrationChannel,
-                          ahead: Bool = false) async -> Result {
+                          ahead: Bool = false, teardown: UUID? = nil) async -> Result {
         await waitForTurn(ahead: ahead)
         defer { finishTurn() }
+        if let teardown, teardowns[channel.owner.serverID] != teardown {
+            return .notSent(reason: "teardown_ended")
+        }
         if body.pushMode != ApplePushRegistrationWire.offPushMode, isDeparting(channel.owner) {
             return .notSent(reason: "departing")
         }
@@ -597,6 +603,9 @@ actor ApplePushRegistrar {
             }
         }
 
+        // The address was unlinked while this waited: its record's key is
+        // not sent.
+        guard resolves(serverID, to: slot) else { return .notSent(reason: Self.linkChangedReason) }
         let receipt: APIv2ApplePushRegistrationReceipt
         do {
             receipt = try await channel.send(command.intent.body, command.installationKey, command.generation)
@@ -608,8 +617,8 @@ actor ApplePushRegistrar {
             // renewal leaves the installation to it.
             if mayShareRecord, command.intent.body.pushMode != ApplePushRegistrationWire.offPushMode,
                Self.isInstallationKeyMismatch(error), let shared = await shareProvenRecord(for: channel) {
-                return await registerShared(command, in: shared, body: body, through: channel,
-                                            mayResetInstallation: mayResetInstallation)
+                return await registerShared(command, in: shared.record, slot: shared.slot, body: body,
+                                            through: channel, mayResetInstallation: mayResetInstallation)
             }
             // A renewal replays an intent this key had accepted, so a
             // mismatch there means another record on this device (the same
@@ -661,8 +670,14 @@ actor ApplePushRegistrar {
         // address sharing this record no longer has a registration of its own.
         let aliases = await otherAddressesSharingRecord(with: serverID)
         let displayTargets = self.displayTargets
+        let journal = self.journal
         do {
             try await channel.commit { [target] in
+                // An address unlinked while the answer was in flight has
+                // left the deployment that minted this token.
+                guard try journal.recordSlot(for: serverID) == slot else {
+                    throw ApplePushInstallationJournal.JournalError.linkChanged
+                }
                 if let target {
                     displayTargets.save(target)
                 } else {
@@ -673,7 +688,7 @@ actor ApplePushRegistrar {
                 }
             }
         } catch {
-            Self.logger.info("Discarding Apple push display token: owner changed while in flight")
+            Self.logger.info("Discarding Apple push display token: owner or link changed while in flight")
         }
         held[serverID] = registration.isActive && receipt.displayToken == nil
             ? (command.generation, now()) : nil
@@ -683,9 +698,11 @@ actor ApplePushRegistrar {
 
     /// Links `channel`'s saved server to the record of another saved server
     /// that reports the same deployment identity and proves it
-    /// (`sharesBackend`), and returns the shared record. `nil` when no saved
+    /// (`sharesBackend`), and returns the shared record and its slot, read
+    /// together before anything else can unlink it. `nil` when no saved
     /// server proves it; the reported identity alone never links.
-    private func shareProvenRecord(for channel: ApplePushRegistrationChannel) async -> ApplePushInstallationRecord? {
+    private func shareProvenRecord(for channel: ApplePushRegistrationChannel) async
+        -> (record: ApplePushInstallationRecord, slot: String)? {
         let serverID = channel.owner.serverID
         guard let identity = ServerIdentity.usable(await savedServerIdentity(serverID)),
               let own = try? journal.recordSlot(for: serverID) else { return nil }
@@ -701,6 +718,7 @@ actor ApplePushRegistrar {
             do {
                 try journal.link(serverID, toRecordOf: candidate, provenFor: identity)
                 guard let record = try journal.load(serverID: serverID) else { return nil }
+                let slot = try journal.recordSlot(for: serverID)
                 // A retirement queued for the replaced record must not be
                 // sent with the shared record's key.
                 await retirements.cancel(serverID: serverID, reason: "record_shared")
@@ -708,7 +726,7 @@ actor ApplePushRegistrar {
                 // the shared record may reach with a different intent.
                 held[serverID] = nil
                 Self.logger.info("Apple push installation record shared with another address of the same server")
-                return record
+                return (record, slot)
             } catch {
                 Self.logger.error("Could not share the Apple push installation record: \(String(describing: error), privacy: .public)")
                 return nil
@@ -722,7 +740,8 @@ actor ApplePushRegistrar {
     /// a renewal not at all, since the address that registered last holds
     /// the installation, and this address's display target goes.
     private func registerShared(_ command: ApplePushRegistrationCommand, in shared: ApplePushInstallationRecord,
-                                body: APIv2ApplePushRegistrationBody, through channel: ApplePushRegistrationChannel,
+                                slot: String, body: APIv2ApplePushRegistrationBody,
+                                through channel: ApplePushRegistrationChannel,
                                 mayResetInstallation: Bool) async -> Result {
         let serverID = channel.owner.serverID
         if command.isRenewal {
@@ -731,10 +750,8 @@ actor ApplePushRegistrar {
             return .unchanged
         }
         let planned: (record: ApplePushInstallationRecord, command: ApplePushRegistrationCommand?, allocated: Bool)
-        let slot: String
         do {
             planned = try ApplePushInstallationJournal.plan(shared, desired: command.intent, renewDisplayToken: false)
-            slot = try journal.recordSlot(for: serverID)
         } catch {
             return .notSent(reason: "journal_\(error)")
         }
@@ -760,6 +777,12 @@ actor ApplePushRegistrar {
             Self.logger.error("Could not unlink the Apple push installation record: \(String(describing: error), privacy: .public)")
             return false
         }
+    }
+
+    /// Whether `serverID` still resolves to the Keychain slot a command was
+    /// planned from.
+    private func resolves(_ serverID: String, to slot: String) -> Bool {
+        (try? journal.recordSlot(for: serverID)) == slot
     }
 
     /// Whether `other` and `serverID` share one record.
@@ -815,6 +838,7 @@ actor ApplePushRegistrar {
                                    through channel: ApplePushRegistrationChannel) async -> Result {
         let serverID = channel.owner.serverID
         let mismatch = "http_403_\(Self.installationKeyMismatch)"
+        guard resolves(serverID, to: slot) else { return .notSent(reason: Self.linkChangedReason) }
         do {
             let receipt = try await channel.reset(command.intent.body.deviceId, command.installationKey)
             Self.logger.info("Apple push installation reset after a key mismatch: generation=\(command.generation, privacy: .public) reset=\(receipt.reset, privacy: .public)")
@@ -936,6 +960,9 @@ actor ApplePushRegistrar {
     /// `notSent` reason for an address whose stale link to a shared record
     /// could not be removed.
     static let unlinkFailedReason = "journal_unlink"
+    /// `notSent` reason for a command planned from a record its address
+    /// was unlinked from while it waited.
+    static let linkChangedReason = "journal_link_changed"
 
     /// The server's owner-only 403: this account owns the installation, but
     /// it is bound to another key.
