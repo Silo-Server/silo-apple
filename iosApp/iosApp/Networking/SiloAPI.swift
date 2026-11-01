@@ -24,9 +24,11 @@ actor SiloAPI {
     private let imageSizeCapability: ImageSizeCapability?
     /// Test seam for row sizes; production reads `SectionItemLimitSupport.shared`.
     private let sectionItemLimitSupport: SectionItemLimitSupport?
-    /// Whether the server at `serverUrl` advertised `box_sets`, so movie
-    /// pages do not reread the search capabilities on every visit.
-    private var boxSetSupport: (serverUrl: String, supported: Bool)?
+    /// Servers (`RefreshAccountIdentity.serverId`) that advertised
+    /// `box_sets`, so movie pages do not reread the search capabilities on
+    /// every visit. Only a yes is kept: a server upgraded to box sets while
+    /// the app runs shows its rows on the next movie page.
+    private var boxSetServerIds: Set<String> = []
 
     init(
         http: HTTPClient = .shared,
@@ -385,7 +387,10 @@ actor SiloAPI {
     /// offers none. Any other failure throws: a server that timed out or
     /// refused the credentials has not said what it supports.
     func catalogSearchFeatures() async throws -> CatalogSearchFeatures {
-        let auth = try await detailReadAuth()
+        try await catalogSearchFeatures(auth: detailReadAuth())
+    }
+
+    private func catalogSearchFeatures(auth: CapturedOrdinaryRequestAuth) async throws -> CatalogSearchFeatures {
         do {
             return CatalogSearchFeatures(try await apiV2Client.catalogSearchCapabilities(auth: auth))
         } catch let error as APIv2Error {
@@ -421,8 +426,8 @@ actor SiloAPI {
     /// sees, and without a request when the server does not advertise
     /// `box_sets`.
     func itemBoxSet(contentId: String, libraryId: Int?) async throws -> CatalogBoxSetDetail? {
-        guard try await serverHasBoxSets() else { return nil }
         let auth = try await detailReadAuth()
+        guard try await serverHasBoxSets(auth) else { return nil }
         let detail: CatalogBoxSetDetail?
         do {
             detail = try await apiV2Client.catalogItemBoxSet(
@@ -441,13 +446,15 @@ actor SiloAPI {
         return detail
     }
 
-    /// The `box_sets` search capability, kept per server once read. A failed
-    /// read is not kept, so the next movie page asks again.
-    private func serverHasBoxSets() async throws -> Bool {
-        let serverUrl = await tokenStore.getServerUrl()
-        if let boxSetSupport, boxSetSupport.serverUrl == serverUrl { return boxSetSupport.supported }
-        let supported = try await catalogSearchFeatures().boxSets
-        boxSetSupport = (serverUrl, supported)
+    /// The `box_sets` search capability of `auth`'s server, read with that
+    /// same auth so a server switch mid-read cannot file one server's answer
+    /// under another. Kept once the server says yes.
+    private func serverHasBoxSets(_ auth: CapturedOrdinaryRequestAuth) async throws -> Bool {
+        let serverId = auth.account.serverId
+        if boxSetServerIds.contains(serverId) { return true }
+        let supported = try await catalogSearchFeatures(auth: auth).boxSets
+        try await requireCurrentOwner(auth)
+        if supported { boxSetServerIds.insert(serverId) }
         return supported
     }
 

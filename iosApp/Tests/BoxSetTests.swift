@@ -126,6 +126,28 @@ final class BoxSetTests: XCTestCase {
         XCTAssertNil(stub.requests.last { $0.path == path }?.query["library_id"])
     }
 
+    /// A server without `box_sets` gets no box set read, and is asked again
+    /// on the next movie page, so one upgraded while the app runs shows its
+    /// rows without a relaunch. Once it says yes, the answer is kept.
+    func testMoviePageAsksAgainUntilTheServerAdvertisesBoxSets() async throws {
+        let api = try await api()
+        let capabilities = "/api/v2/catalog/search/capabilities"
+        stub.sequence(path: capabilities, [
+            .json(200, #"{"revision":"r","state":"available","allowed":true}"#),
+            .json(200, #"{"revision":"r","state":"available","allowed":true,"box_sets":true}"#),
+        ])
+        let path = "/api/v2/catalog/items/hp3/box-set"
+        stub.reply(path: path, 200, "{}")
+
+        _ = try await api.itemBoxSet(contentId: "hp3", libraryId: 1)
+        XCTAssertFalse(stub.requestedPaths.contains(path), "a server without box sets is not asked for one")
+
+        _ = try await api.itemBoxSet(contentId: "hp3", libraryId: 1)
+        _ = try await api.itemBoxSet(contentId: "hp3", libraryId: 1)
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == capabilities }.count, 2)
+        XCTAssertEqual(stub.requestedPaths.filter { $0 == path }.count, 2)
+    }
+
     func testNextMovieStartsOverOnceEveryMovieIsPlayed() {
         let set = CatalogBoxSet(id: "1", libraryId: "1", title: "Trilogy", movieCount: 2, playedCount: 2)
         let detail = CatalogBoxSetDetail(boxSet: set, items: [
