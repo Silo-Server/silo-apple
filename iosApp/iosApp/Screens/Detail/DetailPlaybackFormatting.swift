@@ -260,8 +260,10 @@ enum DetailPlaybackFormatting {
         if SubtitleMode(rawValue: mode ?? "") == .off {
             return showForced ? nil : -1
         }
+        // The player's resolver never restores a track the server can't
+        // deliver, so the selector doesn't show one either.
         if let signature,
-           let tracks = version?.subtitleTracks,
+           let tracks = version?.subtitleTracks?.filter({ !$0.hasUnsupportedFormat }),
            let match = bestSignatureMatch(signature, in: tracks) {
             return match.selectionIndex
         }

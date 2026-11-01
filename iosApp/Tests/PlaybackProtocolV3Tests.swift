@@ -634,6 +634,56 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertNil(after(nil))
     }
 
+    /// Subtitle picks queued behind a replan go back, if refused, to what
+    /// the server is actually playing, and save the preference of that pick.
+    func testARefusedQueuedSubtitlePickGoesBackToWhatThePlanPlays() {
+        typealias Change = PlayerViewModel.QueuedProtocolV3TrackChange
+        typealias Pick = PlayerViewModel.ReplannedSubtitlePick
+        func rollback(_ id: Int64?) -> PlayerViewModel.SubtitleSelectionRollback {
+            .init(selectedSubtitleId: id, selectedSecondarySubtitleId: nil, pendingSubtitleFfIndex: nil,
+                  pendingSidecarSubtitleTrackId: nil, pendingServerRenderedSubtitleTrackId: nil,
+                  hasExplicitSubtitleChoice: true, subtitlePickedDuringPlayback: true)
+        }
+        func write(_ key: String) -> PlayerViewModel.SubtitlePreferenceWrite {
+            .init(prefKey: key, request: TrackSelectionPersistence.subtitleOffRequest())
+        }
+        // The viewer was on track 1, then picked A (2) and B (3) while A's
+        // replan was out.
+        let a = Pick(generation: 1, rollback: rollback(1), preference: write("a"))
+        let b = Pick(generation: 2, rollback: rollback(2), preference: write("b"))
+
+        // A adopted: B's refusal goes back to A and saves A.
+        let afterAdopted = PlayerViewModel.queuedSubtitlePick(b, after: a, adopted: true)
+        XCTAssertEqual(afterAdopted.rollback.selectedSubtitleId, 2)
+        XCTAssertEqual(afterAdopted.rollbackPreference?.prefKey, "a")
+
+        // A refused: B's refusal goes back to track 1, which still plays.
+        let afterRefused = PlayerViewModel.queuedSubtitlePick(b, after: a, adopted: false)
+        XCTAssertEqual(afterRefused.rollback.selectedSubtitleId, 1)
+        XCTAssertNil(afterRefused.rollbackPreference)
+
+        // B queued, then replaced by C before it ran: C goes back to what B
+        // would have.
+        let queuedB = Change(classification: "subtitle_track_changed", message: "",
+                             target: .subtitle(trackId: 3, combinedIndex: 3), subtitlePick: afterAdopted)
+        let c = PlayerViewModel.subtitlePick(
+            Pick(generation: 3, rollback: rollback(3), preference: write("c")), queuedOver: queuedB)
+        XCTAssertEqual(c.rollback.selectedSubtitleId, 2)
+        XCTAssertEqual(c.rollbackPreference?.prefKey, "a")
+
+        // A subtitle pick that replaced a queued audio pick carries it, so a
+        // refusal still asks for that audio.
+        let queuedAudio = Change(classification: "audio_track_changed", message: "",
+                                 target: .audio(trackId: 9, selectionIndex: 1))
+        let overAudio = PlayerViewModel.subtitlePick(b, queuedOver: queuedAudio)
+        guard case .audio(let trackId, let selectionIndex)? = overAudio.replacedAudioPick else {
+            return XCTFail("the replaced audio pick was dropped")
+        }
+        XCTAssertEqual(trackId, 9)
+        XCTAssertEqual(selectionIndex, 1)
+        XCTAssertEqual(overAudio.rollback.selectedSubtitleId, 2)
+    }
+
     func testNativePickerIdentityRemainsResolvableForSecondaryAfterPrimaryClears() throws {
         let nativePlan = makePlan(
             container: "mkv", selectedSubtitleIndex: 7, subtitleMode: "render",

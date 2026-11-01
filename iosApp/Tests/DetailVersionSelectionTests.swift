@@ -754,6 +754,15 @@ final class DetailVersionSelectionTests: XCTestCase {
             XCTAssertNil(explicit.ffmpegStreamIndex)
             XCTAssertNil(explicit.combinedIndex)
         }
+        // A remembered pick of it doesn't seed the selector with it.
+        XCTAssertNotEqual(
+            DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                version: version,
+                signature: SubtitleTrackSignature(source: "embedded", language: "eng"),
+                mode: "always", showForced: false, usesDeviceSettings: false
+            ),
+            2
+        )
     }
 
     func testSubtitleOptionsKeepEmbeddedStreamZeroSelectable() {

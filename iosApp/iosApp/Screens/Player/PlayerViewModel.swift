@@ -2664,11 +2664,60 @@ class PlayerViewModel {
 
     /// A viewer's subtitle pick that the server switches. If the server
     /// refuses the track, the selection it replaced comes back and nothing
-    /// is saved; otherwise its preference is saved once the replan settles.
+    /// is saved; otherwise its preference is saved once its plan is adopted.
     struct ReplannedSubtitlePick {
         let generation: Int
-        let rollback: SubtitleSelectionRollback
+        var rollback: SubtitleSelectionRollback
         let preference: SubtitlePreferenceWrite?
+        /// The preference of the adopted pick `rollback` goes back to, which
+        /// this newer pick kept from being saved. A refusal saves it.
+        var rollbackPreference: SubtitlePreferenceWrite? = nil
+        /// A queued audio pick this one replaced. The player already shows
+        /// it, so this pick's request carries it, and a refusal asks for it
+        /// on its own.
+        var replacedAudioPick: QueuedProtocolV3TrackTarget? = nil
+    }
+
+    /// A subtitle pick queued in place of `replaced`, which never runs. A
+    /// replaced subtitle pick never took effect, so a refusal goes back to
+    /// what that one replaced.
+    static func subtitlePick(
+        _ pick: ReplannedSubtitlePick,
+        queuedOver replaced: QueuedProtocolV3TrackChange?
+    ) -> ReplannedSubtitlePick {
+        var pick = pick
+        switch replaced?.target {
+        case .audio?:
+            pick.replacedAudioPick = replaced?.target
+        case .subtitle?:
+            guard let older = replaced?.subtitlePick else { break }
+            pick.rollback = older.rollback
+            pick.rollbackPreference = older.rollbackPreference
+            pick.replacedAudioPick = older.replacedAudioPick
+        case nil:
+            break
+        }
+        return pick
+    }
+
+    /// A queued pick once the older pick it waited behind settles. Adopted,
+    /// the older pick is what a refusal of this one goes back to, and its
+    /// preference is saved then. Otherwise the older pick never took effect,
+    /// so this one goes back to what that one replaced.
+    static func queuedSubtitlePick(
+        _ queued: ReplannedSubtitlePick,
+        after older: ReplannedSubtitlePick,
+        adopted: Bool
+    ) -> ReplannedSubtitlePick {
+        var queued = queued
+        if adopted {
+            queued.rollbackPreference = older.preference
+        } else {
+            queued.rollback = older.rollback
+            queued.rollbackPreference = older.rollbackPreference
+            queued.replacedAudioPick = queued.replacedAudioPick ?? older.replacedAudioPick
+        }
+        return queued
     }
 
     struct SubtitlePreferenceWrite {
@@ -2808,7 +2857,9 @@ class PlayerViewModel {
                     classification: classification,
                     message: message,
                     target: trackTarget,
-                    subtitlePick: subtitlePick
+                    subtitlePick: subtitlePick.map {
+                        Self.subtitlePick($0, queuedOver: pendingProtocolV3TrackChange)
+                    }
                 )
                 if targetsSubtitle { pendingProtocolV3SubtitleReport = nil }
                 return true
@@ -2952,10 +3003,12 @@ class PlayerViewModel {
             // that plan keeps playing, as the spec requires.
             var keepsCurrentPlan = false
             var adoptedBufferingPlan = false
+            // The plan now owns the session, with the subtitle it asked for.
+            var adoptedPlan = false
             var refusedSubtitlePick = false
             defer {
                 if let subtitlePick, !refusedSubtitlePick {
-                    self.saveSubtitlePreference(of: subtitlePick)
+                    self.settleSubtitlePick(subtitlePick, adopted: adoptedPlan)
                 }
                 self.protocolV3ReplanTask = nil
                 self.protocolV3ReplanIsReport = false
@@ -3147,6 +3200,7 @@ class PlayerViewModel {
                     try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
                     guard self.activeAetherLoadEpoch == priorAetherLoadEpoch else { throw CancellationError() }
                     keepsCurrentPlan = true
+                    adoptedPlan = true
                     self.adoptSameTransportProtocolV3Plan(next, selection: selection)
                     self.adoptBufferingPlan(
                         prepared,
@@ -3203,6 +3257,7 @@ class PlayerViewModel {
                 }
                 self.markProtocolV3AetherLoadCommitted()
                 uncommittedPrepared = nil
+                adoptedPlan = true
                 self.settleViewerQualityChange(qualityChange, adopted: true)
                 self.adoptBufferingPlan(
                     prepared,
@@ -3271,6 +3326,7 @@ class PlayerViewModel {
                             }
                             // The new quality now owns the session, so a
                             // viewer's switch counts as their pick.
+                            adoptedPlan = true
                             self.settleViewerQualityChange(qualityChange, adopted: true)
                             if let onMeteredNetwork = qualitySwitchOnMeteredNetwork {
                                 self.recordViewerQualityPick(
@@ -3297,9 +3353,17 @@ class PlayerViewModel {
                     // The server can't deliver the picked track. Nothing
                     // was loaded for it, so the current plan still plays.
                     refusedSubtitlePick = true
-                    self.undoRefusedSubtitlePick(subtitlePick, reason: refusal.reason)
+                    let audioPick = self.undoRefusedSubtitlePick(subtitlePick, reason: refusal.reason)
                     if !self.reconnectCycle.isActive,
                        self.activeAetherLoadEpoch == priorAetherLoadEpoch {
+                        if let audioPick, self.pendingProtocolV3TrackChange == nil {
+                            // This task's exit asks for it.
+                            self.pendingProtocolV3TrackChange = QueuedProtocolV3TrackChange(
+                                classification: "audio_track_changed",
+                                message: "User selected an audio track.",
+                                target: audioPick
+                            )
+                        }
                         keepsCurrentPlan = true
                         return
                     }
@@ -8290,21 +8354,43 @@ class PlayerViewModel {
         return SubtitlePreferenceWrite(prefKey: key, request: request)
     }
 
-    /// Saves a server-switched pick's preference unless a newer pick has
-    /// replaced it; that one saves its own.
-    private func saveSubtitlePreference(of pick: ReplannedSubtitlePick) {
-        guard pick.generation == subtitlePickGeneration, let write = pick.preference else { return }
+    /// Saves a server-switched pick's preference once its plan is adopted.
+    /// A newer pick saves its own, so one queued behind this pick learns
+    /// how it settled instead.
+    private func settleSubtitlePick(_ pick: ReplannedSubtitlePick, adopted: Bool) {
+        guard pick.generation == subtitlePickGeneration else {
+            rebaseQueuedSubtitlePick(after: pick, adopted: adopted)
+            return
+        }
+        guard adopted, let write = pick.preference else { return }
         TrackSelectionPersistence.saveSubtitle(prefKey: write.prefKey, request: write.request)
+    }
+
+    private func rebaseQueuedSubtitlePick(after older: ReplannedSubtitlePick, adopted: Bool) {
+        guard let queued = pendingProtocolV3TrackChange?.subtitlePick else { return }
+        pendingProtocolV3TrackChange?.subtitlePick = Self.queuedSubtitlePick(queued, after: older, adopted: adopted)
     }
 
     /// The server refused the track a subtitle pick asked for. The picker
     /// goes back to the selection the pick replaced, unless a newer pick has
-    /// replaced it already.
-    private func undoRefusedSubtitlePick(_ pick: ReplannedSubtitlePick?, reason: String) {
+    /// replaced it already. Returns an audio pick the refused request
+    /// carried, which still has to be asked for.
+    private func undoRefusedSubtitlePick(
+        _ pick: ReplannedSubtitlePick?,
+        reason: String
+    ) -> QueuedProtocolV3TrackTarget? {
         cmpLog("[CMP-SUB] phase=replan_refused reason=\(reason)")
-        guard let pick, pick.generation == subtitlePickGeneration else { return }
+        guard let pick else { return nil }
+        guard pick.generation == subtitlePickGeneration else {
+            rebaseQueuedSubtitlePick(after: pick, adopted: false)
+            return nil
+        }
         restoreSubtitleSelection(pick.rollback)
+        if let write = pick.rollbackPreference {
+            TrackSelectionPersistence.saveSubtitle(prefKey: write.prefKey, request: write.request)
+        }
         showUnsupportedSubtitleNotice()
+        return pick.replacedAudioPick
     }
 
     private func showUnsupportedSubtitleNotice() {
