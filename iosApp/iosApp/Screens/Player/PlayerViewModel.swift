@@ -3352,10 +3352,10 @@ class PlayerViewModel {
         }
     }
 
-    /// With no next episode, the first On Deck item is up next, so playback
-    /// carries on into what the profile is watching elsewhere instead of
-    /// stopping at the end. A failed episode lookup offers nothing: the
-    /// series may still have a next episode. Returns whether it offered one.
+    /// With no next episode, the first On Deck item is up next. It never
+    /// counts down (`nextUpPickAutoPlays`), so it plays only from Play Now.
+    /// A failed episode lookup offers nothing: the series may still have a
+    /// next episode. Returns whether it offered one.
     @discardableResult
     private func offerOnDeckItemIfNothingNext() -> Bool {
         #if os(macOS)
@@ -3627,8 +3627,7 @@ class PlayerViewModel {
         }
         if videoEnded,
            wasShowingBeforeEnd,
-           settings.autoPlayNextEpisode,
-           nextUpEpisode != nil,
+           nextUpPickAutoPlays,
            !isPickingAnotherShufflePick,
            !nextUpAutoplayCancelled {
             playNextEpisodeNow()
@@ -3637,13 +3636,20 @@ class PlayerViewModel {
         startNextUpCountdownIfNeeded()
     }
 
+    /// Auto-play is on and the pick is the next episode or a shuffle's pick.
+    /// An On Deck pick is another title the viewer didn't ask to continue
+    /// into, so it waits for Play Now.
+    private var nextUpPickAutoPlays: Bool {
+        guard settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
+        return !pick.isFromOnDeck
+    }
+
     private func startNextUpCountdownIfNeeded() {
         cancelNextUpCountdown()
         guard showNextUpScreen,
               !isStartingNextUp,
               !isPickingAnotherShufflePick,
-              settings.autoPlayNextEpisode,
-              nextUpEpisode != nil,
+              nextUpPickAutoPlays,
               !nextUpAutoplayCancelled else {
             return
         }
@@ -3677,8 +3683,7 @@ class PlayerViewModel {
               !isPickingAnotherShufflePick,
               !nextUpScreenVideoEnded,
               nextUpPresentationSource != .credits,
-              settings.autoPlayNextEpisode,
-              nextUpEpisode != nil,
+              nextUpPickAutoPlays,
               !nextUpAutoplayCancelled,
               duration.isFinite,
               duration > 0,

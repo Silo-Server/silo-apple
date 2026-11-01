@@ -222,6 +222,32 @@ final class SeriesPlaybackReturnTests: XCTestCase {
         XCTAssertEqual(returned?.seasonNumber, 3)
     }
 
+    func testUpNextCountsDownOnlyForTheNextEpisodeNotAnOnDeckPick() throws {
+        let item = try JSONDecoder().decode(SectionItem.self, from: Data(
+            #"{"contentId":"half-watched-movie","type":"movie","title":"Elsewhere"}"#.utf8
+        ))
+        for fromOnDeck in [true, false] {
+            let model = PlayerViewModel()
+            defer { model.cleanup() }
+            // PlayerSettings.shared keeps a cached value; turning it on here
+            // would queue a server write and a device override.
+            try XCTSkipUnless(model.settings.autoPlayNextEpisode, "needs auto-play on, its default")
+            model.duration = 2600
+            model.currentTime = 2550
+            var pick = PlayerNextUpEpisode(onDeckItem: PlayerOnDeckItem(item: item))
+            pick.isFromOnDeck = fromOnDeck
+            model.nextUpEpisode = pick
+            // The controls' Up Next button, 50 s from the end.
+            model.showNextUpNow()
+            XCTAssertTrue(model.showNextUpScreen)
+            if fromOnDeck {
+                XCTAssertNil(model.nextUpCountdownSeconds, "an On Deck pick waits for Play Now")
+            } else {
+                XCTAssertEqual(model.nextUpCountdownSeconds, 50, "the next episode counts down")
+            }
+        }
+    }
+
     // MARK: - Fixtures
 
     /// A Series page showing `season`. Regular seasons have two episodes each.

@@ -1597,6 +1597,8 @@ struct PlayerNextUpScreen: View {
             return viewModel.nextUpScreenVideoEnded ? "Finished" : "More To Watch"
         }
         if viewModel.shuffleState != nil { return "Up Next at Random" }
+        // An On Deck pick waits for Play Now, so it never reads as playing.
+        if viewModel.nextUpEpisode?.isFromOnDeck == true { return "Up Next" }
         return viewModel.nextUpScreenVideoEnded ? "Playing Next" : "Up Next"
     }
 
