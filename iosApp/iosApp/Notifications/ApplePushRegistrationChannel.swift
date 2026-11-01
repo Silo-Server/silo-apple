@@ -9,6 +9,8 @@ struct ApplePushRegistrationChannel: Sendable {
     let capability: @Sendable () async throws -> APIv2ApplePushCapability
     let send: @Sendable (_ body: APIv2ApplePushRegistrationBody, _ installationKey: String,
                          _ generation: Int64) async throws -> APIv2ApplePushRegistrationReceipt
+    /// `resetApplePushInstallation` with the owner's session.
+    let reset: @Sendable (_ deviceID: String, _ installationKey: String) async throws -> APIv2ApplePushResetReceipt
     /// Runs the write only while `owner` still holds the server's
     /// credentials; throws otherwise.
     let commit: @Sendable (_ write: @Sendable () throws -> Void) async throws -> Void
@@ -53,6 +55,13 @@ struct ApplePushSavedServerClient: Sendable {
                     body: APIv2Client.applePushRegistrationBody(body), headers: headers,
                     owner: owner, serverURL: serverURL)
                 return try APIv2Client.applePushReceipt(from: data, generation: generation, body: body)
+            },
+            reset: { deviceID, installationKey in
+                let data = try await send("POST", APIv2Client.applePushResetPath,
+                    body: APIv2Client.applePushResetBody(deviceID: deviceID),
+                    headers: APIv2Client.applePushResetHeaders(installationKey: installationKey),
+                    owner: owner, serverURL: serverURL)
+                return try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushResetReceipt.self, from: data)
             },
             commit: { try await tokenStore.withSavedServerAuthority(owner, operation: $0) }
         )

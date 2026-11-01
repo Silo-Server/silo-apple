@@ -1289,9 +1289,23 @@ struct APIv2Client: Sendable {
         return try Self.applePushReceipt(from: data, generation: generation, body: body)
     }
 
+    /// Clears this account's installation for `deviceID` on the server
+    /// (`resetApplePushInstallation`), after a registration was refused with
+    /// `push_installation_key_mismatch`. `installationKey` is the key the
+    /// next registration sends; the server leaves an installation already
+    /// bound to it alone, so a repeated reset is safe.
+    func resetApplePushInstallation(deviceID: String, installationKey: String,
+                                    auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushResetReceipt {
+        let data = try await applePushRequest(method: "POST", path: Self.applePushResetPath,
+            body: Self.applePushResetBody(deviceID: deviceID),
+            headers: Self.applePushResetHeaders(installationKey: installationKey), auth: auth)
+        return try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushResetReceipt.self, from: data)
+    }
+
     static let applePushCapabilityPath = "/api/v2/devices/push/apple/capabilities"
     static let applePushRegistrationPath = "/api/v2/devices/push/apple"
     static let applePushRetirementPath = "/api/v2/devices/push/apple/retire"
+    static let applePushResetPath = "/api/v2/devices/push/apple/reset"
 
     /// Its own session: a retirement goes to a server that may no longer be
     /// saved, outside `HTTPClient`'s identity gate and credentials.
@@ -1366,6 +1380,21 @@ struct APIv2Client: Sendable {
             throw ApplePushRegistrationError.invalidInstallation
         }
         return ["X-Push-Installation-Key": installationKey, "X-Push-Generation": String(generation)]
+    }
+
+    /// The reset carries the installation key and no generation.
+    static func applePushResetHeaders(installationKey: String) throws -> [String: String] {
+        guard ApplePushInstallationJournal.isInstallationKey(installationKey) else {
+            throw ApplePushRegistrationError.invalidInstallation
+        }
+        return ["X-Push-Installation-Key": installationKey]
+    }
+
+    static func applePushResetBody(deviceID: String) throws -> Data {
+        guard !deviceID.isEmpty else { throw ApplePushRegistrationError.invalidInstallation }
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        return try encoder.encode(APIv2ApplePushResetBody(deviceId: deviceID))
     }
 
     /// Sorted keys, so a replay sends the same bytes whichever server

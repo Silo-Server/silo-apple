@@ -19,6 +19,10 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     private static let capabilityPath = "/api/v2/devices/push/apple/capabilities"
     private static let registrationPath = "/api/v2/devices/push/apple"
     private static let retirementPath = "/api/v2/devices/push/apple/retire"
+    private static let resetPath = "/api/v2/devices/push/apple/reset"
+    /// A capability that offers the owner reset (`installation_reset_available`).
+    private static let resetCapability =
+        #"{"allowed":true,"registration_available":true,"installation_reset_available":true,"revision":"r1","state":"available"}"#
     private static let tokenA = String(repeating: "ab", count: 32)
     private static let tokenB = String(repeating: "cd", count: 32)
 
@@ -44,8 +48,16 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             case gated(StubURLProtocol.Gate, status: Int)
         }
 
+        /// Answers to `resetApplePushInstallation`; `nil` answers 200 with
+        /// `reset: true`.
+        enum ResetReply {
+            case reset(Bool)
+            case problem(Int, String)
+        }
+
         let handler = StubURLProtocol.Handler()
         private let lock = NSLock()
+        private var resetReplies: [ResetReply] = []
         private var capability = #"{"allowed":true,"registration_available":true,"revision":"r1","state":"available"}"#
         private var replies: [Reply] = []
         private var retirementReplies: [RetirementReply] = []
@@ -90,6 +102,15 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                     throw URLError(.networkConnectionLost)
                 }
             }
+            handler.route(StubURLProtocol.method("POST", path: ApplePushOrderedRegistrationTests.resetPath)) { [self] _ in
+                switch lock.withLock({ resetReplies.isEmpty ? ResetReply.reset(true) : resetReplies.removeFirst() }) {
+                case .reset(let cleared):
+                    return .json(#"{"reset":\#(cleared)}"#)
+                case .problem(let status, let type):
+                    return .json(#"{"type":"https://silo.example/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#,
+                        status: status, headers: ["Content-Type": "application/problem+json"])
+                }
+            }
             handler.route(StubURLProtocol.method("POST", path: ApplePushOrderedRegistrationTests.retirementPath)) { [self] request in
                 var reply = lock.withLock { retirementReplies.isEmpty ? RetirementReply.retired : retirementReplies.removeFirst() }
                 if case .gated(let gate, let status) = reply {
@@ -116,6 +137,11 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         func gateCapability(_ gate: StubURLProtocol.Gate) { lock.withLock { capabilityGate = gate } }
         func enqueue(_ reply: Reply) { lock.withLock { replies.append(reply) } }
         func enqueueRetirement(_ reply: RetirementReply) { lock.withLock { retirementReplies.append(reply) } }
+        func enqueueReset(_ reply: ResetReply) { lock.withLock { resetReplies.append(reply) } }
+
+        var resets: [StubURLProtocol.Request] {
+            handler.requests.filter { $0.method == "POST" && $0.path == ApplePushOrderedRegistrationTests.resetPath }
+        }
 
         var retirements: [StubURLProtocol.Request] {
             handler.requests.filter { $0.method == "POST" && $0.path == ApplePushOrderedRegistrationTests.retirementPath }
@@ -430,6 +456,114 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let owner = try await h.owner()
         let result = await h.registrar().register(Self.body(), owner: owner)
         XCTAssertEqual(result, .uncertain)
+        XCTAssertEqual(try h.record()?.latest?.outcome, .pending)
+    }
+
+    // MARK: - Lost installation key
+
+    /// A reinstall keeps the device ID but loses the journal, so the server
+    /// refuses the new key. Its owner resets the installation with the
+    /// current key and registers again from generation 1.
+    func testKeyMismatchResetsTheInstallationAndRegistersAgainFromGenerationOne() async throws {
+        let h = try await makeHarness()
+        h.server.setCapability(Self.resetCapability)
+        let key = try XCTUnwrap(ApplePushInstallationJournal.randomInstallationKey())
+        try h.journal.save(ApplePushInstallationRecord(installationKey: key, generation: 5, latest: nil),
+                           serverID: Self.serverID)
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        let owner = try await h.owner()
+
+        let result = await h.registrar().register(Self.body(), owner: owner)
+
+        XCTAssertEqual(result, Self.accepted)
+        XCTAssertEqual(h.server.handler.requests.map(\.path),
+                       [Self.capabilityPath, Self.registrationPath, Self.resetPath, Self.registrationPath])
+        let reset = try XCTUnwrap(h.server.resets.first)
+        XCTAssertEqual(reset.header("X-Push-Installation-Key"), key)
+        XCTAssertNil(reset.header("X-Push-Generation"))
+        XCTAssertEqual(reset.header("X-Profile-Id"), "profile-a")
+        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(reset.body)) as? [String: String])
+        XCTAssertEqual(sent, ["device_id": "device-1"])
+        let sends = h.server.registrations
+        XCTAssertEqual(sends.map { $0.header("X-Push-Generation") }, ["6", "1"])
+        XCTAssertEqual(sends.map { $0.header("X-Push-Installation-Key") }, [key, key])
+        XCTAssertEqual(try h.record()?.generation, 1)
+        XCTAssertEqual(h.targets.targets(), [Self.target()])
+    }
+
+    /// Without the server's reset, or for a refusal the reset cannot cure,
+    /// a 403 keeps today's behaviour: the intent is held, nothing is reset.
+    func testForbiddenWithoutAResetToTryHoldsTheIntent() async throws {
+        let noField = #"{"allowed":true,"registration_available":true,"revision":"r1","state":"available"}"#
+        let notOffered =
+            #"{"allowed":true,"registration_available":true,"installation_reset_available":false,"revision":"r1","state":"available"}"#
+        let cases: [(capability: String, problem: String)] = [
+            (noField, "push_installation_key_mismatch"),
+            (notOffered, "push_installation_key_mismatch"),
+            (Self.resetCapability, "permission_denied"),
+        ]
+        for (capability, problem) in cases {
+            let h = try await makeHarness()
+            h.server.setCapability(capability)
+            h.server.enqueue(.problem(403, problem))
+            let owner = try await h.owner()
+
+            let result = await h.registrar().register(Self.body(), owner: owner)
+
+            XCTAssertEqual(result, .held(reason: "http_403_\(problem)"), problem)
+            XCTAssertTrue(h.server.resets.isEmpty, problem)
+            XCTAssertEqual(h.server.registrations.count, 1, problem)
+            XCTAssertEqual(try h.record()?.latest?.outcome, .pending, problem)
+        }
+    }
+
+    /// `reset: false` means the server held nothing to clear; the
+    /// registration from generation 1 binds the key all the same.
+    func testResetThatClearedNothingStillRegistersFromGenerationOne() async throws {
+        let h = try await makeHarness()
+        h.server.setCapability(Self.resetCapability)
+        let key = try XCTUnwrap(ApplePushInstallationJournal.randomInstallationKey())
+        try h.journal.save(ApplePushInstallationRecord(installationKey: key, generation: 5, latest: nil),
+                           serverID: Self.serverID)
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        h.server.enqueueReset(.reset(false))
+        let owner = try await h.owner()
+
+        let result = await h.registrar().register(Self.body(), owner: owner)
+
+        XCTAssertEqual(result, Self.accepted)
+        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["6", "1"])
+    }
+
+    /// One reset per attempt: a registration refused again after the reset,
+    /// or a reset that fails, holds the generation like any 403, so the two
+    /// can never loop.
+    func testMismatchIsResetAtMostOncePerAttempt() async throws {
+        let h = try await makeHarness()
+        h.server.setCapability(Self.resetCapability)
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        let clock = Clock()
+        let registrar = h.registrar(clock: clock)
+        let owner = try await h.owner()
+
+        let result = await registrar.register(Self.body(), owner: owner)
+
+        XCTAssertEqual(result, .held(reason: "http_403_push_installation_key_mismatch"))
+        XCTAssertEqual(h.server.resets.count, 1)
+        XCTAssertEqual(h.server.registrations.map { $0.header("X-Push-Generation") }, ["1", "1"])
+        let held = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(held, .notSent(reason: "held"))
+
+        // A failed reset holds the generation that was refused.
+        clock.advance(by: ApplePushRegistrar.heldGenerationRetryInterval + 1)
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        h.server.enqueueReset(.problem(503, "service_unavailable"))
+        let failed = await registrar.register(Self.body(), owner: owner)
+        XCTAssertEqual(failed, .held(reason: "http_403_push_installation_key_mismatch"))
+        XCTAssertEqual(h.server.resets.count, 2)
+        XCTAssertEqual(h.server.registrations.count, 3)
+        XCTAssertEqual(try h.record()?.generation, 1)
         XCTAssertEqual(try h.record()?.latest?.outcome, .pending)
     }
 

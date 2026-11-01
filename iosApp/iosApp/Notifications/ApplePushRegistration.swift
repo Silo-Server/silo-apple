@@ -422,6 +422,7 @@ actor ApplePushRegistrar {
             serverURL: owner.request.account.serverURL,
             capability: { try await api.applePushRegistrationCapability(auth: owner.request) },
             send: { try await api.registerApplePush($0, installationKey: $1, generation: $2, auth: owner.request) },
+            reset: { try await api.resetApplePushInstallation(deviceID: $0, installationKey: $1, auth: owner.request) },
             commit: { try await tokenStore.withCurrentDurableAuthority(owner, operation: $0) }
         )
     }
@@ -457,8 +458,9 @@ actor ApplePushRegistrar {
             return .notSent(reason: "held")
         }
 
+        let capability: APIv2ApplePushCapability
         do {
-            let capability = try await channel.capability()
+            capability = try await channel.capability()
             guard capability.permitsRegistration else {
                 Self.logger.info("Ordered Apple push registration is unavailable: state=\(capability.state, privacy: .public) allowed=\(capability.allowed, privacy: .public) registration_available=\(capability.registrationAvailable, privacy: .public)")
                 return .unavailable
@@ -466,14 +468,26 @@ actor ApplePushRegistrar {
         } catch {
             return .notSent(reason: "capability_\(String(describing: error))")
         }
+        return await dispatch(command, allocating: planned.allocated ? planned.record : nil, body: body,
+                              through: channel, mayResetInstallation: capability.permitsInstallationReset)
+    }
 
+    /// Persists `allocating` (the record holding `command`'s new generation)
+    /// when given, sends `command`, and records the answer.
+    /// `mayResetInstallation` allows one owner reset after a
+    /// `push_installation_key_mismatch`, followed by a registration from
+    /// generation 1; the registration after a reset never resets again.
+    private func dispatch(_ command: ApplePushRegistrationCommand, allocating: ApplePushInstallationRecord?,
+                          body: APIv2ApplePushRegistrationBody, through channel: ApplePushRegistrationChannel,
+                          mayResetInstallation: Bool) async -> Result {
+        let intentOwner = channel.owner
+        let serverID = intentOwner.serverID
         // The generation reaches the Keychain before the request can leave
         // the device, in the same TokenStore turn as the owner check, so a
         // generation is never allocated for an owner that was already
         // replaced. If it cannot be stored, nothing is sent.
-        if planned.allocated {
+        if let allocated = allocating {
             let journal = self.journal
-            let allocated = planned.record
             do {
                 try await channel.commit {
                     try journal.save(allocated, serverID: serverID)
@@ -495,6 +509,13 @@ actor ApplePushRegistrar {
         do {
             receipt = try await channel.send(command.intent.body, command.installationKey, command.generation)
         } catch {
+            // A renewal replays an intent this key had accepted, so a
+            // mismatch there means another record on this device (the same
+            // server saved under a second address) registered since. Taking
+            // the installation back would only start a tug of war.
+            if mayResetInstallation, !command.isRenewal, Self.isInstallationKeyMismatch(error) {
+                return await resetInstallation(after: command, body: body, through: channel)
+            }
             if let reason = Self.refusalReason(error), !command.isRenewal || Self.isGenerationConflict(error) {
                 record(.refused(reason: reason), for: command, serverID: serverID)
                 Self.logger.error("Apple push registration refused: generation=\(command.generation, privacy: .public) reason=\(reason, privacy: .public) error=\(String(describing: error), privacy: .public)")
@@ -544,6 +565,36 @@ actor ApplePushRegistrar {
             ? (command.generation, now()) : nil
         Self.logger.info("Registered APNs token with Silo generation=\(command.generation, privacy: .public) renewal=\(command.isRenewal, privacy: .public) push_mode=\(body.pushMode, privacy: .public) server_device_id=\(receipt.serverDeviceId, privacy: .private) enabled=\(receipt.enabled, privacy: .public) removed=\(receipt.removed, privacy: .public) displayToken=\(target != nil, privacy: .public)")
         return .registered(registration)
+    }
+
+    /// Recovers from a lost installation key: the owner resets the
+    /// server's installation with `command`'s key, the journal starts over
+    /// with that key, and the same intent registers at generation 1. A reset
+    /// that fails holds `command`'s generation as any 403 would.
+    private func resetInstallation(after command: ApplePushRegistrationCommand, body: APIv2ApplePushRegistrationBody,
+                                   through channel: ApplePushRegistrationChannel) async -> Result {
+        let serverID = channel.owner.serverID
+        let mismatch = "http_403_\(Self.installationKeyMismatch)"
+        do {
+            let receipt = try await channel.reset(command.intent.body.deviceId, command.installationKey)
+            Self.logger.info("Apple push installation reset after a key mismatch: generation=\(command.generation, privacy: .public) reset=\(receipt.reset, privacy: .public)")
+        } catch {
+            held[serverID] = (command.generation, now())
+            Self.logger.error("Apple push installation reset failed; holding generation \(command.generation, privacy: .public): \(String(describing: error), privacy: .public)")
+            return .held(reason: mismatch)
+        }
+        let restarted: (record: ApplePushInstallationRecord, command: ApplePushRegistrationCommand?, allocated: Bool)
+        do {
+            // The same key, and no generation: the server accepts any
+            // positive generation now, and this record starts again at 1.
+            let fresh = ApplePushInstallationRecord(installationKey: command.installationKey, generation: 0, latest: nil)
+            restarted = try ApplePushInstallationJournal.plan(fresh, desired: command.intent, renewDisplayToken: false)
+        } catch {
+            return .notSent(reason: "journal_\(error)")
+        }
+        guard let retry = restarted.command else { return .notSent(reason: "journal_reset") }
+        return await dispatch(retry, allocating: restarted.record, body: body, through: channel,
+                              mayResetInstallation: false)
     }
 
     private func needsDisplayToken(owner: ApplePushIntentOwner, generation: Int64) -> Bool {
@@ -629,6 +680,15 @@ actor ApplePushRegistrar {
         default:
             return nil
         }
+    }
+
+    private static let installationKeyMismatch = "push_installation_key_mismatch"
+
+    /// The server's owner-only 403: this account owns the installation, but
+    /// it is bound to another key.
+    private static func isInstallationKeyMismatch(_ error: Error) -> Bool {
+        guard case APIv2Error.problem(let problem) = error else { return false }
+        return problem.status == 403 && problem.identifier == installationKeyMismatch
     }
 
     /// A 409: the server holds a newer generation, or another intent for this

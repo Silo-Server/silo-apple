@@ -112,15 +112,19 @@ struct ApplePushRegistrationCommand: Equatable, Sendable {
 /// The record sits in the same Keychain group, with the same accessibility,
 /// as `AppleDeviceIdentity`'s device ID, so the two are kept or lost
 /// together: a Keychain reset gives a new device ID, which the server treats
-/// as a new installation. If the record alone is lost, the server's proof
-/// check refuses every later registration for this device (403, or 409 when
-/// the generation falls behind). The contract has no recovery for that, so
-/// the client does not guess: a 409 is recorded as a refusal, a 403 holds
-/// the intent and is retried after a back-off (the server also answers 403
-/// for transient login-authority failures), an unreadable record is never
-/// overwritten and nothing is sent for that server, and the
-/// Notification Service extension falls back to the access token. Recovery
-/// needs the server to drop this device's installation.
+/// as a new installation. If the record alone is lost, or the server is
+/// saved again under another address (a new record, so a new key, for the
+/// same device ID), the server's proof check refuses every later
+/// registration for this device. A server that offers the owner reset
+/// answers its owner with 403 `push_installation_key_mismatch`; the
+/// registrar then resets the installation with the current key and
+/// registers again from generation 1, once per attempt.
+/// Otherwise the client does not guess: a 409 is recorded as a refusal, a
+/// 403 holds the intent and is retried after a back-off (the server also
+/// answers 403 for transient login-authority failures and for another
+/// account's installation), an unreadable record is never overwritten and
+/// nothing is sent for that server, and the Notification Service extension
+/// falls back to the access token.
 ///
 /// Removing a server or signing out of it deletes its credentials but not
 /// this record: the retirement that stops the server's pushes afterwards
