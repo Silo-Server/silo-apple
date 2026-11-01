@@ -171,7 +171,7 @@ struct ApplePushInstallationJournal: Sendable {
     /// when it proved it reaches that deployment.
     struct Link: Codable, Equatable, Sendable {
         let recordOwner: String
-        let serverID: String
+        let provenServerID: String
     }
 
     private func storedLink(of serverID: String) throws -> Link? {
@@ -208,7 +208,7 @@ struct ApplePushInstallationJournal: Sendable {
     /// later at that address must not get the shared key. It starts again
     /// with a record of its own.
     func dropLink(of serverID: String, unlessProvenFor identity: String) throws {
-        guard let link = try storedLink(of: serverID), link.serverID != identity else { return }
+        guard let link = try storedLink(of: serverID), link.provenServerID != identity else { return }
         guard keychain.delete(Self.linkAccount(for: serverID)) else { throw JournalError.writeFailed }
     }
 
@@ -217,13 +217,25 @@ struct ApplePushInstallationJournal: Sendable {
     /// keys an installation by device ID, so one deployment holds one
     /// installation for this device whichever address registers it, and
     /// only one key can prove it. `serverID`'s own record, whose key the
-    /// server does not hold, is deleted. A link is kept like a record: it
+    /// server does not hold, is deleted; the owners both records know are
+    /// kept in the shared one, so either address can register again as
+    /// itself once the other leaves. A link is kept like a record: it
     /// outlives sign-out and removal, until the address reports another
     /// deployment (`dropLink`).
     func link(_ serverID: String, toRecordOf other: String, provenFor identity: String) throws {
         let target = try recordOwner(for: other)
         guard target != serverID else { return }
-        let data = try JSONEncoder().encode(Link(recordOwner: target, serverID: identity))
+        if var shared = try load(serverID: target) {
+            let own = try load(serverID: serverID)
+            var owners = shared.owners ?? [:]
+            for record in [shared, own].compactMap({ $0 }) {
+                for (id, owner) in record.owners ?? [:] { owners[id] = owner }
+                if let latest = record.latest { owners[latest.intent.owner.serverID] = latest.intent.owner }
+            }
+            shared.owners = owners
+            try save(shared, serverID: target)
+        }
+        let data = try JSONEncoder().encode(Link(recordOwner: target, provenServerID: identity))
         guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.linkAccount(for: serverID)) else {
             throw JournalError.writeFailed
         }

@@ -631,6 +631,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     /// first address's next renewal is refused for the other's key; once
     /// the other address lists its session, the first shares that record,
     /// sends nothing more, and drops its target, so pushes display again.
+    /// Once the other address is removed, the first registers as itself.
     func testRenewalRefusedForTheOtherAddressesKeyHandsItsTargetOver() async throws {
         let h = try await makeHarness()
         h.server.setCapability(Self.resetCapability)
@@ -660,6 +661,17 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             "silo_delivery_id": "delivery-1", "silo_server_id": "deployment-a", "silo_profile_id": "profile-a",
         ]), .fetch(ApplePushDisplayAuthState(serverURL: Self.otherServerURL, profileID: "profile-a",
             accessToken: "", profileToken: "", displayToken: "display-1")))
+
+        _ = await registrar.unregister(serverID: Self.otherServerID, activeOwner: try await h.owner())
+        await h.tokens.switchActiveServer(serverId: Self.serverID)
+        await h.tokens.setServerUrl(Self.serverURL)
+        await h.tokens.deleteTokens(for: Self.otherServerID)
+        await registrar.registerSavedServers(Self.body(), among: [Self.serverID], skipping: nil)
+
+        let renewed = try XCTUnwrap(h.server.registrations.last)
+        XCTAssertEqual(renewed.url?.host, "silo.example")
+        XCTAssertEqual(renewed.header("X-Profile-Id"), "profile-a")
+        XCTAssertEqual(h.targets.targets().map(\.registryServerID), [Self.serverID])
     }
 
     /// Registers the first address, signs in to the second, and registers it
