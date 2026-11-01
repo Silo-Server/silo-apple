@@ -259,6 +259,8 @@ struct SubtitleAutoResolver {
         to tracks: [SubtitleTrack]
     ) -> Bool {
         guard let signature else { return false }
+        // `resolve` never picks an unsupported track, so it can't carry the pick.
+        let tracks = tracks.filter { !$0.hasUnsupportedFormat }
         if let language = signature.language, !language.isEmpty {
             return tracks.contains { track in
                 guard let trackLanguage = track.language, !trackLanguage.isEmpty else { return false }
