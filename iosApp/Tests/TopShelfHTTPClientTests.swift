@@ -3,7 +3,9 @@ import XCTest
 @testable import Silo
 
 final class TopShelfHTTPClientTests: XCTestCase {
-    private static let sectionsPath = "/api/v2/home/sections"
+    /// The first request of every Home read.
+    private static let sectionsPath = "/api/v2/home/layout"
+    private static let fullHomePath = "/api/v2/home/sections"
     private static let refreshPath = "/api/v2/auth/refresh"
     private static let refreshedTokens =
         #"{"access_token":"fresh-access","refresh_token":"fresh-refresh","expires_in":28800}"#
@@ -188,6 +190,117 @@ final class TopShelfHTTPClientTests: XCTestCase {
 
         await assertNotAuthenticated(fetch)
         XCTAssertFalse(h.client.isCurrentScope)
+    }
+
+    // MARK: - Home rows
+
+    private static func itemsPath(_ id: String) -> String { "/api/v2/home/sections/\(id)/items" }
+
+    private static func row(_ id: String, _ type: String, cards: [String]) -> String {
+        let items = cards.map { #"{"content_id":"\#($0)","type":"movie","title":"\#($0)"}"# }
+        return #"{"id":"\#(id)","section_type":"\#(type)","title":"\#(id)","items":[\#(items.joined(separator: ","))]}"#
+    }
+
+    private static func layout(_ rows: [(String, String)]) -> String {
+        let entries = rows.map { #"{"id":"\#($0.0)","section_type":"\#($0.1)","title":"\#($0.0)","featured":false,"item_limit":100}"# }
+        return #"{"sections":[\#(entries.joined(separator: ","))],"included_sections":[]}"#
+    }
+
+    /// Stubs the layout and each row's read, and the whole Home with the same
+    /// rows, so a client that still reads the whole Home gets the same cards.
+    private func stubHome(_ h: Harness, _ rows: [(id: String, type: String, cards: [String])]) {
+        h.stub.reply(path: "/api/v2/home/layout", 200, Self.layout(rows.map { ($0.id, $0.type) }))
+        for row in rows {
+            h.stub.reply(path: Self.itemsPath(row.id), 200, Self.row(row.id, row.type, cards: row.cards))
+        }
+        let all = rows.map { Self.row($0.id, $0.type, cards: $0.cards) }.joined(separator: ",")
+        h.stub.reply(path: Self.fullHomePath, 200, #"{"sections":[\#(all)]}"#)
+    }
+
+    func testReadsOnlyTheShelfRowsNeverTheWholeHome() async throws {
+        let h = try harness()
+        stubHome(h, [
+            ("hero", "recently_added", ["new"]),
+            ("cw", "continue_watching", ["a", "b"]),
+            ("genre", "genre", ["c"]),
+            ("nu", "next_up", ["d"]),
+            ("books", "next_in_series", ["e"]),
+        ])
+
+        let response = try await h.client.fetchHomeSections(imageSizeQuery: ["image_size": "large"])
+
+        XCTAssertFalse(h.stub.requestedPaths.contains(Self.fullHomePath))
+        XCTAssertEqual(h.stub.requestedPaths.first, "/api/v2/home/layout")
+        XCTAssertEqual(Set(h.stub.requestedPaths.dropFirst()),
+                       [Self.itemsPath("cw"), Self.itemsPath("nu"), Self.itemsPath("books")])
+        XCTAssertEqual(h.stub.requestedPaths.count, 4)
+        XCTAssertEqual(response.sections.map(\.id), ["cw", "nu", "books"])
+        XCTAssertEqual(response.sections.map { $0.items.map(\.contentId) }, [["a", "b"], ["d"], ["e"]])
+        XCTAssertEqual(response.failedSectionCount, 0)
+        let rowRead = try XCTUnwrap(h.stub.requests.first { $0.path == Self.itemsPath("cw") })
+        // The artwork query, and no item_limit: the row answers at its own limit.
+        XCTAssertEqual(rowRead.query, ["image_size": "large"])
+        XCTAssertEqual(rowRead.header("X-Profile-Id"), "profile")
+    }
+
+    func testAFailedOrRetypedRowIsLeftOutAndTheOthersKept() async throws {
+        let h = try harness()
+        stubHome(h, [
+            ("cw", "continue_watching", ["a"]),
+            ("nu", "next_up", ["b"]),
+            ("later", "next_up", ["c"]),
+        ])
+        h.stub.reply(path: Self.itemsPath("nu"), 500, "{}")
+        // An admin retyped the section after the layout was read.
+        h.stub.reply(path: Self.itemsPath("later"), 200, Self.row("later", "recently_added", cards: ["c"]))
+
+        let response = try await h.client.fetchHomeSections(imageSizeQuery: [:])
+
+        XCTAssertFalse(h.stub.requestedPaths.contains(Self.fullHomePath))
+        XCTAssertEqual(response.sections.map(\.id), ["cw"])
+        XCTAssertEqual(response.failedSectionCount, 2)
+    }
+
+    func testAnEmptyRowIsKeptEmpty() async throws {
+        let h = try harness()
+        stubHome(h, [("cw", "continue_watching", ["a"]), ("nu", "next_up", [])])
+
+        let response = try await h.client.fetchHomeSections(imageSizeQuery: [:])
+
+        XCTAssertFalse(h.stub.requestedPaths.contains(Self.fullHomePath))
+        XCTAssertEqual(response.sections.map(\.id), ["cw", "nu"])
+        XCTAssertEqual(response.sections.last?.items.count, 0)
+        XCTAssertEqual(response.failedSectionCount, 0)
+    }
+
+    func testRowsKeepLayoutOrderWhicheverReadFinishesFirst() async throws {
+        let h = try harness()
+        stubHome(h, [("nu", "next_up", ["a"]), ("books", "next_in_series", ["b"])])
+        h.stub.hold(path: Self.itemsPath("nu"))
+
+        let fetch = Task { try await h.client.fetchHomeSections(imageSizeQuery: [:]) }
+        await h.stub.waitUntilHeld()
+        while !h.stub.requestedPaths.contains(Self.itemsPath("books")) { await Task.yield() }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        h.stub.release()
+
+        let response = try await fetch.value
+        XCTAssertFalse(h.stub.requestedPaths.contains(Self.fullHomePath))
+        XCTAssertEqual(response.sections.map(\.id), ["nu", "books"])
+    }
+
+    func testProfileChangeDuringARowReadReturnsNothing() async throws {
+        let h = try harness()
+        stubHome(h, [("cw", "continue_watching", ["a"]), ("nu", "next_up", ["b"])])
+        h.stub.hold(path: Self.itemsPath("cw"))
+
+        let fetch = Task { try await h.client.fetchHomeSections(imageSizeQuery: [:]) }
+        await h.stub.waitUntilHeld()
+        h.switchProfile()
+        h.stub.release()
+
+        await assertNotAuthenticated(fetch)
+        XCTAssertFalse(h.stub.requestedPaths.contains(Self.fullHomePath))
     }
 
     private func assertNotAuthenticated<T>(

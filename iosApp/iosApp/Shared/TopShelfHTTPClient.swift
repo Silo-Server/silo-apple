@@ -161,8 +161,51 @@ struct TopShelfHTTPClient {
         )
     }
 
+    /// The Continue Watching and Next Up rows, in display order. Reads the
+    /// layout, then only those rows: the whole of Home runs to about 1 MB on
+    /// a large server, too much for the extension's memory limit. A row read
+    /// answers at the row's own limit, as the full list does, so the shelf's
+    /// sort and cap pick the same cards; `item_limit` would cut each row in
+    /// the server's order first.
+    ///
+    /// A row whose read fails, or whose type no longer matches the layout (an
+    /// admin can retype a section and keep its id), is left out and counted,
+    /// as the full list answers a failed row empty. A failed layout read, or
+    /// a scope change during any read, throws.
     func fetchHomeSections(imageSizeQuery: [String: String]) async throws -> TopShelfSectionsResponse {
-        try await get("/api/v2/home/sections", query: imageSizeQuery)
+        let layout: TopShelfHomeLayout = try await get("/api/v2/home/layout")
+        let entries = layout.sections.filter { TopShelfRow.isShown($0.sectionType) }
+        let rows = try await withThrowingTaskGroup(of: (Int, TopShelfSection?).self) { group in
+            for (index, entry) in entries.enumerated() {
+                group.addTask { (index, try await fetchRow(entry, imageSizeQuery: imageSizeQuery)) }
+            }
+            // Layout order, whichever read finishes first: rows without
+            // progress timestamps keep this order through the shelf's sort.
+            var rows = [TopShelfSection?](repeating: nil, count: entries.count)
+            for try await (index, row) in group { rows[index] = row }
+            return rows
+        }
+        let sections = rows.compactMap { $0 }
+        return TopShelfSectionsResponse(sections: sections, failedSectionCount: rows.count - sections.count)
+    }
+
+    /// The row, or nil when its read failed or it changed type.
+    private func fetchRow(
+        _ entry: TopShelfHomeLayout.Entry,
+        imageSizeQuery: [String: String]
+    ) async throws -> TopShelfSection? {
+        guard let segment = CatalogPathSegment.encode(entry.id) else { return nil }
+        do {
+            let row: TopShelfSection = try await get(
+                "/api/v2/home/sections/\(segment)/items",
+                query: imageSizeQuery
+            )
+            return row.sectionType == entry.sectionType ? row : nil
+        } catch Error.notAuthenticated {
+            throw Error.notAuthenticated
+        } catch {
+            return nil
+        }
     }
 
     func fetchSeasons(
