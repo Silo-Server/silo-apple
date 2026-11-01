@@ -110,8 +110,8 @@ enum TVCardCaption {
     static let unfocusedSubtitleOpacity: Double = 0.32
 }
 
-/// With Reduce Motion on, the caption still drops clear of the lifted poster
-/// but snaps there instead of sliding; the glow keeps its fade.
+/// With Reduce Motion on, cards don't lift, so the caption stays put; the
+/// glow keeps its fade.
 private struct TVCardCaptionFocusModifier: ViewModifier {
     let isFocused: Bool
     let drop: CGFloat
@@ -123,24 +123,40 @@ private struct TVCardCaptionFocusModifier: ViewModifier {
             .shadow(color: .white.opacity(isFocused ? 0.22 : 0), radius: 8)
             .shadow(color: .white.opacity(isFocused ? 0.12 : 0), radius: 3)
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
-            .offset(y: isFocused ? drop : 0)
-            .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+            .offset(y: isFocused && !reduceMotion ? drop : 0)
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
     }
 }
 
-extension View {
-    /// The focused card's lift and shadow, shared by
-    /// `TVCardOutlineButtonStyle` and the Series episode row. Callers own
-    /// the animation. Captions drop clear of the lift even with Reduce
-    /// Motion on, so the lift stays and only its animation goes.
-    func tvCardLift(isFocused: Bool, isPressed: Bool = false) -> some View {
-        let scale = isFocused ? TVCardOutlineButtonStyle.scale : 1
-        return scaleEffect(isPressed ? scale * 0.97 : scale)
+/// The focused card's lift and shadow, shared by `TVCardOutlineButtonStyle`
+/// and the Series episode row. Callers own the animation. With Reduce Motion
+/// on, cards don't scale; the shadow and outline still mark focus.
+private struct TVCardLiftModifier: ViewModifier {
+    let isFocused: Bool
+    let isPressed: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(scale)
             .shadow(
                 color: .black.opacity(isFocused ? 0.45 : 0),
                 radius: isFocused ? 18 : 0,
                 y: isFocused ? 8 : 0
             )
+    }
+
+    private var scale: CGFloat {
+        guard !reduceMotion else { return 1 }
+        let base = isFocused ? TVCardOutlineButtonStyle.scale : 1
+        return isPressed ? base * 0.97 : base
+    }
+}
+
+extension View {
+    func tvCardLift(isFocused: Bool, isPressed: Bool = false) -> some View {
+        modifier(TVCardLiftModifier(isFocused: isFocused, isPressed: isPressed))
     }
 
     func tvFocusRing(
