@@ -160,15 +160,31 @@ struct ProfileSelectionView: View {
         if viewModel.requiresPasswordChange || (viewModel.isLoading && viewModel.profiles.isEmpty) {
             LoadingView(message: "Loading profiles...")
         } else if let error = viewModel.error, viewModel.profiles.isEmpty {
-            ErrorView(state: error, onRetry: {
-                Task {
-                    await viewModel.loadProfiles()
-                    await skipPickerIfSingleProfile()
-                }
-            })
+            #if os(tvOS)
+            // Apple TV shows refusals it can't fix here, such as a temporary
+            // password, so changing server and signing out stay offered.
+            VStack(spacing: 0) {
+                errorView(error)
+                footerActions
+                    .frame(maxWidth: .infinity)
+                    .focusSection()
+                    .padding(.bottom, 60)
+            }
+            #else
+            errorView(error)
+            #endif
         } else {
             content
         }
+    }
+
+    private func errorView(_ error: ErrorState) -> some View {
+        ErrorView(state: error, onRetry: {
+            Task {
+                await viewModel.loadProfiles()
+                await skipPickerIfSingleProfile()
+            }
+        })
     }
 
     private var content: some View {
