@@ -461,6 +461,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     @State private var didResetInitialPlayFocus = false
     @State private var initialFocusSeasonKey: String?
     @State private var initialPlayFocusTask: Task<Void, Never>?
+    @State private var lastFocusedAction: ActionID = .play
     @FocusState private var focusedAction: ActionID?
     @FocusState private var playbackSelectorsFocused: Bool
 
@@ -522,6 +523,13 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         .focused(rowFocused)
         .frame(maxWidth: .infinity, alignment: .leading)
         .focusSection()
+        // Entering the row from below lands on the last focused action,
+        // else Play, instead of whichever control sits above the season
+        // pill or card the focus came from.
+        .defaultFocus($focusedAction, entryAction, priority: .userInitiated)
+        .onChange(of: focusedAction) { _, action in
+            if let action { lastFocusedAction = action }
+        }
         // Attaching the handler consumes Up at this hard top boundary of a
         // pushed detail page, keeping focus on the action row; Up must never
         // behave like Back/Menu or pop the page to the root.
@@ -541,6 +549,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         }
         .task(id: focusResetKey) {
             cancelInitialPlayFocusRetry()
+            lastFocusedAction = .play
             didResetInitialPlayFocus = !allowsInitialPlayFocus
             initialFocusSeasonKey = seasonKey
             await Task.yield()
@@ -568,6 +577,20 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     private var seasonKey: String? {
         guard case .season(let key) = initialFocusScope else { return nil }
         return key
+    }
+
+    /// The playback selectors share one container binding, so returning to
+    /// them is left to the focus engine's geometry. Start Over disappears once
+    /// an episode is no longer in progress; Play takes its place.
+    private var entryAction: ActionID? {
+        switch lastFocusedAction {
+        case .playbackSelectors:
+            return nil
+        case .startOver where onStartOver == nil:
+            return .play
+        default:
+            return lastFocusedAction
+        }
     }
 
     private func resetInitialPlayFocus() {
