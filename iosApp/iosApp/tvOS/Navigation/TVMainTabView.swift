@@ -712,6 +712,8 @@ struct TVMainTabView: View {
             entersPanel: isActive && panelEntersFocus,
             focusEntryGeneration: panelFocusEntryGeneration,
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
+            showsRequests: RequestsFeatureStore.shared.isEnabled,
+            showsWatchParty: WatchPartyEntry.isAvailable,
             onSwitchProfile: { closePanel(then: switchProfile) },
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
             onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },

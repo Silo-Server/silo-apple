@@ -1115,6 +1115,10 @@ struct TVProfileDropdown: View {
     /// Reports whether any row currently holds focus, so the host can drop
     /// the avatar's focus ring once focus descends (§5.8).
     let onPanelFocusChanged: (Bool) -> Void
+    /// Whether the server offers Requests (`RequestsFeatureStore`).
+    let showsRequests: Bool
+    /// Whether Watch Party is on and the server supports it (`WatchPartyEntry`).
+    let showsWatchParty: Bool
     let onSwitchProfile: () -> Void
     let onHistory: () -> Void
     let onRequests: () -> Void
@@ -1159,10 +1163,10 @@ struct TVProfileDropdown: View {
             actionButton("Switch Profile", systemImage: "person.2.fill", id: .switchProfile, action: onSwitchProfile)
             // Watchlist and Favorites live under For You, not here.
             actionButton("History", systemImage: "clock.fill", id: .history, action: onHistory)
-            if RequestsFeatureStore.shared.isEnabled {
+            if showsRequests {
                 actionButton("Requests", systemImage: "paperplane.fill", id: .requests, action: onRequests)
             }
-            if WatchPartyEntry.isAvailable {
+            if showsWatchParty {
                 actionButton(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3", id: .watchParty, action: onWatchParty)
             }
 
