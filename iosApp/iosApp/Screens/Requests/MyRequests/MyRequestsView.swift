@@ -2,10 +2,10 @@ import SwiftUI
 
 /// Request management. On iOS/macOS: the signed-in user's requests as an
 /// inset-grouped list in the Downloads manager's shape — a stage track on
-/// every row, swipe to cancel, Open once a title lands, and a filter menu in
-/// the navigation bar. Request administration (approve, decline, retry)
-/// stays in the web admin. tvOS renders the same data as a Skyline page
-/// (`TVRequestsPage`).
+/// every row, swipe to cancel (or to remove a failed request), Open once a
+/// title lands, and a filter menu in the navigation bar. Request
+/// administration (approve, decline, retry) stays in the web admin. tvOS
+/// renders the same data as a Skyline page (`TVRequestsPage`).
 struct MyRequestsView: View {
     var body: some View {
         #if os(tvOS)
@@ -20,6 +20,8 @@ struct MyRequestsView: View {
 private struct PhoneMyRequestsView: View {
     @State private var viewModel = MyRequestsViewModel()
     @State private var filter: MyRequestsBucket?
+    /// The failed request waiting on the remove confirmation.
+    @State private var pendingRemoval: MediaRequest?
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -53,6 +55,27 @@ private struct PhoneMyRequestsView: View {
         .onChange(of: viewModel.buckets.map(\.bucket)) { _, buckets in
             // A filter whose last request moved on would leave a blank list.
             if let filter, !buckets.contains(filter) { self.filter = nil }
+        }
+        .requestRemoveConfirmation($pendingRemoval) { record in
+            Task { await viewModel.remove(record) }
+        }
+        // Outside the list, so it stays when the last row goes.
+        .overlay(alignment: .bottom) {
+            if let notice = viewModel.notice {
+                Text(notice)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.siloOnSurface)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(Capsule().fill(Color.siloChromeSelectedFill))
+                    .padding(.bottom, 24)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: viewModel.notice)
+        .onChange(of: viewModel.notice) { _, notice in
+            if let notice { AccessibilityNotification.Announcement(notice).post() }
         }
     }
 
@@ -112,8 +135,8 @@ private struct PhoneMyRequestsView: View {
                     ForEach(entry.requests) { record in
                         MyRequestRow(
                             record: record,
-                            isBusy: viewModel.cancellingId == record.id,
-                            isDimmed: viewModel.cancellingId == record.id,
+                            isBusy: viewModel.isBusy(record),
+                            isDimmed: viewModel.isBusy(record),
                             onOpen: { router.openRequestRecord(record) },
                             onOpenInLibrary: record.libraryContentId.map { id in
                                 { router.navigate(to: .itemDetail(contentId: id)) }
@@ -121,20 +144,34 @@ private struct PhoneMyRequestsView: View {
                         )
                         .listRowBackground(Color.siloGroupedCell)
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            if isCancelable(record) {
+                            if viewModel.canCancel(record) {
                                 Button(role: .destructive) {
                                     Task { await viewModel.cancel(record) }
                                 } label: {
                                     Label("Cancel", systemImage: "xmark")
                                 }
                             }
+                            if viewModel.canRemove(record) {
+                                Button(role: .destructive) {
+                                    pendingRemoval = record
+                                } label: {
+                                    Label("Remove", systemImage: "trash")
+                                }
+                            }
                         }
                         .contextMenu {
-                            if isCancelable(record) {
+                            if viewModel.canCancel(record) {
                                 Button(role: .destructive) {
                                     Task { await viewModel.cancel(record) }
                                 } label: {
                                     Label("Cancel Request", systemImage: "xmark.circle")
+                                }
+                            }
+                            if viewModel.canRemove(record) {
+                                Button(role: .destructive) {
+                                    pendingRemoval = record
+                                } label: {
+                                    Label("Remove Request", systemImage: "trash")
                                 }
                             }
                         }
@@ -149,10 +186,6 @@ private struct PhoneMyRequestsView: View {
     private var visibleBuckets: [(bucket: MyRequestsBucket, requests: [MediaRequest])] {
         guard let filter else { return viewModel.buckets }
         return viewModel.buckets.filter { $0.bucket == filter }
-    }
-
-    private func isCancelable(_ record: MediaRequest) -> Bool {
-        RequestDisplayState(record: record).isCancelable && !viewModel.isCancelUnconfirmed(record)
     }
 
     // MARK: - Helpers
@@ -280,6 +313,29 @@ private struct RequestRowCapsuleButton: View {
 }
 
 #endif
+
+extension View {
+    /// Asks before removing a failed request, naming its title. Shared by the
+    /// phone list and the tvOS page; the copy matches the web app.
+    func requestRemoveConfirmation(
+        _ pending: Binding<MediaRequest?>,
+        onConfirm: @escaping (MediaRequest) -> Void
+    ) -> some View {
+        alert(
+            "Remove this request?",
+            isPresented: Binding(
+                get: { pending.wrappedValue != nil },
+                set: { if !$0 { pending.wrappedValue = nil } }
+            ),
+            presenting: pending.wrappedValue
+        ) { record in
+            Button("Remove request", role: .destructive) { onConfirm(record) }
+            Button("Keep request", role: .cancel) {}
+        } message: { record in
+            Text("Your failed request for \u{201C}\(record.title)\u{201D} will be deleted. You can request the title again later.")
+        }
+    }
+}
 
 /// Row copy shared by the phone list and the tvOS marquee.
 enum RequestRowCopy {

@@ -35,6 +35,8 @@ struct TVRequestsPage: View {
     /// Last focused card, restored when the page returns from a detail push.
     @State private var lastFocusedKey: String?
     @State private var pendingEntryRequest: Int?
+    /// The failed request waiting on the remove confirmation.
+    @State private var pendingRemoval: MediaRequest?
     @State private var appliedEntryRequest = 0
     @Environment(AppRouter.self) private var router
 
@@ -58,13 +60,18 @@ struct TVRequestsPage: View {
             case .mine: mine.applyRequestUpdate(update)
             }
         }
+        .onChange(of: RequestsEventBus.shared.lastRemoval) { _, removed in
+            // The mine model reads its list again after its own remove.
+            guard let removed, mode == .hub else { return }
+            hub.applyRemoval(removed)
+        }
         .onChange(of: RequestsEventBus.shared.lastTitleState) { _, update in
             // Only discover cards carry a title's follow state.
             guard let update, mode == .hub else { return }
             hub.applyTitleState(update)
         }
         .overlay(alignment: .bottomLeading) {
-            if let message = mine.actionErrorMessage {
+            if let message = mine.actionErrorMessage ?? mine.notice {
                 Text(message)
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(Color.siloOnSurface)
@@ -75,6 +82,9 @@ struct TVRequestsPage: View {
                     .padding(.bottom, 40)
                     .allowsHitTesting(false)
             }
+        }
+        .requestRemoveConfirmation($pendingRemoval) { record in
+            Task { await mine.remove(record, refresh: actionRefresh) }
         }
         .onChange(of: focusRequest) { _, request in requestEntryFocus(request) }
         .onChange(of: rows.map(\.id)) { _, _ in
@@ -291,17 +301,18 @@ struct TVRequestsPage: View {
                 .cardWidth(SiloTheme.Skyline.densePosterCardWidth)
                 .focused($focusedKey, id: key)
                 .contextMenu {
-                    if RequestDisplayState(record: record).isCancelable, !mine.isCancelUnconfirmed(record) {
+                    if mine.canCancel(record) {
                         Button(role: .destructive) {
-                            Task {
-                                if mode == .mine {
-                                    await mine.cancel(record)
-                                } else {
-                                    await mine.cancel(record, refresh: { await hub.load() })
-                                }
-                            }
+                            Task { await mine.cancel(record, refresh: actionRefresh) }
                         } label: {
                             Label("Cancel Request", systemImage: "xmark.circle")
+                        }
+                    }
+                    if mine.canRemove(record) {
+                        Button(role: .destructive) {
+                            pendingRemoval = record
+                        } label: {
+                            Label("Remove Request", systemImage: "trash")
                         }
                     }
                 }
@@ -310,6 +321,12 @@ struct TVRequestsPage: View {
                 .cardWidth(SiloTheme.Skyline.densePosterCardWidth)
                 .focused($focusedKey, id: key)
         }
+    }
+
+    /// The read that settles a cancel or remove: none on the mine page,
+    /// whose model reads its own list, and the hub's read on the hub.
+    private var actionRefresh: (() async -> Bool)? {
+        mode == .mine ? nil : { await hub.load() }
     }
 
     // MARK: - Focus

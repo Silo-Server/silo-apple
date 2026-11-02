@@ -7,7 +7,7 @@ import Foundation
 /// Follow and unfollow are naturally idempotent: repeating one leaves the
 /// same state, so a lost answer is safe to send again.
 ///
-/// Create and cancel are `non_retryable` in the contract. Neither is replayed
+/// Create, cancel and remove are `non_retryable` in the contract. None is replayed
 /// after an uncertain outcome; the callers re-read server state instead. An
 /// owner change once a mutation has captured its owner is uncertain too: the
 /// response is discarded, but the server may already have acted.
@@ -76,6 +76,16 @@ extension APIv2Client {
     func cancelRequest(id: String, reason: String?) async throws -> MediaRequest {
         let path = "/api/v2/requests/\(try catalogPathSegment(id))/cancel"
         return try await requestsCall("POST", path: path, body: try Self.encode(CancelRequestBody(reason: reason)), status: 200)
+    }
+
+    // MARK: removeFailedRequest (non_retryable)
+
+    /// `DELETE /api/v2/requests/{id}`: deletes the viewer's failed request
+    /// that delivered nothing. Answers 204 with no body, or 409 `conflict`
+    /// once the request was retried, completed, or delivered a copy.
+    func removeFailedRequest(id: String) async throws {
+        let path = "/api/v2/requests/\(try catalogPathSegment(id))"
+        _ = try await requestsSend("DELETE", path: path, status: 204)
     }
 
     // MARK: followRequestMedia / unfollowRequestMedia (naturally idempotent)

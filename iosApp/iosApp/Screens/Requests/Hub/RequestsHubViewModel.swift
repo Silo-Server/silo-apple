@@ -140,6 +140,11 @@ final class RequestsHubViewModel {
         }
     }
 
+    /// Bus consumer: the user removed one of their requests.
+    func applyRemoval(_ record: MediaRequest) {
+        myRequests.removeAll { $0.id == record.id }
+    }
+
     /// Bus consumer: patch every visible surface in place after a mutation
     /// anywhere in the app (detail submit, My Requests cancel, …).
     func applyRequestUpdate(_ record: MediaRequest) {

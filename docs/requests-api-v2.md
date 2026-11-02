@@ -1,6 +1,6 @@
 # Requests API v2 consumer
 
-The Apple clients call `/api/v2/requests` for the request capability, search, discovery, detail, create, My Requests, cancel, and follow. The methods live in `APIv2Client+Requests.swift`; `SiloAPI+Requests.swift` forwards to them. No request falls back to v1.
+The Apple clients call `/api/v2/requests` for the request capability, search, discovery, detail, create, My Requests, cancel, remove, and follow. The methods live in `APIv2Client+Requests.swift`; `SiloAPI+Requests.swift` forwards to them. No request falls back to v1.
 
 Request administration (approve, decline, retry, request limits, auto-approve) stays in the web admin. The Apple clients have no approvals queue or moderation actions and never call `/api/v2/admin/requests`, even for an admin account.
 
@@ -10,7 +10,7 @@ Every operation is profile scoped. A call needs a selected profile, sends `X-Pro
 
 ## Capability
 
-`GET /api/v2/requests/status` returns `FeatureStatus`. Entry points show only when `requests_enabled` is true, `allowed` is true, and `state` is `available`. A blocked account gets `requests_enabled: true` with `allowed: false`, so its entry points stay hidden. The contract requires `allowed`; a response without it reads as not allowed. A failed probe keeps the previous value, and an answer counts only if no newer probe has answered. `follow_supported` gates the follow action; a server that omits it does not offer follow.
+`GET /api/v2/requests/status` returns `FeatureStatus`. Entry points show only when `requests_enabled` is true, `allowed` is true, and `state` is `available`. A blocked account gets `requests_enabled: true` with `allowed: false`, so its entry points stay hidden. The contract requires `allowed`; a response without it reads as not allowed. A failed probe keeps the previous value, and an answer counts only if no newer probe has answered. `follow_supported` gates the follow action; a server that omits it does not offer follow. `remove_failed_supported` gates removing a failed request the same way.
 
 ## Reads
 
@@ -33,6 +33,18 @@ Every read requires status 200.
 | Uncertain, owner changed | The account, credential owner or profile changed after the call captured its owner (`APIv2RequestsError.outcomeUnknownOwnerChanged`) | Never resend and hold as above, but skip the re-read: it would run under the new owner. The banner tells the user to check My Requests. |
 
 The transport raises the same identity error just before sending and after a response arrives, so the client cannot tell whether a mutation interrupted by an owner change reached the server. It treats every such case as uncertain. Reads keep the ordinary `HTTPError.authorityChanged`.
+
+## Remove
+
+My Requests offers **Remove Request** (swipe or context menu on iOS and macOS, the card's context menu on tvOS) on a request whose `outcome` is `failed` and none of whose targets is `completed`, the server's own rule (`MediaRequest.isRemovable`). A request that delivered one quality before failing records a copy in the library and keeps no remove action. A confirmation names the title first.
+
+`DELETE /api/v2/requests/{id}` requires 204 with no body and percent-encodes the opaque ID. It is `non_retryable`, so it follows the create and cancel table above: an uncertain outcome holds the row's action until a re-read, and the transport never replays it after a 401. Every answer re-reads the list (an uncertain outcome under a replaced owner skips the read, as for cancel):
+
+- 204 drops the row at once, so a failed re-read cannot leave it on screen, and shows "Request removed". 404 means another device removed it first and reads the same way.
+- 409 `conflict` means the request is no longer a failure that delivered nothing: an admin retried it, or the library completed it, since the list loaded. The re-read shows its new state, with a line saying it was not removed.
+- Any other problem shows its copy, like cancel.
+
+A removal is published on `RequestsEventBus.lastRemoval`, which drops the row from the Requests hub.
 
 ## Follow
 

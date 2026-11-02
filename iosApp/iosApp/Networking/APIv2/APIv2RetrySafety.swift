@@ -168,6 +168,7 @@ enum APIv2MutationCatalog {
         // Media requests
         .init("POST", "/api/v2/requests", .nonRetryable),
         .init("POST", "/api/v2/requests/{id}/cancel", .nonRetryable),
+        .init("DELETE", "/api/v2/requests/{id}", .nonRetryable),
         // Watch together
         .init("POST", "/api/v2/watch-together/rooms/{room_id}/playback/start", .nonRetryable),
         .init("PUT", "/api/v2/watch-together/rooms/{room_id}/selection", .nonRetryable),

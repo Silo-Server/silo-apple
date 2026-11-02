@@ -1,7 +1,7 @@
 import Foundation
 
-/// Sorts a failed create or cancel into the two outcomes the UI treats
-/// differently. Both operations are `non_retryable`: the server keeps no
+/// Sorts a failed create, cancel or remove into the two outcomes the UI
+/// treats differently. All three are `non_retryable`: the server keeps no
 /// request identity, so a resend after an uncertain outcome can act twice.
 ///
 /// - **Definite failure:** the request never left the device, or the server
@@ -22,5 +22,22 @@ enum RequestMutationFailure {
     /// was raised before dispatch.
     static func isUncertain(_ error: Error) -> Bool {
         isOwnerChanged(error) || APIv2MutationOutcome(error, dispatched: false).mayHaveApplied
+    }
+
+    /// The server refused a remove because the request is no longer a
+    /// failure that delivered nothing: an admin retried it, the library
+    /// completed it, or it delivered a copy before failing.
+    static func isRemoveConflict(_ error: Error) -> Bool {
+        hasProblem(error, "conflict")
+    }
+
+    /// The request is already gone, for example removed on another device.
+    static func isAlreadyRemoved(_ error: Error) -> Bool {
+        hasProblem(error, "not_found")
+    }
+
+    private static func hasProblem(_ error: Error, _ identifier: String) -> Bool {
+        guard case APIv2Error.problem(let problem) = error else { return false }
+        return problem.identifier == identifier
     }
 }

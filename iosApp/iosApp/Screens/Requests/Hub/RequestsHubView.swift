@@ -55,6 +55,9 @@ private struct PhoneRequestsHubView: View {
                 viewModel.applyTitleState(update)
             }
         }
+        .onChange(of: RequestsEventBus.shared.lastRemoval) { _, removed in
+            if let removed { viewModel.applyRemoval(removed) }
+        }
     }
 
     // MARK: - Content
