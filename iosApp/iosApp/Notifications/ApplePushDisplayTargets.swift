@@ -53,8 +53,9 @@ struct ApplePushDisplayTargetStore: Sendable {
     /// before. A saved server never replaces another's target, even one
     /// claiming the same deployment: a server could claim any identity.
     /// One deployment saved under two addresses still ends up with one
-    /// target, because the server refuses the second address's
-    /// installation proof.
+    /// target: once the second address proves it is that deployment, both
+    /// share one installation record, and the registrar removes the other
+    /// address's target whenever one of them registers.
     @discardableResult
     func save(_ target: ApplePushDisplayTarget) -> Bool {
         update { targets in
