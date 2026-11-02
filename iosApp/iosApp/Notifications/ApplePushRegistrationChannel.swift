@@ -51,6 +51,9 @@ enum ApplePushSavedServerError: Error, Equatable {
     /// The server refused the stored session's refresh: it needs a new
     /// sign-in, though the session stays saved.
     case credentialRejected
+    /// The address no longer holds the installation key the request
+    /// carries (`keyGate`). Nothing was sent.
+    case keyWithdrawn
 }
 
 /// Registration requests for a saved server sent with that server's own
@@ -69,8 +72,13 @@ struct ApplePushSavedServerClient: Sendable {
     var tokenStore: TokenStore = .shared
     var session: URLSession = Self.defaultSession
 
-    /// Nil when the registry id names no server address.
-    func channel(for owner: ApplePushIntentOwner) -> ApplePushRegistrationChannel? {
+    /// Nil when the registry id names no server address. `keyGate` runs
+    /// after the credential lookups, right before a request that carries an
+    /// installation key leaves, and refuses a key the address no longer
+    /// holds: its link to a shared record may end while those lookups wait.
+    func channel(for owner: ApplePushIntentOwner,
+                 keyGate: @escaping @Sendable (_ installationKey: String) async -> Bool = { _ in true })
+        -> ApplePushRegistrationChannel? {
         guard let serverURL = ServerRegistry.url(forServerId: owner.serverID) else { return nil }
         let tokenStore = self.tokenStore
         return ApplePushRegistrationChannel(
@@ -85,14 +93,14 @@ struct ApplePushSavedServerClient: Sendable {
                                                                             generation: generation)
                 let data = try await send("POST", APIv2Client.applePushRegistrationPath,
                     body: APIv2Client.applePushRegistrationBody(body), headers: headers,
-                    owner: owner, serverURL: serverURL)
+                    owner: owner, serverURL: serverURL, keyGate: { await keyGate(installationKey) })
                 return try APIv2Client.applePushReceipt(from: data, generation: generation, body: body)
             },
             reset: { deviceID, installationKey in
                 let data = try await send("POST", APIv2Client.applePushResetPath,
                     body: APIv2Client.applePushResetBody(deviceID: deviceID),
                     headers: APIv2Client.applePushResetHeaders(installationKey: installationKey),
-                    owner: owner, serverURL: serverURL)
+                    owner: owner, serverURL: serverURL, keyGate: { await keyGate(installationKey) })
                 return try APIv2Client.applePushResetReceipt(from: data)
             },
             loginSessions: { cursor in
@@ -108,7 +116,8 @@ struct ApplePushSavedServerClient: Sendable {
     /// the registrar classifies refusals the same way for every server.
     private func send(_ method: String, _ path: String, query: [String: String] = [:], body: Data? = nil,
                       headers: [String: String] = [:],
-                      owner: ApplePushIntentOwner, serverURL: String) async throws -> Data {
+                      owner: ApplePushIntentOwner, serverURL: String,
+                      keyGate: @Sendable () async -> Bool = { true }) async throws -> Data {
         // The stored session must still be the registering account's: a
         // later sign-in on that server would register under someone else.
         guard let account = await tokenStore.savedSessionAccount(for: owner.serverID),
@@ -141,6 +150,8 @@ struct ApplePushSavedServerClient: Sendable {
         for (field, value) in headers {
             request.setValue(value, forHTTPHeaderField: field)
         }
+        // Last, after every credential await.
+        guard await keyGate() else { throw ApplePushSavedServerError.keyWithdrawn }
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else {

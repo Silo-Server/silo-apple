@@ -702,6 +702,33 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertFalse(after.contains { $0.header("X-Push-Installation-Key") == key })
     }
 
+    /// A saved address that reports another server while its registration
+    /// waits (here on the capability, before the transport's own credential
+    /// lookups) never sends the shared key: the link is checked again right
+    /// before the request leaves.
+    func testSharedKeyIsCheckedAgainRightBeforeASavedAddressSends() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        await h.tokens.switchActiveServer(serverId: Self.serverID)
+        await h.tokens.setServerUrl(Self.serverURL)
+        let sent = h.server.registrations.count
+        let gate = StubURLProtocol.Gate()
+        h.server.gateCapability(gate)
+
+        let pass = Task {
+            await registrar.registerSavedServers(Self.body(token: Self.tokenB), among: [Self.otherServerID],
+                                                 skipping: nil)
+        }
+        while await gate.waiterCount == 0 { await Task.yield() }
+        h.identities.set("deployment-z", for: Self.otherServerID)
+        await gate.open()
+        await pass.value
+
+        let after = h.server.registrations.dropFirst(sent)
+        XCTAssertFalse(after.contains { $0.url?.host == "other.example" && $0.header("X-Push-Installation-Key") == key })
+    }
+
     /// A hold names a generation of the record the address used. Once its
     /// link ends, the address starts over at generation 1, and a hold left
     /// from the shared record must not block replaying that registration.

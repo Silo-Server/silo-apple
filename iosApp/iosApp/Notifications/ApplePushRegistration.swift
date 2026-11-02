@@ -285,8 +285,23 @@ actor ApplePushRegistrar {
     /// Registers a saved server under `owner`, the owner of its journal's
     /// latest intent, with that server's stored session.
     func register(_ body: APIv2ApplePushRegistrationBody, savedServer owner: ApplePushIntentOwner) async -> Result {
-        guard let channel = savedServers.channel(for: owner) else { return .notSent(reason: "server_url") }
+        guard let channel = savedChannel(for: owner) else { return .notSent(reason: "server_url") }
         return await register(body, through: channel)
+    }
+
+    /// `owner`'s saved-server channel, which sends an installation key only
+    /// while the address still holds it (`holdsKey`).
+    private func savedChannel(for owner: ApplePushIntentOwner) -> ApplePushRegistrationChannel? {
+        savedServers.channel(for: owner) { [self] in await holdsKey($0, serverID: owner.serverID) }
+    }
+
+    /// Whether `serverID` still resolves to a record holding
+    /// `installationKey`, after ending its link if the address now reports
+    /// another deployment. A saved-server request checks this last, after its
+    /// credential lookups, during which a link can end.
+    private func holdsKey(_ installationKey: String, serverID: String) async -> Bool {
+        guard await dropStaleLink(of: serverID) else { return false }
+        return (try? journal.load(serverID: serverID))?.installationKey == installationKey
     }
 
     /// Keeps the registration of every other saved server in `serverIDs`
@@ -404,7 +419,7 @@ actor ApplePushRegistrar {
         if let activeOwner, usesActiveSession {
             channel = activeChannel(for: activeOwner)
         } else {
-            channel = ownLastOwner.flatMap { savedServers.channel(for: $0) }
+            channel = ownLastOwner.flatMap { savedChannel(for: $0) }
         }
         guard let channel else { return .notSent(reason: "server_url") }
         let off = Self.body(latest.intent.body, pushMode: ApplePushRegistrationWire.offPushMode)
@@ -635,6 +650,11 @@ actor ApplePushRegistrar {
         do {
             receipt = try await channel.send(command.intent.body, command.installationKey, command.generation)
         } catch {
+            // The address's link ended while the request waited for its
+            // credentials; the key it carried never left.
+            if error as? ApplePushSavedServerError == .keyWithdrawn {
+                return .notSent(reason: Self.linkChangedReason)
+            }
             // The same server saved under another address holds the
             // installation with its own record's key. Once that address
             // proves it is this deployment, both share its record: a new
@@ -873,6 +893,9 @@ actor ApplePushRegistrar {
             let receipt = try await channel.reset(command.intent.body.deviceId, command.installationKey)
             Self.logger.info("Apple push installation reset after a key mismatch: generation=\(command.generation, privacy: .public) reset=\(receipt.reset, privacy: .public)")
         } catch {
+            if error as? ApplePushSavedServerError == .keyWithdrawn {
+                return .notSent(reason: Self.linkChangedReason)
+            }
             guard Self.refusalReason(error) != nil || Self.forbiddenReason(error) != nil else {
                 Self.logger.info("Apple push installation reset outcome unknown; keeping generation \(command.generation, privacy: .public) pending: \(String(describing: error), privacy: .public)")
                 return .uncertain
