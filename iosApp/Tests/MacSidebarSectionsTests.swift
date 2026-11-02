@@ -13,20 +13,13 @@ final class MacSidebarSectionsTests: XCTestCase {
     private var allLibraries: [Library] { [movies, series, anime, audiobooks] }
 
     private func sections(
-        menu: PrimaryMenuPreference?,
         libraries: [Library],
         showAudiobooks: Bool = true,
         downloads: Bool = false,
         requests: Bool = false
     ) -> [MacSidebarSection] {
-        var destinations = projectedMainTabDestinations(
-            primaryMenu: menu,
-            availableLibraries: libraries,
-            showAudiobooks: showAudiobooks
-        )
-        if downloads { destinations.append(.app(.downloads)) }
-        return macSidebarSections(
-            destinations: destinations,
+        macSidebarSections(
+            destinations: mainTabDestinations(downloadsEnabled: downloads),
             libraries: libraries,
             showAudiobooks: showAudiobooks,
             requestsEnabled: requests
@@ -40,97 +33,80 @@ final class MacSidebarSectionsTests: XCTestCase {
         sections.first { $0.id == id }?.items.map(\.id)
     }
 
-    func testLibrariesListEveryLibraryInServerOrderWhateverTheMenuPins() {
-        let expected: [MainTabDestinationID] = [.library(1), .library(2), .library(3), .library(4)]
-        let menus: [PrimaryMenuPreference?] = [
-            nil,
-            PrimaryMenuPreference(items: [.builtin(.home)]),
-            PrimaryMenuPreference(items: [.builtin(.home), .library(libraryId: 3, label: "Anime")]),
-            PrimaryMenuPreference(items: [.builtin(.home), .builtin(.series), .builtin(.movies)]),
-        ]
-        for menu in menus {
-            let built = sections(menu: menu, libraries: allLibraries)
-            XCTAssertEqual(ids(.libraries, in: built), expected)
-            let flattened = built.flatMap(\.items).map(\.id)
-            XCTAssertEqual(Set(flattened).count, flattened.count, "no duplicate rows")
-            XCTAssertFalse(flattened.contains(.app(.libraries)))
-            XCTAssertFalse(flattened.contains(.libraryCategory(.movies)))
-            XCTAssertFalse(flattened.contains(.libraryCategory(.series)))
-        }
+    func testLibrariesListEveryLibraryInServerOrder() {
+        let built = sections(libraries: allLibraries)
+        XCTAssertEqual(
+            ids(.libraries, in: built),
+            [.library(1), .library(2), .library(3), .library(4)]
+        )
+        let flattened = built.flatMap(\.items).map(\.id)
+        XCTAssertEqual(Set(flattened).count, flattened.count, "no duplicate rows")
+        XCTAssertFalse(flattened.contains(.app(.libraries)))
     }
 
     func testLibrariesFallBackToOneRowWithoutLibrariesAndRespectAudiobookOptOut() {
-        // No library list yet: one Libraries row keeps a way in, whatever
-        // the synced menu holds.
-        XCTAssertEqual(ids(.libraries, in: sections(menu: nil, libraries: [])), [.app(.libraries)])
-        let custom = PrimaryMenuPreference(items: [.builtin(.home), .builtin(.movies)])
-        XCTAssertEqual(ids(.libraries, in: sections(menu: custom, libraries: [])), [.app(.libraries)])
+        // No library list yet: one Libraries row keeps a way in.
+        XCTAssertEqual(ids(.libraries, in: sections(libraries: [])), [.app(.libraries)])
         XCTAssertEqual(
-            ids(.libraries, in: sections(menu: nil, libraries: allLibraries, showAudiobooks: false)),
+            ids(.libraries, in: sections(libraries: allLibraries, showAudiobooks: false)),
             [.library(1), .library(2), .library(3)]
         )
     }
 
-    func testDiscoverStartsWithSearchThenFollowsThePrimaryMenu() {
-        let reordered = PrimaryMenuPreference(items: [
-            .builtin(.home), .builtin(.calendar), .builtin(.forYou),
-        ])
+    #if !os(tvOS)
+    // `AppTab.visibleCases` is the iPhone/iPad/Mac list. The Apple TV shell
+    // builds its own bar (`TVRootDestination.visibleRoots`) and never reads it.
+    func testDiscoverHasAFixedOrderStartingWithSearch() {
         XCTAssertEqual(
-            ids(.discover, in: sections(menu: reordered, libraries: allLibraries)),
-            [.app(.search), .app(.calendar), .app(.recommendations)]
+            ids(.discover, in: sections(libraries: allLibraries)),
+            [.app(.search), .app(.recommendations), .app(.calendar)]
         )
-        let calendarOnly = PrimaryMenuPreference(items: [.builtin(.home), .builtin(.calendar)])
         XCTAssertEqual(
-            ids(.discover, in: sections(menu: calendarOnly, libraries: allLibraries)),
-            [.app(.search), .app(.calendar)]
+            ids(.discover, in: sections(libraries: allLibraries, requests: true)),
+            [.app(.search), .app(.recommendations), .app(.requests), .app(.calendar)]
         )
     }
+    #endif
 
     func testYourStuffAppearsOnlyWithDownloads() {
-        XCTAssertNil(ids(.yourStuff, in: sections(menu: nil, libraries: allLibraries)))
+        XCTAssertNil(ids(.yourStuff, in: sections(libraries: allLibraries)))
         XCTAssertEqual(
-            ids(.yourStuff, in: sections(menu: nil, libraries: allLibraries, downloads: true)),
+            ids(.yourStuff, in: sections(libraries: allLibraries, downloads: true)),
             [.app(.downloads)]
         )
     }
 
     func testSectionsKeepTheirFixedOrderWithHomeFirst() {
-        let built = sections(menu: nil, libraries: allLibraries, downloads: true)
+        let built = sections(libraries: allLibraries, downloads: true)
         XCTAssertEqual(built.map(\.id), [.home, .libraries, .discover, .yourStuff])
         XCTAssertEqual(ids(.home, in: built), [.app(.home)])
         XCTAssertNil(built.first?.title)
     }
 
     func testRequestsFollowsForYouOnlyWhileEnabled() {
-        // Compared with the list Requests is off for, since the default menu
-        // differs per platform (tvOS has no Calendar).
-        let menus: [PrimaryMenuPreference?] = [
-            nil,
-            PrimaryMenuPreference(items: [.builtin(.home), .builtin(.calendar)]),
-        ]
-        for menu in menus {
-            let off = ids(.discover, in: sections(menu: menu, libraries: allLibraries)) ?? []
-            XCTAssertFalse(off.contains(.app(.requests)))
-            var expected = off
-            let afterForYou = expected.firstIndex(of: .app(.recommendations)).map { $0 + 1 } ?? 1
-            expected.insert(.app(.requests), at: afterForYou)
-            XCTAssertEqual(
-                ids(.discover, in: sections(menu: menu, libraries: allLibraries, requests: true)),
-                expected
-            )
-        }
+        // Compared with the list Requests is off for, since `AppTab.visibleCases`
+        // differs on tvOS, whose shell does not use it.
+        let off = ids(.discover, in: sections(libraries: allLibraries)) ?? []
+        XCTAssertFalse(off.contains(.app(.requests)))
+        var expected = off
+        let afterForYou = expected.firstIndex(of: .app(.recommendations)).map { $0 + 1 } ?? 1
+        expected.insert(.app(.requests), at: afterForYou)
         XCTAssertEqual(
-            ids(.discover, in: sections(menu: nil, libraries: allLibraries, requests: true))?.prefix(3),
+            ids(.discover, in: sections(libraries: allLibraries, requests: true)),
+            expected
+        )
+        XCTAssertEqual(
+            ids(.discover, in: sections(libraries: allLibraries, requests: true))?.prefix(3),
             [.app(.search), .app(.recommendations), .app(.requests)]
         )
     }
 
     func testLibraryRowsUseMediaTypeIcons() {
-        XCTAssertEqual(macSidebarIcon(for: movies).icon, PrimaryMenuBuiltin.movies.navigationIcon)
-        XCTAssertEqual(macSidebarIcon(for: series).icon, PrimaryMenuBuiltin.series.navigationIcon)
+        XCTAssertEqual(macSidebarIcon(for: movies).icon, LibraryMediaCategory.movies.navigationIcon)
+        XCTAssertEqual(macSidebarIcon(for: series).icon, LibraryMediaCategory.series.navigationIcon)
         XCTAssertEqual(
             macSidebarIcon(for: audiobooks).icon,
-            PrimaryMenuBuiltin.audiobooks.navigationIcon
+            LibraryMediaCategory.audiobooks.navigationIcon
         )
     }
 
@@ -168,12 +144,12 @@ final class MacSidebarSectionsTests: XCTestCase {
     }
 
     func testFallbackLibrariesSelectionMovesToTheFirstLoadedLibrary() {
-        let loaded = sections(menu: nil, libraries: [movies, series]).flatMap(\.items)
+        let loaded = sections(libraries: [movies, series]).flatMap(\.items)
         XCTAssertEqual(
             resolvedRequestedMainTabDestination(.libraries, visibleDestinations: loaded),
             .library(1)
         )
-        let empty = sections(menu: nil, libraries: []).flatMap(\.items)
+        let empty = sections(libraries: []).flatMap(\.items)
         XCTAssertEqual(
             resolvedRequestedMainTabDestination(.libraries, visibleDestinations: empty),
             .app(.libraries)
@@ -181,7 +157,7 @@ final class MacSidebarSectionsTests: XCTestCase {
     }
 
     func testRemovingTheSelectedLibraryFallsBackToHome() {
-        let remaining = sections(menu: nil, libraries: [movies, series]).flatMap(\.items)
+        let remaining = sections(libraries: [movies, series]).flatMap(\.items)
         XCTAssertEqual(
             resolvedVisibleMainTabDestination(.library(3), visibleDestinations: remaining),
             .app(.home)

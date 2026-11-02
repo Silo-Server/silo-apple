@@ -2211,7 +2211,7 @@ private struct MacRootPageTopInset: ViewModifier {
 
 enum MainTabDestinationID: Hashable {
     case app(AppTab)
-    case libraryCategory(PrimaryMenuBuiltin)
+    /// A Mac sidebar library row.
     case library(Int)
 }
 
@@ -2238,130 +2238,12 @@ struct MainTabDestination: Identifiable, Equatable {
             selectedIcon: selectedIcon
         )
     }
-
-    static func libraryCategory(_ category: PrimaryMenuBuiltin) -> MainTabDestination {
-        return .init(
-            id: .libraryCategory(category),
-            title: category.title,
-            icon: category.navigationIcon,
-            selectedIcon: category.navigationIcon
-        )
-    }
 }
 
-private struct MainTabSidebarDestination: Identifiable {
-    let destination: MainTabDestination
-    let isNestedLibrary: Bool
-
-    var id: MainTabDestinationID { destination.id }
-}
-
-/// Projects the cross-client menu into roots this Apple shell can navigate
-/// without discarding destination identity. Sections and collections remain
-/// stored in the synced document, but stay hidden until this shell has a
-/// destination-specific root for them.
-func projectedMainTabDestinations(
-    primaryMenu: PrimaryMenuPreference?,
-    availableLibraries: [Library] = [],
-    showAudiobooks: Bool = true
-) -> [MainTabDestination] {
-    guard let primaryMenu else {
-        return AppTab.visibleCases.map(MainTabDestination.app)
-    }
-
-    let menuItems = primaryMenu.items.count == 1 && primaryMenu.items[0].isHome
-        ? appleDefaultPrimaryMenuItems()
-        : primaryMenu.items
-    var destinations: [MainTabDestination] = []
-    for item in menuItems {
-        guard mainTabSupportsDestination(
-            item,
-            availableLibraries: availableLibraries,
-            showAudiobooks: showAudiobooks
-        ) else {
-            continue
-        }
-        let destination: MainTabDestination?
-        switch item {
-        case .builtin(.home): destination = .app(.home)
-        case .builtin(.movies): destination = .libraryCategory(.movies)
-        case .builtin(.series): destination = .libraryCategory(.series)
-        case .builtin(.audiobooks): destination = .libraryCategory(.audiobooks)
-        case .builtin(.music): destination = nil
-        case .builtin(.forYou): destination = .app(.recommendations)
-        case .builtin(.calendar): destination = .app(.calendar)
-        case .library(let libraryId, let label):
-            let library = availableLibraries.first(where: { $0.id == libraryId })
-            destination = .library(
-                id: libraryId,
-                label: library?.name ?? label,
-                icon: library?.navigationIcon ?? "rectangle.stack",
-                selectedIcon: library?.selectedNavigationIcon ?? "rectangle.stack.fill"
-            )
-        case .section, .collection:
-            destination = nil
-        }
-        if let destination,
-           !destinations.contains(where: { $0.id == destination.id }) {
-            destinations.append(destination)
-        }
-    }
-    if !destinations.contains(where: { $0.id == .app(.home) }) {
-        destinations.insert(.app(.home), at: 0)
-    }
-    if destinations.count == 1, destinations[0].id == .app(.home) {
-        var defaults: [MainTabDestination] = [.app(.home)]
-        if availableLibraries.contains(where: {
-            libraryMatchesPrimaryMenuCategory($0, category: .movies)
-        }) {
-            defaults.append(.libraryCategory(.movies))
-        }
-        if availableLibraries.contains(where: {
-            libraryMatchesPrimaryMenuCategory($0, category: .series)
-        }) {
-            defaults.append(.libraryCategory(.series))
-        }
-        defaults.append(contentsOf: [
-            .app(.recommendations),
-            .app(.calendar),
-        ])
-        return defaults
-    }
-    return destinations
-}
-
-/// Runtime/editor capability gate for the non-tvOS Apple main shell. The
-/// synced document remains untouched; roots that the active profile cannot
-/// currently open simply stay out of the rendered navigation and editor.
-func mainTabSupportsDestination(
-    _ item: PrimaryMenuItem,
-    availableLibraries: [Library],
-    showAudiobooks: Bool = true
-) -> Bool {
-    switch item {
-    case .builtin(.movies):
-        return availableLibraries.contains {
-            libraryMatchesPrimaryMenuCategory($0, category: .movies)
-        }
-    case .builtin(.series):
-        return availableLibraries.contains {
-            libraryMatchesPrimaryMenuCategory($0, category: .series)
-        }
-    case .builtin(.audiobooks):
-        return showAudiobooks && availableLibraries.contains {
-            libraryMatchesPrimaryMenuCategory($0, category: .audiobooks)
-        }
-    case .builtin(.music):
-        return false
-    case .builtin(.home), .builtin(.forYou), .builtin(.calendar):
-        return true
-    case .library(let libraryId, _):
-        return availableLibraries.contains {
-            $0.id == libraryId && (showAudiobooks || !$0.isAudiobookLibrary)
-        }
-    case .section, .collection:
-        return false
-    }
+/// The iPhone, iPad and Mac roots, in a fixed order that matches the Android
+/// phone bar. Search, Requests and Profile live in each page's header.
+func mainTabDestinations(downloadsEnabled: Bool) -> [MainTabDestination] {
+    AppTab.visibleCases.map(MainTabDestination.app) + (downloadsEnabled ? [.app(.downloads)] : [])
 }
 
 func resolvedVisibleMainTabDestination(
@@ -2379,15 +2261,11 @@ func resolvedRequestedMainTabDestination(
 ) -> MainTabDestinationID {
     if requestedTab == .libraries,
        !visibleDestinations.contains(where: { $0.id == .app(.libraries) }),
-       let authoredLibraryRoot = visibleDestinations.first(where: {
-           switch $0.id {
-           case .libraryCategory, .library:
-               return true
-           case .app:
-               return false
-           }
+       let libraryRoot = visibleDestinations.first(where: {
+           if case .library = $0.id { return true }
+           return false
        }) {
-        return authoredLibraryRoot.id
+        return libraryRoot.id
     }
     return resolvedVisibleMainTabDestination(
         .app(requestedTab),
@@ -2438,9 +2316,7 @@ struct MainTabLibrarySnapshot: Equatable {
 struct MainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedDestinationID: MainTabDestinationID = .app(.home)
-    @State private var uiCustomization = UICustomizationPreferences.shared
-    /// The local audiobook opt-in is a final visibility gate even when a
-    /// synced/custom menu contains an Audiobooks destination.
+    /// The local audiobook opt-in; it hides audiobook libraries.
     @State private var navPrefs = AppNavPreferences.shared
     @State private var serverRegistry = ServerRegistry.shared
     /// Tagged with the server/profile that authorized the library list. A
@@ -2580,12 +2456,6 @@ struct MainTabView: View {
         }
         .task { openRequestedSearch() }
         #endif
-        .onChange(of: uiCustomization.primaryMenu) { _, _ in
-            selectedDestinationID = resolvedVisibleMainTabDestination(
-                selectedDestinationID,
-                visibleDestinations: visibleDestinations
-            )
-        }
         .onChange(of: navPrefs.showAudiobooks) { _, _ in
             selectedDestinationID = resolvedVisibleMainTabDestination(
                 selectedDestinationID,
@@ -2776,7 +2646,7 @@ struct MainTabView: View {
 
     #if os(macOS)
     /// The Mac sidebar's groups. Every library the profile can open gets its
-    /// own row; the synced menu only orders the other destinations.
+    /// own row.
     private var macSidebarSectionList: [MacSidebarSection] {
         macSidebarSections(
             destinations: projectedDestinations,
@@ -2788,18 +2658,7 @@ struct MainTabView: View {
     #endif
 
     private var projectedDestinations: [MainTabDestination] {
-        var destinations = projectedMainTabDestinations(
-            primaryMenu: uiCustomization.primaryMenu,
-            availableLibraries: librarySnapshot.availableLibraries(
-                for: currentLibraryAuthority
-            ),
-            showAudiobooks: navPrefs.showAudiobooks
-        )
-        if DownloadManager.shared.downloadsEnabled,
-           !destinations.contains(where: { $0.id == .app(.downloads) }) {
-            destinations.append(.app(.downloads))
-        }
-        return destinations
+        mainTabDestinations(downloadsEnabled: DownloadManager.shared.downloadsEnabled)
     }
 
     private var currentLibraryAuthority: MainTabLibraryAuthority? {
@@ -2936,10 +2795,7 @@ struct MainTabView: View {
 
     private var iPadSidebarLayout: some View {
         NavigationSplitView(columnVisibility: $iPadColumnVisibility) {
-            sidebarList(
-                dismissAfterSelection: true,
-                nestsPinnedLibraries: true
-            )
+            sidebarList(dismissAfterSelection: true)
                 .navigationSplitViewColumnWidth(
                     min: iPadSidebarWidth,
                     ideal: iPadSidebarWidth,
@@ -3097,8 +2953,7 @@ struct MainTabView: View {
     }
 
     private func sidebarList(
-        dismissAfterSelection: Bool,
-        nestsPinnedLibraries: Bool
+        dismissAfterSelection: Bool
     ) -> some View {
         List(selection: Binding<MainTabDestinationID?>(
             get: { selectedDestinationID },
@@ -3110,8 +2965,7 @@ struct MainTabView: View {
                 }
             }
         )) {
-            ForEach(sidebarDestinations(nestingPinnedLibraries: nestsPinnedLibraries)) { item in
-                let destination = item.destination
+            ForEach(visibleDestinations) { destination in
                 let isSelected = selectedDestinationID == destination.id
                 Label {
                     Text(destination.title)
@@ -3123,7 +2977,6 @@ struct MainTabView: View {
                         .foregroundStyle(isSelected ? .primary : .secondary)
                         #endif
                 }
-                .padding(.leading, item.isNestedLibrary ? 24 : 0)
                 .tag(destination.id)
             }
         }
@@ -3135,39 +2988,6 @@ struct MainTabView: View {
         // system's white text, so the selected row gets a graphite fill.
         .tint(Color.siloIconTile)
         #endif
-    }
-
-    private func sidebarDestinations(
-        nestingPinnedLibraries: Bool
-    ) -> [MainTabSidebarDestination] {
-        guard nestingPinnedLibraries else {
-            return visibleDestinations.map {
-                MainTabSidebarDestination(destination: $0, isNestedLibrary: false)
-            }
-        }
-
-        let availableLibraries = librarySnapshot.availableLibraries(
-            for: currentLibraryAuthority
-        )
-        return groupPinnedLibrariesUnderMediaTypes(
-            visibleDestinations,
-            libraries: availableLibraries,
-            libraryID: { destination in
-                guard case .library(let libraryID) = destination.id else { return nil }
-                return libraryID
-            },
-            mediaTypeCategory: { destination in
-                guard case .libraryCategory(let category) = destination.id else {
-                    return nil
-                }
-                return category
-            }
-        ).map {
-            MainTabSidebarDestination(
-                destination: $0.element,
-                isNestedLibrary: $0.isNestedLibrary
-            )
-        }
     }
 
     /// Collapses or re-expands the sidebar without moving the detail content.
@@ -3220,12 +3040,6 @@ struct MainTabView: View {
         switch destination.id {
         case .app(let tab):
             tabContent(for: tab)
-        case .libraryCategory(let category):
-            LibrariesTabView(
-                category: category,
-                libraryAuthority: currentLibraryAuthority,
-                onLibrariesLoaded: acceptLoadedLibraries
-            )
         case .library(let libraryId):
             LibrariesTabView(
                 fixedLibraryId: libraryId,

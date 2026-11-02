@@ -149,7 +149,7 @@ final class FakeThemeMusicTransport: TitleArtTransport, @unchecked Sendable {
             .available(APIv2SettingsContractCapabilities(
                 revision: "capabilities-\(manifestRevision)", state: "available", allowed: true,
                 manifestRevision: manifestRevision, clientFamilies: ["tv", "mobile", "tablet", "desktop", "web"],
-                supportsBatchedEffective: true, supportsAtomicShortcuts: true))
+                supportsBatchedEffective: true))
         }
     }
 

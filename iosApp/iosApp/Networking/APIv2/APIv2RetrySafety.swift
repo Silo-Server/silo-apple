@@ -96,7 +96,6 @@ enum APIv2MutationCatalog {
         .init("DELETE", "/api/v2/subtitle-prefs/{series_id}", .naturalIdempotent),
         // Settings values
         .init("PUT", "/api/v2/settings/values/{key}", .naturalIdempotent),
-        .init("PUT", "/api/v2/settings/values/nav.shortcuts/item", .naturalIdempotent),
         .init("DELETE", "/api/v2/settings/values/{key}", .naturalIdempotent),
         // Catalog and home
         .init("POST", "/api/v2/catalog/query", .naturalIdempotent),

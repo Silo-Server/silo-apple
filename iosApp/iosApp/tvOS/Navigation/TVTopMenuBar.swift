@@ -82,57 +82,33 @@ enum TVRootDestination: Hashable {
     case home
     case recommendations
     case libraryType(TVLibraryTabType)
-    case libraryShortcut(libraryId: Int, label: String)
     case calendar
-    /// Media requests; present only while the server has requests enabled.
-    case requests
-
-    static func == (lhs: TVRootDestination, rhs: TVRootDestination) -> Bool {
-        switch (lhs, rhs) {
-        case (.home, .home), (.recommendations, .recommendations), (.calendar, .calendar),
-             (.requests, .requests):
-            return true
-        case (.libraryType(let lhsType), .libraryType(let rhsType)):
-            return lhsType == rhsType
-        case (.libraryShortcut(let lhsId, _), .libraryShortcut(let rhsId, _)):
-            return lhsId == rhsId
-        default:
-            return false
-        }
-    }
-
-    func hash(into hasher: inout Hasher) {
-        switch self {
-        case .home:
-            hasher.combine(0)
-        case .recommendations:
-            hasher.combine(1)
-        case .libraryType(let type):
-            hasher.combine(2)
-            hasher.combine(type)
-        case .libraryShortcut(let libraryId, _):
-            hasher.combine(3)
-            hasher.combine(libraryId)
-        case .calendar:
-            hasher.combine(4)
-        case .requests:
-            hasher.combine(5)
-        }
-    }
 
     var title: String {
         switch self {
         case .home: return "Home"
         case .recommendations: return "For You"
         case .libraryType(let type): return type.title
-        case .libraryShortcut(_, let label): return label
         case .calendar: return "Calendar"
-        case .requests: return "Requests"
         }
+    }
+
+    /// The fixed Apple TV bar, matching Android TV and Roku: Home, a tab per
+    /// library type the profile can see, For You, Calendar. Audiobooks is
+    /// opt-in. Search and the profile avatar sit outside this list.
+    static func visibleRoots(
+        libraries: [Library],
+        showAudiobooks: Bool
+    ) -> [TVRootDestination] {
+        let types = TVLibraryTabType.allCases.filter { type in
+            (type != .audiobooks || showAudiobooks)
+                && libraries.contains(where: { type.matches($0) })
+        }
+        return [.home] + types.map(TVRootDestination.libraryType) + [.recommendations, .calendar]
     }
 }
 
-/// Skyline top bar: wordmark left, search + the synced root tabs centered
+/// Skyline top bar: wordmark left, search + the root tabs centered
 /// (search sits left of the first root; the tabs stay screen-centered), profile
 /// avatar right (§5.1). The bar is custom on purpose — the system
 /// `TabView` sidebar steals leftward focus — and draws no background band;
@@ -493,13 +469,9 @@ struct TVTopMenuBar: View {
 
     private func rootPanel(_ root: TVRootDestination) -> TVTopMenuPanel? {
         switch root {
-        case .libraryType:
-            return TVLibraryMenuRootKind.category.hasSectionCascade ? .root(root) : nil
-        case .libraryShortcut:
-            return TVLibraryMenuRootKind.directShortcut.hasSectionCascade ? .root(root) : nil
-        case .recommendations:
+        case .libraryType, .recommendations:
             return .root(root)
-        case .home, .calendar, .requests:
+        case .home, .calendar:
             return nil
         }
     }
@@ -508,11 +480,9 @@ struct TVTopMenuBar: View {
         switch root {
         case .libraryType:
             return "Rest to choose a library"
-        case .libraryShortcut:
-            return "Rest to choose a section"
         case .recommendations:
             return "Rest to choose Watchlist, Favorites, or Recommendations"
-        case .home, .calendar, .requests:
+        case .home, .calendar:
             return ""
         }
     }
@@ -1120,6 +1090,7 @@ private enum TVProfileAction: Hashable {
     case watchlist
     case favorites
     case history
+    case requests
     case watchParty
     case settings
     case switchServer
@@ -1150,6 +1121,7 @@ struct TVProfileDropdown: View {
     let onWatchlist: () -> Void
     let onFavorites: () -> Void
     let onHistory: () -> Void
+    let onRequests: () -> Void
     let onWatchParty: () -> Void
     let onSettings: () -> Void
     let onSwitchServer: () -> Void
@@ -1192,6 +1164,9 @@ struct TVProfileDropdown: View {
             actionButton("Watchlist", systemImage: "bookmark.fill", id: .watchlist, action: onWatchlist)
             actionButton("Favorites", systemImage: "heart.fill", id: .favorites, action: onFavorites)
             actionButton("History", systemImage: "clock.fill", id: .history, action: onHistory)
+            if RequestsFeatureStore.shared.isEnabled {
+                actionButton("Requests", systemImage: "paperplane.fill", id: .requests, action: onRequests)
+            }
             if WatchPartyEntry.isAvailable {
                 actionButton(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3", id: .watchParty, action: onWatchParty)
             }

@@ -58,235 +58,6 @@ extension CardPresentationPreference: Codable {
     }
 }
 
-enum PrimaryMenuBuiltin: String, Codable, CaseIterable, Identifiable, Sendable {
-    case home
-    case movies
-    case series
-    case music
-    case audiobooks
-    case forYou = "for_you"
-    case calendar
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .home: return "Home"
-        case .movies: return "Movies"
-        case .series: return "Series"
-        case .music: return "Music"
-        case .audiobooks: return "Audiobooks"
-        case .forYou: return "For You"
-        case .calendar: return "Calendar"
-        }
-    }
-
-    var navigationIcon: String {
-        switch self {
-        case .home: return AppTab.home.icon
-        case .movies: return "film.stack"
-        case .series: return "tv"
-        case .music: return "rectangle.stack"
-        case .audiobooks: return "book.closed"
-        case .forYou: return AppTab.recommendations.icon
-        case .calendar: return AppTab.calendar.icon
-        }
-    }
-}
-
-func appleDefaultPrimaryMenuItems() -> [PrimaryMenuItem] {
-    [
-        .builtin(.home),
-        .builtin(.movies),
-        .builtin(.series),
-        .builtin(.forYou),
-        .builtin(.calendar),
-    ]
-}
-
-/// One item in `nav.primary_menu` or `nav.shortcuts`.
-///
-/// The associated-value representation keeps impossible combinations out of
-/// app state while custom coding preserves the contract's flat tagged object.
-enum PrimaryMenuItem: Hashable, Identifiable, Sendable {
-    case builtin(PrimaryMenuBuiltin)
-    case library(libraryId: Int, label: String)
-    case section(libraryId: Int, sectionId: String, label: String)
-    case collection(collectionId: String, label: String, libraryId: Int?)
-
-    var id: String {
-        switch self {
-        case .builtin(let destination):
-            return "builtin:\(destination.rawValue)"
-        case .library(let libraryId, _):
-            return "library:\(libraryId)"
-        case .section(let libraryId, let sectionId, _):
-            return "section:\(libraryId):\(sectionId)"
-        case .collection(let collectionId, _, let libraryId):
-            let libraryValue = libraryId.map(String.init) ?? ""
-            let libraryPresence = libraryId == nil ? "0" : "1"
-            return "collection|\(libraryPresence)"
-                + "|\(Self.identityComponent(libraryValue))"
-                + "|\(Self.identityComponent(collectionId))"
-        }
-    }
-
-    /// Pre-structured identity used by caches written before collection IDs
-    /// became length-prefixed. It is accepted only while migrating an outbox;
-    /// all live equality, deduplication, and focus identity uses ``id``.
-    fileprivate var legacyUnstructuredId: String {
-        switch self {
-        case .collection(let collectionId, _, let libraryId):
-            return "collection:\(libraryId.map(String.init) ?? "all"):\(collectionId)"
-        default:
-            return id
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .builtin(let destination): return destination.title
-        case .library(_, let label), .section(_, _, let label), .collection(_, let label, _):
-            return label
-        }
-    }
-
-    var isHome: Bool { self == .builtin(.home) }
-
-    var navigationIcon: String {
-        switch self {
-        case .builtin(let destination): return destination.navigationIcon
-        case .library, .section, .collection: return "rectangle.stack"
-        }
-    }
-
-    var isContractValid: Bool {
-        switch self {
-        case .builtin:
-            return true
-        case .library(let libraryId, let label):
-            return libraryId > 0 && Self.isValidLabel(label)
-        case .section(let libraryId, let sectionId, let label):
-            return libraryId > 0
-                && Self.isValidTargetId(sectionId)
-                && Self.isValidLabel(label)
-        case .collection(let collectionId, let label, let libraryId):
-            return (libraryId.map { $0 > 0 } ?? true)
-                && Self.isValidTargetId(collectionId)
-                && Self.isValidLabel(label)
-        }
-    }
-
-    var libraryId: Int? {
-        switch self {
-        case .library(let id, _), .section(let id, _, _): return id
-        case .collection(_, _, let id): return id
-        case .builtin: return nil
-        }
-    }
-
-    private static func isValidLabel(_ value: String) -> Bool {
-        value.count <= 256
-            && !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private static func isValidTargetId(_ value: String) -> Bool {
-        value.count <= 128
-            && !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private static func identityComponent(_ value: String) -> String {
-        "\(value.utf8.count)#\(value)"
-    }
-}
-
-extension PrimaryMenuItem: Codable {
-    private enum ItemType: String, Codable {
-        case builtin
-        case library
-        case section
-        case collection
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case type
-        case destination
-        case libraryId = "library_id"
-        case sectionId = "section_id"
-        case collectionId = "collection_id"
-        case label
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        switch try container.decode(ItemType.self, forKey: .type) {
-        case .builtin:
-            self = .builtin(try container.decode(PrimaryMenuBuiltin.self, forKey: .destination))
-        case .library:
-            self = .library(
-                libraryId: try container.decode(Int.self, forKey: .libraryId),
-                label: try container.decode(String.self, forKey: .label)
-            )
-        case .section:
-            self = .section(
-                libraryId: try container.decode(Int.self, forKey: .libraryId),
-                sectionId: try container.decode(String.self, forKey: .sectionId),
-                label: try container.decode(String.self, forKey: .label)
-            )
-        case .collection:
-            self = .collection(
-                collectionId: try container.decode(String.self, forKey: .collectionId),
-                label: try container.decode(String.self, forKey: .label),
-                libraryId: try container.decodeIfPresent(Int.self, forKey: .libraryId)
-            )
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .builtin(let destination):
-            try container.encode(ItemType.builtin, forKey: .type)
-            try container.encode(destination, forKey: .destination)
-        case .library(let libraryId, let label):
-            try container.encode(ItemType.library, forKey: .type)
-            try container.encode(libraryId, forKey: .libraryId)
-            try container.encode(label, forKey: .label)
-        case .section(let libraryId, let sectionId, let label):
-            try container.encode(ItemType.section, forKey: .type)
-            try container.encode(libraryId, forKey: .libraryId)
-            try container.encode(sectionId, forKey: .sectionId)
-            try container.encode(label, forKey: .label)
-        case .collection(let collectionId, let label, let libraryId):
-            try container.encode(ItemType.collection, forKey: .type)
-            try container.encode(collectionId, forKey: .collectionId)
-            try container.encode(label, forKey: .label)
-            try container.encodeIfPresent(libraryId, forKey: .libraryId)
-        }
-    }
-}
-
-struct PrimaryMenuPreference: Codable, Equatable, Sendable {
-    var items: [PrimaryMenuItem]
-
-    /// The server validates this too. Rechecking at the client boundary makes
-    /// a corrupt offline cache harmless instead of rendering a focus graph
-    /// with no Home anchor or duplicate identities.
-    var isValid: Bool {
-        items.count >= 1
-            && items.count <= 64
-            && items.allSatisfy(\.isContractValid)
-            && items.filter(\.isHome).count == 1
-            && Set(items.map(\.id)).count == items.count
-    }
-}
-
-struct NavigationShortcutsPreference: Codable, Equatable, Sendable {
-    var items: [PrimaryMenuItem]
-
-    static let empty = NavigationShortcutsPreference(items: [])
-}
-
 // MARK: - Transport
 
 protocol UICustomizationTransport: AnyObject, Sendable {
@@ -297,11 +68,6 @@ protocol UICustomizationTransport: AnyObject, Sendable {
         keys: [SettingKey],
         requestIdentity: HTTPRequestIdentity
     ) async throws -> EffectiveSettingValuesResponse
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws
     func putValue(
         key: SettingKey,
         scope: SettingScopeIdentity,
@@ -320,14 +86,6 @@ extension UICustomizationTransport {
         requestIdentity: HTTPRequestIdentity
     ) async -> SettingsCapabilitiesResult {
         .serverUpgradeRequired
-    }
-
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        throw URLError(.unsupportedURL)
     }
 
     func deleteValue(
@@ -360,14 +118,6 @@ final class SiloUICustomizationTransport: UICustomizationTransport {
             keys: keys,
             requestIdentity: requestIdentity
         )
-    }
-
-    func putShortcutItem(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        requestIdentity: HTTPRequestIdentity
-    ) async throws {
-        try await api.putNavigationShortcutItem(item, present: present, requestIdentity: requestIdentity)
     }
 
     func putValue(
@@ -413,7 +163,7 @@ enum UICustomizationCapabilityState: Equatable, Sendable {
 /// Last authoritative compatibility conclusion for one server/profile/family
 /// cache. Probe failures are deliberately not conclusions: offline clients can
 /// keep rendering a previously valid cache, while an explicitly older server
-/// must not keep revision-5 navigation or card presentation active.
+/// must not keep revision-5 card presentation active.
 enum UICustomizationSupportProjection: String, Codable, Equatable, Sendable {
     case unknown
     case supported
@@ -424,37 +174,25 @@ enum UICustomizationSupportProjection: String, Codable, Equatable, Sendable {
 
 // MARK: - Observable preference store
 
-/// Effective UI customization for the active profile and client family.
+/// Effective card presentation for the active profile and client family.
 ///
 /// Server values are authoritative when reachable. A per-profile/family cache
-/// is painted first and updated optimistically so navigation and poster layout
-/// remain useful offline; a failed sync never erases the last working UI.
+/// is painted first and updated optimistically so poster layout remains
+/// useful offline; a failed sync never erases the last working UI.
 @MainActor
 @Observable
 final class UICustomizationPreferences {
     static let shared = UICustomizationPreferences()
 
-    private var storedPrimaryMenu: PrimaryMenuPreference?
-    private var storedShortcuts: NavigationShortcutsPreference = .empty
     private var storedCardPresentation: CardPresentationPreference = .standard
-    private var storedPrimaryMenuSource: SettingSource?
     private var storedCardPresentationSource: SettingSource?
     private(set) var isSaving = false
     private(set) var syncErrorMessage: String?
     private(set) var capabilityState: UICustomizationCapabilityState = .checking
     private(set) var supportProjection: UICustomizationSupportProjection = .unknown
 
-    var primaryMenu: PrimaryMenuPreference? {
-        supportProjection.projectsCachedValues ? storedPrimaryMenu : nil
-    }
-    var shortcuts: NavigationShortcutsPreference {
-        supportProjection.projectsCachedValues ? storedShortcuts : .empty
-    }
     var cardPresentation: CardPresentationPreference {
         supportProjection.projectsCachedValues ? storedCardPresentation : .standard
-    }
-    private var primaryMenuSource: SettingSource? {
-        supportProjection.projectsCachedValues ? storedPrimaryMenuSource : nil
     }
     private var cardPresentationSource: SettingSource? {
         supportProjection.projectsCachedValues ? storedCardPresentationSource : nil
@@ -472,14 +210,10 @@ final class UICustomizationPreferences {
     @ObservationIgnored private var saveTail: Task<Void, Never>?
     @ObservationIgnored private var pendingSaveCount = 0
     @ObservationIgnored private var syncErrorsByKey: [String: String] = [:]
-    @ObservationIgnored private var shortcutSyncErrorsByIdentity: [String: String] = [:]
     @ObservationIgnored private var refreshSyncErrorMessage: String?
     @ObservationIgnored private var loadedCacheKey: String?
     @ObservationIgnored private var pendingSyncWrites: [String: PendingSyncWrite] = [:]
-    @ObservationIgnored private var pendingShortcutOperations: [String: PendingShortcutOperation] = [:]
-    @ObservationIgnored private var pendingShortcutPlacementBlockedIds: Set<String> = []
     @ObservationIgnored private var pendingDeletes: [String: PendingDelete] = [:]
-    @ObservationIgnored private var nextShortcutOperationSequence: UInt64 = 0
     @ObservationIgnored private let writeRetryPolicy: SettingWriteRetryPolicy
     @ObservationIgnored private var outboxRetryTask: Task<Void, Never>?
     @ObservationIgnored private var inFlightRefresh: InFlightRefresh?
@@ -554,118 +288,6 @@ final class UICustomizationPreferences {
         }
     }
 
-    private struct PendingShortcutOperation: Codable {
-        let item: PrimaryMenuItem
-        let present: Bool
-        /// True when this shortcut edit also authored this family's primary
-        /// menu placement. The dependent menu write waits for shortcut
-        /// acceptance so a rejected profile pin cannot commit only one half.
-        let updatesPrimaryMenu: Bool
-        /// Intended family-menu position for an accepted add. Keeping the
-        /// authored index lets an earlier offline pin land ahead of later
-        /// accepted pins when it is eventually replayed.
-        let primaryMenuIndex: Int?
-        /// Stable neighbor from the projected authored menu. The anchor keeps
-        /// placement correct when an earlier pending removal still occupies an
-        /// absolute slot at the time this add is accepted.
-        let primaryMenuPredecessorId: String?
-        /// Original catalog position used to restore a definitively rejected
-        /// removal without replacing unrelated optimistic shortcut edits.
-        let shortcutIndex: Int?
-        /// Local identity of this exact desired-presence operation, stable
-        /// across its retries. Never sent.
-        let operationId: String
-        /// Preserves user intent order across identities after a restart.
-        let sequence: UInt64
-        var retry = OutboxRetryState()
-
-        private enum CodingKeys: String, CodingKey {
-            case item
-            case present
-            case updatesPrimaryMenu
-            case primaryMenuIndex
-            case primaryMenuPredecessorId
-            case shortcutIndex
-            case operationId
-            case legacyMutationId = "mutationId"
-            case sequence
-            case retry
-        }
-
-        init(
-            item: PrimaryMenuItem,
-            present: Bool,
-            updatesPrimaryMenu: Bool,
-            primaryMenuIndex: Int?,
-            primaryMenuPredecessorId: String?,
-            shortcutIndex: Int?,
-            operationId: String = UUID().uuidString,
-            sequence: UInt64,
-            retry: OutboxRetryState = OutboxRetryState()
-        ) {
-            self.item = item
-            self.present = present
-            self.updatesPrimaryMenu = updatesPrimaryMenu
-            self.primaryMenuIndex = primaryMenuIndex
-            self.primaryMenuPredecessorId = primaryMenuPredecessorId
-            self.shortcutIndex = shortcutIndex
-            self.operationId = operationId
-            self.sequence = sequence
-            self.retry = retry
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            let decodedItem = try container.decode(PrimaryMenuItem.self, forKey: .item)
-            item = decodedItem
-            present = try container.decode(Bool.self, forKey: .present)
-            updatesPrimaryMenu = try container.decodeIfPresent(
-                Bool.self,
-                forKey: .updatesPrimaryMenu
-            ) ?? {
-                if case .library = decodedItem { return true }
-                return false
-            }()
-            primaryMenuIndex = try container.decodeIfPresent(Int.self, forKey: .primaryMenuIndex)
-            primaryMenuPredecessorId = try container.decodeIfPresent(
-                String.self,
-                forKey: .primaryMenuPredecessorId
-            )
-            shortcutIndex = try container.decodeIfPresent(Int.self, forKey: .shortcutIndex)
-            operationId = try container.decodeIfPresent(String.self, forKey: .operationId)
-                ?? container.decode(String.self, forKey: .legacyMutationId)
-            sequence = try container.decodeIfPresent(UInt64.self, forKey: .sequence) ?? 0
-            retry = try container.decodeIfPresent(OutboxRetryState.self, forKey: .retry) ?? OutboxRetryState()
-        }
-
-        func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encode(item, forKey: .item)
-            try container.encode(present, forKey: .present)
-            try container.encode(updatesPrimaryMenu, forKey: .updatesPrimaryMenu)
-            try container.encodeIfPresent(primaryMenuIndex, forKey: .primaryMenuIndex)
-            try container.encodeIfPresent(primaryMenuPredecessorId, forKey: .primaryMenuPredecessorId)
-            try container.encodeIfPresent(shortcutIndex, forKey: .shortcutIndex)
-            try container.encode(operationId, forKey: .operationId)
-            try container.encode(sequence, forKey: .sequence)
-            try container.encode(retry, forKey: .retry)
-        }
-
-        func supersedingPrimaryMenuPlacement() -> Self {
-            Self(
-                item: item,
-                present: present,
-                updatesPrimaryMenu: false,
-                primaryMenuIndex: primaryMenuIndex,
-                primaryMenuPredecessorId: primaryMenuPredecessorId,
-                shortcutIndex: shortcutIndex,
-                operationId: operationId,
-                sequence: sequence,
-                retry: retry
-            )
-        }
-    }
-
     private struct PendingDelete: Codable {
         let scope: SettingScope
         /// A local operation identity prevents an older queued DELETE from
@@ -701,16 +323,13 @@ final class UICustomizationPreferences {
         }
     }
 
+    /// Caches written before the menu settings were dropped also carry menu
+    /// and shortcut members; decoding ignores them.
     private struct Cache: Codable {
-        let primaryMenu: PrimaryMenuPreference?
-        let shortcuts: NavigationShortcutsPreference
         let cardPresentation: CardPresentationPreference
-        let primaryMenuSource: SettingSource?
         let cardPresentationSource: SettingSource?
         let supportProjection: UICustomizationSupportProjection?
         let pendingSyncWrites: [String: PendingSyncWrite]?
-        let pendingShortcutOperations: [String: PendingShortcutOperation]?
-        let pendingShortcutPlacementBlockedIds: [String]?
         let pendingDeletes: [String: PendingDelete]?
     }
 
@@ -737,7 +356,7 @@ final class UICustomizationPreferences {
     ///
     /// Calls for the same identity and local revision share one pass. `force`
     /// starts a new pass, for outbox changes that don't advance the revision
-    /// (device-row deletes, rejected shortcuts, discarded held changes).
+    /// (device-row deletes, discarded held changes).
     func refresh(force: Bool = false) async {
         let targetCacheKey = cacheKey()
         if !force,
@@ -830,7 +449,6 @@ final class UICustomizationPreferences {
                 clearReconciledSyncErrors()
             } else {
                 refreshSyncErrorMessage = nil
-                reconcilePendingShortcutPlacementError()
                 updateSyncErrorMessage()
             }
             saveCache(for: targetCacheKey)
@@ -864,163 +482,6 @@ final class UICustomizationPreferences {
         setCardPresentation(updated)
     }
 
-    func setPrimaryMenuItems(_ items: [PrimaryMenuItem]) {
-        guard !primaryMenuUsesDeviceOverride,
-              let context = operationContext() else { return }
-        let acceptedIds = Set(resolvedPrimaryMenuItems().map(\.id))
-        let unacceptedPinIds = Set(pendingShortcutOperations.values.compactMap { operation in
-            operation.present ? operation.item.id : nil
-        }).subtracting(acceptedIds)
-        let blockedIds = Set(items.map(\.id)).intersection(unacceptedPinIds)
-        guard blockedIds.isEmpty else {
-            pendingShortcutPlacementBlockedIds = blockedIds
-            setSyncError(Self.pendingShortcutPlacementMessage, for: .navPrimaryMenu)
-            saveCache(for: context.cacheKey)
-            return
-        }
-        let clearedPlacementBlock = !pendingShortcutPlacementBlockedIds.isEmpty
-            || syncErrorsByKey[SettingKey.navPrimaryMenu.rawValue]
-                == Self.pendingShortcutPlacementMessage
-        pendingShortcutPlacementBlockedIds.removeAll()
-        let didPersist = setPrimaryMenuItems(
-            items,
-            context: context,
-            supersedesPendingShortcutPlacements: true
-        )
-        if clearedPlacementBlock && !didPersist {
-            saveCache(for: context.cacheKey)
-        }
-    }
-
-    @discardableResult
-    private func setPrimaryMenuItems(
-        _ items: [PrimaryMenuItem],
-        context: OperationContext,
-        advancesMutationRevision: Bool = true,
-        supersedesPendingShortcutPlacements: Bool = false
-    ) -> Bool {
-        let normalized = Self.normalizedPrimaryMenuItems(items)
-        guard normalized.count <= Self.maximumPrimaryMenuCount else {
-            setSyncError(Self.primaryMenuLimitMessage, for: .navPrimaryMenu)
-            return false
-        }
-        let value = PrimaryMenuPreference(items: normalized)
-        guard value.isValid else { return false }
-        if let menuError = syncErrorsByKey[SettingKey.navPrimaryMenu.rawValue],
-           menuError == Self.primaryMenuLimitMessage
-            || (menuError == Self.pendingShortcutPlacementMessage
-                && pendingShortcutPlacementBlockedIds.isEmpty) {
-            setSyncError(nil, for: .navPrimaryMenu)
-        }
-        if advancesMutationRevision {
-            localMutationRevision += 1
-        }
-        if supersedesPendingShortcutPlacements {
-            supersedePendingShortcutPlacements()
-        }
-        storedPrimaryMenu = value
-        storedPrimaryMenuSource = .scope(.profileClient)
-        pendingDeletes.removeValue(
-            forKey: Self.deleteIdentity(key: .navPrimaryMenu, scope: .profileClient)
-        )
-        return persist(
-            key: .navPrimaryMenu,
-            scope: .profileClient,
-            value: value,
-            context: context
-        )
-    }
-
-    func setLibraryPinned(_ library: Library, isPinned: Bool) {
-        guard let context = operationContext() else { return }
-        let item = PrimaryMenuItem.library(libraryId: library.id, label: library.name)
-        guard item.isContractValid else { return }
-        let currentShortcuts = shortcuts.items
-        let alreadyPinned = currentShortcuts.contains { $0.id == item.id }
-        guard alreadyPinned != isPinned else { return }
-        guard !isPinned
-                || currentShortcuts.count < Self.maximumShortcutCount else {
-            setSyncError(Self.shortcutLimitMessage, for: .navShortcuts)
-            return
-        }
-
-        var updatedMenu: [PrimaryMenuItem]?
-        if !primaryMenuUsesDeviceOverride {
-            var candidate = projectedPrimaryMenuItems().filter { $0.id != item.id }
-            if isPinned { candidate.append(item) }
-            let normalized = Self.normalizedPrimaryMenuItems(candidate)
-            guard normalized.count <= Self.maximumPrimaryMenuCount else {
-                setSyncError(Self.primaryMenuLimitMessage, for: .navPrimaryMenu)
-                return
-            }
-            updatedMenu = normalized
-        }
-
-        setSyncError(nil, for: .navShortcuts)
-        localMutationRevision += 1
-        var updatedShortcuts = currentShortcuts.filter { $0.id != item.id }
-        if isPinned { updatedShortcuts.append(item) }
-        storedShortcuts = Self.sanitizedShortcuts(.init(items: updatedShortcuts))
-
-        nextShortcutOperationSequence += 1
-        let primaryMenuIndex = isPinned
-            ? updatedMenu?.firstIndex(where: { $0.id == item.id })
-            : nil
-        let operation = PendingShortcutOperation(
-            item: item,
-            present: isPinned,
-            updatesPrimaryMenu: updatedMenu != nil,
-            primaryMenuIndex: primaryMenuIndex,
-            primaryMenuPredecessorId: primaryMenuIndex.flatMap { index in
-                guard index > 0 else { return nil }
-                return updatedMenu?[index - 1].id
-            },
-            shortcutIndex: currentShortcuts.firstIndex(where: { $0.id == item.id }),
-            sequence: nextShortcutOperationSequence
-        )
-        pendingShortcutOperations[item.id] = operation
-        reconcilePendingShortcutPlacementError()
-
-        saveCache(for: context.cacheKey)
-        enqueueShortcutOperation(
-            operation,
-            context: context
-        )
-    }
-
-    func isLibraryPinned(_ libraryId: Int) -> Bool {
-        shortcuts.items.contains {
-            if case .library(let id, _) = $0 { return id == libraryId }
-            return false
-        }
-    }
-
-    /// The app-defined menu used when the contract value is null. Legacy
-    /// audiobook opt-in remains part of that default until the user authors a
-    /// new menu. Profile-wide shortcuts stay available to every family, but
-    /// only an explicit family menu places them in that family's navigation.
-    func resolvedPrimaryMenuItems() -> [PrimaryMenuItem] {
-        // Every write path validates the stored menu.
-        if let primaryMenu {
-            return primaryMenu.items
-        }
-
-        var items: [PrimaryMenuItem] = [
-            .builtin(.home),
-            .builtin(.movies),
-            .builtin(.series),
-            .builtin(.music),
-        ]
-        if AppNavPreferences.shared.showAudiobooks {
-            items.append(.builtin(.audiobooks))
-        }
-        items.append(contentsOf: [.builtin(.forYou), .builtin(.calendar)])
-        return Array(Self.deduplicated(items).prefix(Self.maximumPrimaryMenuCount))
-    }
-
-    var primaryMenuUsesDeviceOverride: Bool {
-        primaryMenuSource == .scope(.profileDevice)
-    }
     var cardPresentationUsesDeviceOverride: Bool {
         cardPresentationSource == .scope(.profileDevice)
     }
@@ -1028,20 +489,13 @@ final class UICustomizationPreferences {
         cardPresentationSource == .scope(.profileClient)
     }
     var hasDeviceOverrides: Bool {
-        primaryMenuUsesDeviceOverride || cardPresentationUsesDeviceOverride
+        cardPresentationUsesDeviceOverride
     }
 
-    /// Clear higher-precedence per-device rows so the family-scoped controls
-    /// can truthfully represent and sync the effective value again.
+    /// Clear the higher-precedence per-device row so the family-scoped
+    /// controls can truthfully represent and sync the effective value again.
     func useFamilySettings() {
         guard let context = operationContext() else { return }
-        if primaryMenuUsesDeviceOverride {
-            scheduleDelete(
-                key: .navPrimaryMenu,
-                scope: .profileDevice,
-                context: context
-            )
-        }
         if cardPresentationUsesDeviceOverride {
             scheduleDelete(
                 key: .uiCardPresentation,
@@ -1165,169 +619,6 @@ final class UICustomizationPreferences {
             }
         }
         saveTail = save
-    }
-
-    private func enqueueShortcutOperation(
-        _ operation: PendingShortcutOperation,
-        context: OperationContext
-    ) {
-        let previousSave = saveTail
-        pendingSaveCount += 1
-        isSaving = true
-
-        let save = Task { @MainActor [weak self] in
-            await previousSave?.value
-            guard let self else { return }
-            defer { self.completeSave() }
-            guard contextIsCurrent(context) else { return }
-            do {
-                try await transport.putShortcutItem(
-                    operation.item,
-                    present: operation.present,
-                    requestIdentity: context.requestIdentity
-                )
-                guard contextIsCurrent(context) else { return }
-                let identity = operation.item.id
-                if let currentOperation = pendingShortcutOperations[identity],
-                   currentOperation.operationId == operation.operationId {
-                    pendingShortcutOperations.removeValue(forKey: identity)
-                    shortcutSyncErrorsByIdentity.removeValue(forKey: identity)
-                    reconcilePendingShortcutPlacementError()
-                    let didPersistMenu = persistPrimaryMenuAfterShortcutAcceptance(
-                        currentOperation,
-                        context: context
-                    )
-                    if !didPersistMenu {
-                        saveCache(for: context.cacheKey)
-                    }
-                    updateSyncErrorMessage()
-                }
-            } catch {
-                guard contextIsCurrent(context) else { return }
-                let identity = operation.item.id
-                guard var current = pendingShortcutOperations[identity],
-                      current.operationId == operation.operationId else {
-                    return
-                }
-                shortcutSyncErrorsByIdentity[identity] = Self.shortcutMessage(for: error)
-                if SettingsAPIError.from(error).writeFailure == .retry {
-                    let held = recordRetryableFailure(&current.retry)
-                    pendingShortcutOperations[identity] = current
-                    saveCache(for: context.cacheKey)
-                    if held {
-                        shortcutSyncErrorsByIdentity[identity] = HeldSettingChange.message
-                    } else {
-                        scheduleOutboxRetry(context: context)
-                    }
-                } else if Self.isDefinitiveShortcutRejection(error) {
-                    // The server proved this operation can never land as
-                    // authored. Quarantine it from the durable outbox so a
-                    // refresh can adopt the authoritative shortcut document
-                    // instead of retrying forever from stale optimistic state.
-                    pendingShortcutOperations.removeValue(forKey: identity)
-                    rollbackRejectedShortcut(operation)
-                    reconcilePendingShortcutPlacementError()
-                    saveCache(for: context.cacheKey)
-                    Task { @MainActor [weak self] in
-                        guard let self, self.contextIsCurrent(context) else { return }
-                        await self.refresh(force: true)
-                    }
-                }
-                updateSyncErrorMessage()
-            }
-        }
-        saveTail = save
-    }
-
-    private func rollbackRejectedShortcut(_ operation: PendingShortcutOperation) {
-        var items = storedShortcuts.items.filter { $0.id != operation.item.id }
-        if !operation.present {
-            let index = min(max(operation.shortcutIndex ?? items.count, 0), items.count)
-            items.insert(operation.item, at: index)
-        }
-        storedShortcuts = Self.sanitizedShortcuts(.init(items: items))
-    }
-
-    /// A rejected explicit menu edit records the exact optimistic pins it
-    /// attempted to place. Unrelated pending pins must not keep that edit's
-    /// validation error alive after its own blockers have settled.
-    private func reconcilePendingShortcutPlacementError() {
-        let acceptedIds = Set(resolvedPrimaryMenuItems().map(\.id))
-        let unacceptedPinIds = Set(pendingShortcutOperations.values.compactMap { operation in
-            operation.present && !acceptedIds.contains(operation.item.id)
-                ? operation.item.id
-                : nil
-        })
-        pendingShortcutPlacementBlockedIds.formIntersection(unacceptedPinIds)
-        if pendingShortcutPlacementBlockedIds.isEmpty {
-            guard syncErrorsByKey[SettingKey.navPrimaryMenu.rawValue]
-                    == Self.pendingShortcutPlacementMessage else { return }
-            setSyncError(nil, for: .navPrimaryMenu)
-        } else {
-            setSyncError(Self.pendingShortcutPlacementMessage, for: .navPrimaryMenu)
-        }
-    }
-
-    @discardableResult
-    private func persistPrimaryMenuAfterShortcutAcceptance(
-        _ operation: PendingShortcutOperation,
-        context: OperationContext
-    ) -> Bool {
-        guard operation.updatesPrimaryMenu,
-              !primaryMenuUsesDeviceOverride else { return false }
-        let previousItems = resolvedPrimaryMenuItems()
-        var items = previousItems.filter { $0.id != operation.item.id }
-        if operation.present {
-            let index = primaryMenuInsertionIndex(for: operation, in: items)
-            items.insert(operation.item, at: index)
-        }
-        let normalized = Self.normalizedPrimaryMenuItems(items)
-        guard normalized != previousItems else { return false }
-        let value = PrimaryMenuPreference(items: normalized)
-        if let encoded = try? SettingJSONValue.encoding(value),
-           pendingSyncWrites[SettingKey.navPrimaryMenu.rawValue]?.value == encoded {
-            // A later explicit edit already queued this exact menu.
-            return false
-        }
-        return setPrimaryMenuItems(
-            normalized,
-            context: context,
-            advancesMutationRevision: false
-        )
-    }
-
-    private func supersedePendingShortcutPlacements() {
-        for (identity, operation) in pendingShortcutOperations
-            where operation.updatesPrimaryMenu {
-            pendingShortcutOperations[identity] = operation.supersedingPrimaryMenuPlacement()
-        }
-    }
-
-    /// Project the final authored menu for validation without exposing an
-    /// unaccepted shortcut as a live family-menu destination. Accepted
-    /// callbacks apply these same ordered deltas to storedPrimaryMenu one at a
-    /// time, so retries and definitive rejections cannot leak sibling intent.
-    private func projectedPrimaryMenuItems() -> [PrimaryMenuItem] {
-        var items = resolvedPrimaryMenuItems()
-        let operations = pendingShortcutOperations.values.sorted(by: Self.authoredOrder)
-        for operation in operations where operation.updatesPrimaryMenu {
-            items.removeAll { $0.id == operation.item.id }
-            guard operation.present else { continue }
-            let index = primaryMenuInsertionIndex(for: operation, in: items)
-            items.insert(operation.item, at: index)
-        }
-        return Self.normalizedPrimaryMenuItems(items)
-    }
-
-    private func primaryMenuInsertionIndex(
-        for operation: PendingShortcutOperation,
-        in items: [PrimaryMenuItem]
-    ) -> Int {
-        if let predecessorId = operation.primaryMenuPredecessorId,
-           let predecessorIndex = items.firstIndex(where: { $0.id == predecessorId }) {
-            return predecessorIndex + 1
-        }
-        return min(max(operation.primaryMenuIndex ?? items.count, 0), items.count)
     }
 
     private func scheduleDelete(
@@ -1468,24 +759,6 @@ final class UICustomizationPreferences {
     ) -> Bool {
         do {
             switch key {
-            case .navPrimaryMenu:
-                let menu: PrimaryMenuPreference?
-                if row.value.isNull {
-                    menu = nil
-                } else {
-                    let decoded = try row.value.decoded(as: PrimaryMenuPreference.self)
-                    guard decoded.isValid else {
-                        throw SettingsAPIError.invalidValue(
-                            message: "The primary menu value is not valid for this client."
-                        )
-                    }
-                    menu = decoded
-                }
-                storedPrimaryMenu = menu
-                storedPrimaryMenuSource = row.source
-            case .navShortcuts:
-                let decoded = try row.value.decoded(as: NavigationShortcutsPreference.self)
-                storedShortcuts = Self.sanitizedShortcuts(decoded)
             case .uiCardPresentation:
                 let presentation = try row.value.decoded(as: CardPresentationPreference.self)
                 storedCardPresentation = presentation
@@ -1520,29 +793,20 @@ final class UICustomizationPreferences {
         )
         // Held changes are sent only by retryHeldChanges().
         guard enqueueOutbox(context: context, where: { _, retry in !retry.isHeld }) else { return true }
-        let replayTail = saveTail
-        await replayTail?.value
-        // An accepted shortcut may enqueue its dependent family-menu write.
-        // Capture the new tail after the shortcut completes so refresh does
-        // not return early with half of the compound pin still pending.
         await saveTail?.value
         guard refreshIsCurrent(sequence, mutationRevision, targetCacheKey, requestIdentity) else { return false }
         return pendingSyncWrites.values.allSatisfy(\.retry.isHeld)
-            && pendingShortcutOperations.values.allSatisfy(\.retry.isHeld)
             && pendingDeletes.values.allSatisfy(\.retry.isHeld)
     }
 
-    /// One outbox entry: a value write by key, a shortcut operation by item
-    /// identity, or a delete by `key|scope`.
+    /// One outbox entry: a value write by key, or a delete by `key|scope`.
     private enum OutboxEntry: Hashable {
         case value(String)
-        case shortcut(String)
         case delete(String)
     }
 
-    /// Queue every outbox entry `include` accepts, deletes first, then
-    /// shortcuts in authored order, then value writes. Returns whether
-    /// anything was queued.
+    /// Queue every outbox entry `include` accepts, deletes first, then value
+    /// writes. Returns whether anything was queued.
     @discardableResult
     private func enqueueOutbox(
         context: OperationContext,
@@ -1550,16 +814,12 @@ final class UICustomizationPreferences {
     ) -> Bool {
         let deletes = pendingDeletes.sorted(by: { $0.key < $1.key })
             .filter { include(.delete($0.key), $0.value.retry) }
-        let pendingShortcuts = pendingShortcutOperations
-            .filter { include(.shortcut($0.key), $0.value.retry) }
-            .values
-            .sorted(by: Self.authoredOrder)
         let pending = Self.keys.compactMap { key -> (SettingKey, SettingScopeIdentity, PendingSyncWrite)? in
             guard let write = pendingSyncWrites[key.rawValue], include(.value(key.rawValue), write.retry),
                   let scope = Self.writeScope(for: key) else { return nil }
             return (key, scope, write)
         }
-        guard !deletes.isEmpty || !pendingShortcuts.isEmpty || !pending.isEmpty else { return false }
+        guard !deletes.isEmpty || !pending.isEmpty else { return false }
 
         for (identity, delete) in deletes {
             guard let key = Self.deleteKey(identity),
@@ -1568,12 +828,6 @@ final class UICustomizationPreferences {
                 key: key,
                 scope: scope,
                 pendingDelete: delete,
-                context: context
-            )
-        }
-        for operation in pendingShortcuts {
-            enqueueShortcutOperation(
-                operation,
                 context: context
             )
         }
@@ -1605,7 +859,6 @@ final class UICustomizationPreferences {
     /// newer is queued by its own edit.
     private func scheduleOutboxRetry(context: OperationContext) {
         let retrying = pendingSyncWrites.values.map(\.retry)
-            + pendingShortcutOperations.values.map(\.retry)
             + pendingDeletes.values.map(\.retry)
         guard let attempt = retrying
             .filter({ !$0.isHeld && $0.failedAttempts > 0 })
@@ -1632,12 +885,6 @@ final class UICustomizationPreferences {
             released.insert(.value(key))
             if let settingKey = SettingKey(rawValue: key) { setSyncError(nil, for: settingKey) }
         }
-        for (identity, var operation) in pendingShortcutOperations where operation.retry.isHeld {
-            operation.retry = OutboxRetryState()
-            pendingShortcutOperations[identity] = operation
-            released.insert(.shortcut(identity))
-            shortcutSyncErrorsByIdentity.removeValue(forKey: identity)
-        }
         for (identity, var delete) in pendingDeletes where delete.retry.isHeld {
             delete.retry = OutboxRetryState()
             pendingDeletes[identity] = delete
@@ -1657,18 +904,10 @@ final class UICustomizationPreferences {
             pendingSyncWrites.removeValue(forKey: key)
             if let settingKey = SettingKey(rawValue: key) { setSyncError(nil, for: settingKey) }
         }
-        for (identity, operation) in pendingShortcutOperations where operation.retry.isHeld {
-            pendingShortcutOperations.removeValue(forKey: identity)
-            shortcutSyncErrorsByIdentity.removeValue(forKey: identity)
-            // Undo the optimistic pin or unpin now, so the menu is right even
-            // when the refresh below cannot reach the server.
-            rollbackRejectedShortcut(operation)
-        }
         for (identity, delete) in pendingDeletes where delete.retry.isHeld {
             pendingDeletes.removeValue(forKey: identity)
             if let key = Self.deleteKey(identity) { setSyncError(nil, for: key) }
         }
-        reconcilePendingShortcutPlacementError()
         saveCache(for: targetCacheKey)
         updateSyncErrorMessage()
         await refresh(force: true)
@@ -1680,9 +919,6 @@ final class UICustomizationPreferences {
         var keys = Set<SettingKey>()
         for (key, write) in pendingSyncWrites where write.retry.isHeld {
             if let settingKey = SettingKey(rawValue: key) { keys.insert(settingKey) }
-        }
-        if pendingShortcutOperations.values.contains(where: \.retry.isHeld) {
-            keys.insert(.navShortcuts)
         }
         for (identity, delete) in pendingDeletes where delete.retry.isHeld {
             if let key = Self.deleteKey(identity) { keys.insert(key) }
@@ -1710,35 +946,19 @@ final class UICustomizationPreferences {
         let cached = key
             .flatMap { defaults.data(forKey: $0) }
             .flatMap { try? SettingsWireCoding.makeDecoder().decode(Cache.self, from: $0) }
-        let cachedPrimaryMenu = cached?.primaryMenu
-        storedPrimaryMenu = cachedPrimaryMenu?.isValid == true ? cachedPrimaryMenu : nil
-        storedShortcuts = cached.map { Self.sanitizedShortcuts($0.shortcuts) } ?? .empty
         storedCardPresentation = cached?.cardPresentation ?? .standard
-        storedPrimaryMenuSource = cached?.primaryMenuSource
         storedCardPresentationSource = cached?.cardPresentationSource
         supportProjection = cached?.supportProjection ?? .unknown
-        var cachedSyncWrites = cached?.pendingSyncWrites ?? [:]
-        // Whole-document shortcut retries predate the atomic endpoint and
-        // cannot be safely replayed without reintroducing lost updates.
-        cachedSyncWrites.removeValue(forKey: SettingKey.navShortcuts.rawValue)
-        pendingSyncWrites = cachedSyncWrites
-        pendingShortcutOperations = Self.validPendingShortcutOperations(
-            cached?.pendingShortcutOperations ?? [:]
-        )
-        pendingShortcutPlacementBlockedIds = Set(
-            cached?.pendingShortcutPlacementBlockedIds ?? []
-        )
+        // Older caches can hold queued top-menu writes; those settings are no
+        // longer synced from Apple clients, so drop them.
+        pendingSyncWrites = (cached?.pendingSyncWrites ?? [:]).filter { key, _ in
+            SettingKey(rawValue: key).map { Self.keys.contains($0) } ?? false
+        }
         pendingDeletes = Self.validPendingDeletes(cached?.pendingDeletes ?? [:])
-        nextShortcutOperationSequence = pendingShortcutOperations.values
-            .map(\.sequence)
-            .max() ?? 0
-        guard cached != nil else { return }
-        reconcilePendingShortcutPlacementError()
     }
 
     private func updateHeldState() {
         let held = pendingSyncWrites.values.contains(where: \.retry.isHeld)
-            || pendingShortcutOperations.values.contains(where: \.retry.isHeld)
             || pendingDeletes.values.contains(where: \.retry.isHeld)
         if hasHeldChanges != held { hasHeldChanges = held }
     }
@@ -1747,19 +967,10 @@ final class UICustomizationPreferences {
         updateHeldState()
         guard let key,
               let data = try? SettingsWireCoding.makeEncoder().encode(Cache(
-                primaryMenu: storedPrimaryMenu,
-                shortcuts: storedShortcuts,
                 cardPresentation: storedCardPresentation,
-                primaryMenuSource: storedPrimaryMenuSource,
                 cardPresentationSource: storedCardPresentationSource,
                 supportProjection: supportProjection,
                 pendingSyncWrites: pendingSyncWrites.isEmpty ? nil : pendingSyncWrites,
-                pendingShortcutOperations: pendingShortcutOperations.isEmpty
-                    ? nil
-                    : pendingShortcutOperations,
-                pendingShortcutPlacementBlockedIds: pendingShortcutPlacementBlockedIds.isEmpty
-                    ? nil
-                    : pendingShortcutPlacementBlockedIds.sorted(),
                 pendingDeletes: pendingDeletes.isEmpty ? nil : pendingDeletes
               ))
         else { return }
@@ -1767,8 +978,7 @@ final class UICustomizationPreferences {
     }
 
     /// Writes are serialized, but a later successful setting must not erase a
-    /// failure from an earlier key (pinning a library writes shortcuts and the
-    /// family menu back-to-back). A successful refresh is the only operation
+    /// failure from an earlier key. A successful refresh is the only operation
     /// that proves the complete effective bundle reconciled.
     private func setSyncError(_ message: String?, for key: SettingKey) {
         if let message {
@@ -1781,31 +991,20 @@ final class UICustomizationPreferences {
 
     private func clearSyncErrors() {
         syncErrorsByKey.removeAll()
-        shortcutSyncErrorsByIdentity.removeAll()
         refreshSyncErrorMessage = nil
         updateSyncErrorMessage()
     }
 
-    /// A successful effective read resolves ordinary write/read failures, but
-    /// a definitive shortcut rejection remains useful after the optimistic
-    /// state snaps back: it tells the user why their pin did not stick. The
-    /// next successful operation for that semantic identity clears it.
+    /// A successful effective read resolves ordinary write/read failures.
     private func clearReconciledSyncErrors() {
         syncErrorsByKey.removeAll()
         refreshSyncErrorMessage = nil
-        reconcilePendingShortcutPlacementError()
         updateSyncErrorMessage()
     }
 
     private func updateSyncErrorMessage() {
-        let shortcutMessage = shortcutSyncErrorsByIdentity
-            .sorted { $0.key < $1.key }
-            .first?.value
         syncErrorMessage = refreshSyncErrorMessage
-            ?? Self.keys.lazy.compactMap { key in
-                self.syncErrorsByKey[key.rawValue]
-                    ?? (key == .navShortcuts ? shortcutMessage : nil)
-            }.first
+            ?? Self.keys.lazy.compactMap { self.syncErrorsByKey[$0.rawValue] }.first
     }
 
     private func operationContext() -> OperationContext? {
@@ -1871,18 +1070,8 @@ final class UICustomizationPreferences {
         identity.split(separator: "|", maxSplits: 1).first.flatMap { SettingKey(rawValue: String($0)) }
     }
 
-    private static let keys: [SettingKey] = [
-        .navPrimaryMenu,
-        .navShortcuts,
-        .uiCardPresentation,
-    ]
+    private static let keys: [SettingKey] = [.uiCardPresentation]
 
-    private static let maximumPrimaryMenuCount = 64
-    private static let maximumShortcutCount = 256
-    private static let primaryMenuLimitMessage = "You can show up to 64 top-menu destinations."
-    private static let shortcutLimitMessage = "You can pin up to 256 navigation shortcuts."
-    private static let pendingShortcutPlacementMessage =
-        "Wait for this library pin to finish syncing before placing it in the top menu."
     private static let effectiveValueDecodeMessage =
         "Could not read this interface preference from the server."
     private static let missingEffectiveValueMessage =
@@ -1890,44 +1079,11 @@ final class UICustomizationPreferences {
 
     private static func writeScope(for key: SettingKey) -> SettingScopeIdentity? {
         switch key {
-        case .navPrimaryMenu, .uiCardPresentation:
+        case .uiCardPresentation:
             return .profileClient
         default:
             return nil
         }
-    }
-
-    private static func validPendingShortcutOperations(
-        _ operations: [String: PendingShortcutOperation]
-    ) -> [String: PendingShortcutOperation] {
-        var migrated: [String: PendingShortcutOperation] = [:]
-        for (persistedIdentity, operation) in operations {
-            let canonicalIdentity = operation.item.id
-            guard (persistedIdentity == canonicalIdentity
-                    || persistedIdentity == operation.item.legacyUnstructuredId),
-                  operation.item.isContractValid,
-                  !operation.operationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else { continue }
-            if case .builtin = operation.item { continue }
-
-            if let existing = migrated[canonicalIdentity] {
-                let existingWins = existing.sequence > operation.sequence
-                    || (existing.sequence == operation.sequence
-                        && existing.operationId >= operation.operationId)
-                if existingWins { continue }
-            }
-            migrated[canonicalIdentity] = operation
-        }
-        return migrated
-    }
-
-    /// User intent order across identities; ties break on item identity.
-    nonisolated private static func authoredOrder(
-        _ lhs: PendingShortcutOperation,
-        _ rhs: PendingShortcutOperation
-    ) -> Bool {
-        if lhs.sequence == rhs.sequence { return lhs.item.id < rhs.item.id }
-        return lhs.sequence < rhs.sequence
     }
 
     private static func validPendingDeletes(
@@ -1939,34 +1095,8 @@ final class UICustomizationPreferences {
                   !delete.operationId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { return false }
             return identity == deleteIdentity(key: key, scope: scope.scope)
-                && (key == .navPrimaryMenu || key == .uiCardPresentation)
+                && keys.contains(key)
         }
-    }
-
-    private static func sanitizedShortcuts(
-        _ value: NavigationShortcutsPreference
-    ) -> NavigationShortcutsPreference {
-        let withoutBuiltins = value.items.filter {
-            guard $0.isContractValid else { return false }
-            if case .builtin = $0 { return false }
-            return true
-        }
-        return .init(items: Array(deduplicated(withoutBuiltins).prefix(maximumShortcutCount)))
-    }
-
-    private static func deduplicated(_ items: [PrimaryMenuItem]) -> [PrimaryMenuItem] {
-        var seen = Set<String>()
-        return items.filter { seen.insert($0.id).inserted }
-    }
-
-    private static func normalizedPrimaryMenuItems(
-        _ items: [PrimaryMenuItem]
-    ) -> [PrimaryMenuItem] {
-        var normalized = deduplicated(items)
-        if !normalized.contains(where: \.isHome) {
-            normalized.insert(.builtin(.home), at: 0)
-        }
-        return normalized
     }
 
     private static func message(for error: Error) -> String {
@@ -1979,25 +1109,5 @@ final class UICustomizationPreferences {
                 ? "The server didn't accept this change, so it wasn't saved."
                 : "Saved on this device. Sync will resume when the server is reachable."
         }
-    }
-
-    private static func shortcutMessage(for error: Error) -> String {
-        switch SettingsAPIError.from(error) {
-        case .invalidValue(let message) where message.contains("256"):
-            return "This profile already has 256 navigation shortcuts. Unpin one and try again."
-        case .invalidValue:
-            return "The server rejected this shortcut. Check the selection and try again."
-        default:
-            return Self.message(for: error)
-        }
-    }
-
-    /// The server proved the shortcut operation can never land as authored.
-    /// A key the server does not know means it needs an update, which is not
-    /// a verdict on this operation.
-    private static func isDefinitiveShortcutRejection(_ error: Error) -> Bool {
-        let mapped = SettingsAPIError.from(error)
-        if case .unknownSetting = mapped { return false }
-        return mapped.writeFailure == .release
     }
 }
