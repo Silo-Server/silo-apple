@@ -638,6 +638,28 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(h.targets.targets().map(\.registryServerID), [Self.serverID])
     }
 
+    /// A removed address's retirement can be retried for months, and a
+    /// different server may answer at that address by then. While another
+    /// saved address still shares the record, the retirement goes through
+    /// that one, which reaches the same server, so the shared key is never
+    /// queued for the address that left.
+    func testRetirementForASharedRecordGoesThroughAnAddressStillSharingIt() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        h.server.enqueueRetirement(.transportFailure)
+        h.server.enqueue(.transportFailure)
+
+        _ = await registrar.unregister(serverID: Self.otherServerID, activeOwner: try await h.owner())
+
+        let retirement = try XCTUnwrap(h.server.retirements.first)
+        XCTAssertEqual(retirement.url?.host, "silo.example")
+        XCTAssertEqual(retirement.header("X-Push-Installation-Key"), key)
+        let queued = try h.retirementStore.load()
+        XCTAssertEqual(queued.map(\.serverID), [Self.otherServerID])
+        XCTAssertEqual(queued.map(\.serverURL), [Self.serverURL])
+    }
+
     /// A link is keyed by the address. When that address later reports
     /// another deployment (a reassigned LAN address, a new install), it
     /// stops sharing the record and starts over with a key of its own.
@@ -877,6 +899,45 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         try await h.tokens.bindVerifiedAccount("12", expected: XCTUnwrap(captured))
         h.server.setSessions(host: "third.example", current: "session-3", pages: [["session-3"]])
         h.server.setSessions(host: "other.example", current: "session-2", pages: [["session-2", "session-3"]])
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        let registrar = h.registrar(savedServerIdentity: "deployment-a",
+            savedServerIDs: [Self.serverID, Self.otherServerID, Self.thirdServerID])
+
+        let result = await registrar.register(Self.body(), owner: try await h.owner())
+
+        XCTAssertEqual(result, Self.accepted)
+        let third = h.server.handler.requests.filter { $0.url?.host == "third.example" }
+        XCTAssertFalse(third.contains { $0.header("X-Push-Installation-Key") == key })
+        XCTAssertEqual(h.server.resets.count, 1)
+        XCTAssertNotEqual(try h.journal.load(serverID: Self.thirdServerID)?.installationKey, key)
+    }
+
+    /// The proof for a candidate comes from that candidate's own address,
+    /// whose deployment was just checked, never from another address that
+    /// registered last. Here the second address registered last and now
+    /// reaches another server, which vouches for a third address claiming
+    /// the first address's deployment: the first address does not list the
+    /// third's session, so the third never gets the shared key.
+    func testProofComesFromTheCandidatesOwnAddressNotTheLastToRegister() async throws {
+        let h = try await makeHarness()
+        let first = try await joinSecondAddress(h)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        _ = first
+        // Nothing has run for the second address since it moved.
+        h.identities.set("deployment-z", for: Self.otherServerID)
+        h.identities.set("deployment-a", for: Self.thirdServerID)
+        await h.tokens.switchActiveServer(serverId: Self.thirdServerID)
+        await h.tokens.setServerUrl(Self.thirdServerURL)
+        let saved = await h.tokens.saveTokens(accessToken: "third-access", refreshToken: "third-refresh")
+        XCTAssertTrue(saved)
+        await h.tokens.setProfileId("profile-a")
+        let proofStored = await h.tokens.setProfileToken("proof-a")
+        XCTAssertTrue(proofStored)
+        let captured = await h.tokens.captureOrdinaryRequestAuth()
+        try await h.tokens.bindVerifiedAccount("12", expected: XCTUnwrap(captured))
+        h.server.setSessions(host: "third.example", current: "session-3", pages: [["session-3"]])
+        h.server.setSessions(host: "other.example", current: "session-2", pages: [["session-2", "session-3"]])
+        h.server.setSessions(host: "silo.example", current: "session-1", pages: [["session-1", "session-2"]])
         h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
         let registrar = h.registrar(savedServerIdentity: "deployment-a",
             savedServerIDs: [Self.serverID, Self.otherServerID, Self.thirdServerID])

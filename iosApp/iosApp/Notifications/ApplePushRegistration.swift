@@ -439,11 +439,23 @@ actor ApplePushRegistrar {
     /// current generation. `nil` when the server never registered, its
     /// address is unknown, `teardown` has ended, or the journal cannot be
     /// read or written; nothing may then be sent as a retirement.
+    ///
+    /// A retirement can be retried for months after the address is gone,
+    /// and another server may answer there by then. While another saved
+    /// address still shares the record, the retirement goes to that address,
+    /// which reaches the same deployment, so the shared key is not queued
+    /// for the departing one.
     private func allocateRetirement(serverID: String, deviceID: String,
                                     teardown: UUID) async -> ApplePushRetirement? {
-        guard let serverURL = ServerRegistry.url(forServerId: serverID) else { return nil }
+        guard var serverURL = ServerRegistry.url(forServerId: serverID) else { return nil }
         await waitForTurn(ahead: true)
         defer { finishTurn() }
+        for alias in await otherAddressesSharingRecord(with: serverID) {
+            guard await dropStaleLink(of: alias), sharesRecord(alias, with: serverID),
+                  let aliasURL = ServerRegistry.url(forServerId: alias) else { continue }
+            serverURL = aliasURL
+            break
+        }
         guard teardowns[serverID] == teardown else { return nil }
         do {
             guard let record = try journal.load(serverID: serverID),
@@ -708,11 +720,13 @@ actor ApplePushRegistrar {
               let own = try? journal.recordSlot(for: serverID) else { return nil }
         for candidate in await savedServerIDs() where candidate != serverID {
             // A candidate whose link was proven for another deployment
-            // must not lend that deployment's record.
+            // must not lend that deployment's record. The proof is asked of
+            // the candidate's own address, whose deployment was just
+            // checked, not of another address that registered last there.
             guard ServerIdentity.usable(await savedServerIdentity(candidate)) == identity,
                   await dropStaleLink(of: candidate),
                   let shared = try? journal.recordSlot(for: candidate), shared != own,
-                  let holder = try? journal.load(serverID: candidate)?.latest?.intent.owner,
+                  let holder = Self.ownLastOwner(of: candidate, in: try? journal.load(serverID: candidate)),
                   let holderChannel = savedServers.channel(for: holder),
                   await channel.sharesBackend(with: holderChannel) else { continue }
             do {
