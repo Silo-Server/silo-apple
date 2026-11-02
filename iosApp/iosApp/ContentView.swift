@@ -839,19 +839,16 @@ struct ContentView: View {
 
         case .needsPasswordChange:
             #if os(tvOS)
-            TVPasswordChangeView(router: router)
+            // Apple TV never hands off to the password change
+            // (`ProfileSelectionViewModel.handsOffToPasswordChange`); its picker
+            // shows the error instead.
+            profileSelection
             #else
             PasswordChangeView(router: router)
             #endif
 
         case .needsProfile:
-            NavigationStack(path: $router.path) {
-                ProfileSelectionView(router: router)
-                    .navigationDestination(for: Route.self) { route in
-                        profileFlowDestination(for: route)
-                    }
-            }
-            .environment(router)
+            profileSelection
 
         case .authenticated:
             #if os(tvOS)
@@ -862,6 +859,16 @@ struct ContentView: View {
                 .onboardingTourGate(router: router)
             #endif
         }
+    }
+
+    private var profileSelection: some View {
+        NavigationStack(path: $router.path) {
+            ProfileSelectionView(router: router)
+                .navigationDestination(for: Route.self) { route in
+                    profileFlowDestination(for: route)
+                }
+        }
+        .environment(router)
     }
 
     /// The splash always plays to the end. It also stays up while the stored

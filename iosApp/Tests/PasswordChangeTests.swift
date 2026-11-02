@@ -330,6 +330,20 @@ final class PasswordChangeTests: XCTestCase {
         XCTAssertFalse(PasswordChangeModel.isRequired(by: APIv2Error.httpStatus(403)))
     }
 
+    /// Apple TV has no password change: its picker shows the refusal as an
+    /// error, with Retry, instead of handing over.
+    func testOnlyPhonesTabletsAndMacsHandTheRefusalToThePasswordChange() {
+        let refusal = APIv2Error.problem(APIv2Problem(
+            type: "https://siloserver.org/docs/api/v2/problems/password_change_required",
+            title: "Password change required", status: 403, detail: "", instance: nil, errors: nil))
+        #if os(tvOS)
+        XCTAssertFalse(ProfileSelectionViewModel.handsOffToPasswordChange(refusal))
+        #else
+        XCTAssertTrue(ProfileSelectionViewModel.handsOffToPasswordChange(refusal))
+        #endif
+        XCTAssertFalse(ProfileSelectionViewModel.handsOffToPasswordChange(APIv2Error.httpStatus(403)))
+    }
+
     func testRequirementsComeFromTheCapabilityWithServerDefaultsAsFallback() {
         let stated = APIv2PasswordCapability(state: "available", allowed: true,
             minimumPasswordLength: 12, maximumPasswordBytes: 64)

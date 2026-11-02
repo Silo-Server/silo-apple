@@ -122,8 +122,15 @@ struct ErrorState: Equatable {
         return humanize(statusCode: 403)
     }
 
+    /// Apple TV has no password change, so it sends the person to the mobile
+    /// app or the web.
+    #if os(tvOS)
+    static let passwordChangeRequiredMessage =
+        "Your password needs to be reset. Use the Silo mobile app or website to set a new one, then come back."
+    #else
     static let passwordChangeRequiredMessage =
         "An admin set a temporary password for this account. Sign out, then sign in again to choose your own."
+    #endif
 
     private static func humanize(httpError: HTTPError) -> String {
         switch httpError {

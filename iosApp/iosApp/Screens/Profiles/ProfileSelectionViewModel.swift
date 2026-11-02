@@ -10,6 +10,19 @@ class ProfileSelectionViewModel {
     /// The account holds a temporary password: the server refuses profiles
     /// until it is replaced, so the picker hands over to the password change.
     private(set) var requiresPasswordChange = false
+
+    /// Whether `error` hands the picker over to the password change. Apple TV
+    /// has no password change, since three passwords are a lot to type with a
+    /// remote: its picker shows the error, which sends the person to the
+    /// mobile app or the web. Changing the password there ends this session,
+    /// so Retry then lands on sign-in.
+    nonisolated static func handsOffToPasswordChange(_ error: Error) -> Bool {
+        #if os(tvOS)
+        false
+        #else
+        PasswordChangeModel.isRequired(by: error)
+        #endif
+    }
     private(set) var isUsingTemporaryManagementContext: Bool = false
     private(set) var isClearingTemporaryManagementContext: Bool = false
     private var temporaryManagementProfileID: String?
@@ -45,7 +58,7 @@ class ProfileSelectionViewModel {
             let fresh = try await StartupContentPrefetcher.fetchProfiles()
             profiles = fresh
         } catch {
-            if PasswordChangeModel.isRequired(by: error) {
+            if Self.handsOffToPasswordChange(error) {
                 requiresPasswordChange = true
             } else if profiles.isEmpty {
                 self.error = ErrorState(error)
@@ -71,7 +84,7 @@ class ProfileSelectionViewModel {
         do {
             try await select(profile, pin: nil, router: router)
         } catch {
-            if PasswordChangeModel.isRequired(by: error) {
+            if Self.handsOffToPasswordChange(error) {
                 requiresPasswordChange = true
             } else {
                 self.error = ErrorState(error)

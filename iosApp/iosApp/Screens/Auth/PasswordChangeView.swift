@@ -3,7 +3,8 @@ import SwiftUI
 #if !os(tvOS)
 /// "Choose a new password" on iPhone, iPad and Mac, shown after signing in
 /// with a temporary password an admin set. `PasswordChangeModel` owns the
-/// rules; this view lays them out. tvOS uses `TVPasswordChangeView`.
+/// rules; this view lays them out. Apple TV has none: its profile picker
+/// shows the refusal as an error (`ProfileSelectionViewModel.handsOffToPasswordChange`).
 struct PasswordChangeView: View {
     var router: AppRouter
     @State private var model = PasswordChangeModel()

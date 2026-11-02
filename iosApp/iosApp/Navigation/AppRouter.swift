@@ -54,7 +54,8 @@ final class AppRouter {
         case serverRecovery(ServerRecoveryReason)
         /// Signed in with a temporary password an administrator set. The
         /// server refuses everything but the account read, the password
-        /// change and sign-out until the account chooses a new one.
+        /// change and sign-out until the account chooses a new one. iPhone,
+        /// iPad and Mac only: the Apple TV picker shows the refusal instead.
         case needsPasswordChange
         /// Signed in but no profile has been selected.
         case needsProfile
