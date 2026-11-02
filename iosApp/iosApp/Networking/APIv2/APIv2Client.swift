@@ -1289,9 +1289,40 @@ struct APIv2Client: Sendable {
         return try Self.applePushReceipt(from: data, generation: generation, body: body)
     }
 
+    /// Clears this account's installation for `deviceID` on the server
+    /// (`resetApplePushInstallation`), after a registration was refused with
+    /// `push_installation_key_mismatch`. `installationKey` is the key the
+    /// next registration sends; the server leaves an installation already
+    /// bound to it alone, so a repeated reset is safe.
+    func resetApplePushInstallation(deviceID: String, installationKey: String,
+                                    auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushResetReceipt {
+        let data = try await applePushRequest(method: "POST", path: Self.applePushResetPath,
+            body: Self.applePushResetBody(deviceID: deviceID),
+            headers: Self.applePushResetHeaders(installationKey: installationKey), auth: auth)
+        return try Self.applePushResetReceipt(from: data)
+    }
+
+    /// One page of the account's login sessions (`listSessions`), with the
+    /// caller's own session. The push registrar compares two saved
+    /// addresses' sessions to prove they reach one backend.
+    func loginSessions(cursor: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2LoginSessionPage {
+        let data = try await applePushRequest(method: "GET", path: Self.loginSessionsPath,
+            query: Self.loginSessionsQuery(cursor: cursor), auth: auth)
+        return try HTTPClient.makeJSONDecoder().decode(APIv2LoginSessionPage.self, from: data)
+    }
+
+    static let loginSessionsPath = "/api/v2/auth/sessions"
+
+    static func loginSessionsQuery(cursor: String?) -> [String: String] {
+        var query = ["limit": "200"]
+        if let cursor { query["cursor"] = cursor }
+        return query
+    }
+
     static let applePushCapabilityPath = "/api/v2/devices/push/apple/capabilities"
     static let applePushRegistrationPath = "/api/v2/devices/push/apple"
     static let applePushRetirementPath = "/api/v2/devices/push/apple/retire"
+    static let applePushResetPath = "/api/v2/devices/push/apple/reset"
 
     /// Its own session: a retirement goes to a server that may no longer be
     /// saved, outside `HTTPClient`'s identity gate and credentials.
@@ -1368,6 +1399,25 @@ struct APIv2Client: Sendable {
         return ["X-Push-Installation-Key": installationKey, "X-Push-Generation": String(generation)]
     }
 
+    /// The reset carries the installation key and no generation.
+    static func applePushResetHeaders(installationKey: String) throws -> [String: String] {
+        guard ApplePushInstallationJournal.isInstallationKey(installationKey) else {
+            throw ApplePushRegistrationError.invalidInstallation
+        }
+        return ["X-Push-Installation-Key": installationKey]
+    }
+
+    static func applePushResetBody(deviceID: String) throws -> Data {
+        guard !deviceID.isEmpty else { throw ApplePushRegistrationError.invalidInstallation }
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        return try encoder.encode(APIv2ApplePushResetBody(deviceId: deviceID))
+    }
+
+    static func applePushResetReceipt(from data: Data) throws -> APIv2ApplePushResetReceipt {
+        try HTTPClient.makeJSONDecoder().decode(APIv2ApplePushResetReceipt.self, from: data)
+    }
+
     /// Sorted keys, so a replay sends the same bytes whichever server
     /// session sends it.
     static func applePushRegistrationBody(_ body: APIv2ApplePushRegistrationBody) throws -> Data {
@@ -1387,7 +1437,8 @@ struct APIv2Client: Sendable {
         return receipt
     }
 
-    private func applePushRequest(method: String, path: String, body: Data? = nil, headers: [String: String] = [:],
+    private func applePushRequest(method: String, path: String, query: [String: String] = [:], body: Data? = nil,
+                                  headers: [String: String] = [:],
                                   auth: CapturedOrdinaryRequestAuth) async throws -> Data {
         try await gate()
         guard case .persistentServer = auth.credentialOwner, let profile = auth.profileId, !profile.isEmpty else {
@@ -1396,7 +1447,7 @@ struct APIv2Client: Sendable {
         let identity = Self.requestIdentity(auth, profile: profile)
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
-                try await http.requestData(method: method, path: path, body: body, headers: headers,
+                try await http.requestData(method: method, path: path, query: query, body: body, headers: headers,
                     requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }

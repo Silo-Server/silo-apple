@@ -84,6 +84,10 @@ struct ApplePushInstallationRecord: Codable, Equatable, Sendable {
     /// The intent that holds `generation`, or, when its outcome is
     /// `retired`, the last intent before the retirement that holds it.
     var latest: Latest?
+    /// Per saved server sharing this record, the owner of its last intent,
+    /// so one can register again once the server that registered last no
+    /// longer holds its session. Absent in records from earlier builds.
+    var owners: [String: ApplePushIntentOwner]? = nil
 }
 
 /// A registration ready to send.
@@ -97,7 +101,10 @@ struct ApplePushRegistrationCommand: Equatable, Sendable {
 }
 
 /// Ordered installation state for `POST /api/v2/devices/push/apple`, one
-/// Keychain item per server.
+/// Keychain item per deployment. A saved server starts with its own record.
+/// Two proven to reach the same deployment (the same server saved under two
+/// addresses) are both linked to one shared record, in a Keychain item no
+/// address owns, and share its key and generations.
 ///
 /// The server keys an Apple installation by `device_id` and checks two
 /// headers on every registration. `X-Push-Installation-Key` proves this is the
@@ -112,15 +119,21 @@ struct ApplePushRegistrationCommand: Equatable, Sendable {
 /// The record sits in the same Keychain group, with the same accessibility,
 /// as `AppleDeviceIdentity`'s device ID, so the two are kept or lost
 /// together: a Keychain reset gives a new device ID, which the server treats
-/// as a new installation. If the record alone is lost, the server's proof
-/// check refuses every later registration for this device (403, or 409 when
-/// the generation falls behind). The contract has no recovery for that, so
-/// the client does not guess: a 409 is recorded as a refusal, a 403 holds
-/// the intent and is retried after a back-off (the server also answers 403
-/// for transient login-authority failures), an unreadable record is never
-/// overwritten and nothing is sent for that server, and the
-/// Notification Service extension falls back to the access token. Recovery
-/// needs the server to drop this device's installation.
+/// as a new installation. If the record alone is lost, or the server is
+/// saved again under another address (a new record, so a new key, for the
+/// same device ID), the server's proof check refuses every later
+/// registration for this device. A server that offers the owner reset
+/// answers its owner with 403 `push_installation_key_mismatch`. The
+/// registrar then links the record to another saved address's when that
+/// address proves it is the same deployment, and registers with its key;
+/// otherwise it resets the installation with the current key. Either way it
+/// registers again at the next generation, once per attempt.
+/// Otherwise the client does not guess: a 409 is recorded as a refusal, a
+/// 403 holds the intent and is retried after a back-off (the server also
+/// answers 403 for transient login-authority failures and for another
+/// account's installation), an unreadable record is never overwritten and
+/// nothing is sent for that server, and the Notification Service extension
+/// falls back to the access token.
 ///
 /// Removing a server or signing out of it deletes its credentials but not
 /// this record: the retirement that stops the server's pushes afterwards
@@ -142,17 +155,131 @@ struct ApplePushInstallationJournal: Sendable {
         case writeFailed
         case keyUnavailable
         case generationExhausted
+        /// The server's link changed after a command was planned from its
+        /// record. Nothing was written.
+        case linkChanged
     }
 
     static func account(for serverID: String) -> String {
         SharedStorage.keychainAccountPrefix + "push.apple.installation.\(serverID)"
     }
 
+    /// Where a saved server proven to reach the same deployment as another
+    /// names the shared record it uses.
+    static func linkAccount(for serverID: String) -> String {
+        SharedStorage.keychainAccountPrefix + "push.apple.installation.link.\(serverID)"
+    }
+
+    /// The Keychain slot of a shared record (`sharedRecordPrefix`), and the
+    /// deployment identity the address reported when it proved it reaches
+    /// that deployment.
+    struct Link: Codable, Equatable, Sendable {
+        let record: String
+        let provenServerID: String
+    }
+
+    private func storedLink(of serverID: String) throws -> Link? {
+        let raw: String?
+        do {
+            raw = try keychain.getChecked(Self.linkAccount(for: serverID))
+        } catch {
+            throw JournalError.unreadable
+        }
+        guard let raw else { return nil }
+        guard let link = try? JSONDecoder().decode(Link.self, from: Data(raw.utf8)) else { throw JournalError.unreadable }
+        return link
+    }
+
+    /// Links followed at most; a longer chain, or a loop, is unreadable.
+    private static let maximumLinks = 8
+
+    /// The Keychain slot that holds `serverID`'s record: `serverID`'s own
+    /// unless it was linked to a shared record.
+    func recordSlot(for serverID: String) throws -> String {
+        var current = serverID
+        for _ in 0...Self.maximumLinks {
+            guard let next = try storedLink(of: current)?.record, !next.isEmpty, next != current else {
+                return current
+            }
+            current = next
+        }
+        throw JournalError.unreadable
+    }
+
+    /// Ends `serverID`'s share of another server's record when it now
+    /// reports a deployment other than the one it was proven to reach: the
+    /// registry id comes from the address, and a different server saved
+    /// later at that address must not get the shared key. It starts again
+    /// with a record of its own: anything left in its own slot, such as a
+    /// copy an interrupted `link` did not delete, goes first. Returns
+    /// whether a link was dropped.
+    @discardableResult
+    func dropLink(of serverID: String, unlessProvenFor identity: String) throws -> Bool {
+        guard let link = try storedLink(of: serverID), link.provenServerID != identity else { return false }
+        guard keychain.delete(Self.account(for: serverID)) else { throw JournalError.writeFailed }
+        guard keychain.delete(Self.linkAccount(for: serverID)) else { throw JournalError.writeFailed }
+        return true
+    }
+
+    /// Makes `serverID` share `other`'s record from now on, after the two
+    /// were proven to reach one deployment (`sharesBackend`). The server
+    /// keys an installation by device ID, so one deployment holds one
+    /// installation for this device whichever address registers it, and
+    /// only one key can prove it. `serverID`'s own record, whose key the
+    /// server does not hold, is deleted; the owners both records know are
+    /// kept in the shared one, so either address can register again as
+    /// itself once the other leaves.
+    ///
+    /// A shared record sits in a Keychain item of its own that no address
+    /// owns: the first time `other`'s record is shared, it moves there and
+    /// `other` is linked to it as well. Every address sharing a record
+    /// therefore holds a link, and one that later reports another
+    /// deployment ends only its own (`dropLink`); the record stays with the
+    /// others. A link is kept like a record: it outlives sign-out and
+    /// removal.
+    func link(_ serverID: String, toRecordOf other: String, provenFor identity: String) throws {
+        var target = try recordSlot(for: other)
+        guard try recordSlot(for: serverID) != target, var shared = try load(serverID: other) else { return }
+        let own = try load(serverID: serverID)
+        var owners = shared.owners ?? [:]
+        for record in [shared, own].compactMap({ $0 }) {
+            for (id, owner) in record.owners ?? [:] { owners[id] = owner }
+            if let latest = record.latest { owners[latest.intent.owner.serverID] = latest.intent.owner }
+        }
+        shared.owners = owners
+        // Written before any link names it, and the address slots are
+        // deleted last, so an interrupted link leaves every address with a
+        // record whose key it already held.
+        var vacated: String?
+        if !target.hasPrefix(Self.sharedRecordPrefix) {
+            vacated = target
+            target = Self.sharedRecordPrefix + UUID().uuidString
+            try save(shared, serverID: target)
+            try writeLink(other, to: target, provenFor: identity)
+        } else {
+            try save(shared, serverID: target)
+        }
+        try writeLink(serverID, to: target, provenFor: identity)
+        keychain.delete(Self.account(for: serverID))
+        if let vacated { keychain.delete(Self.account(for: vacated)) }
+    }
+
+    /// The prefix of a shared record's Keychain item, which no registry id
+    /// (base64url of an address) can start with.
+    static let sharedRecordPrefix = "shared-"
+
+    private func writeLink(_ serverID: String, to record: String, provenFor identity: String) throws {
+        let data = try JSONEncoder().encode(Link(record: record, provenServerID: identity))
+        guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.linkAccount(for: serverID)) else {
+            throw JournalError.writeFailed
+        }
+    }
+
     /// The stored record, `nil` only when no record exists for `serverID`.
     func load(serverID: String) throws -> ApplePushInstallationRecord? {
         let raw: String?
         do {
-            raw = try keychain.getChecked(Self.account(for: serverID))
+            raw = try keychain.getChecked(Self.account(for: recordSlot(for: serverID)))
         } catch {
             throw JournalError.unreadable
         }
@@ -165,8 +292,15 @@ struct ApplePushInstallationJournal: Sendable {
     }
 
     func save(_ record: ApplePushInstallationRecord, serverID: String) throws {
+        try save(record, slot: recordSlot(for: serverID))
+    }
+
+    /// Writes `record` to the Keychain slot `slot` (`recordSlot(for:)`)
+    /// without resolving an address's link again, which may have changed
+    /// since the slot was read.
+    func save(_ record: ApplePushInstallationRecord, slot: String) throws {
         let data = try JSONEncoder().encode(record)
-        guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.account(for: serverID)) else {
+        guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.account(for: slot)) else {
             throw JournalError.writeFailed
         }
     }
@@ -215,6 +349,7 @@ struct ApplePushInstallationJournal: Sendable {
         var next = record
         next.generation += 1
         next.latest = .init(intent: desired, outcome: .pending)
+        next.owners = (record.owners ?? [:]).merging([desired.owner.serverID: desired.owner]) { _, new in new }
         let command = ApplePushRegistrationCommand(installationKey: next.installationKey,
             generation: next.generation, intent: desired, isRenewal: false)
         return (next, command, true)
