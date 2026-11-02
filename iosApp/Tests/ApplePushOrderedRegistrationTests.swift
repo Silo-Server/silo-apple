@@ -702,6 +702,36 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertFalse(after.contains { $0.header("X-Push-Installation-Key") == key })
     }
 
+    /// A hold names a generation of the record the address used. Once its
+    /// link ends, the address starts over at generation 1, and a hold left
+    /// from the shared record must not block replaying that registration.
+    func testHoldEndsWithTheLinkItNamedAGenerationOf() async throws {
+        let h = try await makeHarness()
+        h.server.setCapability(Self.resetCapability)
+        let registrar = h.registrar(savedServerIdentity: "deployment-a")
+        // Accepted without a display token: generation 1 is held.
+        h.server.enqueue(.receipt(displayToken: nil))
+        _ = await registrar.register(Self.body(), owner: try await h.owner())
+        try await h.signInToSecondAddress()
+        h.server.setSessions(host: "other.example", current: "session-2", pages: [["session-2"]])
+        h.server.setSessions(host: "silo.example", current: "session-1", pages: [["session-1", "session-2"]])
+        h.server.enqueue(.problem(403, "push_installation_key_mismatch"))
+        let shared = await registrar.register(Self.body(), owner: try await h.owner())
+        XCTAssertEqual(shared, Self.accepted)
+        // The first address now reaches another server and starts over.
+        h.identities.set("deployment-z", for: Self.serverID)
+        await h.tokens.switchActiveServer(serverId: Self.serverID)
+        await h.tokens.setServerUrl(Self.serverURL)
+        h.server.enqueue(.transportFailure)
+        let lost = await registrar.register(Self.body(), owner: try await h.owner())
+        XCTAssertEqual(lost, .uncertain)
+
+        let replay = await registrar.register(Self.body(), owner: try await h.owner())
+
+        XCTAssertEqual(replay, Self.accepted)
+        XCTAssertEqual(h.server.registrations.last?.header("X-Push-Generation"), "1")
+    }
+
     /// A link is keyed by the address. When that address later reports
     /// another deployment (a reassigned LAN address, a new install), it
     /// stops sharing the record and starts over with a key of its own.

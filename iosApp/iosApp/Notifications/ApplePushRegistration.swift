@@ -601,11 +601,14 @@ actor ApplePushRegistrar {
                 try await channel.commit {
                     // The address was unlinked while this waited
                     // (`dropStaleLink`): the record planned here stays in the
-                    // slot it left, and its key is not sent.
+                    // slot it left, and its key is not sent. The write goes
+                    // to that slot too: an unlink can still land between this
+                    // check and the write, and must not leave the planned
+                    // record, with its key, in the address's own slot.
                     guard try journal.recordSlot(for: serverID) == slot else {
                         throw ApplePushInstallationJournal.JournalError.linkChanged
                     }
-                    try journal.save(allocated, serverID: serverID)
+                    try journal.save(allocated, slot: slot)
                 }
             } catch {
                 return .notSent(reason: "allocation_\(error)")
@@ -795,6 +798,9 @@ actor ApplePushRegistrar {
         do {
             if try journal.dropLink(of: serverID, unlessProvenFor: identity) {
                 displayTargets.removeTargets(registeredBy: serverID)
+                // A hold names a generation of the shared record; the
+                // address starts over at generation 1.
+                held[serverID] = nil
             }
             return true
         } catch {

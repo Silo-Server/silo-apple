@@ -292,9 +292,15 @@ struct ApplePushInstallationJournal: Sendable {
     }
 
     func save(_ record: ApplePushInstallationRecord, serverID: String) throws {
+        try save(record, slot: recordSlot(for: serverID))
+    }
+
+    /// Writes `record` to the Keychain slot `slot` (`recordSlot(for:)`)
+    /// without resolving an address's link again, which may have changed
+    /// since the slot was read.
+    func save(_ record: ApplePushInstallationRecord, slot: String) throws {
         let data = try JSONEncoder().encode(record)
-        let owner = try recordSlot(for: serverID)
-        guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.account(for: owner)) else {
+        guard keychain.set(String(decoding: data, as: UTF8.self), for: Self.account(for: slot)) else {
             throw JournalError.writeFailed
         }
     }
