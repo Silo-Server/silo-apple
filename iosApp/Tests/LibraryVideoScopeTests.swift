@@ -267,17 +267,14 @@ final class LibraryVideoScopeTests: XCTestCase {
     }
 
     #if os(tvOS)
-    func testOnlyAnExplicitVideoTabNarrowsAMixedLibrary() {
+    func testOnlyAMixedLibraryIsNarrowedToItsVideoTab() {
         let mixed = Library(id: 1, name: "Everything", type: "mixed", sortOrder: nil)
         let movies = Library(id: 2, name: "Films", type: "movie", sortOrder: nil)
         XCTAssertTrue(mixed.isMixedLibrary)
-        XCTAssertEqual(TVLibraryTypeTabView.mediaScope(for: .movies, library: mixed, scopesMixedLibraries: true), .movie)
-        XCTAssertEqual(TVLibraryTypeTabView.mediaScope(for: .series, library: mixed, scopesMixedLibraries: true), .series)
-        // A pinned shortcut resolves its pill vocabulary from the first
-        // matching tab type (.movies for a mixed library); it must not hide series.
-        XCTAssertNil(TVLibraryTypeTabView.mediaScope(for: .movies, library: mixed, scopesMixedLibraries: false))
-        XCTAssertNil(TVLibraryTypeTabView.mediaScope(for: .movies, library: movies, scopesMixedLibraries: true))
-        XCTAssertNil(TVLibraryTypeTabView.mediaScope(for: .movies, library: nil, scopesMixedLibraries: true))
+        XCTAssertEqual(TVLibraryTypeTabView.mediaScope(for: .movies, library: mixed), .movie)
+        XCTAssertEqual(TVLibraryTypeTabView.mediaScope(for: .series, library: mixed), .series)
+        XCTAssertNil(TVLibraryTypeTabView.mediaScope(for: .movies, library: movies))
+        XCTAssertNil(TVLibraryTypeTabView.mediaScope(for: .movies, library: nil))
     }
     #endif
 

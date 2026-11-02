@@ -62,17 +62,18 @@ already follow this rule. Android text sizes below assume the TV app's global
 ```
 TOP BAR (persistent on all root screens)
 ├─ SILO wordmark                            (left, non-interactive)
+├─ Search (icon)                            (left of the tabs)
 ├─ Tabs (center):
 │   Home
 │   Movies        ── cascading selector on focus (§5.3)
 │   Series        ── cascading selector on focus (§5.3)
 │   Music         ── only if a music library exists
-│   Audiobooks    ── only if an audiobook library exists
+│   Audiobooks    ── only if an audiobook library exists and Show Audiobooks is on
+│   For You       ── Watchlist · Favorites · Recommendations dropdown
 │   Calendar
-├─ Search (icon)                            (right)
 └─ Profile avatar → anchored dropdown       (far right)
-    Profiles · Watchlist · Favorites · History · Settings ·
-    Admin Dashboard (admins) · Switch Server (Android) · Sign Out
+    Profiles · Watchlist · Favorites · History · Requests (when enabled) ·
+    Watch Party · Settings · Admin Dashboard (admins) · Switch Server · Sign Out
 
 LIBRARY TAB (Movies/Series/Music/Audiobooks) — sub-destination pills:
     Browse (default) · Collections · Genres · A–Z · Recently Added
@@ -85,9 +86,11 @@ FULL-SCREEN (pushed over everything, no top bar):
 
 ### 3.1 Tab derivation rules
 
-- Tabs represent **library types**, not libraries. Fixed order:
-  `Home · Movies · Series · Music · Audiobooks · Calendar`. A type's tab appears
-  only if the profile can see ≥1 library of that type.
+- Tabs represent **library types**, not libraries. Fixed order on tvOS, Android
+  TV, and Roku: `Home · Movies · Series · Music · Audiobooks · For You ·
+  Calendar`. A type's tab appears only if the profile can see ≥1 library of
+  that type; Audiobooks also needs the local Show Audiobooks setting. Users
+  cannot reorder, hide, or pin tabs. Requests lives in the profile dropdown.
 - **Press** on a library tab always commits directly: one library of the type →
   that library's Browse landing; multiple → the current scope's Browse landing.
 - **Focus-dwell** on a library tab opens its anchored selector (§5.3): with one
@@ -98,7 +101,7 @@ FULL-SCREEN (pushed over everything, no top bar):
   A multi-library tab is always scoped to one library (the persisted choice, or
   the first by sort order on cold start); the user switches libraries via the
   cascade (§5.3).
-- Tab cap: with every type present the bar holds 6 tabs + search + avatar, which
+- Tab cap: with every type present the bar holds 7 tabs + search + avatar, which
   fits 1920 with the specified paddings. We do not support arbitrary per-library
   tabs, so no overflow design is needed.
 
@@ -108,7 +111,6 @@ FULL-SCREEN (pushed over everything, no top bar):
   (tvOS `TVLibraryActionsModal` / Android `TvFullScreenPicker` use-for-libraries).
 - The Recommended/Collections mode slider (tvOS `TVLibraryModeSlider`) and the
   `libraryMode` state it controls.
-- The `For You` root tab on both platforms (content folds into Home).
 - The Featured hero carousel on TV surfaces (`FeaturedCarousel` usage in tvOS
   Home and library landings — the component itself stays for iOS/iPadOS), along
   with its action buttons, position dots, and auto-advance.
@@ -197,8 +199,8 @@ mockups is presentation-only — do not implement.
 
 - Position: `safeArea.x` insets, top 56, height 64, single row, z-above content.
   Background: none (transparent over hero scrim). Never draws a band.
-- Layout: wordmark (left) — tabs (true-center cluster, gap 8) — search icon
-  button 52×52 — avatar 52×52 (right, gap 22).
+- Layout: wordmark (left) — search icon button 52×52 directly left of the
+  tabs — tabs (true-center cluster, gap 8) — avatar 52×52 (right inset).
 - Scroll behavior: bar stays mounted on root screens; when the user moves focus
   down into content, bar opacity drops to 70% (200 ms) and restores on re-entry.
   It is never hidden entirely on root screens; it does not exist on pushed
@@ -324,8 +326,9 @@ and read what each item is without entering detail pages.
 Same level-1 panel spec as §5.3, anchored under the avatar, right-aligned to
 `safeArea.x`, and the same open behavior (250 ms focus dwell, or press). Rows:
 current profile header (avatar + name + server host, mono), then `Switch
-Profile`, `Watchlist`, `Favorites`, `History`, divider, `Settings`, `Admin
-Dashboard` (admins), `Switch Server` (Android, multi-server), `Sign Out`.
+Profile`, `Watchlist`, `Favorites`, `History`, `Requests` (while the server
+enables it), `Watch Party` (when available), divider, `Settings`, `Admin
+Dashboard` (admins), `Switch Server`, `Sign Out`.
 No flyout level.
 
 ---

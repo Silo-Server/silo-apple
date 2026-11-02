@@ -8,11 +8,10 @@ final class BrowseViewModelTests: XCTestCase {
         super.tearDown()
     }
 
-    func testMixedLibraryCategorySelectsTheMatchingVideoScope() {
-        XCTAssertEqual(mixedLibraryVideoScope(libraryType: "mixed", category: .movies, selection: .series), .movie)
-        XCTAssertEqual(mixedLibraryVideoScope(libraryType: "mixed", category: .series, selection: .movie), .series)
-        XCTAssertEqual(mixedLibraryVideoScope(libraryType: "mixed", category: nil, selection: .series), .series)
-        XCTAssertNil(mixedLibraryVideoScope(libraryType: "audiobooks", category: nil, selection: .movie))
+    func testMixedLibraryUsesTheSelectedVideoScope() {
+        XCTAssertEqual(mixedLibraryVideoScope(libraryType: "mixed", selection: .series), .series)
+        XCTAssertEqual(mixedLibraryVideoScope(libraryType: "mixed", selection: .movie), .movie)
+        XCTAssertNil(mixedLibraryVideoScope(libraryType: "audiobooks", selection: .movie))
     }
 
     func testSwitchingScopeOnSameLibraryClearsOldItemsAndUsesScopedCache() async throws {

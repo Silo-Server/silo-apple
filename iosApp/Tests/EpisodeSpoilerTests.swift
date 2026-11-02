@@ -745,8 +745,7 @@ private func spoilerCapabilities(
         allowed: allowed,
         manifestRevision: revision,
         clientFamilies: ["tv", "mobile", "tablet", "desktop", "web"],
-        supportsBatchedEffective: batchedEffective,
-        supportsAtomicShortcuts: true
+        supportsBatchedEffective: batchedEffective
     )
 }
 
