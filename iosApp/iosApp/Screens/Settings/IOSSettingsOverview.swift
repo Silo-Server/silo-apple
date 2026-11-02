@@ -286,7 +286,7 @@ struct IOSSettingsOverview: View {
             if matchesExperimentalName || matchesAudiobooks {
                 SettingsOverviewToggleRow(
                     title: "Show Audiobooks",
-                    subtitle: "Add Audiobooks to the main navigation",
+                    subtitle: "Show audiobook libraries in Libraries and Search",
                     systemImage: "book.closed.fill",
                     isOn: Binding(
                         get: { navPrefs.showAudiobooks },
