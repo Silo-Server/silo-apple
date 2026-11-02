@@ -17,9 +17,14 @@ final class MyRequestsViewModel {
     private(set) var notice: String? {
         didSet { scheduleNoticeClear() }
     }
-    /// Requests whose cancel or remove was sent without a usable answer.
-    /// Both are `non_retryable`, so these stay held until a fresh list read.
-    private(set) var unconfirmedActionIds: Set<String> = []
+    /// Requests whose cancel or remove was sent without a usable answer, each
+    /// with the serial of its hold. Both are `non_retryable`, so these stay
+    /// held until a list read that started after the hold succeeds.
+    private var unconfirmedActions: [String: Int] = [:]
+    private var holdSerial = 0
+    /// Bumped by every list read and by a removal, so only the newest read
+    /// installs its answer: an older one could bring back a removed row.
+    private var listGeneration = 0
 
     private var hasLoaded = false
     /// In-flight bus-triggered reload; cancelled and replaced on the next
@@ -37,34 +42,39 @@ final class MyRequestsViewModel {
     }
 
     func load() async {
+        listGeneration &+= 1
+        let generation = listGeneration
+        let coveredHolds = holdSerial
         isLoading = buckets.isEmpty
         error = nil
+        defer { if generation == listGeneration { isLoading = false } }
         do {
             let requests = try await api.myRequests()
+            guard generation == listGeneration else { return }
             buckets = MyRequestsBucket.bucket(requests)
             RequestDetailCache.shared.storeOwnRecords(requests)
             RequestDetailCache.shared.prefetch(buckets.flatMap(\.requests), api: api)
             hasLoaded = true
-            releaseHeldActions()
+            releaseHeldActions(through: coveredHolds)
         } catch {
-            if buckets.isEmpty {
+            if generation == listGeneration, buckets.isEmpty {
                 self.error = ErrorState(error)
             }
         }
-        isLoading = false
     }
 
-    /// The server's list now shows each held action's result.
-    private func releaseHeldActions() {
-        guard !unconfirmedActionIds.isEmpty else { return }
-        unconfirmedActionIds.removeAll()
-        actionErrorMessage = nil
+    /// A read that started after these holds now shows their results; a
+    /// hold made while the read was running stays.
+    private func releaseHeldActions(through serial: Int) {
+        let before = unconfirmedActions.count
+        unconfirmedActions = unconfirmedActions.filter { $0.value > serial }
+        if unconfirmedActions.count < before, unconfirmedActions.isEmpty { actionErrorMessage = nil }
     }
 
     /// Whether the row may offer cancel or remove again; a held action may
     /// not.
     func isActionUnconfirmed(_ request: MediaRequest) -> Bool {
-        unconfirmedActionIds.contains(request.id)
+        unconfirmedActions[request.id] != nil
     }
 
     /// Whether the row may offer cancel: the request can still be withdrawn,
@@ -82,7 +92,7 @@ final class MyRequestsViewModel {
     /// No action is running (another would be refused without a word) and
     /// none is held for this request.
     private func canAct(_ request: MediaRequest) -> Bool {
-        actingId == nil && !unconfirmedActionIds.contains(request.id)
+        actingId == nil && unconfirmedActions[request.id] == nil
     }
 
     /// Whether the row is waiting on its own cancel or remove.
@@ -159,15 +169,17 @@ final class MyRequestsViewModel {
     /// skipped.
     private func hold(_ request: MediaRequest, after error: Error,
                       refresh: (() async -> Bool)?, message: String) async {
-        unconfirmedActionIds.insert(request.id)
+        holdSerial &+= 1
+        unconfirmedActions[request.id] = holdSerial
         release(request)
         if !RequestMutationFailure.isOwnerChanged(error) { await reread(refresh) }
-        if !unconfirmedActionIds.isEmpty { actionErrorMessage = message }
+        if unconfirmedActions[request.id] != nil { actionErrorMessage = message }
     }
 
     /// The server answered that the request is gone. Its row goes now, so a
     /// failed re-read cannot leave it on screen with its action.
     private func removed(_ request: MediaRequest) {
+        listGeneration &+= 1
         buckets = MyRequestsBucket.bucket(buckets.flatMap(\.requests).filter { $0.id != request.id })
         RequestsEventBus.shared.publishRemoval(request)
         notice = RequestErrorCopy.removedNotice
@@ -183,10 +195,11 @@ final class MyRequestsViewModel {
     }
 
     /// Reads the list that shows the rows again; a successful read settles
-    /// every held action.
+    /// the holds made before it started.
     private func reread(_ refresh: (() async -> Bool)?) async {
         if let refresh {
-            if await refresh() { releaseHeldActions() }
+            let coveredHolds = holdSerial
+            if await refresh() { releaseHeldActions(through: coveredHolds) }
         } else {
             await load()
         }

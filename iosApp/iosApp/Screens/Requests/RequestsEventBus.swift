@@ -24,7 +24,11 @@ final class RequestsEventBus {
         lastUpdate = request
     }
 
+    /// Lists drop the row, and the record no longer seeds the title's page.
+    /// The title's own request state is left to the next read: another
+    /// request for it may exist, so a removal says nothing about it.
     func publishRemoval(_ request: MediaRequest) {
+        RequestDetailCache.shared.forgetOwnRecord(request)
         lastRemoval = request
     }
 

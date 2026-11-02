@@ -56,7 +56,11 @@ private struct PhoneRequestsHubView: View {
             }
         }
         .onChange(of: RequestsEventBus.shared.lastRemoval) { _, removed in
-            if let removed { viewModel.applyRemoval(removed) }
+            guard let removed else { return }
+            viewModel.applyRemoval(removed)
+            // Cards may show the removed request's state; the read is the
+            // only source for what the title shows now.
+            Task { await viewModel.load() }
         }
     }
 

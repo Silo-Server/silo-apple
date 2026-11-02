@@ -626,6 +626,94 @@ final class RequestsV2Tests: XCTestCase {
         }
     }
 
+    /// A list read that started before the remove answers after it: its
+    /// older answer must not bring the removed row back.
+    @MainActor
+    func testAnOlderListReadCannotBringBackARemovedRow() async throws {
+        let model = try await myRequestsModel()
+        stub.sequence(path: "/api/v2/requests/mine", [
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            // The pull-to-refresh read, answered before the delete.
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            .json(200, #"{"items":[]}"#),
+        ])
+        stub.sequence(path: "/api/v2/requests/request-one", [Self.noContent])
+        await model.load()
+        let failed = try XCTUnwrap(model.buckets.first?.requests.first)
+
+        stub.hold(path: "/api/v2/requests/mine")
+        let olderRead = Task { await model.load() }
+        await stub.waitUntilHeld()
+        await model.remove(failed)
+        XCTAssertTrue(model.buckets.isEmpty)
+        stub.release()
+        await olderRead.value
+
+        XCTAssertTrue(model.buckets.isEmpty, "the older read's answer is dropped")
+    }
+
+    /// The hub's rail too: a read that started before a removal still lists
+    /// the request, and the row stays out.
+    @MainActor
+    func testAnOlderHubReadCannotBringBackARemovedRow() async throws {
+        let tokens = try await tokens()
+        let api = SiloAPI(http: HTTPClient(session: stub.makeSession(), tokenStore: tokens), tokenStore: tokens)
+        let hub = RequestsHubViewModel(api: api)
+        stub.reply(path: "/api/v2/requests/discover", 200, #"{"items":[]}"#)
+        stub.reply(path: "/api/v2/requests/mine", 200, #"{"items":[\#(Self.failedRecord)]}"#)
+        await hub.load()
+        let failed = try XCTUnwrap(hub.myRequests.first)
+
+        stub.hold(path: "/api/v2/requests/mine")
+        let olderRead = Task { await hub.load() }
+        await stub.waitUntilHeld()
+        hub.applyRemoval(failed)
+        stub.release()
+        let installed = await olderRead.value
+
+        XCTAssertTrue(installed, "a removal does not overtake the hub's read")
+        XCTAssertTrue(hub.myRequests.isEmpty, "the older read does not bring the row back")
+    }
+
+    /// A re-read releases only the holds it can speak for: one that became
+    /// uncertain while the read was running stays held.
+    @MainActor
+    func testAReadReleasesOnlyHoldsOlderThanIt() async throws {
+        let model = try await myRequestsModel()
+        let other = Self.failedRecord
+            .replacingOccurrences(of: #""id":"request-one""#, with: #""id":"request-two""#)
+            .replacingOccurrences(of: #""tmdb_id":949"#, with: #""tmdb_id":500"#)
+        stub.sequence(path: "/api/v2/requests/mine", [.json(200, #"{"items":[\#(Self.failedRecord),\#(other)]}"#)])
+        stub.sequence(path: "/api/v2/requests/request-one", [.failure(URLError(.networkConnectionLost))])
+        stub.sequence(path: "/api/v2/requests/request-two", [.failure(URLError(.networkConnectionLost))])
+        await model.load()
+        let rows = try XCTUnwrap(model.buckets.first?.requests)
+        let first = try XCTUnwrap(rows.first { $0.id == "request-one" })
+        let second = try XCTUnwrap(rows.first { $0.id == "request-two" })
+
+        let (signal, answer) = AsyncStream<Void>.makeStream()
+        let firstRemove = Task {
+            await model.remove(first, refresh: {
+                for await _ in signal { break }
+                return true
+            })
+        }
+        for _ in 0..<500 where !model.isActionUnconfirmed(first) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(model.isActionUnconfirmed(first))
+        // The second remove is lost too, and its own read fails.
+        await model.remove(second, refresh: { false })
+        XCTAssertTrue(model.isActionUnconfirmed(second))
+
+        answer.yield()
+        await firstRemove.value
+
+        XCTAssertFalse(model.isActionUnconfirmed(first), "the read settles the hold it started after")
+        XCTAssertTrue(model.isActionUnconfirmed(second), "it says nothing about a later hold")
+        XCTAssertEqual(stub.requests.filter { $0.method == "DELETE" }.count, 2)
+    }
+
     /// An admin retried the request after the list loaded: the server refuses
     /// the remove, and the list shows the request on its way again.
     @MainActor
