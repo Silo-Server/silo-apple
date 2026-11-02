@@ -268,6 +268,22 @@ final class AuthService: @unchecked Sendable {
         return await apiV2Client.signInOptions(serverURL: url)
     }
 
+    /// Whether the login screen offers "Forgot password?" on the active
+    /// server: it emails reset links on request. False on a server that
+    /// predates the capability; nil when it could not be read.
+    func passwordResetAvailable() async -> Bool? {
+        let url = serverUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !url.isEmpty else { return false }
+        return await apiV2Client.passwordResetAvailable(serverURL: url)
+    }
+
+    /// Asks the active server to email a reset link to the account `login`
+    /// names (`POST /api/v2/password-resets`). Succeeds whether or not an
+    /// account matched.
+    func requestPasswordReset(login: String) async throws {
+        try await apiV2Client.requestPasswordReset(login: login)
+    }
+
     /// Validate a Keychain-restored account without changing the remembered
     /// server entry. Temporary failures return `indeterminate`; only the
     /// existing HTTP refresh policy may invalidate a terminally rejected
