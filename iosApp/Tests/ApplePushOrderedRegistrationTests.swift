@@ -641,8 +641,9 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
     /// A removed address's retirement can be retried for months, and a
     /// different server may answer at that address by then. While another
     /// saved address still shares the record, the retirement goes through
-    /// that one, which reaches the same server, so the shared key is never
-    /// queued for the address that left.
+    /// that one, which reaches the same server. The route is chosen on every
+    /// attempt: once that address reports another server too, a retry no
+    /// longer goes there.
     func testRetirementForASharedRecordGoesThroughAnAddressStillSharingIt() async throws {
         let h = try await makeHarness()
         let registrar = try await joinSecondAddress(h)
@@ -655,9 +656,16 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         let retirement = try XCTUnwrap(h.server.retirements.first)
         XCTAssertEqual(retirement.url?.host, "silo.example")
         XCTAssertEqual(retirement.header("X-Push-Installation-Key"), key)
-        let queued = try h.retirementStore.load()
-        XCTAssertEqual(queued.map(\.serverID), [Self.otherServerID])
-        XCTAssertEqual(queued.map(\.serverURL), [Self.serverURL])
+        XCTAssertEqual(try h.retirementStore.load().map(\.serverID), [Self.otherServerID])
+
+        // The first address now reaches another server, and nothing has run
+        // for it since. A relaunch retries without a back-off.
+        h.identities.set("deployment-z", for: Self.serverID)
+        h.server.enqueueRetirement(.transportFailure)
+        await h.registrar(savedServerIdentity: "deployment-a").retryPendingRetirements()
+
+        XCTAssertEqual(h.server.retirements.count, 2)
+        XCTAssertNotEqual(h.server.retirements.last?.url?.host, "silo.example")
     }
 
     /// A link is keyed by the address. When that address later reports

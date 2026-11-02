@@ -91,6 +91,9 @@ actor ApplePushRetirementQueue {
 
     typealias Send = @Sendable (_ serverURL: String, _ deviceID: String, _ installationKey: String,
                                 _ generation: Int64) async throws -> Void
+    /// The address to send `entry` to now, chosen when it is sent rather
+    /// than when it was queued; `nil` sends it to `entry.serverURL`.
+    typealias Route = @Sendable (_ entry: ApplePushRetirement) async -> String?
 
     static let shared = ApplePushRetirementQueue()
 
@@ -185,16 +188,16 @@ actor ApplePushRetirementQueue {
 
     /// Queues `entry` and sends it at once. An entry the Keychain refused
     /// still gets this one attempt.
-    func submit(_ entry: ApplePushRetirement) async -> Outcome? {
+    func submit(_ entry: ApplePushRetirement, route: Route? = nil) async -> Outcome? {
         enqueue(entry)
         let stored = pending().first { $0.serverID == entry.serverID && $0.generation == entry.generation }
-        return await attempt(stored ?? entry)
+        return await attempt(stored ?? entry, route: route)
     }
 
     /// Sends every pending retirement whose back-off has passed, a few at a
     /// time. `afterPush` skips the back-off: a push from a server that should
     /// have stopped is the moment to try again.
-    func retryDue(afterPush: Bool = false) async {
+    func retryDue(afterPush: Bool = false, route: Route? = nil) async {
         let at = now()
         let due = pending().filter { entry in
             guard let failure = failures[entry.serverID] else { return true }
@@ -206,11 +209,11 @@ actor ApplePushRetirementQueue {
             var next = due.makeIterator()
             for _ in 0..<Self.maximumConcurrentSends {
                 guard let entry = next.next() else { break }
-                group.addTask { _ = await self.attempt(entry) }
+                group.addTask { _ = await self.attempt(entry, route: route) }
             }
             while await group.next() != nil {
                 guard let entry = next.next() else { continue }
-                group.addTask { _ = await self.attempt(entry) }
+                group.addTask { _ = await self.attempt(entry, route: route) }
             }
         }
     }
@@ -219,7 +222,7 @@ actor ApplePushRetirementQueue {
         min(maximumBackOff, initialBackOff * pow(2, Double(max(0, count - 1))))
     }
 
-    private func attempt(_ entry: ApplePushRetirement) async -> Outcome? {
+    private func attempt(_ entry: ApplePushRetirement, route: Route?) async -> Outcome? {
         guard sending.insert(entry.serverID).inserted else { return nil }
         defer { sending.remove(entry.serverID) }
         let age = now().timeIntervalSince(entry.queuedAt)
@@ -245,8 +248,9 @@ actor ApplePushRetirementQueue {
             // Before first unlock, for example. Nothing was sent.
             return finish(entry, .kept(reason: "journal_unreadable"))
         }
+        let serverURL = await route?(entry) ?? entry.serverURL
         do {
-            try await transport(entry.serverURL, entry.deviceID, key, entry.generation)
+            try await transport(serverURL, entry.deviceID, key, entry.generation)
             return finish(entry, .retired)
         } catch {
             return finish(entry, Self.outcome(for: error, age: age))

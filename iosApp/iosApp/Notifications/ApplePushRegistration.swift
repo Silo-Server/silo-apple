@@ -387,7 +387,7 @@ actor ApplePushRegistrar {
         var retirement: ApplePushRetirementQueue.Outcome?
         if let entry = await allocateRetirement(serverID: serverID, deviceID: deviceID, teardown: teardown) {
             let retirements = self.retirements
-            let submitting = Task { await retirements.submit(entry) }
+            let submitting = Task { await retirements.submit(entry) { await self.retirementURL(for: $0) } }
             // An unanswered retirement keeps going while the `off` is sent.
             let answer = await Self.value(of: submitting, within: retirementBudget)
             let outcome = answer.flatMap { $0 } ?? .kept(reason: answer == nil ? "unanswered" : "in_flight")
@@ -439,23 +439,11 @@ actor ApplePushRegistrar {
     /// current generation. `nil` when the server never registered, its
     /// address is unknown, `teardown` has ended, or the journal cannot be
     /// read or written; nothing may then be sent as a retirement.
-    ///
-    /// A retirement can be retried for months after the address is gone,
-    /// and another server may answer there by then. While another saved
-    /// address still shares the record, the retirement goes to that address,
-    /// which reaches the same deployment, so the shared key is not queued
-    /// for the departing one.
     private func allocateRetirement(serverID: String, deviceID: String,
                                     teardown: UUID) async -> ApplePushRetirement? {
-        guard var serverURL = ServerRegistry.url(forServerId: serverID) else { return nil }
+        guard let serverURL = ServerRegistry.url(forServerId: serverID) else { return nil }
         await waitForTurn(ahead: true)
         defer { finishTurn() }
-        for alias in await otherAddressesSharingRecord(with: serverID) {
-            guard await dropStaleLink(of: alias), sharesRecord(alias, with: serverID),
-                  let aliasURL = ServerRegistry.url(forServerId: alias) else { continue }
-            serverURL = aliasURL
-            break
-        }
         guard teardowns[serverID] == teardown else { return nil }
         do {
             guard let record = try journal.load(serverID: serverID),
@@ -469,6 +457,26 @@ actor ApplePushRegistrar {
             Self.logger.error("Could not allocate an Apple push retirement: \(String(describing: error), privacy: .public)")
             return nil
         }
+    }
+
+    /// Where `entry` goes now. A retirement can be retried for months after
+    /// its address is gone, and another server may answer there by then.
+    /// While another saved address still shares the record, the retirement
+    /// goes to that one, which reaches the same deployment; this is decided
+    /// on every attempt, so an address that has since moved is passed over.
+    private func retirementURL(for entry: ApplePushRetirement) async -> String? {
+        for alias in await otherAddressesSharingRecord(with: entry.serverID) {
+            guard await dropStaleLink(of: alias), sharesRecord(alias, with: entry.serverID),
+                  let aliasURL = ServerRegistry.url(forServerId: alias) else { continue }
+            return aliasURL
+        }
+        return nil
+    }
+
+    /// Sends the retirements still pending whose back-off has passed
+    /// (`ApplePushRetirementQueue.retryDue`), each to `retirementURL`.
+    func retryPendingRetirements(afterPush: Bool = false) async {
+        await retirements.retryDue(afterPush: afterPush) { await self.retirementURL(for: $0) }
     }
 
     /// Undoes `unregister` for a server whose sign-out or removal did not
@@ -1219,7 +1227,7 @@ final class ApplePushRegistrationCoordinator {
     /// whose back-off has passed. `afterPush` skips the back-off: a push
     /// arriving is the sign a retired server is still sending them.
     func retryPendingRetirements(afterPush: Bool = false) async {
-        await registrar.retirements.retryDue(afterPush: afterPush)
+        await registrar.retryPendingRetirements(afterPush: afterPush)
     }
 
     /// Moves an earlier build's single display token into a target. Runs at
