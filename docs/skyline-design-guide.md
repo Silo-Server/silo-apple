@@ -72,7 +72,7 @@ TOP BAR (persistent on all root screens)
 │   For You       ── Watchlist · Favorites · Recommendations dropdown
 │   Calendar
 └─ Profile avatar → anchored dropdown       (far right)
-    Profiles · Watchlist · Favorites · History · Requests (when enabled) ·
+    Profiles · History · Requests (when enabled) ·
     Watch Party · Settings · Admin Dashboard (admins) · Switch Server · Sign Out
 
 LIBRARY TAB (Movies/Series/Music/Audiobooks) — sub-destination pills:
@@ -126,7 +126,7 @@ FULL-SCREEN (pushed over everything, no top bar):
 | Library landing "Recommended" mode | Library tab → `Browse` pill (default) |
 | Library landing "Collections" mode | Library tab → `Collections` pill, plus an inline "Collections" row on Browse |
 | For You rows | Home rows, after Continue Watching |
-| Watchlist / Favorites / History quick links | Profile dropdown (and stay in Settings) |
+| Watchlist / Favorites / History quick links | Watchlist and Favorites: For You dropdown; History: profile dropdown (all stay in Settings) |
 | Calendar tab | Unchanged position; Android TV must add the screen for parity |
 | Search | Top bar icon → existing search screen |
 | Settings | Profile dropdown → existing settings screen |
@@ -326,10 +326,10 @@ and read what each item is without entering detail pages.
 Same level-1 panel spec as §5.3, anchored under the avatar, right-aligned to
 `safeArea.x`, and the same open behavior (250 ms focus dwell, or press). Rows:
 current profile header (avatar + name + server host, mono), then `Switch
-Profile`, `Watchlist`, `Favorites`, `History`, `Requests` (while the server
-enables it), `Watch Party` (when available), divider, `Settings`, `Admin
-Dashboard` (admins), `Switch Server`, `Sign Out`.
-No flyout level.
+Profile`, `History`, `Requests` (while the server enables it), `Watch Party`
+(when available), divider, `Settings`, `Admin Dashboard` (admins), `Switch
+Server`, `Sign Out`. Watchlist and Favorites live in the For You dropdown
+only. No flyout level.
 
 ---
 
