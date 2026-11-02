@@ -472,7 +472,8 @@ actor HTTPClient {
         expectedAccount: RefreshAccountIdentity? = nil,
         expectedAuth: CapturedOrdinaryRequestAuth? = nil,
         sendsProfile: Bool = true,
-        dispatchRecord: HTTPDispatchRecord? = nil
+        dispatchRecord: HTTPDispatchRecord? = nil,
+        beforeDispatch: (@Sendable () async throws -> Void)? = nil
     ) async throws -> HTTPRawResponse {
         if let requestIdentity {
             let dispatchRevision = try captureRequestDispatchRevision()
@@ -507,6 +508,9 @@ actor HTTPClient {
                 headers: headers,
                 auth: auth
             )
+            // The caller's last check, after the credential capture and any
+            // refresh above, right before the request leaves.
+            try await beforeDispatch?()
             var (data, response) = try await perform(
                 request: request,
                 timeout: timeout,
@@ -551,6 +555,7 @@ actor HTTPClient {
                         auth: auth
                     )
                     Self.logRefreshRetry(method: method, path: path, retried: true)
+                    try await beforeDispatch?()
                     (data, response) = try await perform(
                         request: request,
                         timeout: timeout,

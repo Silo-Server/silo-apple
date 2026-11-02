@@ -729,6 +729,28 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertFalse(after.contains { $0.url?.host == "other.example" && $0.header("X-Push-Installation-Key") == key })
     }
 
+    /// The same last check guards the active server's requests, which go
+    /// through `HTTPClient` and its own credential capture.
+    func testSharedKeyIsCheckedAgainRightBeforeTheActiveServerSends() async throws {
+        let h = try await makeHarness()
+        let registrar = try await joinSecondAddress(h)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        let sent = h.server.registrations.count
+        let gate = StubURLProtocol.Gate()
+        h.server.gateCapability(gate)
+        let owner = try await h.owner()
+
+        let pass = Task { await registrar.register(Self.body(token: Self.tokenB), owner: owner) }
+        while await gate.waiterCount == 0 { await Task.yield() }
+        h.identities.set("deployment-z", for: Self.otherServerID)
+        await gate.open()
+        let result = await pass.value
+
+        XCTAssertEqual(result, .notSent(reason: ApplePushRegistrar.linkChangedReason))
+        let after = h.server.registrations.dropFirst(sent)
+        XCTAssertFalse(after.contains { $0.header("X-Push-Installation-Key") == key })
+    }
+
     /// A hold names a generation of the record the address used. Once its
     /// link ends, the address starts over at generation 1, and a hold left
     /// from the shared record must not block replaying that registration.

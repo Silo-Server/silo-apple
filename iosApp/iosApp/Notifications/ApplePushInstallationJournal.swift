@@ -9,6 +9,10 @@ enum ApplePushRegistrationError: Error, Equatable {
     /// The server answered 200 with a receipt for a different generation or
     /// payload.
     case invalidReceipt
+    /// The address no longer holds the installation key the request
+    /// carries: its link to a shared record ended while the request waited
+    /// for its credentials. Nothing was sent.
+    case keyWithdrawn
 }
 
 /// The durable owner an Apple push intent was prepared for. Nonsecret: the

@@ -1281,11 +1281,13 @@ struct APIv2Client: Sendable {
     /// Throws `ApplePushRegistrationError.invalidReceipt` when the server's
     /// receipt does not describe this generation and payload.
     func registerApplePush(_ body: APIv2ApplePushRegistrationBody, installationKey: String, generation: Int64,
-                           auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushRegistrationReceipt {
+                           auth: CapturedOrdinaryRequestAuth,
+                           beforeDispatch: (@Sendable () async throws -> Void)? = nil)
+        async throws -> APIv2ApplePushRegistrationReceipt {
         let data = try await applePushRequest(method: "POST", path: Self.applePushRegistrationPath,
             body: Self.applePushRegistrationBody(body),
             headers: Self.applePushInstallationHeaders(installationKey: installationKey, generation: generation),
-            auth: auth)
+            auth: auth, beforeDispatch: beforeDispatch)
         return try Self.applePushReceipt(from: data, generation: generation, body: body)
     }
 
@@ -1295,10 +1297,13 @@ struct APIv2Client: Sendable {
     /// next registration sends; the server leaves an installation already
     /// bound to it alone, so a repeated reset is safe.
     func resetApplePushInstallation(deviceID: String, installationKey: String,
-                                    auth: CapturedOrdinaryRequestAuth) async throws -> APIv2ApplePushResetReceipt {
+                                    auth: CapturedOrdinaryRequestAuth,
+                                    beforeDispatch: (@Sendable () async throws -> Void)? = nil)
+        async throws -> APIv2ApplePushResetReceipt {
         let data = try await applePushRequest(method: "POST", path: Self.applePushResetPath,
             body: Self.applePushResetBody(deviceID: deviceID),
-            headers: Self.applePushResetHeaders(installationKey: installationKey), auth: auth)
+            headers: Self.applePushResetHeaders(installationKey: installationKey), auth: auth,
+            beforeDispatch: beforeDispatch)
         return try Self.applePushResetReceipt(from: data)
     }
 
@@ -1437,9 +1442,12 @@ struct APIv2Client: Sendable {
         return receipt
     }
 
+    /// `beforeDispatch` runs right before the request leaves, after the
+    /// credential capture and any refresh.
     private func applePushRequest(method: String, path: String, query: [String: String] = [:], body: Data? = nil,
                                   headers: [String: String] = [:],
-                                  auth: CapturedOrdinaryRequestAuth) async throws -> Data {
+                                  auth: CapturedOrdinaryRequestAuth,
+                                  beforeDispatch: (@Sendable () async throws -> Void)? = nil) async throws -> Data {
         try await gate()
         guard case .persistentServer = auth.credentialOwner, let profile = auth.profileId, !profile.isEmpty else {
             throw HTTPError.requestIdentityChanged
@@ -1448,7 +1456,8 @@ struct APIv2Client: Sendable {
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: path, query: query, body: body, headers: headers,
-                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth,
+                    beforeDispatch: beforeDispatch)
             }
         }
         try Task.checkCancellation()

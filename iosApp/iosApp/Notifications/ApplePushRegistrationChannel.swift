@@ -51,9 +51,6 @@ enum ApplePushSavedServerError: Error, Equatable {
     /// The server refused the stored session's refresh: it needs a new
     /// sign-in, though the session stays saved.
     case credentialRejected
-    /// The address no longer holds the installation key the request
-    /// carries (`keyGate`). Nothing was sent.
-    case keyWithdrawn
 }
 
 /// Registration requests for a saved server sent with that server's own
@@ -151,7 +148,7 @@ struct ApplePushSavedServerClient: Sendable {
             request.setValue(value, forHTTPHeaderField: field)
         }
         // Last, after every credential await.
-        guard await keyGate() else { throw ApplePushSavedServerError.keyWithdrawn }
+        guard await keyGate() else { throw ApplePushRegistrationError.keyWithdrawn }
         let (data, response) = try await session.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else {

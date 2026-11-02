@@ -295,6 +295,18 @@ actor ApplePushRegistrar {
         savedServers.channel(for: owner) { [self] in await holdsKey($0, serverID: owner.serverID) }
     }
 
+    /// `holdsKey` as the active server's last check before a request
+    /// leaves (`HTTPClient.requestData`'s `beforeDispatch`), after its
+    /// credential capture and any refresh.
+    private nonisolated func keyCheck(_ installationKey: String, serverID: String)
+        -> @Sendable () async throws -> Void {
+        { [self] in
+            guard await holdsKey(installationKey, serverID: serverID) else {
+                throw ApplePushRegistrationError.keyWithdrawn
+            }
+        }
+    }
+
     /// Whether `serverID` still resolves to a record holding
     /// `installationKey`, after ending its link if the address now reports
     /// another deployment. A saved-server request checks this last, after its
@@ -522,12 +534,15 @@ actor ApplePushRegistrar {
     private func activeChannel(for owner: CapturedDurableAccountAuth) -> ApplePushRegistrationChannel? {
         guard let intentOwner = ApplePushIntentOwner(owner) else { return nil }
         let api = self.api, tokenStore = self.tokenStore
+        let serverID = intentOwner.serverID
         return ApplePushRegistrationChannel(
             owner: intentOwner,
             serverURL: owner.request.account.serverURL,
             capability: { try await api.applePushRegistrationCapability(auth: owner.request) },
-            send: { try await api.registerApplePush($0, installationKey: $1, generation: $2, auth: owner.request) },
-            reset: { try await api.resetApplePushInstallation(deviceID: $0, installationKey: $1, auth: owner.request) },
+            send: { try await api.registerApplePush($0, installationKey: $1, generation: $2, auth: owner.request,
+                                                    beforeDispatch: self.keyCheck($1, serverID: serverID)) },
+            reset: { try await api.resetApplePushInstallation(deviceID: $0, installationKey: $1, auth: owner.request,
+                                                              beforeDispatch: self.keyCheck($1, serverID: serverID)) },
             loginSessions: { try await api.loginSessions(cursor: $0, auth: owner.request) },
             commit: { try await tokenStore.withCurrentDurableAuthority(owner, operation: $0) }
         )
@@ -652,7 +667,7 @@ actor ApplePushRegistrar {
         } catch {
             // The address's link ended while the request waited for its
             // credentials; the key it carried never left.
-            if error as? ApplePushSavedServerError == .keyWithdrawn {
+            if error as? ApplePushRegistrationError == .keyWithdrawn {
                 return .notSent(reason: Self.linkChangedReason)
             }
             // The same server saved under another address holds the
@@ -893,7 +908,7 @@ actor ApplePushRegistrar {
             let receipt = try await channel.reset(command.intent.body.deviceId, command.installationKey)
             Self.logger.info("Apple push installation reset after a key mismatch: generation=\(command.generation, privacy: .public) reset=\(receipt.reset, privacy: .public)")
         } catch {
-            if error as? ApplePushSavedServerError == .keyWithdrawn {
+            if error as? ApplePushRegistrationError == .keyWithdrawn {
                 return .notSent(reason: Self.linkChangedReason)
             }
             guard Self.refusalReason(error) != nil || Self.forbiddenReason(error) != nil else {
