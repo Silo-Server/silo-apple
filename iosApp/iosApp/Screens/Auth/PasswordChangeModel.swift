@@ -187,9 +187,7 @@ final class PasswordChangeModel {
     /// profile selection, unless the app left this screen meanwhile.
     private func continueSignIn(router: AppRouter) async -> Bool {
         guard await auth.refreshSessionAfterPasswordChange() else { return false }
-        if router.authState == .needsPasswordChange {
-            router.showProfileSelection()
-        }
+        router.finishPasswordChange()
         return true
     }
 

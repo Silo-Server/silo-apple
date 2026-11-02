@@ -273,6 +273,41 @@ final class PasswordChangeTests: XCTestCase {
         XCTAssertTrue(stub.requests.isEmpty, "nothing reaches the server's password-change budget")
     }
 
+    // MARK: Hand-off
+
+    /// Connecting to a saved server asks for profiles twice: once when the
+    /// server becomes active, and again when the connect returns. A second
+    /// request that lands after the hand-off must keep the password change on
+    /// screen; the picker it would show waits on profiles the server refuses.
+    func testAskingForProfilesAgainKeepsThePasswordChange() {
+        let router = AppRouter()
+        router.showProfileSelection()
+        router.showPasswordChange()
+
+        router.showProfileSelection()
+
+        XCTAssertEqual(router.authState, .needsPasswordChange)
+    }
+
+    /// Only the account holding the temporary password is held back, and
+    /// only until the app leaves the password change.
+    func testAnotherAccountOrASignOutShowsProfiles() {
+        var account = SignedInAccount(serverID: "server", accountID: "1")
+        let router = AppRouter()
+        router.signedInAccount = { account }
+        router.showPasswordChange()
+
+        account = SignedInAccount(serverID: "server", accountID: "2")
+        router.showProfileSelection()
+        XCTAssertEqual(router.authState, .needsProfile)
+
+        account = SignedInAccount(serverID: "server", accountID: "1")
+        router.showPasswordChange()
+        router.resetToLogin()
+        router.showProfileSelection()
+        XCTAssertEqual(router.authState, .needsProfile)
+    }
+
     // MARK: Copy and detection
 
     func testRejectedNewPasswordShowsTheServersReason() {

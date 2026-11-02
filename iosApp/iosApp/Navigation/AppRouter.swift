@@ -103,6 +103,7 @@ final class AppRouter {
             // Re-read even when the state is unchanged: a server switch can
             // commit `.authenticated` over `.authenticated` under a new owner.
             authenticatedOwner = authState == .authenticated ? sessionOwner() : nil
+            if authState != .needsPasswordChange { passwordChangeAccount = nil }
             guard oldValue != authState else { return }
             recordAuthStateBreadcrumb(from: oldValue, to: authState, reason: reason)
             // Leaving the authenticated state is an identity boundary: a video
@@ -136,6 +137,16 @@ final class AppRouter {
     @ObservationIgnored private var sessionReturnPoint: SessionReturnPoint?
     /// The signed-in server, account and profile. Tests replace it.
     @ObservationIgnored var sessionOwner: () -> SessionOwner? = { SessionOwner.current() }
+
+    // MARK: - Temporary Password
+
+    /// The account the password change is for, while it shows. The server
+    /// refuses that account's profiles until the change finishes, so asking
+    /// for them again (a server connect that completes after the hand-off)
+    /// stays on the password change instead of a picker that can't load.
+    @ObservationIgnored private var passwordChangeAccount: SignedInAccount?
+    /// The active server and its signed-in account. Tests replace it.
+    @ObservationIgnored var signedInAccount: () -> SignedInAccount = { SignedInAccount.current() }
 
     // MARK: - Navigation Stack
 
@@ -1002,6 +1013,13 @@ final class AppRouter {
 
     /// Transition to profile selection after successful login.
     func showProfileSelection() {
+        if let account = passwordChangeAccount {
+            guard account != signedInAccount() else {
+                showPasswordChange()
+                return
+            }
+            passwordChangeAccount = nil
+        }
         loginNotice = nil
         recordScreenBreadcrumb(target: "profileSelection", action: "reset")
         path = NavigationPath()
@@ -1015,6 +1033,16 @@ final class AppRouter {
         recordScreenBreadcrumb(target: "passwordChange", action: "reset")
         path = NavigationPath()
         setAuthState(.needsPasswordChange, reason: "showPasswordChange")
+        passwordChangeAccount = signedInAccount()
+    }
+
+    /// The temporary password was replaced and the session no longer carries
+    /// its restriction: continue to profile selection, unless the app left
+    /// the password change meanwhile.
+    func finishPasswordChange() {
+        passwordChangeAccount = nil
+        guard authState == .needsPasswordChange else { return }
+        showProfileSelection()
     }
 
     /// User-initiated profile switching has one persistence and cache
@@ -1307,6 +1335,18 @@ final class AppRouter {
             ]
         )
         #endif
+    }
+}
+
+/// The active server and the account signed in to it, before any profile is
+/// chosen. Either is nil when unknown, as for a legacy session that never
+/// recorded its account.
+struct SignedInAccount: Equatable {
+    let serverID: String?
+    let accountID: String?
+
+    static func current() -> SignedInAccount {
+        SignedInAccount(serverID: ServerRegistry.shared.activeServerId, accountID: AuthService.shared.accountID)
     }
 }
 
