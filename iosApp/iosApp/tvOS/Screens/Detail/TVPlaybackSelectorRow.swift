@@ -17,12 +17,18 @@ struct TVPlaybackActionSelectors: View {
     let onSelectVersion: (Int?) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
+    /// The action row's focus binding, so the row can return to the selector
+    /// the viewer left.
+    let focusedAction: FocusState<TVDetailAction?>.Binding
 
     var body: some View {
         HStack(spacing: 18) {
             versionMenu
+                .focused(focusedAction, equals: .version)
             audioMenu
+                .focused(focusedAction, equals: .audio)
             subtitleMenu
+                .focused(focusedAction, equals: .subtitles)
         }
         // The parent observes the store, so hydration repaints it.
         .task { await ProfilePrefsStore.shared.hydrateIfNeeded() }

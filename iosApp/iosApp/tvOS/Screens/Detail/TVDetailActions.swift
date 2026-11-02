@@ -413,6 +413,18 @@ enum TVCircleFocusMotion {
 
 // MARK: - Detail action row
 
+/// Focus targets in `TVDetailActionRow`. Each playback selector has its own
+/// value so returning to the row can land on the exact control the viewer left.
+enum TVDetailAction: Hashable {
+    case play
+    case startOver
+    case version
+    case audio
+    case subtitles
+    case watchlist
+    case more
+}
+
 /// Shared native focus row for movie, episode, season and series detail pages.
 /// The only imperative focus work is a bounded page-entry retry for Play;
 /// directional movement remains owned by the tvOS focus engine.
@@ -420,14 +432,6 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     enum InitialFocusScope: Equatable {
         case page
         case season(key: String?)
-    }
-
-    private enum ActionID: Hashable {
-        case play
-        case startOver
-        case playbackSelectors
-        case watchlist
-        case more
     }
 
     let playTitle: String?
@@ -454,16 +458,17 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     var isPlaybackLoading = false
     var allowsInitialPlayFocus = true
     var tracksInitialFocusNavigation = false
-    @ViewBuilder let playbackSelectors: () -> PlaybackSelectors
+    /// Receives the row's focus binding; bind each selector to its
+    /// `TVDetailAction` so the row can restore it.
+    @ViewBuilder let playbackSelectors: (FocusState<TVDetailAction?>.Binding) -> PlaybackSelectors
     @ViewBuilder let moreMenu: () -> MoreMenu
 
     @Environment(\.resetFocus) private var resetFocus
     @State private var didResetInitialPlayFocus = false
     @State private var initialFocusSeasonKey: String?
     @State private var initialPlayFocusTask: Task<Void, Never>?
-    @State private var lastFocusedAction: ActionID = .play
-    @FocusState private var focusedAction: ActionID?
-    @FocusState private var playbackSelectorsFocused: Bool
+    @State private var lastFocusedAction: TVDetailAction = .play
+    @FocusState private var focusedAction: TVDetailAction?
 
     var body: some View {
         HStack(spacing: stabilizesFocusMotion ? 18 : 36) {
@@ -500,8 +505,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                     .focused($focusedAction, equals: .startOver)
                 }
 
-                playbackSelectors()
-                    .focused($playbackSelectorsFocused)
+                playbackSelectors($focusedAction)
             }
 
             TVCircleActionButton(
@@ -540,13 +544,6 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                 cancelInitialPlayFocusRetry()
             }
         }
-        .onChange(of: playbackSelectorsFocused) { _, isFocused in
-            if isFocused {
-                focusedAction = .playbackSelectors
-            } else if focusedAction == .playbackSelectors {
-                focusedAction = nil
-            }
-        }
         .task(id: focusResetKey) {
             cancelInitialPlayFocusRetry()
             lastFocusedAction = .play
@@ -579,18 +576,11 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         return key
     }
 
-    /// The playback selectors share one container binding, so returning to
-    /// them is left to the focus engine's geometry. Start Over disappears once
-    /// an episode is no longer in progress; Play takes its place.
-    private var entryAction: ActionID? {
-        switch lastFocusedAction {
-        case .playbackSelectors:
-            return nil
-        case .startOver where onStartOver == nil:
-            return .play
-        default:
-            return lastFocusedAction
-        }
+    /// Start Over disappears once an episode is no longer in progress; Play
+    /// takes its place.
+    private var entryAction: TVDetailAction {
+        if lastFocusedAction == .startOver, onStartOver == nil { return .play }
+        return lastFocusedAction
     }
 
     private func resetInitialPlayFocus() {
