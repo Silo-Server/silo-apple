@@ -387,7 +387,7 @@ actor ApplePushRegistrar {
         var retirement: ApplePushRetirementQueue.Outcome?
         if let entry = await allocateRetirement(serverID: serverID, deviceID: deviceID, teardown: teardown) {
             let retirements = self.retirements
-            let submitting = Task { await retirements.submit(entry) { await self.retirementURL(for: $0) } }
+            let submitting = Task { await retirements.submit(entry) { await self.retirementRoute(for: $0) } }
             // An unanswered retirement keeps going while the `off` is sent.
             let answer = await Self.value(of: submitting, within: retirementBudget)
             let outcome = answer.flatMap { $0 } ?? .kept(reason: answer == nil ? "unanswered" : "in_flight")
@@ -459,24 +459,26 @@ actor ApplePushRegistrar {
         }
     }
 
-    /// Where `entry` goes now. A retirement can be retried for months after
-    /// its address is gone, and another server may answer there by then.
-    /// While another saved address still shares the record, the retirement
-    /// goes to that one, which reaches the same deployment; this is decided
-    /// on every attempt, so an address that has since moved is passed over.
-    private func retirementURL(for entry: ApplePushRetirement) async -> String? {
+    /// The other saved address `entry` goes to now, if any. A retirement can
+    /// be retried for months after its address is gone, and another server
+    /// may answer there by then. While another saved address still shares
+    /// the record, the retirement goes to that one, which reaches the same
+    /// deployment; this is decided on every attempt, so an address that has
+    /// since moved is passed over.
+    private func retirementRoute(for entry: ApplePushRetirement) async -> ApplePushRetirementRoute? {
         for alias in await otherAddressesSharingRecord(with: entry.serverID) {
             guard await dropStaleLink(of: alias), sharesRecord(alias, with: entry.serverID),
-                  let aliasURL = ServerRegistry.url(forServerId: alias) else { continue }
-            return aliasURL
+                  let aliasURL = ServerRegistry.url(forServerId: alias),
+                  let slot = try? journal.recordSlot(for: alias) else { continue }
+            return ApplePushRetirementRoute(serverURL: aliasURL, alias: alias, slot: slot)
         }
         return nil
     }
 
     /// Sends the retirements still pending whose back-off has passed
-    /// (`ApplePushRetirementQueue.retryDue`), each to `retirementURL`.
+    /// (`ApplePushRetirementQueue.retryDue`), each through `retirementRoute`.
     func retryPendingRetirements(afterPush: Bool = false) async {
-        await retirements.retryDue(afterPush: afterPush) { await self.retirementURL(for: $0) }
+        await retirements.retryDue(afterPush: afterPush) { await self.retirementRoute(for: $0) }
     }
 
     /// Undoes `unregister` for a server whose sign-out or removal did not

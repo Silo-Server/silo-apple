@@ -17,6 +17,14 @@ struct ApplePushRetirement: Codable, Equatable, Sendable {
     let queuedAt: Date
 }
 
+/// Another saved address a retirement goes to: `alias` at `serverURL`,
+/// which shares the record in Keychain slot `slot` with the departing one.
+struct ApplePushRetirementRoute: Equatable, Sendable {
+    let serverURL: String
+    let alias: String
+    let slot: String
+}
+
 /// The pending retirements, one Keychain item in the journal's audience so
 /// they are kept or lost with the journal and the device ID.
 struct ApplePushRetirementStore: Sendable {
@@ -91,9 +99,10 @@ actor ApplePushRetirementQueue {
 
     typealias Send = @Sendable (_ serverURL: String, _ deviceID: String, _ installationKey: String,
                                 _ generation: Int64) async throws -> Void
-    /// The address to send `entry` to now, chosen when it is sent rather
-    /// than when it was queued; `nil` sends it to `entry.serverURL`.
-    typealias Route = @Sendable (_ entry: ApplePushRetirement) async -> String?
+    /// Another saved address to send `entry` to now, chosen when it is
+    /// sent rather than when it was queued; `nil` sends it to
+    /// `entry.serverURL`.
+    typealias Route = @Sendable (_ entry: ApplePushRetirement) async -> ApplePushRetirementRoute?
 
     static let shared = ApplePushRetirementQueue()
 
@@ -229,8 +238,20 @@ actor ApplePushRetirementQueue {
         if age >= Self.maximumLifetime {
             return finish(entry, .dropped(reason: "expired"))
         }
+        // The record is read after the route, so a link that changed while
+        // the route was looked up is seen here.
+        let routed = await route?(entry)
         let key: String
         do {
+            // The route was chosen for a record both addresses no longer
+            // share. Nothing is sent; the next attempt chooses again.
+            if let routed {
+                let departing = try journal.recordSlot(for: entry.serverID)
+                let alias = try journal.recordSlot(for: routed.alias)
+                guard departing == routed.slot, alias == routed.slot else {
+                    return finish(entry, .kept(reason: "route_changed"))
+                }
+            }
             guard let record = try journal.load(serverID: entry.serverID) else {
                 return finish(entry, .dropped(reason: "journal_missing"))
             }
@@ -248,9 +269,8 @@ actor ApplePushRetirementQueue {
             // Before first unlock, for example. Nothing was sent.
             return finish(entry, .kept(reason: "journal_unreadable"))
         }
-        let serverURL = await route?(entry) ?? entry.serverURL
         do {
-            try await transport(serverURL, entry.deviceID, key, entry.generation)
+            try await transport(routed?.serverURL ?? entry.serverURL, entry.deviceID, key, entry.generation)
             return finish(entry, .retired)
         } catch {
             return finish(entry, Self.outcome(for: error, age: age))

@@ -668,6 +668,40 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertNotEqual(h.server.retirements.last?.url?.host, "silo.example")
     }
 
+    /// The record is read after the route is looked up. When the departing
+    /// address is added again for another server while the route is being
+    /// looked up, its link ends and the retry carries nothing: the shared
+    /// key never goes to that address.
+    func testRetryReadsTheRecordAfterItsRoute() async throws {
+        let h = try await makeHarness()
+        let first = try await joinSecondAddress(h)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        h.server.enqueueRetirement(.transportFailure)
+        h.server.enqueue(.transportFailure)
+        _ = await first.unregister(serverID: Self.otherServerID, activeOwner: try await h.owner())
+        XCTAssertEqual(try h.retirementStore.load().map(\.serverID), [Self.otherServerID])
+        let sent = h.server.retirements.count
+        let gate = StubURLProtocol.Gate()
+        let pause = Pause()
+        let registrar = h.registrar(savedServerIdentity: "deployment-a", beforeIdentityLookup: {
+            if pause.isOn { await gate.wait() }
+        })
+
+        pause.isOn = true
+        let retry = Task { await registrar.retryPendingRetirements() }
+        while await gate.waiterCount == 0 { await Task.yield() }
+        pause.isOn = false
+        // The second address now reaches another server and registers there.
+        h.identities.set("deployment-z", for: Self.otherServerID)
+        let readded = await registrar.register(Self.body(), owner: try await h.owner())
+        XCTAssertEqual(readded, Self.accepted)
+        await gate.open()
+        await retry.value
+
+        let after = h.server.retirements.dropFirst(sent)
+        XCTAssertFalse(after.contains { $0.header("X-Push-Installation-Key") == key })
+    }
+
     /// A link is keyed by the address. When that address later reports
     /// another deployment (a reassigned LAN address, a new install), it
     /// stops sharing the record and starts over with a key of its own.
