@@ -38,6 +38,9 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
             case problem(Int, String)
             case transportFailure
             case gated(StubURLProtocol.Gate)
+            /// Over a local route: runs `then`, and the connection is refused,
+            /// so the request goes again to the saved address.
+            case refusedOnLocalRoute(then: @Sendable () -> Void)
         }
 
         /// Answers to `retireApplePushInstallation`; `retired` echoes the
@@ -87,6 +90,10 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                     await gate.wait()
                     reply = .receipt()
                 }
+                if case .refusedOnLocalRoute(let then) = reply {
+                    then()
+                    throw URLError(.cannotConnectToHost)
+                }
                 switch reply {
                 case .receipt(let generation, let enabled, let removed, let displayToken, let serverID):
                     let sent = (try? JSONSerialization.jsonObject(with: request.body ?? Data())) as? [String: Any]
@@ -106,7 +113,7 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
                 case .problem(let status, let type):
                     return .json(#"{"type":"https://silo.example/problems/\#(type)","title":"t","status":\#(status),"detail":"d"}"#,
                         status: status, headers: ["Content-Type": "application/problem+json"])
-                case .transportFailure, .gated:
+                case .transportFailure, .gated, .refusedOnLocalRoute:
                     throw URLError(.networkConnectionLost)
                 }
             }
@@ -302,7 +309,18 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         }
     }
 
-    private func makeHarness() async throws -> Harness {
+    /// The active local route a harness's `HTTPClient` sees, changeable
+    /// mid-test.
+    private final class RouteBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var current: LocalRoute?
+        var route: LocalRoute? {
+            get { lock.withLock { current } }
+            set { lock.withLock { current = newValue } }
+        }
+    }
+
+    private func makeHarness(localRoute: RouteBox? = nil) async throws -> Harness {
         let name = "ApplePushOrderedRegistrationTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         let keychain = SharedKeychain(service: name, accessGroup: nil)
@@ -344,7 +362,9 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         try await tokens.bindVerifiedAccount("12", expected: requestOwner)
 
         let server = PushServer()
-        let http = HTTPClient(session: server.handler.makeSession(), tokenStore: tokens)
+        let http = localRoute.map { box in
+            HTTPClient(session: server.handler.makeSession(), tokenStore: tokens, localRoute: { box.route })
+        } ?? HTTPClient(session: server.handler.makeSession(), tokenStore: tokens)
         let api = APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false })
         let targets = ApplePushDisplayTargetStore(keychain: keychain.withAudience(.currentUser))
         return Harness(tokens: tokens, server: server, journal: journal, targets: targets, http: http, api: api,
@@ -749,6 +769,29 @@ final class ApplePushOrderedRegistrationTests: XCTestCase {
         XCTAssertEqual(result, .notSent(reason: ApplePushRegistrar.linkChangedReason))
         let after = h.server.registrations.dropFirst(sent)
         XCTAssertFalse(after.contains { $0.header("X-Push-Installation-Key") == key })
+    }
+
+    /// An active request that tries the local route first and then goes
+    /// again to the saved address checks the key again before that second
+    /// send: the local attempt can wait a while, and the address's link can
+    /// end meanwhile.
+    func testSharedKeyIsCheckedAgainBeforeTheSavedAddressFallback() async throws {
+        let box = RouteBox()
+        let h = try await makeHarness(localRoute: box)
+        let registrar = try await joinSecondAddress(h)
+        let key = try XCTUnwrap(h.record()?.installationKey)
+        box.route = LocalRoute(serverID: Self.otherServerID, savedOrigin: Self.otherServerURL,
+                               localOrigin: "https://192.168.1.20:8080", generation: 1)
+        let sent = h.server.registrations.count
+        let identities = h.identities
+        h.server.enqueue(.refusedOnLocalRoute { identities.set("deployment-z", for: Self.otherServerID) })
+
+        let result = await registrar.register(Self.body(token: Self.tokenB), owner: try await h.owner())
+
+        XCTAssertEqual(result, .notSent(reason: ApplePushRegistrar.linkChangedReason))
+        let after = h.server.registrations.dropFirst(sent)
+        XCTAssertEqual(after.map { $0.url?.host }, ["192.168.1.20"])
+        XCTAssertFalse(after.contains { $0.url?.host == "other.example" && $0.header("X-Push-Installation-Key") == key })
     }
 
     /// A hold names a generation of the record the address used. Once its

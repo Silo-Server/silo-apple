@@ -508,15 +508,13 @@ actor HTTPClient {
                 headers: headers,
                 auth: auth
             )
-            // The caller's last check, after the credential capture and any
-            // refresh above, right before the request leaves.
-            try await beforeDispatch?()
             var (data, response) = try await perform(
                 request: request,
                 timeout: timeout,
                 dispatchRevision: dispatchRevision,
                 dispatchRecord: dispatchRecord,
-                routesLocally: true
+                routesLocally: true,
+                beforeDispatch: beforeDispatch
             )
 
             if response.statusCode == 401,
@@ -555,13 +553,13 @@ actor HTTPClient {
                         auth: auth
                     )
                     Self.logRefreshRetry(method: method, path: path, retried: true)
-                    try await beforeDispatch?()
                     (data, response) = try await perform(
                         request: request,
                         timeout: timeout,
                         dispatchRevision: dispatchRevision,
                         dispatchRecord: dispatchRecord,
-                        routesLocally: true
+                        routesLocally: true,
+                        beforeDispatch: beforeDispatch
                     )
                 } else {
                     // Refresh reported success but the recapture disagreed, so
@@ -1420,7 +1418,8 @@ actor HTTPClient {
         dispatchRevision: UInt64,
         dispatchRecord: HTTPDispatchRecord? = nil,
         reportReachability: Bool = true,
-        routesLocally: Bool = false
+        routesLocally: Bool = false,
+        beforeDispatch: (@Sendable () async throws -> Void)? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         #if os(iOS) || os(tvOS)
         // Templated once, at capture, before anything can log it. `request.url`
@@ -1437,6 +1436,9 @@ actor HTTPClient {
         // request start after its session was already enumerated and survive
         // a registry or temporary-owner transition. Reject it; waiting would
         // send a request built from credentials captured before the switch.
+        // The caller's last check (`requestData`'s `beforeDispatch`), after
+        // the credential capture and any refresh, ahead of the dispatch fence.
+        try await beforeDispatch?()
         do {
             try ensureRequestDispatchAllowed(expectedRevision: dispatchRevision)
         } catch {
@@ -1453,7 +1455,11 @@ actor HTTPClient {
         do {
             let session = timeout == .extended ? longWaitSession : session
             (data, response) = try await send(
-                request, on: session, routesLocally: routesLocally, dispatchRevision: dispatchRevision)
+                request, on: session, routesLocally: routesLocally, dispatchRevision: dispatchRevision,
+                beforeDispatch: beforeDispatch)
+        } catch let refusal as DispatchHookRefusal {
+            // The caller refused the saved-address retry; nothing left then.
+            throw refusal.underlying
         } catch {
             if isRequestDispatchBlocked || requestDispatchRevision != dispatchRevision {
                 #if os(iOS) || os(tvOS)
@@ -1579,6 +1585,13 @@ actor HTTPClient {
         url.map { $0.path.contains("/api/v2/auth/") } ?? false
     }
 
+    /// The caller's `beforeDispatch` refused the saved-address retry in
+    /// `send`, so `perform` rethrows `underlying` rather than reporting a
+    /// transport failure.
+    private struct DispatchHookRefusal: Error {
+        let underlying: Error
+    }
+
     /// Sends `request`, over the local route when it is allowed and one is
     /// active for its origin. The route is read once, so the response and any
     /// failure belong to the route this request used; the response reports the
@@ -1590,7 +1603,8 @@ actor HTTPClient {
         _ request: URLRequest,
         on session: URLSession,
         routesLocally: Bool,
-        dispatchRevision: UInt64
+        dispatchRevision: UInt64,
+        beforeDispatch: (@Sendable () async throws -> Void)? = nil
     ) async throws -> (Data, URLResponse) {
         // Sign-in stays on the saved address: the server builds verification
         // and redirect links from the origin a request arrived on.
@@ -1618,6 +1632,12 @@ actor HTTPClient {
             // a challenge the pin refused goes again to the saved address.
             guard LocalRoute.mayRetryOnSavedAddress(after: error, method: request.httpMethod) else {
                 throw LocalRouteFailure(underlying: error)
+            }
+            // The local attempt may have waited a while: the caller checks again.
+            do {
+                try await beforeDispatch?()
+            } catch {
+                throw DispatchHookRefusal(underlying: error)
             }
             try ensureRequestDispatchAllowed(expectedRevision: dispatchRevision)
             return try await session.data(for: request)
