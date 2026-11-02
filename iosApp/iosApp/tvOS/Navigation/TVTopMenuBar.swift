@@ -1087,8 +1087,6 @@ private struct TVDropdownBoundaryMoveHandler: ViewModifier {
 
 private enum TVProfileAction: Hashable {
     case switchProfile
-    case watchlist
-    case favorites
     case history
     case requests
     case watchParty
@@ -1117,9 +1115,11 @@ struct TVProfileDropdown: View {
     /// Reports whether any row currently holds focus, so the host can drop
     /// the avatar's focus ring once focus descends (§5.8).
     let onPanelFocusChanged: (Bool) -> Void
+    /// Whether the server offers Requests (`RequestsFeatureStore`).
+    let showsRequests: Bool
+    /// Whether Watch Party is on and the server supports it (`WatchPartyEntry`).
+    let showsWatchParty: Bool
     let onSwitchProfile: () -> Void
-    let onWatchlist: () -> Void
-    let onFavorites: () -> Void
     let onHistory: () -> Void
     let onRequests: () -> Void
     let onWatchParty: () -> Void
@@ -1161,13 +1161,12 @@ struct TVProfileDropdown: View {
             header
 
             actionButton("Switch Profile", systemImage: "person.2.fill", id: .switchProfile, action: onSwitchProfile)
-            actionButton("Watchlist", systemImage: "bookmark.fill", id: .watchlist, action: onWatchlist)
-            actionButton("Favorites", systemImage: "heart.fill", id: .favorites, action: onFavorites)
+            // Watchlist and Favorites live under For You, not here.
             actionButton("History", systemImage: "clock.fill", id: .history, action: onHistory)
-            if RequestsFeatureStore.shared.isEnabled {
+            if showsRequests {
                 actionButton("Requests", systemImage: "paperplane.fill", id: .requests, action: onRequests)
             }
-            if WatchPartyEntry.isAvailable {
+            if showsWatchParty {
                 actionButton(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3", id: .watchParty, action: onWatchParty)
             }
 
