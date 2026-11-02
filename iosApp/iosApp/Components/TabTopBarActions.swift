@@ -116,7 +116,7 @@ private struct TopBarIconButton: View {
     }
 }
 
-/// Profile avatar opening the account menu (Watch Party, Requests, Settings,
+/// Profile avatar opening the account menu (Requests, Watch Party, Settings,
 /// Switch Profile, Switch Server, Sign Out).
 struct ProfileAvatarMenu: View {
     @Environment(AppRouter.self) private var router
@@ -136,6 +136,49 @@ struct ProfileAvatarMenu: View {
         RequestsFeatureStore.shared.isEnabled
     }
 
+    private var showsWatchParty: Bool {
+        #if os(iOS) || os(tvOS)
+        WatchPartyEntry.isAvailable
+        #else
+        false
+        #endif
+    }
+
+    @ViewBuilder
+    private var featureActions: some View {
+        if requestsEnabled {
+            Button {
+                onOpenRequests()
+            } label: {
+                Label("Requests", systemImage: "sparkles")
+            }
+        }
+        #if os(iOS) || os(tvOS)
+        if showsWatchParty {
+            Button(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3") { router.navigate(to: .watchParty) }
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private var accountActions: some View {
+        Button {
+            onOpenSettings()
+        } label: {
+            Label("Settings", systemImage: "gearshape")
+        }
+        Button {
+            onSwitchProfile()
+        } label: {
+            Label("Switch Profile", systemImage: "person.2")
+        }
+        Button {
+            onSwitchServer()
+        } label: {
+            Label("Switch Server", systemImage: "server.rack")
+        }
+    }
+
     private var avatarSize: CGFloat {
         #if os(macOS)
         SiloTheme.macSidebarAvatarSize
@@ -150,45 +193,40 @@ struct ProfileAvatarMenu: View {
         showsName ? .siloIconTile : .siloSurfaceVariant
     }
 
+    /// Who is signed in and where, for the menu's header.
+    private var menuTitle: String? {
+        guard let profile else { return nil }
+        return [profile.name, ServerRegistry.shared.activeServer?.displayName]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func titledSection<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if let menuTitle {
+            Section(menuTitle, content: content)
+        } else {
+            Section(content: content)
+        }
+    }
+
     var body: some View {
+        // Same order as Android's phone menu: Requests and Watch Party, then
+        // the account actions, then Sign Out on its own. The header titles
+        // whichever group comes first.
         Menu {
-            #if os(iOS) || os(tvOS)
-            if WatchPartyEntry.isAvailable {
-                Button(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3") { router.navigate(to: .watchParty) }
+            if requestsEnabled || showsWatchParty {
+                titledSection { featureActions }
+                Section { accountActions }
+            } else {
+                titledSection { accountActions }
             }
-            #endif
-            if requestsEnabled {
-                Button {
-                    onOpenRequests()
+            Section {
+                Button(role: .destructive) {
+                    onSignOut()
                 } label: {
-                    Label("Requests", systemImage: "sparkles")
+                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
                 }
-
-                Divider()
-            }
-
-            Button {
-                onOpenSettings()
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-            }
-
-            Divider()
-
-            Button {
-                onSwitchProfile()
-            } label: {
-                Label("Switch Profile", systemImage: "person.2")
-            }
-            Button {
-                onSwitchServer()
-            } label: {
-                Label("Switch Server", systemImage: "server.rack")
-            }
-            Button(role: .destructive) {
-                onSignOut()
-            } label: {
-                Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
             }
         } label: {
             HStack(spacing: SiloTheme.smallPadding) {
