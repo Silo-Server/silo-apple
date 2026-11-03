@@ -126,11 +126,8 @@ extension AppRouter {
     // MARK: - Change Account
 
     /// Opens Change Account (spec §4.1): pushed over the picker or Home, or
-    /// the profile flow's root while no account is open. `serverId` names
-    /// the server whose Add an account row comes into view (Add › Add an
-    /// account).
-    func showChangeAccount(focusingAddAccountOn serverId: String? = nil) {
-        changeAccountFocusServerId = serverId
+    /// the profile flow's root while no account is open.
+    func showChangeAccount() {
         switch authState {
         case .needsProfile where showsChangeAccountRoot:
             // Already on screen as the root.

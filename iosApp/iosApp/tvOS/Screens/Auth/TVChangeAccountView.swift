@@ -247,16 +247,9 @@ struct TVChangeAccountView: View {
         return .addAccount(server.id)
     }
 
-    /// Starts on the open account's card on the active server. From Add ›
-    /// Add an account, on that server's Add an account card instead.
+    /// Starts on the open account's card on the active server.
     private func seedFocus() {
-        let requested = router.changeAccountFocusServerId
-        router.changeAccountFocusServerId = nil
-        let server = model.servers.first(where: { $0.id == requested }) ?? model.servers.first
-        select(server)
-        if let server, server.id == requested {
-            paneEntry = .addAccount(server.id)
-        }
+        select(model.servers.first)
         focusEntry()
     }
 

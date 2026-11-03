@@ -12,37 +12,27 @@ struct ChangeAccountView: View {
     @State private var directory = AccountDirectory.shared
 
     var body: some View {
-        ScrollViewReader { scroller in
-            List {
-                ForEach(model.servers) { server in
-                    serverSection(server)
-                }
+        List {
+            ForEach(model.servers) { server in
+                serverSection(server)
+            }
 
-                Section {
-                    Button {
-                        model.addServer(router: router)
-                    } label: {
-                        ChangeAccountActionLabel(
-                            title: AddChoice.server.title,
-                            detail: AddChoice.server.detail,
-                            systemImage: "plus"
-                        )
-                    }
-                    .buttonStyle(.plain)
+            Section {
+                Button {
+                    model.addServer(router: router)
+                } label: {
+                    ChangeAccountActionLabel(
+                        title: AddChoice.server.title,
+                        detail: AddChoice.server.detail,
+                        systemImage: "plus"
+                    )
                 }
-                .listRowBackground(Color.siloGroupedCell)
+                .buttonStyle(.plain)
             }
-            .settingsListChrome()
-            .disabled(model.isBusy)
-            .task(id: router.changeAccountFocusServerId) {
-                // Add › Add an account: the active server's row comes into view.
-                guard let serverId = router.changeAccountFocusServerId else { return }
-                router.changeAccountFocusServerId = nil
-                // Once the pushed list has laid out its rows.
-                try? await Task.sleep(for: .milliseconds(150))
-                withAnimation { scroller.scrollTo(ChangeAccountModel.addAccountRowID(serverId), anchor: .center) }
-            }
+            .listRowBackground(Color.siloGroupedCell)
         }
+        .settingsListChrome()
+        .disabled(model.isBusy)
         .navigationTitle("Change Account")
         .siloNavigationTitleDisplayMode(.inline)
         .task { model.reload() }
@@ -74,7 +64,6 @@ struct ChangeAccountView: View {
                 }
             }
             .buttonStyle(.plain)
-            .id(ChangeAccountModel.addAccountRowID(server.id))
         } header: {
             ChangeAccountServerHeader(server: server.server)
         }

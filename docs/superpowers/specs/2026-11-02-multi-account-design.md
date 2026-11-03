@@ -117,14 +117,14 @@ Apple TV                                              iPhone
 - **With no account open** (after a sign-out or an expiry) while another account still has a
   session, Change Account is the root screen instead of the picker.
 
-**Add** (on "Who's watching?") opens an app-styled sheet, not a system alert or action sheet. Each
-choice has an icon and a description line:
-- **Add a profile**: "For someone else on this account". Shown only when the household has a
-  primary profile.
-- **Add an account**: "Sign in to another account on a saved server". Opens Change Account with
-  focus on the active server's **Add an account** card, so any saved server can be picked.
-- **Add a server**: "Connect this {iPhone/iPad/Mac/Apple TV/device} to another Silo server".
-- **Cancel**.
+**Add** (on "Who's watching?") is for profiles only. On Apple (*amended 2026-11-03, owner
+decision*) it opens profile creation directly, as before multi-account, after the primary
+profile's PIN if it has one. Adding an account or a server happens on Change Account, through
+**Add an account** ("Sign in to another account on a saved server") and **Add a server**
+("Connect this {iPhone/iPad/Mac/Apple TV/device} to another Silo server").
+
+Roku and Android were built with an app-styled Add sheet (Add a profile / Add an account / Add a
+server). Whether they follow the Apple change is still open.
 
 If a sign-in turns out to be an account that is already saved, Silo refreshes that account's
 credentials instead of adding a duplicate. After a sign-in, an account with one profile and no PIN
@@ -162,8 +162,10 @@ Because #981/#982 aligned this menu across platforms, both platforms change it i
    Change Account shows a **Sign in** row for it, so signing back in is one step. If another
    account still has a session, Change Account shows; otherwise sign-in shows.
 
-The confirmation is the app's own dialog, not a system alert, with **Cancel** focused by default.
-A system dialog that focused "Sign out" caused an accidental sign-out on a TV. The title is
+On TVs the confirmation is the app's own dialog, not a system alert, with **Cancel** focused by
+default: a system dialog that focused "Sign out" caused an accidental sign-out on a TV. On iPhone,
+iPad and Mac it is the standard system alert, like the app's other confirmations, with a
+destructive Sign Out and a Cancel button (*amended 2026-11-03*). The title is
 "Sign out of {account} on {server}?", and the dialog states the download count and size when there
 are downloads:
 
@@ -312,10 +314,10 @@ was added as a column.
 |---|---|---|---|---|---|
 | "Who's watching?" shows the open account's profiles only | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Change Account | grouped list by server | rail + accounts pane | grouped list by server | rail + accounts pane | rail + accounts pane |
-| Add sheet: Add a profile / Add an account / Add a server | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Add on the picker | creates a profile | creates a profile | Add sheet (3 choices) | Add sheet (3 choices) | Add sheet (3 choices) |
 | Add an account on any saved server | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Server mark, or the Silo project icon as fallback | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Sign-out dialog: app-styled, Cancel focused | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Sign-out confirmation | system alert | app dialog, Cancel focused | app dialog | app dialog, Cancel focused | app dialog, Cancel focused |
 | Sign out deletes downloads | ✓ | — (no downloads) | ✓ | — | — |
 | Selection memory | device | per Apple TV user | device | device | device |
 | Phone sends several accounts to a TV | sender | receiver | sender | receiver | receiver (one account per server; older protocol) |

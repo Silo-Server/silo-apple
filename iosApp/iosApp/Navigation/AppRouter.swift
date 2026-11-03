@@ -181,9 +181,6 @@ final class AppRouter {
     /// Changes with each `.needsProfile`, so the picker is rebuilt for the
     /// account that is open now.
     private(set) var profileFlowRevision = 0
-    /// The server whose Add an account row Change Account brings into view
-    /// (Add › Add an account). Read once.
-    var changeAccountFocusServerId: String?
 
     /// Navigation path for push/pop within the current flow.
     var path = NavigationPath()

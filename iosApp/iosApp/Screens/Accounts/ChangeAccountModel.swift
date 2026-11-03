@@ -162,8 +162,4 @@ final class ChangeAccountModel {
         guard !isBusy else { return }
         router.resetToServerSetup()
     }
-
-    /// Row ID of a server's Add an account (or Sign in) row, for scrolling
-    /// and focusing it (Add › Add an account).
-    static func addAccountRowID(_ serverId: String) -> String { "add-account|\(serverId)" }
 }

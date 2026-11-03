@@ -10,8 +10,6 @@ struct ProfileSelectionView: View {
     @State private var pinError: String?
     @State private var isVerifyingPIN = false
     @State private var showCreateProfile: Bool = false
-    /// The Add sheet: a profile, an account, or a server.
-    @State private var showsAddChoice = false
     /// The profile under a finger, then the one being opened; either tints
     /// the backdrop with that profile's color.
     @State private var pressedProfileID: String?
@@ -32,8 +30,8 @@ struct ProfileSelectionView: View {
     }
 
     @FocusState private var pickerFocus: PickerFocus?
-    /// The control that opened the PIN prompt, the Add sheet, Create Profile
-    /// or the sign-out confirmation, so focus goes back to it when that
+    /// The control that opened the PIN prompt, Create Profile or the
+    /// sign-out confirmation, so focus goes back to it when that
     /// closes rather than to the first profile.
     @State private var returnFocus: PickerFocus?
     @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
@@ -57,22 +55,16 @@ struct ProfileSelectionView: View {
         pinEntryContext != nil
     }
 
-    /// The PIN prompt or the Add sheet covers the picker.
-    private var isOverlayPresented: Bool {
-        isPINEntryPresented || showsAddChoice
-    }
-
     var body: some View {
         ZStack {
             background
 
             pickerContent
-                .disabled(viewModel.isClearingTemporaryManagementContext || isOverlayPresented)
-                .accessibilityHidden(isOverlayPresented)
+                .disabled(viewModel.isClearingTemporaryManagementContext || isPINEntryPresented)
+                .accessibilityHidden(isPINEntryPresented)
                 .opacity(isPINEntryPresented ? 0 : 1)
         }
         .animation(.easeInOut(duration: 0.25), value: isPINEntryPresented)
-        .animation(.easeOut(duration: 0.2), value: showsAddChoice)
         .task {
             MarqueeScene.shared.showActiveServer()
             MarqueeScene.shared.focus = .profiles
@@ -146,14 +138,14 @@ struct ProfileSelectionView: View {
 
     /// The picker's controls are on screen and nothing covers them: not the
     /// startup splash (a cold launch builds the picker underneath it, where
-    /// nothing can take focus), the PIN prompt, the Add sheet, Create
-    /// Profile, or the sign-out confirmation.
+    /// nothing can take focus), the PIN prompt, Create Profile, or the
+    /// sign-out confirmation.
     private var acceptsFocus: Bool {
         !isStartupSplashVisible
-            // Nothing is pushed over the picker: Add › Add an account closes
-            // the sheet as it pushes Change Account, which then owns focus.
+            // Nothing is pushed over the picker, such as Change Account,
+            // which then owns focus.
             && router.path.isEmpty
-            && !isOverlayPresented
+            && !isPINEntryPresented
             && !showCreateProfile
             && router.pendingRemoval == nil
             && !viewModel.isClearingTemporaryManagementContext
@@ -432,7 +424,7 @@ struct ProfileSelectionView: View {
             }
             AddProfileTile(title: "Add") {
                 returnFocus = .add
-                showsAddChoice = true
+                handleAddProfileTap()
             }
             .focused($pickerFocus, equals: .add)
         }
@@ -504,7 +496,7 @@ struct ProfileSelectionView: View {
                                     handleProfileTap(profile)
                                 }
                             case .add:
-                                AddProfileTile(size: layout?.addSize ?? 0, title: "Add") { showsAddChoice = true }
+                                AddProfileTile(size: layout?.addSize ?? 0, title: "Add") { handleAddProfileTap() }
                             }
                         }
                         .frame(width: layout?.columnWidth ?? 0)
@@ -523,19 +515,6 @@ struct ProfileSelectionView: View {
     private var rememberedProfileID: String? {
         let account = ServerRegistry.shared.activeServerId.flatMap { AccountScope.localAccountId(onServer: $0) }
         return launchPreferences.rememberedProfile(forAccount: account)?.profileID
-    }
-
-    private var addChoices: [AddChoice] {
-        AddChoice.available(canAddProfile: viewModel.primaryProfile != nil)
-    }
-
-    private func handleAddChoice(_ choice: AddChoice) {
-        showsAddChoice = false
-        if choice == .profile {
-            handleAddProfileTap()
-        } else {
-            router.choose(choice)
-        }
     }
 
     private func handleProfileTap(_ profile: UserProfile) {
@@ -583,13 +562,6 @@ struct ProfileSelectionView: View {
 
     @ViewBuilder
     private var profileOverlay: some View {
-        if showsAddChoice {
-            AddChoiceSheet(choices: addChoices, onChoose: handleAddChoice) {
-                showsAddChoice = false
-            }
-            .transition(.opacity)
-            .zIndex(11)
-        }
         #if os(tvOS)
         if let context = pinEntryContext {
             pinEntryContent(for: context)
