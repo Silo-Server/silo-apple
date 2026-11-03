@@ -30,8 +30,21 @@ struct TVPlaybackActionSelectors: View {
             subtitleMenu
                 .focused(focusedAction, equals: .subtitles)
         }
+        .preference(key: TVDisabledDetailActionsKey.self, value: disabledActions)
         // The parent observes the store, so hydration repaints it.
         .task { await ProfilePrefsStore.shared.hydrateIfNeeded() }
+    }
+
+    private var isVersionDisabled: Bool { currentVersion == nil || versions.isEmpty }
+    private var isAudioDisabled: Bool { currentVersion == nil || audioOptions.isEmpty }
+    private var isSubtitleDisabled: Bool { currentVersion == nil }
+
+    private var disabledActions: Set<TVDetailAction> {
+        var actions: Set<TVDetailAction> = []
+        if isVersionDisabled { actions.insert(.version) }
+        if isAudioDisabled { actions.insert(.audio) }
+        if isSubtitleDisabled { actions.insert(.subtitles) }
+        return actions
     }
 
     private var versionMenu: some View {
@@ -66,7 +79,7 @@ struct TVPlaybackActionSelectors: View {
                 }
             }
         )
-        .disabled(currentVersion == nil || versions.isEmpty)
+        .disabled(isVersionDisabled)
     }
 
     private var audioMenu: some View {
@@ -101,7 +114,7 @@ struct TVPlaybackActionSelectors: View {
                 }
             }
         )
-        .disabled(currentVersion == nil || audioOptions.isEmpty)
+        .disabled(isAudioDisabled)
     }
 
     private var subtitleMenu: some View {
@@ -150,7 +163,7 @@ struct TVPlaybackActionSelectors: View {
                 }
             }
         )
-        .disabled(currentVersion == nil)
+        .disabled(isSubtitleDisabled)
     }
 
     private var versionValue: String {

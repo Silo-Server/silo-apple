@@ -425,6 +425,16 @@ enum TVDetailAction: Hashable {
     case more
 }
 
+/// Row actions that are mounted but disabled, reported by the playback
+/// selectors so the row never offers one as its entry target.
+struct TVDisabledDetailActionsKey: PreferenceKey {
+    static let defaultValue: Set<TVDetailAction> = []
+
+    static func reduce(value: inout Set<TVDetailAction>, nextValue: () -> Set<TVDetailAction>) {
+        value.formUnion(nextValue())
+    }
+}
+
 /// Shared native focus row for movie, episode, season and series detail pages.
 /// The only imperative focus work is a bounded page-entry retry for Play;
 /// directional movement remains owned by the tvOS focus engine.
@@ -468,6 +478,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     @State private var initialFocusSeasonKey: String?
     @State private var initialPlayFocusTask: Task<Void, Never>?
     @State private var lastFocusedAction: TVDetailAction = .play
+    @State private var disabledActions: Set<TVDetailAction> = []
     @FocusState private var focusedAction: TVDetailAction?
 
     var body: some View {
@@ -534,6 +545,9 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         .onChange(of: focusedAction) { _, action in
             if let action { lastFocusedAction = action }
         }
+        .onPreferenceChange(TVDisabledDetailActionsKey.self) { actions in
+            disabledActions = actions
+        }
         // Attaching the handler consumes Up at this hard top boundary of a
         // pushed detail page, keeping focus on the action row; Up must never
         // behave like Back/Menu or pop the page to the root.
@@ -576,10 +590,12 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
         return key
     }
 
-    /// Start Over disappears once an episode is no longer in progress; Play
-    /// takes its place.
+    /// Play stands in for an action that cannot take focus: Start Over once
+    /// the episode is no longer in progress, or a selector disabled while a
+    /// newly focused episode's versions load.
     private var entryAction: TVDetailAction {
         if lastFocusedAction == .startOver, onStartOver == nil { return .play }
+        if disabledActions.contains(lastFocusedAction) { return .play }
         return lastFocusedAction
     }
 
