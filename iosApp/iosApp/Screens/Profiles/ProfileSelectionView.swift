@@ -76,16 +76,12 @@ struct ProfileSelectionView: View {
         .task {
             MarqueeScene.shared.showActiveServer()
             MarqueeScene.shared.focus = .profiles
-            #if !os(tvOS)
             let requestedByPerson = router.pickerRequestedByPerson
-            #endif
             router.pickerRequestedByPerson = false
             async let account: Void = viewModel.loadAccount()
             await viewModel.loadProfiles()
             await skipPickerIfSingleProfile()
-            #if !os(tvOS)
             if !requestedByPerson { await openOnlyProfileIfNeeded() }
-            #endif
             await account
         }
         .onChange(of: viewModel.requiresPasswordChange) { _, required in
@@ -220,17 +216,15 @@ struct ProfileSelectionView: View {
         await viewModel.selectProfile(only, router: router)
     }
 
-    #if !os(tvOS)
     /// With one profile and no PIN there is nothing to choose: open it
-    /// (spec §4.2), unless the person asked for the picker. Apple TV keeps
-    /// asking each Apple TV user until one chooses to remember a profile.
+    /// (spec §4.2), unless the person asked for the picker, whatever Profile
+    /// Selection says, as Android and Roku do.
     private func openOnlyProfileIfNeeded() async {
         guard viewModel.error == nil, !viewModel.requiresPasswordChange,
               router.authState == .needsProfile,
               viewModel.profiles.count == 1, let only = viewModel.profiles.first, !only.hasPin else { return }
         await viewModel.selectProfile(only, router: router)
     }
-    #endif
 
     // MARK: - Content
 

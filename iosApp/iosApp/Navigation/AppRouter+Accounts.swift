@@ -70,8 +70,9 @@ enum SignedOutDestination: Equatable {
 extension AppRouter {
     // MARK: - Routing without a signed-in account
 
-    /// Change Account while any saved account can open a profile, or while
-    /// several accounts wait to sign in again; sign-in otherwise.
+    /// Change Account while another saved account can open a profile;
+    /// otherwise the active server's sign-in, renewing its account that waits
+    /// to sign in again, as Android and Roku route.
     func signedOutDestination() -> SignedOutDestination {
         Self.signedOutDestination(activeServerId: ServerRegistry.shared.activeServerId)
     }
@@ -79,10 +80,11 @@ extension AppRouter {
     static func signedOutDestination(activeServerId: String?) -> SignedOutDestination {
         let directory = AccountDirectory.shared
         directory.reload()
-        let accounts = directory.accounts
-        if directory.hasSignedInAccount || accounts.count > 1 { return .changeAccount }
-        guard let only = accounts.first else { return .signIn(renewing: nil) }
-        return only.serverId == activeServerId ? .signIn(renewing: only) : .changeAccount
+        if directory.hasSignedInAccount { return .changeAccount }
+        guard let activeServerId else { return .signIn(renewing: nil) }
+        let waiting = directory.accounts(onServer: activeServerId).filter(\.needsSignIn)
+        let selected = AccountScope.localAccountId(onServer: activeServerId)
+        return .signIn(renewing: waiting.first { $0.localAccountId == selected } ?? waiting.first)
     }
 
     /// Whether leaving the sign-in or server setup screen has somewhere to
@@ -90,6 +92,25 @@ extension AppRouter {
     /// goes back there, and otherwise some saved account can open a profile.
     var canReturnToPicker: Bool {
         accountSignIn?.returnsToChangeAccount == true || AccountDirectory.shared.hasSignedInAccount
+    }
+
+    /// Leaving sign-in without signing in: back where it started, else to
+    /// Change Account while other accounts or servers are saved (as Android
+    /// routes), else to server setup.
+    func leaveSignIn() {
+        if canReturnToPicker {
+            returnToPicker()
+        } else if signInLeavesForChangeAccount {
+            showChangeAccount()
+        } else {
+            resetToServerSetup()
+        }
+    }
+
+    /// Whether leaving sign-in goes to Change Account rather than server
+    /// setup: something besides this sign-in's account is saved.
+    var signInLeavesForChangeAccount: Bool {
+        AccountDirectory.shared.accounts.count > 1 || ServerRegistry.shared.entries.count > 1
     }
 
     /// The username the sign-in screen starts with: the account signing in

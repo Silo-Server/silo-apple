@@ -554,11 +554,13 @@ struct TVLoginView: View {
     }
 
     /// Back to Change Account when the sign-in started there, else to the
-    /// profiles while another saved account can be chosen; otherwise to
+    /// profiles while another saved account can be chosen, else to Change
+    /// Account while other accounts or servers are saved; otherwise to
     /// server setup, as on a first sign-in.
     private var leaveTitle: String {
         if router.accountSignIn?.returnsToChangeAccount == true { return "Back to accounts" }
-        return router.canReturnToPicker ? "Back to profiles" : "Change server"
+        if router.canReturnToPicker { return "Back to profiles" }
+        return router.signInLeavesForChangeAccount ? "Change account" : "Change server"
     }
 
     private func headline(_ text: String) -> some View {
@@ -616,11 +618,7 @@ struct TVLoginView: View {
     private func leave() {
         guard !isSubmittingPassword, !isSubmittingNetwork else { return }
         qrVM.stop()
-        if router.canReturnToPicker {
-            router.returnToPicker()
-        } else {
-            router.resetToServerSetup()
-        }
+        router.leaveSignIn()
     }
 
     /// "Continue as …": the same single flight as a password sign-in, so a

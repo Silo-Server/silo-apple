@@ -26,7 +26,7 @@ struct LoginView: View {
         MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { leave() }) {
             MarqueeTopBar {
                 MarqueeIconButton(systemImage: "chevron.left",
-                                  accessibilityLabel: router.canReturnToPicker ? "Back" : "Change server") {
+                                  accessibilityLabel: backLabel) {
                     leave()
                 }
                 .disabled(viewModel.isBusy)
@@ -83,14 +83,16 @@ struct LoginView: View {
 
     static let noSignInText = "This server doesn't offer a sign-in this app can use. Sign in on the web, or ask the server's admin."
 
-    /// Back to the picker while another saved account can be chosen;
-    /// otherwise to server setup, as on a first sign-in.
+    /// Back to the picker while another saved account can be chosen, else to
+    /// Change Account while other accounts or servers are saved; otherwise to
+    /// server setup, as on a first sign-in (`AppRouter.leaveSignIn`).
     private func leave() {
-        if router.canReturnToPicker {
-            router.returnToPicker()
-        } else {
-            router.resetToServerSetup()
-        }
+        router.leaveSignIn()
+    }
+
+    private var backLabel: String {
+        if router.canReturnToPicker { return "Back" }
+        return router.signInLeavesForChangeAccount ? "Change account" : "Change server"
     }
 
     /// Adding an account beside the ones already saved on this server.
