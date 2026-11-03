@@ -2,8 +2,7 @@ import Foundation
 
 /// Movie box set reads (`docs/catalog-api.md`, "Movie box sets"). Both run for
 /// the profile in `auth` and are refused once that owner is no longer current.
-/// A server without box sets answers 404; callers only ask a server whose
-/// libraries report `box_sets_enabled`.
+/// A server without box sets answers 404.
 extension APIv2Client {
     /// `getCatalogBoxSet`: the box set's movies in `libraryId` that the viewer
     /// can see, in release order. 404 when the library has box sets off or the

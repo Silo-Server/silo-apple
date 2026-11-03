@@ -377,12 +377,11 @@ enum StartupContentPrefetcher {
 
     /// The landing rows plus the first grid page with the library's saved
     /// filter, which is the query the Library tab sends.
-    static func prefetchLibraryLanding(libraryId: Int, groupsBoxSets: Bool = false) {
+    static func prefetchLibraryLanding(libraryId: Int) {
         prefetchLibrarySections(libraryId: libraryId)
         prefetchBrowseFirstPage(
             libraryId: libraryId,
-            state: BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none,
-            groupsBoxSets: groupsBoxSets
+            state: BrowsePrefsStore.shared.savedState(libraryId: libraryId) ?? .none
         )
     }
 
@@ -438,8 +437,7 @@ enum StartupContentPrefetcher {
         let query = TVLibraryGridViewModel.firstPageQuery(
             libraryId: library.id,
             libraryType: library.type,
-            filter: filter,
-            groupsBoxSets: library.browsesBoxSets
+            filter: filter
         )
         let writeToken = ResponseCache.shared.writeToken
         Task {
@@ -447,10 +445,7 @@ enum StartupContentPrefetcher {
                   profileScopedGeneration == generation else { return }
             ResponseCache.shared.set(
                 page.response,
-                for: CacheKey.tvLibrary(
-                    libraryId: library.id,
-                    filterKey: CatalogQueryBuilder.cacheKeyFragment(filter, groupsBoxSets: library.browsesBoxSets)
-                ),
+                for: CacheKey.tvLibrary(libraryId: library.id, filterKey: filter.cacheKeyFragment),
                 fetchedAt: writeToken
             )
             PosterImageCache.prefetchArtworkData(
@@ -516,9 +511,9 @@ enum StartupContentPrefetcher {
         }
     }
 
-    static func prefetchBrowseFirstPage(libraryId: Int?, state: CatalogFilterState = .none, groupsBoxSets: Bool = false) {
+    static func prefetchBrowseFirstPage(libraryId: Int?, state: CatalogFilterState = .none) {
         Task {
-            _ = try? await fetchBrowseFirstPage(libraryId: libraryId, state: state, groupsBoxSets: groupsBoxSets)
+            _ = try? await fetchBrowseFirstPage(libraryId: libraryId, state: state)
         }
     }
 
@@ -527,15 +522,10 @@ enum StartupContentPrefetcher {
     static func fetchBrowseFirstPage(
         libraryId: Int?,
         state: CatalogFilterState = .none,
-        mediaScope: LibraryVideoScope? = nil,
-        groupsBoxSets: Bool = false
+        mediaScope: LibraryVideoScope? = nil
     ) async throws -> CatalogListPage {
         let generation = profileScopedGeneration
-        let key = CacheKey.browse(
-            libraryId: libraryId,
-            filterKey: CatalogQueryBuilder.cacheKeyFragment(state, groupsBoxSets: groupsBoxSets),
-            mediaScope: mediaScope?.rawValue
-        )
+        let key = CacheKey.browse(libraryId: libraryId, filterKey: state.cacheKeyFragment, mediaScope: mediaScope?.rawValue)
         let flight = browseFirstPages[key] ?? {
             let flight = SharedFetch<CatalogListPage>()
             browseFirstPages[key] = flight
@@ -561,8 +551,7 @@ enum StartupContentPrefetcher {
                 mediaType: .movie,
                 limit: browsePageSize,
                 includeType: false,
-                enforcedScope: mediaScope,
-                groupsBoxSets: groupsBoxSets
+                enforcedScope: mediaScope
             )
             return try await SiloAPI.shared.catalogPage(query)
         }
@@ -660,10 +649,7 @@ enum StartupContentPrefetcher {
                 showAudiobooks: AppNavPreferences.shared.showAudiobooks,
                 storedLibraryId: storedLibrarySelectionId(for: storageKey)
             ) {
-                prefetchLibraryLanding(
-                    libraryId: libraryId,
-                    groupsBoxSets: response.libraries.first { $0.id == libraryId }?.browsesBoxSets ?? false
-                )
+                prefetchLibraryLanding(libraryId: libraryId)
             }
             #endif
         }

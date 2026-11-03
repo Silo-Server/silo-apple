@@ -1,8 +1,7 @@
 import Foundation
 
 /// A movie box set: the movies TMDB lists in one collection (a franchise such
-/// as Harry Potter) that the viewer can see in one library. It arrives on a
-/// `box_set` card of a `group=box_set` library browse, and from
+/// as Harry Potter) that the viewer can see in one library. It arrives from
 /// `GET /api/v2/catalog/box-sets?q=`; `GET /api/v2/catalog/box-sets/{id}`
 /// opens it as a ``CatalogBoxSetDetail``.
 struct CatalogBoxSet: Codable, Hashable, Identifiable {
@@ -126,7 +125,7 @@ struct CatalogBoxSetList: Decodable {
 }
 
 extension BrowseItem {
-    /// A box set card of a `group=box_set` browse, which opens the box set
+    /// A box set search result lifted into a card, which opens the box set
     /// rather than a title page.
     var isBoxSet: Bool { type == "box_set" && boxSet != nil }
 
