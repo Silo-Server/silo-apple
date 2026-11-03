@@ -628,6 +628,12 @@ class PlayerViewModel {
     var isQualitySwitching = false
     var qualitySwitchError: String?
     var isScrubbing = false
+    #if os(iOS) || os(macOS)
+    /// A two-finger trackpad swipe owns the current scrub.
+    private(set) var isTrackpadScrubbing = false
+    @ObservationIgnored
+    private var trackpadScrub = TrackpadScrub()
+    #endif
     var scrubPreviewTime: Double = 0
     /// Latest generation-fenced Aether still for the active scrub target.
     /// Nil is a first-class state: native cache misses and sources that cannot
@@ -8066,10 +8072,13 @@ class PlayerViewModel {
         return "\(contentId):\(fileId):recap:\(range.start):\(range.end)"
     }
 
+    /// Whether `beginScrub` would start a scrub now.
+    var canBeginScrub: Bool {
+        canRequestSeek && !refusesSeekAtEndOfFile && duration > 0
+    }
+
     func beginScrub(fraction: Double) {
-        guard canRequestSeek else { return }
-        guard !refusesSeekAtEndOfFile else { return }
-        guard duration > 0 else { return }
+        guard canBeginScrub else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
         isScrubbing = true
@@ -8159,6 +8168,75 @@ class PlayerViewModel {
         scrubPreviewTime = currentTime
         scrubPreviewProvider.endInteraction()
     }
+
+    #if os(iOS) || os(macOS)
+    // MARK: - Trackpad scrubbing
+    //
+    // A two-finger swipe over the player drives the scrub above. Platform code
+    // reports the swipe; `TrackpadScrub` decides whether it scrubs.
+
+    func trackpadScrubBegan() {
+        trackpadScrubEnded(committing: false)
+        trackpadScrub.start(canSeek: canBeginScrub)
+    }
+
+    /// `delta` is in points, with positive x toward the end of the video.
+    func trackpadScrubMoved(by delta: CGSize) {
+        // Something else, such as a skip's delayed seek, ended the scrub. The
+        // rest of the swipe does nothing rather than start a second one.
+        if trackpadScrub.ownsScrub, !isScrubbing { abandonTrackpadScrub() }
+        guard let step = trackpadScrub.move(by: delta), duration > 0 else { return }
+        switch step {
+        case .begin(let points):
+            // From a pending skip's target; `beginScrub` cancels that skip's
+            // seek, so the swipe carries it.
+            let start = isScrubbing ? scrubPreviewTime : currentTime
+            // Before `beginScrub`, which cancels the auto-hide this arms.
+            revealControls()
+            beginScrub(fraction: (start + trackpadScrubSeconds(points)) / duration)
+            if isScrubbing {
+                isTrackpadScrubbing = true
+            } else {
+                abandonTrackpadScrub()
+            }
+        case .move(let points):
+            // A skip pressed mid-swipe moved the preview; the swipe carries it
+            // rather than letting its seek fire under the fingers.
+            skipDebounceTask?.cancel()
+            skipDebounceTask = nil
+            hideControlsTask?.cancel()
+            updateScrub(fraction: (scrubPreviewTime + trackpadScrubSeconds(points)) / duration)
+        }
+    }
+
+    /// Seeks to the previewed time when `committing`, otherwise abandons the
+    /// scrub where it is.
+    func trackpadScrubEnded(committing: Bool) {
+        guard trackpadScrub.finish() else { return }
+        isTrackpadScrubbing = false
+        guard isScrubbing else { return }
+        // `endScrub` refuses at the end of the file without clearing the
+        // scrub, so a swipe that ran into the end is abandoned instead.
+        if committing, !refusesSeekAtEndOfFile {
+            // Back where playback already is, give or take rounding from the
+            // fraction round trip: skip the redundant seek.
+            endScrub(shouldSeek: abs(scrubPreviewTime - currentTime) > 0.01)
+        } else {
+            cancelScrub()
+            // Re-arms the auto-hide that `beginScrub` paused.
+            revealControls()
+        }
+    }
+
+    private func abandonTrackpadScrub() {
+        trackpadScrub.abandon()
+        isTrackpadScrubbing = false
+    }
+
+    private func trackpadScrubSeconds(_ points: CGFloat) -> Double {
+        Double(points / TrackpadScrub.pointsPerTimeline) * duration
+    }
+    #endif
 
     // MARK: - Track selection
     //
