@@ -253,12 +253,13 @@ struct TVPlayerControls: View {
         .onDisappear {
             if isTimelineScrubbing { onTimelineScrubbingChange(false) }
         }
-        // Select during the AI subtitles "Preparing" pause lands on the
-        // scrubber and opens a scrub preview. When the AI job then resumes
-        // playback, drop that preview instead of leaving it on screen to seek
-        // back later.
+        // A timeline scrub opens on a paused player. When playback resumes
+        // from outside the scrubber (Play/Pause, Now Playing, a remote, the
+        // room, or the AI subtitles job), drop the preview without seeking.
+        // Left up, the bar would show the paused position over moving video,
+        // and the auto-hide removes the scrubber before its blur can end it.
         .onChange(of: viewModel.isPlaying) { _, playing in
-            guard playing, isTimelineScrubbing, viewModel.subtitleAI.livePresentationActive else { return }
+            guard playing, isTimelineScrubbing else { return }
             viewModel.cancelScrub()
             isTimelineScrubbing = false
             resumePlaybackAfterTimelineSelection = false

@@ -157,9 +157,9 @@ struct TVPlayerScrubber: View {
                 if scrubbing {
                     hasTimelineSelectionMoved = false
                 } else {
-                    // The shell can end the session itself (AI subtitles
-                    // resuming playback); a held Left/Right must not keep
-                    // stepping a preview that is gone.
+                    // The shell can end the session itself (playback
+                    // resuming from outside the scrubber); a held Left/Right
+                    // must not keep stepping a preview that is gone.
                     stopTimelineAutoSeek()
                 }
             }
