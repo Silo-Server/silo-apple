@@ -7081,10 +7081,16 @@ class PlayerViewModel {
             return
         }
         guard !isStartingPlayback, !hasReachedEndOfFile else { return }
-        if isPlaying, !holdPlayIntentForFreshLoad(false) {
+        if isPlaying || isResumePending, !holdPlayIntentForFreshLoad(false) {
             aetherPlaybackController.pause()
         }
         pinControlsVisible()
+    }
+
+    /// Stopped, but the transport still means to play: a resume whose seek
+    /// is still landing, such as a timeline commit reopened right away.
+    var isResumePending: Bool {
+        !isPlaying && aetherPlaybackController.shouldPlayWhenReady
     }
     #endif
 

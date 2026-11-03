@@ -404,7 +404,9 @@ struct TVPlayerScrubber: View {
             viewModel.endScrub(resumePlayback: resumesPlayback, shouldSeek: shouldSeek)
         } else {
             guard viewModel.duration > 0 else { return }
-            resumePlaybackAfterTimelineSelection = viewModel.isPlaying
+            // A resume still landing its seek is held by this scrub and
+            // given back on its commit, not left to cancel the scrub.
+            resumePlaybackAfterTimelineSelection = viewModel.isPlaying || viewModel.isResumePending
             viewModel.pauseForTimelineSelection()
             let fraction = viewModel.currentTime / viewModel.duration
             viewModel.beginScrub(fraction: fraction)
