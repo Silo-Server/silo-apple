@@ -258,11 +258,14 @@ struct TVPlayerControls: View {
         // room, or the AI subtitles job), drop the preview without seeking.
         // Left up, the bar would show the paused position over moving video,
         // and the auto-hide removes the scrubber before its blur can end it.
+        // The scrub pinned the controls, and a room or remote play does not
+        // re-arm their auto-hide, so re-arm it here.
         .onChange(of: viewModel.isPlaying) { _, playing in
             guard playing, isTimelineScrubbing else { return }
             viewModel.cancelScrub()
             isTimelineScrubbing = false
             resumePlaybackAfterTimelineSelection = false
+            viewModel.resumeAutoHide()
         }
         // Re-arm the auto-hide whenever focus moves between transport controls,
         // so navigating the overlay doesn't let the fixed 5s timer hide it (and
