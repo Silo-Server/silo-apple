@@ -22,7 +22,11 @@ enum PairingProtocol {
     static let advertisesSignInTVs = true
 
     /// TXT keys. `st` is the receiver state; `srv` is the deployment
-    /// identity of a `login` TV's server (absent for `setup`).
+    /// identity of a `login` TV's server (absent for `setup`). `acct=1`
+    /// says a `setup` TV keeps every account it is sent for one server, so
+    /// a phone may push a server once per saved account; without it (older
+    /// TVs, Android TV, Roku) a phone pushes each server once, approved by
+    /// the account it uses there. The wire messages are unchanged.
     enum TXTKey {
         static let version = "v"
         static let name = "name"
@@ -30,6 +34,7 @@ enum PairingProtocol {
         static let sessionNonce = "sid"
         static let state = "st"
         static let serverIdentity = "srv"
+        static let acceptsAccounts = "acct"
     }
 }
 

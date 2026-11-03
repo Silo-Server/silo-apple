@@ -36,12 +36,18 @@ class ProfileSelectionViewModel {
     private let launchPreferences = ProfileLaunchPreferences.shared
 
     init() {
+        let account = AuthService.shared.activeAccount
         if let cached: [UserProfile] = ResponseCache.shared.get(CacheKey.profiles) {
             profiles = cached
+        } else if let account {
+            // The list cached on the account, so the picker draws offline.
+            profiles = account.cachedProfiles.map(UserProfile.init)
         }
+        accountName = account?.username
     }
 
-    /// Fetch the user's profiles from the server.
+    /// Fetch the open account's profiles from the server. When it can't be
+    /// reached, the account's cached list stays on screen.
     func loadProfiles() async {
         if profiles.isEmpty {
             isLoading = true
@@ -66,12 +72,14 @@ class ProfileSelectionViewModel {
         }
     }
 
-    /// The signed-in account's username, shown under the title. Nil until
-    /// `loadAccount` finishes, or when the read fails.
+    /// The signed-in account's username, shown under the title: the saved
+    /// one until `loadAccount` reads it from the server.
     private(set) var accountName: String?
 
     func loadAccount() async {
-        accountName = try? await SiloAPI.shared.currentUser().username
+        if let username = try? await SiloAPI.shared.currentUser().username {
+            accountName = username
+        }
     }
 
     var primaryProfile: UserProfile? {

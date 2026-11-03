@@ -61,7 +61,8 @@ final class ReceiverPairingCoordinator {
         /// phone checks the request programmatically instead of asking the
         /// user to compare again, and the copy must not claim otherwise.
         case awaitingApproval(serverName: String, code: String, matchWords: String?, automatic: Bool)
-        /// A single server finished signing in (interim, during multi-server).
+        /// One pushed sign-in finished (interim, while the phone sends more
+        /// servers or accounts). The count is every sign-in so far.
         case signedIn(serverCount: Int)
         /// Terminal success; every signed-in server, named for the summary.
         case completed(serverNames: [String])
@@ -121,6 +122,7 @@ final class ReceiverPairingCoordinator {
         /// The account the tokens authenticate (`TokenPair.user.id`), bound
         /// as the session's verified account.
         let accountID: String
+        var username: String? = nil
     }
 
     private enum AlternateChoice: Sendable {
@@ -150,6 +152,9 @@ final class ReceiverPairingCoordinator {
     }
 
     private(set) var state: State = .idle
+    /// Sign-ins this session committed. A phone that sends every account
+    /// it holds can sign in several on one server.
+    var signedInCount: Int { signedInNames.count }
     /// Set before `run`; the advertiser publishes the matching `st`.
     var mode: Mode = .setup
 
@@ -493,7 +498,8 @@ final class ReceiverPairingCoordinator {
                 verifiedServerId: push.serverIdentity,
                 accessToken: tokens.accessToken,
                 refreshToken: tokens.refreshToken,
-                accountID: tokens.user.id
+                accountID: tokens.user.id,
+                username: tokens.user.username
             )) else {
                 // A cancellation before the first write is not a failure
                 // (the catch below returns quietly).
@@ -700,23 +706,23 @@ final class ReceiverPairingCoordinator {
         let saved = ServerRegistry.shared.entry(matching: pairedID)
         let url = saved?.url ?? pairing.url
         let id = saved?.id ?? pairedID
-        // Device authorization can replace the account for an already-saved
-        // server URL. Preserve its name, but never carry the previous account's
-        // profile selection across that credential boundary.
+        // Device authorization adds an account to an already-saved server
+        // URL, or refreshes it when it is already saved. Preserve the
+        // server's name; the account install below never carries the
+        // previous account's profile selection across that credential
+        // boundary.
         let entry = ServerEntry(
             id: id,
             url: url,
             fetchedName: pairing.fetchedName,
-            profileId: nil,
             lastUsedAt: Date(),
             verifiedServerId: pairing.verifiedServerId
         )
-        // Re-pairing an already saved server replaces its credential slot in
-        // the session install below (and adopts the slot even when the write fails
-        // part way), before the registry commit can still fail. Keep what
-        // the slot and its server-scoped profile proof held, so either
-        // failure puts it back instead of leaving the new credentials, an
-        // adoption marker, or a tombstone behind a reported failure.
+        // Re-pairing an already saved server changes its accounts in the
+        // install below, before the registry commit can still fail. Keep
+        // what the server's accounts and their profile proofs held, so
+        // either failure puts them back instead of leaving the new
+        // credentials behind a reported failure.
         let previousSession = await TokenStore.shared.accountSessionSnapshot(for: id)
         guard previousSession != .unreadable else {
             // A slot that cannot be read cannot be restored either; refuse
@@ -724,30 +730,10 @@ final class ReceiverPairingCoordinator {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }
-        // `addOrUpdate(preservingProfile: false)` forgets the durable profile
-        // choice for this server id. When the pairing then fails, the previous
-        // session is kept, so its remembered profile must come back too or the
-        // next launch lands on profile selection for no reason.
-        let launchPreferences = ProfileLaunchPreferences.shared
-        let previousRememberedProfile = launchPreferences.rememberedProfile(for: id)
-        let previousSelectionRequired = launchPreferences.state.selectionRequiredServerIDs.contains(id)
-        func restoreRememberedProfile() {
-            if let remembered = previousRememberedProfile {
-                launchPreferences.remember(
-                    profileID: remembered.profileID,
-                    requiresPIN: remembered.requiredPINAtSelection,
-                    accountEpoch: remembered.accountEpoch,
-                    for: id
-                )
-            }
-            if previousSelectionRequired {
-                launchPreferences.markSelectionRequired(for: id)
-            }
-        }
         // From this first persistent mutation onward the transaction must
         // finish even if the pairing task is cancelled. Publishing failure
         // after committed credentials would make the phone and TV disagree.
-        guard ServerRegistry.shared.addOrUpdate(entry, preservingProfile: false) != nil else {
+        guard ServerRegistry.shared.addOrUpdate(entry) != nil else {
             await HTTPClient.shared.endIdentityTransition(transitionLease)
             return false
         }
@@ -772,15 +758,19 @@ final class ReceiverPairingCoordinator {
             await TokenStore.shared.switchActiveServer(serverId: previousTokenServerID)
             await TokenStore.shared.setProfileId(previousProfileID)
             _ = await TokenStore.shared.setProfileToken(previousProfileToken)
-            restoreRememberedProfile()
             await HTTPClient.shared.endIdentityTransition(transitionLease)
         }
+        let installed: AccountSignInResult
         do {
-            try await TokenStore.shared.installAccountSession(
+            // Added beside the server's other accounts, as every sign-in
+            // is: a phone may send several accounts for one server.
+            installed = try await TokenStore.shared.installAccountSession(
                 accessToken: access,
                 refreshToken: refresh,
                 accountID: pairing.accountID,
-                clearProfile: false
+                username: pairing.username,
+                clearProfile: false,
+                replacingOtherAccounts: AuthService.signInReplacesOtherAccounts
             )
         } catch {
             Self.logger.error("pairing session install failed: \(String(describing: error), privacy: .private)")
@@ -794,6 +784,11 @@ final class ReceiverPairingCoordinator {
             await rollBack()
             return false
         }
+        // The paired account starts on Who's Watching, and any account it
+        // replaced leaves nothing remembered behind.
+        ProfileLaunchPreferences.shared.clearRememberedProfile(
+            forAccounts: [installed.account.localAccountId] + installed.removedAccountIds
+        )
         await HTTPClient.shared.endIdentityTransition(transitionLease)
         await ServerRegistry.shared.refreshFeaturesAfterGatedServerSwitch()
         return true

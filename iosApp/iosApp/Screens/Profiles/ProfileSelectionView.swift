@@ -10,7 +10,8 @@ struct ProfileSelectionView: View {
     @State private var pinError: String?
     @State private var isVerifyingPIN = false
     @State private var showCreateProfile: Bool = false
-    @State private var showSignOutConfirm: Bool = false
+    /// The Add sheet: a profile, an account, or a server.
+    @State private var showsAddChoice = false
     /// The profile under a finger, then the one being opened; either tints
     /// the backdrop with that profile's color.
     @State private var pressedProfileID: String?
@@ -19,13 +20,23 @@ struct ProfileSelectionView: View {
     @State private var headerHeight: CGFloat = 0
     @State private var footerHeight: CGFloat = 0
     #endif
-    @Namespace private var profileFocusNamespace
     #if os(tvOS)
-    @FocusState private var isSignOutFocused: Bool
-    /// The profile whose PIN prompt was open, so closing it puts focus back
-    /// on that profile rather than the first one.
-    @State private var returnFocusProfileID: String?
-    @Environment(\.resetFocus) private var resetFocus
+    /// A control on the picker. Focus is written only to seed the picker and
+    /// to put it back once something that covered it closes; the focus
+    /// engine owns movement (docs/tvos-focus.md).
+    private enum PickerFocus: Hashable {
+        case profile(String)
+        case add
+        case changeAccount
+        case signOut
+    }
+
+    @FocusState private var pickerFocus: PickerFocus?
+    /// The control that opened the PIN prompt, the Add sheet, Create Profile
+    /// or the sign-out confirmation, so focus goes back to it when that
+    /// closes rather than to the first profile.
+    @State private var returnFocus: PickerFocus?
+    @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
     #endif
 
     private enum PINEntryPurpose: String {
@@ -46,31 +57,35 @@ struct ProfileSelectionView: View {
         pinEntryContext != nil
     }
 
+    /// The PIN prompt or the Add sheet covers the picker.
+    private var isOverlayPresented: Bool {
+        isPINEntryPresented || showsAddChoice
+    }
+
     var body: some View {
         ZStack {
             background
 
             pickerContent
-                #if os(tvOS)
-                .disabled(
-                    viewModel.isClearingTemporaryManagementContext
-                        || isPINEntryPresented
-                        || showSignOutConfirm
-                )
-                .accessibilityHidden(isPINEntryPresented || showSignOutConfirm)
-                #else
-                .disabled(viewModel.isClearingTemporaryManagementContext || isPINEntryPresented)
-                .accessibilityHidden(isPINEntryPresented)
-                #endif
+                .disabled(viewModel.isClearingTemporaryManagementContext || isOverlayPresented)
+                .accessibilityHidden(isOverlayPresented)
                 .opacity(isPINEntryPresented ? 0 : 1)
         }
         .animation(.easeInOut(duration: 0.25), value: isPINEntryPresented)
+        .animation(.easeOut(duration: 0.2), value: showsAddChoice)
         .task {
             MarqueeScene.shared.showActiveServer()
             MarqueeScene.shared.focus = .profiles
+            #if !os(tvOS)
+            let requestedByPerson = router.pickerRequestedByPerson
+            #endif
+            router.pickerRequestedByPerson = false
             async let account: Void = viewModel.loadAccount()
             await viewModel.loadProfiles()
             await skipPickerIfSingleProfile()
+            #if !os(tvOS)
+            if !requestedByPerson { await openOnlyProfileIfNeeded() }
+            #endif
             await account
         }
         .onChange(of: viewModel.requiresPasswordChange) { _, required in
@@ -101,6 +116,13 @@ struct ProfileSelectionView: View {
         #endif
         .sensoryFeedback(.error, trigger: wrongPINCount)
         #if os(tvOS)
+        .defaultFocus($pickerFocus, defaultPickerFocus)
+        .onAppear {
+            if acceptsFocus { restoreFocus() }
+        }
+        .onChange(of: acceptsFocus) { _, accepts in
+            if accepts { restoreFocus() }
+        }
         .alert(
             rememberOfferTitle,
             isPresented: Binding(
@@ -124,6 +146,53 @@ struct ProfileSelectionView: View {
     #if os(tvOS)
     private var rememberOfferTitle: String {
         "Open \(viewModel.rememberOffer?.name ?? "this profile") automatically?"
+    }
+
+    /// The picker's controls are on screen and nothing covers them: not the
+    /// startup splash (a cold launch builds the picker underneath it, where
+    /// nothing can take focus), the PIN prompt, the Add sheet, Create
+    /// Profile, or the sign-out confirmation.
+    private var acceptsFocus: Bool {
+        !isStartupSplashVisible
+            // Nothing is pushed over the picker: Add › Add an account closes
+            // the sheet as it pushes Change Account, which then owns focus.
+            && router.path.isEmpty
+            && !isOverlayPresented
+            && !showCreateProfile
+            && router.pendingRemoval == nil
+            && !viewModel.isClearingTemporaryManagementContext
+            && !showsLoading
+    }
+
+    /// The remembered profile, else the first; Change Account when the
+    /// picker shows an error instead of profiles.
+    private var defaultPickerFocus: PickerFocus {
+        let profiles = viewModel.profiles
+        guard let first = profiles.first else { return viewModel.error == nil ? .add : .changeAccount }
+        let remembered = rememberedProfileID.flatMap { id in profiles.contains { $0.id == id } ? id : nil }
+        return .profile(remembered ?? first.id)
+    }
+
+    /// Puts focus on the control that opened whatever just closed, or on the
+    /// default one. Once the picker is enabled again in this update.
+    private func restoreFocus() {
+        Task { @MainActor in
+            await Task.yield()
+            guard acceptsFocus else { return }
+            pickerFocus = returnFocus.flatMap(availableFocus) ?? defaultPickerFocus
+        }
+    }
+
+    /// `target` while it is still on screen.
+    private func availableFocus(_ target: PickerFocus) -> PickerFocus? {
+        switch target {
+        case .profile(let id):
+            viewModel.profiles.contains { $0.id == id } ? target : nil
+        case .add:
+            viewModel.profiles.isEmpty && viewModel.error != nil ? nil : target
+        case .changeAccount, .signOut:
+            target
+        }
     }
     #endif
 
@@ -151,18 +220,34 @@ struct ProfileSelectionView: View {
         await viewModel.selectProfile(only, router: router)
     }
 
+    #if !os(tvOS)
+    /// With one profile and no PIN there is nothing to choose: open it
+    /// (spec §4.2), unless the person asked for the picker. Apple TV keeps
+    /// asking each Apple TV user until one chooses to remember a profile.
+    private func openOnlyProfileIfNeeded() async {
+        guard viewModel.error == nil, !viewModel.requiresPasswordChange,
+              router.authState == .needsProfile,
+              viewModel.profiles.count == 1, let only = viewModel.profiles.first, !only.hasPin else { return }
+        await viewModel.selectProfile(only, router: router)
+    }
+    #endif
+
     // MARK: - Content
+
+    /// A temporary password hands over to the password change; until that
+    /// lands, keep the loading state rather than flash a refusal.
+    private var showsLoading: Bool {
+        viewModel.requiresPasswordChange || (viewModel.isLoading && viewModel.profiles.isEmpty)
+    }
 
     @ViewBuilder
     private var pickerContent: some View {
-        // A temporary password hands over to the password change; until that
-        // lands, keep the loading state rather than flash a refusal.
-        if viewModel.requiresPasswordChange || (viewModel.isLoading && viewModel.profiles.isEmpty) {
+        if showsLoading {
             LoadingView(message: "Loading profiles...")
         } else if let error = viewModel.error, viewModel.profiles.isEmpty {
             #if os(tvOS)
             // Apple TV shows refusals it can't fix here, such as a temporary
-            // password, so changing server and signing out stay offered.
+            // password, so changing account and signing out stay offered.
             VStack(spacing: 0) {
                 errorView(error)
                 footerActions
@@ -280,9 +365,9 @@ struct ProfileSelectionView: View {
         return Menu {
             Section(ServerBranding.hostLabel(serverURL)) {
                 Button {
-                    router.navigate(to: .serverList)
+                    router.showChangeAccount()
                 } label: {
-                    Label("Change server", systemImage: "server.rack")
+                    Label("Change Account", systemImage: "person.2")
                 }
             }
         } label: {
@@ -290,33 +375,35 @@ struct ProfileSelectionView: View {
         }
         .menuStyle(.button)
         .buttonStyle(.marqueePressable)
-        .accessibilityLabel("\(name), server. Double-tap to change.")
+        .accessibilityLabel("\(name), server. Double-tap to change account.")
     }
     #endif
 
-    /// Changing server and signing out are utilities, kept small and below
-    /// the people.
+    /// Changing account and signing out are utilities, kept small and below
+    /// the people. Signing out asks first, naming the account and server.
     private var footerActions: some View {
         HStack(spacing: footerSpacing) {
             Button {
-                router.navigate(to: .serverList)
+                router.showChangeAccount()
             } label: {
-                Label("Change server", systemImage: "server.rack")
+                Label("Change Account", systemImage: "person.2")
             }
             .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
+            #if os(tvOS)
+            .focused($pickerFocus, equals: .changeAccount)
+            #endif
 
             Button {
                 #if os(tvOS)
-                showSignOutConfirm = true
-                #else
-                router.signOutAndReset()
+                returnFocus = .signOut
                 #endif
+                router.signOutAndReset()
             } label: {
                 Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
             }
             .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
             #if os(tvOS)
-            .focused($isSignOutFocused)
+            .focused($pickerFocus, equals: .signOut)
             #endif
         }
     }
@@ -331,10 +418,7 @@ struct ProfileSelectionView: View {
 
     #if os(tvOS)
     private var tileRow: some View {
-        let rememberedProfileID = launchPreferences.rememberedProfile(
-            for: ServerRegistry.shared.activeServerId
-        )?.profileID
-        let preferredProfileID = returnFocusProfileID ?? rememberedProfileID ?? viewModel.profiles.first?.id
+        let rememberedProfileID = self.rememberedProfileID
         let grid = LazyVGrid(
             columns: gridColumns,
             spacing: rowSpacing
@@ -342,20 +426,22 @@ struct ProfileSelectionView: View {
             ForEach(viewModel.profiles) { profile in
                 TVProfileTile(
                     profile: profile,
-                    isRemembered: profile.id == rememberedProfileID,
-                    prefersDefaultFocus: profile.id == preferredProfileID,
-                    defaultFocusNamespace: profileFocusNamespace
+                    isRemembered: profile.id == rememberedProfileID
                 ) {
                     handleProfileTap(profile)
                 }
+                .focused($pickerFocus, equals: .profile(profile.id))
             }
-            AddProfileTile { handleAddProfileTap() }
+            AddProfileTile(title: "Add") {
+                returnFocus = .add
+                showsAddChoice = true
+            }
+            .focused($pickerFocus, equals: .add)
         }
 
         // A focus section, so Up from either footer button finds the
         // centered grid.
         return grid
-            .focusScope(profileFocusNamespace)
             .focusSection()
     }
     #endif
@@ -395,9 +481,7 @@ struct ProfileSelectionView: View {
     private func tileRows(_ layout: ProfilePickerLayout?) -> some View {
         let items = viewModel.profiles.map(PickerItem.profile) + [.add]
         let perRow = layout?.perRow ?? 3
-        let rememberedProfileID = launchPreferences.rememberedProfile(
-            for: ServerRegistry.shared.activeServerId
-        )?.profileID
+        let rememberedProfileID = self.rememberedProfileID
         let rows = stride(from: 0, to: items.count, by: perRow).map {
             Array(items[$0..<min($0 + perRow, items.count)])
         }
@@ -422,7 +506,7 @@ struct ProfileSelectionView: View {
                                     handleProfileTap(profile)
                                 }
                             case .add:
-                                AddProfileTile(size: layout?.addSize ?? 0) { handleAddProfileTap() }
+                                AddProfileTile(size: layout?.addSize ?? 0, title: "Add") { showsAddChoice = true }
                             }
                         }
                         .frame(width: layout?.columnWidth ?? 0)
@@ -437,9 +521,28 @@ struct ProfileSelectionView: View {
     }
     #endif
 
+    /// "Last used": the profile Automatic opens for the open account.
+    private var rememberedProfileID: String? {
+        let account = ServerRegistry.shared.activeServerId.flatMap { AccountScope.localAccountId(onServer: $0) }
+        return launchPreferences.rememberedProfile(forAccount: account)?.profileID
+    }
+
+    private var addChoices: [AddChoice] {
+        AddChoice.available(canAddProfile: viewModel.primaryProfile != nil)
+    }
+
+    private func handleAddChoice(_ choice: AddChoice) {
+        showsAddChoice = false
+        if choice == .profile {
+            handleAddProfileTap()
+        } else {
+            router.choose(choice)
+        }
+    }
+
     private func handleProfileTap(_ profile: UserProfile) {
         #if os(tvOS)
-        returnFocusProfileID = profile.id
+        returnFocus = .profile(profile.id)
         #endif
         if profile.hasPin {
             pinEntryContext = PINEntryContext(profile: profile, purpose: .profileSelection)
@@ -482,20 +585,15 @@ struct ProfileSelectionView: View {
 
     @ViewBuilder
     private var profileOverlay: some View {
-        #if os(tvOS)
-        if showSignOutConfirm {
-            TVSettingsConfirmationOverlay(
-                title: "Sign Out",
-                message: "Choose whether to keep or remove this server from this Apple TV.",
-                confirmTitle: "Sign Out",
-                additionalDestructiveTitle: "Sign Out & Remove Server",
-                cancel: dismissSignOutConfirmation,
-                confirm: router.signOutAndReset,
-                additionalDestructiveAction: router.signOutRemoveServerAndReset
-            )
+        if showsAddChoice {
+            AddChoiceSheet(choices: addChoices, onChoose: handleAddChoice) {
+                showsAddChoice = false
+            }
             .transition(.opacity)
-            .zIndex(10)
-        } else if let context = pinEntryContext {
+            .zIndex(11)
+        }
+        #if os(tvOS)
+        if let context = pinEntryContext {
             pinEntryContent(for: context)
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
                 .zIndex(10)
@@ -509,16 +607,6 @@ struct ProfileSelectionView: View {
         #endif
     }
 
-    #if os(tvOS)
-    private func dismissSignOutConfirmation() {
-        showSignOutConfirm = false
-        Task {
-            await Task.yield()
-            isSignOutFocused = true
-        }
-    }
-    #endif
-
     private func pinEntryContent(for context: PINEntryContext) -> some View {
         PINEntryView(
             profile: context.profile,
@@ -531,17 +619,11 @@ struct ProfileSelectionView: View {
         }
     }
 
+    /// On Apple TV, focus goes back to the control that opened the prompt
+    /// once the picker is enabled again (`restoreFocus`).
     private func closePINEntry() {
         pinEntryContext = nil
         pinError = nil
-        #if os(tvOS)
-        // The picker is enabled again in this update; once it is, send focus
-        // to the profile that opened the prompt.
-        Task {
-            await Task.yield()
-            resetFocus(in: profileFocusNamespace)
-        }
-        #endif
     }
 
     /// The prompt stays open while the server checks the PIN. A rejected PIN

@@ -377,6 +377,9 @@ actor DiagnosticsCoordinator {
     private var cachedStatus: DiagnosticsStatusSnapshot?
     private var cachedStatusDestination: DiagnosticsDestinationChoice?
     private var cachedStatusServerRegistryID: String?
+    /// The saved account (`Account.localAccountId`) the cached status was
+    /// fetched for. Accounts on one server share its registry id.
+    private var cachedStatusLocalAccountID: String?
     private var cachedStatusAccessTokenFingerprint: String?
     private var statusRefreshEpoch = DiagnosticsStatusRefreshEpoch()
     /// Credential-owner epoch associated with the exact live hosted status
@@ -442,6 +445,7 @@ actor DiagnosticsCoordinator {
         }
 
         let requestServerRegistryID = ServerRegistry.activeServerIDSnapshot
+        let requestLocalAccountID = await TokenStore.shared.refreshAccountIdentity()?.localAccountId
         guard requestServerRegistryID != nil,
               await Self.currentAccessTokenFingerprint() != nil else {
             throw DiagnosticsCoordinatorError.identityChanged
@@ -454,10 +458,12 @@ actor DiagnosticsCoordinator {
         // registry id plus the freshly fetched account user id. Comparing
         // these rather than raw access-token fingerprints means a transparent
         // token refresh HTTPClient may perform during these calls is not
-        // misread as an identity change. A genuine change — server switch or
-        // sign-out — still flips the server id or drops the token.
+        // misread as an identity change. A genuine change — server switch,
+        // account switch on the same server, or sign-out — still flips the
+        // server id or the saved account, or drops the token.
         guard statusRefreshEpoch.isCurrent(requestGeneration, destination: destination),
               requestServerRegistryID == ServerRegistry.activeServerIDSnapshot,
+              await TokenStore.shared.refreshAccountIdentity()?.localAccountId == requestLocalAccountID,
               let accessTokenFingerprint = await Self.currentAccessTokenFingerprint() else {
             throw DiagnosticsCoordinatorError.identityChanged
         }
@@ -474,16 +480,19 @@ actor DiagnosticsCoordinator {
         cachedStatus = snapshot
         cachedStatusDestination = .selfHosted
         cachedStatusServerRegistryID = requestServerRegistryID
+        cachedStatusLocalAccountID = requestLocalAccountID
         cachedStatusAccessTokenFingerprint = accessTokenFingerprint
         persistLastKnownSnapshot(
             snapshot,
             serverRegistryID: requestServerRegistryID,
+            localAccountID: requestLocalAccountID,
             destination: .selfHosted
         )
         updateBreadcrumbConsentContext(
             binding: binding,
             noticeVersion: status.consentNoticeVersion,
-            statusAvailable: status.status == .available
+            statusAvailable: status.status == .available,
+            localAccountID: requestLocalAccountID
         )
         // Keep the synchronous breadcrumb eligibility flag current for the
         // profile in view (covers a launch directly into a child profile).
@@ -539,17 +548,20 @@ actor DiagnosticsCoordinator {
         cachedStatus = snapshot
         cachedStatusDestination = .hosted
         cachedStatusServerRegistryID = requestServerRegistryID
+        cachedStatusLocalAccountID = requestCredentialIdentity.localAccountId
         cachedStatusAccessTokenFingerprint = accessTokenFingerprint
         cachedHostedCredentialIdentity = requestCredentialIdentity
         persistLastKnownSnapshot(
             snapshot,
             serverRegistryID: requestServerRegistryID,
+            localAccountID: requestCredentialIdentity.localAccountId,
             destination: .hosted
         )
         updateBreadcrumbConsentContext(
             binding: binding,
             noticeVersion: status.consentNoticeVersion,
-            statusAvailable: status.status == .available
+            statusAvailable: status.status == .available,
+            localAccountID: requestCredentialIdentity.localAccountId
         )
         let eligibilityGeneration = Self.beginActiveProfileEligibilityResolution(invalidateCurrent: false)
         Task {
@@ -594,21 +606,28 @@ actor DiagnosticsCoordinator {
         guard let activeServerId = ServerRegistry.activeServerIDSnapshot else {
             return nil
         }
+        // Accounts on one server share its registry id: a status fetched for
+        // another of them must not bind this account's capture.
+        let activeAccount = Self.activeLocalAccountID
         if cachedStatusServerRegistryID == activeServerId,
+           cachedStatusLocalAccountID == nil || cachedStatusLocalAccountID == activeAccount,
            cachedStatusDestination == destination,
            let cachedStatus {
             return cachedStatus
         }
-        return Self.LastKnownStatusStore.snapshot(for: activeServerId, destination: destination)
+        return Self.LastKnownStatusStore.snapshot(for: activeServerId, destination: destination,
+                                                  account: activeAccount)
     }
 
     private func persistLastKnownSnapshot(
         _ snapshot: DiagnosticsStatusSnapshot,
         serverRegistryID: String?,
+        localAccountID: String?,
         destination: DiagnosticsDestinationChoice
     ) {
         guard let serverRegistryID else { return }
-        Self.LastKnownStatusStore.record(snapshot, for: serverRegistryID, destination: destination)
+        Self.LastKnownStatusStore.record(snapshot, for: serverRegistryID, localAccountID: localAccountID,
+                                         destination: destination)
         // The capture gate falls back to this store before the first live
         // context of a launch resolves, so a new snapshot is a gate input.
         Self.invalidateCaptureGateCache()
@@ -1667,6 +1686,7 @@ actor DiagnosticsCoordinator {
             cacheHostedFallback(
                 snapshot,
                 serverRegistryID: serverRegistryID,
+                localAccountID: requestCredentialIdentity.localAccountId,
                 accessTokenFingerprint: accessTokenFingerprint
             )
             return HostedPersistentCaptureFallback(
@@ -1745,15 +1765,18 @@ actor DiagnosticsCoordinator {
     private func cacheHostedFallback(
         _ snapshot: DiagnosticsStatusSnapshot,
         serverRegistryID: String,
+        localAccountID: String?,
         accessTokenFingerprint: String
     ) {
         cachedStatus = snapshot
         cachedStatusDestination = .hosted
         cachedStatusServerRegistryID = serverRegistryID
+        cachedStatusLocalAccountID = localAccountID
         cachedStatusAccessTokenFingerprint = accessTokenFingerprint
         persistLastKnownSnapshot(
             snapshot,
             serverRegistryID: serverRegistryID,
+            localAccountID: localAccountID,
             destination: .hosted
         )
     }
@@ -2259,6 +2282,7 @@ actor DiagnosticsCoordinator {
             cachedStatus = nil
             cachedStatusDestination = nil
             cachedStatusServerRegistryID = nil
+            cachedStatusLocalAccountID = nil
             cachedStatusAccessTokenFingerprint = nil
             cachedHostedCredentialIdentity = nil
         }
@@ -2439,18 +2463,38 @@ actor DiagnosticsCoordinator {
         /// capture stays off while the feature is disabled/storage-unavailable,
         /// mirroring the persistent-capture gate.
         let isAvailable: Bool
+        /// The saved account (`Account.localAccountId`) the binding was
+        /// resolved for. Accounts on one server share its registry id, so a
+        /// context for another of them never opens capture for this one.
+        /// Nil when unknown.
+        let localAccountID: String?
 
-        init(binding: DiagnosticsBinding, noticeVersion: Int, isAvailable: Bool = true) {
+        init(binding: DiagnosticsBinding, noticeVersion: Int, isAvailable: Bool = true,
+             localAccountID: String? = nil) {
             self.binding = binding
             self.noticeVersion = noticeVersion
             self.isAvailable = isAvailable
+            self.localAccountID = localAccountID
         }
+
+        /// Whether this context may gate capture for `account`, the account
+        /// in use now.
+        func applies(to account: String?) -> Bool {
+            localAccountID == nil || localAccountID == account
+        }
+    }
+
+    /// The saved account requests on the active server use, read without
+    /// awaiting `TokenStore` (`AccountScope.current`).
+    nonisolated static var activeLocalAccountID: String? {
+        AccountScope.current?.localAccountId
     }
 
     private func updateBreadcrumbConsentContext(
         binding: DiagnosticsBinding,
         noticeVersion: Int,
-        statusAvailable: Bool
+        statusAvailable: Bool,
+        localAccountID: String? = DiagnosticsCoordinator.activeLocalAccountID
     ) {
         // A request for the previous destination may finish after the picker
         // persisted a new choice. It may refresh its own cache, but it must not
@@ -2464,7 +2508,8 @@ actor DiagnosticsCoordinator {
         Self.breadcrumbConsentContext = BreadcrumbConsentContext(
             binding: binding,
             noticeVersion: noticeVersion,
-            isAvailable: statusAvailable
+            isAvailable: statusAvailable,
+            localAccountID: localAccountID
         )
         Self.breadcrumbContextLock.unlock()
         // The gate's context input just changed (binding, notice version, or
@@ -2531,20 +2576,26 @@ actor DiagnosticsCoordinator {
         let context = breadcrumbConsentContext
         breadcrumbContextLock.unlock()
         guard !transitionInProgress else { return nil }
+        // After an account switch on the same server, the context and the
+        // last-known status can still be the previous account's until the
+        // next status refresh rebinds; neither may open capture meanwhile.
+        let activeAccount = activeLocalAccountID
         if let context {
-            return context
+            return context.applies(to: activeAccount) ? context : nil
         }
         guard let serverId = ServerRegistry.activeServerIDSnapshot,
               let snapshot = LastKnownStatusStore.snapshot(
                 for: serverId,
-                destination: DiagnosticsDestinationStore.shared.selectedDestination
+                destination: DiagnosticsDestinationStore.shared.selectedDestination,
+                account: activeAccount
               ) else {
             return nil
         }
         return BreadcrumbConsentContext(
             binding: snapshot.binding,
             noticeVersion: snapshot.status.consentNoticeVersion,
-            isAvailable: snapshot.status.status == .available
+            isAvailable: snapshot.status.status == .available,
+            localAccountID: activeAccount
         )
     }
 
@@ -3053,21 +3104,34 @@ actor DiagnosticsCoordinator {
     /// a crash, before any live refresh has run.
     private enum LastKnownStatusStore {
         private static let key = "diagnostics.lastKnownStatus.v1"
+        /// Per index key, the saved account (`Account.localAccountId`) its
+        /// snapshot was fetched for. Accounts on one server share the key, so
+        /// the last one refreshed owns it. Snapshots from before accounts
+        /// have no entry.
+        private static let accountsKey = "diagnostics.lastKnownStatusAccount.v1"
         private static let lock = NSLock()
 
         static func record(
             _ snapshot: DiagnosticsStatusSnapshot,
             for serverId: String,
+            localAccountID: String?,
             destination: DiagnosticsDestinationChoice
         ) {
             guard !serverId.isEmpty else { return }
             lock.lock()
             var index = load()
-            index[key(serverId: serverId, destination: destination)] = snapshot
+            let entry = key(serverId: serverId, destination: destination)
+            index[entry] = snapshot
             save(index)
+            var accounts = loadAccounts()
+            if accounts[entry] != localAccountID {
+                accounts[entry] = localAccountID
+                saveAccounts(accounts)
+            }
             lock.unlock()
         }
 
+        /// Every account's: for erasure, which finds bindings by server.
         static func snapshot(
             for serverId: String,
             destination: DiagnosticsDestinationChoice
@@ -3078,6 +3142,21 @@ actor DiagnosticsCoordinator {
                 ?? (destination == .selfHosted ? index[serverId] : nil)
             lock.unlock()
             return snapshot
+        }
+
+        /// The snapshot only when it was fetched for `account` (or before
+        /// accounts), so another account on the server never lends its
+        /// binding or consent to this one.
+        static func snapshot(
+            for serverId: String,
+            destination: DiagnosticsDestinationChoice,
+            account: String?
+        ) -> DiagnosticsStatusSnapshot? {
+            lock.lock()
+            let owner = loadAccounts()[key(serverId: serverId, destination: destination)]
+            lock.unlock()
+            if let owner, owner != account { return nil }
+            return snapshot(for: serverId, destination: destination)
         }
 
         private static func key(
@@ -3093,6 +3172,9 @@ actor DiagnosticsCoordinator {
             let filtered = index.filter { $0.value.binding != binding }
             if filtered.count != index.count {
                 save(filtered)
+                let accounts = loadAccounts()
+                let kept = accounts.filter { filtered[$0.key] != nil }
+                if kept.count != accounts.count { saveAccounts(kept) }
             }
             lock.unlock()
         }
@@ -3117,6 +3199,19 @@ actor DiagnosticsCoordinator {
             lock.unlock()
         }
         #endif
+
+        private static func loadAccounts() -> [String: String] {
+            guard let data = SharedDefaults.shared.data(forKey: accountsKey),
+                  let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
+                return [:]
+            }
+            return decoded
+        }
+
+        private static func saveAccounts(_ accounts: [String: String]) {
+            guard let data = try? JSONEncoder().encode(accounts) else { return }
+            SharedDefaults.shared.set(data, forKey: accountsKey)
+        }
 
         private static func load() -> [String: DiagnosticsStatusSnapshot] {
             guard let data = SharedDefaults.shared.data(forKey: key),

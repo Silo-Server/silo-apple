@@ -50,6 +50,10 @@ enum Route: Hashable {
     case collectionDetail(collectionId: String)
     case settings
     case serverList
+    /// Settings › Accounts: saved servers and their accounts (spec §4.5).
+    case accounts
+    /// Change Account: every saved account, grouped by server (spec §4.1).
+    case changeAccount
 
     /// The active party or the create/join hub.
     case watchParty

@@ -11,6 +11,19 @@ struct HTTPRequestIdentity: Equatable, Sendable {
     let serverURL: String
     let profileId: String
     let clientFamily: String
+    /// The account (`Account.localAccountId`) the work belongs to. Profile
+    /// IDs repeat across accounts on one server, so when set,
+    /// `TokenStore.captureRequestAuth` also requires the selected account to
+    /// be this one.
+    let localAccountId: String?
+
+    init(serverId: String, serverURL: String, profileId: String, clientFamily: String, localAccountId: String? = nil) {
+        self.serverId = serverId
+        self.serverURL = serverURL
+        self.profileId = profileId
+        self.clientFamily = clientFamily
+        self.localAccountId = localAccountId
+    }
 }
 
 enum CapturedHTTPRequestCredentialOwner: Equatable, Sendable {
@@ -129,9 +142,10 @@ actor HTTPClient {
     private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
     /// Approver-bearer renewals of saved servers that are not active
-    /// (`freshAccessToken(serverId:)`), keyed by server. A caller holding the
-    /// same refresh token joins the renewal in flight instead of sending that
-    /// token a second time.
+    /// (`freshAccessToken(serverId:)`), keyed by server, and of accounts not
+    /// in use (`freshAccessToken(serverId:localAccountId:)`), keyed by
+    /// `server|account`. A caller holding the same refresh token joins the
+    /// renewal in flight instead of sending that token a second time.
     private var inactiveServerRenewals: [String: (refreshToken: String, task: Task<ApproverBearer, Never>)] = [:]
     /// The profile proof the last `.siloProfileVerificationRequired` was
     /// posted for (access token dropped), with the `TokenStore` selection
@@ -409,9 +423,16 @@ actor HTTPClient {
     /// read the replacement account. The request carries only that bearer: v2
     /// logout does not accept the profile header.
     func revokeSession(_ auth: CapturedOrdinaryRequestAuth) async {
-        guard let token = auth.accessToken, !token.isEmpty else { return }
+        guard let token = auth.accessToken else { return }
+        await revokeSession(accessToken: token, serverURL: auth.account.serverURL)
+    }
+
+    /// Revokes one signed-out session by its own bearer, at the origin it
+    /// was saved for. Best effort, like the captured form above.
+    func revokeSession(accessToken token: String, serverURL: String) async {
+        guard !token.isEmpty, !serverURL.isEmpty else { return }
         do {
-            var request = try buildRequest(serverUrl: auth.account.serverURL,
+            var request = try buildRequest(serverUrl: serverURL,
                 method: "POST", path: "/api/v2/auth/logout", query: [:])
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             request.timeoutInterval = 5
@@ -2400,7 +2421,7 @@ actor HTTPClient {
     /// Nothing here signs anyone out.
     ///
     /// A bearer is released only for the address the saved server is keyed
-    /// by (`TokenStore.session(_:belongsTo:)`): a session bound to another
+    /// by (`TokenStore.account(_:belongsTo:)`): an account bound to another
     /// origin answers `.rejected` rather than travel to this one.
     ///
     /// When the slot changed while the refresh was in flight (it became
@@ -2439,7 +2460,7 @@ actor HTTPClient {
         }
         guard let stored = await tokenStore.inactiveServerSession(for: serverId),
               let access = stored.accessToken, let refresh = stored.refreshToken,
-              let origin = stored.origin.map({ ServerRegistry.normalize(url: $0) }), !origin.isEmpty else {
+              case let origin = ServerRegistry.normalize(url: stored.origin), !origin.isEmpty else {
             return await storedBearer(serverId: serverId)
         }
         guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
@@ -2455,9 +2476,38 @@ actor HTTPClient {
         return bearer
     }
 
+    /// `freshAccessToken(serverId:)` for one saved account on the server,
+    /// which need not be the account requests there use: an approving phone
+    /// can sign a TV in as any account it holds. The account in use renews
+    /// through the server path; any other renews its own record once,
+    /// compare-and-set, as an inactive server does.
+    func freshAccessToken(serverId: String, localAccountId: String) async -> ApproverBearer {
+        guard !serverId.isEmpty else { return .rejected }
+        if await tokenStore.requestAccountId(onServer: serverId) == localAccountId {
+            return await freshAccessToken(serverId: serverId)
+        }
+        guard let stored = await tokenStore.inactiveAccountSession(localAccountId, onServer: serverId),
+              let access = stored.accessToken, let refresh = stored.refreshToken,
+              case let origin = ServerRegistry.normalize(url: stored.origin), !origin.isEmpty else {
+            return .rejected
+        }
+        guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
+        let key = "\(serverId)|\(localAccountId)"
+        if let flight = inactiveServerRenewals[key], flight.refreshToken == refresh {
+            return await flight.task.value
+        }
+        let task = Task { await renewInactiveServer(serverId, stored: stored, access: access, refresh: refresh, origin: origin) }
+        inactiveServerRenewals[key] = (refresh, task)
+        let bearer = await task.value
+        if inactiveServerRenewals[key]?.refreshToken == refresh {
+            inactiveServerRenewals[key] = nil
+        }
+        return bearer
+    }
+
     /// One renewal of an inactive saved server's slot, compare-and-set
     /// against `stored` (see `freshAccessToken(serverId:)`).
-    private func renewInactiveServer(_ serverId: String, stored: CanonicalAccountSession, access: String,
+    private func renewInactiveServer(_ serverId: String, stored: Account, access: String,
                                      refresh: String, origin: String) async -> ApproverBearer {
         func fallback(_ failure: ApproverBearer) -> ApproverBearer {
             Self.hasExpired(access) ? failure : .token(access)

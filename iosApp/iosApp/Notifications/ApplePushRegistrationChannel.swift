@@ -19,29 +19,11 @@ struct ApplePushRegistrationChannel: Sendable {
 }
 
 extension ApplePushRegistrationChannel {
-    /// Pages `listSessions` reads through at most when looking for a session.
-    static let maximumSessionPages = 10
-
-    /// Whether `holder`'s backend stores this channel's own login session,
-    /// which proves both addresses reach one deployment. A `server_id` is
-    /// self-asserted, so it only picks the addresses to ask. A session ID is
-    /// a random UUID that only the backend that issued it knows, and each
-    /// address is asked only about its own sessions, with its own
-    /// credentials. An address that is not that backend, or a proxy for it,
-    /// cannot list this session unless it signs in to `holder` with the
-    /// person's own credentials, which already give it the account. Any
-    /// failure counts as no proof.
+    /// Whether `holder`'s backend stores this channel's own login session
+    /// (`LoginSessionProof`), which proves both addresses reach one
+    /// deployment. Any failure counts as no proof.
     func sharesBackend(with holder: ApplePushRegistrationChannel) async -> Bool {
-        guard let own = try? await loginSessions(nil).currentSession?.id, !own.isEmpty else { return false }
-        var cursor: String?
-        for _ in 0..<Self.maximumSessionPages {
-            guard let page = try? await holder.loginSessions(cursor) else { return false }
-            // The holder's own session is never this channel's.
-            if page.items.contains(where: { $0.id == own && !$0.current }) { return true }
-            guard let next = page.page?.nextCursor, page.page?.hasMore == true else { return false }
-            cursor = next
-        }
-        return false
+        await LoginSessionProof.check(own: loginSessions, holder: holder.loginSessions) == .proven
     }
 }
 
@@ -117,8 +99,7 @@ struct ApplePushSavedServerClient: Sendable {
                       keyGate: @Sendable () async -> Bool = { true }) async throws -> Data {
         // The stored session must still be the registering account's: a
         // later sign-in on that server would register under someone else.
-        guard let account = await tokenStore.savedSessionAccount(for: owner.serverID),
-              account.accountID == owner.accountID, account.epoch == owner.accountEpoch else {
+        guard let account = await tokenStore.savedSessionAccount(for: owner.serverID), owner.holds(account) else {
             throw HTTPError.authorityChanged
         }
         let fresh = await http.freshAccessToken(serverId: owner.serverID)

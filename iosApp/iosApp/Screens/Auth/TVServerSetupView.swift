@@ -21,12 +21,16 @@ struct TVServerSetupView: View {
     @State private var coordinator = ReceiverPairingCoordinator()
     @State private var discovery = ServerDiscovery()
     @State private var isEnteringAddress = false
+    /// The first account a phone signed in this session: the one the phone
+    /// uses, which it sends first (spec §4.6).
+    @State private var firstPairedAccount: (serverId: String, localAccountId: String)?
     @FocusState private var focusedField: Field?
     /// Where focus goes once the system keyboard closes after Done.
     @State private var focusAfterKeyboard: Field?
 
     private enum Field: Hashable {
         case enterAddress
+        case backToProfiles
         case host
         case advanced
         case scheme(ServerSetupScheme)
@@ -49,10 +53,7 @@ struct TVServerSetupView: View {
     var body: some View {
         ZStack {
             if isPairing {
-                TVPairingReceiverView(coordinator: coordinator, advance: {
-                    router.skipsSingleProfilePicker = true
-                    router.showProfileSelection()
-                })
+                TVPairingReceiverView(coordinator: coordinator, advance: openPairedAccount)
                     .transition(.opacity)
             } else if isEnteringAddress {
                 manualEntry
@@ -70,6 +71,12 @@ struct TVServerSetupView: View {
         }
         .task { await advertise() }
         .onChange(of: coordinator.state) { _, state in
+            if case .linked = state { firstPairedAccount = nil }
+            if case .signedIn(serverCount: 1) = state,
+               let serverId = ServerRegistry.shared.activeServerId,
+               let account = AuthService.shared.activeAccount?.localAccountId {
+                firstPairedAccount = (serverId, account)
+            }
             // Only accept a new phone once the panel is back to the idle
             // chooser. Releasing on terminal states (completed/failed) would
             // let a second phone connect and clobber the summary the user is
@@ -82,6 +89,25 @@ struct TVServerSetupView: View {
             Task { await coordinator.cancel() }
         }
         .serverInsecurePromptAlert(viewModel, router: router)
+    }
+
+    /// After a phone finishes: one account with a single profile and no PIN
+    /// opens directly. Several accounts open the picker of the one the phone
+    /// uses (the last one sent is active now); Change Account reaches the
+    /// rest.
+    private func openPairedAccount() {
+        let severalAccounts = coordinator.signedInCount > 1
+        router.skipsSingleProfilePicker = !severalAccounts
+        guard severalAccounts, let first = firstPairedAccount,
+              AuthService.shared.activeAccount?.localAccountId != first.localAccountId else {
+            router.showProfileSelection()
+            return
+        }
+        Task {
+            // Failing that, the active account's picker still shows.
+            try? await AccountSessions.switchTo(account: first.localAccountId, onServer: first.serverId)
+            router.showProfileSelection()
+        }
     }
 
     // MARK: - Set up with a phone (default)
@@ -118,7 +144,7 @@ struct TVServerSetupView: View {
                     .frame(width: 760, alignment: .leading)
                     .padding(.top, 16)
             }
-            HStack {
+            HStack(spacing: 22) {
                 Button {
                     // A found server may be connecting; leaving now would let
                     // its result land behind manual entry.
@@ -130,6 +156,12 @@ struct TVServerSetupView: View {
                 }
                 .buttonStyle(.marquee(.glass, fullWidth: false))
                 .focused($focusedField, equals: .enterAddress)
+
+                if canReturnToPicker {
+                    Button("Back to profiles") { returnToPicker() }
+                        .buttonStyle(.marquee(.plain, fullWidth: false))
+                        .focused($focusedField, equals: .backToProfiles)
+                }
             }
             .padding(.top, 18)
         } card: {
@@ -137,6 +169,7 @@ struct TVServerSetupView: View {
         }
         .defaultFocus($focusedField, .enterAddress, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, .enterAddress)
+        .onExitCommand(perform: canReturnToPicker ? returnToPicker : nil)
         .animation(.easeOut(duration: 0.32), value: discovery.servers)
         .animation(.easeInOut(duration: 0.2), value: viewModel.discoveryError)
     }
@@ -262,6 +295,19 @@ struct TVServerSetupView: View {
         .animation(SiloTheme.springAnimation, value: viewModel.showsAdvancedOptions)
         .animation(.easeInOut(duration: 0.2), value: viewModel.error)
         .keepsSubmittedServerInputs(viewModel)
+    }
+
+    /// "Add a server" from the picker can be left again while another
+    /// saved account can be chosen. Not when this screen was pushed from
+    /// the server list, where Menu pops it.
+    private var canReturnToPicker: Bool {
+        route == .needsServerSetup && router.canReturnToPicker
+    }
+
+    private func returnToPicker() {
+        // A found server may be connecting; its result would pull the app on.
+        guard !viewModel.isLoading else { return }
+        router.returnToPicker()
     }
 
     private func connect() {

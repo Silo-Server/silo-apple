@@ -90,7 +90,8 @@ enum DownloadStorageReclaim {
         /// The server URL the folder name encodes, when it encodes one.
         let serverURL: String?
         let bytes: Int64
-        /// The active server's folder: it holds the other profiles' data.
+        /// The active server's folder: it holds the other profiles' and
+        /// accounts' data.
         let isActiveServer: Bool
 
         var id: String { folderName }
@@ -98,12 +99,17 @@ enum DownloadStorageReclaim {
 
     /// Groups everything under `root` outside the active scope by top-level
     /// folder, largest first. `staging` and hidden entries such as the
-    /// legacy marker are left out, and so is a group with no bytes.
-    static func otherStorage(root: URL, activeServerFolder: String, activeProfileFolder: String) -> [OtherStorage] {
+    /// legacy marker are left out, and so is a group with no bytes. The
+    /// active scope is `<activeServerFolder>/<activeAccountFolder>/<activeProfileFolder>`,
+    /// or `<activeServerFolder>/<activeProfileFolder>` without an account folder.
+    static func otherStorage(
+        root: URL, activeServerFolder: String, activeAccountFolder: String? = nil, activeProfileFolder: String
+    ) -> [OtherStorage] {
         topLevelFolders(root: root).compactMap { folder in
             let name = folder.lastPathComponent
             let isActive = name == activeServerFolder
-            let bytes = removalTargets(folder: folder, excludingProfileFolder: isActive ? activeProfileFolder : nil)
+            let excluded = isActive ? [activeAccountFolder, activeProfileFolder].compactMap { $0 } : []
+            let bytes = removalTargets(folder: folder, excluding: excluded)
                 .reduce(Int64(0)) { $0 + DownloadFilePaths.bytes(under: $1) }
             guard bytes > 0 else { return nil }
             return OtherStorage(
@@ -117,20 +123,27 @@ enum DownloadStorageReclaim {
     }
 
     /// What removing a group deletes: the whole folder, or for the active
-    /// server every child except the active profile's scope.
+    /// server everything except the active scope.
     static func removalTargets(folderName: String, root: URL, activeServerFolder: String,
-                               activeProfileFolder: String) -> [URL] {
+                               activeAccountFolder: String? = nil, activeProfileFolder: String) -> [URL] {
         guard let folder = topLevelFolders(root: root).first(where: { $0.lastPathComponent == folderName }) else {
             return []
         }
         let isActive = folderName == activeServerFolder
-        return removalTargets(folder: folder, excludingProfileFolder: isActive ? activeProfileFolder : nil)
+        let excluded = isActive ? [activeAccountFolder, activeProfileFolder].compactMap { $0 } : []
+        return removalTargets(folder: folder, excluding: excluded)
     }
 
-    private static func removalTargets(folder: URL, excludingProfileFolder excluded: String?) -> [URL] {
-        guard let excluded else { return [folder] }
+    /// `folder` itself when `path` is empty; otherwise every child of
+    /// `folder` except the one `path` starts with, plus the same for that
+    /// child and the rest of `path`.
+    private static func removalTargets(folder: URL, excluding path: [String]) -> [URL] {
+        guard let excluded = path.first else { return [folder] }
         let children = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-        return children.filter { $0.lastPathComponent != excluded }
+        return children.flatMap { child -> [URL] in
+            guard child.lastPathComponent == excluded else { return [child] }
+            return path.count > 1 ? removalTargets(folder: child, excluding: Array(path.dropFirst())) : []
+        }
     }
 
     private static func topLevelFolders(root: URL) -> [URL] {

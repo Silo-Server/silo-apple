@@ -46,7 +46,10 @@ struct TVMainTabView: View {
         }
         return cached.first(where: { $0.id == profileId })
     }()
-    @State private var showSignOutConfirm = false
+    /// Sign Out was chosen in the profile menu and its confirmation is up,
+    /// so cancelling it returns focus to the avatar.
+    @State private var isConfirmingMenuSignOut = false
+    @State private var accountDirectory = AccountDirectory.shared
     @State private var librariesStaleSinceBackground = false
     @State private var registry = ServerRegistry.shared
     /// Local, per-profile Audiobooks opt-in for the bar's Audiobooks tab.
@@ -190,22 +193,17 @@ struct TVMainTabView: View {
         .overlayPreferenceValue(TVTopMenuAnchorKey.self) { anchors in
             panelOverlay(anchors: anchors)
         }
-        .allowsHitTesting(!showSignOutConfirm)
-        .overlay {
-            if showSignOutConfirm {
-                TVSettingsConfirmationOverlay(
-                    title: "Sign Out",
-                    message: "Choose whether to keep or remove this server from this Apple TV.",
-                    confirmTitle: "Sign Out",
-                    additionalDestructiveTitle: "Sign Out & Remove Server",
-                    cancel: dismissSignOutConfirmation,
-                    confirm: router.signOutAndReset,
-                    additionalDestructiveAction: router.signOutRemoveServerAndReset
-                )
-                .transition(.opacity)
+        // The shared sign-out confirmation (`AccountRemovalConfirmationModifier`)
+        // disables the whole screen while it is up; once it is cancelled,
+        // focus goes back to the avatar it was opened from.
+        .onChange(of: router.pendingRemoval == nil) { _, dismissed in
+            guard dismissed, isConfirmingMenuSignOut else { return }
+            isConfirmingMenuSignOut = false
+            Task { @MainActor in
+                await Task.yield()
+                focusTopMenuIfVisible(focusing: .profile)
             }
         }
-        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSignOutConfirm)
         .ignoresSafeArea(edges: [.top, .horizontal])
         .tint(.siloOnSurface)
         .fullScreenCover(isPresented: Binding(
@@ -358,7 +356,7 @@ struct TVMainTabView: View {
             && !isStartupSplashVisible
             && router.presentedPlayer == nil
             && !audioStore.isShowingFullPlayer
-            && !showSignOutConfirm
+            && router.pendingRemoval == nil
             && controlReceiver.standbyState == nil
     }
 
@@ -708,7 +706,7 @@ struct TVMainTabView: View {
             profileName: currentProfile?.name ?? "Profile",
             avatar: currentProfile?.avatarEmoji,
             avatarImageUrl: currentProfile?.avatarImageUrl,
-            serverHost: ServerRegistry.shared.activeServer?.displayName,
+            serverHost: profileMenuServerLine,
             entersPanel: isActive && panelEntersFocus,
             focusEntryGeneration: panelFocusEntryGeneration,
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
@@ -719,17 +717,24 @@ struct TVMainTabView: View {
             onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
-            onSwitchServer: { closePanel(then: { navigateFromBar(.serverList) }) },
-            onSignOut: { closePanel(then: { showSignOutConfirm = true }) }
+            onChangeAccount: { closePanel(then: showChangeAccount) },
+            onSignOut: {
+                closePanel(then: {
+                    isConfirmingMenuSignOut = true
+                    router.signOutAndReset()
+                })
+            }
         )
     }
 
-    private func dismissSignOutConfirmation() {
-        showSignOutConfirm = false
-        Task { @MainActor in
-            await Task.yield()
-            focusTopMenuIfVisible(focusing: .profile)
-        }
+    /// "server", or "server · username" when the server has more than one
+    /// saved account (spec §4.3).
+    private var profileMenuServerLine: String? {
+        guard let server = registry.activeServer else { return nil }
+        guard accountDirectory.accounts(onServer: server.id).count > 1,
+              let selected = AccountScope.localAccountId(onServer: server.id),
+              let username = accountDirectory.account(selected)?.username else { return server.displayName }
+        return "\(server.displayName) · \(username)"
     }
 
     // MARK: - Panel control (§5.3 / §5.8)
@@ -1247,7 +1252,7 @@ struct TVMainTabView: View {
         if audioStore.isShowingFullPlayer {
             audioStore.dismissFullPlayer()
         }
-        showSignOutConfirm = false
+        router.pendingRemoval = nil
         closePanelForContentHandoff()
         if !router.path.isEmpty {
             router.popToRoot()
@@ -1272,6 +1277,13 @@ struct TVMainTabView: View {
 
     private func switchProfile() {
         router.switchProfile()
+    }
+
+    /// Change Account from the profile menu, pushed like the menu's other
+    /// destinations so Back returns focus to the bar.
+    private func showChangeAccount() {
+        barOwnsFocusOnPopToRoot = true
+        router.showChangeAccount()
     }
 
     private func loadCurrentProfile() async {
@@ -1369,6 +1381,10 @@ struct TVMainTabView: View {
             TVSettingsView()
         case .serverList:
             ServerListView()
+        case .accounts:
+            TVAccountsSettingsView()
+        case .changeAccount:
+            TVChangeAccountView()
         case .serverSetup:
             // Pushed from the server list's "Add Server" button — staying
             // on the nav stack means the tvOS back button returns to the

@@ -23,10 +23,11 @@ struct LoginView: View {
     var body: some View {
         // Leaving mid-sign-in would let the finished sign-in pull the app
         // back from server setup, so going back waits until it settles.
-        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { router.resetToServerSetup() }) {
+        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { leave() }) {
             MarqueeTopBar {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Change server") {
-                    router.resetToServerSetup()
+                MarqueeIconButton(systemImage: "chevron.left",
+                                  accessibilityLabel: router.canReturnToPicker ? "Back" : "Change server") {
+                    leave()
                 }
                 .disabled(viewModel.isBusy)
             } trailing: {
@@ -37,6 +38,7 @@ struct LoginView: View {
                 title: "Sign in",
                 // An expired session says why sign-in is back on screen.
                 lead: router.loginNotice?.message(serverName: server.serverName)
+                    ?? addingLead
                     ?? server.branding?.loginSubtitle ?? "Use your \(server.serverName) account."
             )
             options
@@ -50,6 +52,10 @@ struct LoginView: View {
         .task {
             MarqueeScene.shared.focus = .account
             MarqueeScene.shared.personalTint = nil
+            // An account signing in again starts with its username.
+            if viewModel.username.isEmpty, let prefill = router.signInPrefill {
+                viewModel.username = prefill
+            }
             await server.load()
         }
         .task {
@@ -76,6 +82,22 @@ struct LoginView: View {
     }
 
     static let noSignInText = "This server doesn't offer a sign-in this app can use. Sign in on the web, or ask the server's admin."
+
+    /// Back to the picker while another saved account can be chosen;
+    /// otherwise to server setup, as on a first sign-in.
+    private func leave() {
+        if router.canReturnToPicker {
+            router.returnToPicker()
+        } else {
+            router.resetToServerSetup()
+        }
+    }
+
+    /// Adding an account beside the ones already saved on this server.
+    private var addingLead: String? {
+        guard let request = router.accountSignIn, request.renewingAccountId == nil else { return nil }
+        return "Sign in with another \(server.serverName) account."
+    }
 
     private var serverMenu: some View {
         Menu {

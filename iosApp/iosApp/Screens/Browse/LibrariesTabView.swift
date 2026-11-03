@@ -294,7 +294,6 @@ struct LibrariesTabView: View {
                 onSwitchProfile: {
                     router.switchProfile()
                 },
-                onSwitchServer: { router.navigate(to: .serverList) },
                 onSignOut: { router.signOutAndReset() }
             )
             .padding(.horizontal, SiloTheme.padding)
@@ -435,7 +434,6 @@ private struct LibrariesTopBar: View {
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
-    let onSwitchServer: () -> Void
     let onSignOut: () -> Void
 
     var body: some View {
@@ -455,7 +453,6 @@ private struct LibrariesTopBar: View {
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
-                onSwitchServer: onSwitchServer,
                 onSignOut: onSignOut
             )
         }

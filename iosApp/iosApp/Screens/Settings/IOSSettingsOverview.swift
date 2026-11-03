@@ -9,7 +9,6 @@ struct IOSSettingsOverview: View {
     let viewModel: SettingsViewModel
     let diagnosticsModel: DiagnosticsViewModel
     let uiCustomization: UICustomizationPreferences
-    @Binding var showSignOutConfirm: Bool
 
     @Environment(AppRouter.self) private var router
     @State private var navPrefs = AppNavPreferences.shared
@@ -83,9 +82,9 @@ struct IOSSettingsOverview: View {
         .onAppear(perform: navPrefs.refresh)
         .task { await accountSignIn.load() }
         .sheet(isPresented: $showsSignInTV) {
-            SignInTVView(onSwitchAccount: { server, link, choosingAccount in
+            SignInTVView(onAddAccount: { server, link, choosingAccount in
                 showsSignInTV = false
-                router.switchAccount(forTVApproval: link, on: server, choosingAccount: choosingAccount)
+                router.addAccount(forTVApproval: link, on: server, choosingAccount: choosingAccount)
             }, onClose: { showsSignInTV = false })
         }
     }
@@ -211,12 +210,12 @@ struct IOSSettingsOverview: View {
     private var connectionSection: some View {
         Section("Connection") {
             Button {
-                router.navigate(to: .serverList)
+                router.navigate(to: .accounts)
             } label: {
                 SettingsOverviewRow(
-                    title: "Server",
-                    subtitle: "Manage this device's Silo connection",
-                    systemImage: "server.rack",
+                    title: "Accounts",
+                    subtitle: "Servers and accounts on this device",
+                    systemImage: "person.2.fill",
                     value: viewModel.serverDisplayName,
                     showsChevron: true
                 )
@@ -313,8 +312,10 @@ struct IOSSettingsOverview: View {
 
     private var signOutSection: some View {
         Section {
+            // Signs out of the current account; the router confirms first,
+            // naming the account, its server, and its downloads.
             Button("Sign Out", role: .destructive) {
-                showSignOutConfirm = true
+                router.signOutAndReset()
             }
             .frame(maxWidth: .infinity)
             .foregroundStyle(Color.red)
@@ -355,7 +356,7 @@ struct IOSSettingsOverview: View {
     }
 
     private var matchesConnectionSection: Bool {
-        matches("server", "connection", viewModel.serverDisplayName) || matchesSignInTV
+        matches("server", "connection", "account", "sign out", viewModel.serverDisplayName) || matchesSignInTV
     }
 
     private var matchesAboutSection: Bool {

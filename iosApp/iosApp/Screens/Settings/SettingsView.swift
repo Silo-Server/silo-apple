@@ -16,7 +16,6 @@ struct SettingsView: View {
     @State private var viewModel = SettingsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(AppRouter.self) private var router
-    @State private var showSignOutConfirm = false
     #if os(iOS)
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
@@ -33,14 +32,6 @@ struct SettingsView: View {
             macOSBody
             #endif
         }
-        .alert("Sign Out", isPresented: $showSignOutConfirm) {
-            Button("Sign Out", role: .destructive) {
-                router.signOutAndReset()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Are you sure you want to sign out?")
-        }
     }
     #endif
 
@@ -49,8 +40,7 @@ struct SettingsView: View {
         IOSSettingsOverview(
             viewModel: viewModel,
             diagnosticsModel: diagnosticsModel,
-            uiCustomization: uiCustomization,
-            showSignOutConfirm: $showSignOutConfirm
+            uiCustomization: uiCustomization
         )
         .task {
             await viewModel.loadSettings()
@@ -213,12 +203,12 @@ struct SettingsView: View {
     private var connectionSection: some View {
         Section {
             Button {
-                router.navigate(to: .serverList)
+                router.navigate(to: .accounts)
             } label: {
                 HStack(spacing: 0) {
                     SettingsRowLabel(
-                        title: "Server",
-                        systemImage: "server.rack",
+                        title: "Accounts",
+                        systemImage: "person.2.fill",
                         color: .teal,
                         value: viewModel.serverDisplayName
                     )
@@ -284,8 +274,9 @@ struct SettingsView: View {
 
     private var signOutSection: some View {
         Section {
+            // The router confirms first, naming the account and its downloads.
             Button(role: .destructive) {
-                showSignOutConfirm = true
+                router.signOutAndReset()
             } label: {
                 Text("Sign Out")
                     .font(.siloBody.weight(.semibold))

@@ -24,9 +24,19 @@ struct ServerSetupView: View {
     }
 
     var body: some View {
-        MarqueeStage(scrim: .bottom, frostStart: 0.30) {
+        // With a saved account to go back to ("Add a server" from the
+        // picker), setup can be left again.
+        MarqueeStage(scrim: .bottom, frostStart: 0.30,
+                     onBack: router.canReturnToPicker && !viewModel.isLoading ? { router.returnToPicker() } : nil) {
             MarqueeTopBar {
-                SiloWordmarkView(width: 92)
+                if router.canReturnToPicker {
+                    MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back") {
+                        router.returnToPicker()
+                    }
+                    .disabled(viewModel.isLoading)
+                } else {
+                    SiloWordmarkView(width: 92)
+                }
             } trailing: { EmptyView() }
         } content: {
             MarqueeHeadline(title: "Connect to\nyour server", lead: "Type the address you use for Silo.")

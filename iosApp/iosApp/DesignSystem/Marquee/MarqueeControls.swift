@@ -329,11 +329,14 @@ struct MarqueeErrorText: View {
 // MARK: - Server identity
 
 /// The server's mark: its `mark_url` image when branding provides one,
-/// otherwise its initial on a warm tile, otherwise a server glyph.
+/// otherwise its initial on a warm tile, otherwise a server glyph. With
+/// `fallsBackToProjectIcon`, the Silo project icon instead of the initial or
+/// glyph (Change Account, the saved-server lists, spec §4.1).
 struct MarqueeServerMark: View {
     var name: String?
     var imageURL: URL?
     var size: CGFloat = 48
+    var fallsBackToProjectIcon = false
 
     private static let initialGradient = [Color(hex: "#EAA65C"), Color(hex: "#A8521D"), Color(hex: "#5E290D")]
     private static let initialInk = Color(hex: "#FFF6EA")
@@ -364,7 +367,12 @@ struct MarqueeServerMark: View {
 
     @ViewBuilder
     private var fallback: some View {
-        if let initial = name?.trimmingCharacters(in: .whitespaces).first {
+        if fallsBackToProjectIcon {
+            // The icon brings its own field; the rounder clip trims its corners.
+            Image("SiloProjectIcon")
+                .resizable()
+                .scaledToFill()
+        } else if let initial = name?.trimmingCharacters(in: .whitespaces).first {
             LinearGradient(
                 colors: Self.initialGradient,
                 startPoint: .topLeading, endPoint: .bottomTrailing
@@ -382,6 +390,15 @@ struct MarqueeServerMark: View {
                         .foregroundStyle(Color.siloOnSurface.opacity(0.62))
                 )
         }
+    }
+}
+
+extension MarqueeServerMark {
+    /// A saved server's mark: its cached branding logo, else the Silo
+    /// project icon, never its initial.
+    init(server: ServerEntry, size: CGFloat) {
+        self.init(imageURL: ServerBrandingCache.branding(for: server.url)?.markURL, size: size,
+                  fallsBackToProjectIcon: true)
     }
 }
 

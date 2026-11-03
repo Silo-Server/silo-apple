@@ -71,7 +71,12 @@ struct ContentView: View {
     /// to sign-in; re-keying there would flash a fresh, empty setup screen
     /// between the two.
     private var authContentIdentity: String? {
-        router.authState == .needsServerSetup ? "serverSetup" : serverRegistry.activeServerId
+        if router.authState == .needsServerSetup { return "serverSetup" }
+        // Change Account switches server and account underneath the profile
+        // flow; the flow's root is rebuilt for the account that opens
+        // (`profileFlowRoot`) rather than the whole stack mid-switch.
+        if router.authState == .needsProfile { return "profileSelection" }
+        return serverRegistry.activeServerId
     }
 
     private var presentedContent: some View {
@@ -128,6 +133,7 @@ struct ContentView: View {
         } message: {
             Text(router.accountActionError ?? "")
         }
+        .modifier(AccountRemovalConfirmationModifier(router: router))
         #if !os(tvOS)
         .alert(LegacyDownloadStorage.noticeMessage, isPresented: Binding(
             get: {
@@ -157,9 +163,9 @@ struct ContentView: View {
                 // Sign in to that saved server again, then come back here.
                 deviceApprovalLink = nil
                 router.signIn(forTVApproval: pending, on: server)
-            }, onSwitchAccount: { server, pending, choosingAccount in
+            }, onAddAccount: { server, pending, choosingAccount in
                 deviceApprovalLink = nil
-                router.switchAccount(forTVApproval: pending, on: server, choosingAccount: choosingAccount)
+                router.addAccount(forTVApproval: pending, on: server, choosingAccount: choosingAccount)
             }, onClose: { deviceApprovalLink = nil })
         }
         #endif
@@ -220,9 +226,8 @@ struct ContentView: View {
                 guard await TokenStore.shared.shouldConsumeSessionExpiryEvent(event) else { return }
                 audioStore.dismissFullPlayer()
                 Task { await audioStore.player.close() }
-                #if !os(tvOS)
-                DownloadManager.shared.clearForSignOut()
-                #endif
+                // Not a sign-out: the account stays saved, waiting to sign in
+                // again, and its downloads stay (spec §4.4).
                 router.expiredSession()
             }
         }
@@ -352,7 +357,7 @@ struct ContentView: View {
             #if os(iOS)
             if router.authState == .authenticated || router.authState == .needsProfile {
                 // A TV approval that waited for this sign-in ("Sign in",
-                // "Not you? Switch account", or a newly added server).
+                // "Not you?" › another account, or a newly added server).
                 // Approval is account-level, so it reopens before a profile
                 // is picked; other links still wait for one.
                 if let link = router.takePendingDeviceApproval() {
@@ -863,12 +868,28 @@ struct ContentView: View {
 
     private var profileSelection: some View {
         NavigationStack(path: $router.path) {
-            ProfileSelectionView(router: router)
+            profileFlowRoot
                 .navigationDestination(for: Route.self) { route in
                     profileFlowDestination(for: route)
                 }
         }
         .environment(router)
+    }
+
+    /// The open account's "Who's watching?", or Change Account while no
+    /// account is open and another can be chosen (spec §4.1).
+    @ViewBuilder
+    private var profileFlowRoot: some View {
+        if router.authState == .needsProfile, router.showsChangeAccountRoot {
+            #if os(tvOS)
+            TVChangeAccountView()
+            #else
+            ChangeAccountView()
+            #endif
+        } else {
+            ProfileSelectionView(router: router)
+                .id(router.profileFlowRevision)
+        }
     }
 
     /// The splash always plays to the end. It also stays up while the stored
@@ -1511,6 +1532,18 @@ struct ContentView: View {
         switch route {
         case .serverList:
             ServerListView()
+        case .accounts:
+            #if os(tvOS)
+            TVAccountsSettingsView()
+            #else
+            AccountsSettingsView()
+            #endif
+        case .changeAccount:
+            #if os(tvOS)
+            TVChangeAccountView()
+            #else
+            ChangeAccountView()
+            #endif
         case .serverSetup:
             #if os(tvOS)
             TVServerSetupView(router: router)
@@ -2759,7 +2792,6 @@ struct MainTabView: View {
                     onOpenSettings: { router.navigate(to: .settings) },
                     onOpenRequests: { router.navigate(to: .requestsHub) },
                     onSwitchProfile: { router.switchProfile() },
-                    onSwitchServer: { router.navigate(to: .serverList) },
                     onSignOut: { router.signOutAndReset() },
                     axis: .vertical
                 )
@@ -3207,6 +3239,18 @@ struct MainTabView: View {
             SettingsView()
         case .serverList:
             ServerListView()
+        case .accounts:
+            #if os(tvOS)
+            TVAccountsSettingsView()
+            #else
+            AccountsSettingsView()
+            #endif
+        case .changeAccount:
+            #if os(tvOS)
+            TVChangeAccountView()
+            #else
+            ChangeAccountView()
+            #endif
         case .offlinePlayer(let downloadId, let contentId, let startFromBeginning, let resumePosition):
             #if os(macOS)
             PlayerView(

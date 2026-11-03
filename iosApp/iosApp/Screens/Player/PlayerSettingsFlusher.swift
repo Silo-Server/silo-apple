@@ -85,11 +85,22 @@ final class SiloPlayerSettingsTransport: PlayerSettingsTransport {
         value: SettingJSONValue,
         profileId: String?
     ) async throws {
-        try await api.putValue(key: key, scope: scope.identity, value: value, profileId: profileId)
+        try await api.putValue(key: key, scope: scope.identity, value: value, profileId: profileId,
+                               requestIdentity: Self.pinnedIdentity(profileId: profileId))
     }
 
     func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?) async throws {
-        try await api.deleteValue(key: key, scope: scope.identity, profileId: profileId)
+        try await api.deleteValue(key: key, scope: scope.identity, profileId: profileId,
+                                  requestIdentity: Self.pinnedIdentity(profileId: profileId))
+    }
+
+    /// The account active as the flusher hands over a write it just checked
+    /// against the active scope. Profile IDs repeat across accounts, so the
+    /// request is refused if another account is selected before it is sent.
+    private static func pinnedIdentity(profileId: String?) -> HTTPRequestIdentity? {
+        guard let identity = HTTPRequestIdentity.activeProfile(),
+              profileId == nil || identity.profileId == profileId else { return nil }
+        return identity
     }
 }
 

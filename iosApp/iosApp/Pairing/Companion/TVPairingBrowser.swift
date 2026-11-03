@@ -18,6 +18,9 @@ struct DiscoveredTV: Identifiable, Equatable {
     /// Found as `_silopair-roku._tcp`: dialed over plain TCP, and signed in
     /// to one server only.
     var isRoku = false
+    /// TXT `acct=1`: the TV keeps several accounts per server, so the phone
+    /// sends every account it holds on a chosen server.
+    var acceptsSeveralAccounts = false
     // id-only equality is intentional: `sid`/`state` changes are surfaced via the
     // Optional nil↔value transition in CompanionPairingCardModifier's onChange latch,
     // not by field equality. Don't make this field-sensitive without revisiting that.
@@ -138,7 +141,8 @@ final class TVPairingBrowser {
         let id = txt[Key.deviceId] ?? "\(endpoint)"
         return DiscoveredTV(id: id, name: name, state: state, endpoint: endpoint, sid: txt[Key.sessionNonce],
             serverIdentity: ServerIdentity.usable(txt[Key.serverIdentity]),
-            isRoku: serviceType == PairingProtocol.rokuServiceType)
+            isRoku: serviceType == PairingProtocol.rokuServiceType,
+            acceptsSeveralAccounts: txt[Key.acceptsAccounts] == "1")
     }
 }
 #endif

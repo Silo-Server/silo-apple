@@ -28,8 +28,7 @@ struct TopShelfHTTPClient {
     }
 
     let defaults: SharedDefaults
-    let accountKeychain: SharedKeychain
-    let profileKeychain: SharedKeychain
+    let accounts: AccountStore
     let session: URLSession
     /// Read once by `authenticated()` so each request skips the keychain.
     private var credentials: Credentials?
@@ -37,6 +36,7 @@ struct TopShelfHTTPClient {
     /// The account and profile a set of credentials was read for.
     private struct Scope: Equatable {
         let serverID: String
+        let localAccountID: String
         let profileID: String?
         let accountEpoch: String?
     }
@@ -87,25 +87,32 @@ struct TopShelfHTTPClient {
          keychain: SharedKeychain = SharedKeychain(),
          session: URLSession = TopShelfHTTPClient.defaultSession) {
         self.defaults = defaults
-        self.accountKeychain = keychain.withAudience(.userIndependent)
-        self.profileKeychain = keychain.withAudience(.currentUser)
+        self.accounts = AccountStore(keychain: keychain, defaults: defaults)
         self.session = session
     }
 
+    /// The current device user's active account: the one this user (on
+    /// Apple TV, this Apple TV user) selected on their active server. Never
+    /// another account on that server, such as the one another Apple TV user
+    /// used last. Nil without a selection, while it needs signing in again,
+    /// and when it can't be read.
+    private func activeAccount() -> Account? {
+        guard let scope = AccountScope.current(defaults: defaults),
+              let account = try? accounts.account(scope.localAccountId, onServer: scope.serverId),
+              account.isSignedIn else { return nil }
+        return account
+    }
+
     var isPersonalizedContentAllowed: Bool {
-        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else {
-            return false
-        }
+        guard let account = activeAccount() else { return false }
         let state = ProfileLaunchState.load(from: defaults)
         return TopShelfProfilePolicy.allowsPersonalizedContent(
             state: state,
-            serverID: serverID,
+            localAccountID: account.localAccountId,
             activeProfileID: defaults.string(forKey: SharedStorage.profileIdKey),
-            accountEpoch: accountKeychain.get(
-                SharedStorage.accountEpochAccount(for: serverID)
-            ),
-            hasStoredProfileToken: profileKeychain.get(
-                SharedStorage.profileTokenAccount(for: serverID)
+            accountEpoch: account.epoch?.uuidString,
+            hasStoredProfileToken: accounts.profileToken(
+                for: account.localAccountId, onServer: account.serverId
             ) != nil
         )
     }
@@ -119,33 +126,41 @@ struct TopShelfHTTPClient {
     }
 
     private func currentScope() -> Scope? {
-        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else { return nil }
-        return Scope(
-            serverID: serverID,
+        guard let account = activeAccount() else { return nil }
+        return scope(of: account)
+    }
+
+    private func scope(of account: Account) -> Scope {
+        Scope(
+            serverID: account.serverId,
+            localAccountID: account.localAccountId,
             profileID: defaults.string(forKey: SharedStorage.profileIdKey),
-            accountEpoch: accountKeychain.get(SharedStorage.accountEpochAccount(for: serverID))
+            accountEpoch: account.epoch?.uuidString
         )
     }
 
-    /// A copy carrying the active server's credentials, or nil without an
+    /// A copy carrying the active account's credentials, or nil without an
     /// access token. Check `isPersonalizedContentAllowed` first.
     func authenticated() -> TopShelfHTTPClient? {
-        guard let scope = currentScope(),
+        guard let account = activeAccount(),
+              let accessToken = account.accessToken,
               let serverURL = defaults.string(forKey: SharedStorage.serverUrlKey),
               !serverURL.isEmpty,
-              let accessToken = accountKeychain.get(SharedStorage.accessTokenAccount(for: scope.serverID))
+              // The bearer only goes to the address the account was saved
+              // for. The app stores both normalized (`ServerRegistry.normalize`).
+              serverURL == account.origin
         else { return nil }
-        let serverID = scope.serverID
+        let scope = self.scope(of: account)
         var client = self
         client.credentials = Credentials(
             scope: scope,
             serverURL: serverURL,
             tokens: AccessTokenSlot(
                 accessToken: accessToken,
-                refreshToken: accountKeychain.get(SharedStorage.refreshTokenAccount(for: serverID))
+                refreshToken: account.refreshToken
             ),
             profileID: scope.profileID,
-            profileToken: profileKeychain.get(SharedStorage.profileTokenAccount(for: serverID))
+            profileToken: accounts.profileToken(for: account.localAccountId, onServer: account.serverId)
         )
         return client
     }

@@ -144,7 +144,7 @@ final class EpisodeSpoilerPreferences {
         self.defaults = defaults
         self.transport = transport
         self.requestIdentity = requestIdentity
-        loadCache(for: requestIdentity().map(Self.cacheKey(for:)))
+        loadCache(for: requestIdentity().map(adoptedCacheKey(for:)))
     }
 
     // MARK: Reading
@@ -157,7 +157,7 @@ final class EpisodeSpoilerPreferences {
         // adopts the new identity still observes the store and redraws when
         // the server's answer arrives.
         let loaded = values
-        let key = requestIdentity().map(Self.cacheKey(for:))
+        let key = requestIdentity().map(adoptedCacheKey(for:))
         guard key != loadedCacheKey else { return loaded }
         return key.flatMap(cachedValues(for:))
     }
@@ -174,7 +174,7 @@ final class EpisodeSpoilerPreferences {
             return
         }
         let context = OperationContext(
-            cacheKey: Self.cacheKey(for: identity),
+            cacheKey: adoptedCacheKey(for: identity),
             requestIdentity: identity
         )
         loadCache(for: context.cacheKey)
@@ -243,7 +243,7 @@ final class EpisodeSpoilerPreferences {
               var next = values,
               let identity = requestIdentity() else { return }
         let context = OperationContext(
-            cacheKey: Self.cacheKey(for: identity),
+            cacheKey: adoptedCacheKey(for: identity),
             requestIdentity: identity
         )
         guard context.cacheKey == loadedCacheKey, next[setting] != isOn else { return }
@@ -396,7 +396,15 @@ final class EpisodeSpoilerPreferences {
         }
     }
 
+    /// `silo.episodeSpoilers.v2.<server>.<account>.<profile>`. Top Shelf
+    /// reads the same key (`EpisodeSpoilerCache`).
     static func cacheKey(for identity: HTTPRequestIdentity) -> String {
-        EpisodeSpoilerCache.key(serverId: identity.serverId, profileId: identity.profileId)
+        identity.accountScopedKey(EpisodeSpoilerCache.prefix)
+    }
+
+    /// `cacheKey(for:)`, after the legacy owner takes over the cache saved
+    /// before accounts.
+    private func adoptedCacheKey(for identity: HTTPRequestIdentity) -> String {
+        identity.adoptedAccountScopedKey(EpisodeSpoilerCache.prefix, defaults: defaults)
     }
 }

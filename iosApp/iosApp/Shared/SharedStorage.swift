@@ -66,6 +66,23 @@ enum SharedStorage {
     static let applePushDisplayTokenExpiresAtKey = "applePush.displayTokenExpiresAt"
     static let applePushDisplayTokenServerIdKey = "applePush.displayTokenServerId"
 
+    /// The saved-account index and its backup copy (`AccountIndex`), in the
+    /// user-independent keychain.
+    static let accountIndexAccount = keychainAccountPrefix + "accounts.v1"
+    static let accountIndexBackupAccount = keychainAccountPrefix + "accounts.v1.backup"
+
+    /// One saved account (`Account`), in the user-independent keychain.
+    static func accountRecordAccount(serverID: String, localAccountID: String) -> String {
+        keychainAccountPrefix + "signIn.v1.\(serverID).\(localAccountID)"
+    }
+
+    /// The current device user's profile verification proof for one account.
+    static func accountProfileTokenAccount(serverID: String, localAccountID: String) -> String {
+        keychainAccountPrefix + "signIn.v1.\(serverID).\(localAccountID).profileToken"
+    }
+
+    // Per-server credential slots from before accounts. Only
+    // `AccountMigration` reads them.
     static func accessTokenAccount(for serverID: String) -> String {
         keychainAccountPrefix + "\(serverID).accessToken"
     }
@@ -88,6 +105,12 @@ enum SharedStorage {
     static let serverUrlKey = "serverUrl"
     static let activeServerIdKey = "activeServerId"
     static let profileIdKey = "profileId"
+    /// The selected account (`AccountSelection`). On tvOS, like the two keys
+    /// above, it belongs to the current Apple TV user.
+    static let activeAccountKey = "activeAccount.v1"
+    /// Set once this device user's profile proofs and remembered profiles
+    /// from before accounts have moved onto accounts (`AccountMigration`).
+    static let accountUserStateAdoptedKey = "accountUserStateAdopted.v1"
     static let profileLaunchStateKey = "profileLaunchState.v1"
 
     /// Breadcrumb keys the Top Shelf extension writes after each run.
@@ -234,6 +257,23 @@ struct SharedDefaults: @unchecked Sendable {
 
     func containsObject(forKey key: String) -> Bool {
         suite.object(forKey: key) != nil || standard.object(forKey: key) != nil
+    }
+
+    func object(forKey key: String) -> Any? {
+        suite.object(forKey: key) ?? standard.object(forKey: key)
+    }
+
+    /// Any property-list value, for code that moves values whose type it
+    /// doesn't know.
+    func setObject(_ value: Any, forKey key: String) {
+        suite.set(value, forKey: key)
+        standard.set(value, forKey: key)
+    }
+
+    /// Every key either domain holds (the standard domain includes global
+    /// and registered keys).
+    var allKeys: Set<String> {
+        Set(suite.dictionaryRepresentation().keys).union(standard.dictionaryRepresentation().keys)
     }
 
     func set(_ value: String?, forKey key: String) {
