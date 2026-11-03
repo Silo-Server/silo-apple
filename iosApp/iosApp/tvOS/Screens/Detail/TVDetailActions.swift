@@ -592,11 +592,14 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
 
     /// Play stands in for an action that cannot take focus: Start Over once
     /// the episode is no longer in progress, or a selector disabled while a
-    /// newly focused episode's versions load.
+    /// newly focused episode's versions load. Watchlist, always enabled,
+    /// stands in for Play while Series episodes are still loading.
     private var entryAction: TVDetailAction {
-        if lastFocusedAction == .startOver, onStartOver == nil { return .play }
-        if disabledActions.contains(lastFocusedAction) { return .play }
-        return lastFocusedAction
+        var action = lastFocusedAction
+        if action == .startOver, onStartOver == nil { action = .play }
+        if disabledActions.contains(action) { action = .play }
+        if action == .play, playTitle == nil { return .watchlist }
+        return action
     }
 
     private func resetInitialPlayFocus() {
