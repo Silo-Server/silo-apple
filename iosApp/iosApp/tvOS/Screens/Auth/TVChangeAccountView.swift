@@ -213,8 +213,8 @@ struct TVChangeAccountView: View {
         } label: {
             TVAccountCardLabel(
                 initial: "+",
-                title: server.offersSignIn ? "Sign in" : AddChoice.account.title,
-                detail: server.offersSignIn ? server.signInDetail : server.addAccountDetail
+                title: AddChoice.account.title,
+                detail: server.addAccountDetail
             ) {
                 EmptyView()
             }

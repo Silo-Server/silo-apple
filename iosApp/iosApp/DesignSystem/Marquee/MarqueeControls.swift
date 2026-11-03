@@ -523,7 +523,8 @@ struct MarqueeBadge: View {
     #endif
 }
 
-/// Compact server capsule for the top bar.
+/// Compact server capsule for the top bar. Its mark is the server's logo,
+/// else the Silo project icon, never the initial.
 struct MarqueeServerChipLabel: View {
     let name: String
     var markURL: URL?
@@ -531,7 +532,7 @@ struct MarqueeServerChipLabel: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            MarqueeServerMark(name: name, imageURL: markURL, size: markSize)
+            MarqueeServerMark(imageURL: markURL, size: markSize, fallsBackToProjectIcon: true)
             Text(name)
                 .font(.system(size: font, weight: .semibold))
                 .foregroundStyle(Color.siloOnSurface)

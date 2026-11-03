@@ -46,7 +46,7 @@ struct TVAccountsSettingsView: View {
                 }
                 .padding(.top, 18)
 
-                Text("Signing out of an account removes it and its settings from this Apple TV. Its server stays saved.")
+                Text("Signing out of an account removes it and its settings from this Apple TV. Signing out of a server's only account removes the server too.")
                     .font(.system(size: 20))
                     .foregroundStyle(Color.siloSecondaryText)
                     .padding(.horizontal, 24)

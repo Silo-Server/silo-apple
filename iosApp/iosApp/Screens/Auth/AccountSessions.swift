@@ -114,6 +114,31 @@ enum AccountSessions {
         return removed
     }
 
+    /// Whether no account, signed in or waiting to sign in again, is saved
+    /// on `serverId`. False when the account index can't be read or the
+    /// accounts aren't migrated yet, so a server is never removed on a guess.
+    static func hasNoAccounts(onServer serverId: String) -> Bool {
+        guard let index = try? AccountStore.shared.loadIndex(), index.legacySessionsMigrated else { return false }
+        return !index.entries.contains { $0.serverId == serverId }
+    }
+
+    /// Removes saved servers with no account on them: a server isn't kept
+    /// once its last account is gone (spec §4.4). Earlier builds kept one
+    /// after a sign-out, and the migration makes accounts only from saved
+    /// sessions. Runs at launch, after the migration and the duplicate-server
+    /// merge (`ServerRegistry.init`), before the route is read. The active
+    /// server stays while no account is signed in, since launch opens its
+    /// sign-in. Such a server has no session to revoke.
+    static func removeServersWithoutAccounts() async {
+        let registry = ServerRegistry.shared
+        let activeId = registry.activeServerId
+        let keepsActive = AppRouter.signedOutDestination(activeServerId: activeId) != .changeAccount
+        for entry in registry.entries where hasNoAccounts(onServer: entry.id) {
+            if keepsActive, entry.id == activeId { continue }
+            _ = await removeServer(entry.id)
+        }
+    }
+
     /// How many downloads `localAccountId` keeps on this device, for the
     /// sign-out confirmation. Nil where there are no downloads (tvOS).
     static func downloadSummary(account localAccountId: String, onServer serverId: String) async -> DownloadAccountSummary? {

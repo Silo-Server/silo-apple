@@ -105,7 +105,7 @@ struct LoginView: View {
         Menu {
             Section(server.hostLabel) {
                 Button {
-                    router.resetToServerSetup()
+                    router.leaveSignInForServerSetup()
                 } label: {
                     Label("Use a different server", systemImage: "server.rack")
                 }

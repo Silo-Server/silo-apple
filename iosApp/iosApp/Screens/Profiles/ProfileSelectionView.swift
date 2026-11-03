@@ -307,9 +307,7 @@ struct ProfileSelectionView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             MarqueeTopBar {
                 SiloWordmarkView(width: 92)
-            } trailing: {
-                serverChip
-            }
+            } trailing: { EmptyView() }
             .padding(.horizontal, 24)
             .padding(.top, 6)
         }
@@ -342,28 +340,6 @@ struct ProfileSelectionView: View {
             .opacity(viewModel.accountName == nil ? 0 : 1)
             .animation(.easeOut(duration: 0.25), value: viewModel.accountName)
     }
-
-    #if !os(tvOS)
-    private var serverChip: some View {
-        let serverURL = AuthService.shared.serverUrl
-        let branding = ServerBrandingCache.branding(for: serverURL)
-        let name = ServerBranding.displayName(branding, serverURL: serverURL)
-        return Menu {
-            Section(ServerBranding.hostLabel(serverURL)) {
-                Button {
-                    router.showChangeAccount()
-                } label: {
-                    Label("Change Account", systemImage: "person.2")
-                }
-            }
-        } label: {
-            MarqueeServerChipLabel(name: name, markURL: branding?.markURL)
-        }
-        .menuStyle(.button)
-        .buttonStyle(.marqueePressable)
-        .accessibilityLabel("\(name), server. Double-tap to change account.")
-    }
-    #endif
 
     /// Changing account and signing out are utilities, kept small and below
     /// the people. Signing out asks first, naming the account and server.

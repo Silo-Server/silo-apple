@@ -1,14 +1,13 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Change Account on iPhone, iPad and Mac (spec §4.1): every saved account
-/// under its server's mark and name, the active server first. Each server
-/// ends in Add an account (or Sign in, when no account is left on it), and
-/// Add a server comes last. A grouped list, so its section headers show
-/// which account is on which server and that there is more to scroll.
+/// Change Account on iPhone, iPad and Mac (spec §4.1): an inset grouped
+/// list with one section per server, the active server first. A checkmark
+/// marks the open account; swiping an account, or holding it, offers Sign
+/// Out. Each server ends in Add Account, and Add Server comes last.
 struct ChangeAccountView: View {
     @Environment(AppRouter.self) private var router
-    @State private var model = ChangeAccountModel()
+    @State private var model = ChangeAccountModel.shared
     @State private var directory = AccountDirectory.shared
 
     var body: some View {
@@ -21,17 +20,16 @@ struct ChangeAccountView: View {
                 Button {
                     model.addServer(router: router)
                 } label: {
-                    ChangeAccountActionLabel(
-                        title: AddChoice.server.title,
-                        detail: AddChoice.server.detail,
-                        systemImage: "plus"
-                    )
+                    ChangeAccountActionLabel(title: "Add Server")
                 }
-                .buttonStyle(.plain)
+            } footer: {
+                Text("\(AddChoice.server.detail).")
             }
             .listRowBackground(Color.siloGroupedCell)
         }
         .settingsListChrome()
+        // The app's tint, whichever screen opened this one.
+        .tint(.siloOnSurface)
         .disabled(model.isBusy)
         .navigationTitle("Change Account")
         .siloNavigationTitleDisplayMode(.inline)
@@ -50,117 +48,142 @@ struct ChangeAccountView: View {
                     ChangeAccountRowLabel(row: row, isOpening: model.openingAccountId == row.id)
                 }
                 .buttonStyle(.plain)
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    // Not `.destructive`: that removes the row at once, and it
+                    // would stay gone after Cancel in the confirmation.
+                    Button("Sign Out") { signOut(row) }
+                        .tint(.red)
+                }
+                .contextMenu {
+                    if row.needsSignIn {
+                        Button("Sign In Again", systemImage: "person.crop.circle.badge.exclamationmark") {
+                            model.choose(row, router: router)
+                        }
+                    }
+                    Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                        signOut(row)
+                    }
+                }
             }
 
             Button {
                 model.addAccount(on: server, router: router)
             } label: {
-                if server.offersSignIn {
-                    ChangeAccountActionLabel(title: "Sign in", detail: server.signInDetail,
-                                             systemImage: "person.crop.circle.badge.plus")
-                } else {
-                    ChangeAccountActionLabel(title: AddChoice.account.title, detail: server.addAccountDetail,
-                                             systemImage: "plus")
-                }
+                ChangeAccountActionLabel(title: "Add Account")
             }
-            .buttonStyle(.plain)
         } header: {
             ChangeAccountServerHeader(server: server.server)
         }
         .listRowBackground(Color.siloGroupedCell)
     }
+
+    /// Asks first, through the app's shared sign-out confirmation.
+    private func signOut(_ row: ChangeAccountRow) {
+        Task { await router.confirmSignOut(account: row.id, onServer: row.serverId) }
+    }
 }
 
-/// A server's mark and name above its accounts.
+/// A server's mark and name, as the section header above its accounts.
 private struct ChangeAccountServerHeader: View {
     let server: ServerEntry
+    @ScaledMetric(relativeTo: .footnote) private var markSize: CGFloat = 18
 
     var body: some View {
-        HStack(spacing: 10) {
-            MarqueeServerMark(server: server, size: 24)
+        HStack(spacing: 6) {
+            MarqueeServerMark(server: server, size: markSize)
+                .accessibilityHidden(true)
             Text(server.displayName)
-                .font(.siloSubheadline.weight(.semibold))
-                .foregroundColor(.siloOnSurface)
                 .lineLimit(1)
         }
         .textCase(nil)
-        .padding(.top, 6)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
     }
 }
 
-/// One account: its initial, username and profile count, and its badge.
+/// One account: its initial, username and a line under it (its profile
+/// count, or that it needs to sign in again), with a checkmark when open.
 private struct ChangeAccountRowLabel: View {
     let row: ChangeAccountRow
     let isOpening: Bool
+    @ScaledMetric(relativeTo: .body) private var avatarSize: CGFloat = ChangeAccountMetrics.leadingWidth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text(row.initial)
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundColor(.siloOnSurface)
-                .frame(width: 40, height: 40)
-                .background(Circle().fill(Color.white.opacity(0.12)))
-                .opacity(row.needsSignIn ? 0.55 : 1)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(row.username)
-                    .font(.siloSubheadline)
+        let identityLayout = ChangeAccountMetrics.leadingLayout(dynamicTypeSize)
+        HStack(spacing: ChangeAccountMetrics.spacing) {
+            identityLayout {
+                Text(row.initial)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundColor(.siloOnSurface)
-                    .lineLimit(1)
-                if let count = row.profileCount {
-                    Text(count)
-                        .font(.siloCaption)
-                        .foregroundColor(.siloSecondaryText)
-                        .lineLimit(1)
+                    .frame(width: avatarSize, height: avatarSize)
+                    .background(Circle().fill(Color.siloIconTile))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(row.username)
+                        .foregroundColor(.siloOnSurface)
+                        .lineLimit(2)
+                    if let detail {
+                        Text(detail)
+                            .font(.subheadline)
+                            .foregroundColor(row.needsSignIn ? .siloWarning : .siloSecondaryText)
+                    }
                 }
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
             }
             Spacer(minLength: 8)
             if isOpening {
                 ProgressView()
-                    .controlSize(.small)
-            } else if let badge = row.badge {
-                MarqueeBadge(
-                    text: badge.title,
-                    systemImage: badge.systemImage,
-                    warning: badge == .signInAgain
-                )
+            } else if row.isCurrent {
+                Image(systemName: "checkmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
             }
         }
-        .padding(.vertical, 4)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
         .accessibilityHint(row.accessibilityHint)
+    }
+
+    private var detail: String? {
+        row.needsSignIn ? ChangeAccountBadge.signInAgain.title : row.profileCount
     }
 }
 
-/// Add an account, Sign in, or Add a server: an icon, its title and a line.
+/// Add Account or Add Server: a plus in the avatar's column, so the
+/// title lines up with the usernames above it.
 private struct ChangeAccountActionLabel: View {
     let title: String
-    let detail: String
-    let systemImage: String
+    @ScaledMetric(relativeTo: .body) private var leadingWidth: CGFloat = ChangeAccountMetrics.leadingWidth
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.siloOnSurface)
-                .frame(width: 40, height: 40)
-                .background(Circle().strokeBorder(Color.white.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.siloSubheadline)
-                    .foregroundColor(.siloOnSurface)
-                Text(detail)
-                    .font(.siloCaption)
-                    .foregroundColor(.siloSecondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
+        let layout = ChangeAccountMetrics.leadingLayout(dynamicTypeSize)
+        layout {
+            Image(systemName: "plus")
+                .font(.body.weight(.semibold))
+                .frame(width: leadingWidth)
+                .accessibilityHidden(true)
+            Text(title)
+                .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
         }
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
+        .foregroundStyle(.tint)
+    }
+}
+
+/// The leading column shared by account rows and the add rows.
+private enum ChangeAccountMetrics {
+    static let leadingWidth: CGFloat = 32
+    static let spacing: CGFloat = 12
+
+    /// The leading column beside the text, or above it at accessibility
+    /// sizes, where a row is too narrow for both.
+    static func leadingLayout(_ size: DynamicTypeSize) -> AnyLayout {
+        size.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+            : AnyLayout(HStackLayout(spacing: spacing))
     }
 }
 #endif

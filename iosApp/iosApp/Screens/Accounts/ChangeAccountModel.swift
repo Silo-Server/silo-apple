@@ -13,13 +13,6 @@ enum ChangeAccountBadge: Equatable {
         case .signInAgain: "Sign in again"
         }
     }
-
-    var systemImage: String {
-        switch self {
-        case .current: "checkmark"
-        case .signInAgain: "exclamationmark.circle"
-        }
-    }
 }
 
 /// One saved account in Change Account.
@@ -51,12 +44,8 @@ struct ChangeAccountServer: Identifiable, Equatable {
 
     var id: String { server.id }
     var name: String { server.displayName }
-    /// No account left on the server: it shows one Sign in row instead.
-    var offersSignIn: Bool { rows.isEmpty }
     /// The line under Add an account.
     var addAccountDetail: String { "Sign in on \(name)" }
-    /// The line under a server's Sign in row.
-    var signInDetail: String { "No account on \(name) is saved on this \(DeviceNoun.current)" }
 }
 
 /// Builds Change Account's list (spec §4.1). Pure, so it draws offline and
@@ -101,6 +90,12 @@ final class ChangeAccountModel {
     /// The account being opened while its switch runs.
     private(set) var openingAccountId: String?
 
+    /// One model for every copy of the screen. Switching to an account on
+    /// another server switches the server first, which rebuilds the app
+    /// shell and with it Change Account; the rebuilt copy has to find the
+    /// switch still in progress, or it draws the half-switched list.
+    static let shared = ChangeAccountModel()
+
     private let directory: AccountDirectory
 
     init(directory: AccountDirectory? = nil) {
@@ -113,6 +108,8 @@ final class ChangeAccountModel {
     /// Rebuilds `servers`. `refreshingDirectory: false` when
     /// `AccountDirectory` just changed.
     func reload(refreshingDirectory: Bool = true) {
+        // Mid-switch the accounts are half moved; keep the list as chosen.
+        guard !isBusy else { return }
         if refreshingDirectory { directory.reload() }
         let built = ChangeAccountList.servers(
             ServerRegistry.shared.sortedEntries,
@@ -141,18 +138,20 @@ final class ChangeAccountModel {
         }
         openingAccountId = row.id
         Task {
-            defer { openingAccountId = nil }
             do {
+                // The picker has replaced this screen once this returns.
                 try await router.openAccount(row.id, onServer: row.serverId)
-            } catch is CancellationError {
+                openingAccountId = nil
             } catch {
+                openingAccountId = nil
+                guard !(error is CancellationError) else { return }
                 router.accountActionError = error.localizedDescription
                 reload()
             }
         }
     }
 
-    /// Add an account, or Sign in on a server with no account left.
+    /// Add an account on a saved server.
     func addAccount(on server: ChangeAccountServer, router: AppRouter) {
         guard !isBusy else { return }
         router.beginAddAccount(onServer: server.id, returningToChangeAccount: true)

@@ -1199,6 +1199,7 @@ struct ContentView: View {
     /// validation is cancelled and the local route stands, which keeps an
     /// offline launch from waiting on the network.
     private func checkInitialState() async {
+        await AccountSessions.removeServersWithoutAccounts()
         let local = await RestoredSessionAuthResolver.resolveLocal()
         guard !Task.isCancelled, router.authState == .loading else { return }
         commitInitialState(local.state)

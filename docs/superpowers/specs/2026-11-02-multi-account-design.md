@@ -72,7 +72,9 @@ picker. The following are gone from "Who's watching?": per-server sections, the 
 look-alike tiles, the "Sign in again" badge on tiles, the "Sign in" tile for a server with no
 account, and the background refresh of other accounts' profile lists.
 
-**"Who's watching?"** shows only the open account's profiles plus Add, as it does today. It uses the
+**"Who's watching?"** shows only the open account's profiles plus Add, as it does today. It has no
+server pill at the top (*amended 2026-11-03*); Change Account is reached from its footer and the
+avatar menu. It uses the
 account's cached profile list when the server can't be reached. PIN-protected profiles ask for the
 PIN, as now. The footer has **Change Account** where "Change server" used to be.
 
@@ -102,11 +104,19 @@ Apple TV                                              iPhone
     The last card is **Add an account**, with the line "Sign in on {server}".
   - Left and Right move between the rail and the pane; Up and Down move within each. A scroll
     affordance shows when either column has more rows.
-- **Phone, tablet and Mac:** use the same structure and wording in the platform's usual form.
-  Accounts are grouped under a header with the server mark and name. Each group ends in
-  **Add an account**, and **Add a server** is at the end. It should be obvious which account is on
-  which server, and that there is more to scroll.
-- **Server marks** (Change Account and the saved-servers list): the branding `mark_url` image when
+- **Phone, tablet and Mac** (*amended 2026-11-03: native list*): the platform's standard grouped
+  list in the app's settings style, with no custom cards or capsules.
+  - One section per server, headed by its small server mark and name.
+  - Account rows show the initial avatar, the username, and "3 profiles" (or "Sign in again" in
+    the warning colour) underneath. A trailing checkmark marks the open account.
+  - Swiping a row, or long-pressing it, offers Sign Out through the usual confirmation. Cancel
+    keeps the row.
+  - Each section ends in **Add Account**, and the last section is **Add Server**, with the footer
+    "Connect this {device} to another Silo server."
+  - Add rows and separators line up with the usernames. At accessibility text sizes the avatar
+    sits above the text.
+  - A switch keeps the list frozen and dimmed until the picker replaces it.
+- **Server marks** (Change Account, the saved-servers list and the sign-in screen's server label): the branding `mark_url` image when
   the server has one, otherwise the Silo project icon (silo-branding
   `logo/svg/silo-project-icon.svg`), never the initial.
 - **Choosing another account** makes it active on its server and opens its "Who's watching?". The
@@ -158,9 +168,10 @@ Because #981/#982 aligned this menu across platforms, both platforms change it i
 2. Deletes the account's tokens, cached profiles, local preferences, response caches and
    **downloads**.
 3. Unregisters the account's push installation.
-4. Removes the account. If it was the last account on that server, the server stays saved and
-   Change Account shows a **Sign in** row for it, so signing back in is one step. If another
-   account still has a session, Change Account shows; otherwise sign-in shows.
+4. Removes the account. If it was the server's last account, the server is removed too
+   (*amended 2026-11-03, owner decision*): a saved server never stays without an account. An
+   account that needs to sign in again still counts, so its server stays. If another account
+   still has a session, Change Account shows; otherwise sign-in shows.
 
 On TVs the confirmation is the app's own dialog, not a system alert, with **Cancel** focused by
 default: a system dialog that focused "Sign out" caused an accidental sign-out on a TV. On iPhone,
@@ -171,7 +182,12 @@ are downloads:
 
 > Sign out of **alex** on **Home**? This deletes 12 downloads (8.4 GB) from this iPhone.
 
-The dialog offers **Sign Out & Remove Server** only while that server has no other account.
+When it is the server's only account, the message adds "{server} will be removed from this
+{device}." There is no separate **Sign Out & Remove Server** choice.
+
+**Servers with no account** are removed in two more places: at launch (servers saved before
+multi-account whose session had been signed out, except one the app is signing in to), and when
+someone backs out of signing in to a server that has no account yet.
 
 **Remove a server** signs out of every account on it, then removes the server.
 
@@ -384,8 +400,8 @@ All of these belong to the separate user-picker design.
   and a downgrade-safe decode.
 - Isolation: two accounts on one server, both with a `default` profile. Downloads, preferences,
   caches and push must not cross between them.
-- Sign out: downloads removed, other accounts on the same server untouched, server kept with a
-  Sign in row in Change Account.
+- Sign out: downloads removed, other accounts on the same server untouched; signing out of a
+  server's last account removes the server; empty servers from before the upgrade are removed.
 - Expired credentials keep downloads; replacing with a different account asks first.
 - Picker and Change Account: offline render from cache, Automatic restoring a deleted profile,
   server marks with the Silo icon fallback, Cancel focused in the sign-out dialog.

@@ -24,12 +24,8 @@ struct AccountRemovalConfirmationModifier: ViewModifier {
                         title: request.title,
                         message: request.message ?? "",
                         confirmTitle: request.confirmTitle,
-                        additionalDestructiveTitle: request.alternative?.title,
                         cancel: cancel,
-                        confirm: { router.perform(request) },
-                        additionalDestructiveAction: request.alternative == nil
-                            ? nil
-                            : { router.perform(request, choosingAlternative: true) }
+                        confirm: { router.perform(request) }
                     )
                     .transition(.opacity)
                 }
@@ -43,11 +39,6 @@ struct AccountRemovalConfirmationModifier: ViewModifier {
                 presenting: router.pendingRemoval
             ) { request in
                 Button(request.confirmTitle, role: .destructive) { router.perform(request) }
-                if let alternative = request.alternative {
-                    Button(alternative.title, role: .destructive) {
-                        router.perform(request, choosingAlternative: true)
-                    }
-                }
                 Button(request.cancelTitle, role: .cancel, action: cancel)
             } message: { request in
                 if let message = request.message {

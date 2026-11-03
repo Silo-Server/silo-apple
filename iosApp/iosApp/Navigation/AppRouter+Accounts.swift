@@ -19,6 +19,8 @@ struct AccountSignInRequest: Equatable {
 struct AccountRemovalRequest: Identifiable, Equatable {
     enum Action: Equatable {
         case signOut(localAccountId: String)
+        /// Also signing out of the server's only account: a server with no
+        /// account isn't kept.
         case removeServer
         /// Keep the new sign-in and sign out of the old account.
         case replace(localAccountId: String)
@@ -30,14 +32,6 @@ struct AccountRemovalRequest: Identifiable, Equatable {
     let message: String?
     let confirmTitle: String
     let cancelTitle: String
-    /// A second destructive choice: "Sign Out & Remove Server" while the
-    /// account is the server's only one.
-    var alternative: Alternative? = nil
-
-    struct Alternative: Equatable {
-        let title: String
-        let action: Action
-    }
 
     var id: String {
         switch action {
@@ -96,21 +90,53 @@ extension AppRouter {
 
     /// Leaving sign-in without signing in: back where it started, else to
     /// Change Account while other accounts or servers are saved (as Android
-    /// routes), else to server setup.
+    /// routes), else to server setup. A server with no account goes first.
     func leaveSignIn() {
         if canReturnToPicker {
             returnToPicker()
-        } else if signInLeavesForChangeAccount {
-            showChangeAccount()
-        } else {
-            resetToServerSetup()
+            return
+        }
+        // Decided before the server goes, as the screen's Back title was.
+        let leavesForChangeAccount = signInLeavesForChangeAccount
+        removingActiveServerWithoutAccounts { [self] in
+            if leavesForChangeAccount {
+                showChangeAccount()
+            } else {
+                resetToServerSetup()
+            }
         }
     }
 
     /// Whether leaving sign-in goes to Change Account rather than server
-    /// setup: something besides this sign-in's account is saved.
+    /// setup: something besides this sign-in's account is saved. A server
+    /// with no account is removed on the way out, so only other servers count.
     var signInLeavesForChangeAccount: Bool {
-        AccountDirectory.shared.accounts.count > 1 || ServerRegistry.shared.entries.count > 1
+        let directory = AccountDirectory.shared
+        let servers = ServerRegistry.shared
+        if let serverId = servers.activeServerId, directory.accounts(onServer: serverId).isEmpty {
+            return servers.entries.count > 1
+        }
+        return directory.accounts.count > 1 || servers.entries.count > 1
+    }
+
+    /// Runs `next` once the active server is removed when no account is
+    /// saved on it, as after backing out of signing in to a server just
+    /// added: a server with no account isn't kept. The registry then makes
+    /// the most recently used server active. Otherwise runs `next` at once.
+    private func removingActiveServerWithoutAccounts(then next: @escaping () -> Void) {
+        guard let serverId = ServerRegistry.shared.activeServerId,
+              AccountSessions.hasNoAccounts(onServer: serverId) else {
+            next()
+            return
+        }
+        guard !isSigningOut else { return }
+        isSigningOut = true
+        Task {
+            defer { isSigningOut = false }
+            // When removal fails the server stays; leaving goes on as before.
+            _ = await AccountSessions.removeServer(serverId)
+            next()
+        }
     }
 
     /// The username the sign-in screen starts with: the account signing in
@@ -195,7 +221,7 @@ extension AppRouter {
     // MARK: - Sign-in
 
     /// Opens sign-in for `serverId` with the account's username filled in
-    /// (`renewing`), or a fresh sign-in on a server with no account left.
+    /// (`renewing`), or a fresh sign-in.
     /// The server becomes the active one first.
     func beginSignIn(onServer serverId: String, renewing localAccountId: String?,
                      returningToChangeAccount: Bool = false) {
@@ -214,21 +240,29 @@ extension AppRouter {
 
     /// Leaves sign-in or server setup: back to Change Account when the
     /// sign-in started there, else to the picker, or to Home when a profile
-    /// is still selected (the person backed out of adding).
+    /// is still selected (the person backed out of adding). A server added
+    /// on the way, with no account yet, is removed first.
     func returnToPicker() {
         let request = accountSignIn
         accountSignIn = nil
-        if request?.returnsToChangeAccount == true {
-            showChangeAccount()
-            return
+        removingActiveServerWithoutAccounts { [self] in
+            if request?.returnsToChangeAccount == true {
+                showChangeAccount()
+                return
+            }
+            if AuthService.shared.isLoggedIn, AuthService.shared.hasProfile {
+                resetAfterServerResolution(to: .authenticated)
+            } else {
+                pickerRequestedByPerson = true
+                resetAfterServerResolution(to: .needsProfile)
+            }
         }
-        // Adding a server may have made it the active one, with no account.
-        if AuthService.shared.isLoggedIn, AuthService.shared.hasProfile {
-            resetAfterServerResolution(to: .authenticated)
-        } else {
-            pickerRequestedByPerson = true
-            resetAfterServerResolution(to: .needsProfile)
-        }
+    }
+
+    /// "Use a different server" on sign-in: server setup, without the
+    /// server being left when it has no account.
+    func leaveSignInForServerSetup() {
+        removingActiveServerWithoutAccounts { [self] in resetToServerSetup() }
     }
 
     private func startSignIn(_ request: AccountSignInRequest) {
@@ -307,8 +341,9 @@ extension AppRouter {
     }
 
     /// Asks before signing out of an account, naming it, its server, and the
-    /// downloads that go with it (spec §4.4). While it is the server's only
-    /// account, the server can go with it.
+    /// downloads that go with it (spec §4.4). Signing out of the server's
+    /// only account removes the server too: a server with no account isn't
+    /// kept.
     func confirmSignOut(account localAccountId: String, onServer serverId: String) async {
         let directory = AccountDirectory.shared
         directory.reload()
@@ -318,28 +353,33 @@ extension AppRouter {
         let isOnlyAccount = directory.accounts(onServer: serverId).allSatisfy { $0.localAccountId == localAccountId }
         pendingRemoval = AccountRemovalRequest(
             serverId: serverId,
-            action: .signOut(localAccountId: localAccountId),
+            action: isOnlyAccount ? .removeServer : .signOut(localAccountId: localAccountId),
             title: "Sign out of \(account?.username ?? "this account") on \(serverName)?",
-            message: Self.signOutMessage(downloads: summary.flatMap {
-                AccountRemovalRequest.downloadsSentence(count: $0.count, bytes: $0.bytes)
-            }),
+            message: Self.signOutMessage(
+                removingServer: isOnlyAccount ? serverName : nil,
+                downloads: summary.flatMap {
+                    AccountRemovalRequest.downloadsSentence(count: $0.count, bytes: $0.bytes)
+                }
+            ),
             confirmTitle: "Sign Out",
-            cancelTitle: "Cancel",
-            alternative: isOnlyAccount
-                ? AccountRemovalRequest.Alternative(title: "Sign Out & Remove Server", action: .removeServer)
-                : nil
+            cancelTitle: "Cancel"
         )
     }
 
-    /// What signing out deletes. Apple TV also says what leaves and what
-    /// stays, as Roku and Android TV do.
-    private static func signOutMessage(downloads: String?) -> String? {
+    /// What signing out deletes, and the server when this is its only
+    /// account. Apple TV also says what leaves and what stays, as Roku and
+    /// Android TV do.
+    private static func signOutMessage(removingServer serverName: String?, downloads: String?) -> String? {
+        let device = DeviceNoun.current
         #if os(tvOS)
-        let leaves = "This account's profiles and settings leave this \(DeviceNoun.current). The server stays saved, so you can sign in again."
-        return [leaves, downloads].compactMap { $0 }.joined(separator: " ")
+        let leaves = serverName.map {
+            "This account's profiles and settings leave this \(device), and \($0) will be removed from it."
+        } ?? "This account's profiles and settings leave this \(device). The server stays saved, so you can sign in again."
         #else
-        return downloads
+        let leaves = serverName.map { "\($0) will be removed from this \(device)." }
         #endif
+        let message = [leaves, downloads].compactMap { $0 }.joined(separator: " ")
+        return message.isEmpty ? nil : message
     }
 
     /// Asks before removing a server, which signs out of every account on it.
@@ -370,12 +410,10 @@ extension AppRouter {
         )
     }
 
-    /// Runs a confirmed request: its action, or its alternative.
-    func perform(_ request: AccountRemovalRequest, choosingAlternative: Bool = false) {
+    /// Runs a confirmed request.
+    func perform(_ request: AccountRemovalRequest) {
         pendingRemoval = nil
-        let alternative = choosingAlternative ? request.alternative : nil
-        let action = alternative?.action ?? request.action
-        switch action {
+        switch request.action {
         case .signOut(let id), .replace(let id):
             signOut(account: id, onServer: request.serverId)
         case .removeServer:
@@ -392,16 +430,7 @@ extension AppRouter {
         accountActionError = nil
         Task {
             defer { isSigningOut = false }
-            #if os(tvOS)
-            // A phone's remote playback borrows this TV's identity; it ends
-            // before any account can sign out.
-            if await TokenStore.shared.hasTemporaryScope() {
-                guard await RemotePlaybackIdentityManager.shared.end() else {
-                    accountActionError = "Couldn't end remote playback. Try signing out again."
-                    return
-                }
-            }
-            #endif
+            guard await endRemotePlaybackBeforeSignOut() else { return }
             let requestAccountId = await TokenStore.shared.requestAccountId(onServer: serverId)
             let wasInUse = ServerRegistry.shared.activeServerId == serverId && requestAccountId == localAccountId
             let outcome = await AccountSessions.signOut(account: localAccountId, onServer: serverId)
@@ -426,12 +455,27 @@ extension AppRouter {
         }
     }
 
+    /// A phone's remote playback borrows this TV's identity; it ends before
+    /// any account can sign out. False when it couldn't end.
+    private func endRemotePlaybackBeforeSignOut() async -> Bool {
+        #if os(tvOS)
+        if await TokenStore.shared.hasTemporaryScope() {
+            guard await RemotePlaybackIdentityManager.shared.end() else {
+                accountActionError = "Couldn't end remote playback. Try signing out again."
+                return false
+            }
+        }
+        #endif
+        return true
+    }
+
     private func removeServer(_ serverId: String) {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
         Task {
             defer { isSigningOut = false }
+            guard await endRemotePlaybackBeforeSignOut() else { return }
             let wasActive = ServerRegistry.shared.activeServerId == serverId
             guard await AccountSessions.removeServer(serverId) else {
                 accountActionError = "Silo couldn't remove the saved server. Please try again."
