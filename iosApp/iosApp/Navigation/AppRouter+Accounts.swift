@@ -302,13 +302,26 @@ extension AppRouter {
             serverId: serverId,
             action: .signOut(localAccountId: localAccountId),
             title: "Sign out of \(account?.username ?? "this account") on \(serverName)?",
-            message: summary.flatMap { AccountRemovalRequest.downloadsSentence(count: $0.count, bytes: $0.bytes) },
+            message: Self.signOutMessage(downloads: summary.flatMap {
+                AccountRemovalRequest.downloadsSentence(count: $0.count, bytes: $0.bytes)
+            }),
             confirmTitle: "Sign Out",
             cancelTitle: "Cancel",
             alternative: isOnlyAccount
                 ? AccountRemovalRequest.Alternative(title: "Sign Out & Remove Server", action: .removeServer)
                 : nil
         )
+    }
+
+    /// What signing out deletes. Apple TV also says what leaves and what
+    /// stays, as Roku and Android TV do.
+    private static func signOutMessage(downloads: String?) -> String? {
+        #if os(tvOS)
+        let leaves = "This account's profiles and settings leave this \(DeviceNoun.current). The server stays saved, so you can sign in again."
+        return [leaves, downloads].compactMap { $0 }.joined(separator: " ")
+        #else
+        return downloads
+        #endif
     }
 
     /// Asks before removing a server, which signs out of every account on it.

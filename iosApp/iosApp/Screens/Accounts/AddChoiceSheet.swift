@@ -24,9 +24,20 @@ struct AddChoiceSheet: View {
                     .focused($focusedChoice, equals: choice)
                 }
             }
+            #if os(tvOS)
+            // A full-width row like the choices, as Roku draws it.
+            Button(action: onCancel) {
+                Text("Cancel")
+                    .font(.system(size: 26, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(AddChoiceRowStyle())
+            .padding(.top, spacing)
+            #else
             Button("Cancel", action: onCancel)
                 .buttonStyle(.marquee(.plain))
                 .padding(.top, spacing)
+            #endif
         }
         #if os(tvOS)
         // The picker under the sheet is disabled as it opens, so nothing is
@@ -45,13 +56,26 @@ struct AddChoiceSheet: View {
 
 private struct AddChoiceLabel: View {
     let choice: AddChoice
+    #if os(tvOS)
+    @Environment(\.isFocused) private var isFocused
+    #endif
 
     var body: some View {
         HStack(spacing: gap) {
             Image(systemName: choice.systemImage)
                 .font(.system(size: iconFont, weight: .medium))
                 .frame(width: iconSize, height: iconSize)
+                #if os(tvOS)
+                // Roku's glyph tile: it stays dark, its glyph light, on the
+                // focused row's white.
+                .foregroundStyle(Color.siloOnSurface)
+                .background(
+                    RoundedRectangle(cornerRadius: iconSize * 0.25, style: .continuous)
+                        .fill(isFocused ? Color.black.opacity(0.85) : Color.white.opacity(0.1))
+                )
+                #else
                 .background(Circle().fill(Color.white.opacity(0.1)))
+                #endif
             VStack(alignment: .leading, spacing: 2) {
                 Text(choice.title)
                     .font(.system(size: titleFont, weight: .semibold))

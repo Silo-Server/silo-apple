@@ -16,6 +16,12 @@ import SwiftUI
 /// written only to seed the screen, to cross on Select on a server, and on
 /// Menu from the pane, which returns to the rail as Settings does; Menu on
 /// the rail leaves the screen (see docs/tvos-focus.md).
+///
+/// Drawn as Roku draws it (`AccountsScreen`, `ServerCard`), at the same
+/// sizes, since Roku's pixels and Apple TV's points are both 1920 wide: the
+/// first-run column under the Silo wordmark and an 88 pt headline, rail
+/// rows 520 wide and 88 tall, and account cards 760 wide and 128 tall, each
+/// a warm initial tile, the username over its profile count, and a badge.
 struct TVChangeAccountView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
@@ -42,16 +48,17 @@ struct TVChangeAccountView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-                .padding(.bottom, 36)
+                .padding(.bottom, Layout.formGap)
 
-            HStack(alignment: .top, spacing: 52) {
+            HStack(alignment: .top, spacing: Layout.paneGap) {
                 rail
-                    .frame(width: 520)
+                    .frame(width: Layout.railWidth)
                     .defaultFocus($railFocus, railEntry, priority: .userInitiated)
                     .focusSection()
 
                 pane
-                    .frame(maxWidth: 900, maxHeight: .infinity, alignment: .topLeading)
+                    .frame(width: Layout.cardWidth)
+                    .frame(maxHeight: .infinity, alignment: .top)
                     .defaultFocus($paneFocus, paneEntry, priority: .userInitiated)
                     .focusSection()
                     .onExitCommand(perform: returnToRail)
@@ -59,10 +66,15 @@ struct TVChangeAccountView: View {
             .frame(maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .safeAreaPadding(.horizontal, SiloTheme.Skyline.safeAreaX)
-        .safeAreaPadding(.top, 56)
-        .safeAreaPadding(.bottom, 44)
-        .background(SettingsBackdrop())
+        // The first-run screens' margins (MarqueeTVScreen).
+        .padding(.horizontal, 90)
+        .padding(.top, 60)
+        .padding(.bottom, 44)
+        .ignoresSafeArea()
+        .background {
+            MarqueeBackdrop()
+            MarqueeScrim(style: .leading)
+        }
         .onAppear(perform: seedFocus)
         .task { model.reload() }
         .onChange(of: directory.accounts) { _, _ in
@@ -89,66 +101,69 @@ struct TVChangeAccountView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Change Account")
-                .font(.system(size: 48, weight: .bold))
+        VStack(alignment: .leading, spacing: 0) {
+            SiloWordmarkView(width: 150)
+                .frame(height: 64)
+                .padding(.bottom, 30)
+            Text("Change account")
+                .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))
                 .foregroundStyle(Color.siloOnSurface)
                 .accessibilityAddTraits(.isHeader)
-            Text("Choose a server, then the account to use on it.")
-                .font(.system(size: 22))
-                .foregroundStyle(Color.siloSecondaryText)
+                .padding(.bottom, 22)
+            MarqueeTVBody("Choose a server, then the account to use on it.")
         }
-        .padding(.horizontal, 20)
     }
 
     // MARK: - Rail
 
     private var rail: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            TVOverflowColumn {
-                VStack(spacing: 8) {
-                    ForEach(model.servers) { server in
-                        serverRow(server)
-                    }
+        TVOverflowColumn {
+            VStack(spacing: Layout.railGap) {
+                ForEach(model.servers) { server in
+                    serverRow(server)
                 }
+                addServerRow
+                    .padding(.top, Layout.addServerGap - Layout.railGap)
             }
-
-            Button {
-                model.addServer(router: router)
-            } label: {
-                HStack(spacing: 18) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 26, weight: .semibold))
-                        .frame(width: 56, height: 56)
-                    Text("Add server")
-                        .font(.system(size: 26, weight: .medium))
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-            }
-            .buttonStyle(TVSettingsRailRowStyle())
-            .focused($railFocus, equals: .addServer)
-            .padding(.horizontal, 12)
         }
-        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private var addServerRow: some View {
+        Button {
+            model.addServer(router: router)
+        } label: {
+            railRowLabel("Add server") {
+                Image(systemName: "plus")
+                    .font(.system(size: 28, weight: .regular))
+                    .frame(width: Layout.railMark, height: Layout.railMark)
+            }
+        }
+        .buttonStyle(TVChangeAccountRailRowStyle())
+        .focused($railFocus, equals: .addServer)
     }
 
     private func serverRow(_ server: ChangeAccountServer) -> some View {
         Button {
             enterPane()
         } label: {
-            HStack(spacing: 18) {
-                MarqueeServerMark(server: server.server, size: 56)
-                Text(server.name)
-                    .font(.system(size: 26, weight: .medium))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
+            railRowLabel(server.name) {
+                MarqueeServerMark(server: server.server, size: Layout.railMark)
             }
             .accessibilityElement(children: .combine)
         }
-        .buttonStyle(TVSettingsRailRowStyle(isSelected: server.id == selectedServerId))
+        .buttonStyle(TVChangeAccountRailRowStyle(isSelected: server.id == selectedServerId))
         .focused($railFocus, equals: .server(server.id))
         .accessibilityAddTraits(server.id == selectedServerId ? .isSelected : [])
+    }
+
+    private func railRowLabel(_ title: String, @ViewBuilder mark: () -> some View) -> some View {
+        HStack(spacing: Layout.railTextGap) {
+            mark()
+            Text(title)
+                .font(.system(size: 25, weight: .medium))
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
     }
 
     // MARK: - Accounts pane
@@ -157,7 +172,7 @@ struct TVChangeAccountView: View {
     private var pane: some View {
         if let server = selectedServer {
             TVOverflowColumn {
-                VStack(spacing: 16) {
+                VStack(spacing: Layout.cardGap) {
                     ForEach(server.rows) { row in
                         accountCard(row)
                     }
@@ -173,35 +188,22 @@ struct TVChangeAccountView: View {
         Button {
             model.choose(row, router: router)
         } label: {
-            HStack(spacing: 24) {
-                Text(row.initial)
-                    .font(.system(size: 30, weight: .semibold))
-                    .frame(width: 72, height: 72)
-                    .background(Circle().fill(.quaternary))
-                    .opacity(row.needsSignIn ? 0.55 : 1)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(row.username)
-                        .font(.system(size: 28, weight: .semibold))
-                        .lineLimit(1)
-                    if let count = row.profileCount {
-                        Text(count)
-                            .font(.system(size: 21))
-                            .opacity(0.62)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 16)
+            TVAccountCardLabel(
+                initial: row.initial,
+                title: row.username,
+                detail: row.profileCount,
+                dimsMark: row.needsSignIn
+            ) {
                 if model.openingAccountId == row.id {
                     ProgressView()
                 } else if let badge = row.badge {
                     TVChangeAccountBadge(badge: badge)
                 }
             }
-            .padding(.vertical, 10)
             .accessibilityElement(children: .combine)
             .accessibilityHint(row.accessibilityHint)
         }
-        .buttonStyle(TVSettingsPaneRowStyle())
+        .buttonStyle(TVAccountCardStyle())
         .focused($paneFocus, equals: .account(row.id))
     }
 
@@ -209,28 +211,16 @@ struct TVChangeAccountView: View {
         Button {
             model.addAccount(on: server, router: router)
         } label: {
-            HStack(spacing: 24) {
-                Image(systemName: server.offersSignIn ? "person.crop.circle.badge.plus" : "plus")
-                    .font(.system(size: 28, weight: .semibold))
-                    .frame(width: 72, height: 72)
-                    .background(
-                        Circle().strokeBorder(.tertiary, style: StrokeStyle(lineWidth: 2, dash: [6, 5]))
-                    )
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(server.offersSignIn ? "Sign in" : AddChoice.account.title)
-                        .font(.system(size: 28, weight: .semibold))
-                        .lineLimit(1)
-                    Text(server.offersSignIn ? server.signInDetail : server.addAccountDetail)
-                        .font(.system(size: 21))
-                        .opacity(0.62)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
+            TVAccountCardLabel(
+                initial: "+",
+                title: server.offersSignIn ? "Sign in" : AddChoice.account.title,
+                detail: server.offersSignIn ? server.signInDetail : server.addAccountDetail
+            ) {
+                EmptyView()
             }
-            .padding(.vertical, 10)
             .accessibilityElement(children: .combine)
         }
-        .buttonStyle(TVSettingsPaneRowStyle())
+        .buttonStyle(TVAccountCardStyle())
         .focused($paneFocus, equals: .addAccount(server.id))
     }
 
@@ -302,30 +292,159 @@ struct TVChangeAccountView: View {
     }
 }
 
-/// "Current" or "Sign in again" beside an account. Drawn in the card's
-/// ink, so it stays legible on the white focus platter.
+/// Roku's `AccountsScreen` and `ServerCard` sizes, in points.
+private enum Layout {
+    static let formGap: CGFloat = 48
+    static let railWidth: CGFloat = 520
+    static let railRow: CGFloat = 88
+    static let railGap: CGFloat = 8
+    static let railMark: CGFloat = 56
+    static let railInset: CGFloat = 16
+    static let railTextGap: CGFloat = 18
+    static let addServerGap: CGFloat = 16
+    static let paneGap: CGFloat = 40
+    static let cardWidth: CGFloat = 760
+    static let cardGap: CGFloat = 16
+    static let cardPadding: CGFloat = 24
+    static let cardMark: CGFloat = 80
+    static let cardTextGap: CGFloat = 22
+    static let cardCorner: CGFloat = 30
+    static let cardFocusScale: CGFloat = 1.03
+}
+
+/// A server on the rail, or Add server: #EDEDED with black ink when
+/// focused, a dim fill while its accounts are shown.
+private struct TVChangeAccountRailRowStyle: ButtonStyle {
+    var isSelected = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        RowBody(configuration: configuration, isSelected: isSelected)
+    }
+
+    private struct RowBody: View {
+        let configuration: ButtonStyleConfiguration
+        let isSelected: Bool
+        @Environment(\.isFocused) private var isFocused
+
+        var body: some View {
+            configuration.label
+                .padding(.horizontal, Layout.railInset)
+                .frame(maxWidth: .infinity, minHeight: Layout.railRow, alignment: .leading)
+                .foregroundStyle(isFocused ? Color.black : Color.siloOnSurface)
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(fill))
+                .scaleEffect(configuration.isPressed ? 0.98 : 1)
+                .focusEffectDisabled()
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+        }
+
+        private var fill: Color {
+            if isFocused { return .siloOnSurface }
+            return isSelected ? .siloChromeSelectedFill : .clear
+        }
+    }
+}
+
+/// Roku's `ServerCard` (itself the first-run `MarqueeServerCard`): white 7%
+/// under a white 14% outline at rest; focused, #EDEDED, grown 3%.
+private struct TVAccountCardStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        CardBody(configuration: configuration)
+    }
+
+    private struct CardBody: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isFocused) private var isFocused
+
+        var body: some View {
+            let shape = RoundedRectangle(cornerRadius: Layout.cardCorner, style: .continuous)
+            configuration.label
+                .padding(Layout.cardPadding)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background {
+                    if isFocused {
+                        shape.fill(Color.siloOnSurface)
+                    } else {
+                        shape.fill(Color.white.opacity(0.07))
+                            .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+                            .siloGlass(in: shape)
+                    }
+                }
+                .scaleEffect(configuration.isPressed ? 0.98 : (isFocused ? Layout.cardFocusScale : 1))
+                .shadow(color: isFocused ? Color.black.opacity(0.45) : .clear, radius: 24, y: 12)
+                .focusEffectDisabled()
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
+        }
+    }
+}
+
+/// A card's content: the warm initial tile, a bold title over a faint
+/// line, and what trails it.
+private struct TVAccountCardLabel<Trailing: View>: View {
+    let initial: String
+    let title: String
+    let detail: String?
+    var dimsMark = false
+    @ViewBuilder let trailing: () -> Trailing
+    @Environment(\.isFocused) private var isFocused
+
+    private var ink: Color { isFocused ? .black : .siloOnSurface }
+
+    var body: some View {
+        HStack(spacing: Layout.cardTextGap) {
+            MarqueeServerMark(name: initial, size: Layout.cardMark, serifInitial: false)
+                .opacity(dimsMark ? 0.55 : 1)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 34, weight: .bold))
+                    .foregroundStyle(ink)
+                    .lineLimit(1)
+                if let detail {
+                    Text(detail)
+                        .font(.system(size: 23))
+                        .foregroundStyle(ink.opacity(0.4))
+                        .lineLimit(2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            trailing()
+        }
+    }
+}
+
+/// CURRENT or SIGN IN AGAIN beside an account (Roku's `ServerCard` badge):
+/// neutral on black 45% under the hairline, or the warning colour with its
+/// open-lock glyph. On the focused card its fill turns near-opaque black so
+/// the text keeps its contrast.
 private struct TVChangeAccountBadge: View {
     let badge: ChangeAccountBadge
     @Environment(\.isFocused) private var isFocused
 
+    private var warning: Bool { badge == .signInAgain }
+
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: badge.systemImage)
-                .font(.system(size: 17, weight: .bold))
+            if warning {
+                Image(systemName: "lock.open.fill")
+                    .font(.system(size: 17, weight: .bold))
+            }
             Text(badge.title.uppercased())
         }
         .font(.system(size: 18, weight: .semibold))
         .kerning(0.8)
-        .foregroundStyle(tint)
+        .foregroundStyle(warning ? Color.siloStatusWarning : Color.siloOnSurface)
         .padding(.horizontal, 16)
-        .frame(height: 38)
-        .background(Capsule().strokeBorder(tint.opacity(0.45), lineWidth: 1.5))
+        .frame(height: 36)
+        .background(Capsule().fill(fill).overlay(Capsule().strokeBorder(line, lineWidth: 1)))
         .fixedSize()
     }
 
-    private var tint: Color {
-        if isFocused { return .siloBackground }
-        return badge == .signInAgain ? .siloStatusWarning : .siloOnSurface
+    private var fill: Color {
+        if isFocused { return .black.opacity(0.85) }
+        return warning ? Color.siloStatusWarning.opacity(0.08) : .black.opacity(0.45)
+    }
+
+    private var line: Color {
+        warning ? Color.siloStatusWarning.opacity(0.35) : Color.white.opacity(0.14)
     }
 }
 
@@ -344,7 +463,7 @@ private struct TVOverflowColumn<Content: View>: View {
         VStack(spacing: 6) {
             ScrollView(.vertical, showsIndicators: false) {
                 content()
-                    // Room for the focused row's lift and shadow.
+                    // Room for the focused row's growth and shadow.
                     .padding(.vertical, 16)
                     .padding(.horizontal, 12)
             }
@@ -357,6 +476,9 @@ private struct TVOverflowColumn<Content: View>: View {
                 overflow = value
             }
             .mask(edgeFade)
+            // The rows line up with the header, their room outside it.
+            .padding(.horizontal, -12)
+            .padding(.top, -16)
 
             HStack(spacing: 10) {
                 Image(systemName: "chevron.up").opacity(overflow.above ? 1 : 0)

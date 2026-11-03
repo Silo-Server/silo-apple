@@ -337,6 +337,9 @@ struct MarqueeServerMark: View {
     var imageURL: URL?
     var size: CGFloat = 48
     var fallsBackToProjectIcon = false
+    /// The initial in serif; Change Account on Apple TV sets it in sans, as
+    /// Roku draws its account tiles.
+    var serifInitial = true
 
     private static let initialGradient = [Color(hex: "#EAA65C"), Color(hex: "#A8521D"), Color(hex: "#5E290D")]
     private static let initialInk = Color(hex: "#FFF6EA")
@@ -379,7 +382,7 @@ struct MarqueeServerMark: View {
             )
             .overlay(
                 Text(String(initial).uppercased())
-                    .font(.system(size: size * 0.54, weight: .bold, design: .serif))
+                    .font(.system(size: size * 0.54, weight: .bold, design: serifInitial ? .serif : .default))
                     .foregroundStyle(Self.initialInk)
             )
         } else {

@@ -386,7 +386,11 @@ struct ProfileSelectionView: View {
             Button {
                 router.showChangeAccount()
             } label: {
+                #if os(tvOS)
+                Label("Change account", systemImage: "person.2")
+                #else
                 Label("Change Account", systemImage: "person.2")
+                #endif
             }
             .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
             #if os(tvOS)
