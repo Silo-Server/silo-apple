@@ -291,6 +291,7 @@ struct MacFeaturedHero: View {
                 .padding(.horizontal, HomeFeedMetrics.gutter)
                 // Room for the highlight ring, which draws outside the art.
                 .padding(.vertical, SiloTheme.smallPadding)
+                .mouseDragScrolling()
             }
             .onChange(of: index) { _, newIndex in
                 guard section.items.indices.contains(newIndex) else { return }

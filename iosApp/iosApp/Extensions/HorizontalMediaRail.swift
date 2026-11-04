@@ -54,6 +54,20 @@ extension View {
         #endif
     }
 
+    /// Attach to the stack INSIDE a horizontal ScrollView to let a mouse
+    /// click-and-drag scroll it on the Mac, where a scroll view otherwise only
+    /// follows a trackpad or wheel. A click still opens the item under it; a
+    /// drag doesn't. Inside, so the nearest native scroll view is the rail,
+    /// not its vertically scrolling page. A no-op on other platforms.
+    @ViewBuilder
+    func mouseDragScrolling() -> some View {
+        #if os(macOS)
+        background(MacMouseDragScrollingAnchor().allowsHitTesting(false))
+        #else
+        self
+        #endif
+    }
+
     /// Attach to the stack INSIDE a horizontal media ScrollView, so the
     /// nearest native scroll view is the rail, not its vertically scrolling page.
     @ViewBuilder

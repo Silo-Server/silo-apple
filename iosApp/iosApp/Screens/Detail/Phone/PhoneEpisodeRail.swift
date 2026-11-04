@@ -56,6 +56,7 @@ struct PhoneEpisodeRail: View {
             .padding(.horizontal, HorizontalMediaRailLayout.isPhone ? 0 : SiloTheme.safePadding)
             .padding(.vertical, 4)
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
         }
         .contentMargins(.leading, leadingContentMargin, for: .scrollContent)
         .contentMargins(.trailing, trailingContentMargin, for: .scrollContent)
