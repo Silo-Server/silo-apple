@@ -448,6 +448,10 @@ private struct PhonePlaybackSelectorSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var preferredSubtitleLanguage: String?
+    #if os(macOS)
+    /// Height of the Mac sheet's rows; nil until first measured.
+    @State private var macRowsHeight: CGFloat?
+    #endif
 
     private var editions: [PlaybackEditions.Edition] {
         PlaybackEditions.editions(from: versions)
@@ -468,9 +472,48 @@ private struct PhonePlaybackSelectorSheet: View {
             titledList
         }
         #else
-        titledList
+        macSheet
         #endif
     }
+
+    #if os(macOS)
+    private static let macSheetWidth: CGFloat = 400
+    private static let macMaxListHeight: CGFloat = 440
+
+    /// A Mac sheet takes its content's ideal size, and a `List` has almost
+    /// none, so the sheet collapsed to its title and Done button. The rows
+    /// sit in a measured scroll view instead: the sheet grows to fit them up
+    /// to `macMaxListHeight`, then scrolls.
+    private var macSheet: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(kind.title)
+                    .font(.headline)
+                    .foregroundColor(.siloOnSurface)
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    optionContent
+                }
+                .padding(8)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                    macRowsHeight = $0
+                }
+            }
+            .frame(height: macRowsHeight.map { min($0, Self.macMaxListHeight) })
+        }
+        .frame(width: Self.macSheetWidth)
+        .task { await loadPreferredSubtitleLanguage() }
+    }
+    #endif
 
     #if os(iOS)
     /// Just the options, sized to fit and scrolling once they outgrow the
@@ -500,38 +543,25 @@ private struct PhonePlaybackSelectorSheet: View {
         preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
     }
 
+    #if os(iOS)
     private var titledList: some View {
         NavigationStack {
             List {
                 optionContent
             }
-            #if os(macOS)
-            .listStyle(.inset)
-            #else
             .listStyle(.insetGrouped)
-            #endif
             .scrollContentBackground(.hidden)
             .siloSheetBackground(legacyColor: .siloBackground)
             .task { await loadPreferredSubtitleLanguage() }
             .navigationTitle(kind.title)
-            #if !os(macOS)
             .navigationBarTitleDisplayMode(.inline)
-            #endif
             .toolbar {
-                #if os(macOS)
-                ToolbarItem {
-                    Button("Done") { dismiss() }
-                        .tint(.siloOnSurface)
-                }
-                #else
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .tint(.siloOnSurface)
                 }
-                #endif
             }
         }
-        #if os(iOS)
         // Regular-width iPad uses this view as an anchored popover instead
         // of forcing a phone detent into the split-view detail column.
         .frame(
@@ -539,12 +569,10 @@ private struct PhonePlaybackSelectorSheet: View {
             height: popover == nil ? nil : 480
         )
         .presentationCompactAdaptation(.sheet)
-        #endif
-        #if !os(macOS)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
-        #endif
     }
+    #endif
 
     @ViewBuilder
     private var optionContent: some View {
@@ -716,14 +744,53 @@ private struct PhonePlaybackSelectorSheet: View {
                         .foregroundColor(.siloOnSurface)
                 }
             }
+            #if os(macOS)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            #else
             .padding(.vertical, isCompactPopover ? 10 : 4)
             .padding(.horizontal, isCompactPopover ? 16 : 0)
+            #endif
             .contentShape(Rectangle())
         }
+        #if os(macOS)
+        .buttonStyle(MacSelectorOptionButtonStyle())
+        #else
         .buttonStyle(.plain)
+        #endif
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.56)
         .listRowBackground(Color.siloSurfaceVariant)
     }
 }
+
+#if os(macOS)
+/// Highlights a Mac sheet row under the pointer and while pressed.
+private struct MacSelectorOptionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Row(configuration: configuration)
+    }
+
+    private struct Row: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovered = false
+
+        var body: some View {
+            configuration.label
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(highlightOpacity))
+                )
+                .onHover { isHovered = $0 }
+        }
+
+        private var highlightOpacity: Double {
+            guard isEnabled else { return 0 }
+            if configuration.isPressed { return 0.14 }
+            return isHovered ? 0.08 : 0
+        }
+    }
+}
+#endif
 #endif
