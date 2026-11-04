@@ -159,16 +159,16 @@ class MetadataTests(unittest.TestCase):
 
     def test_command_is_bounded_and_repeated_timeouts_are_a_failure(self):
         with patch.object(metadata.subprocess, 'check_output',
-                          side_effect=subprocess.TimeoutExpired(('xcrun', 'simctl'), 120)) as run:
+                          side_effect=subprocess.TimeoutExpired(('xcrun', 'simctl'), 60)) as run:
             with self.assertRaisesRegex(RuntimeError, 'Build metadata command timed out: xcrun'):
                 metadata.command('xcrun', 'simctl', 'list', 'runtimes', '--json')
         self.assertEqual(run.call_count, metadata.COMMAND_ATTEMPTS)
-        self.assertEqual(run.call_args.kwargs['timeout'], metadata.COMMAND_TIMEOUT)
+        self.assertEqual(run.call_args.kwargs['timeout'], 60)
         self.assertNotIn('shell', run.call_args.kwargs)
 
     def test_command_recovers_from_a_stalled_attempt(self):
         with patch.object(metadata.subprocess, 'check_output',
-                          side_effect=[subprocess.TimeoutExpired(('xcrun',), 120), '27.1\n']) as run:
+                          side_effect=[subprocess.TimeoutExpired(('xcrun',), 60), '27.1\n']) as run:
             self.assertEqual(metadata.command('xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'), '27.1')
         self.assertEqual(run.call_count, 2)
 
