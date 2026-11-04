@@ -48,7 +48,7 @@ struct ChangeAccountView: View {
                     ChangeAccountRowLabel(row: row, isOpening: model.openingAccountId == row.id)
                 }
                 .buttonStyle(.plain)
-                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     // Not `.destructive`: that removes the row at once, and it
                     // would stay gone after Cancel in the confirmation.
                     Button("Sign Out") { signOut(row) }

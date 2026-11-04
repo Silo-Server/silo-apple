@@ -44,6 +44,22 @@ struct AccountsSettingsView: View {
                 } label: {
                     AccountRow(account: account, isInUse: isInUse(account), downloads: downloads[account.localAccountId])
                 }
+                // Not `.destructive`: that removes the row at once, and it
+                // would stay gone after Cancel in the confirmation.
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button("Sign Out") { signOut(account) }
+                        .tint(.red)
+                }
+                .contextMenu {
+                    if account.needsSignIn {
+                        Button("Sign In Again", systemImage: "person.crop.circle.badge.exclamationmark") {
+                            router.beginSignIn(onServer: server.id, renewing: account.localAccountId)
+                        }
+                    }
+                    Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                        signOut(account)
+                    }
+                }
             }
 
             Button {
@@ -62,6 +78,11 @@ struct AccountsSettingsView: View {
             ServerSectionHeader(server: server)
         }
         .listRowBackground(Color.siloGroupedCell)
+    }
+
+    /// Asks first, through the app's shared sign-out confirmation.
+    private func signOut(_ account: SavedAccountSummary) {
+        Task { await router.confirmSignOut(account: account.localAccountId, onServer: account.serverId) }
     }
 
     private func isInUse(_ account: SavedAccountSummary) -> Bool {
