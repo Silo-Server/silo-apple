@@ -29,13 +29,14 @@ enum PhonePlaybackSelectorKind: String, Identifiable {
 }
 
 /// Opaque, low-cost placeholder for the common version/audio/subtitle card.
-/// It deliberately mirrors `PhonePlaybackSelectorRow`'s three 44pt rows so an
+/// It deliberately mirrors `PhonePlaybackSelectorRow`'s three rows so an
 /// episode change never removes or inserts vertical space while networking.
 /// Row metrics come from `PhonePlaybackSelectorMetrics`, so the placeholder
 /// keeps matching the loaded card as Dynamic Type grows it.
 struct PhonePlaybackSelectorSkeleton: View {
     /// Card height at the default text size; larger sizes only grow it.
-    static let standardHeight: CGFloat = 133
+    /// Three rows and two hairline dividers.
+    static let standardHeight: CGFloat = 3 * PhonePlaybackSelectorMetrics.rowHeight + 1
 
     private let kinds: [PhonePlaybackSelectorKind] = [.version, .audio, .subtitles]
 
@@ -125,7 +126,13 @@ struct PhonePlaybackSelectorSkeleton: View {
 /// Row geometry shared by the selector card and its loading placeholder.
 /// Values are the default-text-size points; both views scale them.
 enum PhonePlaybackSelectorMetrics {
+    #if os(macOS)
+    /// Pointer-sized rows keep the Mac detail header short enough to leave
+    /// the backdrop and the seasons below it on the first screen.
+    static let rowHeight: CGFloat = 38
+    #else
     static let rowHeight: CGFloat = 44
+    #endif
     static let iconWidth: CGFloat = 20
     static let iconSpacing: CGFloat = 10
     static let stackedLineSpacing: CGFloat = 4
