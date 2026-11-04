@@ -30,6 +30,7 @@ struct PhoneSeasonChips: View {
                 }
                 .padding(.horizontal, SiloTheme.safePadding)
                 .padding(.vertical, 4)
+                .mouseDragScrolling()
             }
             .onAppear {
                 scrollToSelection(selected?.id, using: proxy, animated: false)

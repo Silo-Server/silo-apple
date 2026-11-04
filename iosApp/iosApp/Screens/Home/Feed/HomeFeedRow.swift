@@ -128,6 +128,7 @@ struct HomeFeedRow: View {
             }
             .scrollTargetLayout()
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
         }
         .contentMargins(.horizontal, HomeFeedMetrics.gutter, for: .scrollContent)
         .scrollClipDisabled()

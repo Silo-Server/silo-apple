@@ -138,6 +138,7 @@ struct OfflineSeriesBrowseView: View {
                 }
             }
             .padding(.horizontal, 18)
+            .mouseDragScrolling()
         }
         .padding(.top, 14)
     }
