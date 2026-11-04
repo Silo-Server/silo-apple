@@ -426,8 +426,8 @@ struct SharedKeychain {
     /// one), each read strictly: a location that can't be read throws
     /// `ReadError` instead of passing for empty. A group this build isn't
     /// entitled to holds nothing it wrote, so it reads as empty. A value
-    /// moves forward only into an empty slot, and its old copy is deleted
-    /// from the one group it was found in.
+    /// moves forward only into an empty slot; a value already there wins.
+    /// Either way the old copy is deleted from the one group it was found in.
     func getCheckedIncludingOlderLocations(_ account: String) throws -> String? {
         if let value = try getChecked(account) { return value }
         // As in `get`: with the app-local fallback in use, that group is the
@@ -439,16 +439,12 @@ struct SharedKeychain {
         if audience == .userIndependent, usesUserIndependentKeychain {
             let legacyKeychain = withAudience(.currentUser)
             if let legacy = try legacyKeychain.getCheckedIncludingOlderLocations(account) {
-                switch addIfAbsent(legacy, for: account) {
-                case errSecSuccess:
-                    legacyKeychain.delete(account)
-                    return legacy
-                case errSecDuplicateItem:
-                    // Written meanwhile: that value is newer.
-                    return try getChecked(account)
-                default:
-                    return legacy
-                }
+                let status = addIfAbsent(legacy, for: account)
+                guard status == errSecSuccess || status == errSecDuplicateItem else { return legacy }
+                // A value written meanwhile is newer; either way the old copy
+                // goes, so nothing can move it forward again later.
+                legacyKeychain.delete(account)
+                return try status == errSecSuccess ? legacy : getChecked(account)
             }
         }
         #endif
@@ -468,21 +464,16 @@ struct SharedKeychain {
             // The search without a group also finds the shared group, which
             // holds a value written since the read above.
             if result.accessGroup == accessGroup { return legacy }
-            switch addIfAbsent(legacy, for: account) {
-            case errSecSuccess:
-                // Deleted only from the group it was found in: a query without
-                // one would match the copy just written too. An item whose
-                // group isn't known stays.
-                if let found = result.accessGroup {
-                    deleteLegacy(account: account, accessGroup: found)
-                }
-                return legacy
-            case errSecDuplicateItem:
-                // Written meanwhile: that value is newer.
-                return try getChecked(account)
-            default:
-                return legacy
+            let status = addIfAbsent(legacy, for: account)
+            guard status == errSecSuccess || status == errSecDuplicateItem else { return legacy }
+            // A value written meanwhile is newer; either way the old copy
+            // goes, so nothing can move it forward again later. Deleted only
+            // from the group it was found in: a query without one would match
+            // the shared copy too. An item whose group isn't known stays.
+            if let found = result.accessGroup {
+                deleteLegacy(account: account, accessGroup: found)
             }
+            return try status == errSecSuccess ? legacy : getChecked(account)
         }
         return nil
     }

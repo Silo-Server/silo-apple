@@ -164,7 +164,7 @@ final class AccountStore: @unchecked Sendable {
     private func publishLegacyDataOwners(_ index: AccountIndex?) {
         guard self === Self.shared else { return }
         LegacyLocalDataOwner.publish(index?.legacyDataOwners ?? [:])
-        MergedServerIds.publish(index?.mergedServerIds ?? [:])
+        MergedServerIds.publish(index?.mergedServerIds ?? [:], legacyDataOwners: index?.mergedLegacyDataOwners ?? [:])
         MergedAccountIds.publish(index?.mergedAccountIds ?? [:])
     }
 
@@ -603,6 +603,11 @@ final class AccountStore: @unchecked Sendable {
                 mergedAccounts[keptId] = nil
             }
             if !mergedAccounts.isEmpty { index.mergedAccountIds = mergedAccounts }
+            if let target = merge.legacyDataTarget {
+                var owners = index.mergedLegacyDataOwners ?? [:]
+                owners[dropped] = target
+                index.mergedLegacyDataOwners = owners
+            }
             var pending = index.pendingRecordRemovals ?? []
             pending += unlisted.filter { !pending.contains($0) }
             index.pendingRecordRemovals = pending
@@ -640,8 +645,10 @@ final class AccountStore: @unchecked Sendable {
     /// is its own server from now on, and nothing resolves to the other.
     func forgetMergedServer(_ serverId: String) {
         locked {
-            guard var index = try? loadIndex(), index.mergedServerIds?[serverId] != nil else { return }
+            guard var index = try? loadIndex(),
+                  index.mergedServerIds?[serverId] != nil || index.mergedLegacyDataOwners?[serverId] != nil else { return }
             index.mergedServerIds?[serverId] = nil
+            index.mergedLegacyDataOwners?[serverId] = nil
             try? saveIndex(index)
         }
     }

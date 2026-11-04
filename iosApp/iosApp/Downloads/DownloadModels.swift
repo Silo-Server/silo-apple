@@ -840,7 +840,10 @@ struct DownloadTaskTag: Hashable, Sendable {
               !payload.server.isEmpty, !payload.profile.isEmpty, !payload.download.isEmpty else { return nil }
         let account: String?
         switch payload.v {
-        case Self.accountlessPayloadVersion: account = legacyOwner(payload.server)
+        case Self.accountlessPayloadVersion:
+            // A merge hands a dropped server's data from before accounts to
+            // an account on the survivor.
+            account = legacyOwner(payload.server) ?? MergedServerIds.legacyDataOwner(of: payload.server)
         case Self.payloadVersion: account = payload.account
         default: return nil
         }

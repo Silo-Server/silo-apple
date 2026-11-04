@@ -158,6 +158,11 @@ struct AccountIndex: Codable, Equatable, Sendable {
     /// downloads now. A transfer an earlier process tagged with a removed
     /// account resolves through it. Absent in indexes from earlier builds.
     var mergedAccountIds: [String: String]?
+    /// Each merged server's ID and the account on the survivor that took its
+    /// data from before accounts, whose `legacyDataOwners` entry the merge
+    /// removed. A transfer started before accounts resolves through it.
+    /// Absent in indexes from earlier builds.
+    var mergedLegacyDataOwners: [String: String]?
     /// Records a server merge stopped listing and has yet to delete.
     var pendingRecordRemovals: [Entry]?
 
@@ -183,16 +188,19 @@ struct AccountSelection: Codable, Equatable, Sendable {
     let localAccountId: String
 
     /// A selection left on a server that was merged into another names the
-    /// server its account moved to, unless `resolvingMergedServers` is off.
+    /// server its account moved to, and one left on an account such a merge
+    /// removed names the account kept in its place, unless
+    /// `resolvingMergedServers` is off.
     static func load(from defaults: SharedDefaults, resolvingMergedServers: Bool = true) -> AccountSelection? {
         guard let data = defaults.data(forKey: SharedStorage.activeAccountKey),
               let selection = try? JSONDecoder().decode(AccountSelection.self, from: data),
               Account.isValidServerId(selection.serverId),
               Account.isValidLocalAccountId(selection.localAccountId) else { return nil }
-        guard resolvingMergedServers, let survivor = MergedServerIds.survivor(of: selection.serverId) else {
-            return selection
-        }
-        return AccountSelection(serverId: survivor, localAccountId: selection.localAccountId)
+        guard resolvingMergedServers else { return selection }
+        return AccountSelection(
+            serverId: MergedServerIds.survivor(of: selection.serverId) ?? selection.serverId,
+            localAccountId: MergedAccountIds.kept(for: selection.localAccountId) ?? selection.localAccountId
+        )
     }
 }
 

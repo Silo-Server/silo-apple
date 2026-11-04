@@ -232,8 +232,18 @@ enum MergedServerIds {
         return (try? AccountStore.shared.loadIndex())?.mergedServerIds?[serverId]
     }
 
-    static func publish(_ ids: [String: String]) {
+    private static let legacyOwners = Mutex<[String: String]?>(nil)
+
+    /// The account that took merged server `serverId`'s data from before
+    /// accounts (`AccountIndex.mergedLegacyDataOwners`), or nil.
+    static func legacyDataOwner(of serverId: String) -> String? {
+        if let known = legacyOwners.withLock({ $0 }) { return known[serverId] }
+        return (try? AccountStore.shared.loadIndex())?.mergedLegacyDataOwners?[serverId]
+    }
+
+    static func publish(_ ids: [String: String], legacyDataOwners: [String: String]) {
         merged.withLock { $0 = ids }
+        legacyOwners.withLock { $0 = legacyDataOwners }
     }
 }
 
