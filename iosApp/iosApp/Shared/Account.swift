@@ -153,6 +153,11 @@ struct AccountIndex: Codable, Equatable, Sendable {
     /// ID, or a transfer an earlier process tagged with one, resolves
     /// through it. Absent in indexes from earlier builds.
     var mergedServerIds: [String: String]?
+    /// Accounts such a merge removed in favour of another account of the same
+    /// server user: each removed `localAccountId` and the one that holds its
+    /// downloads now. A transfer an earlier process tagged with a removed
+    /// account resolves through it. Absent in indexes from earlier builds.
+    var mergedAccountIds: [String: String]?
     /// Records a server merge stopped listing and has yet to delete.
     var pendingRecordRemovals: [Entry]?
 

@@ -237,6 +237,22 @@ enum MergedServerIds {
     }
 }
 
+/// Which account took each account a server merge removed: a process-wide
+/// copy of `AccountIndex.mergedAccountIds`, published like `MergedServerIds`.
+enum MergedAccountIds {
+    private static let merged = Mutex<[String: String]?>(nil)
+
+    /// The account `localAccountId` was merged into, or nil when it never was.
+    static func kept(for localAccountId: String) -> String? {
+        if let known = merged.withLock({ $0 }) { return known[localAccountId] }
+        return (try? AccountStore.shared.loadIndex())?.mergedAccountIds?[localAccountId]
+    }
+
+    static func publish(_ ids: [String: String]) {
+        merged.withLock { $0 = ids }
+    }
+}
+
 extension AccountScope {
     /// The selected account when it is on `serverId`, else nil. For stores
     /// that already know their server and profile.

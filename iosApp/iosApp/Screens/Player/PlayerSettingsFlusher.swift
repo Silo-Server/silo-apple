@@ -296,7 +296,8 @@ struct PendingSettingWrite: Equatable, Codable {
     /// This write, the later one for its key, keeping what `older` still
     /// owes, as a later edit does in `PlayerSettingsFlusher.enqueue` and
     /// `enqueueDelete`: a clear of this device's value, a profile value not
-    /// yet stored, and the device value a clear replaced.
+    /// yet stored, the device value a clear replaced, and the profile value
+    /// an owed clear exposes unless this write owes a newer one.
     func superseding(_ older: PendingSettingWrite) -> PendingSettingWrite {
         let owesClear = (older.scope == .profile && older.clearsDeviceValue)
             || (older.operation == .delete && older.scope == .profileDevice)
@@ -311,7 +312,7 @@ struct PendingSettingWrite: Equatable, Codable {
             onlyWhereProfileScoped: onlyWhereProfileScoped,
             fallbackDeviceValue: fallbackDeviceValue ?? olderDeviceValue,
             owedProfileValue: owedProfileValue ?? olderProfileValue,
-            storedProfileValue: storedProfileValue,
+            storedProfileValue: storedProfileValue ?? (owedProfileValue == nil ? older.storedProfileValue : nil),
             scopeIdentifier: scopeIdentifier,
             profileId: profileId,
             failedAttempts: failedAttempts,

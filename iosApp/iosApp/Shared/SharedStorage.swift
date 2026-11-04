@@ -425,7 +425,9 @@ struct SharedKeychain {
     /// from (tvOS ordinary persona, access groups from before the shared
     /// one), each read strictly: a location that can't be read throws
     /// `ReadError` instead of passing for empty. A group this build isn't
-    /// entitled to holds nothing it wrote, so it reads as empty.
+    /// entitled to holds nothing it wrote, so it reads as empty. A value
+    /// moves forward only into an empty slot, and its old copy is deleted
+    /// from the one group it was found in.
     func getCheckedIncludingOlderLocations(_ account: String) throws -> String? {
         if let value = try getChecked(account) { return value }
         // As in `get`: with the app-local fallback in use, that group is the
@@ -437,16 +439,22 @@ struct SharedKeychain {
         if audience == .userIndependent, usesUserIndependentKeychain {
             let legacyKeychain = withAudience(.currentUser)
             if let legacy = try legacyKeychain.getCheckedIncludingOlderLocations(account) {
-                if set(legacy, for: account) {
+                switch addIfAbsent(legacy, for: account) {
+                case errSecSuccess:
                     legacyKeychain.delete(account)
+                    return legacy
+                case errSecDuplicateItem:
+                    // Written meanwhile: that value is newer.
+                    return try getChecked(account)
+                default:
+                    return legacy
                 }
-                return legacy
             }
         }
         #endif
-        guard accessGroup != nil else { return nil }
+        guard let accessGroup else { return nil }
         for candidate in Self.legacyFallbackAccessGroups() {
-            let result = readResult(account: account, accessGroup: candidate)
+            let result = readResultWithAccessGroup(account: account, accessGroup: candidate)
             switch result.status {
             case errSecSuccess:
                 break
@@ -457,10 +465,24 @@ struct SharedKeychain {
                 throw ReadError(status: result.status)
             }
             guard let legacy = result.value else { continue }
-            if set(legacy, for: account) {
-                deleteLegacy(account: account, accessGroup: candidate)
+            // The search without a group also finds the shared group, which
+            // holds a value written since the read above.
+            if result.accessGroup == accessGroup { return legacy }
+            switch addIfAbsent(legacy, for: account) {
+            case errSecSuccess:
+                // Deleted only from the group it was found in: a query without
+                // one would match the copy just written too. An item whose
+                // group isn't known stays.
+                if let found = result.accessGroup {
+                    deleteLegacy(account: account, accessGroup: found)
+                }
+                return legacy
+            case errSecDuplicateItem:
+                // Written meanwhile: that value is newer.
+                return try getChecked(account)
+            default:
+                return legacy
             }
-            return legacy
         }
         return nil
     }
@@ -679,6 +701,38 @@ struct SharedKeychain {
             return (errSecDecode, nil)
         }
         return (status, value)
+    }
+
+    /// `readResult`, plus the access group of the item found, so a search
+    /// without a group can tell which group it matched.
+    private func readResultWithAccessGroup(
+        account: String,
+        accessGroup: String?
+    ) -> (status: OSStatus, value: String?, accessGroup: String?) {
+        var query = baseQuery(account: account, accessGroup: accessGroup)
+        query[kSecReturnData as String] = true
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let item = result as? [String: Any],
+              let data = item[kSecValueData as String] as? Data else {
+            return (status, nil, nil)
+        }
+        guard let value = String(data: data, encoding: .utf8) else {
+            return (errSecDecode, nil, nil)
+        }
+        return (status, value, item[kSecAttrAccessGroup as String] as? String)
+    }
+
+    /// Writes `value` under `account` in the configured group only when no
+    /// item is there: `errSecDuplicateItem` when one is.
+    private func addIfAbsent(_ value: String, for account: String) -> OSStatus {
+        guard let data = value.data(using: .utf8) else { return errSecParam }
+        var query = baseQuery(account: account, accessGroup: accessGroup)
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(query as CFDictionary, nil)
     }
 
     private func write(_ data: Data, for account: String, accessGroup: String?) -> OSStatus {

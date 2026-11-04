@@ -165,6 +165,7 @@ final class AccountStore: @unchecked Sendable {
         guard self === Self.shared else { return }
         LegacyLocalDataOwner.publish(index?.legacyDataOwners ?? [:])
         MergedServerIds.publish(index?.mergedServerIds ?? [:])
+        MergedAccountIds.publish(index?.mergedAccountIds ?? [:])
     }
 
     /// Writes the index and reads it back; this write is the commit point.
@@ -594,6 +595,14 @@ final class AccountStore: @unchecked Sendable {
             merged[dropped] = survivor
             merged[survivor] = nil
             index.mergedServerIds = merged
+            var mergedAccounts = index.mergedAccountIds ?? [:]
+            for removal in merge.removed {
+                let removedId = removal.account.localAccountId, keptId = removal.keptLocalAccountId
+                for (id, target) in mergedAccounts where target == removedId { mergedAccounts[id] = keptId }
+                mergedAccounts[removedId] = keptId
+                mergedAccounts[keptId] = nil
+            }
+            if !mergedAccounts.isEmpty { index.mergedAccountIds = mergedAccounts }
             var pending = index.pendingRecordRemovals ?? []
             pending += unlisted.filter { !pending.contains($0) }
             index.pendingRecordRemovals = pending

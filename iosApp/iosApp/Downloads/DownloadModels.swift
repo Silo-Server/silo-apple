@@ -831,7 +831,9 @@ struct DownloadTaskTag: Hashable, Sendable {
     /// tag, from a transfer started before accounts, belongs to the account
     /// that adopted its server's data; nil while there is none, which leaves
     /// its events to be attributed again later. A tag naming a server that
-    /// was merged into another names the server that holds its account now.
+    /// was merged into another names the server that holds its account now,
+    /// and one naming an account such a merge removed names the account
+    /// that took its downloads.
     init?(taskDescription: String?, legacyOwner: LegacyOwner = DownloadTaskTag.currentLegacyOwner) {
         guard let data = taskDescription?.data(using: .utf8),
               let payload = try? JSONDecoder().decode(Payload.self, from: data),
@@ -843,7 +845,8 @@ struct DownloadTaskTag: Hashable, Sendable {
         default: return nil
         }
         guard let account, !account.isEmpty else { return nil }
-        self.init(serverId: MergedServerIds.survivor(of: payload.server) ?? payload.server, localAccountId: account,
+        self.init(serverId: MergedServerIds.survivor(of: payload.server) ?? payload.server,
+                  localAccountId: MergedAccountIds.kept(for: account) ?? account,
                   profileId: payload.profile, downloadId: payload.download)
     }
 

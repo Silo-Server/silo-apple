@@ -406,12 +406,13 @@ struct DownloadAccountSummary: Equatable, Sendable {
 }
 
 private extension DownloadStoreFile {
-    /// No downloads and nothing owed to the server: what loading a scope
-    /// with no store yet saves.
+    /// No downloads, nothing owed to the server, and no legacy cleanup
+    /// still owed: what loading a scope with no store yet saves.
     var holdsNothingToKeep: Bool {
         records.isEmpty && subscriptions.isEmpty && progressQueue.isEmpty && localProgress.isEmpty
             && (pendingServerDeletes ?? []).isEmpty
             && (pendingSubscriptionDeletes ?? [:]).isEmpty
             && (legacyMonitorIds ?? []).isEmpty
+            && legacyRowsPending != true && legacyMonitorsPending != true
     }
 }
