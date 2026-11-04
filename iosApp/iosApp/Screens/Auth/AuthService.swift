@@ -946,14 +946,16 @@ final class AuthService: @unchecked Sendable {
     }
 
     /// Signs out of the active server's account and reports which account
-    /// it removed. The server stays saved.
-    func signOut() async -> SignOutResult {
+    /// it removed. The server stays saved. With `expectedAccountId`, the
+    /// sign-out is refused unless that account is the one requests use.
+    func signOut(expecting expectedAccountId: String? = nil) async -> SignOutResult {
         let refused = SignOutResult(outcome: .refused, localAccountId: nil)
         let serverID = serverRegistry.activeServerId
         let capturedAuth = await tokenStore.captureOrdinaryRequestAuth()
         guard case .allowed(let account) = Self.signOutAuthorization(
             activeServerId: serverID, capturedAuth: capturedAuth
         ) else { return refused }
+        if let expectedAccountId, account?.localAccountId != expectedAccountId { return refused }
         // Signing out leaves the server's registration for this device in
         // place, so its pushes stop the same way as for a removal: a
         // retirement, retried after the credentials are gone, or a session

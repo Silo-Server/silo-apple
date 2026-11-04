@@ -65,6 +65,34 @@ protocol PlayerSettingsTransport: AnyObject, Sendable {
         profileId: String?
     ) async throws
     func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?) async throws
+    /// The same writes for an operation queued under `scopeIdentifier`
+    /// (`PlayerSettings.currentScopeIdentifier`).
+    func putValue(
+        key: SettingKey,
+        scope: PlayerSettingWriteScope,
+        value: SettingJSONValue,
+        profileId: String?,
+        scopeIdentifier: String?
+    ) async throws
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?,
+                     scopeIdentifier: String?) async throws
+}
+
+extension PlayerSettingsTransport {
+    func putValue(
+        key: SettingKey,
+        scope: PlayerSettingWriteScope,
+        value: SettingJSONValue,
+        profileId: String?,
+        scopeIdentifier: String?
+    ) async throws {
+        try await putValue(key: key, scope: scope, value: value, profileId: profileId)
+    }
+
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?,
+                     scopeIdentifier: String?) async throws {
+        try await deleteValue(key: key, scope: scope, profileId: profileId)
+    }
 }
 
 /// The production transport: the canonical endpoints on ``SiloAPI``.
@@ -85,21 +113,44 @@ final class SiloPlayerSettingsTransport: PlayerSettingsTransport {
         value: SettingJSONValue,
         profileId: String?
     ) async throws {
-        try await api.putValue(key: key, scope: scope.identity, value: value, profileId: profileId,
-                               requestIdentity: Self.pinnedIdentity(profileId: profileId))
+        try await putValue(key: key, scope: scope, value: value, profileId: profileId, scopeIdentifier: nil)
     }
 
     func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?) async throws {
-        try await api.deleteValue(key: key, scope: scope.identity, profileId: profileId,
-                                  requestIdentity: Self.pinnedIdentity(profileId: profileId))
+        try await deleteValue(key: key, scope: scope, profileId: profileId, scopeIdentifier: nil)
     }
 
-    /// The account active as the flusher hands over a write it just checked
-    /// against the active scope. Profile IDs repeat across accounts, so the
-    /// request is refused if another account is selected before it is sent.
-    private static func pinnedIdentity(profileId: String?) -> HTTPRequestIdentity? {
-        guard let identity = HTTPRequestIdentity.activeProfile(),
-              profileId == nil || identity.profileId == profileId else { return nil }
+    func putValue(
+        key: SettingKey,
+        scope: PlayerSettingWriteScope,
+        value: SettingJSONValue,
+        profileId: String?,
+        scopeIdentifier: String?
+    ) async throws {
+        try await api.putValue(key: key, scope: scope.identity, value: value, profileId: profileId,
+                               requestIdentity: Self.pinnedIdentity(profileId: profileId, scopeIdentifier: scopeIdentifier))
+    }
+
+    func deleteValue(key: SettingKey, scope: PlayerSettingWriteScope, profileId: String?,
+                     scopeIdentifier: String?) async throws {
+        try await api.deleteValue(key: key, scope: scope.identity, profileId: profileId,
+                                  requestIdentity: Self.pinnedIdentity(profileId: profileId, scopeIdentifier: scopeIdentifier))
+    }
+
+    /// The active account and profile, pinned to the request. Profile IDs
+    /// repeat across accounts, so the request is refused if another account
+    /// is selected before it is sent. A write queued under
+    /// `scopeIdentifier` goes only as that scope's account and profile:
+    /// when another one is active, it is cancelled, and the flusher leaves
+    /// it to that scope's journal.
+    private static func pinnedIdentity(profileId: String?, scopeIdentifier: String?) throws -> HTTPRequestIdentity? {
+        guard let identity = HTTPRequestIdentity.activeProfile() else { return nil }
+        if let owner = scopeIdentifier.flatMap(PlayerSettings.scopeOwner(of:)) {
+            guard owner.localAccountId == identity.localAccountId, owner.profileId == identity.profileId else {
+                throw CancellationError()
+            }
+        }
+        guard profileId == nil || identity.profileId == profileId else { return nil }
         return identity
     }
 }
@@ -1415,7 +1466,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                 }
                 if let profileValue {
                     do {
-                        try await transport.putValue(key: key, scope: .profile, value: profileValue, profileId: write.profileId)
+                        try await transport.putValue(key: key, scope: .profile, value: profileValue, profileId: write.profileId,
+                                                     scopeIdentifier: write.scopeIdentifier)
                     } catch let error as SettingsAPIError {
                         guard case .release = error.writeFailure else { throw error }
                         // Refused for the profile, and sending it again would
@@ -1461,7 +1513,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                     key: key,
                     scope: scope,
                     value: wireValue,
-                    profileId: write.profileId
+                    profileId: write.profileId,
+                    scopeIdentifier: write.scopeIdentifier
                 )
                 if scope == .profile {
                     // With a clear to follow, from here the clear is the only
@@ -1481,7 +1534,8 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                         try await transport.deleteValue(
                             key: key,
                             scope: .profileDevice,
-                            profileId: write.profileId
+                            profileId: write.profileId,
+                            scopeIdentifier: write.scopeIdentifier
                         )
                     } catch SettingsAPIError.noValueAtScope {
                         // No device value, so the profile value already shows.
@@ -1501,13 +1555,15 @@ final class PlayerSettingsFlusher: @unchecked Sendable {
                                 key: key,
                                 scope: .profileDevice,
                                 value: key.wireValue(fallback, forServerRevision: revision),
-                                profileId: write.profileId
+                                profileId: write.profileId,
+                                scopeIdentifier: write.scopeIdentifier
                             )
                         }
                         return .settled
                     }
                 }
-                try await transport.deleteValue(key: key, scope: write.scope, profileId: write.profileId)
+                try await transport.deleteValue(key: key, scope: write.scope, profileId: write.profileId,
+                                                scopeIdentifier: write.scopeIdentifier)
             }
             return .settled
         } catch let error as SettingsAPIError {

@@ -701,7 +701,10 @@ final class DownloadManager {
         let onServer = selected?.serverId == serverId ? selected : nil
         let accountId = onServer?.localAccountId ?? ""
         let profileId = onServer?.profileId ?? ""
-        guard !serverId.isEmpty, !accountId.isEmpty, !profileId.isEmpty else {
+        // An account whose downloads were deleted stays unloaded while its
+        // sign-out finishes; `deleteAllDownloads` resets a load in flight.
+        guard !serverId.isEmpty, !accountId.isEmpty, !profileId.isEmpty,
+              !removedAccounts.contains(Self.accountKey(serverId, accountId)) else {
             deactivate()
             releaseHeldSessionEvents()
             return false

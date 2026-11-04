@@ -70,13 +70,14 @@ enum AccountSessions {
         let tokenStore = TokenStore.shared
         guard !(await tokenStore.hasTemporaryScope()),
               let account = try? AccountStore.shared.account(localAccountId, onServer: serverId) else { return .refused }
-        let requestAccountId = await tokenStore.requestAccountId(onServer: serverId)
-        let isInUse = ServerRegistry.shared.activeServerId == serverId && requestAccountId == localAccountId
         await deleteLocalData(of: account)
 
         defer { AccountDirectory.shared.reload() }
-        if isInUse {
-            return await AuthService.shared.signOut().outcome
+        // Read after the deletion, which suspends: an account switch
+        // meanwhile changes which path signs this account out.
+        let requestAccountId = await tokenStore.requestAccountId(onServer: serverId)
+        if ServerRegistry.shared.activeServerId == serverId, requestAccountId == localAccountId {
+            return await AuthService.shared.signOut(expecting: localAccountId).outcome
         }
 
         #if os(iOS)
@@ -129,13 +130,25 @@ enum AccountSessions {
     /// merge (`ServerRegistry.init`), before the route is read. The active
     /// server stays while no account is signed in, since launch opens its
     /// sign-in. Such a server has no session to revoke.
+    ///
+    /// Only the active server, which the route reads, is removed before
+    /// this returns (and the one the registry falls back to, until one has
+    /// an account). The others go after, without holding up launch: each
+    /// removal can wait seconds to turn its server's pushes off.
     static func removeServersWithoutAccounts() async {
         let registry = ServerRegistry.shared
+        let keepsActive = AppRouter.signedOutDestination(activeServerId: registry.activeServerId) != .changeAccount
+        while !keepsActive, let activeId = registry.activeServerId, hasNoAccounts(onServer: activeId) {
+            guard await removeServer(activeId) else { break }
+        }
         let activeId = registry.activeServerId
-        let keepsActive = AppRouter.signedOutDestination(activeServerId: activeId) != .changeAccount
-        for entry in registry.entries where hasNoAccounts(onServer: entry.id) {
-            if keepsActive, entry.id == activeId { continue }
-            _ = await removeServer(entry.id)
+        let others = registry.entries.map(\.id).filter { $0 != activeId && hasNoAccounts(onServer: $0) }
+        guard !others.isEmpty else { return }
+        Task {
+            // Checked again: one may have been opened, or signed in to, since.
+            for serverId in others where serverId != registry.activeServerId && hasNoAccounts(onServer: serverId) {
+                _ = await removeServer(serverId)
+            }
         }
     }
 

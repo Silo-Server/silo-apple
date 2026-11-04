@@ -25,7 +25,7 @@ import SwiftUI
 struct TVChangeAccountView: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.isStartupSplashVisible) private var isStartupSplashVisible
-    @State private var model = ChangeAccountModel()
+    @State private var model = ChangeAccountModel.shared
     @State private var directory = AccountDirectory.shared
     /// The server whose accounts the pane shows.
     @State private var selectedServerId: String?

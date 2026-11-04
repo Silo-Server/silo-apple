@@ -100,7 +100,14 @@ struct AccountMigration {
         var complete = true
         for (serverId, localAccountId) in index.legacyDataOwners {
             let legacyKey = SharedStorage.profileTokenAccount(for: serverId)
-            guard let proof = profileKeychain.get(legacyKey), !proof.isEmpty else { continue }
+            // An unreadable slot is not an absent proof: leave adoption
+            // incomplete so the next launch reads it again.
+            let stored: String?
+            do { stored = try legacyRead(legacyKey, in: profileKeychain) } catch {
+                complete = false
+                continue
+            }
+            guard let proof = stored, !proof.isEmpty else { continue }
             let adopted = accounts.profileToken(for: localAccountId, onServer: serverId) != nil
                 || (accounts.setProfileToken(proof, for: localAccountId, onServer: serverId)
                     && accounts.profileToken(for: localAccountId, onServer: serverId) == proof)
@@ -132,13 +139,13 @@ struct AccountMigration {
                 epoch: epoch
             )
         case .legacy:
-            guard let access = try accountKeychain.getChecked(SharedStorage.accessTokenAccount(for: serverId)),
+            guard let access = try legacyRead(SharedStorage.accessTokenAccount(for: serverId), in: accountKeychain),
                   !access.isEmpty else { return nil }
-            let refresh = try accountKeychain.getChecked(SharedStorage.refreshTokenAccount(for: serverId))
+            let refresh = try legacyRead(SharedStorage.refreshTokenAccount(for: serverId), in: accountKeychain)
             // The epoch a remembered profile was bound to; a session that never
             // made one gets a new one, and its remembered profile no longer
             // matches, as after any sign-in.
-            let epoch = try accountKeychain.getChecked(SharedStorage.accountEpochAccount(for: serverId))
+            let epoch = try legacyRead(SharedStorage.accountEpochAccount(for: serverId), in: accountKeychain)
                 .flatMap(UUID.init(uuidString:)) ?? UUID()
             return Account(
                 serverId: serverId,
@@ -148,6 +155,16 @@ struct AccountMigration {
                 epoch: epoch
             )
         }
+    }
+
+    /// An old per-token slot as the app before accounts read it: a strict
+    /// read first, so an unreadable Keychain throws `SharedKeychain.ReadError`
+    /// instead of passing for empty, then, when it holds nothing, the
+    /// lenient read that still finds copies in the older locations
+    /// `SharedKeychain.get` moves forward (tvOS ordinary persona, access
+    /// groups from before the shared one).
+    private func legacyRead(_ account: String, in keychain: SharedKeychain) throws -> String? {
+        try keychain.getChecked(account) ?? keychain.get(account)
     }
 
     /// Deletes the old credential slots of each server in `serverIds`, then

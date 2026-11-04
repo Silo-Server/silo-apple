@@ -249,8 +249,9 @@ actor DownloadStore {
     }
 
     /// Where both scopes have a store, the downloads `target` lacks join it
-    /// with their files and queued progress, and what is left of `source`
-    /// (downloads `target` already has) is deleted. Otherwise the files
+    /// with their files and queued progress, `source`'s monitors and pending
+    /// deletions join it too, and what is left of `source` (downloads
+    /// `target` already has) is deleted. Otherwise the files
     /// merge as they are. A rerun after an interruption finishes the move.
     private nonisolated static func mergeScope(_ source: URL, into target: URL) -> Bool {
         let fm = FileManager.default
@@ -278,6 +279,18 @@ actor DownloadStore {
         let queued = Set(kept.progressQueue.map(\.id))
         kept.progressQueue += incoming.progressQueue.filter { !queued.contains($0.id) }
         kept.localProgress.merge(incoming.localProgress) { current, _ in current }
+        let monitors = Set(kept.subscriptions.map(\.id))
+        kept.subscriptions += incoming.subscriptions.filter { !monitors.contains($0.id) }
+        if let deletes = incoming.pendingServerDeletes {
+            kept.pendingServerDeletes = (kept.pendingServerDeletes ?? []).union(deletes)
+        }
+        if let deletes = incoming.pendingSubscriptionDeletes {
+            kept.pendingSubscriptionDeletes = (kept.pendingSubscriptionDeletes ?? [:])
+                .merging(deletes) { current, _ in current }
+        }
+        if let legacy = incoming.legacyMonitorIds {
+            kept.legacyMonitorIds = (kept.legacyMonitorIds ?? []).union(legacy)
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
         do {
@@ -301,7 +314,8 @@ actor DownloadStore {
     ///
     /// The move merges: a transfer started before accounts may already have
     /// parked its file under the account. An account store that holds
-    /// nothing yields to the one from before accounts.
+    /// nothing yields to the one from before accounts; two that both hold
+    /// something merge their contents (`mergeScope`).
     private func adoptDataFromBeforeAccounts(serverId: String, localAccountId: String) -> Bool {
         let root = rootDirectory()
         let legacyScopes = DownloadFilePaths.scopesFromBeforeAccounts(serverId: serverId, root: root)
@@ -317,7 +331,7 @@ actor DownloadStore {
         for legacy in legacyScopes {
             let target = account.appendingPathComponent(legacy.lastPathComponent, isDirectory: true)
             discardEmptyStore(at: target, yieldingTo: legacy)
-            if !DownloadFilePaths.merge(legacy, into: target) { complete = false }
+            if !Self.mergeScope(legacy, into: target) { complete = false }
         }
         if complete {
             Self.logger.notice("Moved \(legacyScopes.count, privacy: .public) download scopes saved before accounts to their account")
@@ -326,8 +340,8 @@ actor DownloadStore {
     }
 
     /// Removes the account scope's store when it holds nothing to keep and
-    /// the scope from before accounts has a store, so the merge keeps that
-    /// one instead of whichever file is newer.
+    /// the scope from before accounts has a store, so the move keeps that
+    /// store whole instead of merging into an empty one.
     private func discardEmptyStore(at target: URL, yieldingTo legacy: URL) {
         let fm = FileManager.default
         let current = target.appendingPathComponent(DownloadFilePaths.storeFileName, isDirectory: false)

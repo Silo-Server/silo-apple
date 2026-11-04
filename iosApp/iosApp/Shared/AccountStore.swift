@@ -55,6 +55,13 @@ struct AccountServerMerge: Sendable {
         removed.first { $0.account.localAccountId == localAccountId }?.keptLocalAccountId
     }
 
+    /// Whether the merge moves, removes, or keeps `localAccountId` (a kept
+    /// account takes a removed one's downloads).
+    func touches(_ localAccountId: String) -> Bool {
+        moved.contains { $0.localAccountId == localAccountId }
+            || removed.contains { $0.account.localAccountId == localAccountId || $0.keptLocalAccountId == localAccountId }
+    }
+
     /// Where the dropped server's data from before accounts goes on the
     /// survivor: its owner when it moves, else the account kept in its place.
     var legacyDataTarget: String? {

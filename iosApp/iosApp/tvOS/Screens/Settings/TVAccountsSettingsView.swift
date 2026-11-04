@@ -42,7 +42,8 @@ struct TVAccountsSettingsView: View {
                 }
 
                 row("Add a server", id: .addServer) {
-                    router.resetToServerSetup()
+                    // Pushed, so Menu returns here (TVMainTabView `.serverSetup`).
+                    router.navigate(to: .serverSetup)
                 }
                 .padding(.top, 18)
 

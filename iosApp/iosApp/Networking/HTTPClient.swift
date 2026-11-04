@@ -142,10 +142,11 @@ actor HTTPClient {
     private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
     /// Approver-bearer renewals of saved servers that are not active
-    /// (`freshAccessToken(serverId:)`), keyed by server, and of accounts not
-    /// in use (`freshAccessToken(serverId:localAccountId:)`), keyed by
-    /// `server|account`. A caller holding the same refresh token joins the
-    /// renewal in flight instead of sending that token a second time.
+    /// (`freshAccessToken(serverId:)`) and of accounts not in use
+    /// (`freshAccessToken(serverId:localAccountId:)`), both keyed by the
+    /// `server|account` renewed. A caller holding the same refresh token
+    /// joins the renewal in flight instead of sending that token a second
+    /// time.
     private var inactiveServerRenewals: [String: (refreshToken: String, task: Task<ApproverBearer, Never>)] = [:]
     /// The profile proof the last `.siloProfileVerificationRequired` was
     /// posted for (access token dropped), with the `TokenStore` selection
@@ -2464,16 +2465,7 @@ actor HTTPClient {
             return await storedBearer(serverId: serverId)
         }
         guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
-        if let flight = inactiveServerRenewals[serverId], flight.refreshToken == refresh {
-            return await flight.task.value
-        }
-        let task = Task { await renewInactiveServer(serverId, stored: stored, access: access, refresh: refresh, origin: origin) }
-        inactiveServerRenewals[serverId] = (refresh, task)
-        let bearer = await task.value
-        if inactiveServerRenewals[serverId]?.refreshToken == refresh {
-            inactiveServerRenewals[serverId] = nil
-        }
-        return bearer
+        return await renewInactiveAccountOnce(serverId, stored: stored, access: access, refresh: refresh, origin: origin)
     }
 
     /// `freshAccessToken(serverId:)` for one saved account on the server,
@@ -2492,7 +2484,16 @@ actor HTTPClient {
             return .rejected
         }
         guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
-        let key = "\(serverId)|\(localAccountId)"
+        return await renewInactiveAccountOnce(serverId, stored: stored, access: access, refresh: refresh, origin: origin)
+    }
+
+    /// `renewInactiveServer`, once per account and refresh token. Both
+    /// `freshAccessToken` paths key the flight by the account they read, so
+    /// a server's most recently used account renewed by either path shares
+    /// one renewal and its refresh token is sent once.
+    private func renewInactiveAccountOnce(_ serverId: String, stored: Account, access: String,
+                                          refresh: String, origin: String) async -> ApproverBearer {
+        let key = "\(serverId)|\(stored.localAccountId)"
         if let flight = inactiveServerRenewals[key], flight.refreshToken == refresh {
             return await flight.task.value
         }

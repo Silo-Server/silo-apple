@@ -1386,10 +1386,11 @@ struct TVMainTabView: View {
         case .changeAccount:
             TVChangeAccountView()
         case .serverSetup:
-            // Pushed from the server list's "Add Server" button — staying
-            // on the nav stack means the tvOS back button returns to the
-            // previous active server instead of dropping the authenticated
-            // tree entirely. Successful `connect()` flips authState to
+            // Pushed from the server list's "Add Server" button and
+            // Settings › Accounts' "Add a server" — staying on the nav stack
+            // means the tvOS back button returns to the previous active
+            // server instead of dropping the authenticated tree entirely.
+            // Successful `connect()` flips authState to
             // `.needsLogin` and replaces this view tree.
             TVServerSetupView(router: router)
         default:

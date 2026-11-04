@@ -18,9 +18,9 @@ struct AccountSignInRequest: Equatable {
 /// downloads it deletes.
 struct AccountRemovalRequest: Identifiable, Equatable {
     enum Action: Equatable {
+        /// Also removes the server when, once confirmed, this is its last
+        /// account: a server with no account isn't kept.
         case signOut(localAccountId: String)
-        /// Also signing out of the server's only account: a server with no
-        /// account isn't kept.
         case removeServer
         /// Keep the new sign-in and sign out of the old account.
         case replace(localAccountId: String)
@@ -273,6 +273,10 @@ extension AppRouter {
             defer { isSigningOut = false }
             if ServerRegistry.shared.activeServerId != request.serverId {
                 guard await ServerRegistry.shared.switchTo(serverId: request.serverId) else {
+                    #if os(iOS)
+                    // A TV approval waiting on this sign-in has none to wait on.
+                    _ = takePendingDeviceApproval()
+                    #endif
                     accountActionError = AccountSwitchError.serverSwitchFailed.errorDescription
                     return
                 }
@@ -353,7 +357,7 @@ extension AppRouter {
         let isOnlyAccount = directory.accounts(onServer: serverId).allSatisfy { $0.localAccountId == localAccountId }
         pendingRemoval = AccountRemovalRequest(
             serverId: serverId,
-            action: isOnlyAccount ? .removeServer : .signOut(localAccountId: localAccountId),
+            action: .signOut(localAccountId: localAccountId),
             title: "Sign out of \(account?.username ?? "this account") on \(serverName)?",
             message: Self.signOutMessage(
                 removingServer: isOnlyAccount ? serverName : nil,
@@ -424,8 +428,17 @@ extension AppRouter {
     /// Signs out of one account. Signing out of the account in use leaves
     /// for Change Account when another account can be chosen, else for
     /// sign-in; any other account goes without leaving the current screen.
+    /// The server's last account takes the server with it, decided now
+    /// rather than when the confirmation was asked, so an account added
+    /// meanwhile stays.
     private func signOut(account localAccountId: String, onServer serverId: String) {
         guard !isSigningOut else { return }
+        let directory = AccountDirectory.shared
+        directory.reload()
+        if directory.accounts(onServer: serverId).allSatisfy({ $0.localAccountId == localAccountId }) {
+            removeServer(serverId, signingOut: localAccountId)
+            return
+        }
         isSigningOut = true
         accountActionError = nil
         Task {
@@ -469,7 +482,9 @@ extension AppRouter {
         return true
     }
 
-    private func removeServer(_ serverId: String) {
+    /// Removes a server and every account on it. `signingOut` is the last
+    /// account when a sign-out removes the server.
+    private func removeServer(_ serverId: String, signingOut localAccountId: String? = nil) {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
@@ -477,10 +492,21 @@ extension AppRouter {
             defer { isSigningOut = false }
             guard await endRemotePlaybackBeforeSignOut() else { return }
             let wasActive = ServerRegistry.shared.activeServerId == serverId
+            let signsOutAccountInUse: Bool
+            if let localAccountId, wasActive {
+                signsOutAccountInUse = await TokenStore.shared.requestAccountId(onServer: serverId) == localAccountId
+            } else {
+                signsOutAccountInUse = false
+            }
             guard await AccountSessions.removeServer(serverId) else {
                 accountActionError = "Silo couldn't remove the saved server. Please try again."
                 return
             }
+            #if !os(tvOS)
+            // As for any sign-out of the account in use: if the server is
+            // added again, its next browser sign-in asks for an account choice.
+            if signsOutAccountInUse { SelectAccountPrompt.shared.request(serverId: serverId, autoStart: false) }
+            #endif
             guard wasActive else { return }
             if !ServerRegistry.shared.hasActiveServer {
                 withoutStackCrossfade { resetAfterServerResolution(to: .needsServerSetup) }

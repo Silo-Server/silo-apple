@@ -2111,6 +2111,14 @@ final class PlayerSettings {
         ]
     }
 
+    /// The account and profile a scope identifier names. Nil for one from
+    /// before accounts.
+    static func scopeOwner(of scopeID: String) -> (localAccountId: String, profileId: String)? {
+        guard let parts = scopeIdentifierParts(scopeID), parts.count == 5,
+              parts[0] == AccountScopedKeyAdoption.versionMarker else { return nil }
+        return (parts[2], parts[3])
+    }
+
     /// A scope identifier's `|`-separated fields, or nil when it isn't
     /// base64 of UTF-8.
     private static func scopeIdentifierParts(_ scopeID: String) -> [String]? {
@@ -2118,13 +2126,25 @@ final class PlayerSettings {
         return raw.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
     }
 
+    /// Unlike the other values, a queue already under `scopeID` doesn't stop
+    /// the move: the two merge, so the old scope's writes aren't left where
+    /// no flusher sends them. Where both have a key, the one already under
+    /// `scopeID` is the later edit and stays.
     private static func adoptPendingWrites(from legacyScopeID: String, to scopeID: String, defaults: UserDefaults) {
         let legacyKey = pendingWritesKey(for: legacyScopeID)
         let key = pendingWritesKey(for: scopeID)
-        guard defaults.object(forKey: key) == nil,
-              let data = defaults.data(forKey: legacyKey),
-              let stored = try? SettingsWireCoding.makeDecoder().decode([String: PendingSettingWrite].self, from: data)
+        let decoder = SettingsWireCoding.makeDecoder()
+        guard let data = defaults.data(forKey: legacyKey),
+              let stored = try? decoder.decode([String: PendingSettingWrite].self, from: data)
         else { return }
+        let existingData = defaults.data(forKey: key)
+        var existing: [String: PendingSettingWrite] = [:]
+        if defaults.object(forKey: key) != nil {
+            // An unreadable queue there stays as it is, and so does this one.
+            guard let existingData,
+                  let decoded = try? decoder.decode([String: PendingSettingWrite].self, from: existingData) else { return }
+            existing = decoded
+        }
         let rebound = stored.mapValues { write in
             guard write.scopeIdentifier == nil || write.scopeIdentifier == legacyScopeID else { return write }
             return PendingSettingWrite(
@@ -2141,10 +2161,15 @@ final class PlayerSettings {
                 isHeld: write.isHeld
             )
         }
-        guard let encoded = try? SettingsWireCoding.makeEncoder().encode(rebound) else { return }
+        let merged = rebound.merging(existing) { _, later in later }
+        guard let encoded = try? SettingsWireCoding.makeEncoder().encode(merged) else { return }
         defaults.set(encoded, forKey: key)
         guard defaults.data(forKey: key) == encoded else {
-            defaults.removeObject(forKey: key)
+            if let existingData {
+                defaults.set(existingData, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
             return
         }
         defaults.removeObject(forKey: legacyKey)

@@ -397,20 +397,28 @@ final class ServerRegistry {
     /// after launch (`scheduleDuplicateServerProof`), and its stored result
     /// lets a proven pair merge offline later.
     ///
-    /// The entry the person just added survives (`preferring`), else the
-    /// active one, else the most recently used. It keeps its id and URL, and
-    /// the other address is dropped. Its accounts and local data move to the
-    /// survivor (`AccountStore.planServerMerge`, `ServerMerge`): moves first,
-    /// then the account index commits, then the registry, then the
-    /// leftovers go, so a rerun after an interruption finishes the job.
-    /// Returns, for each dropped id, the survivor's.
+    /// An `https` entry survives an `http` one, so no account moves to a
+    /// cleartext address it hasn't used. Otherwise the entry the person just
+    /// added survives (`preferring`), else the active one, else the most
+    /// recently used. It keeps its id and URL, and the other address is
+    /// dropped. Its accounts and local data move to the survivor
+    /// (`AccountStore.planServerMerge`, `ServerMerge`): moves first, then the
+    /// account index commits, then the registry, then the leftovers go, so a
+    /// rerun after an interruption finishes the job.
+    ///
+    /// `whileRunning` skips a merge that moves, removes, or keeps the
+    /// account in use: its downloads and session are loaded, and a merge
+    /// under them would be overwritten. The stored proof keeps the pair
+    /// proven, so the next launch merges it here in `init`, before anything
+    /// loads. Returns, for each dropped id, the survivor's.
     @discardableResult
-    func mergeDuplicateServers(preferring preferredId: String? = nil) -> [String: String] {
+    func mergeDuplicateServers(preferring preferredId: String? = nil, whileRunning: Bool = false) -> [String: String] {
         var survivors: [String: String] = [:]
         let saved = (try? accounts.accounts()) ?? []
+        let accountInUse = whileRunning ? AccountScope.current?.localAccountId : nil
         for (dropped, survivor) in duplicateServerCandidates(preferring: preferredId)
         where ServerMerge.cachedProof(dropped.id, survivor.id, accounts: saved) == .proven
-            && merge(dropped, into: survivor) {
+            && merge(dropped, into: survivor, deferringAccount: accountInUse) {
             survivors[dropped.id] = survivor.id
         }
         // Records an interrupted merge left behind.
@@ -423,10 +431,13 @@ final class ServerRegistry {
     private func duplicateServerCandidates(preferring preferredId: String? = nil) -> [(ServerEntry, ServerEntry)] {
         let identified = entries.filter { $0.verifiedServerId != nil }
         return Dictionary(grouping: identified, by: { $0.verifiedServerId ?? "" }).values.flatMap { group in
+            // Survivors come from the `https` entries when there are any.
+            let secure = group.filter(Self.isHTTPS)
+            let eligible = secure.isEmpty ? group : secure
             guard group.count > 1,
-                  let survivor = group.first(where: { $0.id == preferredId })
-                    ?? group.first(where: { $0.id == activeServerId })
-                    ?? group.max(by: { $0.lastUsedAt < $1.lastUsedAt }) else { return [(ServerEntry, ServerEntry)]() }
+                  let survivor = eligible.first(where: { $0.id == preferredId })
+                    ?? eligible.first(where: { $0.id == activeServerId })
+                    ?? eligible.max(by: { $0.lastUsedAt < $1.lastUsedAt }) else { return [(ServerEntry, ServerEntry)]() }
             return group.filter { $0.id != survivor.id }.map { ($0, survivor) }
         }
     }
@@ -485,7 +496,7 @@ final class ServerRegistry {
     /// download manager, so both load them again.
     @discardableResult
     private func mergeDuplicateServersAfterLaunch(preferring preferredId: String? = nil) -> [String: String] {
-        let survivors = mergeDuplicateServers(preferring: preferredId)
+        let survivors = mergeDuplicateServers(preferring: preferredId, whileRunning: true)
         guard !survivors.isEmpty else { return survivors }
         let tokenStore = tokenStore
         let activeId = activeServerId ?? ""
@@ -501,11 +512,27 @@ final class ServerRegistry {
         return survivors
     }
 
-    private func merge(_ dropped: ServerEntry, into survivor: ServerEntry) -> Bool {
+    private static func isHTTPS(_ entry: ServerEntry) -> Bool {
+        URL(string: entry.url)?.scheme?.lowercased() == "https"
+    }
+
+    private func merge(_ dropped: ServerEntry, into survivor: ServerEntry, deferringAccount accountInUse: String? = nil) -> Bool {
+        // Never onto a cleartext address from an `https` one.
+        guard !Self.isHTTPS(dropped) || Self.isHTTPS(survivor) else { return false }
         let plan: AccountServerMerge
         do {
             plan = try accounts.planServerMerge(dropping: dropped.id, into: survivor.id)
-            ServerMerge.moveLocalData(plan, from: dropped, to: survivor)
+            if let accountInUse, plan.touches(accountInUse) {
+                // Left for the next launch (`mergeDuplicateServers`).
+                recordRegistryEvent(phase: "mergeServer", outcome: "deferred", reason: "accountInUse")
+                return false
+            }
+            guard ServerMerge.moveLocalData(plan, from: dropped, to: survivor) else {
+                // Some downloads are still under the dropped server; keep
+                // both entries until a later launch moves them.
+                recordRegistryEvent(phase: "mergeServer", outcome: "deferred", reason: "downloadsNotMoved")
+                return false
+            }
             try accounts.commitServerMerge(plan, origin: ServerRegistry.normalize(url: survivor.url))
         } catch {
             // Nothing is committed; the next launch or identity check retries.
@@ -520,8 +547,9 @@ final class ServerRegistry {
             entries[index].lastUsedAt = max(entries[index].lastUsedAt, dropped.lastUsedAt)
             if entries[index].fetchedName?.isEmpty != false { entries[index].fetchedName = dropped.fetchedName }
         }
-        // Only an address just added replaces the active entry. Its accounts
-        // and profile moved with it, so the profile stays selected.
+        // An address just added, or an `https` one, replaces the active
+        // entry. Its accounts and profile moved with it, so the profile
+        // stays selected.
         if activeServerId == dropped.id {
             activeServerId = survivor.id
             defaults.set(survivor.url, forKey: SharedStorage.serverUrlKey)

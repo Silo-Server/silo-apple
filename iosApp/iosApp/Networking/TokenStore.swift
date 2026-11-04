@@ -715,7 +715,9 @@ actor TokenStore {
               !previousValue.isEmpty else { return false }
         guard let account = refreshAccountIdentity(),
               account.serverId == expected.serverId,
-              account.serverURL == expectedURL else { return false }
+              account.serverURL == expectedURL,
+              // A rotation captured for one account never lands on another.
+              expected.localAccountId == nil || expected.localAccountId == account.localAccountId else { return false }
         return saveRefreshedTokens(
             accessValue,
             value,
@@ -723,7 +725,8 @@ actor TokenStore {
                 account: RefreshAccountIdentity(
                     serverId: expected.serverId,
                     serverURL: expectedURL,
-                    credentialGenerationID: account.credentialGenerationID
+                    credentialGenerationID: account.credentialGenerationID,
+                    localAccountId: account.localAccountId
                 ),
                 refreshToken: previousValue,
                 owner: credentialOwner

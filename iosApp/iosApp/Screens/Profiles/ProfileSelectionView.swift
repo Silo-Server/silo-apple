@@ -210,10 +210,11 @@ struct ProfileSelectionView: View {
 
     /// With one profile and no PIN there is nothing to choose: open it
     /// (spec §4.2), unless the person asked for the picker, whatever Profile
-    /// Selection says, as Android and Roku do.
+    /// Selection says, as Android and Roku do. A profile already opened and
+    /// waiting on the TV's remember offer isn't opened again.
     private func openOnlyProfileIfNeeded() async {
         guard viewModel.error == nil, !viewModel.requiresPasswordChange,
-              router.authState == .needsProfile,
+              router.authState == .needsProfile, viewModel.rememberOffer == nil,
               viewModel.profiles.count == 1, let only = viewModel.profiles.first, !only.hasPin else { return }
         await viewModel.selectProfile(only, router: router)
     }

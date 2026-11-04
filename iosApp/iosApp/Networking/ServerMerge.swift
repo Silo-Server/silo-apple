@@ -18,11 +18,14 @@ enum ServerMerge {
 
     /// Moves what `merge`'s dropped server keeps on this device to the
     /// accounts that hold it on `survivor`. Runs before
-    /// `AccountStore.commitServerMerge`.
-    static func moveLocalData(_ merge: AccountServerMerge, from dropped: ServerEntry, to survivor: ServerEntry) {
+    /// `AccountStore.commitServerMerge`. False when some downloads could not
+    /// move: the merge must not commit then, since nothing finds the
+    /// dropped server's downloads once its accounts are gone, and the next
+    /// launch retries the whole merge.
+    static func moveLocalData(_ merge: AccountServerMerge, from dropped: ServerEntry, to survivor: ServerEntry) -> Bool {
         let movedIds = Set(merge.moved.map(\.localAccountId))
         let legacyTarget = merge.legacyDataTarget
-        moveDownloads(merge, survivorServerId: survivor.id)
+        guard moveDownloads(merge, survivorServerId: survivor.id) else { return false }
         moveAccountScopedKeys(from: dropped.id, to: survivor.id, accounts: movedIds, legacyTarget: legacyTarget)
         PlayerSettings.moveLocalData(fromServerURL: dropped.url, toServerURL: survivor.url,
                                      accounts: movedIds, legacyTarget: legacyTarget)
@@ -30,6 +33,7 @@ enum ServerMerge {
                                       accounts: movedIds, legacyTarget: legacyTarget)
         UnrenderableOnboardingTourSuppression.move(fromServer: dropped.id, toServer: survivor.id,
                                                    accounts: movedIds, legacyTarget: legacyTarget)
+        return true
     }
 
     /// Deletes what the dropped server leaves once the registry no longer
@@ -155,7 +159,7 @@ enum ServerMerge {
     /// Each moved account's directory goes to the survivor, a removed
     /// account's downloads join the account kept in its place, and the
     /// dropped server's scopes from before accounts join its owner's.
-    private static func moveDownloads(_ merge: AccountServerMerge, survivorServerId: String) {
+    private static func moveDownloads(_ merge: AccountServerMerge, survivorServerId: String) -> Bool {
         let root = DownloadFilePaths.rootDirectory()
         var complete = true
         for move in merge.downloadMoves {
@@ -180,6 +184,7 @@ enum ServerMerge {
         if !complete {
             logger.error("Some downloads of a merged server could not move yet; the next launch retries")
         }
+        return complete
     }
 
     /// `<prefix>.v2.<dropped>.<account>.…` becomes `<prefix>.v2.<survivor>.<account>.…`

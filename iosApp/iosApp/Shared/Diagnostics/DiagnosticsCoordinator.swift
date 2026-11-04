@@ -3137,11 +3137,18 @@ actor DiagnosticsCoordinator {
             destination: DiagnosticsDestinationChoice
         ) -> DiagnosticsStatusSnapshot? {
             lock.lock()
+            defer { lock.unlock() }
+            return unlockedSnapshot(for: serverId, destination: destination)
+        }
+
+        /// Caller holds `lock`.
+        private static func unlockedSnapshot(
+            for serverId: String,
+            destination: DiagnosticsDestinationChoice
+        ) -> DiagnosticsStatusSnapshot? {
             let index = load()
-            let snapshot = index[key(serverId: serverId, destination: destination)]
+            return index[key(serverId: serverId, destination: destination)]
                 ?? (destination == .selfHosted ? index[serverId] : nil)
-            lock.unlock()
-            return snapshot
         }
 
         /// The snapshot only when it was fetched for `account` (or before
@@ -3152,11 +3159,14 @@ actor DiagnosticsCoordinator {
             destination: DiagnosticsDestinationChoice,
             account: String?
         ) -> DiagnosticsStatusSnapshot? {
+            // One lock for both reads, so a concurrent `record` can't swap in
+            // another account's snapshot after the owner check.
             lock.lock()
-            let owner = loadAccounts()[key(serverId: serverId, destination: destination)]
-            lock.unlock()
-            if let owner, owner != account { return nil }
-            return snapshot(for: serverId, destination: destination)
+            defer { lock.unlock() }
+            if let owner = loadAccounts()[key(serverId: serverId, destination: destination)], owner != account {
+                return nil
+            }
+            return unlockedSnapshot(for: serverId, destination: destination)
         }
 
         private static func key(
