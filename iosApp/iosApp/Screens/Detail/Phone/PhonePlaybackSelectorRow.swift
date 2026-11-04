@@ -190,10 +190,8 @@ struct PhonePlaybackSelectorRow: View {
                     }
             }
             #else
+            // Each row anchors its own drop-down; see `selectorButton`.
             selectorCard
-                .sheet(item: $activeSelector) { kind in
-                    selectorPresentation(for: kind)
-                }
             #endif
         }
     }
@@ -329,10 +327,18 @@ struct PhonePlaybackSelectorRow: View {
             .foregroundColor(.white)
     }
 
+    /// Mac rows open a drop-down below them; elsewhere they open a sheet
+    /// or popover.
+    #if os(macOS)
+    private static let chevronSymbol = "chevron.down"
+    #else
+    private static let chevronSymbol = "chevron.right"
+    #endif
+
     @ViewBuilder
     private func selectorChevron(_ kind: PhonePlaybackSelectorKind) -> some View {
         if isInteractive(kind) {
-            Image(systemName: "chevron.right")
+            Image(systemName: Self.chevronSymbol)
                 .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
                 .foregroundColor(.white.opacity(0.35))
         }
@@ -349,12 +355,29 @@ struct PhonePlaybackSelectorRow: View {
             Button { activeSelector = kind } label: { content() }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(kind.title), \(value(for: kind))")
+                #if os(macOS)
+                .popover(isPresented: dropDownBinding(for: kind), arrowEdge: .bottom) {
+                    selectorPresentation(for: kind)
+                }
+                #endif
         } else {
             content()
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(kind.title), \(value(for: kind))")
         }
     }
+
+    #if os(macOS)
+    /// Presents `kind`'s drop-down while it is the active selector.
+    private func dropDownBinding(for kind: PhonePlaybackSelectorKind) -> Binding<Bool> {
+        Binding(
+            get: { activeSelector == kind },
+            set: { isPresented in
+                if !isPresented, activeSelector == kind { activeSelector = nil }
+            }
+        )
+    }
+    #endif
 
     private var selectorKinds: [PhonePlaybackSelectorKind] {
         var kinds: [PhonePlaybackSelectorKind] = []
@@ -455,6 +478,10 @@ private struct PhonePlaybackSelectorSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var preferredSubtitleLanguage: String?
+    #if os(macOS)
+    /// Height of the Mac drop-down's rows; nil until first measured.
+    @State private var macRowsHeight: CGFloat?
+    #endif
 
     private var editions: [PlaybackEditions.Edition] {
         PlaybackEditions.editions(from: versions)
@@ -475,9 +502,44 @@ private struct PhonePlaybackSelectorSheet: View {
             titledList
         }
         #else
-        titledList
+        macDropDown
         #endif
     }
+
+    #if os(macOS)
+    private static let macDropDownWidth: CGFloat = 400
+    private static let macMaxListHeight: CGFloat = 440
+    /// Scroll target for the checked row. Optional to match the row's `id`.
+    private static let selectedRowID: String? = "selected"
+
+    /// The options, dropping down from the selector row. Choosing one, a
+    /// click outside, or Escape closes it. A popover takes its content's
+    /// ideal size, which a `List` barely has, so the rows sit in a measured
+    /// scroll view: it grows to fit them up to `macMaxListHeight`, then
+    /// scrolls, opening at the checked row like a pop-up menu.
+    private var macDropDown: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    optionContent
+                }
+                .padding(6)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                    macRowsHeight = $0
+                }
+            }
+            .onChange(of: macRowsHeight != nil) {
+                proxy.scrollTo(Self.selectedRowID, anchor: .center)
+            }
+        }
+        .frame(width: Self.macDropDownWidth)
+        .frame(height: macRowsHeight.map { min($0, Self.macMaxListHeight) })
+        // The default glass takes on whatever is behind it, and the white
+        // Play button just below the selectors washes out the rows.
+        .presentationBackground(Color.siloSurfaceVariant.opacity(0.94))
+        .task { await loadPreferredSubtitleLanguage() }
+    }
+    #endif
 
     #if os(iOS)
     /// Just the options, sized to fit and scrolling once they outgrow the
@@ -507,38 +569,25 @@ private struct PhonePlaybackSelectorSheet: View {
         preferredSubtitleLanguage = ProfilePrefsStore.shared.preferredSubtitleLanguage
     }
 
+    #if os(iOS)
     private var titledList: some View {
         NavigationStack {
             List {
                 optionContent
             }
-            #if os(macOS)
-            .listStyle(.inset)
-            #else
             .listStyle(.insetGrouped)
-            #endif
             .scrollContentBackground(.hidden)
             .siloSheetBackground(legacyColor: .siloBackground)
             .task { await loadPreferredSubtitleLanguage() }
             .navigationTitle(kind.title)
-            #if !os(macOS)
             .navigationBarTitleDisplayMode(.inline)
-            #endif
             .toolbar {
-                #if os(macOS)
-                ToolbarItem {
-                    Button("Done") { dismiss() }
-                        .tint(.siloOnSurface)
-                }
-                #else
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .tint(.siloOnSurface)
                 }
-                #endif
             }
         }
-        #if os(iOS)
         // Regular-width iPad uses this view as an anchored popover instead
         // of forcing a phone detent into the split-view detail column.
         .frame(
@@ -546,12 +595,10 @@ private struct PhonePlaybackSelectorSheet: View {
             height: popover == nil ? nil : 480
         )
         .presentationCompactAdaptation(.sheet)
-        #endif
-        #if !os(macOS)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
-        #endif
     }
+    #endif
 
     @ViewBuilder
     private var optionContent: some View {
@@ -723,14 +770,54 @@ private struct PhonePlaybackSelectorSheet: View {
                         .foregroundColor(.siloOnSurface)
                 }
             }
+            #if os(macOS)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 12)
+            #else
             .padding(.vertical, isCompactPopover ? 10 : 4)
             .padding(.horizontal, isCompactPopover ? 16 : 0)
+            #endif
             .contentShape(Rectangle())
         }
+        #if os(macOS)
+        .buttonStyle(MacSelectorOptionButtonStyle())
+        .id(isSelected ? Self.selectedRowID : nil)
+        #else
         .buttonStyle(.plain)
+        #endif
         .disabled(!isEnabled)
         .opacity(isEnabled ? 1 : 0.56)
         .listRowBackground(Color.siloSurfaceVariant)
     }
 }
+
+#if os(macOS)
+/// Highlights a Mac drop-down row under the pointer and while pressed.
+private struct MacSelectorOptionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Row(configuration: configuration)
+    }
+
+    private struct Row: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovered = false
+
+        var body: some View {
+            configuration.label
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(highlightOpacity))
+                )
+                .onHover { isHovered = $0 }
+        }
+
+        private var highlightOpacity: Double {
+            guard isEnabled else { return 0 }
+            if configuration.isPressed { return 0.14 }
+            return isHovered ? 0.08 : 0
+        }
+    }
+}
+#endif
 #endif
