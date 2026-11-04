@@ -58,8 +58,20 @@ struct MouseDragScrollGesture {
             break
         }
         samples.append((time, point.x))
-        samples.removeAll { time - $0.time > Self.velocityWindow }
+        pruneSamples(before: time - Self.velocityWindow)
         return true
+    }
+
+    /// Drops samples older than `cutoff`. When fewer than two recent samples
+    /// would remain, the newest older one stays as the baseline, so a flick
+    /// that arrives as a single move after a pause still has a velocity.
+    private mutating func pruneSamples(before cutoff: TimeInterval) {
+        let recent = samples.filter { $0.time >= cutoff }
+        if recent.count < 2, let baseline = samples.last(where: { $0.time < cutoff }) {
+            samples = [baseline] + recent
+        } else {
+            samples = recent
+        }
     }
 
     /// Pointer velocity at release in points per second, positive to the

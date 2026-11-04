@@ -41,6 +41,22 @@ final class MouseDragScrollGestureTests: XCTestCase {
         XCTAssertEqual(gesture.releaseVelocity(at: 0.1), 1_000, accuracy: 1)
     }
 
+    func testFlickArrivingAsOneMoveAfterAHoldStillGlides() {
+        var gesture = MouseDragScrollGesture(start: start, time: 0)
+        // Held still, then the whole flick lands in one drag event.
+        XCTAssertTrue(gesture.move(to: CGPoint(x: 300, y: 100), time: 0.2))
+        XCTAssertEqual(gesture.releaseVelocity(at: 0.205), 1_000, accuracy: 1)
+    }
+
+    func testFlickAfterAHoldMeasuresOnlyTheRecentMotion() {
+        var gesture = MouseDragScrollGesture(start: start, time: 0)
+        // Held still for a second, then 20 points every 10 ms.
+        for step in 1...5 {
+            gesture.move(to: CGPoint(x: 100 + CGFloat(step) * 20, y: 100), time: 1 + Double(step) * 0.01)
+        }
+        XCTAssertEqual(gesture.releaseVelocity(at: 1.05), 2_000, accuracy: 1)
+    }
+
     func testPausingBeforeReleaseCancelsTheFling() {
         var gesture = MouseDragScrollGesture(start: start, time: 0)
         gesture.move(to: CGPoint(x: 140, y: 100), time: 0.02)

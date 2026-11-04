@@ -49,7 +49,9 @@ final class MacMouseDragScroller {
     private struct Session {
         weak var rail: NSScrollView?
         let window: NSWindow
-        let startOriginX: CGFloat
+        /// Rail origin that matches zero pointer travel. Moved when the rail
+        /// stops at an end, so reversing direction scrolls straight away.
+        var startOriginX: CGFloat
         var gesture: MouseDragScrollGesture
     }
 
@@ -135,6 +137,8 @@ final class MacMouseDragScroller {
 
         // Content follows the pointer, so the origin moves against it.
         setOriginX(current.startOriginX - current.gesture.translation, of: rail)
+        // Past an end the rail stays put; drop that overshoot from the baseline.
+        session?.startOriginX = rail.contentView.bounds.origin.x + current.gesture.translation
         if wasDragging { return nil }
 
         // The drag just began: end the card's press away from it so the
