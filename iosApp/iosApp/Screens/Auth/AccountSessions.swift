@@ -75,8 +75,9 @@ enum AccountSessions {
         defer { AccountDirectory.shared.reload() }
         // Read after the deletion, which suspends: an account switch
         // meanwhile changes which path signs this account out.
-        let requestAccountId = await tokenStore.requestAccountId(onServer: serverId)
-        if ServerRegistry.shared.activeServerId == serverId, requestAccountId == localAccountId {
+        // Only a loaded session signs out through AuthService; a selected
+        // account that needs to sign in again has none and signs out below.
+        if await tokenStore.loadedAccountId(onServer: serverId) == localAccountId {
             return await AuthService.shared.signOut(expecting: localAccountId).outcome
         }
 
@@ -103,13 +104,15 @@ enum AccountSessions {
 
     /// Removes a saved server: every account on it is signed out (its
     /// downloads and local data deleted, its session revoked), then the
-    /// server and its credentials are forgotten.
-    static func removeServer(_ serverId: String) async -> Bool {
+    /// server and its credentials are forgotten. `onlyIf` is checked again
+    /// just before the removal commits (`ServerRegistry.remove`).
+    static func removeServer(_ serverId: String, onlyIf stillRemovable: (@MainActor () -> Bool)? = nil) async -> Bool {
         guard !(await TokenStore.shared.hasTemporaryScope()) else { return false }
         let accounts = (try? AccountStore.shared.accounts(onServer: serverId)) ?? []
         for account in accounts { await deleteLocalData(of: account) }
         let wasActive = ServerRegistry.shared.activeServerId == serverId
-        let removed = await ServerRegistry.shared.remove(serverId: serverId, resolveFallbackProfile: wasActive)
+        let removed = await ServerRegistry.shared.remove(serverId: serverId, resolveFallbackProfile: wasActive,
+                                                         onlyIf: stillRemovable)
         if removed { accounts.forEach(revoke) }
         AccountDirectory.shared.reload()
         return removed
@@ -145,9 +148,14 @@ enum AccountSessions {
         let others = registry.entries.map(\.id).filter { $0 != activeId && hasNoAccounts(onServer: $0) }
         guard !others.isEmpty else { return }
         Task {
-            // Checked again: one may have been opened, or signed in to, since.
-            for serverId in others where serverId != registry.activeServerId && hasNoAccounts(onServer: serverId) {
-                _ = await removeServer(serverId)
+            // Checked again: one may have been opened, or signed in to, since,
+            // including while its removal waits to turn its pushes off.
+            for serverId in others {
+                let stillRemovable: @MainActor () -> Bool = {
+                    serverId != registry.activeServerId && hasNoAccounts(onServer: serverId)
+                }
+                guard stillRemovable() else { continue }
+                _ = await removeServer(serverId, onlyIf: stillRemovable)
             }
         }
     }

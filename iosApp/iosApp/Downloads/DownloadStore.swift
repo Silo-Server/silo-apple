@@ -291,6 +291,10 @@ actor DownloadStore {
         if let legacy = incoming.legacyMonitorIds {
             kept.legacyMonitorIds = (kept.legacyMonitorIds ?? []).union(legacy)
         }
+        // Legacy cleanup either store still owes stays owed, or the next sync
+        // would import old rows and monitors instead of retiring them.
+        if incoming.legacyRowsPending == true { kept.legacyRowsPending = true }
+        if incoming.legacyMonitorsPending == true { kept.legacyMonitorsPending = true }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
         do {

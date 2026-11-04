@@ -1435,6 +1435,15 @@ actor TokenStore {
         return AccountSignOutResult(serverId: serverId, localAccountId: signedOut, durable: durable)
     }
 
+    /// The account whose credentials requests send on `serverId` now. Nil
+    /// when none is loaded, such as a selected account that needs to sign in
+    /// again; `requestAccountId(onServer:)` falls back to the selection.
+    func loadedAccountId(onServer serverId: String) -> String? {
+        guard !serverId.isEmpty, serverId == activeServerId else { return nil }
+        ensureLoaded()
+        return activeAccount?.localAccountId
+    }
+
     /// The saved account requests on `serverId` use now: the selected one on
     /// the active server, otherwise the server's most recently used account.
     /// Nil when the server has none, or its accounts can't be read.
@@ -1450,14 +1459,17 @@ actor TokenStore {
     /// Signs out of a saved account that requests do not use: another
     /// account on the active server, or any account on another server. Its
     /// record and this device user's profile proof go; the account in use
-    /// is untouched. The account requests use signs out through
-    /// `signOutActiveAccount()`, which this refuses.
+    /// is untouched. The loaded account (`loadedAccountId(onServer:)`) signs
+    /// out through `signOutActiveAccount()`, which this refuses.
     func signOutInactiveAccount(_ localAccountId: String, onServer serverId: String) -> AccountSignOutResult {
         let refused = AccountSignOutResult(serverId: serverId, localAccountId: nil, durable: false)
         guard !serverId.isEmpty, temporaryScope?.serverId != serverId else { return refused }
-        if serverId == activeServerId, requestAccountId(onServer: serverId) == localAccountId { return refused }
+        if loadedAccountId(onServer: serverId) == localAccountId { return refused }
         do {
             try accounts.signOut(localAccountId, onServer: serverId)
+            // A selected account that needs to sign in again has no session
+            // loaded; it signs out here, and nothing stays selected.
+            if accounts.selection()?.localAccountId == localAccountId { _ = accounts.select(nil) }
         } catch {
             recordSessionEvent(phase: "clearTokens", outcome: "failed", reason: Self.persistenceFailureReason(error))
             return refused

@@ -2129,7 +2129,8 @@ final class PlayerSettings {
     /// Unlike the other values, a queue already under `scopeID` doesn't stop
     /// the move: the two merge, so the old scope's writes aren't left where
     /// no flusher sends them. Where both have a key, the one already under
-    /// `scopeID` is the later edit and stays.
+    /// `scopeID` is the later edit and stays, keeping what the old one still
+    /// owes (`PendingSettingWrite.superseding`).
     private static func adoptPendingWrites(from legacyScopeID: String, to scopeID: String, defaults: UserDefaults) {
         let legacyKey = pendingWritesKey(for: legacyScopeID)
         let key = pendingWritesKey(for: scopeID)
@@ -2161,7 +2162,9 @@ final class PlayerSettings {
                 isHeld: write.isHeld
             )
         }
-        let merged = rebound.merging(existing) { _, later in later }
+        let merged = rebound.merging(existing) { older, later in
+            older.scopeIdentifier == scopeID ? later.superseding(older) : later
+        }
         guard let encoded = try? SettingsWireCoding.makeEncoder().encode(merged) else { return }
         defaults.set(encoded, forKey: key)
         guard defaults.data(forKey: key) == encoded else {

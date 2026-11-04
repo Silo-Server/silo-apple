@@ -157,14 +157,13 @@ struct AccountMigration {
         }
     }
 
-    /// An old per-token slot as the app before accounts read it: a strict
-    /// read first, so an unreadable Keychain throws `SharedKeychain.ReadError`
-    /// instead of passing for empty, then, when it holds nothing, the
-    /// lenient read that still finds copies in the older locations
-    /// `SharedKeychain.get` moves forward (tvOS ordinary persona, access
-    /// groups from before the shared one).
+    /// An old per-token slot as the app before accounts read it, including
+    /// the older locations `SharedKeychain.get` moves forward (tvOS ordinary
+    /// persona, access groups from before the shared one). Every location is
+    /// read strictly, so an unreadable one throws `SharedKeychain.ReadError`
+    /// instead of passing for empty.
     private func legacyRead(_ account: String, in keychain: SharedKeychain) throws -> String? {
-        try keychain.getChecked(account) ?? keychain.get(account)
+        try keychain.getCheckedIncludingOlderLocations(account)
     }
 
     /// Deletes the old credential slots of each server in `serverIds`, then

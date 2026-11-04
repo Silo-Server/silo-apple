@@ -293,6 +293,32 @@ struct PendingSettingWrite: Equatable, Codable {
         )
     }
 
+    /// This write, the later one for its key, keeping what `older` still
+    /// owes, as a later edit does in `PlayerSettingsFlusher.enqueue` and
+    /// `enqueueDelete`: a clear of this device's value, a profile value not
+    /// yet stored, and the device value a clear replaced.
+    func superseding(_ older: PendingSettingWrite) -> PendingSettingWrite {
+        let owesClear = (older.scope == .profile && older.clearsDeviceValue)
+            || (older.operation == .delete && older.scope == .profileDevice)
+        var olderProfileValue = older.owedProfileValue
+        if older.scope == .profile, case .set(let value) = older.operation { olderProfileValue = value }
+        var olderDeviceValue = older.fallbackDeviceValue
+        if older.scope == .profileDevice, case .set(let value) = older.operation { olderDeviceValue = value }
+        return PendingSettingWrite(
+            operation: operation,
+            scope: scope,
+            clearsDeviceValue: clearsDeviceValue || owesClear,
+            onlyWhereProfileScoped: onlyWhereProfileScoped,
+            fallbackDeviceValue: fallbackDeviceValue ?? olderDeviceValue,
+            owedProfileValue: owedProfileValue ?? olderProfileValue,
+            storedProfileValue: storedProfileValue,
+            scopeIdentifier: scopeIdentifier,
+            profileId: profileId,
+            failedAttempts: failedAttempts,
+            isHeld: isHeld
+        )
+    }
+
     /// What a profile write that clears this device's value still owes once
     /// it stored `profileValue`: the clear alone.
     func remainingDeviceClear(exposing profileValue: SettingJSONValue) -> PendingSettingWrite {

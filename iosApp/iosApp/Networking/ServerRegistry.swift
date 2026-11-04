@@ -758,10 +758,13 @@ final class ServerRegistry {
 
     /// Forget the entry and its credentials. Removing the active server
     /// selects the most recently used remaining server, or clears setup.
+    /// `onlyIf` is checked again under the identity transition, after the
+    /// push wait, and the server stays when it no longer holds.
     @discardableResult
     func remove(
         serverId: String,
-        resolveFallbackProfile: Bool = false
+        resolveFallbackProfile: Bool = false,
+        onlyIf stillRemovable: (@MainActor () -> Bool)? = nil
     ) async -> Bool {
         // Runs before the credentials are deleted: the retirement it queues
         // needs only the installation key and is retried after they are
@@ -772,14 +775,16 @@ final class ServerRegistry {
         if turnsPushOff {
             await unregisterPush(serverId)
         }
-        let removed = await removeEntry(serverId: serverId, resolveFallbackProfile: resolveFallbackProfile)
+        let removed = await removeEntry(serverId: serverId, resolveFallbackProfile: resolveFallbackProfile,
+                                        onlyIf: stillRemovable)
         if turnsPushOff, !removed {
             await restorePush(serverId)
         }
         return removed
     }
 
-    private func removeEntry(serverId: String, resolveFallbackProfile: Bool) async -> Bool {
+    private func removeEntry(serverId: String, resolveFallbackProfile: Bool,
+                             onlyIf stillRemovable: (@MainActor () -> Bool)?) async -> Bool {
         guard let transitionLease = await httpClient.beginIdentityTransition() else {
             recordRegistryEvent(
                 phase: "removeServer",
@@ -804,6 +809,10 @@ final class ServerRegistry {
                 outcome: "failed",
                 reason: "unknownServer"
             )
+            return false
+        }
+        if let stillRemovable, !(await stillRemovable()) {
+            await httpClient.endIdentityTransition(transitionLease)
             return false
         }
         let removesActiveServer = activeServerId == serverId

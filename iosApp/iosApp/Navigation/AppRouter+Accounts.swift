@@ -269,13 +269,17 @@ extension AppRouter {
         guard !isSigningOut else { return }
         isSigningOut = true
         accountActionError = nil
+        #if os(iOS)
+        let approval = pendingDeviceApproval
+        #endif
         Task {
             defer { isSigningOut = false }
             if ServerRegistry.shared.activeServerId != request.serverId {
                 guard await ServerRegistry.shared.switchTo(serverId: request.serverId) else {
                     #if os(iOS)
-                    // A TV approval waiting on this sign-in has none to wait on.
-                    _ = takePendingDeviceApproval()
+                    // The TV approval waiting on this sign-in has none to wait
+                    // on; a newer one that arrived during the switch stays.
+                    if let approval, pendingDeviceApproval == approval { _ = takePendingDeviceApproval() }
                     #endif
                     accountActionError = AccountSwitchError.serverSwitchFailed.errorDescription
                     return
@@ -354,7 +358,7 @@ extension AppRouter {
         let account = directory.account(localAccountId)
         let serverName = ServerRegistry.shared.entry(with: serverId)?.displayName ?? "this server"
         let summary = await AccountSessions.downloadSummary(account: localAccountId, onServer: serverId)
-        let isOnlyAccount = directory.accounts(onServer: serverId).allSatisfy { $0.localAccountId == localAccountId }
+        let isOnlyAccount = Self.isLastAccount(localAccountId, onServer: serverId, in: directory)
         pendingRemoval = AccountRemovalRequest(
             serverId: serverId,
             action: .signOut(localAccountId: localAccountId),
@@ -425,6 +429,15 @@ extension AppRouter {
         }
     }
 
+    /// Whether `localAccountId` is the only account saved on `serverId`.
+    /// False when the account list couldn't be read or doesn't list it, so
+    /// an unreadable list never takes the whole server, and other accounts,
+    /// with one sign-out.
+    private static func isLastAccount(_ localAccountId: String, onServer serverId: String,
+                                      in directory: AccountDirectory) -> Bool {
+        directory.isReadable && directory.accounts(onServer: serverId).map(\.localAccountId) == [localAccountId]
+    }
+
     /// Signs out of one account. Signing out of the account in use leaves
     /// for Change Account when another account can be chosen, else for
     /// sign-in; any other account goes without leaving the current screen.
@@ -435,7 +448,7 @@ extension AppRouter {
         guard !isSigningOut else { return }
         let directory = AccountDirectory.shared
         directory.reload()
-        if directory.accounts(onServer: serverId).allSatisfy({ $0.localAccountId == localAccountId }) {
+        if Self.isLastAccount(localAccountId, onServer: serverId, in: directory) {
             removeServer(serverId, signingOut: localAccountId)
             return
         }

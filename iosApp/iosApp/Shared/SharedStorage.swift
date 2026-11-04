@@ -421,6 +421,50 @@ struct SharedKeychain {
         return nil
     }
 
+    /// `getChecked`, then the older locations `get` moves values forward
+    /// from (tvOS ordinary persona, access groups from before the shared
+    /// one), each read strictly: a location that can't be read throws
+    /// `ReadError` instead of passing for empty. A group this build isn't
+    /// entitled to holds nothing it wrote, so it reads as empty.
+    func getCheckedIncludingOlderLocations(_ account: String) throws -> String? {
+        if let value = try getChecked(account) { return value }
+        // As in `get`: with the app-local fallback in use, that group is the
+        // store, and moving "legacy" copies out of it would delete them.
+        guard !shouldUseAppLocalFallback(for: readResult(account: account, accessGroup: accessGroup).status) else {
+            return nil
+        }
+        #if os(tvOS)
+        if audience == .userIndependent, usesUserIndependentKeychain {
+            let legacyKeychain = withAudience(.currentUser)
+            if let legacy = try legacyKeychain.getCheckedIncludingOlderLocations(account) {
+                if set(legacy, for: account) {
+                    legacyKeychain.delete(account)
+                }
+                return legacy
+            }
+        }
+        #endif
+        guard accessGroup != nil else { return nil }
+        for candidate in Self.legacyFallbackAccessGroups() {
+            let result = readResult(account: account, accessGroup: candidate)
+            switch result.status {
+            case errSecSuccess:
+                break
+            case errSecItemNotFound, errSecMissingEntitlement:
+                continue
+            default:
+                Self.logger.error("Keychain checked read of an older location failed: status=\(result.status, privacy: .public)")
+                throw ReadError(status: result.status)
+            }
+            guard let legacy = result.value else { continue }
+            if set(legacy, for: account) {
+                deleteLegacy(account: account, accessGroup: candidate)
+            }
+            return legacy
+        }
+        return nil
+    }
+
     func get(_ account: String) -> String? {
         let configuredRead = readResult(account: account, accessGroup: accessGroup)
         if let found = configuredRead.value {
