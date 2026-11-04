@@ -47,8 +47,9 @@ enum AccountSessions {
         let switched = await TokenStore.shared.switchActiveAccount(localAccountId: localAccountId)
         if switched {
             // An account boundary is as hard as a server one: nothing cached
-            // for the previous account may show for this one.
-            AuthService.shared.clearCachesForServerChange()
+            // in memory for the previous account may show for this one. Its
+            // saved snapshots stay, keyed by account.
+            AuthService.shared.clearCachesForAccountChange()
         }
         await HTTPClient.shared.endIdentityTransition(lease)
         #if os(iOS) || os(tvOS)

@@ -1056,4 +1056,14 @@ final class AuthService: @unchecked Sendable {
     func clearCachesForServerChange() {
         clearAllCaches()
     }
+
+    /// Another account on the same server: nothing in memory crosses the
+    /// boundary, but the saved snapshots stay, since they are kept per
+    /// server, account and profile and each account reads only its own.
+    @MainActor
+    func clearCachesForAccountChange() {
+        StartupContentPrefetcher.resetAllPrefetches()
+        ResponseCache.shared.clearMemory()
+        resetIdentityScopedStores(forgetWatchPartyRecent: true, preservingTrailerReturn: false)
+    }
 }
