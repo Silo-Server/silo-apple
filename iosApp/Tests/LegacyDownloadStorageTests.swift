@@ -5,6 +5,8 @@ import Foundation
 /// Covers the one-shot removal of downloads saved by earlier versions and
 /// the store's refusal to overwrite a file it could not load.
 final class LegacyDownloadStorageTests: XCTestCase {
+    /// The account that adopted the server's data from before accounts.
+    private static let account = "6F9619FF-8B86-D011-B42D-00C04FC964FF"
     private var sandbox: URL!
     private var root: URL!
 
@@ -46,7 +48,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         XCTAssertEqual(try contents(of: root), [LegacyDownloadStorage.markerFileName, "server"])
         XCTAssertEqual(try contents(of: scope), [DownloadFilePaths.storeFileName], "only a fresh store is left")
         XCTAssertEqual(try contents(of: sandbox), ["SiloDownloads"], "the moved-aside tree is deleted")
-        let carried = await store.load(serverId: "server", profileId: "profile")
+        let carried = await store.load(serverId: "server", localAccountId: Self.account, profileId: "profile")
         XCTAssertTrue(carried.records.isEmpty)
         XCTAssertEqual(carried.legacyRowsPending, true, "the scope's first registry read deletes the old rows")
         XCTAssertEqual(carried.legacyMonitorsPending, true, "the scope's first monitor list sets the old monitors aside")
@@ -57,10 +59,10 @@ final class LegacyDownloadStorageTests: XCTestCase {
         let fresh = makeStore()
         var file = DownloadStoreFile.empty
         file.pendingServerDeletes = ["after-upgrade"]
-        await fresh.save(file, serverId: "server", profileId: "profile")
+        await fresh.save(file, serverId: "server", localAccountId: Self.account, profileId: "profile")
         let stateOnRelaunch = await fresh.legacyStorageState()
         XCTAssertEqual(stateOnRelaunch, .removed(noticePending: true))
-        let reloaded = await fresh.load(serverId: "server", profileId: "profile")
+        let reloaded = await fresh.load(serverId: "server", localAccountId: Self.account, profileId: "profile")
         XCTAssertEqual(reloaded.pendingServerDeletes, ["after-upgrade"])
     }
 
@@ -93,7 +95,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         let removal = await store.removeLegacyStorage()
         XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: false, completed: true))
         XCTAssertEqual(try contents(of: root), [LegacyDownloadStorage.markerFileName])
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", localAccountId: Self.account, profileId: "profile")
         XCTAssertNil(loaded.legacyRowsPending)
     }
 
@@ -118,7 +120,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         let removal = await store.removeLegacyStorage()
         XCTAssertTrue(removal.completed)
 
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", localAccountId: Self.account, profileId: "profile")
         XCTAssertTrue(loaded.records.isEmpty)
         let queue = loaded.progressQueue.sorted { $0.mediaItemId < $1.mediaItemId }
         XCTAssertEqual(queue.map(\.mediaItemId), ["episode-1", "movie-9"], "newest entry per item; the unreadable one is dropped")
@@ -140,7 +142,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: false, completed: true))
         let state = await store.legacyStorageState()
         XCTAssertEqual(state, .removed(noticePending: false))
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", localAccountId: Self.account, profileId: "profile")
         XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-1"])
     }
 
@@ -154,7 +156,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
         """)
         let store = makeStore()
         _ = await store.removeLegacyStorage()
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", localAccountId: Self.account, profileId: "profile")
         XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-2"])
     }
 
@@ -173,7 +175,7 @@ final class LegacyDownloadStorageTests: XCTestCase {
 
         XCTAssertEqual(removal, LegacyDownloadStorage.Removal(hadDownloads: true, completed: false))
         XCTAssertEqual(try contents(of: sandbox), ["SiloDownloads"], "the moved-aside tree is deleted anyway")
-        let loaded = await store.load(serverId: LegacyDownloadStorage.markerFileName, profileId: "profile")
+        let loaded = await store.load(serverId: LegacyDownloadStorage.markerFileName, localAccountId: Self.account, profileId: "profile")
         XCTAssertEqual(loaded.progressQueue.map(\.mediaItemId), ["movie-3"], "the queue survives in the new root")
     }
 
@@ -251,12 +253,12 @@ final class LegacyDownloadStorageTests: XCTestCase {
 
     func testUndecodableStoreIsQuarantinedInsteadOfOverwritten() async throws {
         let garbage = Data("{\"version\": \"not a number\"".utf8)
-        let scope = try writeScope(server: "server", profile: "profile", storeJSON: nil)
+        let scope = try writeScope(server: "server", profile: "profile", account: Self.account, storeJSON: nil)
         let storeURL = scope.appendingPathComponent(DownloadFilePaths.storeFileName)
         try garbage.write(to: storeURL)
         let store = makeStore()
 
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", localAccountId: Self.account, profileId: "profile")
         XCTAssertTrue(loaded.records.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: storeURL.path))
         let quarantined = try contents(of: scope).filter { $0.hasPrefix("store.json.corrupt-") }
@@ -267,26 +269,26 @@ final class LegacyDownloadStorageTests: XCTestCase {
         // The empty registry now saves normally and leaves the original alone.
         var file = DownloadStoreFile.empty
         file.pendingServerDeletes = ["new"]
-        await store.save(file, serverId: "server", profileId: "profile")
-        let pending = await store.load(serverId: "server", profileId: "profile").pendingServerDeletes
+        await store.save(file, serverId: "server", localAccountId: Self.account, profileId: "profile")
+        let pending = await store.load(serverId: "server", localAccountId: Self.account, profileId: "profile").pendingServerDeletes
         XCTAssertEqual(pending, ["new"])
         XCTAssertEqual(try Data(contentsOf: quarantinedURL), garbage)
     }
 
     func testStoreThatCannotBeQuarantinedIsNeverSaved() async throws {
         let garbage = Data("not json".utf8)
-        let scope = try writeScope(server: "server", profile: "profile", storeJSON: nil)
+        let scope = try writeScope(server: "server", profile: "profile", account: Self.account, storeJSON: nil)
         let storeURL = scope.appendingPathComponent(DownloadFilePaths.storeFileName)
         try garbage.write(to: storeURL)
         // A read-only scope directory makes the rename fail.
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: scope.path)
         let store = makeStore()
 
-        let loaded = await store.load(serverId: "server", profileId: "profile")
+        let loaded = await store.load(serverId: "server", localAccountId: Self.account, profileId: "profile")
         XCTAssertTrue(loaded.records.isEmpty)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scope.path)
 
-        await store.save(.empty, serverId: "server", profileId: "profile")
+        await store.save(.empty, serverId: "server", localAccountId: Self.account, profileId: "profile")
         XCTAssertEqual(try Data(contentsOf: storeURL), garbage)
     }
 
@@ -308,12 +310,14 @@ final class LegacyDownloadStorageTests: XCTestCase {
 
     private func makeStore() -> DownloadStore {
         let root: URL = self.root
-        return DownloadStore(rootDirectory: { root })
+        return DownloadStore(rootDirectory: { root }, legacyOwner: { _ in Self.account })
     }
 
     @discardableResult
-    private func writeScope(server: String, profile: String, storeJSON: String?) throws -> URL {
-        let scope = root
+    private func writeScope(server: String, profile: String, account: String? = nil, storeJSON: String?) throws -> URL {
+        let scope = account.map {
+            DownloadFilePaths.scopePath(serverId: server, localAccountId: $0, profileId: profile, root: root)
+        } ?? root
             .appendingPathComponent(server, isDirectory: true)
             .appendingPathComponent(profile, isDirectory: true)
         try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: true)

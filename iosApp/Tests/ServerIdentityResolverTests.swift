@@ -64,14 +64,12 @@ final class ServerIdentityResolverTests: XCTestCase {
             id: ServerRegistry.serverId(for: "https://a.example"),
             url: "https://a.example",
             fetchedName: "Server A",
-            profileId: nil,
             lastUsedAt: .now
         )
         let serverB = ServerEntry(
             id: ServerRegistry.serverId(for: "https://b.example"),
             url: "https://b.example",
             fetchedName: "Server B",
-            profileId: nil,
             lastUsedAt: .now
         )
         registry.addOrUpdate(serverA)
