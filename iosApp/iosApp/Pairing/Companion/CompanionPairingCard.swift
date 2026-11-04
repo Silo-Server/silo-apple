@@ -184,6 +184,12 @@ struct CompanionPairingCard: View {
                         .lineLimit(2)
                         .truncationMode(.middle)
                         .fixedSize(horizontal: false, vertical: true)
+                    if let accounts = accountNames(on: server) {
+                        Text(accounts)
+                            .font(.siloCaption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -402,6 +408,16 @@ struct CompanionPairingCard: View {
         } completion: {
             onDismiss()
         }
+    }
+
+    /// The accounts a TV that keeps them all is sent for `server`, when
+    /// there is more than one ("alex, sam").
+    private func accountNames(on server: ServerEntry) -> String? {
+        guard tv.acceptsSeveralAccounts, !tv.isRoku else { return nil }
+        let names = AccountDirectory.shared.accounts(onServer: server.id)
+            .filter { !$0.needsSignIn }
+            .map { $0.username ?? "Account" }
+        return names.count > 1 ? names.joined(separator: ", ") : nil
     }
 
     /// The chooser starts with the server this device is using; the user

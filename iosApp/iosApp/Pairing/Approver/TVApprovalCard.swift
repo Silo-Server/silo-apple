@@ -13,15 +13,18 @@ struct TVApprovalCard: View {
     /// Back to code entry when the code isn't found (a mistyped digit is the
     /// usual cause); nil hides it.
     var onEnterAnotherCode: (() -> Void)? = nil
-    /// "Not you?": sign out of this server in Silo only, then sign in again,
-    /// keeping the TV's code. The wording follows `model.accountSwitch`:
-    /// "Switch account" when the provider is asked for an account choice or
-    /// the server only takes passwords, "Sign out" when a provider could
-    /// sign the same person straight back in. Nil hides the link.
-    var onSwitchAccount: (() -> Void)? = nil
+    /// "Not you?": the other accounts this device has on the server, each
+    /// of which can approve instead (`onUseAccount`).
+    var otherAccounts: [SavedAccountSummary] = []
+    var onUseAccount: (SavedAccountSummary) -> Void = { _ in }
+    /// "Not you?": sign in with another account on this server, keeping
+    /// every account already saved and the TV's code. Nil hides it.
+    var onAddAccount: (() -> Void)? = nil
     var onClose: () -> Void
 
-    @State private var confirmsSwitchAccount = false
+    @State private var choosesAccount = false
+
+    private var offersAnotherAccount: Bool { onAddAccount != nil || !otherAccounts.isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -78,27 +81,22 @@ struct TVApprovalCard: View {
                 closeButton("Close")
             }
         }
-        .confirmationDialog(model.offersAccountChoice ? "Switch account?" : "Sign out?",
-                            isPresented: $confirmsSwitchAccount, titleVisibility: .visible) {
-            Button(model.offersAccountChoice ? "Sign Out and Switch" : "Sign Out") { onSwitchAccount?() }
+        .confirmationDialog("Approve as another account?", isPresented: $choosesAccount, titleVisibility: .visible) {
+            ForEach(otherAccounts) { account in
+                Button("Use \(account.username ?? "another account")") { onUseAccount(account) }
+            }
+            if let onAddAccount {
+                Button("Sign in with another account") { onAddAccount() }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(Self.switchAccountMessage(serverName: model.server.displayName,
-                                           choosingAccount: model.offersAccountChoice))
+            Text(Self.anotherAccountMessage(serverName: model.server.displayName))
         }
     }
 
-    static func switchAccountLink(_ accountSwitch: TVApprovalAccountSwitch) -> String {
-        accountSwitch == .signOut ? "Not you? Sign out" : "Not you? Switch account"
-    }
-
-    /// The confirmation. Without `select_account` the provider may sign the
-    /// same person straight back in, so the copy promises no account choice.
-    static func switchAccountMessage(serverName: String, choosingAccount: Bool) -> String {
-        if choosingAccount {
-            return "You'll be signed out of \(serverName) on this device, then asked which account to sign in with. The TV's code stays ready to approve."
-        }
-        return "You'll be signed out of \(serverName) on this device. Sign in with the account the TV should use, then approve it. The TV's code stays ready to approve."
+    /// Every account stays signed in on this device; the TV's code waits.
+    static func anotherAccountMessage(serverName: String) -> String {
+        "Choose which \(serverName) account signs in the TV. Accounts on this device stay signed in, and the TV's code stays ready to approve."
     }
 
     private func review(_ request: TVApprovalRequest, busy: Bool, declining: Bool) -> some View {
@@ -123,8 +121,8 @@ struct TVApprovalCard: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(signInLine(request)).font(.siloBody).fixedSize(horizontal: false, vertical: true)
-                if onSwitchAccount != nil {
-                    Button(Self.switchAccountLink(model.accountSwitch)) { confirmsSwitchAccount = true }
+                if offersAnotherAccount {
+                    Button("Not you?") { choosesAccount = true }
                         .font(.siloCaption)
                         .disabled(busy)
                 }

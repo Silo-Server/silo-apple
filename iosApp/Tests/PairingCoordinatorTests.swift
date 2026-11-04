@@ -119,7 +119,7 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
 // MARK: - Helpers
 
 private func entry(_ id: String, name: String) -> ServerEntry {
-    ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, profileId: nil, lastUsedAt: Date())
+    ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, lastUsedAt: Date())
 }
 
 private func devicePoll(_ status: String, tokens: APIv2LoginTokens? = nil) -> APIv2DevicePoll {
@@ -191,10 +191,10 @@ final class ServerSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(registry.entry(with: first.id), first)
     }
 
-    /// Companion authorization may install a different user's credentials for
-    /// an existing URL. That boundary must not inherit the previous account's
-    /// profile, while ordinary metadata upserts continue preserving it.
-    func testNewSessionUpsertClearsExistingProfileAndRefreshesServerName() {
+    /// Upserting a saved server refreshes its fetched name. (Profile memory
+    /// now belongs to accounts, so a new session never inherits another
+    /// account's profile through the registry.)
+    func testUpsertRefreshesServerName() {
         let suiteName = "ServerSessionPersistenceTests.suite.\(UUID().uuidString)"
         let standardName = "ServerSessionPersistenceTests.standard.\(UUID().uuidString)"
         let suite = UserDefaults(suiteName: suiteName)!
@@ -218,22 +218,14 @@ final class ServerSessionPersistenceTests: XCTestCase {
             fetchedName: "Home",
             lastUsedAt: Date()
         ))
-        launchPreferences.remember(
-            profileID: "OLD-PROFILE",
-            requiresPIN: false,
-            accountEpoch: "old-account",
-            for: serverID
-        )
 
         registry.addOrUpdate(ServerEntry(
             id: serverID,
             url: "https://home.example",
             fetchedName: "Home Renamed",
-            profileId: nil,
             lastUsedAt: Date()
-        ), preservingProfile: false)
+        ))
 
-        XCTAssertNil(launchPreferences.rememberedProfile(for: serverID))
         XCTAssertEqual(registry.entry(with: serverID)?.fetchedName, "Home Renamed")
         XCTAssertEqual(registry.entry(with: serverID)?.displayName, "Home Renamed")
     }
@@ -273,8 +265,7 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
         let identified = ServerEntry(
-            id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "S"
+            id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "S"
         )
         let legacy = entry("b", name: "Legacy")
         let endpoints = [ServerEndpoint(url: "https://public.example", kind: .public)]
@@ -1510,8 +1501,7 @@ final class TVSignInPairingTests: XCTestCase {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
         api.lookupMatchCode = "ABCD"
-        let home = ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "srv-1")
+        let home = ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "srv-1")
         let coordinator = CompanionPairingCoordinator(
             channel: channel, stream: channel.stream, tvName: "Living Room", fixedServer: home, api: api,
             deviceModel: "iPhone", availableServers: { XCTFail("no chooser for a sign-in TV"); return [] },
@@ -1546,7 +1536,7 @@ final class TVSignInPairingTests: XCTestCase {
         api.lookupMatchCode = "ZZZZ"
         let coordinator = CompanionPairingCoordinator(
             channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
-            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date())] },
             accessToken: { _ in .token("token") }, serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
         coordinator.start()
         channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
@@ -1572,7 +1562,7 @@ final class TVSignInPairingTests: XCTestCase {
         var calls = 0
         let coordinator = CompanionPairingCoordinator(
             channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
-            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date())] },
             // The lookup gets a bearer; by approval time the renewal failed.
             accessToken: { _ in calls += 1; return calls == 1 ? .token("token") : .rejected },
             serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
@@ -1611,7 +1601,7 @@ final class TVSignInPairingTests: XCTestCase {
             var calls = 0
             let coordinator = CompanionPairingCoordinator(
                 channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
-                availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+                availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date())] },
                 accessToken: { _ in calls += 1; return calls == 1 ? .token("token") : failure },
                 serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
             coordinator.start()

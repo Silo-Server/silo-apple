@@ -16,7 +16,6 @@ struct TabTopBarActions: View {
     /// server reports `requests_enabled`, so the closure is inert otherwise.
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
-    let onSwitchServer: () -> Void
     let onSignOut: () -> Void
     /// Vertical in the iPhone Duo's status column (`StatusColumnBar`).
     var axis: Axis = .horizontal
@@ -79,7 +78,6 @@ struct TabTopBarActions: View {
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
-                onSwitchServer: onSwitchServer,
                 onSignOut: onSignOut
             )
         }
@@ -117,7 +115,9 @@ private struct TopBarIconButton: View {
 }
 
 /// Profile avatar opening the account menu (Requests, Watch Party, Settings,
-/// Switch Profile, Switch Server, Sign Out).
+/// Switch Profile, Change Account, Sign Out). Switch Profile opens the open
+/// account's picker; Change Account, in Switch Server's place, lists every
+/// saved account by server (spec §4.3).
 struct ProfileAvatarMenu: View {
     @Environment(AppRouter.self) private var router
     let profile: UserProfile?
@@ -127,8 +127,8 @@ struct ProfileAvatarMenu: View {
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
-    let onSwitchServer: () -> Void
     let onSignOut: () -> Void
+    private let directory = AccountDirectory.shared
 
     /// Capability-gated: the Requests row exists only when the server has
     /// the feature enabled (older servers 404 the probe and read as off).
@@ -173,9 +173,9 @@ struct ProfileAvatarMenu: View {
             Label("Switch Profile", systemImage: "person.2")
         }
         Button {
-            onSwitchServer()
+            router.showChangeAccount()
         } label: {
-            Label("Switch Server", systemImage: "server.rack")
+            Label("Change Account", systemImage: "person.crop.circle.badge.checkmark")
         }
     }
 
@@ -193,12 +193,18 @@ struct ProfileAvatarMenu: View {
         showsName ? .siloIconTile : .siloSurfaceVariant
     }
 
-    /// Who is signed in and where, for the menu's header.
+    /// Who is signed in and where, for the menu's header: "profile · server",
+    /// plus the username when the server has more than one saved account.
     private var menuTitle: String? {
         guard let profile else { return nil }
-        return [profile.name, ServerRegistry.shared.activeServer?.displayName]
-            .compactMap { $0 }
-            .joined(separator: " · ")
+        let server = ServerRegistry.shared.activeServer
+        var parts = [profile.name, server?.displayName].compactMap { $0 }
+        if let server, directory.accounts(onServer: server.id).count > 1,
+           let selected = AccountScope.localAccountId(onServer: server.id),
+           let username = directory.account(selected)?.username {
+            parts.append(username)
+        }
+        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder

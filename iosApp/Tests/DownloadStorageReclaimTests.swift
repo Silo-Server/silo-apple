@@ -6,6 +6,7 @@ import Foundation
 /// allows the sweep, which directories in the loaded scope it removes, and
 /// how the data outside the active scope is grouped and removed.
 final class DownloadStorageReclaimTests: XCTestCase {
+    private static let account = "6F9619FF-8B86-D011-B42D-00C04FC964FF"
     private var sandbox: URL!
     private var root: URL!
 
@@ -32,31 +33,31 @@ final class DownloadStorageReclaimTests: XCTestCase {
         let root: URL = self.root
         let store = DownloadStore(rootDirectory: { root })
 
-        let missing = await store.loadScope(serverId: "server", profileId: "missing")
+        let missing = await store.loadScope(serverId: "server", localAccountId: Self.account, profileId: "missing")
         XCTAssertEqual(missing.outcome, .missing)
         XCTAssertTrue(missing.tracksScopeStorage, "nothing can read a missing store's directories again")
 
         try writeStore(profile: "loaded", contents: Data(#"{"version":1,"records":{},"subscriptions":[],"progressQueue":[],"localProgress":{}}"#.utf8))
-        let loaded = await store.loadScope(serverId: "server", profileId: "loaded")
+        let loaded = await store.loadScope(serverId: "server", localAccountId: Self.account, profileId: "loaded")
         XCTAssertEqual(loaded.outcome, .loaded)
         XCTAssertTrue(loaded.tracksScopeStorage)
 
         try writeStore(profile: "corrupt", contents: Data("not json".utf8))
-        let quarantined = await store.loadScope(serverId: "server", profileId: "corrupt")
+        let quarantined = await store.loadScope(serverId: "server", localAccountId: Self.account, profileId: "corrupt")
         XCTAssertEqual(quarantined.outcome, .quarantined)
         XCTAssertTrue(quarantined.tracksScopeStorage, "nothing reads a quarantined store again")
 
         // Present but unreadable, as before first unlock.
         let locked = try writeStore(profile: "locked", contents: Data("{}".utf8))
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
-        let unreadable = await store.loadScope(serverId: "server", profileId: "locked")
+        let unreadable = await store.loadScope(serverId: "server", localAccountId: Self.account, profileId: "locked")
         XCTAssertEqual(unreadable.outcome, .unreadable)
         XCTAssertFalse(unreadable.tracksScopeStorage, "the store may still own every directory")
 
         // Undecodable and stuck in place.
         let stuck = try writeStore(profile: "stuck", contents: Data("not json".utf8))
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: stuck.deletingLastPathComponent().path)
-        let unmovable = await store.loadScope(serverId: "server", profileId: "stuck")
+        let unmovable = await store.loadScope(serverId: "server", localAccountId: Self.account, profileId: "stuck")
         XCTAssertEqual(unmovable.outcome, .unreadable)
         XCTAssertFalse(unmovable.tracksScopeStorage)
     }
@@ -164,7 +165,8 @@ final class DownloadStorageReclaimTests: XCTestCase {
 
     @discardableResult
     private func writeStore(profile: String, contents: Data) throws -> URL {
-        let url = root.appendingPathComponent("server/\(profile)/\(DownloadFilePaths.storeFileName)")
+        let url = DownloadFilePaths.scopePath(serverId: "server", localAccountId: Self.account, profileId: profile, root: root)
+            .appendingPathComponent(DownloadFilePaths.storeFileName)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try contents.write(to: url)
         return url

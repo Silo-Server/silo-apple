@@ -58,7 +58,8 @@ struct TVTrailerReturnStore {
             libraryId: libraryId,
             serverId: serverId,
             profileId: profileId,
-            savedAt: Date()
+            savedAt: Date(),
+            localAccountId: AccountScope.localAccountId(onServer: serverId)
         )
         guard let data = try? JSONEncoder().encode(record) else { return }
         defaults.set(data, forKey: Self.recordKey)
@@ -84,7 +85,10 @@ struct TVTrailerReturnStore {
             record: record,
             now: now,
             activeServerId: ServerRegistry.shared.activeServerId,
-            activeProfileId: AuthService.shared.profileId
+            activeProfileId: AuthService.shared.profileId,
+            activeLocalAccountId: ServerRegistry.shared.activeServerId.flatMap {
+                AccountScope.localAccountId(onServer: $0)
+            }
         ) else {
             return nil
         }

@@ -82,7 +82,7 @@ struct TVPairingReceiverView: View {
                 .padding(.top, 28)
             actions { cancelButton(.primary) }
         case let .signedIn(count):
-            headline(count <= 1 ? "Signed in" : "Signed in to\n\(count) servers")
+            headline(count <= 1 ? "Signed in" : "\(count) accounts\nsigned in")
             MarqueeTVBody("Finishing up on your phone or tablet…")
                 .padding(.top, 28)
             // No Cancel here: this server's sign-in is already committed, so a
@@ -255,10 +255,13 @@ struct TVPairingReceiverView: View {
             .focused($focused, equals: control)
     }
 
+    /// Each server once, however many of its accounts signed in.
     private func completedSummary(_ names: [String]) -> String {
-        names.isEmpty
+        var seen = Set<String>()
+        let servers = names.filter { seen.insert($0).inserted }
+        return servers.isEmpty
             ? "Taking you to your profiles…"
-            : "Signed in to \(names.joined(separator: ", ")). Taking you to your profiles…"
+            : "Signed in to \(servers.joined(separator: ", ")). Taking you to your profiles…"
     }
 
     /// The host of an address, for a button label. Falls back to the

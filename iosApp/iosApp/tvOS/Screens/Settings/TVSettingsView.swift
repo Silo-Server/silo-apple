@@ -19,14 +19,12 @@ struct TVSettingsView: View {
     @State private var viewModel = SettingsViewModel()
     @State private var diagnosticsModel = DiagnosticsViewModel()
     @State private var experimental = ExperimentalFeatures.shared
-    @State private var showSignOutConfirm = false
     @State private var showPrivacyPolicy = false
     @State private var showOpenSourceAcknowledgements = false
     @State private var selectedCategory: TVSettingsCategory = .general
     @State private var activePicker: TVSettingsPickerRequest?
     @State private var pendingPickerFocus: TVSettingsDetailFocus?
     @State private var isRestoringDetailFocus = false
-    @State private var isRestoringRailFocus = false
     @State private var preferredFocusOwner: FocusOwner = .rail
     @State private var preferredRailFocus: RailItem = .category(.general)
     @State private var preferredDetailFocus: TVSettingsDetailFocus = .top
@@ -43,21 +41,6 @@ struct TVSettingsView: View {
             SettingsBackdrop()
 
             settingsContent
-
-            if showSignOutConfirm {
-                TVSettingsConfirmationOverlay(
-                    title: "Sign Out",
-                    message: "Choose whether to keep or remove this server from this Apple TV.",
-                    confirmTitle: "Sign Out",
-                    additionalDestructiveTitle: "Sign Out & Remove Server",
-                    cancel: dismissSignOutConfirmation,
-                    confirm: router.signOutAndReset,
-                    additionalDestructiveAction: router.signOutRemoveServerAndReset
-                )
-                .onDisappear(perform: restoreSignOutFocus)
-                .transition(.opacity)
-                .zIndex(1)
-            }
 
             if let activePicker {
                 TVSettingsPickerSheet(
@@ -86,7 +69,6 @@ struct TVSettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .animation(.easeOut(duration: SiloTheme.fastDuration), value: showSignOutConfirm)
         .onAppear(perform: focusGeneralOnEntry)
         .task {
             await viewModel.loadSettings()
@@ -95,8 +77,7 @@ struct TVSettingsView: View {
         .onChange(of: railFocus) { _, focus in
             if let focus,
                !isModalPresented,
-               !isRestoringDetailFocus,
-               !isRestoringRailFocus {
+               !isRestoringDetailFocus {
                 preferredFocusOwner = .rail
                 preferredRailFocus = focus
             }
@@ -115,8 +96,7 @@ struct TVSettingsView: View {
         .onChange(of: detailFocus) { _, focus in
             if let focus,
                !isModalPresented,
-               !isRestoringDetailFocus,
-               !isRestoringRailFocus {
+               !isRestoringDetailFocus {
                 preferredDetailFocus = focus
                 preferredFocusOwner = .detail
             }
@@ -128,9 +108,12 @@ struct TVSettingsView: View {
         }
     }
 
-    /// A picker, confirmation, or full-screen overlay owns focus.
+    /// A picker or full-screen overlay owns focus. The sign-out
+    /// confirmation (`AccountRemovalConfirmationModifier`) disables the
+    /// screen from the app's root instead; once it closes, focus returns to
+    /// Sign Out (the rail's remembered control).
     private var isModalPresented: Bool {
-        activePicker != nil || showSignOutConfirm || showPrivacyPolicy || showOpenSourceAcknowledgements
+        activePicker != nil || showPrivacyPolicy || showOpenSourceAcknowledgements
     }
 
     /// Settings always enters through General. Assign the concrete rail focus
@@ -172,7 +155,7 @@ struct TVSettingsView: View {
 
             detailPane
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .disabled(isModalPresented || isRestoringRailFocus)
+                .disabled(isModalPresented)
                 .defaultFocus(
                     $detailFocus,
                     preferredDetailFocus,
@@ -280,9 +263,10 @@ struct TVSettingsView: View {
         .focused($railFocus, equals: .category(category))
     }
 
+    /// Signs out of the current account after the shared confirmation.
     private var signOutRow: some View {
         Button {
-            showSignOutConfirm = true
+            router.signOutAndReset()
         } label: {
             HStack(spacing: 16) {
                 Image(systemName: "rectangle.portrait.and.arrow.right")
@@ -339,27 +323,6 @@ struct TVSettingsView: View {
         detailFocus = nil
         railFocus = .category(selectedCategory)
         resetFocus(in: railFocusScope)
-    }
-
-    private func dismissSignOutConfirmation() {
-        preferredFocusOwner = .rail
-        preferredRailFocus = .signOut
-        isRestoringRailFocus = true
-        showSignOutConfirm = false
-        railFocus = nil
-    }
-
-    private func restoreSignOutFocus() {
-        guard isRestoringRailFocus else { return }
-        // Restore after the confirmation's focus subtree has left, ignoring
-        // transient rail focus while the dismissal animation completes.
-        Task { @MainActor in
-            await Task.yield()
-            resetFocus(in: railFocusScope)
-            railFocus = .signOut
-            try? await Task.sleep(for: .milliseconds(120))
-            isRestoringRailFocus = false
-        }
     }
 
     private func presentPrivacyPolicy() {
@@ -549,11 +512,11 @@ struct TVSettingsView: View {
                 TVSettingsInfoRow(title: "Address", value: viewModel.serverUrl)
             }
 
-            Button { router.navigate(to: .serverList) } label: {
+            Button { router.navigate(to: .accounts) } label: {
                 HStack(spacing: 16) {
-                    Image(systemName: "server.rack")
+                    Image(systemName: "person.2")
                         .font(.system(size: 22, weight: .medium))
-                    Text("Manage Servers")
+                    Text("Accounts")
                         .font(.system(size: 26))
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right")

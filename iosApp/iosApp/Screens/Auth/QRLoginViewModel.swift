@@ -656,6 +656,7 @@ class QRLoginViewModel: NearbySignInCodeSource {
                     accessToken: tokens.accessToken,
                     refreshToken: tokens.refreshToken,
                     accountID: tokens.user.id,
+                    username: tokens.user.username,
                     expectedAccount: account
                 )
                 return .approved(.approved(account: ServerIdentity.usable(tokens.user.username)))

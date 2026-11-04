@@ -59,7 +59,6 @@ struct MacSidebar: View {
                 onOpenSettings: { router.navigate(to: .settings) },
                 onOpenRequests: { onSelect(.app(.requests)) },
                 onSwitchProfile: { router.switchProfile() },
-                onSwitchServer: { router.navigate(to: .serverList) },
                 onSignOut: { router.signOutAndReset() }
             )
             .menuIndicator(.hidden)

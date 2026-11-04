@@ -1091,7 +1091,7 @@ private enum TVProfileAction: Hashable {
     case requests
     case watchParty
     case settings
-    case switchServer
+    case changeAccount
     case signOut
 }
 
@@ -1106,7 +1106,8 @@ struct TVProfileDropdown: View {
     /// raw `avatar` ref when present.
     var avatarImageUrl: String? = nil
     /// Display name of the active server, shown under the profile name in
-    /// the §5.8 mono header style.
+    /// the §5.8 mono header style, with the username when the server has
+    /// more than one saved account.
     let serverHost: String?
     /// Whether focus has entered the panel.
     let entersPanel: Bool
@@ -1124,7 +1125,7 @@ struct TVProfileDropdown: View {
     let onRequests: () -> Void
     let onWatchParty: () -> Void
     let onSettings: () -> Void
-    let onSwitchServer: () -> Void
+    let onChangeAccount: () -> Void
     let onSignOut: () -> Void
 
     @FocusState private var focusedAction: TVProfileAction?
@@ -1173,10 +1174,10 @@ struct TVProfileDropdown: View {
             divider
 
             actionButton("Settings", systemImage: "gearshape.fill", id: .settings, action: onSettings)
-            // The guide marks Switch Server as Android-only (§5.8), but tvOS
-            // already ships multi-server switching — dropping it here would
-            // regress existing users.
-            actionButton("Switch Server", systemImage: "server.rack", id: .switchServer, action: onSwitchServer)
+            // Switch Profile shows the open account's profiles; Change
+            // Account, in Switch Server's place, lists every saved account by
+            // server (spec §4.3). Servers are managed in Settings › Accounts.
+            actionButton("Change Account", systemImage: "person.crop.circle.badge.checkmark", id: .changeAccount, action: onChangeAccount)
             actionButton("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", id: .signOut, isDestructive: true, action: onSignOut)
         }
         .padding(SiloTheme.Skyline.dropdownPadding)

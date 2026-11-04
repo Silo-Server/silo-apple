@@ -138,10 +138,10 @@ final class DiagnosticsUploadV2Tests: XCTestCase {
         let keychain = SharedKeychain(service: name, accessGroup: nil)
         addTeardownBlock {
             for key in [
-                TokenStore.accessTokenKey(for: Self.serverID),
-                TokenStore.refreshTokenKey(for: Self.serverID),
-                TokenStore.profileTokenKey(for: Self.serverID),
-                TokenStore.accountEpochKey(for: Self.serverID),
+                SharedStorage.accessTokenAccount(for: Self.serverID),
+                SharedStorage.refreshTokenAccount(for: Self.serverID),
+                SharedStorage.profileTokenAccount(for: Self.serverID),
+                SharedStorage.accountEpochAccount(for: Self.serverID),
                 AccountSessionPersistence.recordKey(Self.serverID),
                 AccountSessionPersistence.markerKey(Self.serverID),
                 SharedStorage.mirroredAccessTokenAccount,

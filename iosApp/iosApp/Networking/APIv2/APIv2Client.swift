@@ -136,7 +136,7 @@ struct APIv2Client: Sendable {
         guard let current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: captured) else {
             throw HTTPError.authorityChanged
         }
-        try await tokenStore.bindVerifiedAccount(value.id, expected: current)
+        try await tokenStore.bindVerifiedAccount(value.id, username: value.username, expected: current)
         return value
     }
 
@@ -245,7 +245,9 @@ struct APIv2Client: Sendable {
             serverId: expected.serverId,
             serverURL: ServerRegistry.normalize(url: expected.serverURL),
             profileId: expected.profileId,
-            clientFamily: expected.clientFamily
+            clientFamily: expected.clientFamily,
+            // A caller that pinned no account accepts the captured one.
+            localAccountId: expected.localAccountId ?? identity?.localAccountId
         )
         if normalizedExpected != identity { throw HTTPError.requestIdentityChanged }
     }
@@ -1236,6 +1238,14 @@ struct APIv2Client: Sendable {
         return try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackCapabilities.self, from: raw.data)
     }
 
+    static let loginSessionsPath = "/api/v2/auth/sessions"
+
+    static func loginSessionsQuery(cursor: String?) -> [String: String] {
+        var query = ["limit": "200"]
+        if let cursor { query["cursor"] = cursor }
+        return query
+    }
+
     #if os(iOS)
     func notificationSync(cursor: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2NotificationSyncPage {
         try await gate()
@@ -1314,14 +1324,6 @@ struct APIv2Client: Sendable {
         let data = try await applePushRequest(method: "GET", path: Self.loginSessionsPath,
             query: Self.loginSessionsQuery(cursor: cursor), auth: auth)
         return try HTTPClient.makeJSONDecoder().decode(APIv2LoginSessionPage.self, from: data)
-    }
-
-    static let loginSessionsPath = "/api/v2/auth/sessions"
-
-    static func loginSessionsQuery(cursor: String?) -> [String: String] {
-        var query = ["limit": "200"]
-        if let cursor { query["cursor"] = cursor }
-        return query
     }
 
     static let applePushCapabilityPath = "/api/v2/devices/push/apple/capabilities"
@@ -1533,7 +1535,8 @@ struct APIv2Client: Sendable {
 
     static func requestIdentity(_ auth: CapturedOrdinaryRequestAuth, profile: String) -> HTTPRequestIdentity {
         HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
-            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily,
+            localAccountId: auth.account.localAccountId)
     }
 
     /// A strong entity tag: quoted, non-empty, single line. Anything else is
