@@ -10408,8 +10408,7 @@ class PlayerViewModel {
         // the device policy decides when the pick names none of them, as it
         // does for a streamed title.
         let prefs = offlinePlaybackContext != nil && settings.subtitleMatchesSystemAppearance
-            && savedPrefs.trackSignature != nil
-            && !SubtitleAutoResolver.savedPickApplies(savedPrefs.trackSignature, toPlayerTracks: allSubs)
+            && savedPrefs.trackSignature != nil && !savedPickApplies(savedPrefs.trackSignature)
             ? systemCaptionPrefsSnapshot()
             : savedPrefs
 
@@ -10467,10 +10466,7 @@ class PlayerViewModel {
         // The viewer's own pick, in this player or saved for the title,
         // outranks the system's ask.
         guard !hasExplicitSubtitleChoice,
-              !SubtitleAutoResolver.savedPickApplies(
-                  currentWatchDetail?.effectiveSubtitleTrackSignature,
-                  to: currentSelectedVersion?.subtitleTracks ?? []
-              ) else { return }
+              !savedPickApplies(currentWatchDetail?.effectiveSubtitleTrackSignature) else { return }
         guard let language = request.language, !language.isEmpty else { return }
         guard !subtitleTracks.isEmpty else { return }
 
@@ -10513,9 +10509,24 @@ class PlayerViewModel {
         return settings.subtitleMatchesSystemAppearance && !savedPickDecides
     }
 
+    /// Whether a saved pick names a track this file has: the server's
+    /// inventory for a streamed title, the probed tracks for a download,
+    /// which has no server inventory.
+    private func savedPickApplies(_ signature: SubtitleTrackSignature?) -> Bool {
+        offlinePlaybackContext != nil
+            ? SubtitleAutoResolver.savedPickApplies(signature, toPlayerTracks: subtitleTracks)
+            : SubtitleAutoResolver.savedPickApplies(signature, to: currentSelectedVersion?.subtitleTracks ?? [])
+    }
+
+    /// The policy for the item playing. A download's probed tracks decide
+    /// once they are known, so a later device caption change still reapplies
+    /// the device policy after a saved pick fell back to it.
     private var subtitleSelectionFollowsSystem: Bool {
-        subtitleSelectionFollowsSystem(currentWatchDetail, currentSelectedVersion,
-                                       offline: offlinePlaybackContext != nil)
+        if offlinePlaybackContext != nil, subtitleTracks.isEmpty {
+            return subtitleSelectionFollowsSystem(currentWatchDetail, currentSelectedVersion, offline: true)
+        }
+        return settings.subtitleMatchesSystemAppearance
+            && !savedPickApplies(currentWatchDetail?.effectiveSubtitleTrackSignature)
     }
 
     private func reapplySystemSubtitlePolicy() {
