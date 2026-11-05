@@ -82,11 +82,12 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
             frame.size.height = min(max(videoMaxY, 0), frame.height)
         }
         guard fitsSafeArea else { return frame }
-        // Even side insets keep the picture centred. Only the top edge holds
-        // a sensor housing; the bottom inset is the home indicator, which may
-        // overlay video.
+        // Matching insets on opposite edges keep the picture centred. The top
+        // inset is mirrored at the bottom in place of the home indicator's,
+        // which may overlay video and would shrink landscape Fit for nothing.
         let side = max(insets.leading, insets.trailing)
-        frame = frame.inset(by: UIEdgeInsets(top: min(insets.top, frame.height), left: side, bottom: 0, right: side))
+        let vertical = min(insets.top, frame.height / 2)
+        frame = frame.inset(by: UIEdgeInsets(top: vertical, left: side, bottom: vertical, right: side))
         #endif
         return frame
     }
