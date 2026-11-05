@@ -12,20 +12,21 @@ enum OverlayRegistry {
 
     static let all: [OverlayDef] = tech + ratings + metadata + ribbons
 
-    /// Whether `id` should be hidden because another enabled overlay
-    /// already displays the same information. The combined
-    /// `resolution_hdr` badge subsumes the standalone `resolution` and
-    /// `hdr` badges — without this, enabling the combined view on top
-    /// of the defaults produces "4K HDR 4K HDR" stacks. The user's
-    /// stored prefs are left untouched so toggling the combined badge
-    /// off restores the standalones automatically.
+    /// Combined badges and the badges whose information each already
+    /// shows, mirroring web's `COMBINED_BADGES` in `schema.ts`. Without
+    /// this, enabling a combined badge on top of the defaults produces
+    /// "4K HDR 4K HDR" stacks.
+    private static let combinedBadges: [(combined: OverlayId, covers: [OverlayId])] = [
+        (.resolutionHdrAudio, [.resolution, .hdr, .audio, .resolutionHdr]),
+        (.resolutionHdr, [.resolution, .hdr]),
+    ]
+
+    /// Whether `id` should be hidden because an enabled combined badge
+    /// already displays the same information. The user's stored prefs
+    /// are left untouched so toggling the combined badge off restores
+    /// the badges it hid.
     static func isSuppressed(_ id: OverlayId, by prefs: CardOverlayPrefs) -> Bool {
-        switch id {
-        case .resolution, .hdr:
-            return prefs.items[.resolutionHdr]?.enabled == true
-        default:
-            return false
-        }
+        combinedBadges.contains { $0.covers.contains(id) && prefs.items[$0.combined]?.enabled == true }
     }
 
     /// Enabled overlays for a corner, in the user's chosen order. Any
@@ -59,9 +60,12 @@ enum OverlayRegistry {
 
 private extension OverlayRegistry {
 
+    /// Mirrors web's `compactHdrSuffix` in `mediaFormat.ts`.
     static func compactHdrSuffix(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
-        return value.contains("DV") ? "DV" : "HDR"
+        if value.contains("DV") { return "DV" }
+        if value.contains("HDR10+") { return "HDR10+" }
+        return "HDR"
     }
 
     /// Mirrors web's `hdrIcon`: only exact wordmark matches get a brand
@@ -126,6 +130,23 @@ private extension OverlayRegistry {
                 if let hdr = compactHdrSuffix(data.hdr) { return "\(res) \(hdr)" }
                 return res
             },
+            getIcon: { resolutionHdrIcon($0.hdr) }
+        ),
+        OverlayDef(
+            id: .resolutionHdrAudio,
+            defaultPosition: .topLeft,
+            defaultEnabled: false,
+            iconCapable: true,
+            // The parts the file has, so a file without a known resolution
+            // still shows its audio codec while the audio badge is hidden.
+            getValue: { data in
+                let label = [MediaTextFormatting.resolution(data.resolution), compactHdrSuffix(data.hdr), data.audio]
+                    .compactMap { $0 }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                return label.isEmpty ? nil : label
+            },
+            // An Atmos or HDR10 mark would repeat words already in the label.
             getIcon: { resolutionHdrIcon($0.hdr) }
         ),
         OverlayDef(
