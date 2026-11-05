@@ -346,7 +346,12 @@ struct TVPlayerScrubber: View {
     private func beginTimelineHoldIfNeeded() {
         guard !isTimelineScrubbing else { return }
         guard viewModel.duration > 0 else { return }
-        resumePlaybackAfterTimelineSelection = viewModel.isPlaying
+        // A hold keeps a playing player running, but a resume still landing
+        // its seek would cancel the scrub when it lands: hold it here and
+        // give it back on commit, as Select does.
+        let resumePending = viewModel.isResumePending
+        resumePlaybackAfterTimelineSelection = viewModel.isPlaying || resumePending
+        if resumePending { viewModel.pauseForTimelineSelection() }
         let base = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
         viewModel.beginScrub(fraction: min(max(base / viewModel.duration, 0), 1))
         isTimelineScrubbing = true
