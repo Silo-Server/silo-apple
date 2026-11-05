@@ -7088,9 +7088,11 @@ class PlayerViewModel {
     }
 
     /// Stopped, but the transport still means to play: a resume whose seek
-    /// is still landing, such as a timeline commit reopened right away.
+    /// is still landing, such as a timeline commit reopened right away. An
+    /// audio interruption that ended without `.shouldResume` keeps the play
+    /// intent but leaves the player paused, so it is not a pending resume.
     var isResumePending: Bool {
-        !isPlaying && aetherPlaybackController.shouldPlayWhenReady
+        !isPlaying && viewerWantsToPlay
     }
     #endif
 
