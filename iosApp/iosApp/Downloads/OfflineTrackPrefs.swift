@@ -357,12 +357,14 @@ enum OfflineTrackPrefs {
     /// original download's ordinal is the source index the server stores; a
     /// prepared file's sends -1, which the server's selection skips. The
     /// manifest folds the two titles, so no signature is sent.
-    /// A prepared file's untagged track gives the server nothing to find it
-    /// by, and an empty row would clear the series choice, so it is not saved.
+    /// An untagged track is not saved: without a signature neither the
+    /// server nor `audioOrdinal` can find it again (both honor a saved index
+    /// only when its track has the saved language), and the empty language
+    /// would clear the series choice.
     static func audioRequest(tracks: [AudioTrack], ordinal: Int, sourceOrdinals: Bool) -> AudioPrefRequest? {
         guard tracks.indices.contains(ordinal) else { return nil }
         let language = tracks[ordinal].language ?? ""
-        guard sourceOrdinals || !language.isEmpty else { return nil }
+        guard !language.isEmpty else { return nil }
         return AudioPrefRequest(
             audioTrackIndex: sourceOrdinals ? ordinal : -1,
             audioLanguage: language,

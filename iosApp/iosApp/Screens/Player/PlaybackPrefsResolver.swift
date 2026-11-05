@@ -280,6 +280,21 @@ struct SubtitleAutoResolver {
         return !(signature.language ?? "").isEmpty || !(signature.label ?? "").isEmpty
     }
 
+    /// `savedPickApplies` against the tracks a player found in its file, for
+    /// a download, whose list is known only once it is probed.
+    static func savedPickApplies(_ signature: SubtitleTrackSignature?, toPlayerTracks tracks: [PlayerTrack]) -> Bool {
+        guard let signature else { return false }
+        let tracks = tracks.filter { !$0.hasUnsupportedFormat }
+        if let language = signature.language, !language.isEmpty {
+            return tracks.contains { track in
+                guard let trackLanguage = track.lang, !trackLanguage.isEmpty else { return false }
+                return languagesMatch(trackLanguage, language)
+            }
+        }
+        guard let label = signature.label, !label.isEmpty else { return false }
+        return tracks.contains { $0.title?.localizedCaseInsensitiveContains(label) == true }
+    }
+
     // MARK: - Matching helpers
 
     /// Score-based signature match. Higher score = better. Returns the

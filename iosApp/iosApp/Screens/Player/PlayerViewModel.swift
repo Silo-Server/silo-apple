@@ -10393,7 +10393,7 @@ class PlayerViewModel {
     }
 
     private func applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: Bool = false) {
-        guard !hasExplicitSubtitleChoice, let prefs = prefsForCurrentItem else { return }
+        guard !hasExplicitSubtitleChoice, let savedPrefs = prefsForCurrentItem else { return }
         if prefsResolvedForCurrentItem && !forceReevaluation {
             return
         }
@@ -10403,6 +10403,15 @@ class PlayerViewModel {
             prefsResolvedForCurrentItem = false
             return
         }
+        // A download's load let a saved pick that names a track outrank Use
+        // Device Settings before its subtitles were known. Now that they are,
+        // the device policy decides when the pick names none of them, as it
+        // does for a streamed title.
+        let prefs = offlinePlaybackContext != nil && settings.subtitleMatchesSystemAppearance
+            && savedPrefs.trackSignature != nil
+            && !SubtitleAutoResolver.savedPickApplies(savedPrefs.trackSignature, toPlayerTracks: allSubs)
+            ? systemCaptionPrefsSnapshot()
+            : savedPrefs
 
         // When the playing track carries no usable language (none, blank or
         // "und"), resolve it as the start request did: by that track's

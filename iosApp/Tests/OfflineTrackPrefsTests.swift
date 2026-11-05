@@ -186,6 +186,8 @@ final class OfflineTrackPrefsTests: XCTestCase {
                                    sampleRate: nil, language: nil, title: nil, embeddedTitle: nil, isDefault: true)]
         XCTAssertNil(OfflineTrackPrefs.audioRequest(tracks: untagged, ordinal: 0, sourceOrdinals: false),
                      "an empty row on a prepared file would clear the series audio choice")
+        XCTAssertNil(OfflineTrackPrefs.audioRequest(tracks: untagged, ordinal: 0, sourceOrdinals: true),
+                     "a saved index is honored only when its track has the saved language, so it could never come back")
     }
 
     // MARK: - Store
