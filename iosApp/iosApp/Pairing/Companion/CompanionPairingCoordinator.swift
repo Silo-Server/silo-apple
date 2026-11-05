@@ -601,10 +601,13 @@ final class CompanionPairingCoordinator {
 
     /// Whether the server definitely did not approve: it refused the
     /// session, the request, or this app or server version. A lost answer,
-    /// timeout, 5xx or unreadable reply leaves the outcome unknown.
+    /// timeout, 5xx or unreadable reply leaves the outcome unknown, and so
+    /// does a 409: the request may already be approved by another phone or
+    /// collected by the TV, whose result could then be credited to the next
+    /// target.
     nonisolated static func isDefiniteRefusal(_ error: Error) -> Bool {
         if UpdateRequirement(error) != nil { return true }
-        let refusals: Set<Int> = [401, 403, 404, 409, 410]
+        let refusals: Set<Int> = [401, 403, 404, 410]
         switch error {
         case APIv2Error.problem(let problem):
             return problem.identifier == "provider_unavailable" || refusals.contains(problem.status)

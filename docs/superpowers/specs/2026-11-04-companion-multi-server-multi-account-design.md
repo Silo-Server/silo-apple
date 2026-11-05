@@ -432,11 +432,11 @@ Decisions taken while implementing, recorded so the spec matches the code:
   the first target, the message says "The codes didn't match, so setup stopped. Accounts already
   signed in stay on the TV."
 - **On Apple, an approval with an unknown outcome ends the session.** When the approve call fails without a
-  definite answer (transport error, timeout, 5xx), the server may have approved it, and the TV's
-  late result could be credited to the next target. Definite refusals (401, 403, 404, 409, 410,
-  `provider_unavailable`, update required) and the other failures (TV refusal, different binding)
-  fail only their target. The phone also ignores a `serverResult` whose `serverURL` isn't the
-  current target's.
+  definite answer (transport error, timeout, 5xx, or a 409 because the request was already
+  decided), the server may have approved it, and the TV's late result could be credited to the
+  next target. Definite refusals (401, 403, 404, 410, `provider_unavailable`, update required)
+  and the other failures (TV refusal, different binding) fail only their target. The phone also
+  ignores a `serverResult` whose `serverURL` isn't the current target's.
 - **A TV on its sign-in screen sends no binding.** It reuses the code it already showed, and the
   phone always compares that single account.
 - **Remembered profile on refresh:** Android keeps it only when the profile has no PIN, because

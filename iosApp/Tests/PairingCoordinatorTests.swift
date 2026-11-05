@@ -576,10 +576,10 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         XCTAssertTrue(api.approvedCodes.isEmpty)
     }
 
-    /// A 409 means the request was already decided elsewhere. The approval
-    /// is not sent again, the target's summary says what happened instead of
-    /// blaming the phone's connection, and the session still ends with
-    /// `done` (a failed target never aborts it).
+    /// A 409 means the request was already decided elsewhere, possibly
+    /// approved. The approval is not sent again, the message says what
+    /// happened instead of blaming the phone's connection, and the session
+    /// stops, since the outcome is unknown.
     func testAlreadyDecidedApprovalEndsWithoutRetrying() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
@@ -601,14 +601,14 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
             return false
         }
         await coordinator.confirmMatch()
-        await expectEventually("approve failure in the summary") {
-            if case .finished(let ok, let bad) = coordinator.state {
-                return ok.isEmpty && bad.count == 1 && bad[0].summary.contains("already approved or declined")
+        await expectEventually("approve failure shown") {
+            if case .error(let message) = coordinator.state {
+                return message.contains("already approved or declined")
             }
             return false
         }
         XCTAssertEqual(api.approveAttempts, 1)
-        XCTAssertEqual(channel.lastSent, .done)
+        XCTAssertEqual(channel.lastSent, .cancel(reason: "approve_failed"))
     }
 }
 
@@ -1976,7 +1976,7 @@ final class CompanionMultiAccountTests: XCTestCase {
     func testAFailedTargetNeverEndsTheSession() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
-        api.approveErrors = [APIv2Error.problem(problem(409, "conflict")), nil]
+        api.approveErrors = [APIv2Error.problem(problem(410, "device_login_expired")), nil]
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [home, cabin, lake], accounts: [
             "a": [option(home, "alex", "alex", inUse: true)],
             "b": [option(cabin, "alex-b", "alex", inUse: true)],
@@ -2007,19 +2007,21 @@ final class CompanionMultiAccountTests: XCTestCase {
             return false
         }
         if case .finished(_, let bad) = coordinator.state {
-            XCTAssertTrue(bad[0].summary.hasPrefix("Home — alex: This sign-in request was already approved or declined"))
+            XCTAssertTrue(bad[0].summary.hasPrefix("Home — alex: The code expired before it was approved"))
             XCTAssertEqual(bad[1].summary, "Cabin — alex: the TV can't keep any more accounts.")
         }
         XCTAssertEqual(channel.lastSent, .done)
         XCTAssertFalse(channel.sent.contains(.cancel(reason: "approve_failed")))
     }
 
-    /// An approval whose answer was lost (transport error, 5xx) may have
-    /// gone through, so the session ends instead of moving on: the TV's late
-    /// result could otherwise be credited to the next account on the same
-    /// server. The message keeps the earlier sign-in.
+    /// An approval whose answer was lost (transport error, 5xx) or that
+    /// conflicts with one already made (409) may have gone through, so the
+    /// session ends instead of moving on: the TV's late result could
+    /// otherwise be credited to the next account on the same server. The
+    /// message keeps the earlier sign-in.
     func testAnUnknownApprovalOutcomeEndsTheSession() async {
-        let errors: [Error] = [URLError(.timedOut), APIv2Error.httpStatus(503), APIv2Error.problem(problem(500, "internal"))]
+        let errors: [Error] = [URLError(.timedOut), APIv2Error.httpStatus(503), APIv2Error.problem(problem(500, "internal")),
+                               APIv2Error.problem(problem(409, "conflict"))]
         for error in errors {
             let channel = FakePairingChannel()
             let api = FakePairingAPI()

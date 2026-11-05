@@ -69,9 +69,14 @@ struct CompanionPairingCard: View {
                 .frame(width: 38, height: 5)
                 .padding(.top, 10)
                 .padding(.bottom, 18)
-            stepContent
-                .padding(.horizontal, 22)
-                .padding(.bottom, 22)
+            // The step as laid out when it fits. Otherwise (large text, a
+            // short screen, a long summary) the whole step scrolls, so its
+            // actions stay reachable.
+            ViewThatFits(in: .vertical) {
+                paddedStep(scrollsWhole: false)
+                ScrollView { paddedStep(scrollsWhole: true) }
+                    .scrollBounceBehavior(.basedOnSize)
+            }
         }
         .frame(maxWidth: .infinity)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
@@ -92,7 +97,15 @@ struct CompanionPairingCard: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: started)
     }
 
-    @ViewBuilder private var stepContent: some View {
+    private func paddedStep(scrollsWhole: Bool) -> some View {
+        stepContent(scrollsWhole: scrollsWhole)
+            .padding(.horizontal, 22)
+            .padding(.bottom, 22)
+    }
+
+    /// `scrollsWhole`: the step sits in a scroll view, so the account list
+    /// doesn't scroll on its own.
+    @ViewBuilder private func stepContent(scrollsWhole: Bool) -> some View {
         if !started {
             discovery
         } else {
@@ -100,7 +113,7 @@ struct CompanionPairingCard: View {
             case .connecting:
                 progressStep(title: "Connecting…", subtitle: tv.name)
             case let .pickAccounts(_, sections):
-                accountPicker(sections)
+                accountPicker(sections, listScrolls: !scrollsWhole)
                     .onAppear { preselect() }
             case let .confirmMatch(_, serverName, serverHost, accountName, code, matchWords, step):
                 confirm(serverName: serverName, serverHost: serverHost, accountName: accountName,
@@ -173,7 +186,7 @@ struct CompanionPairingCard: View {
         .padding(.top, 18)
     }
 
-    private func accountPicker(_ sections: [CompanionServerSection]) -> some View {
+    private func accountPicker(_ sections: [CompanionServerSection], listScrolls: Bool) -> some View {
         let chooser = coordinator?.chooser ?? CompanionAccountChooser(isRoku: tv.isRoku, acceptsSeveralAccounts: tv.acceptsSeveralAccounts)
         let activeServerId = ServerRegistry.shared.activeServerId
         let count = chooser.sendingOrder(selection, in: sections, activeServerId: activeServerId).count
@@ -186,15 +199,18 @@ struct CompanionPairingCard: View {
         return VStack(spacing: 0) {
             compactHeader(title: chooser.mode == .several ? "Choose accounts" : "Choose an account",
                           subtitle: "Sign \(tv.name) in to…")
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(sections) { section in
-                        serverSection(section, chooser: chooser, activeServerId: activeServerId)
-                    }
+            let list = VStack(alignment: .leading, spacing: 14) {
+                ForEach(sections) { section in
+                    serverSection(section, chooser: chooser, activeServerId: activeServerId)
                 }
             }
-            .scrollBounceBehavior(.basedOnSize)
-            .frame(maxHeight: 420)
+            if listScrolls {
+                ScrollView { list }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(maxHeight: 420)
+            } else {
+                list
+            }
             if let note = Self.chooserNote(chooser, tvName: tv.name, limitReached: limitReached) {
                 Text(note)
                     .font(.siloCaption)
