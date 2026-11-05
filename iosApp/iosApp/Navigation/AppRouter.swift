@@ -533,6 +533,12 @@ final class AppRouter {
     /// instead of a one-person picker.
     var skipsSingleProfilePicker = false
 
+    /// A nearby phone is in a session with the TV's first-run setup screen.
+    /// Each sign-in it pushes makes its server active, and the setup screen
+    /// routes on itself once the session ends, so nothing may navigate away
+    /// from it before then.
+    var isReceivingCompanionSetup = false
+
     func switchTab(to tab: AppTab) {
         requestedTab = tab
     }

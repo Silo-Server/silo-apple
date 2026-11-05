@@ -21,9 +21,9 @@ struct TVServerSetupView: View {
     @State private var coordinator = ReceiverPairingCoordinator()
     @State private var discovery = ServerDiscovery()
     @State private var isEnteringAddress = false
-    /// The first account a phone signed in this session: the one the phone
-    /// uses, which it sends first (spec §4.6).
-    @State private var firstPairedAccount: (serverId: String, localAccountId: String)?
+    /// Set once the end of a phone's session has routed on, so Continue and
+    /// the auto-advance can't both run it.
+    @State private var hasAdvanced = false
     @FocusState private var focusedField: Field?
     /// Where focus goes once the system keyboard closes after Done.
     @State private var focusAfterKeyboard: Field?
@@ -70,13 +70,9 @@ struct TVServerSetupView: View {
             discovery.start()
         }
         .task { await advertise() }
+        .onChange(of: isPairing) { _, pairing in router.isReceivingCompanionSetup = pairing }
         .onChange(of: coordinator.state) { _, state in
-            if case .linked = state { firstPairedAccount = nil }
-            if case .signedIn(serverCount: 1) = state,
-               let serverId = ServerRegistry.shared.activeServerId,
-               let account = AuthService.shared.activeAccount?.localAccountId {
-                firstPairedAccount = (serverId, account)
-            }
+            if case .linked = state { hasAdvanced = false }
             // Only accept a new phone once the panel is back to the idle
             // chooser. Releasing on terminal states (completed/failed) would
             // let a second phone connect and clobber the summary the user is
@@ -84,6 +80,7 @@ struct TVServerSetupView: View {
             if case .idle = state { advertiser.release() }
         }
         .onDisappear {
+            router.isReceivingCompanionSetup = false
             discovery.stop()
             advertiser.stop()
             Task { await coordinator.cancel() }
@@ -91,22 +88,37 @@ struct TVServerSetupView: View {
         .serverInsecurePromptAlert(viewModel, router: router)
     }
 
-    /// After a phone finishes: one account with a single profile and no PIN
-    /// opens directly. Several accounts open the picker of the one the phone
-    /// uses (the last one sent is active now); Change Account reaches the
-    /// rest.
+    /// After a phone finishes (contract §B.7). One account signed in opens
+    /// its picker, where a single profile without a PIN opens directly.
+    /// Several make the first one that signed in the open account (the last
+    /// one is active now), then show Change Account over its picker: the
+    /// rail starts on the active server, so on that account's server, and
+    /// focus on its card, which is the current one. Back opens its picker.
     private func openPairedAccount() {
-        let severalAccounts = coordinator.signedInCount > 1
-        router.skipsSingleProfilePicker = !severalAccounts
-        guard severalAccounts, let first = firstPairedAccount,
-              AuthService.shared.activeAccount?.localAccountId != first.localAccountId else {
+        guard !hasAdvanced else { return }
+        hasAdvanced = true
+        switch PairingSessionEnd(committed: coordinator.committedAccounts) {
+        case .nothingSignedIn, .openPicker:
+            router.skipsSingleProfilePicker = true
             router.showProfileSelection()
-            return
-        }
-        Task {
-            // Failing that, the active account's picker still shows.
-            try? await AccountSessions.switchTo(account: first.localAccountId, onServer: first.serverId)
-            router.showProfileSelection()
+        case .changeAccount(let first):
+            Task {
+                if AuthService.shared.activeAccount?.localAccountId != first.localAccountId
+                    || ServerRegistry.shared.activeServerId != first.serverId {
+                    // Failing that, Change Account still shows, with the
+                    // account the phone sent last as the current one.
+                    try? await AccountSessions.switchTo(account: first.localAccountId, onServer: first.serverId)
+                }
+                ChangeAccountModel.shared.reload()
+                // The picker under Change Account waits for a choice: it
+                // must not open a single profile behind the screen.
+                router.skipsSingleProfilePicker = false
+                router.pickerRequestedByPerson = true
+                router.withoutStackCrossfade {
+                    router.showProfileSelection()
+                    router.showChangeAccount()
+                }
+            }
         }
     }
 

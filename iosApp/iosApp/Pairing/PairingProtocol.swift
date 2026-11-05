@@ -23,10 +23,12 @@ enum PairingProtocol {
 
     /// TXT keys. `st` is the receiver state; `srv` is the deployment
     /// identity of a `login` TV's server (absent for `setup`). `acct=1`
-    /// says a `setup` TV keeps every account it is sent for one server, so
-    /// a phone may push a server once per saved account; without it (older
-    /// TVs, Android TV, Roku) a phone pushes each server once, approved by
-    /// the account it uses there. The wire messages are unchanged.
+    /// says the TV accepts any number of `pushServer` messages in one
+    /// session, the same server more than once included, and keeps each
+    /// sign-in as its own account; without it a phone sends one account per
+    /// server (an older Roku: one account in all). `lim=<n>`, optional and
+    /// sent only by Roku, is the most sign-ins the TV can keep from one
+    /// session.
     enum TXTKey {
         static let version = "v"
         static let name = "name"
@@ -35,6 +37,7 @@ enum PairingProtocol {
         static let state = "st"
         static let serverIdentity = "srv"
         static let acceptsAccounts = "acct"
+        static let accountLimit = "lim"
     }
 }
 
@@ -63,7 +66,11 @@ enum PairingMessage: Equatable {
     /// the phone verified at `serverURL`, and the other addresses the
     /// deployment offers, so a TV that cannot reach the phone's address can
     /// verify and use one it can. Older peers omit and ignore them.
-    case pushServer(serverURL: String, serverName: String?, serverIdentity: String? = nil, endpoints: [ServerEndpoint]? = nil)
+    /// `accountName` is the username the phone will approve with, shown on
+    /// the TV ("Signing in sam on Home") and never used for matching: it is
+    /// an unverified LAN claim, and the account that signs in is the poll's.
+    case pushServer(serverURL: String, serverName: String?, serverIdentity: String? = nil,
+                    endpoints: [ServerEndpoint]? = nil, accountName: String? = nil)
     /// TV → phone, after the TV called device/start for a pushed server.
     /// `matchCode` is advisory display only; the phone re-fetches the
     /// authoritative match code from the server via lookup before approving.
@@ -108,6 +115,9 @@ enum PairingFailureCode: String, Codable, Equatable, Sendable {
     /// Android has no `save_failed` yet, so the wire carries `auth_failed`
     /// (see `wireValue`) until both platforms agree on the code.
     case saveFailed = "save_failed"
+    /// The TV refused the push because it can't keep more sign-ins (a Roku
+    /// at its storage budget). Older phones read it as `auth_failed`.
+    case limitReached = "limit_reached"
 
     init(wire: String?) {
         self = wire.flatMap(PairingFailureCode.init(rawValue:)) ?? .authFailed
@@ -115,7 +125,7 @@ enum PairingFailureCode: String, Codable, Equatable, Sendable {
 
     /// What a TV sends in `serverResult.error`: only the codes both
     /// platforms share (auth_failed, denied, expired, unreachable,
-    /// identity_mismatch, update_required).
+    /// identity_mismatch, update_required, limit_reached).
     var wireValue: String {
         switch self {
         case .saveFailed: return PairingFailureCode.authFailed.rawValue
@@ -128,7 +138,7 @@ extension PairingMessage: Codable {
     private enum CodingKeys: String, CodingKey {
         case type, v
         case tvName, tvDeviceId, state, supportedVersions
-        case serverURL, serverName, serverIdentity, endpoints
+        case serverURL, serverName, serverIdentity, endpoints, accountName
         case userCode, matchCode
         case status, error
         case reason
@@ -148,12 +158,13 @@ extension PairingMessage: Codable {
             try c.encode(tvDeviceId, forKey: .tvDeviceId)
             try c.encode(state, forKey: .state)
             try c.encode(supportedVersions, forKey: .supportedVersions)
-        case let .pushServer(serverURL, serverName, serverIdentity, endpoints):
+        case let .pushServer(serverURL, serverName, serverIdentity, endpoints, accountName):
             try c.encode(Kind.pushServer, forKey: .type)
             try c.encode(serverURL, forKey: .serverURL)
             try c.encodeIfPresent(serverName, forKey: .serverName)
             try c.encodeIfPresent(serverIdentity, forKey: .serverIdentity)
             try c.encodeIfPresent(endpoints, forKey: .endpoints)
+            try c.encodeIfPresent(accountName, forKey: .accountName)
         case let .deviceStarted(serverURL, userCode, matchCode):
             try c.encode(Kind.deviceStarted, forKey: .type)
             try c.encode(serverURL, forKey: .serverURL)
@@ -188,7 +199,8 @@ extension PairingMessage: Codable {
                 serverURL: try c.decode(String.self, forKey: .serverURL),
                 serverName: try c.decodeIfPresent(String.self, forKey: .serverName),
                 serverIdentity: try c.decodeIfPresent(String.self, forKey: .serverIdentity),
-                endpoints: try c.decodeIfPresent([ServerEndpoint].self, forKey: .endpoints)
+                endpoints: try c.decodeIfPresent([ServerEndpoint].self, forKey: .endpoints),
+                accountName: try c.decodeIfPresent(String.self, forKey: .accountName)
             )
         case .deviceStarted:
             self = .deviceStarted(

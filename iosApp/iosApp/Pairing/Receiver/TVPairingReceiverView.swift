@@ -50,11 +50,11 @@ struct TVPairingReceiverView: View {
                 : "On your phone or tablet, choose which servers this Apple TV should sign in to.")
                 .padding(.top, 28)
             actions { cancelButton(.primary) }
-        case let .consentRequested(serverName):
+        case let .consentRequested(serverName, accountName):
             chip(isSignIn ? "A nearby phone is signing in this Apple TV" : "A nearby phone is setting up this Apple TV",
                  systemImage: "iphone")
             headline(isSignIn ? "Allow this\nsign-in?" : "Allow this\nsetup?")
-            MarqueeTVBody("A nearby phone or tablet wants to sign this Apple TV in to \(serverName).")
+            MarqueeTVBody("A nearby phone or tablet wants to sign this Apple TV in to \(Self.accountOnServer(serverName: serverName, accountName: accountName)).")
                 .padding(.top, 28)
             actions {
                 Button { coordinator.allowPendingServer() } label: { Text("Allow") }
@@ -70,12 +70,12 @@ struct TVPairingReceiverView: View {
                 .font(.system(size: 22))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                 .padding(.top, 30)
-        case let .awaitingApproval(_, _, _, automatic):
-            chip(automatic ? "Your phone is approving" : "Waiting for your phone", spinner: true)
+        case let .awaitingApproval(serverName, accountName, _, _, automatic):
+            chip(Self.signingInText(serverName: serverName, accountName: accountName), spinner: true)
             headline(automatic ? "Signing in" : "Confirm on\nyour phone")
-            // Servers after the first are approved programmatically (the
-            // phone verifies this code against the server) — don't ask the
-            // user to compare a code their phone never shows.
+            // A bound request after a bound sign-in is approved without a
+            // comparison (the phone checks the session binding), so don't ask
+            // the user to compare a code their phone never shows.
             MarqueeTVBody(automatic
                 ? "Your phone or tablet is checking this code for you."
                 : "Check that your phone or tablet shows this code, then approve.")
@@ -160,7 +160,7 @@ struct TVPairingReceiverView: View {
             MarqueeTVCardSymbol(systemImage: "iphone")
             cardTitle("On your phone")
             cardNote(isSignIn ? "Approve the sign-in there." : "Pick the servers to bring over, then tap Continue.")
-        case let .consentRequested(serverName):
+        case let .consentRequested(serverName, _):
             HStack(spacing: 26) {
                 MarqueeTVCardSymbol(systemImage: "iphone", size: 96)
                 MarqueeWaitingDots(count: 5, size: 10)
@@ -168,7 +168,7 @@ struct TVPairingReceiverView: View {
             }
             cardTitle(serverName)
             cardNote("After you allow it, a code appears here to compare with your phone.")
-        case let .awaitingApproval(serverName, code, matchWords, automatic):
+        case let .awaitingApproval(serverName, accountName, code, matchWords, automatic):
             cardTitle("Sign-in code").padding(.top, 0)
             MarqueeCodeTiles(code: DeviceUserCode.display(code))
                 .padding(.top, 26)
@@ -183,10 +183,18 @@ struct TVPairingReceiverView: View {
             Divider().overlay(Color.white.opacity(0.1)).padding(.vertical, 30)
             HStack(spacing: 18) {
                 MarqueeServerMark(name: serverName, imageURL: nil, size: 56)
-                Text(serverName)
-                    .font(.system(size: 28, weight: .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(serverName)
+                        .font(.system(size: 28, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let accountName {
+                        Text(accountName)
+                            .font(.system(size: 22))
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.5))
+                            .lineLimit(1)
+                    }
+                }
             }
         case .signedIn, .completed:
             MarqueeTVCardSymbol(systemImage: "checkmark", tint: Color.siloStatusLive, size: 140)
@@ -264,6 +272,18 @@ struct TVPairingReceiverView: View {
             : "Signed in to \(servers.joined(separator: ", ")). Taking you to your profiles…"
     }
 
+    /// "Signing in sam on Home", or "Signing in to Home" when the phone
+    /// named no account. The name is the phone's claim, for display only.
+    static func signingInText(serverName: String, accountName: String?) -> String {
+        guard let accountName else { return "Signing in to \(serverName)" }
+        return "Signing in \(accountName) on \(serverName)"
+    }
+
+    /// "Home as sam", or "Home".
+    static func accountOnServer(serverName: String, accountName: String?) -> String {
+        accountName.map { "\(serverName) as \($0)" } ?? serverName
+    }
+
     /// The host of an address, for a button label. Falls back to the
     /// address itself when it does not parse.
     private static func hostLabel(_ url: String) -> String {
@@ -287,6 +307,8 @@ struct TVPairingReceiverView: View {
             return help ?? UpdateRequirement.serverMessage
         case .saveFailed:
             return "\(name) approved the sign-in, but this Apple TV couldn't save it. Try again from your phone or tablet."
+        case .limitReached:
+            return "This Apple TV can't keep another account from \(name)."
         case .authFailed:
             return "Something went wrong signing in to \(name). Try again from your phone or tablet, or add your server manually."
         }

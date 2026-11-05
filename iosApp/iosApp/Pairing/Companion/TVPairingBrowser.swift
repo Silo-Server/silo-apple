@@ -18,9 +18,13 @@ struct DiscoveredTV: Identifiable, Equatable {
     /// Found as `_silopair-roku._tcp`: dialed over plain TCP, and signed in
     /// to one server only.
     var isRoku = false
-    /// TXT `acct=1`: the TV keeps several accounts per server, so the phone
-    /// sends every account it holds on a chosen server.
+    /// TXT `acct=1`: the TV takes any number of pushes in one session and
+    /// keeps each sign-in as its own account, so the phone may send several
+    /// accounts, on one server too. Without it, one account per server (an
+    /// older Roku: one in all).
     var acceptsSeveralAccounts = false
+    /// TXT `lim`: the most sign-ins the TV keeps from one session (Roku).
+    var accountLimit: Int? = nil
     // id-only equality is intentional: `sid`/`state` changes are surfaced via the
     // Optional nil↔value transition in CompanionPairingCardModifier's onChange latch,
     // not by field equality. Don't make this field-sensitive without revisiting that.
@@ -142,7 +146,8 @@ final class TVPairingBrowser {
         return DiscoveredTV(id: id, name: name, state: state, endpoint: endpoint, sid: txt[Key.sessionNonce],
             serverIdentity: ServerIdentity.usable(txt[Key.serverIdentity]),
             isRoku: serviceType == PairingProtocol.rokuServiceType,
-            acceptsSeveralAccounts: txt[Key.acceptsAccounts] == "1")
+            acceptsSeveralAccounts: txt[Key.acceptsAccounts] == "1",
+            accountLimit: txt[Key.accountLimit].flatMap(Int.init).flatMap { $0 > 0 ? $0 : nil })
     }
 }
 #endif

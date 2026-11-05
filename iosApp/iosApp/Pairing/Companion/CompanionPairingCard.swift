@@ -22,7 +22,12 @@ struct CompanionPairingCard: View {
 
     @State private var coordinator: CompanionPairingCoordinator?
     @State private var startupTask: Task<Void, Never>?
-    @State private var selection: Set<String> = []
+    @State private var selection: Set<CompanionAccountChoice> = []
+    @State private var didPreselect = false
+    /// A sign-in TV: the signed-in accounts on its server, and the one to
+    /// sign it in as (decision D3: one).
+    @State private var signInAccounts: [CompanionAccountOption] = []
+    @State private var signInChoice: CompanionAccountChoice?
     @State private var started = false
     @State private var appeared = false
 
@@ -64,9 +69,14 @@ struct CompanionPairingCard: View {
                 .frame(width: 38, height: 5)
                 .padding(.top, 10)
                 .padding(.bottom, 18)
-            stepContent
-                .padding(.horizontal, 22)
-                .padding(.bottom, 22)
+            // The step as laid out when it fits. Otherwise (large text, a
+            // short screen, a long summary) the whole step scrolls, so its
+            // actions stay reachable.
+            ViewThatFits(in: .vertical) {
+                paddedStep(scrollsWhole: false)
+                ScrollView { paddedStep(scrollsWhole: true) }
+                    .scrollBounceBehavior(.basedOnSize)
+            }
         }
         .frame(maxWidth: .infinity)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
@@ -87,19 +97,27 @@ struct CompanionPairingCard: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: started)
     }
 
-    @ViewBuilder private var stepContent: some View {
+    private func paddedStep(scrollsWhole: Bool) -> some View {
+        stepContent(scrollsWhole: scrollsWhole)
+            .padding(.horizontal, 22)
+            .padding(.bottom, 22)
+    }
+
+    /// `scrollsWhole`: the step sits in a scroll view, so the account list
+    /// doesn't scroll on its own.
+    @ViewBuilder private func stepContent(scrollsWhole: Bool) -> some View {
         if !started {
             discovery
         } else {
             switch coordinator?.state ?? .connecting {
             case .connecting:
                 progressStep(title: "Connecting…", subtitle: tv.name)
-            case let .pickServers(_, servers):
-                serverPicker(servers)
-                    .onAppear { preselectActiveServer(in: servers) }
-            case let .confirmMatch(_, serverName, serverHost, accountName, code, matchWords):
+            case let .pickAccounts(_, sections):
+                accountPicker(sections, listScrolls: !scrollsWhole)
+                    .onAppear { preselect() }
+            case let .confirmMatch(_, serverName, serverHost, accountName, code, matchWords, step):
                 confirm(serverName: serverName, serverHost: serverHost, accountName: accountName,
-                        code: code, matchWords: matchWords)
+                        code: code, matchWords: matchWords, step: step)
             case let .working(progress):
                 progressStep(title: server == nil ? "Setting up…" : "Signing in…", subtitle: progress)
             case let .finished(signedIn, failed):
@@ -126,6 +144,9 @@ struct CompanionPairingCard: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.top, 6)
+                if signInAccounts.count > 1 {
+                    signInAccountChoice(server)
+                }
                 primaryButton("Sign In") { setUp() }.padding(.top, 22)
             } else {
                 Text("Set Up \(tv.name)")
@@ -142,77 +163,170 @@ struct CompanionPairingCard: View {
             }
             tertiaryButton("Not Now") { dismiss() }.padding(.top, 4)
         }
+        .task(id: server?.id) { await loadSignInAccounts() }
     }
 
-    private func serverPicker(_ servers: [ServerEntry]) -> some View {
-        VStack(spacing: 0) {
-            // A Roku keeps one server, so its chooser picks one.
-            compactHeader(title: tv.isRoku ? "Choose a server" : "Choose servers", subtitle: "Sign \(tv.name) in to…")
-            VStack(spacing: 8) {
-                ForEach(servers) { server in serverRow(server) }
+    /// "Sign in Living Room to Home as" with one row per signed-in account,
+    /// the one in use first and chosen.
+    private func signInAccountChoice(_ server: ServerEntry) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Sign in \(tv.name) to \(server.displayName) as")
+                .font(.siloCaption)
+                .foregroundStyle(.secondary)
+                // Long TV and server names wrap instead of truncating.
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            ForEach(signInAccounts) { option in
+                accountRow(option, isOn: signInChoice == option.id, isActiveAccount: option.isInUse,
+                           unavailable: nil) {
+                    signInChoice = option.id
+                }
             }
-            primaryButton("Continue") {
-                let chosen = servers.filter { selection.contains($0.id) }
+        }
+        .padding(.top, 18)
+    }
+
+    private func accountPicker(_ sections: [CompanionServerSection], listScrolls: Bool) -> some View {
+        let chooser = coordinator?.chooser ?? CompanionAccountChooser(isRoku: tv.isRoku, acceptsSeveralAccounts: tv.acceptsSeveralAccounts)
+        let activeServerId = ServerRegistry.shared.activeServerId
+        let count = chooser.sendingOrder(selection, in: sections, activeServerId: activeServerId).count
+        let limitReached = sections.contains { section in
+            section.accounts.contains {
+                if case .limitReached = chooser.unavailable($0, in: selection) { return true }
+                return false
+            }
+        }
+        return VStack(spacing: 0) {
+            compactHeader(title: chooser.mode == .several ? "Choose accounts" : "Choose an account",
+                          subtitle: "Sign \(tv.name) in to…")
+            let list = VStack(alignment: .leading, spacing: 14) {
+                ForEach(sections) { section in
+                    serverSection(section, chooser: chooser, activeServerId: activeServerId)
+                }
+            }
+            if listScrolls {
+                ScrollView { list }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .frame(maxHeight: 420)
+            } else {
+                list
+            }
+            if let note = Self.chooserNote(chooser, tvName: tv.name, limitReached: limitReached) {
+                Text(note)
+                    .font(.siloCaption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 10)
+            }
+            primaryButton(Self.continueTitle(count: count)) {
+                let chosen = selection
                 Task { await coordinator?.pushSelected(chosen) }
             }
-            .disabled(selection.isEmpty)
-            .opacity(selection.isEmpty ? 0.5 : 1)
+            .disabled(count == 0)
+            .opacity(count == 0 ? 0.5 : 1)
             .padding(.top, 18)
             cancelButton().padding(.top, 4)
         }
     }
 
-    private func serverRow(_ server: ServerEntry) -> some View {
-        let isOn = selection.contains(server.id)
-        return Button {
-            selection = Self.toggling(server.id, in: selection, singleSelect: tv.isRoku)
-        } label: {
-            HStack(spacing: 12) {
+    private func serverSection(_ section: CompanionServerSection, chooser: CompanionAccountChooser,
+                               activeServerId: String?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
                 Image(systemName: "server.rack")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 34, height: 34)
-                    .background(Color.siloIconTile, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 26, height: 26)
+                    .background(Color.siloIconTile, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .foregroundStyle(.white)
+                Text(section.server.displayName)
+                    .font(.siloBody.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
+            ForEach(section.accounts) { option in
+                accountRow(
+                    option,
+                    isOn: selection.contains(option.id),
+                    isActiveAccount: option.isInUse && section.server.id == activeServerId,
+                    unavailable: chooser.unavailable(option, in: selection)
+                ) {
+                    selection = chooser.toggling(option, in: selection)
+                }
+            }
+        }
+    }
+
+    /// One account: its initial, its name ("alex · this iPhone" for the
+    /// account the phone uses), and a check. An account that must sign in
+    /// again on this phone, or that the TV's limit leaves no room for, is
+    /// shown but can't be ticked.
+    private func accountRow(
+        _ option: CompanionAccountOption,
+        isOn: Bool,
+        isActiveAccount: Bool,
+        unavailable: CompanionAccountChooser.Unavailable?,
+        action: @escaping () -> Void
+    ) -> some View {
+        let name = option.username ?? "Your account"
+        return Button(action: action) {
+            HStack(spacing: 12) {
+                Text(String(name.prefix(1)).uppercased())
+                    .font(.siloBody.weight(.semibold))
+                    .frame(width: 32, height: 32)
+                    .background(Color.siloIconTile, in: Circle())
                     .foregroundStyle(.white)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(server.displayName)
+                    Text(isActiveAccount ? "\(name) · this \(UIDevice.current.model)" : name)
                         .font(.siloBody)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text(server.url)
-                        .font(.siloCaption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .truncationMode(.middle)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let accounts = accountNames(on: server) {
-                        Text(accounts)
+                    if unavailable == .needsSignIn {
+                        Text("Sign in again on \(UIDevice.current.model)")
                             .font(.siloCaption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
-                .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 22))
                     .foregroundStyle(isOn ? Color.siloOnSurface : Color.secondary)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.vertical, 10)
             .background(
                 isOn ? Color.siloChromeSelectedFill : Color.siloChromeRestingFill,
                 in: RoundedRectangle(cornerRadius: 13, style: .continuous)
             )
+            .opacity(unavailable == nil ? 1 : 0.5)
         }
         .buttonStyle(.plain)
+        .disabled(unavailable != nil)
         .accessibilityAddTraits(isOn ? [.isSelected] : [])
     }
 
-    /// The chooser's selection after tapping `id`. Single-select (a Roku)
-    /// picks only `id`; tapping the chosen row again clears it.
-    static func toggling(_ id: String, in selection: Set<String>, singleSelect: Bool) -> Set<String> {
-        if selection.contains(id) { return selection.subtracting([id]) }
-        return singleSelect ? [id] : selection.union([id])
+    /// "Continue — 3 accounts".
+    static func continueTitle(count: Int) -> String {
+        switch count {
+        case 0: return "Continue"
+        case 1: return "Continue — 1 account"
+        default: return "Continue — \(count) accounts"
+        }
+    }
+
+    /// What the chooser can't do on this TV, under the list.
+    static func chooserNote(_ chooser: CompanionAccountChooser, tvName: String, limitReached: Bool) -> String? {
+        if limitReached, let limit = chooser.limit {
+            return limit == 1
+                ? "\(tvName) can keep 1 account from this setup."
+                : "\(tvName) can keep \(limit) accounts from this setup."
+        }
+        switch chooser.mode {
+        case .several: return nil
+        case .onePerServer: return "\(tvName) keeps one account per server."
+        case .one: return "\(tvName) keeps one account."
+        }
     }
 
     /// The sign-in offer's body. It reports what the TV says, not a fact.
@@ -224,8 +338,14 @@ struct CompanionPairingCard: View {
     /// and Android: the code, which server and account, what approving
     /// grants, and the warning.
     private func confirm(serverName: String, serverHost: String, accountName: String?,
-                         code: String, matchWords: String?) -> some View {
+                         code: String, matchWords: String?, step: String?) -> some View {
         VStack(spacing: 0) {
+            if let step {
+                Text(step)
+                    .font(.siloCaption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.bottom, 4)
+            }
             Text("Check that \(tv.name) shows")
                 .font(.siloCaption)
                 .foregroundStyle(.secondary)
@@ -280,16 +400,27 @@ struct CompanionPairingCard: View {
 
     private func finished(signedIn: [String], failed: [CompanionPairingCoordinator.FailedServer]) -> some View {
         VStack(spacing: 0) {
-            Image(systemName: signedIn.isEmpty ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+            let complete = signedIn.isEmpty == false && failed.isEmpty
+            Image(systemName: complete ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                 .font(.system(size: 44))
-                .foregroundStyle(signedIn.isEmpty ? Color.yellow : Color.green)
+                .foregroundStyle(complete ? Color.green : Color.yellow)
                 .padding(.bottom, 12)
             Text(signedIn.isEmpty
                 ? (server == nil ? "Setup didn’t finish" : "Sign-in didn’t finish")
-                : (server == nil ? "Set up \(signedIn.joined(separator: ", "))" : "\(tv.name) is signed in"))
+                : (server == nil
+                    ? (failed.isEmpty ? "\(tv.name) is set up" : "\(tv.name) is set up, with problems")
+                    : "\(tv.name) is signed in"))
                 .font(.siloHeadline)
                 .multilineTextAlignment(.center)
-            ForEach(failed, id: \.name) { failure in
+            // One line per server: "Home — alex, sam".
+            ForEach(signedIn.indices, id: \.self) { index in
+                Text(signedIn[index])
+                    .font(.siloBody)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 4)
+            }
+            ForEach(failed.indices, id: \.self) { index in
+                let failure = failed[index]
                 Text(failure.summary)
                     .font(.siloCaption)
                     .foregroundStyle(.secondary)
@@ -382,7 +513,8 @@ struct CompanionPairingCard: View {
         started = true
         startupTask?.cancel()
         startupTask = Task {
-            let coordinator = await CompanionPairingCoordinator.connect(to: tv, server: server)
+            let account = server == nil ? nil : signInAccounts.first { $0.id == signInChoice }
+            let coordinator = await CompanionPairingCoordinator.connect(to: tv, server: server, account: account)
             guard !Task.isCancelled else {
                 await coordinator.cancel()
                 return
@@ -410,22 +542,24 @@ struct CompanionPairingCard: View {
         }
     }
 
-    /// The accounts a TV that keeps them all is sent for `server`, when
-    /// there is more than one ("alex, sam").
-    private func accountNames(on server: ServerEntry) -> String? {
-        guard tv.acceptsSeveralAccounts, !tv.isRoku else { return nil }
-        let names = AccountDirectory.shared.accounts(onServer: server.id)
-            .filter { !$0.needsSignIn }
-            .map { $0.username ?? "Account" }
-        return names.count > 1 ? names.joined(separator: ", ") : nil
+    /// The chooser starts with the account this device uses on its active
+    /// server; the user can add or remove others. Kept across Try Again.
+    private func preselect() {
+        guard !didPreselect, let coordinator else { return }
+        didPreselect = true
+        if selection.isEmpty { selection = coordinator.defaultSelection }
     }
 
-    /// The chooser starts with the server this device is using; the user
-    /// can add or remove others.
-    private func preselectActiveServer(in servers: [ServerEntry]) {
-        guard selection.isEmpty, let active = ServerRegistry.shared.activeServerId,
-              servers.contains(where: { $0.id == active }) else { return }
-        selection.insert(active)
+    /// A sign-in TV's server: the accounts that can approve, the one in use
+    /// chosen.
+    private func loadSignInAccounts() async {
+        guard let server else { return }
+        let options = await CompanionPairingCoordinator.accountOptions(on: server).filter { !$0.needsSignIn }
+        guard !Task.isCancelled else { return }
+        signInAccounts = options
+        if signInChoice == nil || !options.contains(where: { $0.id == signInChoice }) {
+            signInChoice = (options.first(where: \.isInUse) ?? options.first)?.id
+        }
     }
 }
 
