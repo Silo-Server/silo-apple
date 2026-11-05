@@ -1310,18 +1310,23 @@ final class DownloadManager {
         do {
             if isBatch {
                 let version = batchVersion(fileId)
+                var pagesStored = 0
                 do {
                     try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
-                        quality: batchQuality(requestedQuality), versionFileId: version, owner: owner)
-                } catch where version != nil && APIv2Client.downloadRegistryFailure(error) == .rejected {
+                        quality: batchQuality(requestedQuality), versionFileId: version, owner: owner,
+                        pagesStored: &pagesStored)
+                } catch where version != nil && pagesStored == 0
+                    && APIv2Client.downloadRegistryFailure(error) == .rejected {
                     // A cached `batchVersion` can outlive a server downgrade,
-                    // and such a server refuses the template before it
-                    // registers anything. Read the capability again and, when
-                    // it no longer offers versions, send the batch without one.
+                    // and such a server refuses the template on the first page,
+                    // before it registers anything. Read the capability again
+                    // and, when it no longer offers versions, send the batch
+                    // without one. A refusal after a stored page is shown as is.
                     await refreshCapability()
                     guard isCurrent(owner), batchVersion(fileId) == nil else { throw error }
                     try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
-                        quality: batchQuality(requestedQuality), versionFileId: nil, owner: owner)
+                        quality: batchQuality(requestedQuality), versionFileId: nil, owner: owner,
+                        pagesStored: &pagesStored)
                 }
             } else {
                 let request = APIv2DownloadCreateRequest.single(
@@ -1355,7 +1360,8 @@ final class DownloadManager {
     /// repeats the same client-chosen batch id, and each page's entries are
     /// stored as soon as it arrives.
     private func createSeriesPages(seriesId: String, seasonNumber: Int?, quality: String,
-                                   versionFileId: String?, owner: ScopeOwner) async throws {
+                                   versionFileId: String?, owner: ScopeOwner,
+                                   pagesStored: inout Int) async throws {
         let request = APIv2DownloadCreateRequest.seriesPage(
             seriesId: seriesId,
             seasonNumber: seasonNumber,
@@ -1372,6 +1378,7 @@ final class DownloadManager {
             guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
             applyCreatedEntries(page.items, displayTitle: nil, displaySubtitle: nil, type: nil,
                 seriesId: seriesId, posterThumbhash: nil)
+            pagesStored += 1
             registered += page.items.count
             guard page.page.hasMore else {
                 if registered == 0 { throw DownloadError.emptyRegistrationResponse }
