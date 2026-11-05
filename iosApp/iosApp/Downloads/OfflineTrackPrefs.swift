@@ -83,6 +83,15 @@ struct TrackPrefsStore: Codable, Equatable, Sendable {
         if hadRow, row == nil { clearedRow(Body.self, key: key) }
     }
 
+    /// Folds a store merged away (two server entries becoming one) into
+    /// this one: per key the newer pending pick wins, and this store's rows
+    /// and cascade win over the other's.
+    mutating func merge(_ other: TrackPrefsStore) {
+        audio.merge(other.audio)
+        subtitle.merge(other.subtitle)
+        effectiveSubtitle.merge(other.effectiveSubtitle) { current, _ in current }
+    }
+
     private mutating func clearedRow<Body: TrackPrefBody>(_: Body.Type, key: String) {
         if Body.kind == .subtitle { effectiveSubtitle[key] = nil }
     }
@@ -219,6 +228,11 @@ struct TrackPrefLedger<Body: TrackPrefBody>: Codable, Equatable, Sendable {
         }
     }
 
+    fileprivate mutating func merge(_ other: TrackPrefLedger<Body>) {
+        observed.merge(other.observed) { current, _ in current }
+        pending.merge(other.pending) { current, incoming in incoming.pickedAt > current.pickedAt ? incoming : current }
+    }
+
     /// Ends `pick` without sending it: the server row is newer.
     mutating func discard(_ pick: PendingTrackPref<Body>, key: String) {
         guard pending[key]?.id == pick.id else { return }
@@ -343,11 +357,15 @@ enum OfflineTrackPrefs {
     /// original download's ordinal is the source index the server stores; a
     /// prepared file's sends -1, which the server's selection skips. The
     /// manifest folds the two titles, so no signature is sent.
+    /// A prepared file's untagged track gives the server nothing to find it
+    /// by, and an empty row would clear the series choice, so it is not saved.
     static func audioRequest(tracks: [AudioTrack], ordinal: Int, sourceOrdinals: Bool) -> AudioPrefRequest? {
         guard tracks.indices.contains(ordinal) else { return nil }
+        let language = tracks[ordinal].language ?? ""
+        guard sourceOrdinals || !language.isEmpty else { return nil }
         return AudioPrefRequest(
             audioTrackIndex: sourceOrdinals ? ordinal : -1,
-            audioLanguage: tracks[ordinal].language ?? "",
+            audioLanguage: language,
             trackSignature: nil
         )
     }
@@ -379,17 +397,25 @@ enum OfflineTrackPrefs {
     }
 
     /// A subtitle pick from the local file or one of its sidecars. Neither
-    /// index is the source's, and the probed or sidecar metadata may differ
-    /// from the server's, so it sends the language and flags only.
-    static func subtitleRequest(track: PlayerTrack) -> SubtitlePrefRequest {
+    /// index is the source's, so it sends -1 and the track's signature, as
+    /// streaming does: the codec and source tell a sidecar SRT from an
+    /// embedded ASS track in the same language. Nil for a track with neither
+    /// a language nor a title: the series row would turn on whichever track
+    /// ranks first.
+    static func subtitleRequest(track: PlayerTrack) -> SubtitlePrefRequest? {
         let language = track.normalizedLanguageCode
+        let label = track.normalizedTitle
+        guard language != nil || label != nil else { return nil }
         return SubtitlePrefRequest(
             subtitleLanguage: language ?? "",
             subtitleTrackIndex: -1,
             externalSubtitlePath: "",
             subtitleMode: SubtitleMode.always.rawValue,
             trackSignature: SubtitleTrackSignature(
+                source: track.isExternal ? "external" : "embedded",
                 language: language,
+                codec: track.codec,
+                label: label,
                 forced: track.isForced,
                 hearingImpaired: track.isHearingImpaired
             ),

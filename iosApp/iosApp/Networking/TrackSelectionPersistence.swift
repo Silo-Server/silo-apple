@@ -215,11 +215,12 @@ enum TrackSelectionPersistence {
 
     /// Runs `operation` in turn with the writes for the same kind and key,
     /// without registering an intent: the downloads flush decides for itself
-    /// whether to write. `operation` answers whether it stored a write, so
-    /// reads marked before it know to read again.
-    static func ordered(kind: TrackPreferenceKind, prefKey: String,
+    /// whether to write. Reads under `owner` wait for it like any write, and
+    /// `operation` answers whether it stored one, so reads marked before it
+    /// read again and an older failed pick stops being carried.
+    static func ordered(kind: TrackPreferenceKind, prefKey: String, owner: CapturedOrdinaryRequestAuth,
                         _ operation: @escaping @Sendable () async -> Bool) -> Task<Void, Never> {
-        pendingWrites.chain(.init(kind: kind, prefKey: prefKey), operation)
+        pendingWrites.chain(.init(kind: kind, prefKey: prefKey), owner: owner, operation)
     }
 
     private static let pendingWrites = PendingWrites()
@@ -607,6 +608,8 @@ enum TrackSelectionPersistence {
             var storeSequence: UInt64 = 0
             /// The store sequence of each slot's last stored write.
             var lastStored: [Slot: UInt64] = [:]
+            /// Writes run through `chain` that have not ended, by id.
+            var chained: [UInt64: (slot: Slot, owner: CapturedOrdinaryRequestAuth, task: Task<Void, Never>)] = [:]
         }
 
         private let state = Mutex(State())
@@ -632,27 +635,39 @@ enum TrackSelectionPersistence {
         }
 
         /// Runs `operation` after the slot's last dispatched write, as the
-        /// slot's new tail, without registering an intent. A stored write
-        /// bumps the store sequence like `finish(_:stored:)`.
-        func chain(_ slot: Slot, _ operation: @escaping @Sendable () async -> Bool) -> Task<Void, Never> {
+        /// slot's new tail, without registering an intent. Until it ends,
+        /// reads under `owner` wait for it as for an in-flight write. A
+        /// stored write bumps the store sequence like `finish(_:stored:)`
+        /// and ends a failed pick from that profile dispatched before it,
+        /// which reads would otherwise keep carrying over the stored value.
+        func chain(_ slot: Slot, owner: CapturedOrdinaryRequestAuth,
+                   _ operation: @escaping @Sendable () async -> Bool) -> Task<Void, Never> {
             state.withLock { state -> Task<Void, Never> in
                 state.nextId += 1
                 let id = state.nextId
                 let previous = state.tails[slot]?.task
                 let task = Task {
                     await previous?.value
-                    if await operation() { self.noteStored(slot) }
+                    let stored = await operation()
+                    self.endChained(id, slot: slot, owner: owner, stored: stored)
                     self.releaseTail(slot, id)
                 }
                 state.tails[slot] = (id, task)
+                state.chained[id] = (slot, owner, task)
                 return task
             }
         }
 
-        private func noteStored(_ slot: Slot) {
+        private func endChained(_ id: UInt64, slot: Slot, owner: CapturedOrdinaryRequestAuth, stored: Bool) {
             state.withLock { state in
+                state.chained[id] = nil
+                guard stored else { return }
                 state.storeSequence += 1
                 state.lastStored[slot] = state.storeSequence
+                let owned = OwnedSlot(slot: slot, profile: owner.profileId)
+                if let entry = state.latest[owned], entry.failedAt != nil, entry.id < id {
+                    state.latest[owned] = nil
+                }
             }
         }
 
@@ -699,6 +714,9 @@ enum TrackSelectionPersistence {
                           entry.belongs(to: owner, includingUnbound: owned.profile == owner.profileId)
                     else { return nil }
                     return entry.task
+                } + state.chained.values.compactMap { chained in
+                    guard chained.slot.prefKey == prefKey, chained.owner.sameCredentialIdentity(as: owner) else { return nil }
+                    return chained.task
                 }
             }
         }

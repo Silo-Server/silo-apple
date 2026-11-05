@@ -151,18 +151,41 @@ final class OfflineTrackPrefsTests: XCTestCase {
         XCTAssertEqual(request.audioLanguage, "ja")
     }
 
-    func testOfflineSubtitlePickSendsLanguageAndFlagsOnly() {
-        let sidecar = PlayerTrack(trackId: 1_073_741_825, kind: .sub, title: "English SDH", lang: "en", codec: "subrip",
-                                  audioChannelCount: nil, bitrate: nil, isDefault: false, isForced: false,
-                                  isHearingImpaired: true, isExternal: true, isSelected: true, ffIndex: nil, srcId: 0)
+    private func subtitle(_ id: Int64, title: String?, lang: String?, codec: String?, external: Bool) -> PlayerTrack {
+        PlayerTrack(trackId: id, kind: .sub, title: title, lang: lang, codec: codec, audioChannelCount: nil,
+                    bitrate: nil, isDefault: false, isForced: false, isHearingImpaired: false,
+                    isExternal: external, isSelected: false, ffIndex: external ? nil : Int(id), srcId: 0)
+    }
 
-        let request = OfflineTrackPrefs.subtitleRequest(track: sidecar)
+    /// silo-apple#812: an external English SRT picked on a file that also has
+    /// an embedded English ASS track comes back as the SRT, not the embedded
+    /// track the resolver prefers on a tie.
+    func testOfflineSubtitlePickRestoresTheSidecarOverAnEmbeddedTrackInItsLanguage() throws {
+        let embedded = subtitle(2, title: "HIDIVE_English", lang: "en", codec: "ass", external: false)
+        let sidecar = subtitle(1_073_741_825, title: "English", lang: "en", codec: "subrip", external: true)
 
+        let request = try XCTUnwrap(OfflineTrackPrefs.subtitleRequest(track: sidecar))
         XCTAssertEqual(request.subtitleTrackIndex, -1, "a sidecar's position is not a server index")
-        XCTAssertEqual(request.subtitleMode, "always")
-        XCTAssertEqual(request.subtitleLanguage, "en")
-        XCTAssertEqual(request.trackSignature, SubtitleTrackSignature(language: "en", hearingImpaired: true))
         XCTAssertNil(request.showForcedSubtitles, "omitted keeps the series' forced override")
+
+        let selection = SubtitleAutoResolver.resolve(.init(
+            preferredLanguage: request.subtitleLanguage, mode: SubtitleMode(rawValue: request.subtitleMode),
+            showForced: false, trackSignature: request.trackSignature,
+            availableSubtitles: [embedded, sidecar], currentAudioLanguage: "ja"
+        ))
+
+        XCTAssertEqual(selection, .select(sidecar))
+    }
+
+    func testAnOfflinePickNothingIdentifiesLeavesTheSeriesRowAlone() {
+        let untitled = subtitle(3, title: nil, lang: nil, codec: "subrip", external: true)
+        XCTAssertNil(OfflineTrackPrefs.subtitleRequest(track: untitled),
+                     "mode always with no language or title would turn on whichever track ranks first")
+
+        let untagged = [AudioTrack(index: nil, codec: "aac", channels: 2, channelLayout: "stereo", bitrate: nil,
+                                   sampleRate: nil, language: nil, title: nil, embeddedTitle: nil, isDefault: true)]
+        XCTAssertNil(OfflineTrackPrefs.audioRequest(tracks: untagged, ordinal: 0, sourceOrdinals: false),
+                     "an empty row on a prepared file would clear the series audio choice")
     }
 
     // MARK: - Store
@@ -191,7 +214,7 @@ final class OfflineTrackPrefsTests: XCTestCase {
         XCTAssertFalse(store.hasPending)
     }
 
-    func testOmittedForcedOverrideKeepsTheSeriesRowValue() {
+    func testOmittedForcedOverrideKeepsTheSeriesRowValue() throws {
         let seriesRow = SubtitlePrefRequest(subtitleLanguage: "en", subtitleTrackIndex: 3, externalSubtitlePath: "",
                                             subtitleMode: "always", trackSignature: nil, showForcedSubtitles: false)
         let sidecar = PlayerTrack(trackId: 1_073_741_825, kind: .sub, title: nil, lang: "ja", codec: "subrip",
@@ -200,7 +223,8 @@ final class OfflineTrackPrefsTests: XCTestCase {
         var store = TrackPrefsStore()
         store.observe(row(seriesRow, at: 100), key: "s", in: \.subtitle, since: store.subtitle.revision("s"))
 
-        let pick = store.record(OfflineTrackPrefs.subtitleRequest(track: sidecar), key: "s", in: \.subtitle, at: at(200))
+        let pick = store.record(try XCTUnwrap(OfflineTrackPrefs.subtitleRequest(track: sidecar)), key: "s",
+                                in: \.subtitle, at: at(200))
         XCTAssertEqual(store.subtitlePrefs(forKey: "s")?.showForced, false, "the server keeps its override")
         store.acknowledge(pick, key: "s", in: \.subtitle, serverDate: at(201))
         XCTAssertEqual(store.subtitlePrefs(forKey: "s")?.showForced, false)
@@ -314,5 +338,38 @@ final class OfflineTrackPrefsTests: XCTestCase {
         // server's 200, before the server row changed at 1_500.
         XCTAssertFalse(send(pick(at: 2_000, baseline: .updatedAt(seen)), row(at: Date(timeIntervalSince1970: 1_500)),
                             serverDate: readAt.addingTimeInterval(-1_800)))
+    }
+
+    /// A server merge folds one entry's download store into another's; picks
+    /// queued offline under the merged-away entry still reach the server.
+    func testAServerMergeKeepsPicksQueuedUnderTheMergedEntry() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func store(_ prefs: TrackPrefsStore, in directory: URL) throws {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var file = DownloadStoreFile.empty
+            file.trackPrefs = prefs
+            try JSONEncoder().encode(file)
+                .write(to: directory.appendingPathComponent(DownloadFilePaths.storeFileName))
+        }
+        var kept = TrackPrefsStore()
+        kept.record(audio("en"), key: "a", in: \.audio, at: at(100))
+        kept.record(audio("de"), key: "b", in: \.audio, at: at(300))
+        var mergedAway = TrackPrefsStore()
+        mergedAway.record(audio("ja"), key: "a", in: \.audio, at: at(200))
+        mergedAway.record(audio("fr"), key: "b", in: \.audio, at: at(250))
+        mergedAway.record(audio("ko"), key: "c", in: \.audio, at: at(50))
+        let source = root.appendingPathComponent("from/profile-1", isDirectory: true)
+        let destination = root.appendingPathComponent("into", isDirectory: true)
+        try store(mergedAway, in: source)
+        try store(kept, in: destination.appendingPathComponent("profile-1", isDirectory: true))
+
+        XCTAssertTrue(DownloadStore.mergeScopes([source], into: destination))
+
+        let merged = try JSONDecoder().decode(DownloadStoreFile.self, from: Data(contentsOf: destination
+            .appendingPathComponent("profile-1/\(DownloadFilePaths.storeFileName)"))).trackPrefs
+        XCTAssertEqual(merged?.audioPref(forKey: "a")?.audioLanguage, "ja", "the newer pick wins")
+        XCTAssertEqual(merged?.audioPref(forKey: "b")?.audioLanguage, "de", "the newer pick wins")
+        XCTAssertEqual(merged?.audioPref(forKey: "c")?.audioLanguage, "ko", "a pick only the merged entry had still owes a write")
     }
 }

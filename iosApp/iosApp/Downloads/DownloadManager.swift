@@ -4090,17 +4090,21 @@ final class DownloadManager {
         }
         let (key, pick) = (next.key, next.value)
         tried.insert(pick.id)
-        await TrackSelectionPersistence.ordered(kind: Body.kind, prefKey: key) {
-            await self.sendTrackPref(pick, key: key, in: ledger, owner: owner)
+        await TrackSelectionPersistence.ordered(kind: Body.kind, prefKey: key, owner: owner.auth) {
+            await self.sendTrackPref(pick.id, key: key, in: ledger, owner: owner)
         }.value
         return trackPrefs[keyPath: ledger].pending[key]?.id != pick.id
     }
 
-    private func sendTrackPref<Body: TrackPrefBody>(_ pick: PendingTrackPref<Body>, key: String,
+    /// Sends the queued pick `id`, read when its turn comes: a write that
+    /// stored while it waited may have rebased it.
+    private func sendTrackPref<Body: TrackPrefBody>(_ id: UUID, key: String,
                                                     in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
                                                     owner: ScopeOwner) async -> Bool {
-        guard isCurrent(owner), trackPrefs[keyPath: ledger].pending[key]?.id == pick.id else { return false }
+        guard isCurrent(owner), let pick = trackPrefs[keyPath: ledger].pending[key], pick.id == id else { return false }
         let client = SiloAPI.shared.apiV2Client
+        // Only a refused write ends a pick; a failed read says nothing about it.
+        var writing = false
         do {
             let revision = trackPrefs[keyPath: ledger].revision(key)
             let read = try await client.readTrackPreference(Body.self, seriesId: key, auth: owner.auth)
@@ -4114,17 +4118,24 @@ final class DownloadManager {
                 return false
             }
             let serverDate: Date?
+            writing = true
             if let body = pick.body {
                 serverDate = try await client.writeTrackPreference(kind: Body.kind, seriesId: key, body: body, auth: owner.auth)
             } else {
                 serverDate = try await client.deleteTrackPreference(kind: Body.kind, seriesId: key, auth: owner.auth)
             }
             guard isCurrent(owner) else { return true }
-            updateTrackPrefs { $0.acknowledge(pick, key: key, in: ledger, serverDate: serverDate) }
+            updateTrackPrefs {
+                // The write omits members the server keeps (the forced
+                // override), so it lands on the row just read, not the
+                // cached one.
+                $0.observe(read.row, key: key, in: ledger, since: revision)
+                $0.acknowledge(pick, key: key, in: ledger, serverDate: serverDate)
+            }
             return true
         } catch {
             Self.logger.warning("track pref send failed key=\(key, privacy: .public): \(String(describing: error), privacy: .public)")
-            if OfflineTrackPrefs.isRefusedForGood(error), isCurrent(owner) {
+            if writing, OfflineTrackPrefs.isRefusedForGood(error), isCurrent(owner) {
                 updateTrackPrefs { $0[keyPath: ledger].discard(pick, key: key) }
             }
             return false

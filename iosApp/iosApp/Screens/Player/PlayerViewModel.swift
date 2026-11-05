@@ -6238,7 +6238,8 @@ class PlayerViewModel {
                 if !self.hasExplicitSubtitleChoice {
                     let followsSystem = self.subtitleSelectionFollowsSystem(
                         prepared.watchDetail,
-                        prepared.selectedVersion
+                        prepared.selectedVersion,
+                        offline: preparedOfflineContext != nil
                     )
                     self.prefsForCurrentItem = followsSystem
                         ? self.systemCaptionPrefsSnapshot()
@@ -8379,8 +8380,13 @@ class PlayerViewModel {
         if let offline = offlinePlaybackContext {
             if let track, SubtitleTrackIdSpace.isAILive(track.trackId) { return }
             guard let key = offline.trackPrefKey else { return }
-            let request = track.map(OfflineTrackPrefs.subtitleRequest(track:))
-                ?? TrackSelectionPersistence.subtitleOffRequest()
+            let request: SubtitlePrefRequest
+            if let track {
+                guard let pick = OfflineTrackPrefs.subtitleRequest(track: track) else { return }
+                request = pick
+            } else {
+                request = TrackSelectionPersistence.subtitleOffRequest()
+            }
             DownloadManager.shared.recordTrackPref(request, key: key, in: \.subtitle, owner: offline.owner)
             return
         }
@@ -10486,16 +10492,21 @@ class PlayerViewModel {
     /// Whether the device's caption policy chooses the subtitle for a load:
     /// Use Device Settings is on and the viewer has no saved pick for the
     /// title that `version` offers. A saved pick outranks the device policy;
-    /// caption appearance follows the setting alone.
-    private func subtitleSelectionFollowsSystem(_ watchDetail: WatchDetail?, _ version: FileVersion?) -> Bool {
-        settings.subtitleMatchesSystemAppearance && !SubtitleAutoResolver.savedPickApplies(
-            watchDetail?.effectiveSubtitleTrackSignature,
-            to: version?.subtitleTracks ?? []
-        )
+    /// caption appearance follows the setting alone. A downloaded file's
+    /// subtitles are known only once it is probed, so there a saved pick
+    /// that names a track decides, as it does for a streamed title.
+    private func subtitleSelectionFollowsSystem(_ watchDetail: WatchDetail?, _ version: FileVersion?,
+                                                offline: Bool) -> Bool {
+        let saved = watchDetail?.effectiveSubtitleTrackSignature
+        let savedPickDecides = offline
+            ? SubtitleAutoResolver.savedPickNamesATrack(saved)
+            : SubtitleAutoResolver.savedPickApplies(saved, to: version?.subtitleTracks ?? [])
+        return settings.subtitleMatchesSystemAppearance && !savedPickDecides
     }
 
     private var subtitleSelectionFollowsSystem: Bool {
-        subtitleSelectionFollowsSystem(currentWatchDetail, currentSelectedVersion)
+        subtitleSelectionFollowsSystem(currentWatchDetail, currentSelectedVersion,
+                                       offline: offlinePlaybackContext != nil)
     }
 
     private func reapplySystemSubtitlePolicy() {

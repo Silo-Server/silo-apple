@@ -258,8 +258,12 @@ enum OfflinePlaybackBuilder {
             credits: manifest.credits,
             recap: manifest.recap,
             markerSegments: manifest.markerSegments,
-            // Without a manifest audio list the player picks by language.
-            effectiveAudioLanguage: audioPref.map(\.audioLanguage).flatMap { $0.isEmpty ? nil : $0 }
+            // Without a manifest audio list the player picks by language. The
+            // original-language sentinel names no language the player can
+            // match; only the server resolves it, so the profile's applies.
+            effectiveAudioLanguage: audioPref.map(\.audioLanguage).flatMap {
+                $0.isEmpty || $0.caseInsensitiveCompare(PlaybackPrefSentinel.originalLanguage) == .orderedSame ? nil : $0
+            }
         )
 
         let watchDetail = WatchDetail(

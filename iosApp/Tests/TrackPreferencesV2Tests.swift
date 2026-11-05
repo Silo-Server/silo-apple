@@ -479,6 +479,54 @@ final class TrackPreferencesV2Tests: XCTestCase {
         XCTAssertTrue(cleared.unsettled.isEmpty, "the stored Auto replaces the failed pick")
     }
 
+    /// The downloads flush sends queued offline picks in the same per-key
+    /// order as streaming writes; a streaming read waits for it as for any
+    /// write of its owner, and reads again once it stores.
+    func testReadWaitsForADownloadsFlushAndRereadsOnceItStores() async throws {
+        let (_, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let owner = try XCTUnwrap(captured)
+        let key = "series-barrier-flush"
+        let (started, startedNow) = AsyncStream<Void>.makeStream()
+        let (release, releaseNow) = AsyncStream<Void>.makeStream()
+        let flush = TrackSelectionPersistence.ordered(kind: .audio, prefKey: key, owner: owner) {
+            startedNow.yield()
+            for await _ in release { break }
+            return true
+        }
+        for await _ in started { break }
+        let mark = TrackSelectionPersistence.pendingWriteMark()
+
+        let read = Task {
+            await TrackSelectionPersistence.settlePendingWrites(prefKey: key, owner: owner, since: mark,
+                                                                timeout: .seconds(30))
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        releaseNow.yield()
+        let settlement = await read.value
+        await flush.value
+
+        XCTAssertTrue(settlement.rereads, "the read waited for the flush's write and must see it")
+    }
+
+    func testAStoredFlushWriteEndsAnOlderFailedPick() async throws {
+        let (api, tokens) = try await client()
+        let captured = await tokens.captureOrdinaryRequestAuth()
+        let owner = try XCTUnwrap(captured)
+        let key = "series-barrier-flush-failed"
+        stub.sequence([.failure(URLError(.networkConnectionLost))])
+        await TrackSelectionPersistence.saveSubtitle(
+            prefKey: key, request: TrackSelectionPersistence.subtitleOffRequest(), client: api, tokenStore: tokens
+        ).value
+
+        await TrackSelectionPersistence.ordered(kind: .subtitle, prefKey: key, owner: owner) { true }.value
+        let settled = await TrackSelectionPersistence.settlePendingWrites(
+            prefKey: key, owner: owner, since: TrackSelectionPersistence.pendingWriteMark()
+        )
+
+        XCTAssertTrue(settled.unsettled.isEmpty, "the flushed pick is newer than the failed Off; reads must not fold it back")
+    }
+
     func testNewerWriteSupersedesOneStillQueued() async throws {
         let (api, tokens) = try await client()
         let captured = await tokens.captureOrdinaryRequestAuth()
