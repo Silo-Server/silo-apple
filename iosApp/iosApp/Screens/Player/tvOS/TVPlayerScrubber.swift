@@ -353,9 +353,11 @@ struct TVPlayerScrubber: View {
         // A hold keeps a playing player running, but a resume still landing
         // its seek would cancel the scrub when it lands: hold it here and
         // give it back on commit, as Select does. Only when the scrub can
-        // open: `beginScrub` refuses a member who can't seek, and a pause
-        // sent then would have no commit to give it back.
+        // open (`beginScrub` refuses a member who can't seek), and never in a
+        // watch party, where the pause and its give-back would go to the
+        // whole room and room commands don't reach this hold's bookkeeping.
         let resumePending = viewModel.isResumePending && viewModel.canRequestSeek
+            && !viewModel.isWatchPartyPlayback
         resumePlaybackAfterTimelineSelection = viewModel.isPlaying || resumePending
         if resumePending { viewModel.pauseForTimelineSelection() }
         holdPausedPendingResume = resumePending
