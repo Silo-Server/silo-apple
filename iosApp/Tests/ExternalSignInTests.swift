@@ -838,7 +838,7 @@ final class ExternalSignInTests: XCTestCase {
         let api = APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false })
         let auth = AuthService(serverIdentityResolver: ServerIdentityResolver(httpClient: http), serverRegistry: registry,
             launchPreferences: preferences, contractProbe: APIv2Probe(httpClient: http), apiV2Client: api,
-            httpClient: http, tokenStore: tokens, sessionPersistence: AccountSessionPersistence(keychain: keychain),
+            httpClient: http, tokenStore: tokens, defaults: defaults, accounts: AccountStore(keychain: keychain, defaults: defaults),
             purgeDiagnostics: { _ in true })
         return AppHarness(tokens: tokens, registry: registry, auth: auth, api: api)
     }

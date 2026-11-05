@@ -7,6 +7,9 @@ protocol TVApprovalAPI: Sendable {
     /// A bearer for the saved server, renewed first when it has expired or
     /// is about to, or why there is none.
     func bearer(serverId: String) async -> ApproverBearer
+    /// The same for one saved account on the server; nil is the account
+    /// requests there use.
+    func bearer(serverId: String, localAccountId: String?) async -> ApproverBearer
     func lookup(serverURL: String, bearer: String, code: String) async throws -> DeviceLookupResponse
     func approve(serverURL: String, bearer: String, code: String) async throws
     func deny(serverURL: String, bearer: String, code: String) async throws
@@ -16,9 +19,15 @@ protocol TVApprovalAPI: Sendable {
     func accountSwitch(serverURL: String) async -> TVApprovalAccountSwitch
 }
 
-/// What "Not you?" on the approval card offers. In every case it signs out of
-/// the server in Silo only; the difference is what the next sign-in lets the
-/// person do.
+extension TVApprovalAPI {
+    func bearer(serverId: String, localAccountId: String?) async -> ApproverBearer {
+        await bearer(serverId: serverId)
+    }
+}
+
+/// What signing in with another account from "Not you?" on the approval card
+/// can promise. The phone keeps every account it has; the difference is
+/// what the sign-in lets the person choose.
 enum TVApprovalAccountSwitch: Equatable, Sendable {
     /// The server lists a browser provider and advertises `select_account`:
     /// the provider is asked to let the person choose an account.
@@ -28,8 +37,8 @@ enum TVApprovalAccountSwitch: Equatable, Sendable {
     case switchAccount
     /// A browser provider without `select_account`, a server that takes no
     /// password (its network provider signs the same device owner back in),
-    /// or discovery that could not be read: the card promises only a
-    /// sign-out.
+    /// or discovery that could not be read: the provider may sign the same
+    /// person straight back in.
     case signOut
 
     /// The rule for a server's discovery; nil is discovery that could not
@@ -49,6 +58,11 @@ struct LiveTVApprovalAPI: TVApprovalAPI {
 
     func bearer(serverId: String) async -> ApproverBearer {
         await HTTPClient.shared.freshAccessToken(serverId: serverId)
+    }
+
+    func bearer(serverId: String, localAccountId: String?) async -> ApproverBearer {
+        guard let localAccountId else { return await bearer(serverId: serverId) }
+        return await HTTPClient.shared.freshAccessToken(serverId: serverId, localAccountId: localAccountId)
     }
 
     func lookup(serverURL: String, bearer: String, code: String) async throws -> DeviceLookupResponse {
@@ -130,12 +144,15 @@ final class TVApprovalModel {
     }
 
     private(set) var phase: Phase = .idle
-    /// What "Not you?" offers on this server; a plain sign-out until the
-    /// lookup has read the server's discovery.
+    /// What signing in with another account from "Not you?" can promise on
+    /// this server; nothing until the lookup has read the server's discovery.
     private(set) var accountSwitch: TVApprovalAccountSwitch = .signOut
-    /// Whether "Not you?" asks the provider for an account choice.
+    /// Whether that sign-in asks the provider for an account choice.
     var offersAccountChoice: Bool { accountSwitch == .chooseAccount }
     let server: ServerEntry
+    /// The saved account that approves; nil is the account requests on the
+    /// server use.
+    let localAccountId: String?
     let code: String
 
     private let api: any TVApprovalAPI
@@ -150,11 +167,13 @@ final class TVApprovalModel {
     init(
         server: ServerEntry,
         code: String,
+        localAccountId: String? = nil,
         api: any TVApprovalAPI = LiveTVApprovalAPI(),
         watchInterval: Duration = .seconds(3),
         watchLimit: Int = 40
     ) {
         self.server = server
+        self.localAccountId = localAccountId
         self.code = DeviceUserCode.normalized(code)
         self.api = api
         self.watchInterval = watchInterval
@@ -315,7 +334,7 @@ final class TVApprovalModel {
     /// there is none. Only a session the server refused asks the person to
     /// sign in again; an outage keeps the session and says so.
     private func bearerOrFailure() async -> String? {
-        switch await api.bearer(serverId: server.id) {
+        switch await api.bearer(serverId: server.id, localAccountId: localAccountId) {
         case .token(let token) where !token.isEmpty:
             return token
         case .token, .rejected:

@@ -102,7 +102,6 @@ struct TVLibraryTypeTabView: View {
                 libraryType: library.type,
                 mediaScope: mediaScope,
                 initialFilter: .none,
-                groupsBoxSets: library.browsesBoxSets,
                 showsHeader: false,
                 showsAlphabetRail: true,
                 topContentInset: SiloTheme.Skyline.libraryContentTopInset,
@@ -110,9 +109,6 @@ struct TVLibraryTypeTabView: View {
                 isTopMenuFocused: isTopMenuFocused,
                 onTopMenuFocusRequest: onTopMenuFocusRequest
             )
-            // The grid keeps its model, so a library list that arrives with
-            // box sets turned on or off has to build a new one.
-            .id(library.browsesBoxSets)
         }
     }
 

@@ -211,8 +211,10 @@ struct TVGeneralSettingsPane: View {
     }
 
     private var pairedProfileName: String {
-        guard let serverID = registry.activeServerId,
-              let remembered = launchPreferences.rememberedProfile(for: serverID) else {
+        guard registry.activeServerId != nil,
+              let remembered = launchPreferences.rememberedProfile(
+                  forAccount: AccountScope.current?.localAccountId
+              ) else {
             return "Not paired"
         }
         guard let activeProfile,

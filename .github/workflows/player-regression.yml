@@ -104,7 +104,9 @@ jobs:
     if: needs.select.result == 'success' && needs.select.outputs.has_platforms == 'true'
     # Same Xcode 27 image as the release builds.
     runs-on: xcode-27
-    timeout-minutes: 40
+    # 40 minutes for validation plus the benchmark step's own 6 minutes, so a
+    # stalled diagnostic cannot cancel a job whose tests passed.
+    timeout-minutes: 46
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
@@ -414,6 +416,10 @@ jobs:
           derived-cache-hit: ${{ steps.cache.outputs.derived-cache-hit }}
       - name: Record benchmark metadata
         if: always()
+        # Benchmark metadata is diagnostic output; it must not fail validation
+        # or use up the job deadline before evidence upload.
+        continue-on-error: true
+        timeout-minutes: 6
         env:
           SILO_PREPARED_SIMULATOR_RUNTIMES: ${{ matrix.action == 'test' && env.SILO_BENCH_VARIANT != 'baseline' && format('{0}/apple-simulator-runtimes.json', runner.temp) || '' }}
           SILO_XCODEGEN_CACHE_HIT: ${{ steps.xcodegen.outputs.cache-hit }}

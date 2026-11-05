@@ -25,6 +25,8 @@ final class RequestsV2Tests: XCTestCase {
             defaults: SharedDefaults(suite: suite, standard: suite))
         await tokens.switchActiveServer(serverId: "test-server")
         await tokens.setServerUrl("https://requests.example")
+        // A profile proof belongs to a signed-in account.
+        _ = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
         if let profile { await tokens.setProfileId(profile) }
         return tokens
     }

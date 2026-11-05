@@ -4,14 +4,16 @@ import OSLog
 /// On-disk layout for offline downloads. Everything lives under
 /// Application Support (NOT Caches — the OS purges Caches under storage
 /// pressure and downloaded media must survive that). Paths are scoped by
-/// `(serverId, profileId)` so a profile or server switch is just a
-/// different directory tree with no migration.
+/// `(serverId, localAccountId, profileId)` so a profile, account, or server
+/// switch is just a different directory tree. Profile IDs repeat across
+/// accounts on one server (older accounts all have `default`), so the
+/// account has its own level.
 ///
 /// ```
 /// <AppSupport>/SiloDownloads/
 ///   .legacy-downloads-removed    (see `LegacyDownloadStorage`)
 ///   staging/task-<n>.bin         (finished untagged transfers, see below)
-/// <AppSupport>/SiloDownloads/<serverId>/<profileId>/
+/// <AppSupport>/SiloDownloads/<serverId>/acct-<localAccountId>/<profileId>/
 ///   store.json
 ///   <downloadId>/
 ///     media.<ext>
@@ -24,6 +26,12 @@ import OSLog
 /// A finished transfer is parked as `transfer.finished` in its owner's
 /// download directory, whichever scope is loaded, and becomes `media.<ext>`
 /// once that scope's store is loaded and its record accepts it.
+///
+/// Builds from before accounts saved `<serverId>/<profileId>/` with no
+/// account level. Only the account that adopted the server's data from
+/// before accounts (`AccountStore.legacyDataOwner(forServer:)`) takes those
+/// directories over, when its downloads first load (`DownloadStore`); no
+/// other code reads them.
 ///
 /// `DownloadRecord` stores **relative filenames** (e.g. `media.mp4`), not
 /// absolute URLs, because the iOS app-container path can change between
@@ -49,17 +57,88 @@ enum DownloadFilePaths {
         return rootURL
     }
 
-    static func scopeDirectory(serverId: String, profileId: String, root: URL = rootDirectory()) -> URL {
-        let dir = root
-            .appendingPathComponent(sanitize(serverId), isDirectory: true)
+    /// Names an account's level inside a server's directory. Profile IDs
+    /// are UUIDs or `default`, so none starts with it.
+    static let accountFolderPrefix = "acct-"
+
+    /// `<root>/<serverId>` as a path only.
+    static func serverPath(serverId: String, root: URL) -> URL {
+        root.appendingPathComponent(sanitize(serverId), isDirectory: true)
+    }
+
+    /// `<root>/<serverId>/acct-<localAccountId>`, holding every profile
+    /// scope of one account, as a path only.
+    static func accountPath(serverId: String, localAccountId: String, root: URL) -> URL {
+        serverPath(serverId: serverId, root: root)
+            .appendingPathComponent(accountFolderName(localAccountId: localAccountId), isDirectory: true)
+    }
+
+    /// A scope's directory as a path only; `scopeDirectory` creates it.
+    static func scopePath(serverId: String, localAccountId: String, profileId: String, root: URL) -> URL {
+        accountPath(serverId: serverId, localAccountId: localAccountId, root: root)
             .appendingPathComponent(sanitize(profileId), isDirectory: true)
+    }
+
+    static func scopeDirectory(
+        serverId: String, localAccountId: String, profileId: String, root: URL = rootDirectory()
+    ) -> URL {
+        let dir = scopePath(serverId: serverId, localAccountId: localAccountId, profileId: profileId, root: root)
         ensureDirectory(dir)
         return dir
     }
 
-    static func storeFileURL(serverId: String, profileId: String, root: URL = rootDirectory()) -> URL {
-        scopeDirectory(serverId: serverId, profileId: profileId, root: root)
+    static func storeFileURL(
+        serverId: String, localAccountId: String, profileId: String, root: URL = rootDirectory()
+    ) -> URL {
+        scopeDirectory(serverId: serverId, localAccountId: localAccountId, profileId: profileId, root: root)
             .appendingPathComponent(storeFileName, isDirectory: false)
+    }
+
+    /// The profile scopes under an account's directory.
+    static func profileScopes(serverId: String, localAccountId: String, root: URL) -> [URL] {
+        subdirectories(of: accountPath(serverId: serverId, localAccountId: localAccountId, root: root))
+    }
+
+    /// The `<serverId>/<profileId>/` scopes a build from before accounts
+    /// saved: every directory in the server's folder outside an account
+    /// level. Read only to hand them to the server's legacy data owner.
+    static func scopesFromBeforeAccounts(serverId: String, root: URL) -> [URL] {
+        subdirectories(of: serverPath(serverId: serverId, root: root))
+            .filter { !$0.lastPathComponent.hasPrefix(accountFolderPrefix) }
+    }
+
+    /// Moves `source` to `destination`, creating its parent. When
+    /// `destination` already exists, their contents merge: directories in
+    /// both merge the same way, and of two files with one name the newer
+    /// stays. Returns true once nothing is left at `source`; a failed move
+    /// leaves the rest in place to try again.
+    static func merge(_ source: URL, into destination: URL) -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: destination.path) else {
+            do {
+                try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.moveItem(at: source, to: destination)
+                return true
+            } catch {
+                logger.error("Failed to move download data: \(String(describing: error), privacy: .public)")
+                return false
+            }
+        }
+        if isDirectory(source), isDirectory(destination) {
+            let children = (try? fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)) ?? []
+            for child in children {
+                _ = merge(child, into: destination.appendingPathComponent(child.lastPathComponent))
+            }
+            if (try? fm.contentsOfDirectory(atPath: source.path))?.isEmpty == true {
+                try? fm.removeItem(at: source)
+            }
+        } else if modificationDate(source) > modificationDate(destination) {
+            guard (try? fm.removeItem(at: destination)) != nil else { return false }
+            return merge(source, into: destination)
+        } else {
+            try? fm.removeItem(at: source)
+        }
+        return !fm.fileExists(atPath: source.path)
     }
 
     /// Staging area where the background session delegate moves the temp
@@ -94,8 +173,8 @@ enum DownloadFilePaths {
         return freed
     }
 
-    static func downloadDirectory(serverId: String, profileId: String, downloadId: String) -> URL {
-        let dir = scopeDirectory(serverId: serverId, profileId: profileId)
+    static func downloadDirectory(serverId: String, localAccountId: String, profileId: String, downloadId: String) -> URL {
+        let dir = scopeDirectory(serverId: serverId, localAccountId: localAccountId, profileId: profileId)
             .appendingPathComponent(sanitize(downloadId), isDirectory: true)
         ensureDirectory(dir)
         return dir
@@ -106,22 +185,24 @@ enum DownloadFilePaths {
     /// artwork on every render. Use `fileURLForWriting` to create a file.
     static func fileURL(
         serverId: String,
+        localAccountId: String,
         profileId: String,
         downloadId: String,
         filename: String
     ) -> URL {
-        downloadPath(serverId: serverId, profileId: profileId, downloadId: downloadId)
+        downloadPath(serverId: serverId, localAccountId: localAccountId, profileId: profileId, downloadId: downloadId)
             .appendingPathComponent(filename, isDirectory: false)
     }
 
     /// `fileURL`, after creating the download's directory.
     static func fileURLForWriting(
         serverId: String,
+        localAccountId: String,
         profileId: String,
         downloadId: String,
         filename: String
     ) -> URL {
-        downloadDirectory(serverId: serverId, profileId: profileId, downloadId: downloadId)
+        downloadDirectory(serverId: serverId, localAccountId: localAccountId, profileId: profileId, downloadId: downloadId)
             .appendingPathComponent(filename, isDirectory: false)
     }
 
@@ -132,15 +213,33 @@ enum DownloadFilePaths {
     static func finishedTransferURL(for tag: DownloadTaskTag) -> URL {
         fileURL(
             serverId: tag.serverId,
+            localAccountId: tag.localAccountId,
             profileId: tag.profileId,
             downloadId: tag.downloadId,
             filename: finishedTransferFilename
         )
     }
 
-    /// The folder names of a scope's server and profile directories.
-    static func scopeFolderNames(serverId: String, profileId: String) -> (server: String, profile: String) {
-        (sanitize(serverId), sanitize(profileId))
+    /// Moves a finished transfer's file to its parked path, replacing any
+    /// file there. The download's directory is created when missing: a
+    /// transfer started before accounts can finish before its owner's
+    /// downloads have moved under the account (see `merge`).
+    static func park(_ source: URL, at destination: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? fm.removeItem(at: destination)
+        try fm.moveItem(at: source, to: destination)
+    }
+
+    /// The folder names of a scope's server, account, and profile directories.
+    static func scopeFolderNames(
+        serverId: String, localAccountId: String, profileId: String
+    ) -> (server: String, account: String, profile: String) {
+        (sanitize(serverId), accountFolderName(localAccountId: localAccountId), sanitize(profileId))
+    }
+
+    private static func accountFolderName(localAccountId: String) -> String {
+        accountFolderPrefix + sanitize(localAccountId)
     }
 
     /// The name of a download's directory inside its scope directory.
@@ -150,8 +249,10 @@ enum DownloadFilePaths {
 
     /// Every parked finished transfer in a scope, keyed by the name of the
     /// download directory that holds it (see `directoryName(forDownloadId:)`).
-    static func finishedTransfers(serverId: String, profileId: String, root: URL = rootDirectory()) -> [String: URL] {
-        let scope = scopeDirectory(serverId: serverId, profileId: profileId, root: root)
+    static func finishedTransfers(
+        serverId: String, localAccountId: String, profileId: String, root: URL = rootDirectory()
+    ) -> [String: URL] {
+        let scope = scopeDirectory(serverId: serverId, localAccountId: localAccountId, profileId: profileId, root: root)
         let fm = FileManager.default
         guard let children = try? fm.contentsOfDirectory(
             at: scope,
@@ -169,22 +270,20 @@ enum DownloadFilePaths {
 
     /// Delete every on-disk asset for one download (media, manifest,
     /// artwork, subtitles). The JSON store record is removed separately.
-    static func removeDownloadDirectory(serverId: String, profileId: String, downloadId: String) {
+    static func removeDownloadDirectory(serverId: String, localAccountId: String, profileId: String, downloadId: String) {
         try? FileManager.default.removeItem(
-            at: downloadPath(serverId: serverId, profileId: profileId, downloadId: downloadId)
+            at: downloadPath(serverId: serverId, localAccountId: localAccountId, profileId: profileId, downloadId: downloadId)
         )
     }
 
-    private static func downloadPath(serverId: String, profileId: String, downloadId: String) -> URL {
-        rootURL
-            .appendingPathComponent(sanitize(serverId), isDirectory: true)
-            .appendingPathComponent(sanitize(profileId), isDirectory: true)
+    private static func downloadPath(serverId: String, localAccountId: String, profileId: String, downloadId: String) -> URL {
+        scopePath(serverId: serverId, localAccountId: localAccountId, profileId: profileId, root: rootURL)
             .appendingPathComponent(sanitize(downloadId), isDirectory: true)
     }
 
     /// Total bytes used by all download assets in a scope.
-    static func bytesUsed(serverId: String, profileId: String) -> Int64 {
-        bytes(under: scopeDirectory(serverId: serverId, profileId: profileId))
+    static func bytesUsed(serverId: String, localAccountId: String, profileId: String) -> Int64 {
+        bytes(under: scopeDirectory(serverId: serverId, localAccountId: localAccountId, profileId: profileId))
     }
 
     /// Total bytes of the regular files under a directory.
@@ -223,6 +322,23 @@ enum DownloadFilePaths {
     #endif
 
     // MARK: - Helpers
+
+    private static func subdirectories(of url: URL) -> [URL] {
+        let children = (try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return children.filter(isDirectory)
+    }
+
+    private static func isDirectory(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+    }
+
+    private static func modificationDate(_ url: URL) -> Date {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+    }
 
     private static func ensureDirectory(_ url: URL, excludeFromBackup: Bool = false) {
         let fm = FileManager.default

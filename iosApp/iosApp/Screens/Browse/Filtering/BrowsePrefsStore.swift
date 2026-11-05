@@ -3,9 +3,10 @@ import Foundation
 /// Per-library, per-profile persistence of browse sort + filters, gated by a
 /// user-facing "Preserve sort & filters" toggle (default on). Mirrors the
 /// `AppNavPreferences` / `TVLibraryScopeStore` pattern: `SharedDefaults`
-/// keyed by platform + server + profile + library, so a phone's filters
-/// never leak to the TV or to another profile, and an anonymous (no-profile)
-/// state is never persisted.
+/// keyed by platform + server + account + profile + library, so a phone's
+/// filters never leak to the TV, to another profile, or to another account's
+/// profile with the same ID, and an anonymous (no-profile) state is never
+/// persisted.
 struct BrowsePrefsStore {
     static let shared = BrowsePrefsStore()
 
@@ -58,22 +59,23 @@ struct BrowsePrefsStore {
 
     // MARK: - Keys
 
-    private func base(libraryId: Int?, mediaScope: String? = nil) -> String? {
-        guard let profileId = AuthService.shared.profileId, !profileId.isEmpty else { return nil }
-        let serverId = ServerRegistry.shared.activeServerId ?? "default"
+    /// `<platform>.v2.<server>.<account>.<profile>.<library>[.type-<scope>].<field>`,
+    /// after the legacy owner takes over the value saved before accounts.
+    private func key(_ field: String, libraryId: Int?, mediaScope: String?) -> String? {
         let lib = libraryId.map(String.init) ?? "all"
-        return "\(Self.platformPrefix).\(serverId).\(profileId).\(lib)" + (mediaScope.map { ".type-\($0)" } ?? "")
+        let suffix = lib + (mediaScope.map { ".type-\($0)" } ?? "") + ".\(field)"
+        return AccountScope.current?.adoptedKey(Self.platformPrefix, suffix: suffix, defaults: defaults)
     }
 
     private func stateKey(libraryId: Int?, mediaScope: String? = nil) -> String? {
-        base(libraryId: libraryId, mediaScope: mediaScope).map { "\($0).state" }
+        key("state", libraryId: libraryId, mediaScope: mediaScope)
     }
 
     private func preserveKey(libraryId: Int?, mediaScope: String? = nil) -> String? {
-        base(libraryId: libraryId, mediaScope: mediaScope).map { "\($0).preserve" }
+        key("preserve", libraryId: libraryId, mediaScope: mediaScope)
     }
 
-    private static var platformPrefix: String {
+    static var platformPrefix: String {
         #if os(tvOS)
         "tv.browsePrefs"
         #elseif os(iOS)

@@ -272,6 +272,11 @@ class PlayerViewModel {
     private var pendingProtocolV3FirstFrameEpoch: AetherPlaybackController.LoadEpoch?
     @ObservationIgnored
     private var pendingProtocolV3SeekReanchorPosition: Double?
+    /// The viewer's latest Play or Pause, and how many there have been. A
+    /// replan that goes unanswered reconnects with the play intent from its
+    /// request, which ignores the failed transport's teardown pause; a Play
+    /// or Pause the viewer gave while that request was out wins over it.
+    private var viewerTransportCommand: (count: UInt64, play: Bool) = (0, false)
     /// The load epoch whose startup milestone (`handleFileLoaded`) has already
     /// run. Video loads reach that milestone on Aether's first frame; audio-only
     /// loads have no picture and reach it when the audio route starts playing.
@@ -2499,7 +2504,10 @@ class PlayerViewModel {
                         )
                     } else if let queuedTarget = self.pendingProtocolV3SeekReanchorPosition {
                         self.pendingProtocolV3SeekReanchorPosition = nil
-                        self.commitSeek(to: queuedTarget, source: "queuedAuthReloadReanchor", roomCommand: self.isWatchPartyPlayback)
+                        self.commitSeek(
+                            to: queuedTarget, source: "queuedAuthReloadReanchor", roomCommand: self.isWatchPartyPlayback,
+                            requestedPaused: self.queuedReanchorRequestedPaused
+                        )
                     } else {
                         self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
                     }
@@ -2950,6 +2958,7 @@ class PlayerViewModel {
             && (resolvedOperation == PlaybackProtocolV3.ReplanOperation.failureRecovery
                 || resolvedOperation == PlaybackProtocolV3.ReplanOperation.seekReanchor)
         let playIntentAtRequest = aetherPlaybackController.shouldPlayWhenReady
+        let viewerCommandCountAtRequest = viewerTransportCommand.count
         // A quality, track or seek replan is a fresh look at the stream; only
         // the reconnect's own replan keeps where the last one resumed.
         if classification != PlaybackReconnectPolicy.classification {
@@ -3097,7 +3106,10 @@ class PlayerViewModel {
                 } else if let queuedTarget = self.pendingProtocolV3SeekReanchorPosition {
                     self.pendingProtocolV3SeekReanchorPosition = nil
                     if !self.isDisposed, self.activePreparedProtocolV3 != nil {
-                        self.commitSeek(to: queuedTarget, source: "queuedReanchor", roomCommand: self.isWatchPartyPlayback)
+                        self.commitSeek(
+                            to: queuedTarget, source: "queuedReanchor", roomCommand: self.isWatchPartyPlayback,
+                            requestedPaused: self.queuedReanchorRequestedPaused
+                        )
                     }
                 } else if currentStreamLoadGeneration == self.streamLoadGeneration {
                     // Runs only once this task handle is cleared, so a policy
@@ -3412,7 +3424,11 @@ class PlayerViewModel {
                 if joinsReconnectWhenUnanswered,
                    self.viewingHasPlayed,
                    PlaybackReconnectPolicy.isUnanswered(error),
-                   self.beginReconnect(position: position, resume: playIntentAtRequest) {
+                   self.beginReconnect(
+                       position: position,
+                       resume: self.viewerTransportCommand.count == viewerCommandCountAtRequest
+                           ? playIntentAtRequest : self.viewerTransportCommand.play
+                   ) {
                     return
                 }
                 if PlaybackSessionBridge.isPlaybackSessionMissing(error),
@@ -5636,6 +5652,7 @@ class PlayerViewModel {
     private func handleNowPlayingPlay() {
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(.play) == true { return }
+        noteViewerTransportCommand(play: true)
         if !holdPlayIntentForFreshLoad(true) {
             aetherPlaybackController.play()
         }
@@ -5646,6 +5663,7 @@ class PlayerViewModel {
 
     private func handleNowPlayingPause() {
         if watchPartyAdapter?.request(.pause) == true { return }
+        noteViewerTransportCommand(play: false)
         if !holdPlayIntentForFreshLoad(false) {
             aetherPlaybackController.pause()
         }
@@ -7055,14 +7073,22 @@ class PlayerViewModel {
         // Nothing can play until the reconnect hands over a new transport.
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(isPlaying ? .pause : .play) == true { return }
-        if holdPlayIntentForFreshLoad(!isPlaying) {
+        // While a replan replaces the transport, the outgoing engine's state
+        // can disagree with the viewer's: it sits paused under a recorded Play
+        // (a resuming scrub's reanchor), and `isPlaying` lags a Pause until the
+        // engine reports it. The press toggles the viewer's intent, so a Pause
+        // keeps the replacement paused instead of starting the old stream.
+        let replacingTransport = seekReplanTask != nil || protocolV3ReplanTask != nil
+        let playing = replacingTransport ? viewerWantsToPlay : isPlaying
+        noteViewerTransportCommand(play: !playing)
+        if holdPlayIntentForFreshLoad(!playing) {
             scheduleHideControls()
             return
         }
         // `isPlaying` is driven by the backend's `onPauseChange` callback;
         // let that be the single writer so the UI can't drift out of sync
         // with the actual pipeline state on error paths.
-        if isPlaying {
+        if playing {
             aetherPlaybackController.pause()
         } else {
             aetherPlaybackController.play()
@@ -7101,6 +7127,10 @@ class PlayerViewModel {
     /// SiloControl) for the replacement, and shows it, since no engine event
     /// will. False once the load has handed the engine a transport,
     /// which then takes the command itself.
+    private func noteViewerTransportCommand(play: Bool) {
+        viewerTransportCommand = (viewerTransportCommand.count &+ 1, play)
+    }
+
     private func holdPlayIntentForFreshLoad(_ play: Bool) -> Bool {
         guard freshLoadTask != nil, activeAetherLoadEpoch == nil else { return false }
         freshLoadPlayIntent = play
@@ -7626,6 +7656,14 @@ class PlayerViewModel {
             return false
         }()
 
+        // A scrub that resumes playback skips Play on a replan so the old
+        // transport doesn't run on at its old position; the replacement load
+        // reads this intent instead.
+        let resumesOnReplan = requiresReplan && requestedPaused == false
+        if resumesOnReplan {
+            aetherPlaybackController.playWhenReplacementLoads()
+        }
+
         Self.logger.info(
             "[CMP-SEEK] commit requested source=\(source, privacy: .public) target=\(clampedTarget, privacy: .public) current=\(self.currentTime, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) replan=\(requiresReplan, privacy: .public)"
         )
@@ -7680,6 +7718,11 @@ class PlayerViewModel {
                 // replan of its own, so this is the last chance to apply a
                 // caption pick held for that replan.
                 self.reapplyDeferredAutoSubtitlePolicyIfNeeded()
+                // A resuming seek that was queued behind another replan may
+                // land locally after all; nothing else starts the engine then.
+                if requestedPaused == false, self.viewerWantsToPlay {
+                    self.aetherPlaybackController.play()
+                }
             case .requiresReplan(let sourceSeconds):
                 if let protocolV3 = self.activePreparedProtocolV3,
                    protocolV3.serverFeatures.contains(PlaybackProtocolV3.seekReanchorFeature) {
@@ -7693,6 +7736,11 @@ class PlayerViewModel {
                         operation: PlaybackProtocolV3.ReplanOperation.seekReanchor
                     ) else {
                         self.isLoading = false
+                        // The scrub asked to resume; if no Pause came since,
+                        // resume where playback was.
+                        if resumesOnReplan, self.aetherPlaybackController.shouldPlayWhenReady {
+                            self.aetherPlaybackController.play()
+                        }
                         self.showNotice(
                             title: "Couldn't seek",
                             message: "Playback couldn't move to that position. Try again.",
@@ -11082,6 +11130,12 @@ extension PlayerViewModel {
             upstreamSilent: upstreamMeter.isSilent(atMs: bufferingClock.elapsedMs),
             readerMetered: aetherPlaybackController.upstreamBytesFetched != nil
         )
+    }
+
+    /// A queued reanchor carries the viewer's current intent: a scrub that
+    /// asked to resume recorded it as Play before the reanchor was queued.
+    private var queuedReanchorRequestedPaused: Bool? {
+        !isWatchPartyPlayback && viewerWantsToPlay ? false : nil
     }
 
     /// The viewer means playback to run: it is not paused, and no audio

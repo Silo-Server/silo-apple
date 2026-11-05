@@ -17,6 +17,11 @@ struct MacSidebar: View {
     @AppStorage("mac.sidebar.discoverExpanded") private var discoverExpanded = true
     @AppStorage("mac.sidebar.yourStuffExpanded") private var yourStuffExpanded = true
 
+    /// macOS fills the selected row with the accent only while the list has
+    /// focus in the key window; the list's environment does not report it.
+    @FocusState private var isListFocused: Bool
+    @Environment(\.controlActiveState) private var controlActiveState
+
     var body: some View {
         List(selection: Binding<MainTabDestinationID?>(
             get: { highlight },
@@ -41,6 +46,7 @@ struct MacSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        .focused($isListFocused)
         .scrollBounceBehavior(.basedOnSize)
         .scrollContentBackground(.hidden)
         .background(Color.siloSidebarCanvas)
@@ -59,7 +65,6 @@ struct MacSidebar: View {
                 onOpenSettings: { router.navigate(to: .settings) },
                 onOpenRequests: { onSelect(.app(.requests)) },
                 onSwitchProfile: { router.switchProfile() },
-                onSwitchServer: { router.navigate(to: .serverList) },
                 onSignOut: { router.signOutAndReset() }
             )
             .menuIndicator(.hidden)
@@ -76,18 +81,11 @@ struct MacSidebar: View {
     private func rows(for section: MacSidebarSection) -> some View {
         ForEach(section.items) { destination in
             let isSelected = highlight == destination.id
-            HStack {
-                Label(
-                    destination.title,
-                    systemImage: isSelected ? destination.selectedIcon : destination.icon
-                )
-                if destination.id == .app(.search) {
-                    Spacer()
-                    Text("⌘K")
-                        .font(.siloSmall)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            MacSidebarRow(
+                destination: destination,
+                isSelected: isSelected,
+                isOnAccentHighlight: isSelected && isListFocused && controlActiveState == .key
+            )
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             // The list reports a click only when the selection changes, so the
@@ -104,6 +102,54 @@ struct MacSidebar: View {
         case .discover: return $discoverExpanded
         case .yourStuff: return $yourStuffExpanded
         }
+    }
+}
+
+/// One sidebar row. While the sidebar has keyboard focus in the key window,
+/// macOS fills the selected row with the app accent, which is near white, and
+/// repaints its label white. That row draws its label and icon in black
+/// instead. The highlight without focus is dark, so rows keep their usual
+/// colors there.
+private struct MacSidebarRow: View {
+    let destination: MainTabDestination
+    let isSelected: Bool
+    /// True while the row sits on the accent-filled selection highlight.
+    let isOnAccentHighlight: Bool
+
+    var body: some View {
+        if isOnAccentHighlight {
+            // The group keeps the list from repainting the text white.
+            content
+                .foregroundStyle(Color.black)
+                .compositingGroup()
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        HStack {
+            Label {
+                Text(destination.title)
+            } icon: {
+                // Styled inside the label, or the sidebar label style whitens it.
+                if isOnAccentHighlight {
+                    icon.foregroundStyle(Color.black)
+                } else {
+                    icon
+                }
+            }
+            if destination.id == .app(.search) {
+                Spacer()
+                Text("⌘K")
+                    .font(.siloSmall)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var icon: Image {
+        Image(systemName: isSelected ? destination.selectedIcon : destination.icon)
     }
 }
 #endif

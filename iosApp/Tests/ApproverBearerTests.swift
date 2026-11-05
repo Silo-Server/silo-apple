@@ -74,7 +74,7 @@ final class ApproverBearerTests: XCTestCase {
         let stored = await tokens.inactiveServerSession(for: Self.other)
         XCTAssertEqual(stored?.accessToken, fresh)
         XCTAssertEqual(stored?.refreshToken, "refresh-2")
-        XCTAssertEqual(stored?.accountID, "7")
+        XCTAssertEqual(stored?.serverUserId, "7")
 
         let again = await http.freshAccessToken(serverId: Self.other)
         XCTAssertEqual(again, .token(fresh))
@@ -181,17 +181,23 @@ final class ApproverBearerTests: XCTestCase {
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
         let keys = SharedKeychain(service: name, accessGroup: nil)
-        let tokens = TokenStore(keychain: keys, defaults: SharedDefaults(suite: suite, standard: suite))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        let accounts = AccountStore(keychain: keys, defaults: defaults)
+        let tokens = TokenStore(keychain: keys, defaults: defaults, accounts: accounts)
         await tokens.switchActiveServer(serverId: Self.active)
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
-        let legacy = keys.withAudience(.userIndependent)
+        // Account migration carries a legacy record over without a refresh token.
+        func saveLegacyAccount(access: String) throws {
+            _ = try accounts.saveSignIn(serverId: Self.other, origin: "https://other.example", serverUserId: nil,
+                username: nil, accessToken: access, refreshToken: nil, replacingOtherAccounts: true)
+        }
 
         let valid = Self.token("valid", expiresIn: 3600)
-        legacy.set(valid, for: TokenStore.accessTokenKey(for: Self.other))
+        try saveLegacyAccount(access: valid)
         var bearer = await http.freshAccessToken(serverId: Self.other)
         XCTAssertEqual(bearer, .token(valid))
 
-        legacy.set(Self.token("expired", expiresIn: -60), for: TokenStore.accessTokenKey(for: Self.other))
+        try saveLegacyAccount(access: Self.token("expired", expiresIn: -60))
         bearer = await http.freshAccessToken(serverId: Self.other)
         XCTAssertEqual(bearer, .rejected)
         XCTAssertTrue(refreshes.isEmpty)

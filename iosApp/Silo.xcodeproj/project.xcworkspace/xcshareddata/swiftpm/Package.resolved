@@ -6,7 +6,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Silo-Server/AetherEngine",
       "state" : {
-        "revision" : "df72cc59606ec823ce6a5231a53d7eee385ed72e"
+        "revision" : "10631a5136371a0f83d67a1e85f26163588d6094"
       }
     },
     {
@@ -23,8 +23,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/superuser404notfound/FFmpegBuild",
       "state" : {
-        "revision" : "28cd8757ff5338396326d9eea296c33e777b05cc",
-        "version" : "3.10.0"
+        "revision" : "9c87af0231fd1403654c14a0e867fe8aa43c5bea",
+        "version" : "3.12.1"
       }
     },
     {
@@ -34,15 +34,6 @@
       "state" : {
         "revision" : "0d7cce1d6836a30d13a3a2326e50a153af53f014",
         "version" : "2.1.0"
-      }
-    },
-    {
-      "identity" : "libtruehd",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/superuser404notfound/LibTrueHD",
-      "state" : {
-        "revision" : "73bee84d7ac7b8619db570e36490b92761fe91a6",
-        "version" : "3.1.0"
       }
     },
     {

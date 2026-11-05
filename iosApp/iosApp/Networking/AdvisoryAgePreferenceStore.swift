@@ -208,15 +208,6 @@ final class AdvisoryAgePreferenceStore: ObservableObject {
     }
 
     private static func activeRequestIdentity() -> HTTPRequestIdentity? {
-        guard let server = ServerRegistry.shared.activeServer,
-              ServerRegistry.shared.activeServerId == server.id,
-              let profileId = AuthService.shared.profileId,
-              !profileId.isEmpty else { return nil }
-        return HTTPRequestIdentity(
-            serverId: server.id,
-            serverURL: server.url,
-            profileId: profileId,
-            clientFamily: AppleDeviceIdentity.current.clientFamily
-        )
+        HTTPRequestIdentity.activeProfile()
     }
 }

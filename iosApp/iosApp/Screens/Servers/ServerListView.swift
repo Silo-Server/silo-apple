@@ -12,9 +12,9 @@ import SwiftUI
 struct ServerListView: View {
     @Environment(AppRouter.self) private var router
     @State private var registry = ServerRegistry.shared
-    @State private var removeTarget: ServerEntry?
     @State private var isResolvingServer = false
     #if os(tvOS)
+    @State private var removeTarget: ServerEntry?
     @FocusState private var focusedRow: TVRow?
     #endif
 
@@ -27,7 +27,7 @@ struct ServerListView: View {
             if let entry = removeTarget {
                 TVSettingsConfirmationOverlay(
                     title: "Remove this server?",
-                    message: "Sign-in credentials for \(entry.displayName) will be forgotten on this device.",
+                    message: "This signs out of every account on \(entry.displayName) on this Apple TV.",
                     confirmTitle: "Remove",
                     cancel: { dismissRemoveConfirmation(for: entry) },
                     confirm: { remove(entry) }
@@ -39,25 +39,13 @@ struct ServerListView: View {
         .background(SettingsBackdrop())
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: removeTarget)
         #else
+        // Removing asks through the app's shared confirmation
+        // (`AccountRemovalConfirmationModifier`), which names the accounts
+        // and downloads that go with the server.
         contentList
             .disabled(isResolvingServer)
             .navigationTitle("Servers")
             .siloNavigationTitleDisplayMode(.inline)
-            .alert(
-                "Remove this server?",
-                isPresented: Binding(
-                    get: { removeTarget != nil },
-                    set: { if !$0 { removeTarget = nil } }
-                ),
-                presenting: removeTarget
-            ) { entry in
-                Button("Remove", role: .destructive) {
-                    remove(entry)
-                }
-                Button("Cancel", role: .cancel) { removeTarget = nil }
-            } message: { entry in
-                Text("Sign-in credentials for \(entry.displayName) will be forgotten on this device.")
-            }
         #endif
     }
 
@@ -205,12 +193,7 @@ struct ServerListView: View {
             switchTo(entry)
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: entry.id == registry.activeServerId
-                      ? "checkmark.circle.fill"
-                      : "server.rack")
-                    .font(.system(size: 20, weight: .medium))
-                    .foregroundColor(.siloOnSurface)
-                    .frame(width: 28)
+                MarqueeServerMark(server: entry, size: 32)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.displayName)
@@ -231,13 +214,19 @@ struct ServerListView: View {
                 }
                 .multilineTextAlignment(.leading)
                 Spacer()
+                if entry.id == registry.activeServerId {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.siloOnSurface)
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityValue(entry.id == registry.activeServerId ? "Active" : "")
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
-                removeTarget = entry
+                Task { await router.confirmRemoveServer(entry.id) }
             } label: {
                 Label("Remove", systemImage: "trash")
             }
@@ -265,12 +254,14 @@ struct ServerListView: View {
         }
     }
 
+    #if os(tvOS)
     private func remove(_ entry: ServerEntry) {
         guard !isResolvingServer else { return }
         isResolvingServer = true
         let wasActive = entry.id == registry.activeServerId
         Task {
-            let removed = await registry.remove(serverId: entry.id, resolveFallbackProfile: wasActive)
+            // Every account on the server signs out first, deleting its downloads.
+            let removed = await AccountSessions.removeServer(entry.id)
             isResolvingServer = false
             removeTarget = nil
             guard removed else {
@@ -281,6 +272,7 @@ struct ServerListView: View {
             if wasActive { refreshAuthState() }
         }
     }
+    #endif
 
     /// Recompute auth state for the (possibly new) active server and
     /// drop any in-tab navigation that belonged to the previous server.
@@ -302,9 +294,8 @@ private struct TVServerSummaryLabel: View {
 
     var body: some View {
         HStack(spacing: 18) {
-            Image(systemName: isActive ? "checkmark.circle.fill" : "server.rack")
-                .font(.system(size: 24, weight: .medium))
-                .frame(width: 34)
+            // Its branding mark, else the Silo project icon (spec §4.1).
+            MarqueeServerMark(server: entry, size: 48)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(entry.displayName)

@@ -206,6 +206,7 @@ final class ThemeMusicPreferences {
 }
 
 extension HTTPRequestIdentity {
-    /// One server's profile, as a key.
-    var profileKey: String { "\(serverId)/\(profileId)" }
+    /// One account's profile on one server, as a key. Profile IDs repeat
+    /// across accounts.
+    var profileKey: String { "\(serverId)/\(localAccountId ?? "")/\(profileId)" }
 }

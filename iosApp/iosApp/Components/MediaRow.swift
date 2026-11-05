@@ -437,6 +437,7 @@ struct MediaRow: View {
             #endif
             .padding(.vertical, verticalCardPadding)
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         #if !os(tvOS)

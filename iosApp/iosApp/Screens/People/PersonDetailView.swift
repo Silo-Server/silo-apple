@@ -781,6 +781,7 @@ private struct PersonFilterBar: View {
             #if os(tvOS)
             .padding(.vertical, 8)
             #endif
+            .mouseDragScrolling()
         }
         .scrollClipDisabled()
     }

@@ -49,7 +49,7 @@ struct DownloadsSettingsView: View {
     }
 
     private func detail(for group: DownloadStorageReclaim.OtherStorage) -> String {
-        if group.isActiveServer { return "Other profiles on this server" }
+        if group.isActiveServer { return "Other profiles and accounts on this server" }
         if server(for: group) != nil { return "Another server you've added" }
         return group.serverURL == nil ? "Not used by this version of Silo" : "A server no longer on this device"
     }
@@ -58,7 +58,7 @@ struct DownloadsSettingsView: View {
     /// still switch to: its downloads go, and may download again later.
     private func removalMessage(for group: DownloadStorageReclaim.OtherStorage) -> String {
         if group.isActiveServer {
-            return "Downloads saved for other profiles on this server will be deleted from this device. "
+            return "Downloads saved for other profiles and accounts on this server will be deleted from this device. "
                 + "Switching to one of those profiles may download its items again."
         }
         if server(for: group) != nil {

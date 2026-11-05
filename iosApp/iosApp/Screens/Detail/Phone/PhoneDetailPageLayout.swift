@@ -239,6 +239,12 @@ extension EnvironmentValues {
     /// that extend beneath it.
     @Entry var detailPageTopSafeArea: CGFloat = 0
 
+    #if os(macOS)
+    /// The detail page's height in the window, set by `PhoneDetailPageSurface`.
+    /// Zero until measured.
+    @Entry var detailPageVisibleHeight: CGFloat = 0
+    #endif
+
     /// How the playback selectors' popover attaches and how big it is.
     @Entry var detailSelectorPopover: DetailSelectorPopover = .standard
 }

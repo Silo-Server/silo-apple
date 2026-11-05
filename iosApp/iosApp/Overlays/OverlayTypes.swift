@@ -12,6 +12,7 @@ enum OverlayId: String, Hashable {
     case resolution
     case hdr
     case resolutionHdr = "resolution_hdr"
+    case resolutionHdrAudio = "resolution_hdr_audio"
     case audio
     case audioChannels = "audio_channels"
     case videoCodec = "video_codec"

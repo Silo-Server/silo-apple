@@ -53,6 +53,7 @@ enum ApplePushDeepLinkCoordinator {
         profileInUse: Bool,
         activeServer: ServerEntry?,
         activeProfileID: String?,
+        activeLocalAccountID: String? = AccountScope.current?.localAccountId,
         targets: ApplePushDisplayTargetStore = ApplePushDisplayTargetStore()
     ) -> Admission {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -61,6 +62,7 @@ enum ApplePushDeepLinkCoordinator {
         }
         guard profileInUse else { return .wait }
         return opensUnderActiveIdentity(url, activeServer: activeServer, activeProfileID: activeProfileID,
+                                        activeLocalAccountID: activeLocalAccountID,
                                         targets: targets) ? .open : .drop
     }
 
@@ -70,11 +72,14 @@ enum ApplePushDeepLinkCoordinator {
     /// another; the app opens without navigating instead. When a saved
     /// server holds the target the push was displayed with, that saved
     /// server must be the active one; a server's reported identity counts
-    /// only when no saved server holds one. Other links open as before.
+    /// only when no saved server holds one. A target that names its account
+    /// opens only under that account: profile IDs repeat across accounts on
+    /// one server. Other links open as before.
     static func opensUnderActiveIdentity(
         _ url: URL,
         activeServer: ServerEntry?,
         activeProfileID: String?,
+        activeLocalAccountID: String? = AccountScope.current?.localAccountId,
         targets: ApplePushDisplayTargetStore = ApplePushDisplayTargetStore()
     ) -> Bool {
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -87,7 +92,9 @@ enum ApplePushDeepLinkCoordinator {
         let claims = targets.targets(serverID: serverID, profileID: profileID)
         switch claims.count {
         case 0: return ServerIdentity.usable(activeServer.verifiedServerId) == serverID
-        case 1: return claims[0].registryServerID == activeServer.id
+        case 1:
+            return claims[0].registryServerID == activeServer.id
+                && (claims[0].localAccountID == nil || claims[0].localAccountID == activeLocalAccountID)
         default: return false
         }
     }

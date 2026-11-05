@@ -15,6 +15,10 @@ enum ApplePushRegistrationError: Error, Equatable {
     case keyWithdrawn
 }
 
+/// The verified account a saved server's requests use, and its sign-in
+/// epoch (`TokenStore.savedSessionAccount(for:)`).
+typealias ApplePushSessionAccount = (accountID: String, epoch: UUID, localAccountID: String)
+
 /// The durable owner an Apple push intent was prepared for. Nonsecret: the
 /// profile proof is excluded because re-verifying a PIN does not change which
 /// profile the registration belongs to, and the server's intent identity
@@ -24,6 +28,11 @@ struct ApplePushIntentOwner: Codable, Equatable, Sendable {
     let accountID: String
     let accountEpoch: UUID
     let profileID: String
+    /// The saved account on this device (`Account.localAccountId`). A server
+    /// keeps one installation for this device, which belongs to the account
+    /// last used there; switching accounts registers the new one with the
+    /// same key at the next generation. Nil in records from before accounts.
+    let localAccountID: String?
 
     /// `nil` for temporary playback credentials and for a request with no
     /// selected profile; neither may register this installation.
@@ -35,6 +44,19 @@ struct ApplePushIntentOwner: Codable, Equatable, Sendable {
         accountID = auth.accountID
         accountEpoch = auth.accountEpoch
         self.profileID = profileID
+        localAccountID = auth.localAccountId
+    }
+
+    /// Whether this owner is `session`'s account, in any sign-in. An owner
+    /// from before accounts names only its server user.
+    func isAccount(of session: ApplePushSessionAccount) -> Bool {
+        if let localAccountID { return localAccountID == session.localAccountID }
+        return accountID == session.accountID
+    }
+
+    /// Whether this owner is `session`'s current sign-in.
+    func holds(_ session: ApplePushSessionAccount) -> Bool {
+        isAccount(of: session) && accountID == session.accountID && accountEpoch == session.epoch
     }
 }
 
@@ -92,6 +114,11 @@ struct ApplePushInstallationRecord: Codable, Equatable, Sendable {
     /// so one can register again once the server that registered last no
     /// longer holds its session. Absent in records from earlier builds.
     var owners: [String: ApplePushIntentOwner]? = nil
+    /// Per saved account (`localAccountID`), the owner of its last intent
+    /// here, so the installation can go back to an account whose turn it is
+    /// again (the account last used on the server) without waiting for it
+    /// to pick a profile. Absent in records from earlier builds.
+    var accountOwners: [String: ApplePushIntentOwner]? = nil
 }
 
 /// A registration ready to send.
@@ -251,6 +278,9 @@ struct ApplePushInstallationJournal: Sendable {
             if let latest = record.latest { owners[latest.intent.owner.serverID] = latest.intent.owner }
         }
         shared.owners = owners
+        var accountOwners = shared.accountOwners ?? [:]
+        for (id, owner) in own?.accountOwners ?? [:] { accountOwners[id] = owner }
+        shared.accountOwners = accountOwners.isEmpty ? nil : accountOwners
         // Written before any link names it, and the address slots are
         // deleted last, so an interrupted link leaves every address with a
         // record whose key it already held.
@@ -354,6 +384,9 @@ struct ApplePushInstallationJournal: Sendable {
         next.generation += 1
         next.latest = .init(intent: desired, outcome: .pending)
         next.owners = (record.owners ?? [:]).merging([desired.owner.serverID: desired.owner]) { _, new in new }
+        if let account = desired.owner.localAccountID {
+            next.accountOwners = (record.accountOwners ?? [:]).merging([account: desired.owner]) { _, new in new }
+        }
         let command = ApplePushRegistrationCommand(installationKey: next.installationKey,
             generation: next.generation, intent: desired, isRenewal: false)
         return (next, command, true)

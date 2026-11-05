@@ -223,10 +223,7 @@ struct LibrariesTabView: View {
                     selectedLibraryId = id
                     persistLibrarySelection(id)
                     showPicker = false
-                    StartupContentPrefetcher.prefetchLibraryLanding(
-                        libraryId: id,
-                        groupsBoxSets: visibleLibraries.first { $0.id == id }?.browsesBoxSets ?? false
-                    )
+                    StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
                 }
             )
         }
@@ -263,14 +260,7 @@ struct LibrariesTabView: View {
         case .recommended:
             LibraryRecommendedView(libraryId: activeLibrary.id, mediaScope: videoScope(for: activeLibrary))
         case .library:
-            BrowseView(
-                libraryId: activeLibrary.id,
-                title: nil,
-                showsSearchShortcut: false,
-                libraryType: activeLibrary.type,
-                mediaScope: videoScope(for: activeLibrary),
-                groupsBoxSets: activeLibrary.browsesBoxSets
-            )
+            BrowseView(libraryId: activeLibrary.id, title: nil, showsSearchShortcut: false, libraryType: activeLibrary.type, mediaScope: videoScope(for: activeLibrary))
         case .collections:
             LibraryCollectionsView(libraryId: activeLibrary.id, mediaScope: videoScope(for: activeLibrary))
         }
@@ -304,7 +294,6 @@ struct LibrariesTabView: View {
                 onSwitchProfile: {
                     router.switchProfile()
                 },
-                onSwitchServer: { router.navigate(to: .serverList) },
                 onSignOut: { router.signOutAndReset() }
             )
             .padding(.horizontal, SiloTheme.padding)
@@ -402,10 +391,7 @@ struct LibrariesTabView: View {
         applyLibrarySelection()
         onLibrariesLoaded?(libraryAuthority, response.libraries)
         if let selectedLibraryId {
-            StartupContentPrefetcher.prefetchLibraryLanding(
-                libraryId: selectedLibraryId,
-                groupsBoxSets: response.libraries.first { $0.id == selectedLibraryId }?.browsesBoxSets ?? false
-            )
+            StartupContentPrefetcher.prefetchLibraryLanding(libraryId: selectedLibraryId)
         }
     }
 
@@ -448,7 +434,6 @@ private struct LibrariesTopBar: View {
     let onOpenSettings: () -> Void
     let onOpenRequests: () -> Void
     let onSwitchProfile: () -> Void
-    let onSwitchServer: () -> Void
     let onSignOut: () -> Void
 
     var body: some View {
@@ -468,7 +453,6 @@ private struct LibrariesTopBar: View {
                 onOpenSettings: onOpenSettings,
                 onOpenRequests: onOpenRequests,
                 onSwitchProfile: onSwitchProfile,
-                onSwitchServer: onSwitchServer,
                 onSignOut: onSignOut
             )
         }

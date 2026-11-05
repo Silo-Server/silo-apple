@@ -2,11 +2,9 @@ import Foundation
 import XCTest
 @testable import Silo
 
-/// Movie box sets (silo-server#677). A library that reports
-/// `box_sets_enabled` browses with `group=box_set` and the server answers
-/// `box_set` cards in place of a collection's movies; the box set read lists
-/// its movies in release order; search lists matching box sets ahead of
-/// titles. A server or library without box sets behaves exactly as before.
+/// Movie box sets (silo-server#677). The box set read lists its movies in
+/// release order; search lists matching box sets ahead of titles. A server
+/// or library without box sets behaves exactly as before.
 @MainActor
 final class BoxSetTests: XCTestCase {
     private static let catalogPath = "/api/v2/catalog"
@@ -38,52 +36,6 @@ final class BoxSetTests: XCTestCase {
 
     private func movie(_ id: String, _ title: String, year: Int, played: Bool) -> String {
         #"{"content_id":"\#(id)","type":"movie","title":"\#(title)","year":\#(year),"user_state":{"played":\#(played),"is_favorite":false,"in_watchlist":false}}"#
-    }
-
-    // MARK: Browse
-
-    func testBoxSetLibraryBrowsesGroupedAndOthersDoNot() throws {
-        let grouped = try CatalogQueryBuilder.build(.none, libraryId: 1, mediaType: .movie, limit: 60,
-                                                    includeType: false, groupsBoxSets: true).getParameters()
-        XCTAssertEqual(grouped["group"], "box_set")
-
-        let plain = try CatalogQueryBuilder.build(.none, libraryId: 1, mediaType: .movie, limit: 60,
-                                                  includeType: false).getParameters()
-        XCTAssertNil(plain["group"], "a library without box sets sends exactly what it sent before")
-
-        // A cached page of one list never paints the other.
-        XCTAssertNotEqual(CatalogQueryBuilder.cacheKeyFragment(.none, groupsBoxSets: true),
-                          CatalogQueryBuilder.cacheKeyFragment(.none, groupsBoxSets: false))
-        XCTAssertEqual(CatalogQueryBuilder.cacheKeyFragment(.none, groupsBoxSets: false),
-                       CatalogFilterState.none.cacheKeyFragment)
-    }
-
-    func testGroupedPageDecodesBoxSetCardsBesideMovies() async throws {
-        let api = try await api()
-        stub.reply(path: Self.catalogPath, 200, #"{"items":[\#(movie("movie-1", "Arrival", year: 2016, played: false)),{"content_id":"box_set:1241","type":"box_set","title":"Harry Potter Collection","year":2001,"user_state":{"played":false,"is_favorite":false,"in_watchlist":false},"box_set":\#(harryPotter)}],"page":{"has_more":false},"total":2,"total_exact":true}"#)
-        let query = CatalogQueryBuilder.build(.none, libraryId: 1, mediaType: .movie, limit: 60,
-                                              includeType: false, groupsBoxSets: true)
-
-        let items = try await api.catalogPage(query).response.items
-
-        XCTAssertEqual(stub.requests.last { $0.path == Self.catalogPath }?.query["group"], "box_set")
-        XCTAssertEqual(items.map(\.isBoxSet), [false, true], "the client keeps the server's grouping and order")
-        let boxSet = try XCTUnwrap(items[1].boxSet)
-        XCTAssertEqual(boxSet.id, "1241")
-        XCTAssertEqual(boxSet.appLibraryId, 1)
-        XCTAssertEqual(Route.boxSet(boxSet), .boxSet(id: "1241", libraryId: 1))
-        XCTAssertEqual(boxSet.cardCaption, "3 / 8 watched")
-        XCTAssertEqual(boxSet.watchedProgress ?? 0, 0.375, accuracy: 0.0001)
-    }
-
-    func testLibrariesReportWhetherTheyGroupBoxSets() async throws {
-        let api = try await api()
-        stub.reply(path: "/api/v2/user/libraries", 200, #"{"items":[{"id":"1","name":"Movies","type":"movies","sort_order":1,"box_sets_enabled":true},{"id":"2","name":"Films","type":"movies","sort_order":2,"box_sets_enabled":false},{"id":"3","name":"Old","type":"movies","sort_order":3}]}"#)
-
-        let libraries = try await api.libraries().libraries
-
-        XCTAssertEqual(libraries.map(\.browsesBoxSets), [true, false, false],
-                       "a server that predates box sets omits the field")
     }
 
     // MARK: Box set page

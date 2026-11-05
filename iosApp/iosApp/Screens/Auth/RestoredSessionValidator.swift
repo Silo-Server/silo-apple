@@ -250,6 +250,14 @@ enum RestoredSessionAuthResolver {
         }
 
         guard await TokenStore.shared.hasAccessTokenForActiveServer(serverId: activeServerID) else {
+            // The active server's account signed out or must sign in again,
+            // but other saved accounts can still be chosen in Change Account.
+            let destination = await MainActor.run {
+                AppRouter.signedOutDestination(activeServerId: activeServerID)
+            }
+            if destination == .changeAccount {
+                return LocalResolution(state: .needsProfile, restoredAccount: nil)
+            }
             return LocalResolution(state: .needsLogin, restoredAccount: nil)
         }
 

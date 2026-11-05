@@ -7,8 +7,6 @@ struct BrowseView: View {
     var showsSearchShortcut = true
     var libraryType: String? = nil
     var mediaScope: LibraryVideoScope? = nil
-    /// The library reports `box_sets_enabled`; browse it with `group=box_set`.
-    var groupsBoxSets = false
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
@@ -52,12 +50,8 @@ struct BrowseView: View {
         .sheet(isPresented: $showFilters) {
             FilterView(viewModel: viewModel)
         }
-        .task(id: BrowseConfigurationID(
-            libraryId: libraryId, libraryType: libraryType, mediaScope: mediaScope, groupsBoxSets: groupsBoxSets
-        )) {
-            guard await viewModel.configure(
-                libraryId: libraryId, libraryType: libraryType, mediaScope: mediaScope, groupsBoxSets: groupsBoxSets
-            ) else { return }
+        .task(id: BrowseConfigurationID(libraryId: libraryId, libraryType: libraryType, mediaScope: mediaScope)) {
+            guard await viewModel.configure(libraryId: libraryId, libraryType: libraryType, mediaScope: mediaScope) else { return }
             await viewModel.loadItems(reset: true)
             await viewModel.loadFacetsIfNeeded()
         }
@@ -304,6 +298,7 @@ struct BrowseView: View {
                 }
             }
             .padding(.horizontal, SiloTheme.padding)
+            .mouseDragScrolling()
         }
     }
 
@@ -328,7 +323,6 @@ private struct BrowseConfigurationID: Hashable {
     let libraryId: Int?
     let libraryType: String?
     let mediaScope: LibraryVideoScope?
-    let groupsBoxSets: Bool
 }
 
 enum LibraryPageTab: String, CaseIterable, Identifiable {
@@ -361,7 +355,7 @@ struct LibraryPageTabSelector: View {
     var body: some View {
         if scrolls {
             ScrollView(.horizontal, showsIndicators: false) {
-                chips
+                chips.mouseDragScrolling()
             }
         } else {
             chips
