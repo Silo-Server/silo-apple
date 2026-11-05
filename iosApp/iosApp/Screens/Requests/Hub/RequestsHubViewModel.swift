@@ -80,11 +80,12 @@ final class RequestsHubViewModel {
         async let mine = api.myRequests()
         var succeeded = false
         do {
-            let (layout, requests) = try await (discover, mine)
+            let (layout, answer) = try await (discover, mine)
             guard generation == listGeneration else { return false }
+            // The cache too: a removed record must not seed its title's page.
+            let requests = answer.filter { !removedRequestIds.contains($0.id) }
             carousels = RequestCarouselMerge.carousels(from: layout)
-            myRequests = MyRequestsBucket.bucket(requests.filter { !removedRequestIds.contains($0.id) })
-                .flatMap(\.requests)
+            myRequests = MyRequestsBucket.bucket(requests).flatMap(\.requests)
             RequestDetailCache.shared.storeOwnRecords(requests)
             RequestDetailCache.shared.prefetch(myRequests, api: api)
             succeeded = true
@@ -160,6 +161,8 @@ final class RequestsHubViewModel {
     /// Bus consumer: patch every visible surface in place after a mutation
     /// anywhere in the app (detail submit, My Requests cancel, …).
     func applyRequestUpdate(_ record: MediaRequest) {
+        // A late answer for a request removed since must not bring it back.
+        guard !removedRequestIds.contains(record.id) else { return }
         searchResults.applyRequestUpdate(record)
         carousels = carousels.map { carousel in
             var results = carousel.results

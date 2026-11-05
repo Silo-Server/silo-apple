@@ -184,7 +184,8 @@ struct TVRequestsPage: View {
     private func load() async {
         switch mode {
         case .hub:
-            await hub.load()
+            // Actions on hub cards hold through `mine`; this read settles them.
+            await mine.settleHolds { await hub.load() }
         case .mine:
             await mine.load()
         }

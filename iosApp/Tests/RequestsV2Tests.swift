@@ -673,6 +673,94 @@ final class RequestsV2Tests: XCTestCase {
 
         XCTAssertTrue(installed, "a removal does not overtake the hub's read")
         XCTAssertTrue(hub.myRequests.isEmpty, "the older read does not bring the row back")
+        XCTAssertNil(RequestDetailCache.shared.ownRecord(.init(mediaType: failed.mediaType, tmdbId: failed.tmdbId)),
+                     "nor does it cache the removed record for the title's page")
+
+        // A late mutation answer for the removed request doesn't either.
+        let late = try HTTPClient.makeJSONDecoder().decode(MediaRequest.self, from: Data(Self.record.utf8))
+        XCTAssertEqual(late.id, failed.id)
+        hub.applyRequestUpdate(late)
+        XCTAssertTrue(hub.myRequests.isEmpty, "a late update does not bring the row back")
+    }
+
+    /// On the tvOS hub, holds belong to the action model; a later successful
+    /// hub read, not only the action's own re-read, settles them.
+    @MainActor
+    func testALaterHubReadSettlesAHeldHubAction() async throws {
+        let model = try await myRequestsModel()
+        stub.sequence(path: "/api/v2/requests/request-one", [.failure(URLError(.networkConnectionLost))])
+        let failed = try HTTPClient.makeJSONDecoder().decode(MediaRequest.self, from: Data(Self.failedRecord.utf8))
+
+        await model.remove(failed, refresh: { false })
+        XCTAssertTrue(model.isActionUnconfirmed(failed), "the action's own read failed")
+
+        await model.settleHolds { true }
+        XCTAssertFalse(model.isActionUnconfirmed(failed))
+        XCTAssertNil(model.actionErrorMessage)
+    }
+
+    /// Another mounted list (a second window) drops the row a removal
+    /// elsewhere deleted, and a read it started earlier can't bring it back.
+    @MainActor
+    func testARemovalElsewhereDropsTheRowFromThisList() async throws {
+        let model = try await myRequestsModel()
+        stub.sequence(path: "/api/v2/requests/mine", [
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+        ])
+        await model.load()
+        let failed = try XCTUnwrap(model.buckets.first?.requests.first)
+
+        stub.hold(path: "/api/v2/requests/mine")
+        let olderRead = Task { await model.load() }
+        await stub.waitUntilHeld()
+        model.applyRemoval(failed)
+        stub.release()
+        await olderRead.value
+
+        XCTAssertTrue(model.buckets.isEmpty)
+    }
+
+    /// A lost remove gives up its slot before its re-read. If a fresh read
+    /// settles the hold and the user removes again meanwhile, the first
+    /// remove finishing must not free the second one's slot while its DELETE
+    /// is still out.
+    @MainActor
+    func testAFinishedActionLeavesALaterClaimOnTheSameRequestBusy() async throws {
+        let model = try await myRequestsModel()
+        stub.sequence(path: "/api/v2/requests/mine", [
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+            .json(200, #"{"items":[\#(Self.failedRecord)]}"#),
+        ])
+        stub.sequence(path: "/api/v2/requests/request-one", [.failure(URLError(.networkConnectionLost)), Self.noContent])
+        await model.load()
+        let failed = try XCTUnwrap(model.buckets.first?.requests.first)
+
+        let (signal, answer) = AsyncStream<Void>.makeStream()
+        let firstRemove = Task {
+            await model.remove(failed, refresh: {
+                for await _ in signal { break }
+                return false
+            })
+        }
+        for _ in 0..<500 where !model.isActionUnconfirmed(failed) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await model.load()
+        XCTAssertFalse(model.isActionUnconfirmed(failed), "a fresh read settles the hold")
+
+        stub.hold(path: "/api/v2/requests/request-one")
+        let secondRemove = Task { await model.remove(failed, refresh: { true }) }
+        await stub.waitUntilHeld()
+        XCTAssertTrue(model.isBusy(failed))
+
+        answer.yield()
+        await firstRemove.value
+        XCTAssertTrue(model.isBusy(failed), "the second remove still holds its slot")
+
+        stub.release()
+        await secondRemove.value
+        XCTAssertFalse(model.isBusy(failed))
     }
 
     /// A re-read releases only the holds it can speak for: one that became

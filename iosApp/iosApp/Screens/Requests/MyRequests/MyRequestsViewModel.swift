@@ -9,6 +9,9 @@ final class MyRequestsViewModel {
     /// Id of the request whose cancel or remove is running (disables its
     /// row). One action runs at a time.
     private var actingId: String?
+    /// Identifies the invocation that holds the slot, so a finished action
+    /// never frees a slot a later action claimed for the same request.
+    private var actionToken = 0
     /// Inline message for a failed cancel or remove; cleared on the next
     /// action.
     private(set) var actionErrorMessage: String?
@@ -105,14 +108,14 @@ final class MyRequestsViewModel {
     /// whether the read succeeded. The bus patches that list on success, so
     /// it runs only to settle an uncertain cancel.
     func cancel(_ request: MediaRequest, refresh: (() async -> Bool)? = nil) async {
-        guard begin(request) else { return }
-        defer { release(request) }
+        guard let token = begin(request) else { return }
+        defer { release(token) }
         do {
             let updated = try await api.cancelRequest(id: request.id)
             RequestsEventBus.shared.publish(updated)
             if refresh == nil { await load() }
         } catch where RequestMutationFailure.isUncertain(error) {
-            await hold(request, after: error, refresh: refresh, message: RequestErrorCopy.unconfirmedCancelMessage)
+            await hold(request, token: token, after: error, refresh: refresh, message: RequestErrorCopy.unconfirmedCancelMessage)
         } catch {
             actionErrorMessage = RequestErrorCopy.message(for: error)
         }
@@ -126,8 +129,8 @@ final class MyRequestsViewModel {
     /// `refresh` re-reads the list that shows the row when it isn't this
     /// model's (the tvOS hub) and returns whether the read succeeded.
     func remove(_ request: MediaRequest, refresh: (() async -> Bool)? = nil) async {
-        guard begin(request) else { return }
-        defer { release(request) }
+        guard let token = begin(request) else { return }
+        defer { release(token) }
         var message: String?
         do {
             try await api.removeFailedRequest(id: request.id)
@@ -135,7 +138,7 @@ final class MyRequestsViewModel {
         } catch where RequestMutationFailure.isAlreadyRemoved(error) {
             removed(request)
         } catch where RequestMutationFailure.isUncertain(error) {
-            await hold(request, after: error, refresh: refresh, message: RequestErrorCopy.unconfirmedRemoveMessage)
+            await hold(request, token: token, after: error, refresh: refresh, message: RequestErrorCopy.unconfirmedRemoveMessage)
             return
         } catch where RequestMutationFailure.isRemoveConflict(error) {
             message = RequestErrorCopy.removeConflictMessage
@@ -147,31 +150,33 @@ final class MyRequestsViewModel {
     }
 
     /// Claims the single action slot for `request` and clears the last
-    /// action's messages; false when the row may not act.
-    private func begin(_ request: MediaRequest) -> Bool {
-        guard canAct(request) else { return false }
+    /// action's messages. Returns the claim's token, or nil when the row may
+    /// not act.
+    private func begin(_ request: MediaRequest) -> Int? {
+        guard canAct(request) else { return nil }
+        actionToken &+= 1
         actingId = request.id
         actionErrorMessage = nil
         notice = nil
-        return true
+        return actionToken
     }
 
-    /// Frees the action slot if `request` still holds it. An uncertain
-    /// action gives the slot up before its re-read, and another action may
-    /// claim it meanwhile.
-    private func release(_ request: MediaRequest) {
-        if actingId == request.id { actingId = nil }
+    /// Frees the action slot if the claim `token` still holds it. An
+    /// uncertain action gives the slot up before its re-read, and another
+    /// action, even on the same request, may claim it meanwhile.
+    private func release(_ token: Int) {
+        if actionToken == token { actingId = nil }
     }
 
     /// A `non_retryable` action got no usable answer: hold the row's actions
     /// and read the list again, which settles the hold when it succeeds. A
     /// read under a replaced owner says nothing about the action, so it is
     /// skipped.
-    private func hold(_ request: MediaRequest, after error: Error,
+    private func hold(_ request: MediaRequest, token: Int, after error: Error,
                       refresh: (() async -> Bool)?, message: String) async {
         holdSerial &+= 1
         unconfirmedActions[request.id] = holdSerial
-        release(request)
+        release(token)
         if !RequestMutationFailure.isOwnerChanged(error) { await reread(refresh) }
         if unconfirmedActions[request.id] != nil { actionErrorMessage = message }
     }
@@ -179,10 +184,17 @@ final class MyRequestsViewModel {
     /// The server answered that the request is gone. Its row goes now, so a
     /// failed re-read cannot leave it on screen with its action.
     private func removed(_ request: MediaRequest) {
-        listGeneration &+= 1
-        buckets = MyRequestsBucket.bucket(buckets.flatMap(\.requests).filter { $0.id != request.id })
+        applyRemoval(request)
         RequestsEventBus.shared.publishRemoval(request)
         notice = RequestErrorCopy.removedNotice
+    }
+
+    /// Drops a removed request's row, here or from another mounted list (a
+    /// second window). An older read could bring it back, so it is overtaken.
+    func applyRemoval(_ record: MediaRequest) {
+        guard buckets.contains(where: { $0.requests.contains { $0.id == record.id } }) else { return }
+        listGeneration &+= 1
+        buckets = MyRequestsBucket.bucket(buckets.flatMap(\.requests).filter { $0.id != record.id })
     }
 
     private func scheduleNoticeClear() {
@@ -198,11 +210,17 @@ final class MyRequestsViewModel {
     /// the holds made before it started.
     private func reread(_ refresh: (() async -> Bool)?) async {
         if let refresh {
-            let coveredHolds = holdSerial
-            if await refresh() { releaseHeldActions(through: coveredHolds) }
+            await settleHolds(with: refresh)
         } else {
             await load()
         }
+    }
+
+    /// Runs a read of another list that shows these rows (the tvOS hub);
+    /// when it succeeds, it settles the holds made before it started.
+    func settleHolds(with read: () async -> Bool) async {
+        let coveredHolds = holdSerial
+        if await read() { releaseHeldActions(through: coveredHolds) }
     }
 
     /// Bus consumer: a mutation elsewhere (detail submit) while this screen

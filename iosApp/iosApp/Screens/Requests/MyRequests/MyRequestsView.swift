@@ -52,6 +52,10 @@ private struct PhoneMyRequestsView: View {
         .onChange(of: RequestsEventBus.shared.lastUpdate) { _, update in
             if let update { viewModel.applyRequestUpdate(update) }
         }
+        // A removal in another window drops the row here too.
+        .onChange(of: RequestsEventBus.shared.lastRemoval) { _, removed in
+            if let removed { viewModel.applyRemoval(removed) }
+        }
         .onChange(of: viewModel.buckets.map(\.bucket)) { _, buckets in
             // A filter whose last request moved on would leave a blank list.
             if let filter, !buckets.contains(filter) { self.filter = nil }
