@@ -112,8 +112,9 @@ validated.
 
 **Status: off in current builds.** The Silo fork now leaves `TrueHDObjectAudio` and
 `DTSXObjectAudio` off, as upstream ships them, because the components may need
-third-party patent licenses. TrueHD Atmos and DTS:X play through the lossless channel
-bridge, the setting below is hidden (`AetherObjectAudioPolicy.isAvailable`), and a
+third-party patent licenses. TrueHD Atmos and DTS:X play through the channel bridge
+(`audioBridgeMode`: lossless when Lossless Multichannel Audio is on, the default, and
+`.surroundCompat` when it is off), the setting below is hidden (`AetherObjectAudioPolicy.isAvailable`), and a
 stored "on" requests nothing. The rest of this section describes the path as it works
 when both traits are on.
 
