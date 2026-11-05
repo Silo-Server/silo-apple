@@ -1259,13 +1259,15 @@ final class DownloadManager {
         )
     }
 
-    func downloadSeason(seriesId: String, seasonNumber: Int, quality: String? = nil) async throws {
-        try await requestDownload(contentId: seriesId, quality: quality, series: true, seasonNumber: seasonNumber,
-            seriesId: seriesId)
+    /// `fileId` is the version each episode should match, on a server that
+    /// supports it.
+    func downloadSeason(seriesId: String, seasonNumber: Int, fileId: Int? = nil, quality: String? = nil) async throws {
+        try await requestDownload(contentId: seriesId, fileId: fileId, quality: quality, series: true,
+            seasonNumber: seasonNumber, seriesId: seriesId)
     }
 
-    func downloadSeries(seriesId: String, quality: String? = nil) async throws {
-        try await requestDownload(contentId: seriesId, quality: quality, series: true, seriesId: seriesId)
+    func downloadSeries(seriesId: String, fileId: Int? = nil, quality: String? = nil) async throws {
+        try await requestDownload(contentId: seriesId, fileId: fileId, quality: quality, series: true, seriesId: seriesId)
     }
 
     private func requestDownload(
@@ -1308,7 +1310,7 @@ final class DownloadManager {
         do {
             if isBatch {
                 try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
-                    quality: batchQuality(requestedQuality), owner: owner)
+                    quality: batchQuality(requestedQuality), versionFileId: batchVersion(fileId), owner: owner)
             } else {
                 let request = APIv2DownloadCreateRequest.single(
                     contentId: contentId,
@@ -1341,13 +1343,14 @@ final class DownloadManager {
     /// repeats the same client-chosen batch id, and each page's entries are
     /// stored as soon as it arrives.
     private func createSeriesPages(seriesId: String, seasonNumber: Int?, quality: String,
-                                   owner: ScopeOwner) async throws {
+                                   versionFileId: String?, owner: ScopeOwner) async throws {
         let request = APIv2DownloadCreateRequest.seriesPage(
             seriesId: seriesId,
             seasonNumber: seasonNumber,
             batchId: UUID().uuidString.lowercased(),
             caps: DownloadCaps.current(),
-            quality: quality
+            quality: quality,
+            mediaFileId: versionFileId
         )
         var cursor: String?
         var cursors: Set<String> = []
@@ -1467,6 +1470,12 @@ final class DownloadManager {
     /// A batch's quality. A server without `bulkQuality` takes original only.
     private func batchQuality(_ requestedQuality: String?) -> String {
         canChooseBatchQuality ? resolvedDownloadQuality(requestedQuality) : DownloadFormat.original.rawValue
+    }
+
+    /// A batch's version template. A server without `batchVersion` rejects
+    /// one, so the server picks each episode's version there.
+    private func batchVersion(_ fileId: Int?) -> String? {
+        capability?.batchVersion == true ? fileId.map(String.init) : nil
     }
 
     /// The quality a monitor write sends, or nil for a server without

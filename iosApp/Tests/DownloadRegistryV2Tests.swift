@@ -77,6 +77,7 @@ final class DownloadRegistryV2Tests: XCTestCase {
         XCTAssertTrue(capability.seasonDownload)
         XCTAssertFalse(capability.bulkQuality, "a server without the flag batches originals only")
         XCTAssertFalse(capability.monitorQuality)
+        XCTAssertFalse(capability.batchVersion, "a server without the flag rejects a batch that names a file")
         let request = try XCTUnwrap(stub.requests.first)
         XCTAssertEqual(request.method, "GET")
         XCTAssertEqual(request.path, "/api/v2/capabilities/downloads")
@@ -108,13 +109,14 @@ final class DownloadRegistryV2Tests: XCTestCase {
 
         // The quality flags survive the on-disk capability cache, and a copy
         // cached before them reads as original-only.
-        stub.reply(200, #"{"state":"available","allowed":true,"revision":"r1","enabled":true,"download_allowed":true,"quality_presets":["original","5mbps"],"transcode_enabled":true,"transcode_user_allowed":true,"season_download":true,"series_monitoring":true,"monitoring_modes":["all"],"bulk_quality":true,"monitor_quality":true}"#)
+        stub.reply(200, #"{"state":"available","allowed":true,"revision":"r1","enabled":true,"download_allowed":true,"quality_presets":["original","5mbps"],"transcode_enabled":true,"transcode_user_allowed":true,"season_download":true,"series_monitoring":true,"monitoring_modes":["all"],"bulk_quality":true,"monitor_quality":true,"batch_version":true}"#)
         let flagged = try await api.downloadCapability(auth: auth)
         XCTAssertTrue(flagged.bulkQuality)
         XCTAssertTrue(flagged.monitorQuality)
         let cachedFlags = try JSONDecoder().decode(DownloadCapability.self, from: JSONEncoder().encode(flagged))
         XCTAssertTrue(cachedFlags.bulkQuality)
         XCTAssertTrue(cachedFlags.monitorQuality)
+        XCTAssertTrue(cachedFlags.batchVersion)
         XCTAssertFalse(flagged.revokedRemovesLocal, "a server without the flag keeps revoked files on the device")
         XCTAssertFalse(cachedFlags.revokedRemovesLocal)
 
@@ -297,6 +299,12 @@ final class DownloadRegistryV2Tests: XCTestCase {
             JSONSerialization.jsonObject(with: JSONEncoder().encode(preset)) as? [String: Any])
         XCTAssertEqual(presetBody["quality"] as? String, "5mbps")
         XCTAssertNil(presetBody["season_number"])
+        // The version every episode should match rides on each page.
+        let versioned = APIv2DownloadCreateRequest.seriesPage(seriesId: "series-1", seasonNumber: 1, batchId: "batch-3",
+            caps: .current(), mediaFileId: "42")
+        let versionedBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(versioned)) as? [String: Any])
+        XCTAssertEqual(versionedBody["media_file_id"] as? String, "42")
 
         stub.reset()
         stub.reply(202, created([entry("d1", content: "series-1", episode: "ep-1")], batch: "another-batch"))
@@ -313,6 +321,7 @@ final class DownloadRegistryV2Tests: XCTestCase {
             // A cursor belongs to a series request only.
             (.single(contentId: "m", episodeId: nil, mediaFileId: nil, quality: "original", caps: .current(), expected: .absent), "c1"),
             (.seriesPage(seriesId: "s", seasonNumber: nil, batchId: "", caps: .current()), nil),
+            (.seriesPage(seriesId: "s", seasonNumber: nil, batchId: "b", caps: .current(), mediaFileId: ""), nil),
         ]
         for (request, cursor) in invalid {
             let outcome = await failure { _ = try await api.createDownloads(request, cursor: cursor, auth: auth) }
