@@ -39,6 +39,12 @@ struct TVPlayerScrubber: View {
     private static let timelineAutoSeekTickNanos: UInt64 = 100_000_000
     private static let timelineAutoSeekBaseStep: Double = 2
     @State private var timelineAutoSeekRate = 0
+    /// This hold paused a resume that was still landing; leaving the hold
+    /// without a commit gives it back, since a hold never pauses otherwise.
+    @State private var holdPausedPendingResume = false
+    /// The viewer's command count when that hold paused; a newer Play or
+    /// Pause (Now Playing, SiloControl) supersedes the held resume.
+    @State private var holdPausedAtCommandCount: UInt64 = 0
     @State private var timelineAutoSeekTask: Task<Void, Never>?
 
     /// Trackpad-drag scrubbing. Translation from one full edge-to-edge swipe
@@ -142,10 +148,7 @@ struct TVPlayerScrubber: View {
                 // based on whether the shell asked us to abandon.
                 if !focused, viewModel.isScrubbing {
                     if isTimelineScrubbing {
-                        stopTimelineAutoSeek()
-                        isTimelineScrubbing = false
-                        resumePlaybackAfterTimelineSelection = false
-                        viewModel.cancelScrub()
+                        dropTimelineScrub()
                     } else if cancelOnBlur {
                         viewModel.cancelScrub()
                     } else {
@@ -157,10 +160,11 @@ struct TVPlayerScrubber: View {
                 if scrubbing {
                     hasTimelineSelectionMoved = false
                 } else {
-                    // The shell can end the session itself (AI subtitles
-                    // resuming playback); a held Left/Right must not keep
-                    // stepping a preview that is gone.
+                    // The shell can end the session itself (playback
+                    // resuming from outside the scrubber); a held Left/Right
+                    // must not keep stepping a preview that is gone.
                     stopTimelineAutoSeek()
+                    holdPausedPendingResume = false
                 }
             }
             .onMoveCommand(perform: handleMove)
@@ -346,7 +350,18 @@ struct TVPlayerScrubber: View {
     private func beginTimelineHoldIfNeeded() {
         guard !isTimelineScrubbing else { return }
         guard viewModel.duration > 0 else { return }
-        resumePlaybackAfterTimelineSelection = viewModel.isPlaying
+        // A hold keeps a playing player running, but a resume still landing
+        // its seek would cancel the scrub when it lands: hold it here and
+        // give it back on commit, as Select does. Only when the scrub can
+        // open (`beginScrub` refuses a member who can't seek), and never in a
+        // watch party, where the pause and its give-back would go to the
+        // whole room and room commands don't reach this hold's bookkeeping.
+        let resumePending = viewModel.isResumePending && viewModel.canRequestSeek
+            && !viewModel.isWatchPartyPlayback
+        resumePlaybackAfterTimelineSelection = viewModel.isPlaying || resumePending
+        if resumePending { viewModel.pauseForTimelineSelection() }
+        holdPausedPendingResume = resumePending
+        holdPausedAtCommandCount = viewModel.viewerTransportCommandCount
         let base = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
         viewModel.beginScrub(fraction: min(max(base / viewModel.duration, 0), 1))
         isTimelineScrubbing = true
@@ -385,10 +400,23 @@ struct TVPlayerScrubber: View {
 
     private func cancelTimelineScrub() {
         guard isTimelineScrubbing || viewModel.isScrubbing else { return }
+        dropTimelineScrub()
+    }
+
+    /// Ends the scrub without seeking. A hold that paused a landing resume
+    /// gives that resume back, as a hold over playback leaves it running.
+    private func dropTimelineScrub() {
+        let givesBackResume = holdPausedPendingResume
+            && viewModel.viewerTransportCommandCount == holdPausedAtCommandCount
+        holdPausedPendingResume = false
         stopTimelineAutoSeek()
         isTimelineScrubbing = false
         resumePlaybackAfterTimelineSelection = false
-        viewModel.cancelScrub()
+        if givesBackResume {
+            viewModel.endScrub(resumePlayback: true, shouldSeek: false)
+        } else {
+            viewModel.cancelScrub()
+        }
     }
 
     /// Select on an in-flight scrub commits the preview immediately instead
@@ -401,10 +429,13 @@ struct TVPlayerScrubber: View {
             stopTimelineAutoSeek()
             isTimelineScrubbing = false
             resumePlaybackAfterTimelineSelection = false
+            holdPausedPendingResume = false
             viewModel.endScrub(resumePlayback: resumesPlayback, shouldSeek: shouldSeek)
         } else {
             guard viewModel.duration > 0 else { return }
-            resumePlaybackAfterTimelineSelection = viewModel.isPlaying
+            // A resume still landing its seek is held by this scrub and
+            // given back on its commit, not left to cancel the scrub.
+            resumePlaybackAfterTimelineSelection = viewModel.isPlaying || viewModel.isResumePending
             viewModel.pauseForTimelineSelection()
             let fraction = viewModel.currentTime / viewModel.duration
             viewModel.beginScrub(fraction: fraction)

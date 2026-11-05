@@ -277,6 +277,9 @@ class PlayerViewModel {
     /// request, which ignores the failed transport's teardown pause; a Play
     /// or Pause the viewer gave while that request was out wins over it.
     private var viewerTransportCommand: (count: UInt64, play: Bool) = (0, false)
+    /// Counts the viewer's Play and Pause commands, so a caller can tell
+    /// whether a newer one came after a moment it remembered.
+    var viewerTransportCommandCount: UInt64 { viewerTransportCommand.count }
     /// The load epoch whose startup milestone (`handleFileLoaded`) has already
     /// run. Video loads reach that milestone on Aether's first frame; audio-only
     /// loads have no picture and reach it when the audio route starts playing.
@@ -7107,10 +7110,24 @@ class PlayerViewModel {
             return
         }
         guard !isStartingPlayback, !hasReachedEndOfFile else { return }
-        if isPlaying, !holdPlayIntentForFreshLoad(false) {
+        if isPlaying || isResumePending, !holdPlayIntentForFreshLoad(false) {
             aetherPlaybackController.pause()
         }
         pinControlsVisible()
+    }
+
+    /// Stopped, but the transport still means to play: a resume whose seek
+    /// is still landing, such as a timeline commit reopened right away. An
+    /// audio interruption that ended without `.shouldResume` keeps the play
+    /// intent but leaves the player paused, so it is not a pending resume.
+    var isResumePending: Bool {
+        guard !isPlaying else { return false }
+        // A fresh load with no transport yet holds the viewer's Play or
+        // Pause itself; the outgoing controller's intent is stale then.
+        if freshLoadTask != nil, activeAetherLoadEpoch == nil, let held = freshLoadPlayIntent {
+            return held
+        }
+        return viewerWantsToPlay
     }
     #endif
 
@@ -8085,7 +8102,15 @@ class PlayerViewModel {
             )
         }
         if resumePlayback, !reloadsPlaybackPipeline {
-            handleNowPlayingPlay()
+            if !shouldSeek, !isWatchPartyPlayback, seekReplanTask != nil || isPreparingProtocolV3Replacement {
+                // A scrub reopened while a reanchor replaces the transport:
+                // give the Play to the replacement instead of starting the
+                // outgoing stream at its old position.
+                noteViewerTransportCommand(play: true)
+                aetherPlaybackController.playWhenReplacementLoads()
+            } else {
+                handleNowPlayingPlay()
+            }
         }
         scheduleHideControls()
     }
