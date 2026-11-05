@@ -277,6 +277,9 @@ class PlayerViewModel {
     /// request, which ignores the failed transport's teardown pause; a Play
     /// or Pause the viewer gave while that request was out wins over it.
     private var viewerTransportCommand: (count: UInt64, play: Bool) = (0, false)
+    /// Counts the viewer's Play and Pause commands, so a caller can tell
+    /// whether a newer one came after a moment it remembered.
+    var viewerTransportCommandCount: UInt64 { viewerTransportCommand.count }
     /// The load epoch whose startup milestone (`handleFileLoaded`) has already
     /// run. Video loads reach that milestone on Aether's first frame; audio-only
     /// loads have no picture and reach it when the audio route starts playing.
@@ -8099,7 +8102,7 @@ class PlayerViewModel {
             )
         }
         if resumePlayback, !reloadsPlaybackPipeline {
-            if !shouldSeek, !isWatchPartyPlayback, seekReplanTask != nil || protocolV3ReplanTask != nil {
+            if !shouldSeek, !isWatchPartyPlayback, seekReplanTask != nil || isPreparingProtocolV3Replacement {
                 // A scrub reopened while a reanchor replaces the transport:
                 // give the Play to the replacement instead of starting the
                 // outgoing stream at its old position.

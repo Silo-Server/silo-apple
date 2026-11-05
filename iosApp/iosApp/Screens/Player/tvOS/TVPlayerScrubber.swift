@@ -42,6 +42,9 @@ struct TVPlayerScrubber: View {
     /// This hold paused a resume that was still landing; leaving the hold
     /// without a commit gives it back, since a hold never pauses otherwise.
     @State private var holdPausedPendingResume = false
+    /// The viewer's command count when that hold paused; a newer Play or
+    /// Pause (Now Playing, SiloControl) supersedes the held resume.
+    @State private var holdPausedAtCommandCount: UInt64 = 0
     @State private var timelineAutoSeekTask: Task<Void, Never>?
 
     /// Trackpad-drag scrubbing. Translation from one full edge-to-edge swipe
@@ -356,6 +359,7 @@ struct TVPlayerScrubber: View {
         resumePlaybackAfterTimelineSelection = viewModel.isPlaying || resumePending
         if resumePending { viewModel.pauseForTimelineSelection() }
         holdPausedPendingResume = resumePending
+        holdPausedAtCommandCount = viewModel.viewerTransportCommandCount
         let base = viewModel.isScrubbing ? viewModel.scrubPreviewTime : viewModel.currentTime
         viewModel.beginScrub(fraction: min(max(base / viewModel.duration, 0), 1))
         isTimelineScrubbing = true
@@ -401,6 +405,7 @@ struct TVPlayerScrubber: View {
     /// gives that resume back, as a hold over playback leaves it running.
     private func dropTimelineScrub() {
         let givesBackResume = holdPausedPendingResume
+            && viewModel.viewerTransportCommandCount == holdPausedAtCommandCount
         holdPausedPendingResume = false
         stopTimelineAutoSeek()
         isTimelineScrubbing = false
