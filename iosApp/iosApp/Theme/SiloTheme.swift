@@ -73,12 +73,22 @@ enum SiloTheme {
 
     /// Width of the poster beside a detail page's title and facts.
     static let macDetailPosterWidth: CGFloat = 230
-    /// Height of the backdrop behind a detail page's header.
-    static let macDetailBackdropHeight: CGFloat = 520
     /// Widest the detail page's title, facts and synopsis column may grow.
     static let macDetailTextWidth: CGFloat = 620
-    /// Space above the detail header, clearing the window's title bar.
+    /// Space above the detail header's poster, clearing the window's title bar.
     static let macDetailTopInset: CGFloat = 72
+    /// Where a detail page's details column would like to start, as a
+    /// fraction of the page's height, when the title has a backdrop. The
+    /// poster stays at `macDetailTopInset`.
+    static let macDetailColumnTopFraction: CGFloat = 0.2
+    /// The lowest the details column starts, for very tall windows.
+    static let macDetailColumnMaxTop: CGFloat = 240
+    /// Room the details column leaves below the header on the first screen:
+    /// a series' season posters, its episode heading, and the top of the
+    /// episode row.
+    static let macDetailBelowHeaderReserve: CGFloat = 370
+    /// How much slower than the page the detail backdrop scrolls away.
+    static let macDetailBackdropParallax: CGFloat = 0.3
     /// Width of a season's poster card on a series detail page.
     static let macSeasonCardWidth: CGFloat = 130
     /// Dimming of the seasons that are not selected.

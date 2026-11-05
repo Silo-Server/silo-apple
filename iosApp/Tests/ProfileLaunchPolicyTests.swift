@@ -2,7 +2,7 @@ import XCTest
 @testable import Silo
 
 final class ProfileLaunchPolicyTests: XCTestCase {
-    private let serverID = "server-a"
+    private let localAccountID = "local-account-a"
     private let accountEpoch = "account-a"
 
     func testProfileSelectionPoliciesKeepStableOrderAndLegacyEveryTimeRawValue() {
@@ -23,7 +23,7 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         XCTAssertEqual(state.behavior, .automatic)
         XCTAssertEqual(
             state.resolution(
-                for: serverID,
+                forAccount: localAccountID,
                 accountEpoch: accountEpoch,
                 hasStoredProfileToken: false
             ),
@@ -39,18 +39,18 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         )
         let state = ProfileLaunchState(
             behavior: .askEveryLaunch,
-            rememberedByServerID: [serverID: remembered]
+            rememberedByAccountID: [localAccountID: remembered]
         )
 
         XCTAssertEqual(
             state.resolution(
-                for: serverID,
+                forAccount: localAccountID,
                 accountEpoch: accountEpoch,
                 hasStoredProfileToken: true
             ),
             .needsSelection
         )
-        XCTAssertEqual(state.rememberedByServerID[serverID], remembered)
+        XCTAssertEqual(state.rememberedByAccountID[localAccountID], remembered)
     }
 
     func testEveryTimeRequiresARealBackgroundIntervalOnWarmReturn() {
@@ -72,13 +72,13 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         )
         var oneHour = ProfileLaunchState(
             behavior: .afterOneHour,
-            rememberedByServerID: [serverID: remembered],
+            rememberedByAccountID: [localAccountID: remembered],
             backgroundedAt: start
         )
 
         XCTAssertEqual(
             oneHour.resolution(
-                for: serverID,
+                forAccount: localAccountID,
                 accountEpoch: accountEpoch,
                 hasStoredProfileToken: false,
                 now: start.addingTimeInterval(3_599)
@@ -87,7 +87,7 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             oneHour.resolution(
-                for: serverID,
+                forAccount: localAccountID,
                 accountEpoch: accountEpoch,
                 hasStoredProfileToken: false,
                 now: start.addingTimeInterval(3_600)
@@ -145,12 +145,12 @@ final class ProfileLaunchPolicyTests: XCTestCase {
             accountEpoch: accountEpoch
         )
         let state = ProfileLaunchState(
-            rememberedByServerID: [serverID: remembered]
+            rememberedByAccountID: [localAccountID: remembered]
         )
 
         XCTAssertEqual(
             state.resolution(
-                for: serverID,
+                forAccount: localAccountID,
                 accountEpoch: accountEpoch,
                 hasStoredProfileToken: false
             ),
@@ -165,12 +165,12 @@ final class ProfileLaunchPolicyTests: XCTestCase {
             accountEpoch: accountEpoch
         )
         let state = ProfileLaunchState(
-            rememberedByServerID: [serverID: remembered]
+            rememberedByAccountID: [localAccountID: remembered]
         )
 
         XCTAssertEqual(
             state.resolution(
-                for: serverID,
+                forAccount: localAccountID,
                 accountEpoch: accountEpoch,
                 hasStoredProfileToken: false
             ),
@@ -178,7 +178,7 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             state.resolution(
-                for: serverID,
+                forAccount: localAccountID,
                 accountEpoch: "replacement-account",
                 hasStoredProfileToken: true
             ),
@@ -186,7 +186,7 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             state.resolution(
-                for: serverID,
+                forAccount: localAccountID,
                 accountEpoch: accountEpoch,
                 hasStoredProfileToken: true
             ),
@@ -201,16 +201,16 @@ final class ProfileLaunchPolicyTests: XCTestCase {
             accountEpoch: accountEpoch
         )
         let pending = ProfileLaunchState(
-            rememberedByServerID: [serverID: remembered],
-            selectionRequiredServerIDs: [serverID]
+            rememberedByAccountID: [localAccountID: remembered],
+            selectionRequiredAccountIDs: [localAccountID]
         )
         let stale = ProfileLaunchState(
-            rememberedByServerID: [serverID: remembered]
+            rememberedByAccountID: [localAccountID: remembered]
         )
 
         XCTAssertEqual(
             pending.resolution(
-                for: serverID,
+                forAccount: localAccountID,
                 accountEpoch: accountEpoch,
                 hasStoredProfileToken: false
             ),
@@ -218,7 +218,7 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             stale.resolution(
-                for: serverID,
+                forAccount: localAccountID,
                 accountEpoch: accountEpoch,
                 hasStoredProfileToken: false,
                 knownProfileIDs: ["profile-b"]
@@ -238,25 +238,25 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         XCTAssertTrue(preferences.markBackgrounded(
             at: Date(timeIntervalSinceReferenceDate: 1_000)
         ))
-        XCTAssertTrue(preferences.markSelectionRequired(for: serverID))
+        XCTAssertTrue(preferences.markSelectionRequired(forAccount: localAccountID))
         preferences.remember(
             profileID: "profile-a",
             requiresPIN: true,
             accountEpoch: accountEpoch,
-            for: serverID
+            forAccount: localAccountID
         )
 
         let restored = ProfileLaunchPreferences(defaults: defaults)
         XCTAssertEqual(restored.behavior, .askEveryLaunch)
         XCTAssertEqual(
-            restored.rememberedProfile(for: serverID),
+            restored.rememberedProfile(forAccount: localAccountID),
             RememberedProfile(
                 profileID: "profile-a",
                 requiredPINAtSelection: true,
                 accountEpoch: accountEpoch
             )
         )
-        XCTAssertFalse(restored.state.selectionRequiredServerIDs.contains(serverID))
+        XCTAssertFalse(restored.state.selectionRequiredAccountIDs.contains(localAccountID))
         XCTAssertNil(restored.state.backgroundedAt)
     }
 
@@ -309,20 +309,20 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         let accountEpoch = accountEpoch
 
         DispatchQueue.concurrentPerform(iterations: serverCount * 16) { index in
-            let serverID = "server-\((index / 2) % serverCount)"
+            let localAccountID = "account-\((index / 2) % serverCount)"
             if index.isMultiple(of: 2) {
                 preferences.remember(
                     profileID: "profile-\(index)",
                     requiresPIN: false,
                     accountEpoch: accountEpoch,
-                    for: serverID
+                    forAccount: localAccountID
                 )
             } else {
-                _ = preferences.rememberedProfile(for: serverID)
+                _ = preferences.rememberedProfile(forAccount: localAccountID)
             }
         }
 
-        XCTAssertEqual(preferences.state.rememberedByServerID.count, serverCount)
+        XCTAssertEqual(preferences.state.rememberedByAccountID.count, serverCount)
         XCTAssertEqual(
             ProfileLaunchPreferences(defaults: defaults).state,
             preferences.state
@@ -351,12 +351,12 @@ final class ProfileLaunchPolicyTests: XCTestCase {
             accountEpoch: accountEpoch
         )
         var state = ProfileLaunchState(
-            rememberedByServerID: [serverID: pinless]
+            rememberedByAccountID: [localAccountID: pinless]
         )
 
         XCTAssertTrue(TopShelfProfilePolicy.allowsPersonalizedContent(
             state: state,
-            serverID: serverID,
+            localAccountID: localAccountID,
             activeProfileID: "profile-a",
             accountEpoch: accountEpoch,
             hasStoredProfileToken: false
@@ -365,17 +365,17 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         state.behavior = .askEveryLaunch
         XCTAssertFalse(TopShelfProfilePolicy.allowsPersonalizedContent(
             state: state,
-            serverID: serverID,
+            localAccountID: localAccountID,
             activeProfileID: "profile-a",
             accountEpoch: accountEpoch,
             hasStoredProfileToken: true
         ))
 
         state.behavior = .automatic
-        state.selectionRequiredServerIDs.insert(serverID)
+        state.selectionRequiredAccountIDs.insert(localAccountID)
         XCTAssertFalse(TopShelfProfilePolicy.allowsPersonalizedContent(
             state: state,
-            serverID: serverID,
+            localAccountID: localAccountID,
             activeProfileID: "profile-a",
             accountEpoch: accountEpoch,
             hasStoredProfileToken: true
@@ -383,11 +383,11 @@ final class ProfileLaunchPolicyTests: XCTestCase {
 
         let start = Date(timeIntervalSinceReferenceDate: 3_000)
         state.behavior = .afterOneHour
-        state.selectionRequiredServerIDs.remove(serverID)
+        state.selectionRequiredAccountIDs.remove(localAccountID)
         state.backgroundedAt = start
         XCTAssertTrue(TopShelfProfilePolicy.allowsPersonalizedContent(
             state: state,
-            serverID: serverID,
+            localAccountID: localAccountID,
             activeProfileID: "profile-a",
             accountEpoch: accountEpoch,
             hasStoredProfileToken: false,
@@ -395,7 +395,7 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         ))
         XCTAssertFalse(TopShelfProfilePolicy.allowsPersonalizedContent(
             state: state,
-            serverID: serverID,
+            localAccountID: localAccountID,
             activeProfileID: "profile-a",
             accountEpoch: accountEpoch,
             hasStoredProfileToken: false,
@@ -410,19 +410,19 @@ final class ProfileLaunchPolicyTests: XCTestCase {
             accountEpoch: accountEpoch
         )
         let state = ProfileLaunchState(
-            rememberedByServerID: [serverID: protected]
+            rememberedByAccountID: [localAccountID: protected]
         )
 
         XCTAssertFalse(TopShelfProfilePolicy.allowsPersonalizedContent(
             state: state,
-            serverID: serverID,
+            localAccountID: localAccountID,
             activeProfileID: "profile-a",
             accountEpoch: accountEpoch,
             hasStoredProfileToken: false
         ))
         XCTAssertTrue(TopShelfProfilePolicy.allowsPersonalizedContent(
             state: state,
-            serverID: serverID,
+            localAccountID: localAccountID,
             activeProfileID: "profile-a",
             accountEpoch: accountEpoch,
             hasStoredProfileToken: true
@@ -645,10 +645,10 @@ final class ProfileLaunchIdentityTests: XCTestCase {
 
         func cleanup() {
             for key in [
-                TokenStore.accessTokenKey(for: serverID),
-                TokenStore.refreshTokenKey(for: serverID),
-                TokenStore.profileTokenKey(for: serverID),
-                TokenStore.accountEpochKey(for: serverID),
+                SharedStorage.accessTokenAccount(for: serverID),
+                SharedStorage.refreshTokenAccount(for: serverID),
+                SharedStorage.profileTokenAccount(for: serverID),
+                SharedStorage.accountEpochAccount(for: serverID),
                 SharedStorage.mirroredAccessTokenAccount,
                 SharedStorage.mirroredProfileTokenAccount,
             ] {
@@ -706,7 +706,17 @@ final class InvalidProfileRecoveryTests: XCTestCase {
 final class ProfileLaunchMigrationTests: XCTestCase {
     private struct LegacyRegistryState: Codable {
         let activeServerId: String?
-        let entries: [ServerEntry]
+        let entries: [LegacyServerEntry]
+    }
+
+    /// A registry entry as builds before the profile split saved it, with
+    /// the profile on the server.
+    private struct LegacyServerEntry: Codable {
+        let id: String
+        let url: String
+        let fetchedName: String?
+        let profileId: String?
+        let lastUsedAt: Date
     }
 
     func testLegacyRegistryProfileMigratesBeforeProfileFieldIsRemoved() throws {
@@ -720,10 +730,10 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         let serverID = "server-a"
         defer {
             for key in [
-                TokenStore.accessTokenKey(for: serverID),
-                TokenStore.refreshTokenKey(for: serverID),
-                TokenStore.profileTokenKey(for: serverID),
-                TokenStore.accountEpochKey(for: serverID),
+                SharedStorage.accessTokenAccount(for: serverID),
+                SharedStorage.refreshTokenAccount(for: serverID),
+                SharedStorage.profileTokenAccount(for: serverID),
+                SharedStorage.accountEpochAccount(for: serverID),
             ] {
                 keychain.delete(key)
             }
@@ -732,7 +742,7 @@ final class ProfileLaunchMigrationTests: XCTestCase {
 
         let legacy = LegacyRegistryState(
             activeServerId: serverID,
-            entries: [ServerEntry(
+            entries: [LegacyServerEntry(
                 id: serverID,
                 url: "https://silo.example",
                 fetchedName: "Silo",
@@ -746,11 +756,11 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         )
         XCTAssertTrue(keychain.set(
             "access",
-            for: TokenStore.accessTokenKey(for: serverID)
+            for: SharedStorage.accessTokenAccount(for: serverID)
         ))
         XCTAssertTrue(keychain.set(
             "proof",
-            for: TokenStore.profileTokenKey(for: serverID)
+            for: SharedStorage.profileTokenAccount(for: serverID)
         ))
 
         let preferences = ProfileLaunchPreferences(defaults: defaults)
@@ -760,7 +770,12 @@ final class ProfileLaunchMigrationTests: XCTestCase {
             launchPreferences: preferences
         )
 
-        let remembered = try XCTUnwrap(preferences.rememberedProfile(for: serverID))
+        // Account migration then moves the remembered profile onto the
+        // account the server's session became.
+        let account = try XCTUnwrap(
+            AccountStore(keychain: keychain, defaults: defaults).accounts(onServer: serverID).first
+        )
+        let remembered = try XCTUnwrap(preferences.rememberedProfile(forAccount: account.localAccountId))
         XCTAssertEqual(remembered.profileID, "profile-a")
         XCTAssertTrue(remembered.requiredPINAtSelection)
         XCTAssertNil(registry.entry(with: serverID)?.legacyProfileId)
@@ -854,7 +869,7 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         XCTAssertFalse(preferences.migrateLegacyProfile(
             profileID: "profile-a", requiresPIN: false, accountEpoch: accountEpoch, for: serverID
         ))
-        XCTAssertNil(preferences.rememberedProfile(for: serverID))
+        XCTAssertNil(preferences.state.rememberedByServerID[serverID])
         XCTAssertEqual(preferences.behavior, .askEveryLaunch)
         XCTAssertTrue(preferences.isRememberOfferPending)
     }
@@ -877,8 +892,11 @@ final class ProfileLaunchMigrationTests: XCTestCase {
         ))
         XCTAssertEqual(preferences.behavior, .automatic)
         XCTAssertFalse(preferences.isRememberOfferPending)
+        // Account migration moves the server's memory onto its account.
+        let localAccountID = "local-account-a"
+        XCTAssertTrue(preferences.adoptLegacyServerMemory(owners: [serverID: localAccountID]))
         XCTAssertEqual(
-            preferences.resolution(for: serverID, accountEpoch: accountEpoch, hasStoredProfileToken: false),
+            preferences.resolution(forAccount: localAccountID, accountEpoch: accountEpoch, hasStoredProfileToken: false),
             .restore(RememberedProfile(profileID: "profile-a", requiredPINAtSelection: false, accountEpoch: accountEpoch))
         )
     }

@@ -527,7 +527,7 @@ struct TVSeriesDetailView: View {
             isPlaybackLoading: isLoadingEpisodes && playbackEpisode == nil,
             allowsInitialPlayFocus: !userNavigated,
             tracksInitialFocusNavigation: true,
-            playbackSelectors: {
+            playbackSelectors: { focusedAction in
                 // Keep all three triggers mounted while a newly focused
                 // episode's playback detail loads. They disable themselves
                 // until a valid version arrives, preserving every x-position.
@@ -547,7 +547,8 @@ struct TVSeriesDetailView: View {
                     preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                     onSelectVersion: onSelectNextUpVersion,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
-                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
+                    onSelectSubtitleTrack: onSelectNextUpSubtitleTrack,
+                    focusedAction: focusedAction
                 )
             },
             moreMenu: { moreMenu }

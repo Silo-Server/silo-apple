@@ -13,8 +13,9 @@ final class ResponseSnapshotStoreTests: XCTestCase {
         try? FileManager.default.removeItem(at: root)
     }
 
-    private let adult = ResponseSnapshotStore.Scope(serverId: "server-a", profileId: "adult")
-    private let child = ResponseSnapshotStore.Scope(serverId: "server-a", profileId: "child")
+    private static let accountId = "6F9619FF-8B86-D011-B42D-00C04FC964FF"
+    private let adult = ResponseSnapshotStore.Scope(serverId: "server-a", localAccountId: accountId, profileId: "adult")
+    private let child = ResponseSnapshotStore.Scope(serverId: "server-a", localAccountId: accountId, profileId: "child")
 
     func testStoredResponsesComeBackForTheirOwnProfileOnly() throws {
         let libraries = LibrariesResponse(libraries: [

@@ -498,10 +498,14 @@ struct TVSettingsConfirmationOverlay: View {
                         .font(.system(size: 38, weight: .semibold))
                         .foregroundColor(.siloOnSurface)
 
-                    Text(message)
-                        .font(.system(size: 22))
-                        .foregroundColor(.siloSecondaryText)
-                        .multilineTextAlignment(.center)
+                    if !message.isEmpty {
+                        Text(message)
+                            .font(.system(size: 22))
+                            .foregroundColor(.siloSecondaryText)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 820)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 HStack(spacing: 16) {

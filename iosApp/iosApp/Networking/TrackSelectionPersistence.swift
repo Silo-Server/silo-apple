@@ -18,7 +18,9 @@
 //  saved prefs into `WatchDetail.effective_*` /
 //  `FileVersion.effectiveAudioTrackIndex`; `SiloAPI.watchDetail` passes
 //  `settlePendingWrites` first so a read right after a pick (Next Up,
-//  the detail page) neither races the write nor loses it.
+//  the detail page) neither races the write nor loses it. Downloaded
+//  playback reads and queues its picks through `DownloadManager` (see
+//  `OfflineTrackPrefs.swift`).
 //
 
 import Foundation
@@ -33,8 +35,7 @@ enum TrackSelectionPersistence {
     )
 
     /// Server pref key: the series id for episodes, the item's own
-    /// content id otherwise. Nil when neither is known (e.g. offline
-    /// playback with no server-backed identity).
+    /// content id otherwise. Nil when neither is known.
     static func prefKey(seriesId: String?, contentId: String?) -> String? {
         if let seriesId, !seriesId.isEmpty { return seriesId }
         if let contentId, !contentId.isEmpty { return contentId }
@@ -164,13 +165,16 @@ enum TrackSelectionPersistence {
     // `natural_idempotent`, but a failed or unanswered write is logged and
     // not retried: the next explicit pick sends a fresh one. Until then, for
     // up to `failedPickLifetime`, reads under the same owner carry it (see
-    // `settlePendingWrites`).
+    // `settlePendingWrites`). Each sent write's outcome is passed to
+    // `DownloadManager` before the next one for its key starts. Picks made
+    // during downloaded playback are queued there instead, and sent through
+    // `ordered` so they keep the same order.
 
     @discardableResult
     static func saveAudio(prefKey: String, request: AudioPrefRequest,
                           client: APIv2Client = SiloAPI.shared.apiV2Client,
                           tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("audio pref save", kind: .audio, prefKey: prefKey, intent: .audio(request),
+        dispatch("audio pref save", body: request, in: \.audio, prefKey: prefKey, intent: .audio(request),
                  tokenStore: tokenStore) { auth in
             try await client.writeTrackPreference(kind: .audio, seriesId: prefKey, body: request, auth: auth)
         }
@@ -180,7 +184,7 @@ enum TrackSelectionPersistence {
     static func saveSubtitle(prefKey: String, request: SubtitlePrefRequest,
                              client: APIv2Client = SiloAPI.shared.apiV2Client,
                              tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("subtitle pref save", kind: .subtitle, prefKey: prefKey, intent: .subtitle(request),
+        dispatch("subtitle pref save", body: request, in: \.subtitle, prefKey: prefKey, intent: .subtitle(request),
                  tokenStore: tokenStore) { auth in
             try await client.writeTrackPreference(kind: .subtitle, seriesId: prefKey, body: request, auth: auth)
         }
@@ -193,7 +197,7 @@ enum TrackSelectionPersistence {
     static func clearAudio(prefKey: String,
                            client: APIv2Client = SiloAPI.shared.apiV2Client,
                            tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("audio pref clear", kind: .audio, prefKey: prefKey, intent: .cleared,
+        dispatch("audio pref clear", body: AudioPrefRequest?.none, in: \.audio, prefKey: prefKey, intent: .cleared,
                  tokenStore: tokenStore) { auth in
             try await client.deleteTrackPreference(kind: .audio, seriesId: prefKey, auth: auth)
         }
@@ -203,35 +207,52 @@ enum TrackSelectionPersistence {
     static func clearSubtitle(prefKey: String,
                               client: APIv2Client = SiloAPI.shared.apiV2Client,
                               tokenStore: TokenStore = .shared) -> Task<Void, Never> {
-        dispatch("subtitle pref clear", kind: .subtitle, prefKey: prefKey, intent: .cleared,
+        dispatch("subtitle pref clear", body: SubtitlePrefRequest?.none, in: \.subtitle, prefKey: prefKey, intent: .cleared,
                  tokenStore: tokenStore) { auth in
             try await client.deleteTrackPreference(kind: .subtitle, seriesId: prefKey, auth: auth)
         }
     }
 
+    /// Runs `operation` in turn with the writes for the same kind and key,
+    /// without registering an intent: the downloads flush decides for itself
+    /// whether to write. Reads under `owner` wait for it like any write, and
+    /// `operation` answers whether it stored one, so reads marked before it
+    /// read again and an older failed pick stops being carried.
+    static func ordered(kind: TrackPreferenceKind, prefKey: String, owner: CapturedOrdinaryRequestAuth,
+                        _ operation: @escaping @Sendable () async -> Bool) -> Task<Void, Never> {
+        pendingWrites.chain(.init(kind: kind, prefKey: prefKey), owner: owner, operation)
+    }
+
     private static let pendingWrites = PendingWrites()
 
-    private static func dispatch(
+    /// `operation` writes `body` (nil clears) and answers the response's
+    /// `Date` header.
+    private static func dispatch<Body: TrackPrefBody>(
         _ action: String,
-        kind: TrackPreferenceKind,
+        body: Body?,
+        in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
         prefKey: String,
         intent: Intent,
         tokenStore: TokenStore,
-        operation: @escaping @Sendable (CapturedOrdinaryRequestAuth) async throws -> Void
+        operation: @escaping @Sendable (CapturedOrdinaryRequestAuth) async throws -> Date?
     ) -> Task<Void, Never> {
+        let sentAt = Date()
         let pending = pendingWrites
         // The owner the pick was made under, read now rather than when the
         // write's task first runs: a profile switch or a new remote-playback
         // scope in between must not send the pick under the next owner.
         let pickedBy = tokenStore.ownerSnapshot
-        return pending.enqueue(.init(kind: kind, prefKey: prefKey), profile: pickedBy.profileId, intent: intent) { write, previous in
+        return pending.enqueue(.init(kind: Body.kind, prefKey: prefKey), profile: pickedBy.profileId, intent: intent) { write, previous in
             let owner = writeOwner(captured: await tokenStore.captureOrdinaryRequestAuth(), pickedBy: pickedBy)
             pending.bind(write, owner: owner)
             await previous?.value
             guard pending.isLatest(write) else { return }
+            var serverDate: Date?
+            var stored = false
             do {
                 guard let owner else { throw HTTPError.requestIdentityChanged }
-                try await operation(owner)
+                serverDate = try await operation(owner)
+                stored = true
                 pending.finish(write, stored: true)
             } catch {
                 pending.finish(write, stored: false)
@@ -239,6 +260,9 @@ enum TrackSelectionPersistence {
                     "\(action, privacy: .public) failed key=\(prefKey, privacy: .public): \(String(describing: error), privacy: .public)"
                 )
             }
+            guard let owner else { return }
+            await DownloadManager.shared.noteTrackPrefWrite(body, key: prefKey, in: ledger, auth: owner, sentAt: sentAt,
+                                                            stored: stored, serverDate: serverDate)
         }
     }
 
@@ -584,6 +608,8 @@ enum TrackSelectionPersistence {
             var storeSequence: UInt64 = 0
             /// The store sequence of each slot's last stored write.
             var lastStored: [Slot: UInt64] = [:]
+            /// Writes run through `chain` that have not ended, by id.
+            var chained: [UInt64: (slot: Slot, owner: CapturedOrdinaryRequestAuth, task: Task<Void, Never>)] = [:]
         }
 
         private let state = Mutex(State())
@@ -605,6 +631,43 @@ enum TrackSelectionPersistence {
                 state.tails[slot] = (write.id, task)
                 state.latest[write.owned] = Entry(id: write.id, intent: intent, task: task)
                 return task
+            }
+        }
+
+        /// Runs `operation` after the slot's last dispatched write, as the
+        /// slot's new tail, without registering an intent. Until it ends,
+        /// reads under `owner` wait for it as for an in-flight write. A
+        /// stored write bumps the store sequence like `finish(_:stored:)`
+        /// and ends a failed pick from that profile dispatched before it,
+        /// which reads would otherwise keep carrying over the stored value.
+        func chain(_ slot: Slot, owner: CapturedOrdinaryRequestAuth,
+                   _ operation: @escaping @Sendable () async -> Bool) -> Task<Void, Never> {
+            state.withLock { state -> Task<Void, Never> in
+                state.nextId += 1
+                let id = state.nextId
+                let previous = state.tails[slot]?.task
+                let task = Task {
+                    await previous?.value
+                    let stored = await operation()
+                    self.endChained(id, slot: slot, owner: owner, stored: stored)
+                    self.releaseTail(slot, id)
+                }
+                state.tails[slot] = (id, task)
+                state.chained[id] = (slot, owner, task)
+                return task
+            }
+        }
+
+        private func endChained(_ id: UInt64, slot: Slot, owner: CapturedOrdinaryRequestAuth, stored: Bool) {
+            state.withLock { state in
+                state.chained[id] = nil
+                guard stored else { return }
+                state.storeSequence += 1
+                state.lastStored[slot] = state.storeSequence
+                let owned = OwnedSlot(slot: slot, profile: owner.profileId)
+                if let entry = state.latest[owned], entry.failedAt != nil, entry.id < id {
+                    state.latest[owned] = nil
+                }
             }
         }
 
@@ -651,6 +714,9 @@ enum TrackSelectionPersistence {
                           entry.belongs(to: owner, includingUnbound: owned.profile == owner.profileId)
                     else { return nil }
                     return entry.task
+                } + state.chained.values.compactMap { chained in
+                    guard chained.slot.prefKey == prefKey, chained.owner.sameCredentialIdentity(as: owner) else { return nil }
+                    return chained.task
                 }
             }
         }

@@ -245,6 +245,7 @@ private func scaledNameSize(_ size: CGFloat) -> CGFloat {
 
 struct AddProfileTile: View {
     var size: CGFloat = tileSize
+    var title: String = "Add profile"
     let action: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -274,7 +275,7 @@ struct AddProfileTile: View {
                     }
                     .scaleEffect(isFocused && !reduceMotion ? focusScale : 1.0)
 
-                Text("Add profile")
+                Text(title)
                     .font(.system(size: scaledNameSize(size), weight: .semibold))
                     .foregroundStyle(Color.siloOnSurface.opacity(isFocused ? 1 : 0.62))
                     .padding(.top, isFocused ? nameSpacing + 18 : nameSpacing)
@@ -288,7 +289,7 @@ struct AddProfileTile: View {
         #if os(tvOS)
         .focusEffectDisabled()
         #endif
-        .accessibilityLabel("Add profile")
+        .accessibilityLabel(title)
     }
 }
 

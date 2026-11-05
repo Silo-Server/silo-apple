@@ -174,7 +174,7 @@ struct TVMovieDetailView: View {
             rowFocused: $actionRowFocused,
             stabilizesFocusMotion: true,
             primaryButtonWidth: 340,
-            playbackSelectors: {
+            playbackSelectors: { focusedAction in
                 TVPlaybackActionSelectors(
                     versions: availableVersions,
                     currentVersion: currentVersion,
@@ -191,7 +191,8 @@ struct TVMovieDetailView: View {
                     preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                     onSelectVersion: onSelectVersion,
                     onSelectAudioTrack: onSelectAudioTrack,
-                    onSelectSubtitleTrack: onSelectSubtitleTrack
+                    onSelectSubtitleTrack: onSelectSubtitleTrack,
+                    focusedAction: focusedAction
                 )
             },
             moreMenu: { moreMenu }

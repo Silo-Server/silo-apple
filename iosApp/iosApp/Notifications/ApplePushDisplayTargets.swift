@@ -20,6 +20,12 @@ struct ApplePushDisplayTarget: Codable, Equatable, Sendable {
     /// RFC 3339 expiry of `displayToken`. Nil renews the token at the next
     /// registration pass.
     let expiresAt: String?
+    /// The saved account (`Account.localAccountId`) that registered. Pushes
+    /// name only their server and profile, and profile IDs repeat across
+    /// accounts on one server; the server sends this device only the pushes
+    /// of the account that holds its installation, which is this one. Nil
+    /// for a target from before accounts.
+    var localAccountID: String? = nil
 }
 
 /// The display targets, kept as one shared Keychain item: the extension can
@@ -67,6 +73,19 @@ struct ApplePushDisplayTargetStore: Sendable {
     @discardableResult
     func removeTargets(registeredBy registryServerID: String) -> Bool {
         update { $0.removeAll { $0.registryServerID == registryServerID } }
+    }
+
+    /// Removes the saved server's target when `localAccountID`, or a build
+    /// from before accounts, registered it. Another account's target stays:
+    /// that account holds the server's installation.
+    @discardableResult
+    func removeTargets(registeredBy registryServerID: String, account localAccountID: String) -> Bool {
+        update {
+            $0.removeAll {
+                $0.registryServerID == registryServerID
+                    && ($0.localAccountID == nil || $0.localAccountID == localAccountID)
+            }
+        }
     }
 
     /// A Keychain read failure leaves the stored targets as they are rather

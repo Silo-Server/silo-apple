@@ -62,10 +62,20 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
     private(set) var startedServers: [String] = []
     private(set) var approvedCodes: [String] = []
     private(set) var pollCount = 0
+    /// Whether the capability says `session_binding`.
+    var supportsBinding = false
+    private(set) var startBindings: [String?] = []
+    private(set) var pollSecrets: [String?] = []
+    /// The binding each lookup reports, in order; `lookupBinding` after.
+    var lookupBindings: [String?] = []
+    var lookupBinding: String?
+    private(set) var lookupBearers: [String] = []
+    private(set) var approveBearers: [String] = []
 
-    func start(serverURL: String, deviceName: String, devicePlatform: String) async throws -> DeviceLoginStartResponse {
+    func start(serverURL: String, deviceName: String, devicePlatform: String, binding: String?) async throws -> DeviceLoginStartResponse {
         if let startError { throw startError }
         startedServers.append(serverURL)
+        startBindings.append(binding)
         return DeviceLoginStartResponse(
             deviceCode: "DEV-1",
             userCode: "USER-1",
@@ -80,8 +90,9 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
         )
     }
 
-    func poll(serverURL: String, deviceCode: String) async throws -> APIv2DevicePoll {
+    func poll(serverURL: String, deviceCode: String, bindingSecret: String?) async throws -> APIv2DevicePoll {
         pollCount += 1
+        pollSecrets.append(bindingSecret)
         if !pollResults.isEmpty {
             return try pollResults.removeFirst().get()
         }
@@ -91,7 +102,10 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
 
     func lookup(serverURL: String, bearer: String, userCode: String) async throws -> DeviceLookupResponse {
         if let lookupError { throw lookupError }
-        return DeviceLookupResponse(matchCode: lookupMatchCode, deviceName: nil, devicePlatform: nil, status: nil)
+        lookupBearers.append(bearer)
+        let binding = lookupBindings.isEmpty ? lookupBinding : lookupBindings.removeFirst()
+        return DeviceLookupResponse(matchCode: lookupMatchCode, deviceName: nil, devicePlatform: nil, status: nil,
+                                    binding: binding)
     }
 
     private(set) var cancelledCodes: [String] = []
@@ -104,22 +118,26 @@ private final class FakePairingAPI: PairingDeviceAuthorizing, @unchecked Sendabl
 
     func capability(serverURL: String) async throws -> APIv2DeviceCapability {
         APIv2DeviceCapability(revision: "r", state: "available", remotePlaybackHandoff: false, protocolVersions: [2],
-            allowed: nil, cancel: supportsCancel, openedSignal: true)
+            allowed: nil, cancel: supportsCancel, openedSignal: true, sessionBinding: supportsBinding)
     }
 
     private(set) var approveAttempts = 0
+    /// Per-approval outcomes, in order; `approveError` after.
+    var approveErrors: [Error?] = []
 
     func approve(serverURL: String, bearer: String, userCode: String) async throws {
         approveAttempts += 1
+        if !approveErrors.isEmpty, let error = approveErrors.removeFirst() { throw error }
         if let approveError { throw approveError }
         approvedCodes.append(userCode)
+        approveBearers.append(bearer)
     }
 }
 
 // MARK: - Helpers
 
 private func entry(_ id: String, name: String) -> ServerEntry {
-    ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, profileId: nil, lastUsedAt: Date())
+    ServerEntry(id: id, url: "https://\(id).example", fetchedName: name, lastUsedAt: Date())
 }
 
 private func devicePoll(_ status: String, tokens: APIv2LoginTokens? = nil) -> APIv2DevicePoll {
@@ -134,6 +152,19 @@ private let approvedPoll = devicePoll("approved", tokens: APIv2LoginTokens(
 ))
 
 private let pendingPoll = devicePoll("pending")
+
+/// What a persist that saved `pairing` reports.
+private func committed(_ pairing: ReceiverPairingCoordinator.PersistedPairing) -> ReceiverPairingCoordinator.CommittedAccount {
+    ReceiverPairingCoordinator.CommittedAccount(serverId: ServerRegistry.serverId(for: pairing.url), localAccountId: pairing.accountID)
+}
+
+#if os(iOS)
+/// Each server's account in use, unnamed: what a phone without saved
+/// account records lists.
+private func inUse(_ servers: [ServerEntry]) -> Set<CompanionAccountChoice> {
+    Set(servers.map { CompanionAccountChoice(serverId: $0.id, localAccountId: nil) })
+}
+#endif
 
 private func problem(_ status: Int, _ type: String) -> APIv2Problem {
     APIv2Problem(type: "https://siloserver.org/problems/\(type)", title: type, status: status,
@@ -191,10 +222,10 @@ final class ServerSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(registry.entry(with: first.id), first)
     }
 
-    /// Companion authorization may install a different user's credentials for
-    /// an existing URL. That boundary must not inherit the previous account's
-    /// profile, while ordinary metadata upserts continue preserving it.
-    func testNewSessionUpsertClearsExistingProfileAndRefreshesServerName() {
+    /// Upserting a saved server refreshes its fetched name. (Profile memory
+    /// now belongs to accounts, so a new session never inherits another
+    /// account's profile through the registry.)
+    func testUpsertRefreshesServerName() {
         let suiteName = "ServerSessionPersistenceTests.suite.\(UUID().uuidString)"
         let standardName = "ServerSessionPersistenceTests.standard.\(UUID().uuidString)"
         let suite = UserDefaults(suiteName: suiteName)!
@@ -218,22 +249,14 @@ final class ServerSessionPersistenceTests: XCTestCase {
             fetchedName: "Home",
             lastUsedAt: Date()
         ))
-        launchPreferences.remember(
-            profileID: "OLD-PROFILE",
-            requiresPIN: false,
-            accountEpoch: "old-account",
-            for: serverID
-        )
 
         registry.addOrUpdate(ServerEntry(
             id: serverID,
             url: "https://home.example",
             fetchedName: "Home Renamed",
-            profileId: nil,
             lastUsedAt: Date()
-        ), preservingProfile: false)
+        ))
 
-        XCTAssertNil(launchPreferences.rememberedProfile(for: serverID))
         XCTAssertEqual(registry.entry(with: serverID)?.fetchedName, "Home Renamed")
         XCTAssertEqual(registry.entry(with: serverID)?.displayName, "Home Renamed")
     }
@@ -248,19 +271,30 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         api: FakePairingAPI,
         servers: [ServerEntry],
         endpoints: [ServerEndpoint]? = nil,
-        isRoku: Bool = false
+        isRoku: Bool = false,
+        acceptsSeveralAccounts: Bool = false,
+        accountLimit: Int? = nil,
+        accounts: (@MainActor (ServerEntry) async -> [CompanionAccountOption])? = nil,
+        activeServerId: String? = nil,
+        accountName: String? = "laura"
     ) -> CompanionPairingCoordinator {
         let coordinator = CompanionPairingCoordinator(
             channel: channel,
             stream: channel.stream,
             tvName: "Living Room",
             isRoku: isRoku,
+            acceptsSeveralAccounts: acceptsSeveralAccounts,
+            accountLimit: accountLimit,
             api: api,
             deviceModel: "iPhone",
             availableServers: { servers },
             accessToken: { _ in .token("token") },
             serverEndpoints: { _, _ in endpoints },
-            accountName: { _, _ in "laura" }
+            accountName: { _, _ in accountName },
+            accounts: accounts ?? { [.inUse(on: $0)] },
+            // Each saved account's own bearer, named for it.
+            accountAccessToken: { _, localAccountId in .token("bearer-\(localAccountId)") },
+            activeServerId: { activeServerId }
         )
         coordinator.start()
         return coordinator
@@ -273,8 +307,7 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
         let identified = ServerEntry(
-            id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "S"
+            id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "S"
         )
         let legacy = entry("b", name: "Legacy")
         let endpoints = [ServerEndpoint(url: "https://public.example", kind: .public)]
@@ -282,20 +315,20 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
 
         channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv", state: .setup, supportedVersions: [1]))
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        await coordinator.pushSelected([identified, legacy])
+        await coordinator.pushSelected(inUse([identified, legacy]))
         await expectEventually("first push") {
             channel.sent.contains {
-                if case .pushServer("https://a.example", "Home", "S", endpoints) = $0 { return true }
+                if case .pushServer("https://a.example", "Home", "S", endpoints, nil) = $0 { return true }
                 return false
             }
         }
         channel.deliver(.serverResult(serverURL: "https://a.example", status: .failed, error: "unreachable"))
         await expectEventually("legacy push") {
             channel.sent.contains {
-                if case .pushServer("https://b.example", "Legacy", nil, nil) = $0 { return true }
+                if case .pushServer("https://b.example", "Legacy", nil, nil, nil) = $0 { return true }
                 return false
             }
         }
@@ -320,7 +353,7 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: FakePairingAPI(), servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("server picker") {
-            if case .pickServers(_, let servers) = coordinator.state { return servers.count == 1 }
+            if case .pickAccounts(_, let sections) = coordinator.state { return sections.count == 1 }
             return false
         }
     }
@@ -344,17 +377,18 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, sections) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
+        let servers = sections.map(\.server)
+        await coordinator.pushSelected(inUse(servers))
         channel.deliver(.deviceStarted(serverURL: "https://a.example", userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("confirm step") {
             // People compare the TV's sign-in code, not the match words.
-            if case .confirmMatch(_, _, _, _, let code, _) = coordinator.state { return code == "USER-1" }
+            if case .confirmMatch(_, _, _, _, let code, _, _) = coordinator.state { return code == "USER-1" }
             return false
         }
         channel.deliver(.cancel(reason: "receiver_cancelled"))
@@ -377,13 +411,14 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, sections) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
+        let servers = sections.map(\.server)
+        await coordinator.pushSelected(inUse(servers))
         channel.deliver(.deviceStarted(serverURL: "https://a.example", userCode: "4821-7730", matchCode: "warm pony"))
         await expectEventually("both codes to compare") {
             coordinator.state == .confirmMatch(tvName: "Living Room", serverName: "Home", serverHost: "a.example",
@@ -407,13 +442,14 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
             servers: [entry("a", name: "Home"), entry("b", name: "Cabin")], isRoku: true)
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, sections) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
+        let servers = sections.map(\.server)
+        await coordinator.pushSelected(inUse(servers))
         channel.deliver(.deviceStarted(serverURL: "https://a.example", userCode: "4821-7730", matchCode: "warm pony"))
         await expectEventually("the code to compare") {
             coordinator.state == .confirmMatch(tvName: "Living Room", serverName: "Home", serverHost: "a.example",
@@ -431,13 +467,6 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         XCTAssertEqual(pushes.count, 1)
     }
 
-    /// The chooser is single-select for a Roku and multi-select otherwise.
-    func testTheChooserPicksOneServerForARoku() {
-        XCTAssertEqual(CompanionPairingCard.toggling("b", in: ["a"], singleSelect: true), ["b"])
-        XCTAssertEqual(CompanionPairingCard.toggling("b", in: ["a"], singleSelect: false), ["a", "b"])
-        XCTAssertEqual(CompanionPairingCard.toggling("a", in: ["a"], singleSelect: true), [])
-        XCTAssertEqual(CompanionPairingCard.toggling("a", in: ["a", "b"], singleSelect: false), ["b"])
-    }
 
     /// Regression: servers after the first are auto-approved, so the code the
     /// TV displayed must be verified against the server's authoritative one.
@@ -448,10 +477,10 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: servers)
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        await coordinator.pushSelected(servers)
+        await coordinator.pushSelected(inUse(servers))
 
         // First server: codes agree; the user confirms.
         channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
@@ -464,7 +493,7 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
 
         // Second server: the TV shows ZZZZ but the server says ABCD — splice.
         await expectEventually("second push") {
-            channel.sent.contains { if case .pushServer(let url, _, _, _) = $0 { return url == servers[1].url } else { return false } }
+            channel.sent.contains { if case .pushServer(let url, _, _, _, _) = $0 { return url == servers[1].url } else { return false } }
         }
         channel.deliver(.deviceStarted(serverURL: servers[1].url, userCode: "USER-2", matchCode: "ZZZZ"))
 
@@ -482,13 +511,14 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: FakePairingAPI(), servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, sections) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
+        let servers = sections.map(\.server)
+        await coordinator.pushSelected(inUse(servers))
         channel.dropConnection()
         await expectEventually("connection lost") {
             if case .error(let message) = coordinator.state { return message.contains("lost") }
@@ -505,13 +535,14 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, sections) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
+        let servers = sections.map(\.server)
+        await coordinator.pushSelected(inUse(servers))
         channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("zero-success summary") {
             if case .finished(let ok, let bad) = coordinator.state { return ok.isEmpty && bad.map(\.name) == ["Home"] }
@@ -529,13 +560,14 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, sections) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
+        let servers = sections.map(\.server)
+        await coordinator.pushSelected(inUse(servers))
         channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("update summary") {
             if case .finished(let ok, let bad) = coordinator.state { return ok.isEmpty && bad.map(\.code) == [.updateRequired] }
@@ -544,9 +576,10 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         XCTAssertTrue(api.approvedCodes.isEmpty)
     }
 
-    /// A 409 means the request was already decided elsewhere. The approval
-    /// is not sent again, and the error says what happened instead of
-    /// blaming the phone's connection.
+    /// A 409 means the request was already decided elsewhere, possibly
+    /// approved. The approval is not sent again, the message says what
+    /// happened instead of blaming the phone's connection, and the session
+    /// stops, since the outcome is unknown.
     func testAlreadyDecidedApprovalEndsWithoutRetrying() async {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
@@ -554,21 +587,24 @@ final class CompanionPairingCoordinatorTests: XCTestCase {
         let coordinator = makeCoordinator(channel: channel, api: api, servers: [entry("a", name: "Home")])
         channel.deliver(hello())
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else {
-            return XCTFail("expected pickServers, got \(coordinator.state)")
+        guard case let .pickAccounts(_, sections) = coordinator.state else {
+            return XCTFail("expected pickAccounts, got \(coordinator.state)")
         }
-        await coordinator.pushSelected(servers)
+        let servers = sections.map(\.server)
+        await coordinator.pushSelected(inUse(servers))
         channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("confirm prompt") {
             if case .confirmMatch = coordinator.state { return true }
             return false
         }
         await coordinator.confirmMatch()
-        await expectEventually("approve error") {
-            if case .error(let message) = coordinator.state { return message.contains("already approved or declined") }
+        await expectEventually("approve failure shown") {
+            if case .error(let message) = coordinator.state {
+                return message.contains("already approved or declined")
+            }
             return false
         }
         XCTAssertEqual(api.approveAttempts, 1)
@@ -630,7 +666,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
             recorder.persisted.append(Persisted(url: pairing.url, access: pairing.accessToken))
             recorder.verifiedIds.append(pairing.verifiedServerId)
             recorder.accountIDs.append(pairing.accountID)
-            return true
+            return committed(pairing)
         }
     }
 
@@ -745,7 +781,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
 
         channel.deliver(pushWithIdentity())
         await expectEventually("consent prompt") {
-            if case .consentRequested(let name) = coordinator.state { return name == "Home" }
+            if case .consentRequested(let name, _) = coordinator.state { return name == "Home" }
             return false
         }
         coordinator.allowPendingServer()
@@ -792,7 +828,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
             identityProbe: { _ in answers.next() }
         ) { pairing in
             recorder.persisted.append(Persisted(url: pairing.url, access: pairing.accessToken))
-            return true
+            return committed(pairing)
         }
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
@@ -931,7 +967,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
 
         channel.deliver(.pushServer(serverURL: "https://home.example", serverName: "Home"))
         await expectEventually("consent prompt") {
-            if case .consentRequested(let name) = coordinator.state { return name == "Home" }
+            if case .consentRequested(let name, _) = coordinator.state { return name == "Home" }
             return false
         }
         XCTAssertTrue(api.startedServers.isEmpty, "no device/start before the user allows it")
@@ -1098,7 +1134,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         let coordinator = ReceiverPairingCoordinator(api: api) { pairing in
             await gate.wait()
             recorder.persisted.append(Persisted(url: pairing.url, access: pairing.accessToken))
-            return true
+            return committed(pairing)
         }
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
@@ -1140,7 +1176,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         let coordinator = ReceiverPairingCoordinator(api: api) { pairing in
             await gate.wait()
             recorder.persisted.append(Persisted(url: pairing.url, access: pairing.accessToken))
-            return true
+            return committed(pairing)
         }
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
@@ -1217,7 +1253,7 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         api.pollResponse = pendingPoll // hold the attempt at awaitingApproval
         channel.deliver(.pushServer(serverURL: "https://two.example", serverName: "Two"))
         await expectEventually("manual-confirmation copy") {
-            if case let .awaitingApproval(_, _, _, automatic) = coordinator.state { return !automatic }
+            if case let .awaitingApproval(_, _, _, _, automatic) = coordinator.state { return !automatic }
             return false
         }
         channel.dropConnection()
@@ -1268,11 +1304,11 @@ final class ReceiverPairingCoordinatorTests: XCTestCase {
         let recorder = PersistRecorder()
         let coordinator = ReceiverPairingCoordinator(api: api) { pairing in
             guard let lease = await http.beginIdentityTransition() else {
-                return false
+                return nil
             }
             recorder.persisted.append(Persisted(url: pairing.url, access: pairing.accessToken))
             await http.endIdentityTransition(lease)
-            return true
+            return committed(pairing)
         }
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
@@ -1347,7 +1383,7 @@ final class TVSignInPairingTests: XCTestCase {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
         api.pollResponse = approvedPoll
-        let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { _ in false }
+        let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { _ in nil }
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
         await consent(channel, coordinator, identity: nil)
@@ -1374,12 +1410,12 @@ final class TVSignInPairingTests: XCTestCase {
             let api = FakePairingAPI()
             api.supportsCancel = supportsCancel
             api.pollResponse = pendingPoll
-            let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { _ in true }
+            let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { committed($0) }
             let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
             await consent(channel, coordinator, identity: nil)
             await expectEventually("awaiting approval") {
-                if case .awaitingApproval(_, let code, _, _) = coordinator.state { return code == "USER-1" }
+                if case .awaitingApproval(_, _, let code, _, _) = coordinator.state { return code == "USER-1" }
                 return false
             }
             await coordinator.cancel()
@@ -1399,7 +1435,7 @@ final class TVSignInPairingTests: XCTestCase {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
         api.pollResponse = pendingPoll
-        let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { _ in true }
+        let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { committed($0) }
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
         // An older phone: a legacy push with no identity or endpoints.
@@ -1420,7 +1456,7 @@ final class TVSignInPairingTests: XCTestCase {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
         let source = FakeSignInCodeSource()
-        let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { _ in true }
+        let coordinator = ReceiverPairingCoordinator(api: api, identityProbe: { _ in .unreachable }) { committed($0) }
         coordinator.mode = .login(serverIdentity: "srv-1", source: source)
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
@@ -1446,7 +1482,7 @@ final class TVSignInPairingTests: XCTestCase {
     func testSignInModeRefusesAnotherServer() async {
         let channel = FakePairingChannel()
         let source = FakeSignInCodeSource()
-        let coordinator = ReceiverPairingCoordinator(api: FakePairingAPI(), identityProbe: { _ in .unreachable }) { _ in true }
+        let coordinator = ReceiverPairingCoordinator(api: FakePairingAPI(), identityProbe: { _ in .unreachable }) { committed($0) }
         coordinator.mode = .login(serverIdentity: "srv-1", source: source)
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
@@ -1467,7 +1503,7 @@ final class TVSignInPairingTests: XCTestCase {
         let channel = FakePairingChannel()
         let source = FakeSignInCodeSource()
         source.outcome = .failed(.saveFailed)
-        let coordinator = ReceiverPairingCoordinator(api: FakePairingAPI(), identityProbe: { _ in .unreachable }) { _ in true }
+        let coordinator = ReceiverPairingCoordinator(api: FakePairingAPI(), identityProbe: { _ in .unreachable }) { committed($0) }
         coordinator.mode = .login(serverIdentity: "srv-1", source: source)
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
@@ -1487,7 +1523,7 @@ final class TVSignInPairingTests: XCTestCase {
     func testSignInModeAsksAnOlderPhoneToUpdate() async {
         let channel = FakePairingChannel()
         let source = FakeSignInCodeSource()
-        let coordinator = ReceiverPairingCoordinator(api: FakePairingAPI(), identityProbe: { _ in .unreachable }) { _ in true }
+        let coordinator = ReceiverPairingCoordinator(api: FakePairingAPI(), identityProbe: { _ in .unreachable }) { committed($0) }
         coordinator.mode = .login(serverIdentity: "srv-1", source: source)
         let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
 
@@ -1510,19 +1546,19 @@ final class TVSignInPairingTests: XCTestCase {
         let channel = FakePairingChannel()
         let api = FakePairingAPI()
         api.lookupMatchCode = "ABCD"
-        let home = ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "srv-1")
+        let home = ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "srv-1")
         let coordinator = CompanionPairingCoordinator(
             channel: channel, stream: channel.stream, tvName: "Living Room", fixedServer: home, api: api,
             deviceModel: "iPhone", availableServers: { XCTFail("no chooser for a sign-in TV"); return [] },
             accessToken: { _ in .token("token") },
             serverEndpoints: { _, _ in XCTFail("a sign-in TV gets no alternate addresses"); return nil },
-            accountName: { _, _ in "laura" })
+            accountName: { _, _ in "laura" },
+            accounts: { [.inUse(on: $0)] }, activeServerId: { nil })
         coordinator.start()
         channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .login, supportedVersions: [PairingProtocol.version]))
         await expectEventually("pushed its server") {
             channel.sent.contains {
-                if case .pushServer(let url, _, let identity, let endpoints) = $0 {
+                if case .pushServer(let url, _, let identity, let endpoints, _) = $0 {
                     return url == home.url && identity == "srv-1" && endpoints == nil
                 }
                 return false
@@ -1531,7 +1567,7 @@ final class TVSignInPairingTests: XCTestCase {
         channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("compare the TV's code") {
             // The TV's code to compare, with who approving signs it in as.
-            if case .confirmMatch(_, "Home", "a.example", "laura", "USER-1", nil) = coordinator.state { return true }
+            if case .confirmMatch(_, "Home", "a.example", "laura", "USER-1", nil, nil) = coordinator.state { return true }
             return false
         }
         XCTAssertEqual(channel.sent.filter { if case .pushServer = $0 { return true } else { return false } }.count, 1)
@@ -1546,16 +1582,18 @@ final class TVSignInPairingTests: XCTestCase {
         api.lookupMatchCode = "ZZZZ"
         let coordinator = CompanionPairingCoordinator(
             channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
-            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
-            accessToken: { _ in .token("token") }, serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
+            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date())] },
+            accessToken: { _ in .token("token") }, serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil },
+            accounts: { [.inUse(on: $0)] }, activeServerId: { nil })
         coordinator.start()
         channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else { return XCTFail() }
-        await coordinator.pushSelected(servers)
+        guard case let .pickAccounts(_, sections) = coordinator.state else { return XCTFail() }
+        let servers = sections.map(\.server)
+        await coordinator.pushSelected(inUse(servers))
         channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("refused") {
             if case .finished(let ok, let bad) = coordinator.state { return ok.isEmpty && bad.map(\.name) == ["Home"] }
@@ -1572,18 +1610,20 @@ final class TVSignInPairingTests: XCTestCase {
         var calls = 0
         let coordinator = CompanionPairingCoordinator(
             channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
-            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+            availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date())] },
             // The lookup gets a bearer; by approval time the renewal failed.
             accessToken: { _ in calls += 1; return calls == 1 ? .token("token") : .rejected },
-            serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
+            serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil },
+            accounts: { [.inUse(on: $0)] }, activeServerId: { nil })
         coordinator.start()
         channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
         await expectEventually("picker") {
-            if case .pickServers = coordinator.state { return true }
+            if case .pickAccounts = coordinator.state { return true }
             return false
         }
-        guard case let .pickServers(_, servers) = coordinator.state else { return XCTFail() }
-        await coordinator.pushSelected(servers)
+        guard case let .pickAccounts(_, sections) = coordinator.state else { return XCTFail() }
+        let servers = sections.map(\.server)
+        await coordinator.pushSelected(inUse(servers))
         channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
         await expectEventually("confirm") {
             if case .confirmMatch = coordinator.state { return true }
@@ -1591,7 +1631,7 @@ final class TVSignInPairingTests: XCTestCase {
         }
         await coordinator.confirmMatch()
         await expectEventually("sign in again") {
-            if case .error(let message) = coordinator.state { return message.contains("Sign in to Home") }
+            if case .finished(_, let bad) = coordinator.state { return bad.first?.summary.contains("Sign in to Home") == true }
             return false
         }
         XCTAssertEqual(api.approveAttempts, 0)
@@ -1611,17 +1651,19 @@ final class TVSignInPairingTests: XCTestCase {
             var calls = 0
             let coordinator = CompanionPairingCoordinator(
                 channel: channel, stream: channel.stream, tvName: "Living Room", api: api, deviceModel: "iPhone",
-                availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", profileId: nil, lastUsedAt: Date())] },
+                availableServers: { [ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date())] },
                 accessToken: { _ in calls += 1; return calls == 1 ? .token("token") : failure },
-                serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil })
+                serverEndpoints: { _, _ in nil }, accountName: { _, _ in nil },
+            accounts: { [.inUse(on: $0)] }, activeServerId: { nil })
             coordinator.start()
             channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
             await expectEventually("picker") {
-                if case .pickServers = coordinator.state { return true }
+                if case .pickAccounts = coordinator.state { return true }
                 return false
             }
-            guard case let .pickServers(_, servers) = coordinator.state else { return XCTFail() }
-            await coordinator.pushSelected(servers)
+            guard case let .pickAccounts(_, sections) = coordinator.state else { return XCTFail() }
+            let servers = sections.map(\.server)
+            await coordinator.pushSelected(inUse(servers))
             channel.deliver(.deviceStarted(serverURL: servers[0].url, userCode: "USER-1", matchCode: "ABCD"))
             await expectEventually("confirm") {
                 if case .confirmMatch = coordinator.state { return true }
@@ -1629,11 +1671,648 @@ final class TVSignInPairingTests: XCTestCase {
             }
             await coordinator.confirmMatch()
             await expectEventually("\(failure)") {
-                if case .error(let message) = coordinator.state { return message == expected }
+                if case .finished(_, let bad) = coordinator.state { return bad.first?.summary == "Home: \(expected)" }
                 return false
             }
             XCTAssertEqual(api.approveAttempts, 0)
         }
+    }
+}
+
+// MARK: - Several servers and accounts (contract §B–C)
+
+private func option(_ server: ServerEntry, _ id: String, _ name: String,
+                    inUse: Bool = false, needsSignIn: Bool = false) -> CompanionAccountOption {
+    CompanionAccountOption(serverId: server.id, localAccountId: id, username: name,
+                           needsSignIn: needsSignIn, isInUse: inUse)
+}
+
+private func approvedPoll(accountID: String, username: String) -> APIv2DevicePoll {
+    devicePoll("approved", tokens: APIv2LoginTokens(
+        accessToken: "ACCESS-\(accountID)", refreshToken: "REFRESH", expiresIn: 3600,
+        user: APIv2Account(id: accountID, username: username, email: "\(username)@example.test",
+            role: .user, permissions: [], downloadAllowed: true, impersonation: nil)
+    ))
+}
+
+/// The chooser's rules on their own: default selection, how many accounts
+/// each kind of TV takes, `lim`, and sending order.
+@MainActor
+final class CompanionAccountChooserTests: XCTestCase {
+    private let home = entry("a", name: "Home")
+    private let lake = entry("b", name: "Lake House")
+    private let work = entry("c", name: "Work")
+
+    private var sections: [CompanionServerSection] {
+        [
+            CompanionServerSection(server: home, accounts: [option(home, "alex", "alex", inUse: true), option(home, "sam", "sam")]),
+            CompanionServerSection(server: lake, accounts: [option(lake, "alex-2", "alex", inUse: true)]),
+            CompanionServerSection(server: work, accounts: [option(work, "wkim", "wkim", inUse: true, needsSignIn: true)]),
+        ]
+    }
+
+    private func choice(_ server: ServerEntry, _ id: String) -> CompanionAccountChoice {
+        CompanionAccountChoice(serverId: server.id, localAccountId: id)
+    }
+
+    /// Only the account in use on the active server starts ticked; none when
+    /// that account must sign in again.
+    func testDefaultSelectionIsTheAccountInUseOnTheActiveServer() {
+        XCTAssertEqual(CompanionAccountChooser.defaultSelection(sections, activeServerId: "a"), [choice(home, "alex")])
+        XCTAssertEqual(CompanionAccountChooser.defaultSelection(sections, activeServerId: "b"), [choice(lake, "alex-2")])
+        XCTAssertEqual(CompanionAccountChooser.defaultSelection(sections, activeServerId: "c"), [])
+        XCTAssertEqual(CompanionAccountChooser.defaultSelection(sections, activeServerId: nil), [])
+    }
+
+    /// `acct=1` takes any accounts; without it one per server; an older Roku
+    /// one in all. An account that must sign in again can't be ticked.
+    func testHowManyAccountsEachTVTakes() {
+        let all = sections.flatMap(\.accounts)
+        let sam = all[1], lakeAlex = all[2], wkim = all[3]
+        let start: Set = [choice(home, "alex")]
+
+        let several = CompanionAccountChooser(isRoku: false, acceptsSeveralAccounts: true)
+        XCTAssertEqual(several.mode, .several)
+        XCTAssertEqual(several.toggling(sam, in: start), [choice(home, "alex"), choice(home, "sam")])
+
+        let perServer = CompanionAccountChooser(isRoku: false, acceptsSeveralAccounts: false)
+        XCTAssertEqual(perServer.mode, .onePerServer)
+        XCTAssertEqual(perServer.toggling(sam, in: start), [choice(home, "sam")])
+        XCTAssertEqual(perServer.toggling(lakeAlex, in: start), [choice(home, "alex"), choice(lake, "alex-2")])
+
+        let oldRoku = CompanionAccountChooser(isRoku: true, acceptsSeveralAccounts: false)
+        XCTAssertEqual(oldRoku.mode, .one)
+        XCTAssertEqual(oldRoku.toggling(lakeAlex, in: start), [choice(lake, "alex-2")])
+        XCTAssertEqual(CompanionAccountChooser(isRoku: true, acceptsSeveralAccounts: true).mode, .several)
+
+        XCTAssertEqual(several.unavailable(wkim, in: start), .needsSignIn)
+        XCTAssertEqual(several.toggling(wkim, in: start), start)
+        XCTAssertEqual(several.toggling(all[0], in: start), [], "tapping a ticked row clears it")
+    }
+
+    /// `lim` disables further rows once reached, with the reason; clearing
+    /// one frees a place, and swapping within a server stays allowed.
+    func testLimitDisablesFurtherRows() {
+        let all = sections.flatMap(\.accounts)
+        let limited = CompanionAccountChooser(isRoku: true, acceptsSeveralAccounts: true, limit: 2)
+        let full: Set = [choice(home, "alex"), choice(home, "sam")]
+        XCTAssertEqual(limited.unavailable(all[2], in: full), .limitReached(2))
+        XCTAssertEqual(limited.toggling(all[2], in: full), full)
+        XCTAssertNil(limited.unavailable(all[0], in: full), "a ticked row can still be cleared")
+        XCTAssertNil(limited.unavailable(all[2], in: [choice(home, "alex")]))
+
+        let onePerServer = CompanionAccountChooser(isRoku: false, acceptsSeveralAccounts: false, limit: 1)
+        XCTAssertNil(onePerServer.unavailable(all[1], in: [choice(home, "alex")]), "a swap adds nothing")
+        XCTAssertEqual(CompanionAccountChooser(isRoku: true, acceptsSeveralAccounts: true, limit: 0).limit, nil)
+    }
+
+    /// The phone's active account goes first, then list order, trimmed to
+    /// what the TV takes. Accounts that must sign in again never go.
+    func testSendingOrderLeadsWithTheActiveAccount() {
+        let selection: Set = [choice(home, "sam"), choice(lake, "alex-2"), choice(home, "alex"), choice(work, "wkim")]
+        func order(_ chooser: CompanionAccountChooser, active: String?) -> [String] {
+            chooser.sendingOrder(selection, in: sections, activeServerId: active).map { "\($0.server.id)/\($0.account.username ?? "")" }
+        }
+        let several = CompanionAccountChooser(isRoku: false, acceptsSeveralAccounts: true)
+        XCTAssertEqual(order(several, active: "b"), ["b/alex", "a/alex", "a/sam"])
+        XCTAssertEqual(order(several, active: "a"), ["a/alex", "a/sam", "b/alex"])
+        XCTAssertEqual(order(CompanionAccountChooser(isRoku: false, acceptsSeveralAccounts: false), active: "b"), ["b/alex", "a/alex"])
+        XCTAssertEqual(order(CompanionAccountChooser(isRoku: true, acceptsSeveralAccounts: false), active: "b"), ["b/alex"])
+        XCTAssertEqual(order(CompanionAccountChooser(isRoku: true, acceptsSeveralAccounts: true, limit: 2), active: "a"), ["a/alex", "a/sam"])
+    }
+
+    /// The summary names each server once with its accounts.
+    func testSummaryGroupsAccountsByServer() {
+        typealias Target = CompanionPairingCoordinator.PairingTarget
+        let lines = CompanionPairingCoordinator.summaryLines([
+            Target(server: home, localAccountId: "alex", username: "alex"),
+            Target(server: lake, localAccountId: "alex-2", username: "alex"),
+            Target(server: home, localAccountId: "sam", username: "sam"),
+            Target(server: work),
+        ])
+        XCTAssertEqual(lines, ["Home — alex, sam", "Lake House — alex", "Work"])
+        XCTAssertEqual(CompanionPairingCard.continueTitle(count: 3), "Continue — 3 accounts")
+        XCTAssertEqual(CompanionPairingCard.continueTitle(count: 1), "Continue — 1 account")
+    }
+}
+
+@MainActor
+final class CompanionMultiAccountTests: XCTestCase {
+    private let home = entry("a", name: "Home")
+    private let cabin = entry("b", name: "Cabin")
+    private let lake = entry("c", name: "Lake")
+
+    private func makeCoordinator(
+        channel: FakePairingChannel,
+        api: FakePairingAPI,
+        servers: [ServerEntry],
+        accounts: [String: [CompanionAccountOption]],
+        isRoku: Bool = false,
+        acceptsSeveralAccounts: Bool = true,
+        accountLimit: Int? = nil
+    ) -> CompanionPairingCoordinator {
+        let coordinator = CompanionPairingCoordinator(
+            channel: channel, stream: channel.stream, tvName: "Living Room",
+            isRoku: isRoku, acceptsSeveralAccounts: acceptsSeveralAccounts, accountLimit: accountLimit,
+            api: api, deviceModel: "iPhone",
+            availableServers: { servers },
+            accessToken: { _ in XCTFail("every target names its account"); return .token("token") },
+            serverEndpoints: { _, _ in nil },
+            accountName: { _, _ in nil },
+            accounts: { accounts[$0.id] ?? [] },
+            accountAccessToken: { _, localAccountId in .token("bearer-\(localAccountId)") },
+            activeServerId: { "a" }
+        )
+        coordinator.start()
+        return coordinator
+    }
+
+    private func pushes(_ channel: FakePairingChannel) -> [(url: String, account: String?)] {
+        channel.sent.compactMap {
+            if case let .pushServer(url, _, _, _, account) = $0 { return (url, account) }
+            return nil
+        }
+    }
+
+    private func openChooser(_ channel: FakePairingChannel, _ coordinator: CompanionPairingCoordinator) async {
+        channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .setup, supportedVersions: [PairingProtocol.version]))
+        await expectEventually("chooser") {
+            if case .pickAccounts = coordinator.state { return true }
+            return false
+        }
+    }
+
+    private func waitForPush(_ count: Int, _ channel: FakePairingChannel) async {
+        await expectEventually("push \(count)") { pushes(channel).count == count }
+    }
+
+    private func waitForConfirm(_ coordinator: CompanionPairingCoordinator) async {
+        await expectEventually("comparison") {
+            if case .confirmMatch = coordinator.state { return true }
+            return false
+        }
+    }
+
+    /// Two accounts on one server: the active one goes first, each push names
+    /// its account, each approval uses that account's bearer, a later target
+    /// without a binding is compared on its own (naming it), and the summary
+    /// groups them under the server.
+    func testEachAccountIsSentNamedAndApprovedWithItsOwnBearer() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        let coordinator = makeCoordinator(channel: channel, api: api, servers: [home],
+            accounts: ["a": [option(home, "alex", "alex", inUse: true), option(home, "sam", "sam")]])
+        await openChooser(channel, coordinator)
+        XCTAssertEqual(coordinator.defaultSelection, [CompanionAccountChoice(serverId: "a", localAccountId: "alex")],
+                       "only the account in use starts ticked")
+
+        await coordinator.pushSelected([CompanionAccountChoice(serverId: "a", localAccountId: "sam"),
+                                        CompanionAccountChoice(serverId: "a", localAccountId: "alex")])
+        await waitForPush(1, channel)
+        XCTAssertEqual(pushes(channel).first?.account, "alex")
+        channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-1", matchCode: "ABCD"))
+        await expectEventually("first comparison") {
+            coordinator.state == .confirmMatch(tvName: "Living Room", serverName: "Home", serverHost: "a.example",
+                                               accountName: "alex", code: "USER-1", matchWords: "ABCD", step: "1 of 2")
+        }
+        await coordinator.confirmMatch()
+        channel.deliver(.serverResult(serverURL: home.url, status: .signedIn, error: nil))
+
+        await waitForPush(2, channel)
+        XCTAssertEqual(pushes(channel).last?.account, "sam")
+        channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-2", matchCode: "ABCD"))
+        await expectEventually("second comparison, naming sam") {
+            coordinator.state == .confirmMatch(tvName: "Living Room", serverName: "Home", serverHost: "a.example",
+                                               accountName: "sam", code: "USER-2", matchWords: "ABCD", step: "2 of 2")
+        }
+        await coordinator.confirmMatch()
+        channel.deliver(.serverResult(serverURL: home.url, status: .signedIn, error: nil))
+
+        await expectEventually("summary") {
+            coordinator.state == .finished(signedIn: ["Home — alex, sam"], failed: [])
+        }
+        XCTAssertEqual(api.lookupBearers, ["bearer-alex", "bearer-sam"])
+        XCTAssertEqual(api.approveBearers, ["bearer-alex", "bearer-sam"])
+        XCTAssertEqual(channel.lastSent, .done)
+    }
+
+    /// The compared request's binding approves a later request showing it
+    /// without asking again; another binding is refused, recorded, and the
+    /// session goes on to the next target.
+    func testBindingSkipsTheComparisonAndRefusesAnotherSession() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.lookupBindings = ["B1", "B2", "B1"]
+        let coordinator = makeCoordinator(channel: channel, api: api, servers: [home, cabin, lake], accounts: [
+            "a": [option(home, "alex", "alex", inUse: true)],
+            "b": [option(cabin, "alex-b", "alex", inUse: true)],
+            "c": [option(lake, "alex-c", "alex", inUse: true)],
+        ])
+        await openChooser(channel, coordinator)
+        await coordinator.pushSelected([CompanionAccountChoice(serverId: "a", localAccountId: "alex"),
+                                        CompanionAccountChoice(serverId: "b", localAccountId: "alex-b"),
+                                        CompanionAccountChoice(serverId: "c", localAccountId: "alex-c")])
+        await waitForPush(1, channel)
+        channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-1", matchCode: "ABCD"))
+        await waitForConfirm(coordinator)
+        await coordinator.confirmMatch()
+        channel.deliver(.serverResult(serverURL: home.url, status: .signedIn, error: nil))
+
+        // Cabin's request carries another session's binding.
+        await waitForPush(2, channel)
+        channel.deliver(.deviceStarted(serverURL: cabin.url, userCode: "USER-2", matchCode: "ABCD"))
+        await waitForPush(3, channel)
+        XCTAssertEqual(api.approvedCodes, ["USER-1"], "a request bound to another session is never approved")
+
+        // Lake's request carries the compared binding: approved, no comparison.
+        channel.deliver(.deviceStarted(serverURL: lake.url, userCode: "USER-3", matchCode: "ABCD"))
+        await expectEventually("approved without asking") { api.approvedCodes == ["USER-1", "USER-3"] }
+        if case .confirmMatch = coordinator.state { XCTFail("must not ask to compare a trusted binding") }
+        channel.deliver(.serverResult(serverURL: lake.url, status: .signedIn, error: nil))
+
+        await expectEventually("summary") {
+            if case .finished(let ok, let bad) = coordinator.state {
+                return ok == ["Home — alex", "Lake — alex"] && bad.map(\.name) == ["Cabin — alex"] && bad.map(\.code) == [.authFailed]
+            }
+            return false
+        }
+        XCTAssertEqual(channel.lastSent, .done)
+    }
+
+    /// A first server without binding gives nothing to trust: the next
+    /// request is compared too, and its binding is trusted once confirmed.
+    func testWithoutAFirstBindingTheNextRequestIsComparedAndTrusted() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.lookupBindings = [nil, "B1", "B1"]
+        let coordinator = makeCoordinator(channel: channel, api: api, servers: [home, cabin, lake], accounts: [
+            "a": [option(home, "alex", "alex", inUse: true)],
+            "b": [option(cabin, "alex-b", "alex", inUse: true)],
+            "c": [option(lake, "alex-c", "alex", inUse: true)],
+        ])
+        await openChooser(channel, coordinator)
+        await coordinator.pushSelected([CompanionAccountChoice(serverId: "a", localAccountId: "alex"),
+                                        CompanionAccountChoice(serverId: "b", localAccountId: "alex-b"),
+                                        CompanionAccountChoice(serverId: "c", localAccountId: "alex-c")])
+        for (index, server) in [home, cabin].enumerated() {
+            await waitForPush(index + 1, channel)
+            channel.deliver(.deviceStarted(serverURL: server.url, userCode: "USER-\(index + 1)", matchCode: "ABCD"))
+            await waitForConfirm(coordinator)
+            await coordinator.confirmMatch()
+            channel.deliver(.serverResult(serverURL: server.url, status: .signedIn, error: nil))
+        }
+        await waitForPush(3, channel)
+        channel.deliver(.deviceStarted(serverURL: lake.url, userCode: "USER-3", matchCode: "ABCD"))
+        await expectEventually("third approved without asking") { api.approvedCodes == ["USER-1", "USER-2", "USER-3"] }
+        channel.deliver(.serverResult(serverURL: lake.url, status: .signedIn, error: nil))
+        await expectEventually("summary") {
+            coordinator.state == .finished(signedIn: ["Home — alex", "Cabin — alex", "Lake — alex"], failed: [])
+        }
+    }
+
+    /// A refused approval fails its target with the phone's reason; the
+    /// next target still goes, and the session ends with `done`. A TV's
+    /// `limit_reached` reads as its own failure.
+    func testAFailedTargetNeverEndsTheSession() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.approveErrors = [APIv2Error.problem(problem(410, "device_login_expired")), nil]
+        let coordinator = makeCoordinator(channel: channel, api: api, servers: [home, cabin, lake], accounts: [
+            "a": [option(home, "alex", "alex", inUse: true)],
+            "b": [option(cabin, "alex-b", "alex", inUse: true)],
+            "c": [option(lake, "alex-c", "alex", inUse: true)],
+        ])
+        await openChooser(channel, coordinator)
+        await coordinator.pushSelected([CompanionAccountChoice(serverId: "a", localAccountId: "alex"),
+                                        CompanionAccountChoice(serverId: "b", localAccountId: "alex-b"),
+                                        CompanionAccountChoice(serverId: "c", localAccountId: "alex-c")])
+        await waitForPush(1, channel)
+        channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-1", matchCode: "ABCD"))
+        await waitForConfirm(coordinator)
+        await coordinator.confirmMatch()
+
+        await waitForPush(2, channel)
+        channel.deliver(.serverResult(serverURL: cabin.url, status: .failed, error: "limit_reached"))
+
+        await waitForPush(3, channel)
+        channel.deliver(.deviceStarted(serverURL: lake.url, userCode: "USER-3", matchCode: "ABCD"))
+        await waitForConfirm(coordinator)
+        await coordinator.confirmMatch()
+        channel.deliver(.serverResult(serverURL: lake.url, status: .signedIn, error: nil))
+
+        await expectEventually("summary") {
+            if case .finished(let ok, let bad) = coordinator.state {
+                return ok == ["Lake — alex"] && bad.map(\.code) == [.authFailed, .limitReached]
+            }
+            return false
+        }
+        if case .finished(_, let bad) = coordinator.state {
+            XCTAssertTrue(bad[0].summary.hasPrefix("Home — alex: The code expired before it was approved"))
+            XCTAssertEqual(bad[1].summary, "Cabin — alex: the TV can't keep any more accounts.")
+        }
+        XCTAssertEqual(channel.lastSent, .done)
+        XCTAssertFalse(channel.sent.contains(.cancel(reason: "approve_failed")))
+    }
+
+    /// An approval whose answer was lost (transport error, 5xx) or that
+    /// conflicts with one already made (409) may have gone through, so the
+    /// session ends instead of moving on: the TV's late result could
+    /// otherwise be credited to the next account on the same server. The
+    /// message keeps the earlier sign-in.
+    func testAnUnknownApprovalOutcomeEndsTheSession() async {
+        let errors: [Error] = [URLError(.timedOut), APIv2Error.httpStatus(503), APIv2Error.problem(problem(500, "internal")),
+                               APIv2Error.problem(problem(409, "conflict"))]
+        for error in errors {
+            let channel = FakePairingChannel()
+            let api = FakePairingAPI()
+            api.approveErrors = [nil, error]
+            let coordinator = makeCoordinator(channel: channel, api: api, servers: [home],
+                accounts: ["a": [option(home, "alex", "alex", inUse: true), option(home, "sam", "sam")]])
+            await openChooser(channel, coordinator)
+            await coordinator.pushSelected([CompanionAccountChoice(serverId: "a", localAccountId: "alex"),
+                                            CompanionAccountChoice(serverId: "a", localAccountId: "sam")])
+            await waitForPush(1, channel)
+            channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-1", matchCode: "ABCD"))
+            await waitForConfirm(coordinator)
+            await coordinator.confirmMatch()
+            channel.deliver(.serverResult(serverURL: home.url, status: .signedIn, error: nil))
+            await waitForPush(2, channel)
+            channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-2", matchCode: "ABCD"))
+            await waitForConfirm(coordinator)
+            await coordinator.confirmMatch()
+
+            await expectEventually("session ended for \(error)") {
+                if case .error(let message) = coordinator.state {
+                    return message.hasSuffix("Accounts already signed in stay on the TV.")
+                }
+                return false
+            }
+            XCTAssertEqual(channel.lastSent, .cancel(reason: "approve_failed"))
+            XCTAssertEqual(api.approveAttempts, 2, "the approval is never re-sent")
+            XCTAssertEqual(pushes(channel).count, 2)
+        }
+    }
+
+    /// A result naming another server is late or stray: it is ignored, not
+    /// credited to the current target.
+    func testAResultForAnotherServerIsIgnored() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        let coordinator = makeCoordinator(channel: channel, api: api, servers: [home, cabin], accounts: [
+            "a": [option(home, "alex", "alex", inUse: true)],
+            "b": [option(cabin, "alex-b", "alex", inUse: true)],
+        ])
+        await openChooser(channel, coordinator)
+        await coordinator.pushSelected([CompanionAccountChoice(serverId: "a", localAccountId: "alex"),
+                                        CompanionAccountChoice(serverId: "b", localAccountId: "alex-b")])
+        await waitForPush(1, channel)
+        channel.deliver(.serverResult(serverURL: cabin.url, status: .signedIn, error: nil))
+        channel.deliver(.serverResult(serverURL: home.url + "/", status: .failed, error: "denied"))
+        await waitForPush(2, channel)
+        // Home's result again, now stray while Cabin is current.
+        channel.deliver(.serverResult(serverURL: home.url, status: .signedIn, error: nil))
+        channel.deliver(.serverResult(serverURL: cabin.url, status: .failed, error: "expired"))
+        await expectEventually("summary") {
+            if case .finished(let ok, let bad) = coordinator.state {
+                return ok.isEmpty && bad.map(\.name) == ["Home — alex", "Cabin — alex"] && bad.map(\.code) == [.denied, .expired]
+            }
+            return false
+        }
+    }
+
+    /// Declining a later comparison stops setup and says the accounts
+    /// already signed in stay; declining the first keeps the old wording.
+    func testDecliningAComparisonSaysWhatStays() async {
+        for later in [false, true] {
+            let channel = FakePairingChannel()
+            let api = FakePairingAPI()
+            let coordinator = makeCoordinator(channel: channel, api: api, servers: [home, cabin], accounts: [
+                "a": [option(home, "alex", "alex", inUse: true)],
+                "b": [option(cabin, "alex-b", "alex", inUse: true)],
+            ])
+            await openChooser(channel, coordinator)
+            await coordinator.pushSelected([CompanionAccountChoice(serverId: "a", localAccountId: "alex"),
+                                            CompanionAccountChoice(serverId: "b", localAccountId: "alex-b")])
+            await waitForPush(1, channel)
+            channel.deliver(.deviceStarted(serverURL: home.url, userCode: "USER-1", matchCode: "ABCD"))
+            await waitForConfirm(coordinator)
+            if later {
+                await coordinator.confirmMatch()
+                channel.deliver(.serverResult(serverURL: home.url, status: .signedIn, error: nil))
+                await waitForPush(2, channel)
+                channel.deliver(.deviceStarted(serverURL: cabin.url, userCode: "USER-2", matchCode: "ABCD"))
+                await expectEventually("second comparison") {
+                    if case .confirmMatch(_, "Cabin", _, _, _, _, _) = coordinator.state { return true }
+                    return false
+                }
+            }
+            await coordinator.declineMatch()
+            XCTAssertEqual(coordinator.state, .error(later
+                ? "The codes didn’t match, so setup stopped. Accounts already signed in stay on the TV."
+                : "The codes didn’t match, so setup was cancelled."))
+            XCTAssertEqual(channel.lastSent, .cancel(reason: "match_declined"))
+        }
+    }
+
+    /// A Roku that advertises `acct=1` and `lim=2` gets at most two
+    /// accounts, whatever the chooser handed over.
+    func testARokuLimitCapsTheTargets() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        let coordinator = makeCoordinator(channel: channel, api: api, servers: [home, cabin], accounts: [
+            "a": [option(home, "alex", "alex", inUse: true), option(home, "sam", "sam")],
+            "b": [option(cabin, "alex-b", "alex", inUse: true)],
+        ], isRoku: true, acceptsSeveralAccounts: true, accountLimit: 2)
+        await openChooser(channel, coordinator)
+        await coordinator.pushSelected([CompanionAccountChoice(serverId: "a", localAccountId: "alex"),
+                                        CompanionAccountChoice(serverId: "a", localAccountId: "sam"),
+                                        CompanionAccountChoice(serverId: "b", localAccountId: "alex-b")])
+        await waitForPush(1, channel)
+        channel.deliver(.serverResult(serverURL: home.url, status: .failed, error: nil))
+        await waitForPush(2, channel)
+        channel.deliver(.serverResult(serverURL: home.url, status: .failed, error: nil))
+        await expectEventually("finished after two") {
+            if case .finished(_, let bad) = coordinator.state { return bad.count == 2 }
+            return false
+        }
+        XCTAssertEqual(pushes(channel).map(\.account), ["alex", "sam"])
+    }
+
+    /// A sign-in TV is sent the account chosen on the card: its push names
+    /// it, and that account's bearer looks the code up and approves it.
+    func testASignInTVIsSignedInAsTheChosenAccount() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        let server = ServerEntry(id: "a", url: "https://a.example", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "srv-1")
+        let coordinator = CompanionPairingCoordinator(
+            channel: channel, stream: channel.stream, tvName: "Living Room", fixedServer: server,
+            fixedAccount: option(server, "sam", "sam"), api: api, deviceModel: "iPhone",
+            availableServers: { XCTFail("no chooser for a sign-in TV"); return [] },
+            accessToken: { _ in XCTFail("the chosen account approves"); return .token("token") },
+            serverEndpoints: { _, _ in nil }, accountName: { _, _ in "sam" },
+            accounts: { _ in [] },
+            accountAccessToken: { _, localAccountId in .token("bearer-\(localAccountId)") })
+        coordinator.start()
+        channel.deliver(.hello(tvName: "Living Room", tvDeviceId: "tv-1", state: .login, supportedVersions: [PairingProtocol.version]))
+        await waitForPush(1, channel)
+        XCTAssertEqual(pushes(channel).first?.account, "sam")
+        channel.deliver(.deviceStarted(serverURL: server.url, userCode: "USER-1", matchCode: "ABCD"))
+        await waitForConfirm(coordinator)
+        await coordinator.confirmMatch()
+        XCTAssertEqual(api.approveBearers, ["bearer-sam"])
+        await coordinator.cancel()
+    }
+}
+
+/// The TV side: the session binding, the code for every push, and which
+/// accounts a session signed in.
+@MainActor
+final class ReceiverMultiAccountTests: XCTestCase {
+    private nonisolated static let binding = PairingSessionBinding(secretBytes: Data(0..<32))
+
+    private func makeCoordinator(api: FakePairingAPI, saved: @escaping (ReceiverPairingCoordinator.PersistedPairing) -> Void = { _ in })
+        -> ReceiverPairingCoordinator {
+        ReceiverPairingCoordinator(api: api, makeBinding: { Self.binding }, identityProbe: { _ in .unreachable }) { pairing in
+            saved(pairing)
+            return committed(pairing)
+        }
+    }
+
+    private func push(_ channel: FakePairingChannel, account: String?) {
+        channel.deliver(.pushServer(serverURL: "https://home.example", serverName: "Home", accountName: account))
+    }
+
+    /// A server that supports binding gets the session's binding on start
+    /// and its secret on every poll; the same secret for each push. The
+    /// second bound request reads as approved automatically, and every push
+    /// shows its own code and the account the phone named.
+    func testBindingGoesOnlyToServersThatSupportIt() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.supportsBinding = true
+        api.pollResults = [.success(pendingPoll), .success(approvedPoll(accountID: "u-alex", username: "alex"))]
+        let coordinator = makeCoordinator(api: api)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+
+        push(channel, account: "alex")
+        await expectEventually("consent naming the account") {
+            coordinator.state == .consentRequested(serverName: "Home", accountName: "alex")
+        }
+        coordinator.allowPendingServer()
+        await expectEventually("first code") {
+            coordinator.state == .awaitingApproval(serverName: "Home", accountName: "alex", code: "USER-1",
+                                                   matchWords: "ABCD", automatic: false)
+        }
+        await expectEventually("first sign-in") { coordinator.committedAccounts.count == 1 }
+
+        api.pollResults = [.success(pendingPoll), .success(approvedPoll(accountID: "u-sam", username: "sam"))]
+        push(channel, account: "sam")
+        await expectEventually("second code, approved by the binding") {
+            coordinator.state == .awaitingApproval(serverName: "Home", accountName: "sam", code: "USER-1",
+                                                   matchWords: "ABCD", automatic: true)
+        }
+        await expectEventually("second sign-in") { coordinator.committedAccounts.count == 2 }
+        XCTAssertEqual(api.startBindings, [Self.binding.binding, Self.binding.binding])
+        XCTAssertFalse(api.pollSecrets.isEmpty)
+        XCTAssertTrue(api.pollSecrets.allSatisfy { $0 == Self.binding.secret })
+
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    /// Without `session_binding` the TV sends neither value, and a later push
+    /// asks the person to compare its code (the phone has no binding to
+    /// trust).
+    func testNoBindingForServersWithoutIt() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.pollResponse = approvedPoll
+        let coordinator = makeCoordinator(api: api)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+        push(channel, account: nil)
+        await expectEventually("consent") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+        await expectEventually("first sign-in") { coordinator.committedAccounts.count == 1 }
+        api.pollResponse = pendingPoll
+        push(channel, account: "sam")
+        await expectEventually("second code, compared") {
+            if case let .awaitingApproval(_, account, _, _, automatic) = coordinator.state { return account == "sam" && !automatic }
+            return false
+        }
+        XCTAssertEqual(api.startBindings, [nil, nil])
+        XCTAssertTrue(api.pollSecrets.allSatisfy { $0 == nil })
+        await coordinator.cancel()
+        await runTask.value
+    }
+
+    /// A plain-HTTP server gets neither the binding nor its secret, even when
+    /// its capability says `session_binding`: an on-path attacker could read
+    /// the secret there.
+    func testNoBindingForPlainHTTPServers() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        api.supportsBinding = true
+        api.pollResponse = approvedPoll
+        let coordinator = makeCoordinator(api: api)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+        channel.deliver(.pushServer(serverURL: "http://home.example", serverName: "Home", accountName: "alex"))
+        await expectEventually("consent") {
+            if case .consentRequested = coordinator.state { return true }
+            return false
+        }
+        coordinator.allowPendingServer()
+        await expectEventually("sign-in") { coordinator.committedAccounts.count == 1 }
+        XCTAssertEqual(api.startedServers, ["http://home.example"])
+        XCTAssertEqual(api.startBindings, [nil])
+        XCTAssertFalse(api.pollSecrets.isEmpty)
+        XCTAssertTrue(api.pollSecrets.allSatisfy { $0 == nil })
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    /// The same account twice is one account; distinct accounts keep the
+    /// order they signed in.
+    func testCommittedAccountsAreDistinctAndInOrder() async {
+        let channel = FakePairingChannel()
+        let api = FakePairingAPI()
+        let coordinator = makeCoordinator(api: api)
+        let runTask = Task { await coordinator.run(session: channel, stream: channel.stream) }
+        let users = [("u-alex", "alex"), ("u-sam", "sam"), ("u-alex", "alex")]
+        for (index, user) in users.enumerated() {
+            api.pollResponse = approvedPoll(accountID: user.0, username: user.1)
+            push(channel, account: user.1)
+            if index == 0 {
+                await expectEventually("consent") {
+                    if case .consentRequested = coordinator.state { return true }
+                    return false
+                }
+                coordinator.allowPendingServer()
+            }
+            await expectEventually("sign-in \(index + 1)") {
+                channel.sent.filter { if case .serverResult(_, .signedIn, _) = $0 { return true } else { return false } }.count == index + 1
+            }
+        }
+        let serverId = ServerRegistry.serverId(for: "https://home.example")
+        XCTAssertEqual(coordinator.committedAccounts, [
+            .init(serverId: serverId, localAccountId: "u-alex"),
+            .init(serverId: serverId, localAccountId: "u-sam"),
+        ])
+        channel.deliver(.done)
+        await runTask.value
+    }
+
+    /// Contract §B.7: one account opens its picker; several open Change
+    /// Account on the first one; none leaves things as they are.
+    func testSessionEndRule() {
+        let alex = ReceiverPairingCoordinator.CommittedAccount(serverId: "home", localAccountId: "alex")
+        let sam = ReceiverPairingCoordinator.CommittedAccount(serverId: "lake", localAccountId: "sam")
+        XCTAssertEqual(PairingSessionEnd(committed: []), .nothingSignedIn)
+        XCTAssertEqual(PairingSessionEnd(committed: [alex]), .openPicker(alex))
+        XCTAssertEqual(PairingSessionEnd(committed: [alex, alex]), .openPicker(alex))
+        XCTAssertEqual(PairingSessionEnd(committed: [sam, alex]), .changeAccount(first: sam))
     }
 }
 

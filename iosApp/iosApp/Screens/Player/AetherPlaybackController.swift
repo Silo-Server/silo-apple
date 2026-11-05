@@ -573,6 +573,12 @@ final class AetherPlaybackController {
         engine.videoRoute == .none && !engine.isSessionReady
     }
 
+    /// Records a Play for the replacement load a replan is about to start,
+    /// without resuming the outgoing transport at its old position.
+    func playWhenReplacementLoads() {
+        shouldPlayWhenReady = true
+    }
+
     func pause() {
         shouldPlayWhenReady = false
         transportIntentGeneration &+= 1

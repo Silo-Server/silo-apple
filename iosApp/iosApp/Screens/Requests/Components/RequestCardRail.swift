@@ -39,6 +39,7 @@ struct RequestCardRail<Item: Identifiable, Card: View>: View {
             #else
             .scrollTargetLayout()
             .phoneMediaRailBounds()
+            .mouseDragScrolling()
             #endif
         }
         .mediaRailScrolling()

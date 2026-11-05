@@ -273,6 +273,28 @@ struct SubtitleAutoResolver {
         return tracks.contains { ($0.title ?? $0.embeddedTitle)?.localizedCaseInsensitiveContains(label) == true }
     }
 
+    /// Whether a saved pick names a track at all: a language, or a title to
+    /// find it by. For a file whose subtitle list isn't known yet.
+    static func savedPickNamesATrack(_ signature: SubtitleTrackSignature?) -> Bool {
+        guard let signature else { return false }
+        return !(signature.language ?? "").isEmpty || !(signature.label ?? "").isEmpty
+    }
+
+    /// `savedPickApplies` against the tracks a player found in its file, for
+    /// a download, whose list is known only once it is probed.
+    static func savedPickApplies(_ signature: SubtitleTrackSignature?, toPlayerTracks tracks: [PlayerTrack]) -> Bool {
+        guard let signature else { return false }
+        let tracks = tracks.filter { !$0.hasUnsupportedFormat }
+        if let language = signature.language, !language.isEmpty {
+            return tracks.contains { track in
+                guard let trackLanguage = track.lang, !trackLanguage.isEmpty else { return false }
+                return languagesMatch(trackLanguage, language)
+            }
+        }
+        guard let label = signature.label, !label.isEmpty else { return false }
+        return tracks.contains { $0.title?.localizedCaseInsensitiveContains(label) == true }
+    }
+
     // MARK: - Matching helpers
 
     /// Score-based signature match. Higher score = better. Returns the

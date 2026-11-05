@@ -53,6 +53,17 @@ private struct MacSettingsSwitch: View {
             .animation(reduceMotion ? nil : .easeOut(duration: SiloTheme.fastDuration), value: isOn)
     }
 }
+
+/// Keeps ``MacSettingsToggleStyle`` out of menus. A menu builds the options
+/// of a picker inside it as toggles, and a custom toggle style cannot become
+/// a menu item: each item keeps its checkmark but loses its title, and the
+/// menu opens blank.
+private struct MacSettingsMenuStyle: MenuStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Menu(configuration)
+            .toggleStyle(.automatic)
+    }
+}
 #endif
 
 extension View {
@@ -67,6 +78,7 @@ extension View {
         siloGroupedListStyle()
             .formStyle(.grouped)
             .toggleStyle(MacSettingsToggleStyle())
+            .menuStyle(MacSettingsMenuStyle())
             .siloScrollContentBackgroundHidden()
             .frame(maxWidth: SiloTheme.macSettingsColumnWidth)
             .frame(maxWidth: .infinity)

@@ -326,8 +326,14 @@ actor ApplePushRegistrar {
     /// happen is turned back on while its stored session still works.
     /// `activeServerID` was just registered through the active session and
     /// is skipped. A cancelled pass stops between servers.
+    ///
+    /// Each server registers only the account its stored session uses, the
+    /// one last used there. When another account registered last, the
+    /// installation goes to that account's own last intent at the next
+    /// generation with the same key (`handoverOwner`).
     func registerSavedServers(_ body: APIv2ApplePushRegistrationBody, among serverIDs: [String],
                               skipping activeServerID: String?) async {
+        let routedServerID = await tokenStore.getActiveServerId()
         for serverID in serverIDs where serverID != activeServerID {
             guard !Task.isCancelled else { return }
             guard let record = try? journal.load(serverID: serverID), let latest = record.latest else { continue }
@@ -345,6 +351,10 @@ actor ApplePushRegistrar {
                 } else {
                     fallback = own
                 }
+            }
+            if owner.serverID == serverID, serverID != routedServerID,
+               let next = await handoverOwner(for: serverID, from: owner, in: record) {
+                owner = next
             }
             var result = await register(body, savedServer: owner)
             // The other address keeps its session, but the server refused
@@ -380,7 +390,16 @@ actor ApplePushRegistrar {
     /// its record with another address of the same deployment that
     /// registered last: that address holds the installation, and its pushes
     /// go on. It goes ahead of queued registrations.
-    func unregister(serverID: String, activeOwner: CapturedDurableAccountAuth?) async -> Result {
+    ///
+    /// `signingOut` names the one account leaving the server when its other
+    /// accounts stay. Nothing is sent when another account holds the
+    /// installation: that account was used there last and keeps its pushes.
+    /// When the leaving account holds it, the installation is retired as
+    /// for a removal, and the account then in use takes it back at the next
+    /// generation with the same key (`registerSavedServers`, or its own
+    /// registration once a profile is in use).
+    func unregister(serverID: String, activeOwner: CapturedDurableAccountAuth?,
+                    signingOut account: ApplePushSessionAccount? = nil) async -> Result {
         let activeIntentOwner = activeOwner.flatMap(ApplePushIntentOwner.init)
         let usesActiveSession = activeIntentOwner?.serverID == serverID
         // Fence before the first suspension, so neither a `restore` nor a
@@ -388,7 +407,9 @@ actor ApplePushRegistrar {
         // address's link and last owner are looked up.
         let teardown = UUID()
         teardowns[serverID] = teardown
-        if let owner = usesActiveSession ? activeIntentOwner : Self.ownLastOwner(of: serverID,
+        if let account {
+            departing[serverID] = (account.accountID, account.epoch)
+        } else if let owner = usesActiveSession ? activeIntentOwner : Self.ownLastOwner(of: serverID,
                in: try? journal.load(serverID: serverID)) {
             departing[serverID] = (owner.accountID, owner.accountEpoch)
         }
@@ -398,13 +419,18 @@ actor ApplePushRegistrar {
         let (ownLastOwner, heldElsewhere) = await lastOwner(of: serverID, in: record)
         // A `restore` or a new sign-in owns the server's pushes now.
         guard teardowns[serverID] == teardown else { return .unchanged }
-        if let owner = usesActiveSession ? activeIntentOwner : ownLastOwner {
+        if let account {
+            departing[serverID] = (account.accountID, account.epoch)
+        } else if let owner = usesActiveSession ? activeIntentOwner : ownLastOwner {
             departing[serverID] = (owner.accountID, owner.accountEpoch)
         }
         // The record is still the shared one: its key must not go to the
         // server this address reaches now.
         guard unlinked else { return .notSent(reason: Self.unlinkFailedReason) }
         guard let latest, !heldElsewhere else { return .unchanged }
+        // Another account on this server registered last and holds the
+        // installation; the leaving account has nothing here to turn off.
+        if let account, let holder = ownLastOwner, !holder.isAccount(of: account) { return .unchanged }
         if case .accepted(let registration) = latest.outcome, !registration.isActive { return .unchanged }
         // A server already retired by an earlier sign-out is retired again at
         // the same generation: its entry may be gone (a `restore` whose
@@ -724,7 +750,7 @@ actor ApplePushRegistrar {
             }
             target = ApplePushDisplayTarget(serverID: deploymentID, profileID: intentOwner.profileID,
                 registryServerID: serverID, serverURL: channel.serverURL, displayToken: token,
-                expiresAt: receipt.displayTokenExpiresAt)
+                expiresAt: receipt.displayTokenExpiresAt, localAccountID: intentOwner.localAccountID)
         }
         // The deployment holds one installation for this device, so another
         // address sharing this record no longer has a registration of its own.
@@ -857,10 +883,27 @@ actor ApplePushRegistrar {
         return theirs == mine
     }
 
+    /// The owner `serverID`'s installation goes to when `owner`'s account is
+    /// no longer the one its stored session uses: the last intent here of
+    /// the account that is, while that sign-in lasts. Nil when `owner` still
+    /// holds the session, or the account now in use never registered here;
+    /// that account registers once one of its profiles is in use.
+    ///
+    /// Not for the server requests are routed to: its profile proof follows
+    /// the selected profile, so an intent for another profile could be held
+    /// and keep the account's own registration waiting behind it.
+    private func handoverOwner(for serverID: String, from owner: ApplePushIntentOwner,
+                               in record: ApplePushInstallationRecord) async -> ApplePushIntentOwner? {
+        guard let session = await tokenStore.savedSessionAccount(for: serverID), !owner.holds(session),
+              let next = record.accountOwners?[session.localAccountID], next.serverID == serverID,
+              next.holds(session) else { return nil }
+        return next
+    }
+
     /// Whether `owner` still holds its saved server's stored session.
     private func holdsSavedSession(_ owner: ApplePushIntentOwner) async -> Bool {
         guard let account = await tokenStore.savedSessionAccount(for: owner.serverID) else { return false }
-        return account.accountID == owner.accountID && account.epoch == owner.accountEpoch
+        return owner.holds(account)
     }
 
     /// The other saved servers whose record is `serverID`'s.
@@ -924,9 +967,10 @@ actor ApplePushRegistrar {
             // The same key, from `command`'s generation: the turn keeps any
             // retirement from allocating past it, so the next one is above
             // everything this record has sent.
+            let stored = try? journal.load(serverID: serverID)
             let fresh = ApplePushInstallationRecord(installationKey: command.installationKey,
                 generation: command.generation, latest: nil,
-                owners: (try? journal.load(serverID: serverID))?.owners)
+                owners: stored?.owners, accountOwners: stored?.accountOwners)
             restarted = try ApplePushInstallationJournal.plan(fresh, desired: command.intent, renewDisplayToken: false)
         } catch {
             return .notSent(reason: "journal_\(error)")
@@ -938,7 +982,7 @@ actor ApplePushRegistrar {
 
     private func needsDisplayToken(owner: ApplePushIntentOwner, generation: Int64) -> Bool {
         if let target = displayTargets.target(registeredBy: owner.serverID), target.profileID == owner.profileID,
-           target.isCurrent(at: now()) {
+           target.localAccountID == owner.localAccountID, target.isCurrent(at: now()) {
             return false
         }
         return !isHeld(serverID: owner.serverID, generation: generation)
@@ -1243,7 +1287,11 @@ final class ApplePushRegistrationCoordinator {
     /// and, when the server lacks the retirement endpoint or does not
     /// answer, turns pushes off with its session while the credentials
     /// still exist.
-    func unregister(serverID: String) async {
+    ///
+    /// `signingOutActiveAccount` signs out only the account the server's
+    /// requests use, so the installation is left alone when another of its
+    /// accounts holds it (`ApplePushRegistrar.unregister(signingOut:)`).
+    func unregister(serverID: String, signingOutActiveAccount: Bool = false) async {
         // Turning a server off outranks keeping registrations current. The
         // running pass stops at its next request, no new one starts until
         // this ends, and the next pass sends whatever was left pending.
@@ -1251,13 +1299,23 @@ final class ApplePushRegistrationCoordinator {
         registrationPass?.cancel()
         let registrar = self.registrar
         let owner = await TokenStore.shared.captureDurableAccountAuth()
+        let account = signingOutActiveAccount ? await TokenStore.shared.savedSessionAccount(for: serverID) : nil
         await Self.waitAtMost(Self.unregisterDeadline) {
-            _ = await registrar.unregister(serverID: serverID, activeOwner: owner)
+            _ = await registrar.unregister(serverID: serverID, activeOwner: owner, signingOut: account)
         }
         teardowns -= 1
         if teardowns == 0, registrationRequested {
             Task { await registerCurrentDeviceTokenIfPossible() }
         }
+    }
+
+    /// The account requests on the active server use changed
+    /// (`TokenStore.switchActiveAccount`). The server's installation moves
+    /// to that account with the same key at the next generation, through
+    /// the active session once one of its profiles is in use, as after a
+    /// profile switch. This pass also keeps every other server current.
+    func activeAccountDidChange() async {
+        await registerCurrentDeviceTokenIfPossible()
     }
 
     /// Turns pushes back on for a server whose sign-out or removal failed

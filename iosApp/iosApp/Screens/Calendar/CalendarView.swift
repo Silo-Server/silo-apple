@@ -129,7 +129,6 @@ struct CalendarView: View {
                     onSwitchProfile: {
                         router.switchProfile()
                     },
-                    onSwitchServer: { router.navigate(to: .serverList) },
                     onSignOut: { router.signOutAndReset() }
                 )
             }

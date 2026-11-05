@@ -16,40 +16,48 @@ final class OnboardingTourGateModel {
 
     var showTour = false
     var resumeStepId: String?
-    private var checkedProfileId: String?
+    /// The account and profile last checked. Profile IDs repeat across
+    /// accounts, so a switch to another account's same profile checks again.
+    private var checkedScope: String?
     private let api: any OnboardingTourAPI
     private let activeServerId: @MainActor () -> String?
     private let activeProfileId: @MainActor () -> String?
+    private let activeAccountId: @MainActor () -> String?
 
     init(
         api: any OnboardingTourAPI = SiloAPI.shared,
         activeServerId: @escaping @MainActor () -> String? = { ServerRegistry.shared.activeServerId },
-        activeProfileId: @escaping @MainActor () -> String? = { AuthService.shared.profileId }
+        activeProfileId: @escaping @MainActor () -> String? = { AuthService.shared.profileId },
+        activeAccountId: @escaping @MainActor () -> String? = { AccountScope.current?.localAccountId }
     ) {
         self.api = api
         self.activeServerId = activeServerId
         self.activeProfileId = activeProfileId
+        self.activeAccountId = activeAccountId
     }
 
     func check(profileId: String?) async {
         guard let profileId else {
-            checkedProfileId = nil
+            checkedScope = nil
             showTour = false
             resumeStepId = nil
             return
         }
-        guard checkedProfileId != profileId else { return }
+        let accountId = activeAccountId()
+        let scope = "\(accountId ?? "")|\(profileId)"
+        guard checkedScope != scope else { return }
 
-        checkedProfileId = profileId
+        checkedScope = scope
         showTour = false
         resumeStepId = nil
 
         if let serverId = activeServerId(),
            let tourId = UnrenderableOnboardingTourSuppression.pendingTourId(
                serverId: serverId,
+               localAccountId: accountId,
                profileId: profileId
            ) {
-            await completeUnrenderableTour(tourId, serverId: serverId, profileId: profileId)
+            await completeUnrenderableTour(tourId, serverId: serverId, localAccountId: accountId, profileId: profileId)
             return
         }
 
@@ -81,7 +89,12 @@ final class OnboardingTourGateModel {
     /// state is read first, so a completion whose reply was lost earlier is
     /// seen as done instead of being sent again. The empty tour stays
     /// suppressed until the server confirms it is done or replaced.
-    private func completeUnrenderableTour(_ tourId: String, serverId: String, profileId: String) async {
+    private func completeUnrenderableTour(
+        _ tourId: String,
+        serverId: String,
+        localAccountId: String?,
+        profileId: String
+    ) async {
         do {
             let session = try await api.onboardingRead(surface: nil)
             guard session.auth.profileId == profileId else { return }
@@ -93,6 +106,7 @@ final class OnboardingTourGateModel {
             }
             UnrenderableOnboardingTourSuppression.clear(
                 serverId: serverId,
+                localAccountId: localAccountId,
                 profileId: profileId,
                 tourId: tourId
             )

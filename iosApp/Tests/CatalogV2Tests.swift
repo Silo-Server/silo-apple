@@ -94,6 +94,8 @@ final class CatalogV2Tests: XCTestCase {
             defaults: SharedDefaults(suite: suite, standard: suite))
         await tokens.switchActiveServer(serverId: "test-server")
         await tokens.setServerUrl("https://catalog.example")
+        // A profile proof belongs to a signed-in account.
+        _ = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
         await tokens.setProfileId("profile-one")
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens,
             requestCaptureBarrier: { await captureBarrier?(tokens) })

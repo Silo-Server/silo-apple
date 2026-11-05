@@ -12,9 +12,15 @@ final class TopShelfHTTPClientTests: XCTestCase {
 
     private struct Harness {
         let client: TopShelfHTTPClient
-        let keychain: SharedKeychain
+        let accounts: AccountStore
+        let account: Account
         let stub: APIv2TestStub
         let defaults: UserDefaults
+
+        /// The account as the shared Keychain holds it now.
+        func storedAccount() throws -> Account? {
+            try accounts.account(account.localAccountId, onServer: account.serverId)
+        }
 
         /// The user picks another profile, so the remembered one no longer
         /// allows personalized content.
@@ -26,8 +32,11 @@ final class TopShelfHTTPClientTests: XCTestCase {
         /// profile policy still allows personalized content, but for them.
         func switchToAnotherAllowedProfile() throws {
             defaults.set("other-profile", forKey: SharedStorage.profileIdKey)
-            let state = ProfileLaunchState(rememberedByServerID: [
-                "server": RememberedProfile(profileID: "other-profile", requiredPINAtSelection: false, accountEpoch: "epoch"),
+            let state = ProfileLaunchState(rememberedByAccountID: [
+                account.localAccountId: RememberedProfile(
+                    profileID: "other-profile", requiredPINAtSelection: false,
+                    accountEpoch: try XCTUnwrap(account.epoch?.uuidString)
+                ),
             ])
             defaults.set(try JSONEncoder().encode(state), forKey: SharedStorage.profileLaunchStateKey)
         }
@@ -37,31 +46,49 @@ final class TopShelfHTTPClientTests: XCTestCase {
         let name = "TopShelfHTTPClientTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))
         let keychain = SharedKeychain(service: name, accessGroup: nil)
-        let account = keychain.withAudience(.userIndependent)
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        let accounts = AccountStore(keychain: keychain, defaults: defaults)
+        let account = try accounts.saveSignIn(
+            serverId: "server",
+            origin: "https://media.example",
+            serverUserId: "user",
+            username: nil,
+            accessToken: "stale-access",
+            refreshToken: "stored-refresh",
+            replacingOtherAccounts: false
+        ).account
+        let stored = keychain.withAudience(.userIndependent)
         addTeardownBlock {
-            _ = account.delete(SharedStorage.accessTokenAccount(for: "server"))
-            _ = account.delete(SharedStorage.refreshTokenAccount(for: "server"))
-            _ = account.delete(SharedStorage.accountEpochAccount(for: "server"))
+            _ = stored.delete(SharedStorage.accountIndexAccount)
+            _ = stored.delete(SharedStorage.accountIndexBackupAccount)
+            _ = stored.delete(SharedStorage.accountRecordAccount(serverID: "server", localAccountID: account.localAccountId))
             UserDefaults().removePersistentDomain(forName: name)
         }
         suite.set("server", forKey: SharedStorage.activeServerIdKey)
         suite.set("https://media.example", forKey: SharedStorage.serverUrlKey)
+        XCTAssertTrue(accounts.select(account))
         // A remembered PIN-less profile, so the profile policy allows requests.
         suite.set("profile", forKey: SharedStorage.profileIdKey)
-        XCTAssertTrue(account.set("epoch", for: SharedStorage.accountEpochAccount(for: "server")))
-        let launchState = ProfileLaunchState(rememberedByServerID: [
-            "server": RememberedProfile(profileID: "profile", requiredPINAtSelection: false, accountEpoch: "epoch"),
+        let launchState = ProfileLaunchState(rememberedByAccountID: [
+            account.localAccountId: RememberedProfile(
+                profileID: "profile", requiredPINAtSelection: false,
+                accountEpoch: try XCTUnwrap(account.epoch?.uuidString)
+            ),
         ])
         suite.set(try JSONEncoder().encode(launchState), forKey: SharedStorage.profileLaunchStateKey)
-        XCTAssertTrue(account.set("stale-access", for: SharedStorage.accessTokenAccount(for: "server")))
-        XCTAssertTrue(account.set("stored-refresh", for: SharedStorage.refreshTokenAccount(for: "server")))
         let stub = APIv2TestStub()
         let client = TopShelfHTTPClient(
-            defaults: SharedDefaults(suite: suite, standard: suite),
+            defaults: defaults,
             keychain: keychain,
             session: stub.makeSession()
         )
-        return Harness(client: try XCTUnwrap(client.authenticated()), keychain: account, stub: stub, defaults: suite)
+        return Harness(
+            client: try XCTUnwrap(client.authenticated()),
+            accounts: accounts,
+            account: account,
+            stub: stub,
+            defaults: suite
+        )
     }
 
     func testExpiredAccessTokenRefreshesInMemoryAndRetriesOnce() async throws {
@@ -80,8 +107,8 @@ final class TopShelfHTTPClientTests: XCTestCase {
         XCTAssertEqual(refresh.bodyString, #"{"refresh_token":"stored-refresh"}"#)
         XCTAssertEqual(h.stub.requests[2].header("Authorization"), "Bearer fresh-access")
         // The app owns the shared Keychain; the extension never writes back.
-        XCTAssertEqual(h.keychain.get(SharedStorage.accessTokenAccount(for: "server")), "stale-access")
-        XCTAssertEqual(h.keychain.get(SharedStorage.refreshTokenAccount(for: "server")), "stored-refresh")
+        XCTAssertEqual(try h.storedAccount()?.accessToken, "stale-access")
+        XCTAssertEqual(try h.storedAccount()?.refreshToken, "stored-refresh")
     }
 
     func testLaterRequestsReuseTheRefreshedToken() async throws {

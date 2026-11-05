@@ -334,8 +334,8 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
     }
 
     /// A scope-width video in Fit ran under the Dynamic Island because the
-    /// surface spanned the whole landscape screen. Only the sides and the top
-    /// edge hold the sensor housing; the home indicator may overlay video.
+    /// surface spanned the whole landscape screen. The picture must also stay
+    /// centred, so the top inset is mirrored at the bottom.
     func testFitKeepsThePictureClearOfTheSensorHousing() async throws {
         let engine = try AetherEngine()
         let presentation = Presentation()
@@ -355,7 +355,8 @@ final class PlayerSurfaceLayoutTests: XCTestCase {
         let fitFrame = surface.convert(surface.bounds, to: window)
         XCTAssertEqual(fitFrame.midX, window.bounds.midX, accuracy: 1)
         XCTAssertGreaterThanOrEqual(fitFrame.minY, fullFrame.minY + 30 - 1)
-        XCTAssertEqual(fitFrame.maxY, fullFrame.maxY, accuracy: 1)
+        // A top-only inset pushed portrait video below the screen's centre.
+        XCTAssertEqual(fitFrame.midY, fullFrame.midY, accuracy: 1)
 
         presentation.fitsSafeArea = false
         try await settle(window) { abs(surface.bounds.width - fullWidth) < 1 }

@@ -480,6 +480,7 @@ struct CreateProfileView: View {
                 // Buffer so the chip's rounded corners don't sit flush
                 // against the ScrollView's clip boundary.
                 .padding(.vertical, 4)
+                .mouseDragScrolling()
             }
             .scrollClipDisabled()
         }

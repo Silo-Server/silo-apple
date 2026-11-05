@@ -136,7 +136,7 @@ struct APIv2Client: Sendable {
         guard let current = await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: captured) else {
             throw HTTPError.authorityChanged
         }
-        try await tokenStore.bindVerifiedAccount(value.id, expected: current)
+        try await tokenStore.bindVerifiedAccount(value.id, username: value.username, expected: current)
         return value
     }
 
@@ -245,7 +245,9 @@ struct APIv2Client: Sendable {
             serverId: expected.serverId,
             serverURL: ServerRegistry.normalize(url: expected.serverURL),
             profileId: expected.profileId,
-            clientFamily: expected.clientFamily
+            clientFamily: expected.clientFamily,
+            // A caller that pinned no account accepts the captured one.
+            localAccountId: expected.localAccountId ?? identity?.localAccountId
         )
         if normalizedExpected != identity { throw HTTPError.requestIdentityChanged }
     }
@@ -254,23 +256,67 @@ struct APIv2Client: Sendable {
     /// acting profile's remembered track for one series (or movie) id. The
     /// operation is `natural_idempotent` and answers 204; the body schema is
     /// closed, so `body` encodes snake_case with nil members omitted.
+    @discardableResult
     func writeTrackPreference<Body: Encodable>(kind: TrackPreferenceKind, seriesId: String, body: Body,
-                                              auth: CapturedOrdinaryRequestAuth) async throws {
+                                              auth: CapturedOrdinaryRequestAuth) async throws -> Date? {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "PUT",
-                                        body: encoder.encode(body), auth: auth)
+        return try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "PUT",
+                                               body: encoder.encode(body), auth: auth)
     }
 
     /// `deleteAudioPreference` / `deleteSubtitlePreference`. The server
     /// answers 204 whether or not a preference existed.
+    @discardableResult
     func deleteTrackPreference(kind: TrackPreferenceKind, seriesId: String,
-                               auth: CapturedOrdinaryRequestAuth) async throws {
+                               auth: CapturedOrdinaryRequestAuth) async throws -> Date? {
         try await mutateTrackPreference(kind: kind, seriesId: seriesId, method: "DELETE", body: nil, auth: auth)
     }
 
+    /// `getAudioPreference` / `getSubtitlePreference`: the stored row, nil
+    /// on the 404 for a series with none, and the response's `Date` header,
+    /// which places the row's `updated_at` against this device's clock.
+    func readTrackPreference<Body: TrackPrefBody>(_: Body.Type, seriesId: String,
+                                                  auth: CapturedOrdinaryRequestAuth) async throws
+        -> (row: TrackPrefRow<Body>?, serverDate: Date?) {
+        try await gate()
+        guard !seriesId.isEmpty,
+              let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        let path = "/api/v2/\(Body.kind.rawValue)-prefs/\(try catalogPathSegment(seriesId))"
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: path, quietStatuses: [404],
+                    requestIdentity: identity, acceptedStatuses: [404], expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        let serverDate = raw.header("date").flatMap(Self.httpDate.date(from:))
+        if raw.statusCode == 404 {
+            let problem = try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: raw.data)
+            guard problem.status == 404, problem.identifier == "not_found" else {
+                throw APIv2Error.problem(problem)
+            }
+            return (nil, serverDate)
+        }
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return (try HTTPClient.makeJSONDecoder().decode(TrackPrefRow<Body>.self, from: raw.data), serverDate)
+    }
+
+    private static let httpDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        return formatter
+    }()
+
+    /// Answers the response's `Date` header, a server time the change is
+    /// stamped no later than.
     private func mutateTrackPreference(kind: TrackPreferenceKind, seriesId: String, method: String, body: Data?,
-                                       auth: CapturedOrdinaryRequestAuth) async throws {
+                                       auth: CapturedOrdinaryRequestAuth) async throws -> Date? {
         try await gate()
         guard !seriesId.isEmpty,
               let profile = auth.profileId, !profile.isEmpty,
@@ -286,6 +332,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 204 else { throw APIv2Error.httpStatus(response.statusCode) }
+        return response.header("date").flatMap(Self.httpDate.date(from:))
     }
 
     /// Whether `auth` still describes the current owner. Goes through the one
@@ -1236,6 +1283,14 @@ struct APIv2Client: Sendable {
         return try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackCapabilities.self, from: raw.data)
     }
 
+    static let loginSessionsPath = "/api/v2/auth/sessions"
+
+    static func loginSessionsQuery(cursor: String?) -> [String: String] {
+        var query = ["limit": "200"]
+        if let cursor { query["cursor"] = cursor }
+        return query
+    }
+
     #if os(iOS)
     func notificationSync(cursor: String?, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2NotificationSyncPage {
         try await gate()
@@ -1314,14 +1369,6 @@ struct APIv2Client: Sendable {
         let data = try await applePushRequest(method: "GET", path: Self.loginSessionsPath,
             query: Self.loginSessionsQuery(cursor: cursor), auth: auth)
         return try HTTPClient.makeJSONDecoder().decode(APIv2LoginSessionPage.self, from: data)
-    }
-
-    static let loginSessionsPath = "/api/v2/auth/sessions"
-
-    static func loginSessionsQuery(cursor: String?) -> [String: String] {
-        var query = ["limit": "200"]
-        if let cursor { query["cursor"] = cursor }
-        return query
     }
 
     static let applePushCapabilityPath = "/api/v2/devices/push/apple/capabilities"
@@ -1533,7 +1580,8 @@ struct APIv2Client: Sendable {
 
     static func requestIdentity(_ auth: CapturedOrdinaryRequestAuth, profile: String) -> HTTPRequestIdentity {
         HTTPRequestIdentity(serverId: auth.account.serverId, serverURL: auth.account.serverURL,
-            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily)
+            profileId: profile, clientFamily: AppleDeviceIdentity.current.clientFamily,
+            localAccountId: auth.account.localAccountId)
     }
 
     /// A strong entity tag: quoted, non-empty, single line. Anything else is
