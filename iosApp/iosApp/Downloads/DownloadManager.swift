@@ -1309,8 +1309,20 @@ final class DownloadManager {
         let isBatch = series || seasonNumber != nil
         do {
             if isBatch {
-                try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
-                    quality: batchQuality(requestedQuality), versionFileId: batchVersion(fileId), owner: owner)
+                let version = batchVersion(fileId)
+                do {
+                    try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
+                        quality: batchQuality(requestedQuality), versionFileId: version, owner: owner)
+                } catch where version != nil && APIv2Client.downloadRegistryFailure(error) == .rejected {
+                    // A cached `batchVersion` can outlive a server downgrade,
+                    // and such a server refuses the template before it
+                    // registers anything. Read the capability again and, when
+                    // it no longer offers versions, send the batch without one.
+                    await refreshCapability()
+                    guard isCurrent(owner), batchVersion(fileId) == nil else { throw error }
+                    try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
+                        quality: batchQuality(requestedQuality), versionFileId: nil, owner: owner)
+                }
             } else {
                 let request = APIv2DownloadCreateRequest.single(
                     contentId: contentId,
