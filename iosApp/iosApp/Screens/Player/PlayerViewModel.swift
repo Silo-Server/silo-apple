@@ -7118,7 +7118,13 @@ class PlayerViewModel {
     /// audio interruption that ended without `.shouldResume` keeps the play
     /// intent but leaves the player paused, so it is not a pending resume.
     var isResumePending: Bool {
-        !isPlaying && viewerWantsToPlay
+        guard !isPlaying else { return false }
+        // A fresh load with no transport yet holds the viewer's Play or
+        // Pause itself; the outgoing controller's intent is stale then.
+        if freshLoadTask != nil, activeAetherLoadEpoch == nil, let held = freshLoadPlayIntent {
+            return held
+        }
+        return viewerWantsToPlay
     }
     #endif
 
@@ -8093,7 +8099,15 @@ class PlayerViewModel {
             )
         }
         if resumePlayback, !reloadsPlaybackPipeline {
-            handleNowPlayingPlay()
+            if !shouldSeek, !isWatchPartyPlayback, seekReplanTask != nil || protocolV3ReplanTask != nil {
+                // A scrub reopened while a reanchor replaces the transport:
+                // give the Play to the replacement instead of starting the
+                // outgoing stream at its old position.
+                noteViewerTransportCommand(play: true)
+                aetherPlaybackController.playWhenReplacementLoads()
+            } else {
+                handleNowPlayingPlay()
+            }
         }
         scheduleHideControls()
     }
