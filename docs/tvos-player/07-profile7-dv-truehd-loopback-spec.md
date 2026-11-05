@@ -110,6 +110,13 @@ validated.
 
 ### 3.3 TrueHD Atmos and DTS:X heights
 
+**Status: off in current builds.** The Silo fork now leaves `TrueHDObjectAudio` and
+`DTSXObjectAudio` off, as upstream ships them, because the components may need
+third-party patent licenses. TrueHD Atmos and DTS:X play through the lossless channel
+bridge, the setting below is hidden (`AetherObjectAudioPolicy.isAvailable`), and a
+stored "on" requests nothing. The rest of this section describes the path as it works
+when both traits are on.
+
 The Playback setting "TrueHD Atmos and DTS:X" (device-local, default On) selects
 Aether's `LoadOptions.objectAudioRendering = .apac(.l714)` whenever it is on. Silo does
 not check the output first: `AVAudioSession.renderingMode` resolves for the content

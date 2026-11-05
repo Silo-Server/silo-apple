@@ -223,12 +223,14 @@ struct TVPlaybackSettingsPane: View {
             viewModel.losslessAudioEnabled = value
         }
 
-        TVSettingsToggleRow(
-            title: "TrueHD Atmos and DTS:X",
-            isOn: viewModel.trueHDAtmosEnabled
-        ) {
-            let value = !viewModel.trueHDAtmosEnabled
-            viewModel.trueHDAtmosEnabled = value
+        if AetherObjectAudioPolicy.isAvailable {
+            TVSettingsToggleRow(
+                title: "TrueHD Atmos and DTS:X",
+                isOn: viewModel.trueHDAtmosEnabled
+            ) {
+                let value = !viewModel.trueHDAtmosEnabled
+                viewModel.trueHDAtmosEnabled = value
+            }
         }
 
         TVSettingsPickerRow(

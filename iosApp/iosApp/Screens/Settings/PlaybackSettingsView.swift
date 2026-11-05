@@ -204,9 +204,11 @@ struct PlaybackSettingsView: View {
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
 
-            Toggle("TrueHD Atmos and DTS:X", isOn: $viewModel.trueHDAtmosEnabled)
-                .foregroundStyle(Color.siloOnSurface)
-                .tint(.siloSwitchOn)
+            if AetherObjectAudioPolicy.isAvailable {
+                Toggle("TrueHD Atmos and DTS:X", isOn: $viewModel.trueHDAtmosEnabled)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .tint(.siloSwitchOn)
+            }
 
             Picker("Deinterlacing", selection: $viewModel.deinterlaceMode) {
                 ForEach(DeinterlacePreference.allCases, id: \.self) { mode in
