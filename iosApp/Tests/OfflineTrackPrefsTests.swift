@@ -175,7 +175,7 @@ final class OfflineTrackPrefsTests: XCTestCase {
         store.subtitle.observed["s"] = ObservedTrackPref(body: row, updatedAt: Date(timeIntervalSince1970: 100))
         XCTAssertEqual(store.subtitlePrefs(forKey: "s")?.language, "en")
 
-        let off = store.record(TrackSelectionPersistence.subtitleOffRequest(showForced: nil), key: "s",
+        let off = store.record(TrackSelectionPersistence.subtitleOffRequest(), key: "s",
                                in: \.subtitle, at: Date(timeIntervalSince1970: 200))
         XCTAssertEqual(off.baseline, .updatedAt(Date(timeIntervalSince1970: 100)))
         // A read from the server lands while the pick is queued.
@@ -208,7 +208,7 @@ final class OfflineTrackPrefsTests: XCTestCase {
     }
 
     func testClearingTheSeriesRowDropsTheCascadeSeenWithIt() {
-        let off = TrackSelectionPersistence.subtitleOffRequest(showForced: nil)
+        let off = TrackSelectionPersistence.subtitleOffRequest()
         // Streaming resolved Off from the series row.
         let streamedUnderOff = EffectiveSubtitlePrefs(language: nil, mode: "off", showForced: true, signature: nil)
         var store = TrackPrefsStore()
