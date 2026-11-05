@@ -252,14 +252,15 @@ struct ContentView: View {
         .onChange(of: serverRegistry.activeServerId) { previousServerID, activeServerID in
             guard previousServerID != activeServerID,
                   router.authState == .needsServerSetup,
+                  !router.isReceivingCompanionSetup,
                   shouldPresentProfileSelectionAfterRecovery(
                       isLoggedIn: AuthService.shared.isLoggedIn,
                       activeProfileID: AuthService.shared.profileId
                   ) else { return }
-            // Companion setup adds the server and account atomically. The
-            // active-server change intentionally re-keys `authContent`, which
-            // otherwise replaces the receiver's success screen with a fresh
-            // setup view before its delayed navigation can run.
+            // A server and account were added on the setup screen outside a
+            // phone's session. During one, a phone may push several sign-ins
+            // and the setup screen routes on when it ends (contract §B.7);
+            // leaving it at the first would end the session.
             router.skipsSingleProfilePicker = true
             router.showProfileSelection()
         }
