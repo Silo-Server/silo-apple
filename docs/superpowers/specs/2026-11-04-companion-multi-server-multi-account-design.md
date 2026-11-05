@@ -274,6 +274,14 @@ minted to the attacker. The worst outcome is one target failing, and the phone r
 If the first target's lookup has no binding, the phone has no trusted binding yet, so later
 targets need their own comparison (§6.3) until a compared target supplies one.
 
+**Accepted risk (owner decision, 2026-11-04).** One secret covers every server in a session, so
+each server the TV polls learns it. A hostile server that the person chose as one of the targets,
+working with an attacker on the same network path, could start its own bound request on another
+chosen server, and the phone would approve it without a comparison. Both conditions together are
+unlikely for a self-hosted household, so this is accepted. If the threat model changes, give each
+server its own secret and trust a binding only on the server where the person compared a code
+(one comparison per server), or have the TV sign each poll with a per-session key.
+
 Server work in `silo-server` (`internal/auth/device_login.go`, `internal/apiv2/device_login.go`):
 - Nullable `binding_hash` column on `device_login_requests`.
 - `binding` on the v2 start request and on the lookup response.
