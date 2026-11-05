@@ -41,8 +41,7 @@ final class ContentProvider: TVTopShelfContentProvider {
         // The profile's last confirmed spoiler answer, cached by the app. Read
         // with the credentials, before any request suspends.
         let hidesEpisodeStills = EpisodeSpoilerCache.hidesImages(
-            serverId: defaults.string(forKey: SharedStorage.activeServerIdKey),
-            profileId: defaults.string(forKey: SharedStorage.profileIdKey),
+            scope: AccountScope.current(defaults: SharedDefaults(suite: defaults)),
             in: defaults
         )
         let response: TopShelfSectionsResponse
@@ -57,8 +56,8 @@ final class ContentProvider: TVTopShelfContentProvider {
             return nil
         }
 
-        let cwItems = items(from: response, matching: Self.isContinueWatching)
-        let nuItems = items(from: response, matching: Self.isNextUp)
+        let cwItems = items(from: response, matching: TopShelfRow.isContinueWatching)
+        let nuItems = items(from: response, matching: TopShelfRow.isNextUp)
         let seriesPosters = await fetchSeriesPosters(
             for: cwItems + nuItems,
             using: http,
@@ -89,7 +88,7 @@ final class ContentProvider: TVTopShelfContentProvider {
         let cwCount = continueWatching?.items.count ?? 0
         let nuCount = nextUp?.items.count ?? 0
         defaults.set(
-            "ok: sections=\(response.sections.count) cw=\(cwCount) nu=\(nuCount) types=\(response.sections.map(\.sectionType).joined(separator: ","))",
+            "ok: sections=\(response.sections.count) failed=\(response.failedSectionCount) cw=\(cwCount) nu=\(nuCount) types=\(response.sections.map(\.sectionType).joined(separator: ","))",
             forKey: SharedStorage.topShelfLastStatusKey
         )
         guard !collections.isEmpty else { return nil }
@@ -139,8 +138,9 @@ final class ContentProvider: TVTopShelfContentProvider {
         using http: TopShelfHTTPClient,
         imageSizeQuery: [String: String]
     ) async -> EpisodePosters {
+        // Cards that carry their season or series poster need no lookup.
         let seriesIds = Set(items.compactMap { item -> String? in
-            guard item.type == "episode" else { return nil }
+            guard item.isEpisode, item.cardShowPosterUrl == nil else { return nil }
             return item.seriesId
         })
         guard !seriesIds.isEmpty else { return EpisodePosters() }
@@ -201,28 +201,15 @@ final class ContentProvider: TVTopShelfContentProvider {
         return posters
     }
 
-    // MARK: - Section selection
-
-    /// Matches the home screen's `ResolvedSection.isContinueWatchingSection`.
-    private static func isContinueWatching(_ section: TopShelfSection) -> Bool {
-        let type = section.sectionType.lowercased()
-        return type == "continue_watching" || type == "in_progress"
-    }
-
-    /// Matches the next-up half of the home screen's `SectionRow.isEpisodeRow`.
-    private static func isNextUp(_ section: TopShelfSection) -> Bool {
-        section.sectionType.lowercased().contains("next")
-    }
-
     // MARK: - Item construction
 
     private func items(
         from response: TopShelfSectionsResponse,
-        matching predicate: (TopShelfSection) -> Bool
+        matching predicate: (String) -> Bool
     ) -> [TopShelfItem] {
         Array(
             response.sections
-                .filter(predicate)
+                .filter { predicate($0.sectionType) }
                 .flatMap { $0.items }
                 .sorted { lhs, rhs in
                     sortKey(lhs) > sortKey(rhs)
@@ -283,7 +270,8 @@ final class ContentProvider: TVTopShelfContentProvider {
     }
 
     /// For episodes, prefer the season poster; fall back to the series
-    /// poster; only use the item's own `posterUrl` as a last resort,
+    /// poster (from the card when the server sends them, else looked up);
+    /// only use the item's own `posterUrl` as a last resort,
     /// because for episodes the server emits a 16:9 still which looks
     /// bad in a 2:3 poster tile, and which the profile may hide. Movies
     /// use their own poster directly.
@@ -292,7 +280,10 @@ final class ContentProvider: TVTopShelfContentProvider {
         seriesPosters: EpisodePosters,
         hidesEpisodeStills: Bool
     ) -> String? {
-        if item.type == "episode",
+        if item.isEpisode, let poster = item.cardShowPosterUrl {
+            return poster
+        }
+        if item.isEpisode,
            let poster = seriesPosters.lookup(
                seriesId: item.seriesId,
                seasonNumber: item.seasonNumber
@@ -305,7 +296,7 @@ final class ContentProvider: TVTopShelfContentProvider {
     /// Episodes benefit from a "Series Name · S1E3" label instead of
     /// just the episode title. Movies use the bare title.
     private func displayTitle(for item: TopShelfItem) -> String {
-        guard item.type == "episode",
+        guard item.isEpisode,
               let seriesTitle = item.seriesTitle,
               let season = item.seasonNumber,
               let episode = item.episodeNumber else {

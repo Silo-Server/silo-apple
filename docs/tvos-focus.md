@@ -37,8 +37,9 @@ actionable item can be a real focus target.
   control draws its own focus appearance, and keep that appearance visually
   consistent with the platform (scale, lift, highlight).
 - Keep the focused subtree mounted and structurally stable while moving focus.
-- Attach `onMoveCommand` only at intentional boundaries, such as "Up from the
-  first card returns to the top menu." Do not intercept normal in-zone movement.
+- Attach `onMoveCommand` only at intentional boundaries, and never as the only
+  route across one. A Siri Remote touch-surface swipe that finds no native
+  target does not fire it, so a boundary that depends on it ignores swipes. Do not intercept normal in-zone movement.
 - Move focus geometry with layout (`padding`, `frame`, alignment), not
   `.offset`, because tvOS resolves focus from layout frames.
 - Focus can only reach views that are loaded. A `LazyHStack` unloads cards
@@ -113,9 +114,9 @@ A page that renders no focusable view leaves the focus engine with nothing
 focused. The remote stops responding, and Menu/Back never reaches the shell's
 `onExitCommand` either, because exit commands travel up the *focused* responder
 chain. The page reads as hard-frozen and force quit is the only way out. The
-top bar cannot save it: the shell disables the bar while it hands focus to
-content, so a disabled bar and a placeholder page leave zero focus targets in
-the window.
+top bar cannot reliably save it: the shell disables the bar while it hands
+focus to content, and a page that cannot take focus leaves nothing focused
+during that window.
 
 Empty states, error states, and loading skeletons are the usual offenders —
 they are inert by nature, so it is easy to ship one that is the whole content
@@ -144,6 +145,16 @@ still restores the category. Back returns to the category, then exits Settings
 to Home.
 
 ## Top Menu Ownership
+
+The bar stays focusable while the page owns focus, so Up from the page's first
+row reaches it natively, whether the user clicks or swipes. The bar's
+`defaultFocus` on the selected tab, at `.userInitiated` priority, makes that
+entry land on the selected tab instead of the tab above the focused card. The
+page is the shell focus scope's preferred default, so a repair after the
+focused card disappears returns to the page, not the bar. The shell disables the
+bar only for a short window while it hands focus down to the page, so the
+engine's repair from the resigning tab cannot land back in the bar. The pages'
+first-row Up handlers remain as a fallback for that window.
 
 The top menu has three conceptual states:
 

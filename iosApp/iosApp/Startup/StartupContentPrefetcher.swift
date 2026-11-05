@@ -612,7 +612,7 @@ enum StartupContentPrefetcher {
             prefetchProfiles()
         case .needsProfile:
             prefetchProfiles()
-        case .loading, .needsServerSetup, .needsLogin, .serverRecovery:
+        case .loading, .needsServerSetup, .needsLogin, .serverRecovery, .needsPasswordChange:
             break
         }
     }
@@ -642,24 +642,13 @@ enum StartupContentPrefetcher {
                 }
             }
             #else
-            let registry = ServerRegistry.shared
-            let authority = MainTabLibraryAuthority(
-                serverId: registry.activeServerId,
-                profileId: registry.activeProfileId
-            )
-            for category in [PrimaryMenuBuiltin.movies, .series] {
-                let storageKey = librarySelectionStorageKey(
-                    category: category,
-                    fixedLibraryId: nil,
-                    authority: authority
-                )
-                guard let libraryId = resolvedLibraryIdForRoot(
-                    response.libraries,
-                    category: category,
-                    fixedLibraryId: nil,
-                    showAudiobooks: AppNavPreferences.shared.showAudiobooks,
-                    storedLibraryId: storedLibrarySelectionId(for: storageKey)
-                ) else { continue }
+            let storageKey = librarySelectionStorageKey(fixedLibraryId: nil)
+            if let libraryId = resolvedLibraryIdForRoot(
+                response.libraries,
+                fixedLibraryId: nil,
+                showAudiobooks: AppNavPreferences.shared.showAudiobooks,
+                storedLibraryId: storedLibrarySelectionId(for: storageKey)
+            ) {
                 prefetchLibraryLanding(libraryId: libraryId)
             }
             #endif

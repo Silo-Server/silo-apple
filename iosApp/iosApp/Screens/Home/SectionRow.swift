@@ -23,7 +23,8 @@ struct SectionRow: View {
     /// Watching may substitute a parent Series ID while retaining the episode
     /// card as context for the detail route seed.
     let onItemTap: (_ destinationContentId: String, _ item: SectionItem) -> Void
-    var onSeeAll: (() -> Void)? = nil
+    /// Opens the row's full page; see `MediaRow.onExploreAll`.
+    var onExploreAll: (() -> Void)? = nil
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     var prefersDefaultFocusOnFirstItem: Bool = false
@@ -42,6 +43,8 @@ struct SectionRow: View {
     /// tvOS-only: card-focus reports forwarded from `MediaRow` so hosts
     /// can drive the Skyline focus marquee with `(item, row title)`.
     var onItemFocus: ((SectionItem) -> Void)? = nil
+    /// tvOS-only: forwarded to `MediaRow.onExploreAllFocus`.
+    var onExploreAllFocus: (() -> Void)? = nil
     /// Optional poster/square card width forwarded to `MediaRow` —
     /// Skyline's dense landing rows (§5.6) pass a compact width.
     var cardWidth: CGFloat? = nil
@@ -133,6 +136,7 @@ struct SectionRow: View {
         if isContinueWatching {
             HomeFeedRow(
                 section: section,
+                onExploreAll: onExploreAll,
                 onRemoveFromContinueWatching: onRemoveFromContinueWatching,
                 onSetWatched: { item, played in
                     await setWatched(item, played: played)
@@ -151,7 +155,7 @@ struct SectionRow: View {
             items: section.items,
             onItemTap: selectItem,
             onItemPlay: allowsDirectPlayback ? playItem : nil,
-            onSeeAll: onSeeAll,
+            onExploreAll: onExploreAll,
             showProgress: showProgress,
             icon: isContinueWatching ? "play.circle.fill" : nil,
             layout: layout,
@@ -170,6 +174,7 @@ struct SectionRow: View {
             },
             onMoveUp: onMoveUp,
             onItemFocus: onItemFocus,
+            onExploreAllFocus: onExploreAllFocus,
             cardWidth: cardWidth,
             thumbnailCardWidth: Self.thumbnailCardWidth,
             cardVerticalPadding: cardVerticalPadding,

@@ -31,6 +31,9 @@ struct TVPlayerControls: View {
     /// position, outside this overlay, but it follows the intro pill's focus
     /// rules, which live here.
     let bufferingPillFocus: FocusState<TVBufferingQualityPill.Action?>.Binding
+    /// The shell's Watch Party sync capsule holds the top-trailing corner,
+    /// so the status column starts below it.
+    let showsCornerCapsule: Bool
     let onToggleTimeDisplayMode: () -> Void
     /// Reports the explicit timeline scrub, so the shell can take the
     /// buffering pill out of the focus graph during it as `introSkipLayer`
@@ -275,8 +278,9 @@ struct TVPlayerControls: View {
         .onChange(of: bufferingPillFocus.wrappedValue) { _, target in
             if target != nil { rearmAutoHideOnFocusMove() }
         }
-        // TV sleep discards the app's focus state, and the background-suspend
-        // path keeps `showControls` true — so on wake the idle overlay is
+        // TV sleep discards the app's focus state, and a Watch Party player
+        // stays open through it (others close when the app leaves the
+        // foreground) with `showControls` true — so on wake the idle overlay is
         // already mounted, its `onAppear` seed never re-fires, and nothing is
         // focused. With no focused descendant, Menu presses never reach the
         // shell-level `onExitCommand` in PlayerView, stranding the user until
@@ -338,7 +342,7 @@ struct TVPlayerControls: View {
         ZStack(alignment: .bottom) {
             bottomGradient.ignoresSafeArea()
             statusColumn
-                .padding(.top, viewModel.isBuffering ? 120 : 64)
+                .padding(.top, showsCornerCapsule ? 120 : 64)
                 .padding(.horizontal, 80)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             TVScrubPreviewLayer(viewModel: viewModel)

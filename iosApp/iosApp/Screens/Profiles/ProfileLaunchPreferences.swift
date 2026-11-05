@@ -87,20 +87,20 @@ final class ProfileLaunchPreferences {
         }
     }
 
-    func rememberedProfile(for serverID: String?) -> RememberedProfile? {
-        guard let serverID else { return nil }
-        return state.rememberedByServerID[serverID]
+    func rememberedProfile(forAccount localAccountID: String?) -> RememberedProfile? {
+        guard let localAccountID else { return nil }
+        return state.rememberedByAccountID[localAccountID]
     }
 
     func resolution(
-        for serverID: String,
+        forAccount localAccountID: String,
         accountEpoch: String?,
         hasStoredProfileToken: Bool,
         knownProfileIDs: Set<String>? = nil,
         now: Date = .now
     ) -> ProfileLaunchResolution {
         state.resolution(
-            for: serverID,
+            forAccount: localAccountID,
             accountEpoch: accountEpoch,
             hasStoredProfileToken: hasStoredProfileToken,
             knownProfileIDs: knownProfileIDs,
@@ -117,16 +117,16 @@ final class ProfileLaunchPreferences {
         profileID: String,
         requiresPIN: Bool,
         accountEpoch: String,
-        for serverID: String
+        forAccount localAccountID: String
     ) -> Bool {
         update { state in
             let previousState = state
-            state.rememberedByServerID[serverID] = RememberedProfile(
+            state.rememberedByAccountID[localAccountID] = RememberedProfile(
                 profileID: profileID,
                 requiredPINAtSelection: requiresPIN,
                 accountEpoch: accountEpoch
             )
-            state.selectionRequiredServerIDs.remove(serverID)
+            state.selectionRequiredAccountIDs.remove(localAccountID)
             state.backgroundedAt = nil
             guard persist(state) else {
                 state = previousState
@@ -171,11 +171,11 @@ final class ProfileLaunchPreferences {
     }
 
     @discardableResult
-    func markSelectionRequired(for serverID: String) -> Bool {
+    func markSelectionRequired(forAccount localAccountID: String) -> Bool {
         update { state in
-            guard !state.selectionRequiredServerIDs.contains(serverID) else { return true }
+            guard !state.selectionRequiredAccountIDs.contains(localAccountID) else { return true }
             let previousState = state
-            state.selectionRequiredServerIDs.insert(serverID)
+            state.selectionRequiredAccountIDs.insert(localAccountID)
             guard persist(state) else {
                 state = previousState
                 return false
@@ -184,20 +184,24 @@ final class ProfileLaunchPreferences {
         }
     }
 
-    func clearSelectionRequired(for serverID: String) {
+    func clearSelectionRequired(forAccount localAccountID: String) {
         update { state in
-            guard state.selectionRequiredServerIDs.remove(serverID) != nil else { return }
+            guard state.selectionRequiredAccountIDs.remove(localAccountID) != nil else { return }
             _ = persist(state)
         }
     }
 
+    /// Forgets what the accounts open with. Called when they are signed out
+    /// or replaced by a new sign-in.
     @discardableResult
-    func clearRememberedProfile(for serverID: String) -> Bool {
+    func clearRememberedProfile(forAccounts localAccountIDs: [String]) -> Bool {
         update { state in
             let previousState = state
-            let removedProfile = state.rememberedByServerID.removeValue(forKey: serverID) != nil
-            let removedPending = state.selectionRequiredServerIDs.remove(serverID) != nil
-            guard removedProfile || removedPending else { return true }
+            for localAccountID in localAccountIDs {
+                state.rememberedByAccountID.removeValue(forKey: localAccountID)
+                state.selectionRequiredAccountIDs.remove(localAccountID)
+            }
+            guard state != previousState else { return true }
             guard persist(state) else {
                 state = previousState
                 return false
@@ -206,6 +210,15 @@ final class ProfileLaunchPreferences {
         }
     }
 
+    @discardableResult
+    func clearRememberedProfile(forAccount localAccountID: String) -> Bool {
+        clearRememberedProfile(forAccounts: [localAccountID])
+    }
+
+    /// Moves a registry entry's profile from before launch state existed
+    /// into this device user's per-server memory, which
+    /// `adoptLegacyServerMemory` then moves onto the server's account. Only
+    /// `ServerRegistry`'s registry migration calls this.
     @discardableResult
     func migrateLegacyProfile(
         profileID: String?,
@@ -213,7 +226,7 @@ final class ProfileLaunchPreferences {
         accountEpoch: String?,
         for serverID: String
     ) -> Bool {
-        if let existing = rememberedProfile(for: serverID) {
+        if let existing = state.rememberedByServerID[serverID] {
             return existing.profileID == profileID && existing.accountEpoch == accountEpoch
         }
         guard let profileID,
@@ -238,6 +251,33 @@ final class ProfileLaunchPreferences {
                 state.behavior = .automatic
                 state.rememberOfferPending = nil
             }
+            guard persist(state) else {
+                state = previousState
+                return false
+            }
+            return true
+        }
+    }
+
+    /// Moves this device user's per-server memory from before accounts onto
+    /// the account that adopted each server's data (`owners`: server ID to
+    /// `localAccountId`). Memory for a server no account adopted is dropped.
+    /// A no-op once nothing per-server is left. False when the move could
+    /// not be saved.
+    @discardableResult
+    func adoptLegacyServerMemory(owners: [String: String]) -> Bool {
+        update { state in
+            guard !state.rememberedByServerID.isEmpty || !state.selectionRequiredServerIDs.isEmpty else { return true }
+            let previousState = state
+            for (serverID, remembered) in state.rememberedByServerID {
+                guard let owner = owners[serverID], state.rememberedByAccountID[owner] == nil else { continue }
+                state.rememberedByAccountID[owner] = remembered
+            }
+            for serverID in state.selectionRequiredServerIDs {
+                if let owner = owners[serverID] { state.selectionRequiredAccountIDs.insert(owner) }
+            }
+            state.rememberedByServerID = [:]
+            state.selectionRequiredServerIDs = []
             guard persist(state) else {
                 state = previousState
                 return false

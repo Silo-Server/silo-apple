@@ -35,9 +35,15 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         if let season = item.seasonNumber, let episode = item.episodeNumber {
             subtitle = [item.seriesTitle, "S\(season):E\(episode)"].compactMap { $0 }.joined(separator: " · ")
         } else { subtitle = item.seriesTitle }
-        posterUrl = item.posterUrl
-        posterThumbhash = item.posterThumbhash
-        posterIsEpisodeStill = item.posterIsEpisodeStill
+        if let showPoster = item.episodeShowPoster {
+            posterUrl = showPoster.url
+            posterThumbhash = showPoster.thumbhash
+            posterIsEpisodeStill = false
+        } else {
+            posterUrl = item.posterUrl
+            posterThumbhash = item.posterThumbhash
+            posterIsEpisodeStill = item.posterIsEpisodeStill
+        }
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
         backdropIsEpisodeStill = item.backdropIsEpisodeStill

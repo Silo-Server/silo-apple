@@ -25,6 +25,8 @@ final class RequestsV2Tests: XCTestCase {
             defaults: SharedDefaults(suite: suite, standard: suite))
         await tokens.switchActiveServer(serverId: "test-server")
         await tokens.setServerUrl("https://requests.example")
+        // A profile proof belongs to a signed-in account.
+        _ = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
         if let profile { await tokens.setProfileId(profile) }
         return tokens
     }
@@ -51,14 +53,31 @@ final class RequestsV2Tests: XCTestCase {
     func testDiscoverDecodesTheItemsEnvelopeWithoutAPage() async throws {
         let (api, _) = try await client()
         stub.reply(200, #"{"items":[{"key":"trending_movies","title":"Trending","page":1,"total_pages":9,"total_results":180,"next_page":3,"results":[\#(Self.result)]}]}"#)
-        let sections = try await api.requestDiscoverSections()
+        let layout = try await api.requestDiscoverLayout()
+        let sections = layout.sections
         XCTAssertEqual(sections.map(\.key), ["trending_movies"])
         XCTAssertEqual(sections.first?.nextPage, 3)
         XCTAssertEqual(sections.first?.results.first?.tmdbId, 949)
+        // A server without layouts sends no row order.
+        XCTAssertTrue(layout.rowOrder.isEmpty)
         let request = try XCTUnwrap(stub.requests.first)
         XCTAssertEqual(request.method, "GET")
         XCTAssertEqual(request.path, "/api/v2/requests/discover")
         XCTAssertEqual(request.header("X-Profile-Id"), "profile-one")
+    }
+
+    func testDiscoverReadsTheLayoutsRowOrderAndPagesARow() async throws {
+        let (api, _) = try await client()
+        stub.reply(200, #"{"items":[{"key":"r_anime","title":"Anime","page":1,"total_pages":4,"total_results":80,"results":[\#(Self.result)]}],"row_order":[{"key":"r_anime","type":"tmdb_discover","title":"Anime"},{"key":"studios","type":"studios","title":"Studios"}]}"#)
+        let layout = try await api.requestDiscoverLayout()
+        XCTAssertEqual(layout.rowOrder.map(\.key), ["r_anime", "studios"])
+
+        stub.reply(200, #"{"key":"r_anime","title":"Anime","page":2,"total_pages":4,"total_results":80,"next_page":4,"results":[\#(Self.result)]}"#)
+        let page = try await api.requestDiscoverRow(key: "r_anime", page: 2)
+        XCTAssertEqual(page.nextPage, 4)
+        let request = try XCTUnwrap(stub.requests.last)
+        XCTAssertEqual(request.path, "/api/v2/requests/discover/rows/r_anime")
+        XCTAssertEqual(request.query["page"], "2")
     }
 
     func testStatusCountsOnlyWhenAllowedAndAvailable() async throws {

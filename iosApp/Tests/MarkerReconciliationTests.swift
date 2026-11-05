@@ -96,8 +96,8 @@ final class MarkerReconciliationTests: XCTestCase {
         let replaced = player.adoptReplannedVersion(
             try version(fileId: 43, intro: TimeRange(start: 50, end: 95), recap: nil)
         )
-        XCTAssertEqual(replaced?.recap, TimeRange(start: 0, end: 30))
-        XCTAssertNil(replaced?.intro)
+        XCTAssertEqual(replaced?.ranges(.recap), [TimeRange(start: 0, end: 30)])
+        XCTAssertEqual(replaced?.ranges(.intro), [])
     }
 
     func testReplanOnTheSameFileKeepsNewerEventMarkers() async throws {

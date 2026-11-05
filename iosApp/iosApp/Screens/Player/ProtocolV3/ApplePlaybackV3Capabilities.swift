@@ -48,7 +48,8 @@ enum ApplePlaybackV3Capabilities {
         PlaybackProtocolV3.headerAuthenticatedMediaFeature,
         PlaybackProtocolV3.softwareVideoDecodeFeature,
         PlaybackProtocolV3.embeddedSubtitlesFeature,
-        PlaybackProtocolV3.hlsSubtitleRenditionsFeature
+        PlaybackProtocolV3.hlsSubtitleRenditionsFeature,
+        PlaybackProtocolV3.hlsRemuxSubtitleRenditionsFeature
     ]
 
     /// Audiobooks currently restart sessions at part boundaries and do not
@@ -60,6 +61,7 @@ enum ApplePlaybackV3Capabilities {
             && $0 != PlaybackProtocolV3.softwareVideoDecodeFeature
             && $0 != PlaybackProtocolV3.embeddedSubtitlesFeature
             && $0 != PlaybackProtocolV3.hlsSubtitleRenditionsFeature
+            && $0 != PlaybackProtocolV3.hlsRemuxSubtitleRenditionsFeature
     }
 
     /// `authorized_media_origins_v1` is negotiated per attempt rather than
@@ -68,9 +70,14 @@ enum ApplePlaybackV3Capabilities {
     /// surface and every capability report stay opted out. Audio validates
     /// media URLs as API-relative only, and adding the token there would let a
     /// plan hand it an absolute URL its resolver must reject anyway.
-    static func startFeatures(authorizedMediaOrigins: Bool) -> [String] {
-        guard authorizedMediaOrigins else { return features }
-        return features + [PlaybackProtocolV3.authorizedMediaOriginsFeature]
+    ///
+    /// `hls_subtitle_renditions_all_v1` is negotiated the same way: sent only to
+    /// a server that advertises it, then repeated unchanged by every replan of
+    /// the attempt.
+    static func startFeatures(authorizedMediaOrigins: Bool, subtitleRenditionsAll: Bool = false) -> [String] {
+        features
+            + (authorizedMediaOrigins ? [PlaybackProtocolV3.authorizedMediaOriginsFeature] : [])
+            + (subtitleRenditionsAll ? [PlaybackProtocolV3.hlsSubtitleRenditionsAllFeature] : [])
     }
 
     /// The audiobook surface is migrated separately but uses the same Aether
@@ -134,19 +141,30 @@ enum ApplePlaybackV3Capabilities {
 
     // The pinned Aether demuxer exposes FFmpeg stream ids and drains text and
     // bitmap packets from the original source. XSUB has no shipped decoder.
+    // Transport streams (`ts`, and `m2ts` for Blu-ray BDAV) claim PGS only:
+    // Aether reassembles a PGS display set split across MPEG-TS PES packets
+    // before decoding it. Other codecs in a transport stream keep the server's
+    // sidecar or burn-in route.
     static func nativeEmbeddedSubtitleCapabilities(containers: [String]) -> [PlaybackV3NativeEmbeddedSubtitleCapability] {
         var seen = Set<String>()
         return containers.map { $0.lowercased() == "matroska" ? "mkv" : $0.lowercased() }
-            .filter { ["mkv", "mp4", "mov", "m4v", "webm"].contains($0) && seen.insert($0).inserted }.map {
+            .filter { ["mkv", "mp4", "mov", "m4v", "webm", "ts", "m2ts"].contains($0) && seen.insert($0).inserted }.map {
             PlaybackV3NativeEmbeddedSubtitleCapability(
                 container: $0,
-                codecs: $0 == "mkv"
-                    ? ["subrip", "ass", "ssa", "webvtt", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]
-                    : ($0 == "webm" ? ["webvtt"] : ["mov_text"]),
+                codecs: nativeEmbeddedSubtitleCodecs(container: $0),
                 trackIdentity: "ffmpeg_stream_index",
                 assStyling: true,
                 fontAttachments: true
             )
+        }
+    }
+
+    private static func nativeEmbeddedSubtitleCodecs(container: String) -> [String] {
+        switch container {
+        case "mkv": return ["subrip", "ass", "ssa", "webvtt", "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"]
+        case "webm": return ["webvtt"]
+        case "ts", "m2ts": return ["hdmv_pgs_subtitle"]
+        default: return ["mov_text"]
         }
     }
 

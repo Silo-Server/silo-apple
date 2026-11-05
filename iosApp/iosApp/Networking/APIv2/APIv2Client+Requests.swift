@@ -35,10 +35,19 @@ extension APIv2Client {
 
     // MARK: listDiscoverSections
 
-    func requestDiscoverSections() async throws -> [RequestDiscoverySection] {
+    func requestDiscoverLayout() async throws -> RequestDiscoverLayout {
         let collection: APIv2DiscoverSectionCollection = try await requestsCall(
             "GET", path: "/api/v2/requests/discover", status: 200)
-        return collection.items
+        return RequestDiscoverLayout(sections: collection.items, rowOrder: collection.rowOrder ?? [])
+    }
+
+    // MARK: getDiscoverRow
+
+    /// One page of a row of the server's Discover layout, for its See all page.
+    func requestDiscoverRow(key: String, page: Int) async throws -> RequestDiscoverySection {
+        let escaped = try catalogPathSegment(key)
+        return try await requestsCall("GET", path: "/api/v2/requests/discover/rows/\(escaped)",
+            query: ["page": String(max(page, 1))], status: 200)
     }
 
     // MARK: getRequestMediaDetail

@@ -1,16 +1,21 @@
 #if !os(tvOS)
 import SwiftUI
 
-/// Phone movie detail: artwork hero, then cast, trailers, Details and More
-/// Like This. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
+/// Phone movie detail: artwork hero, then cast, trailers and extras, the
+/// box set, More Like This and Details. Mirrors TVMovieDetailView's metadata and actions, sized for touch.
 struct MovieDetailContent<BelowOverview: View>: View {
     let detail: ItemDetail
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The box set the movie belongs to; nil draws no row.
+    let boxSet: CatalogBoxSetDetail?
     let selectedVersionFileId: Int?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
+    /// The viewer picked Auto on this visit, so `detail`'s effective
+    /// subtitle settings no longer describe what Auto plays.
+    let subtitleOverrideCleared: Bool
     /// `resumePosition` is the point the user was offered (nil for a
     /// restart or a title without progress).
     let onPlay: (_ startFromBeginning: Bool, _ resumePosition: Double?) -> Void
@@ -65,12 +70,22 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     belowFold
                 }
                 .padding(.bottom, 40)
-            } paneHero: { height in
-                hero(paneHeight: height)
+            } paneArtwork: {
+                hero(pane: .artwork)
+            } paneSidebar: {
+                VStack(spacing: 16) {
+                    hero(pane: .sidebar)
+                    if let effectiveVersion {
+                        playbackSelectors(for: effectiveVersion)
+                    }
+                }
             } paneContent: {
                 VStack(alignment: .leading, spacing: 32) {
-                    heroExtras
-                        .padding(.horizontal, SiloTheme.safePadding)
+                    VStack(spacing: 14) {
+                        hero(pane: .overview)
+                        belowOverview()
+                    }
+                    .padding(.horizontal, SiloTheme.safePadding)
                     belowFold
                 }
                 .padding(.bottom, 40)
@@ -100,7 +115,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     // MARK: - Hero
 
-    private func hero(paneHeight: CGFloat? = nil) -> some View {
+    private func hero(pane: PhoneDetailHeroPane? = nil) -> some View {
         PhoneDetailHero(
             title: detail.title,
             logoUrl: detail.logoUrl,
@@ -117,13 +132,14 @@ struct MovieDetailContent<BelowOverview: View>: View {
             creditText: PhoneHeroMetadata.creditText(from: detail),
             overlayData: OverlayData.from(detail),
             enablesArtworkParallax: SiloMediaType.isMovieLibrary(detail.type),
-            paneHeight: paneHeight,
+            pane: pane,
             actions: { actionStack },
             belowOverview: { heroExtras }
         )
     }
 
-    /// Under the overview in one column; atop the content pane in a split.
+    /// Under the overview in one column. A split page places the two parts
+    /// separately: selectors in the sidebar, the translation under the overview.
     private var heroExtras: some View {
         VStack(spacing: 14) {
             belowOverview()
@@ -207,6 +223,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
             selectedVersionFileId: selectedVersionFileId,
             selectedAudioTrackIndex: selectedAudioTrackIndex,
             selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+            // The effective settings arrive with the watch-detail enrichment.
+            previewsAutoSubtitle: !subtitleOverrideCleared && detail.hasWatchDetailSubtitlePolicy == true,
+            subtitleLanguage: detail.effectiveSubtitleLanguage,
+            subtitleMode: detail.effectiveSubtitleMode,
+            subtitleSignature: detail.effectiveSubtitleTrackSignature,
+            showForcedSubtitles: detail.showsForcedSubtitles,
             onSelectVersion: onSelectVersion,
             onSelectAudioTrack: onSelectAudioTrack,
             onSelectSubtitleTrack: onSelectSubtitleTrack
@@ -270,10 +292,14 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
             trailersSection
 
-            detailsSection
-                .padding(.horizontal, SiloTheme.safePadding)
+            if let boxSet {
+                PhoneBoxSetRow(boxSet: boxSet, currentContentId: detail.contentId)
+            }
 
             similarSection
+
+            detailsSection
+                .padding(.horizontal, SiloTheme.safePadding)
         }
     }
 

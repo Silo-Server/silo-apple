@@ -169,8 +169,8 @@ final class ArtworkURLTests: XCTestCase {
 
     func testTopShelfHomeSeasonAndDetailArtwork() throws {
         let decoder = HTTPClient.makeJSONDecoder(artworkServerURL: URL(string: "https://tv.example/mount"))
-        let sections = try decoder.decode(TopShelfSectionsResponse.self, from: Data(#"{"sections":[{"id":"cw","section_type":"continue_watching","title":"Continue Watching","items":[{"content_id":"episode","type":"episode","title":"Episode","poster_url":"/art/still.jpg?sig=a%2Bb"}]}]}"#.utf8))
-        XCTAssertEqual(sections.sections.first?.items.first?.posterUrl, "https://tv.example/art/still.jpg?sig=a%2Bb")
+        let section = try decoder.decode(TopShelfSection.self, from: Data(#"{"id":"cw","section_type":"continue_watching","title":"Continue Watching","items":[{"content_id":"episode","type":"episode","title":"Episode","poster_url":"/art/still.jpg?sig=a%2Bb"}]}"#.utf8))
+        XCTAssertEqual(section.items.first?.posterUrl, "https://tv.example/art/still.jpg?sig=a%2Bb")
         let seasons = try decoder.decode(TopShelfSeasonsResponse.self, from: Data(#"{"items":[{"season_number":1,"poster_url":"/art/season.jpg?sig=x%2Fy"}]}"#.utf8))
         XCTAssertEqual(seasons.seasons.first?.posterUrl, "https://tv.example/art/season.jpg?sig=x%2Fy")
         let detail = try decoder.decode(TopShelfItemDetail.self, from: Data(#"{"poster_url":"https://s3.example/poster.jpg?X-Amz-Signature=a%2Bb"}"#.utf8))

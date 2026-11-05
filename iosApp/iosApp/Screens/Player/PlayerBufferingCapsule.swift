@@ -1,34 +1,31 @@
+#if os(tvOS)
 import SwiftUI
 
-/// Keep brief loads quiet; show feedback only for a sustained video stall.
+/// A spinner and a short status line in the top-trailing corner, for a wait
+/// that has a reason worth naming (a Watch Party sync). Plain loading uses
+/// `PlayerLoadingSpinner`.
 struct PlayerBufferingCapsule: View {
-    var message: LocalizedStringKey = "Loading…"
-    var delay: Duration = .milliseconds(1_500)
+    let message: LocalizedStringKey
     @State private var isVisible = false
 
     var body: some View {
-        HStack(spacing: spacing) {
+        HStack(spacing: 8) {
             ProgressView()
                 .tint(.white)
                 .progressViewStyle(.circular)
-                .scaleEffect(spinnerScale)
+                .scaleEffect(0.9)
 
             Text(message)
                 .font(.siloSmall.weight(.medium))
                 .foregroundStyle(.white.opacity(0.82))
         }
-        .padding(.horizontal, horizontalPadding)
+        .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .siloPlayerGlass(in: Capsule())
         .shadow(color: .black.opacity(0.45), radius: 18, y: 7)
-        #if os(macOS)
-        // The Mac player owns the whole window; a corner pill is easy to miss.
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        #else
-        .padding(.top, topPadding)
-        .padding(.trailing, trailingPadding)
+        .padding(.top, 64)
+        .padding(.trailing, 80)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-        #endif
         .allowsHitTesting(false)
         .transition(.opacity)
         .opacity(isVisible ? 1 : 0)
@@ -37,50 +34,11 @@ struct PlayerBufferingCapsule: View {
         .accessibilityHidden(!isVisible)
         .task {
             isVisible = false
-            try? await Task.sleep(for: delay)
-            // Resuming playback removes this view and cancels the delay.
+            try? await Task.sleep(for: PlayerLoadingSpinner.showDelay)
+            // The wait ending removes this view and cancels the delay.
             guard !Task.isCancelled else { return }
             isVisible = true
         }
     }
-
-    private var spacing: CGFloat {
-        #if os(tvOS)
-        8
-        #else
-        7
-        #endif
-    }
-
-    private var spinnerScale: CGFloat {
-        #if os(tvOS)
-        0.9
-        #else
-        0.8
-        #endif
-    }
-
-    private var horizontalPadding: CGFloat {
-        #if os(tvOS)
-        12
-        #else
-        10
-        #endif
-    }
-
-    private var topPadding: CGFloat {
-        #if os(tvOS)
-        64
-        #else
-        68
-        #endif
-    }
-
-    private var trailingPadding: CGFloat {
-        #if os(tvOS)
-        80
-        #else
-        16
-        #endif
-    }
 }
+#endif

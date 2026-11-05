@@ -63,7 +63,7 @@ packages:
   # reviewed revision; Package.resolved also freezes its binary dependencies.
   AetherEngine:
     url: https://github.com/Silo-Server/AetherEngine
-    revision: c74ec2f224f0e6a356b1f9ea4b74f1da5063e83d
+    revision: 10631a5136371a0f83d67a1e85f26163588d6094
   SwiftAssRenderer:
     url: https://github.com/mihai8804858/swift-ass-renderer
     exactVersion: 1.3.1
@@ -284,6 +284,7 @@ targets:
       - path: NotificationService
       - path: iosApp/Notifications/ApplePushDisplayMetadata.swift
       - path: iosApp/Notifications/ApplePushDisplayTargets.swift
+      - path: iosApp/Shared/InsecureRedirectGuard.swift
       - path: iosApp/Shared/KeychainAudience.swift
       - path: iosApp/Shared/SharedStorage.swift
     configFiles:

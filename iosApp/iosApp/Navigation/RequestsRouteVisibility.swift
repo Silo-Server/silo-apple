@@ -7,7 +7,7 @@ enum RequestsRouteVisibility {
     /// The Requests screens: hub, My Requests, request detail.
     static func isRequestsRoute(_ route: Route) -> Bool {
         switch route {
-        case .requestsHub, .myRequests, .requestDetail:
+        case .requestsHub, .myRequests, .requestDetail, .requestDiscoverRow:
             return true
         default:
             return false

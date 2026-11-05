@@ -11,6 +11,19 @@ struct HTTPRequestIdentity: Equatable, Sendable {
     let serverURL: String
     let profileId: String
     let clientFamily: String
+    /// The account (`Account.localAccountId`) the work belongs to. Profile
+    /// IDs repeat across accounts on one server, so when set,
+    /// `TokenStore.captureRequestAuth` also requires the selected account to
+    /// be this one.
+    let localAccountId: String?
+
+    init(serverId: String, serverURL: String, profileId: String, clientFamily: String, localAccountId: String? = nil) {
+        self.serverId = serverId
+        self.serverURL = serverURL
+        self.profileId = profileId
+        self.clientFamily = clientFamily
+        self.localAccountId = localAccountId
+    }
 }
 
 enum CapturedHTTPRequestCredentialOwner: Equatable, Sendable {
@@ -129,9 +142,11 @@ actor HTTPClient {
     private var mediaRefreshBackoff: (auth: CapturedOrdinaryRequestAuth, until: ContinuousClock.Instant)?
     private var proactiveMediaRefreshes: [RefreshAccountIdentity: (id: UUID, task: Task<Void, Never>)] = [:]
     /// Approver-bearer renewals of saved servers that are not active
-    /// (`freshAccessToken(serverId:)`), keyed by server. A caller holding the
-    /// same refresh token joins the renewal in flight instead of sending that
-    /// token a second time.
+    /// (`freshAccessToken(serverId:)`) and of accounts not in use
+    /// (`freshAccessToken(serverId:localAccountId:)`), both keyed by the
+    /// `server|account` renewed. A caller holding the same refresh token
+    /// joins the renewal in flight instead of sending that token a second
+    /// time.
     private var inactiveServerRenewals: [String: (refreshToken: String, task: Task<ApproverBearer, Never>)] = [:]
     /// The profile proof the last `.siloProfileVerificationRequired` was
     /// posted for (access token dropped), with the `TokenStore` selection
@@ -409,15 +424,24 @@ actor HTTPClient {
     /// read the replacement account. The request carries only that bearer: v2
     /// logout does not accept the profile header.
     func revokeSession(_ auth: CapturedOrdinaryRequestAuth) async {
-        guard let token = auth.accessToken, !token.isEmpty else { return }
+        guard let token = auth.accessToken else { return }
+        await revokeSession(accessToken: token, serverURL: auth.account.serverURL)
+    }
+
+    /// Revokes one signed-out session by its own bearer, at the origin it
+    /// was saved for. Best effort, like the captured form above.
+    func revokeSession(accessToken token: String, serverURL: String) async {
+        guard !token.isEmpty, !serverURL.isEmpty else { return }
         do {
-            var request = try buildRequest(serverUrl: auth.account.serverURL,
+            var request = try buildRequest(serverUrl: serverURL,
                 method: "POST", path: "/api/v2/auth/logout", query: [:])
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             request.timeoutInterval = 5
             // Removing the server or signing in again cancels ordinary traffic.
             // Let this one captured revocation finish independently.
-            let revocationSession = URLSession(configuration: session.configuration)
+            let revocationSession = URLSession(configuration: session.configuration,
+                                               delegate: InsecureRedirectRefusingDelegate.shared,
+                                               delegateQueue: nil)
             defer { revocationSession.invalidateAndCancel() }
             _ = try await revocationSession.data(for: request)
         } catch {
@@ -470,7 +494,8 @@ actor HTTPClient {
         expectedAccount: RefreshAccountIdentity? = nil,
         expectedAuth: CapturedOrdinaryRequestAuth? = nil,
         sendsProfile: Bool = true,
-        dispatchRecord: HTTPDispatchRecord? = nil
+        dispatchRecord: HTTPDispatchRecord? = nil,
+        beforeDispatch: (@Sendable () async throws -> Void)? = nil
     ) async throws -> HTTPRawResponse {
         if let requestIdentity {
             let dispatchRevision = try captureRequestDispatchRevision()
@@ -510,7 +535,8 @@ actor HTTPClient {
                 timeout: timeout,
                 dispatchRevision: dispatchRevision,
                 dispatchRecord: dispatchRecord,
-                routesLocally: true
+                routesLocally: true,
+                beforeDispatch: beforeDispatch
             )
 
             if response.statusCode == 401,
@@ -554,7 +580,8 @@ actor HTTPClient {
                         timeout: timeout,
                         dispatchRevision: dispatchRevision,
                         dispatchRecord: dispatchRecord,
-                        routesLocally: true
+                        routesLocally: true,
+                        beforeDispatch: beforeDispatch
                     )
                 } else {
                     // Refresh reported success but the recapture disagreed, so
@@ -1413,7 +1440,8 @@ actor HTTPClient {
         dispatchRevision: UInt64,
         dispatchRecord: HTTPDispatchRecord? = nil,
         reportReachability: Bool = true,
-        routesLocally: Bool = false
+        routesLocally: Bool = false,
+        beforeDispatch: (@Sendable () async throws -> Void)? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         #if os(iOS) || os(tvOS)
         // Templated once, at capture, before anything can log it. `request.url`
@@ -1430,6 +1458,9 @@ actor HTTPClient {
         // request start after its session was already enumerated and survive
         // a registry or temporary-owner transition. Reject it; waiting would
         // send a request built from credentials captured before the switch.
+        // The caller's last check (`requestData`'s `beforeDispatch`), after
+        // the credential capture and any refresh, ahead of the dispatch fence.
+        try await beforeDispatch?()
         do {
             try ensureRequestDispatchAllowed(expectedRevision: dispatchRevision)
         } catch {
@@ -1446,7 +1477,11 @@ actor HTTPClient {
         do {
             let session = timeout == .extended ? longWaitSession : session
             (data, response) = try await send(
-                request, on: session, routesLocally: routesLocally, dispatchRevision: dispatchRevision)
+                request, on: session, routesLocally: routesLocally, dispatchRevision: dispatchRevision,
+                beforeDispatch: beforeDispatch)
+        } catch let refusal as DispatchHookRefusal {
+            // The caller refused the saved-address retry; nothing left then.
+            throw refusal.underlying
         } catch {
             if isRequestDispatchBlocked || requestDispatchRevision != dispatchRevision {
                 #if os(iOS) || os(tvOS)
@@ -1572,6 +1607,13 @@ actor HTTPClient {
         url.map { $0.path.contains("/api/v2/auth/") } ?? false
     }
 
+    /// The caller's `beforeDispatch` refused the saved-address retry in
+    /// `send`, so `perform` rethrows `underlying` rather than reporting a
+    /// transport failure.
+    private struct DispatchHookRefusal: Error {
+        let underlying: Error
+    }
+
     /// Sends `request`, over the local route when it is allowed and one is
     /// active for its origin. The route is read once, so the response and any
     /// failure belong to the route this request used; the response reports the
@@ -1583,7 +1625,8 @@ actor HTTPClient {
         _ request: URLRequest,
         on session: URLSession,
         routesLocally: Bool,
-        dispatchRevision: UInt64
+        dispatchRevision: UInt64,
+        beforeDispatch: (@Sendable () async throws -> Void)? = nil
     ) async throws -> (Data, URLResponse) {
         // Sign-in stays on the saved address: the server builds verification
         // and redirect links from the origin a request arrived on.
@@ -1611,6 +1654,12 @@ actor HTTPClient {
             // a challenge the pin refused goes again to the saved address.
             guard LocalRoute.mayRetryOnSavedAddress(after: error, method: request.httpMethod) else {
                 throw LocalRouteFailure(underlying: error)
+            }
+            // The local attempt may have waited a while: the caller checks again.
+            do {
+                try await beforeDispatch?()
+            } catch {
+                throw DispatchHookRefusal(underlying: error)
             }
             try ensureRequestDispatchAllowed(expectedRevision: dispatchRevision)
             return try await session.data(for: request)
@@ -1883,6 +1932,7 @@ actor HTTPClient {
         "/api/v2/auth/device/start", "/api/v2/auth/device/poll",
         "/api/v2/auth/device/capability", "/api/v2/auth/oauth/complete",
         "/api/v2/system/setup", "/api/v2/auth/signup",
+        "/api/v2/password-resets",
     ]
 
     /// Whether a 401 may refresh the session and re-send the request. Reads
@@ -2214,6 +2264,20 @@ actor HTTPClient {
         return current
     }
 
+    /// Replaces the active account's access token now, through the shared
+    /// refresh flight, however long it has left. A changed temporary password
+    /// needs this: the token that changed it keeps the server's restriction
+    /// until it is replaced. Returns false when no persistent session is
+    /// active, or the token did not rotate: the server was unreachable, or it
+    /// rejected the session, which signs it out as any rejected refresh does.
+    func refreshActiveSession() async throws -> Bool {
+        let revision = try captureRequestDispatchRevision()
+        guard let current = await tokenStore.captureOrdinaryRequestAuth(),
+              case .persistentServer = current.credentialOwner,
+              current.accessToken != nil else { return false }
+        return try await refreshTokens(expected: current, dispatchRevision: revision) != nil
+    }
+
     private static func performRefresh(
         expected: RefreshAccountIdentity,
         tokenStore: TokenStore,
@@ -2358,7 +2422,7 @@ actor HTTPClient {
     /// Nothing here signs anyone out.
     ///
     /// A bearer is released only for the address the saved server is keyed
-    /// by (`TokenStore.session(_:belongsTo:)`): a session bound to another
+    /// by (`TokenStore.account(_:belongsTo:)`): an account bound to another
     /// origin answers `.rejected` rather than travel to this one.
     ///
     /// When the slot changed while the refresh was in flight (it became
@@ -2397,25 +2461,54 @@ actor HTTPClient {
         }
         guard let stored = await tokenStore.inactiveServerSession(for: serverId),
               let access = stored.accessToken, let refresh = stored.refreshToken,
-              let origin = stored.origin.map({ ServerRegistry.normalize(url: $0) }), !origin.isEmpty else {
+              case let origin = ServerRegistry.normalize(url: stored.origin), !origin.isEmpty else {
             return await storedBearer(serverId: serverId)
         }
         guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
-        if let flight = inactiveServerRenewals[serverId], flight.refreshToken == refresh {
+        return await renewInactiveAccountOnce(serverId, stored: stored, access: access, refresh: refresh, origin: origin)
+    }
+
+    /// `freshAccessToken(serverId:)` for one saved account on the server,
+    /// which need not be the account requests there use: an approving phone
+    /// can sign a TV in as any account it holds. The account in use renews
+    /// through the server path; any other renews its own record once,
+    /// compare-and-set, as an inactive server does.
+    func freshAccessToken(serverId: String, localAccountId: String) async -> ApproverBearer {
+        guard !serverId.isEmpty else { return .rejected }
+        if await tokenStore.requestAccountId(onServer: serverId) == localAccountId {
+            return await freshAccessToken(serverId: serverId)
+        }
+        guard let stored = await tokenStore.inactiveAccountSession(localAccountId, onServer: serverId),
+              let access = stored.accessToken, let refresh = stored.refreshToken,
+              case let origin = ServerRegistry.normalize(url: stored.origin), !origin.isEmpty else {
+            return .rejected
+        }
+        guard MediaAccessTokenExpiry.shouldRefresh(access, now: Date()) else { return .token(access) }
+        return await renewInactiveAccountOnce(serverId, stored: stored, access: access, refresh: refresh, origin: origin)
+    }
+
+    /// `renewInactiveServer`, once per account and refresh token. Both
+    /// `freshAccessToken` paths key the flight by the account they read, so
+    /// a server's most recently used account renewed by either path shares
+    /// one renewal and its refresh token is sent once.
+    private func renewInactiveAccountOnce(_ serverId: String, stored: Account, access: String,
+                                          refresh: String, origin: String) async -> ApproverBearer {
+        let key = "\(serverId)|\(stored.localAccountId)"
+        if let flight = inactiveServerRenewals[key], flight.refreshToken == refresh {
             return await flight.task.value
         }
         let task = Task { await renewInactiveServer(serverId, stored: stored, access: access, refresh: refresh, origin: origin) }
-        inactiveServerRenewals[serverId] = (refresh, task)
+        inactiveServerRenewals[key] = (refresh, task)
         let bearer = await task.value
-        if inactiveServerRenewals[serverId]?.refreshToken == refresh {
-            inactiveServerRenewals[serverId] = nil
+        if inactiveServerRenewals[key]?.refreshToken == refresh {
+            inactiveServerRenewals[key] = nil
         }
         return bearer
     }
 
     /// One renewal of an inactive saved server's slot, compare-and-set
     /// against `stored` (see `freshAccessToken(serverId:)`).
-    private func renewInactiveServer(_ serverId: String, stored: CanonicalAccountSession, access: String,
+    private func renewInactiveServer(_ serverId: String, stored: Account, access: String,
                                      refresh: String, origin: String) async -> ApproverBearer {
         func fallback(_ failure: ApproverBearer) -> ApproverBearer {
             Self.hasExpired(access) ? failure : .token(access)

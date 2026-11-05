@@ -4,6 +4,9 @@ enum SiloControlProtocol {
     static let version = 2
     static let supportedVersions = [1, 2]
     static let serviceType = "_silocast._tcp"
+    /// The Roku receiver's own advertisement. A separate type, because a
+    /// Roku can't speak TLS and phones that only do aren't to list it.
+    static let rokuServiceType = "_silocast-roku._tcp"
 
     static func negotiatedVersion(with peer: [Int]) -> Int? {
         supportedVersions.filter(peer.contains).max()
@@ -29,6 +32,12 @@ enum SiloControlFeature {
     /// The receiver accepts `presence`, so a controller can change its
     /// `passive` flag without reconnecting.
     static let presence = "presence"
+    /// The receiver can only mute, not set a level (Roku), so the
+    /// controller offers a mute toggle instead of a volume slider.
+    static let volumeMuteOnly = "volume_mute_only"
+    /// The receiver can't change playback speed (Roku), so the controller
+    /// hides its speed menu.
+    static let noPlaybackSpeed = "no_playback_speed"
 
     static let receiverFeatures = [multiController, closeReason, resumeToken, replaceConfirmation, presence]
     static let phoneFeatures = [closeReason, resumeToken, replaceConfirmation]

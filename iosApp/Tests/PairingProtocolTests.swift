@@ -1,5 +1,8 @@
 import XCTest
 import Foundation
+#if os(iOS)
+import Network
+#endif
 @testable import Silo
 
 final class PairingProtocolTests: XCTestCase {
@@ -93,18 +96,20 @@ final class PairingProtocolTests: XCTestCase {
     /// legacy push decodes and a legacy peer sees no new required key.
     func testPushServerIdentityFieldsAreOptionalOnTheWire() throws {
         let legacy = Data(#"{"type":"pushServer","v":1,"serverURL":"https://media.example.com","serverName":"Home"}"#.utf8)
-        guard case let .pushServer(url, name, identity, endpoints) = try decoder.decode(PairingMessage.self, from: legacy) else {
+        guard case let .pushServer(url, name, identity, endpoints, accountName) = try decoder.decode(PairingMessage.self, from: legacy) else {
             return XCTFail("expected pushServer")
         }
         XCTAssertEqual(url, "https://media.example.com")
         XCTAssertEqual(name, "Home")
         XCTAssertNil(identity)
         XCTAssertNil(endpoints)
+        XCTAssertNil(accountName)
 
         let data = try encoder.encode(PairingMessage.pushServer(serverURL: "https://media.example.com", serverName: nil))
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertNil(json["serverIdentity"])
         XCTAssertNil(json["endpoints"])
+        XCTAssertNil(json["accountName"])
         XCTAssertEqual(json["v"] as? Int, 1)
 
         let full = try encoder.encode(PairingMessage.pushServer(
@@ -116,6 +121,70 @@ final class PairingProtocolTests: XCTestCase {
         XCTAssertEqual(endpoint["url"] as? String, "https://media.overlay.example")
         XCTAssertEqual(endpoint["kind"] as? String, "provider")
         XCTAssertEqual(endpoint["displayName"] as? String, "Tailscale")
+    }
+
+    /// Contract §D: the golden frames Apple and Android must both decode and
+    /// re-encode exactly, with the display-only `accountName` and the
+    /// `limit_reached` failure code.
+    func testMultiAccountGoldenFramesDecodeAndEncodeExactly() throws {
+        let url = "https://home.example.org"
+        let frames: [(String, PairingMessage)] = [
+            (#"{"type":"pushServer","v":1,"serverURL":"https://home.example.org","serverName":"Home","serverIdentity":"5f0c8a1e-2d4b-4c3a-9e7f-1a2b3c4d5e6f","accountName":"sam"}"#,
+             .pushServer(serverURL: url, serverName: "Home", serverIdentity: "5f0c8a1e-2d4b-4c3a-9e7f-1a2b3c4d5e6f",
+                         accountName: "sam")),
+            (#"{"type":"serverResult","v":1,"serverURL":"https://home.example.org","status":"failed","error":"limit_reached"}"#,
+             .serverResult(serverURL: url, status: .failed, error: PairingFailureCode.limitReached.rawValue)),
+        ]
+        for (frame, message) in frames {
+            XCTAssertEqual(try decoder.decode(PairingMessage.self, from: Data(frame.utf8)), message, frame)
+            let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(message)) as? NSDictionary)
+            let expected = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(frame.utf8)) as? NSDictionary)
+            XCTAssertEqual(encoded, expected, frame)
+        }
+        XCTAssertEqual(PairingFailureCode(wire: "limit_reached"), .limitReached)
+        XCTAssertEqual(PairingFailureCode.limitReached.wireValue, "limit_reached")
+    }
+
+    /// The TXT record: `acct=1` takes several accounts, `lim` caps them, and
+    /// a `lim` that isn't a positive count reads as no limit.
+    func testTXTRecordReadsAccountsAndLimit() {
+        #if os(iOS)
+        let endpoint = NWEndpoint.hostPort(host: "tv.local", port: 9)
+        func tv(_ txt: [String: String]) -> DiscoveredTV? {
+            TVPairingBrowser.makeTV(txt: txt, endpoint: endpoint, serviceType: PairingProtocol.rokuServiceType)
+        }
+        XCTAssertEqual(tv(["acct": "1", "lim": "3"])?.acceptsSeveralAccounts, true)
+        XCTAssertEqual(tv(["acct": "1", "lim": "3"])?.accountLimit, 3)
+        XCTAssertNil(tv(["acct": "1", "lim": "0"])?.accountLimit)
+        XCTAssertNil(tv(["acct": "1", "lim": "many"])?.accountLimit)
+        XCTAssertEqual(tv([:])?.acceptsSeveralAccounts, false)
+        XCTAssertNil(tv([:])?.accountLimit)
+        #endif
+    }
+
+    /// The session binding is base64url without padding: the 32-byte secret
+    /// and its SHA-256, 43 characters each, as the server checks them.
+    func testSessionBindingEncodesTheSecretAndItsHash() throws {
+        let fixed = PairingSessionBinding(secretBytes: Data(0..<32))
+        XCTAssertEqual(fixed.secret, "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+        XCTAssertEqual(fixed.binding, "Yw3NKWbEM2aRElRIu7JbT_QSpJxzLbLIq8G4WBvXEN0")
+        let a = try XCTUnwrap(PairingSessionBinding.random())
+        let b = try XCTUnwrap(PairingSessionBinding.random())
+        XCTAssertNotEqual(a, b)
+        for value in [a.secret, a.binding] {
+            XCTAssertEqual(value.count, 43)
+            XCTAssertTrue(value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }, value)
+        }
+    }
+
+    /// Contract §C.5: the phone compares until a compared request supplies
+    /// a binding, then approves that binding alone and refuses any other.
+    func testApprovalDecisionFollowsTheTrustedBinding() {
+        XCTAssertEqual(PairingApprovalDecision.decide(trusted: nil, lookupBinding: nil), .compare(trustOnConfirm: nil))
+        XCTAssertEqual(PairingApprovalDecision.decide(trusted: nil, lookupBinding: "B1"), .compare(trustOnConfirm: "B1"))
+        XCTAssertEqual(PairingApprovalDecision.decide(trusted: "B1", lookupBinding: nil), .compare(trustOnConfirm: nil))
+        XCTAssertEqual(PairingApprovalDecision.decide(trusted: "B1", lookupBinding: "B1"), .approve)
+        XCTAssertEqual(PairingApprovalDecision.decide(trusted: "B1", lookupBinding: "B2"), .refuse)
     }
 
     func testFailureCodesReadUnknownAsGenericFailure() {

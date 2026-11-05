@@ -127,13 +127,16 @@ struct TrackSelectionSheet: View {
             let isSelected = isSecondary
                 ? viewModel.selectedSecondarySubtitleId == track.trackId
                 : viewModel.selectedSubtitleId == track.trackId
-            let isDisabled = isSecondary && viewModel.selectedSubtitleId == track.trackId
+            let isDisabled = track.hasUnsupportedFormat
+                || isSecondary && viewModel.selectedSubtitleId == track.trackId
 
             TrackSelectionRow(
                 name: track.primaryLabel,
                 detail: track.detailLabel,
                 pills: track.attributePillLabels(),
-                status: viewModel.subtitleSyncStatus(for: track),
+                status: track.hasUnsupportedFormat
+                    ? PlayerTrack.unsupportedFormatLabel
+                    : viewModel.subtitleSyncStatus(for: track),
                 isSelected: isSelected,
                 isDisabled: isDisabled
             ) {

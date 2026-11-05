@@ -53,8 +53,8 @@ func episodeRailAccessibilityLabel(
 }
 
 /// A poster-style media card with title, year, and optional progress.
-/// On tvOS the card uses `.buttonStyle(.card)` which gives proper focus lift,
-/// parallax, and title reveal — no manual focus effects required.
+/// On tvOS the card uses `TVCardOutlineButtonStyle`, which lifts and
+/// outlines the poster on focus.
 struct MediaCard: View {
     let title: String
     let posterUrl: String
@@ -114,6 +114,13 @@ struct MediaCard: View {
     /// when one title wraps and has no empty second line when none does.
     /// Nil reserves two lines, for rows that can't be grouped.
     var rowTitles: [String]? = nil
+    /// Draws the card as this movie box set: its label and film count over
+    /// the poster. Pass `progress` for its watched share and no `contentId`,
+    /// so a tap runs `action` and the card has no title menu.
+    var boxSet: CatalogBoxSet? = nil
+    /// Outlines the poster and labels it THIS FILM: the movie whose page
+    /// shows this card in its box set row.
+    var marksCurrentFilm = false
 
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
@@ -121,8 +128,6 @@ struct MediaCard: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
     #endif
-
-    private var uiCustomization: UICustomizationPreferences { .shared }
 
     private var cardWidth: CGFloat { artworkSize.width }
     private var cardHeight: CGFloat { artworkSize.height }
@@ -148,15 +153,15 @@ struct MediaCard: View {
 
     private var cardBody: some View {
         #if os(tvOS)
-        // tvOS: button label is just the poster (so .card style lifts the image),
+        // tvOS: button label is just the poster (so the card style lifts the image),
         // then a title caption lives outside the button and reacts to focus via FocusState.
         FocusableMediaCard(
             title: title,
             year: year,
             subtitle: subtitle,
             episodeAccessibilityLabel: episodeAccessibilityLabel,
-            captionStyle: uiCustomization.cardPresentation.caption,
             cardWidth: cardWidth,
+            cardHeight: cardHeight,
             action: action,
             playAction: playAction,
             focusedItemId: focusedItemId,
@@ -296,12 +301,8 @@ struct MediaCard: View {
     private var cardContent: some View {
         VStack(alignment: .leading, spacing: 4) {
             posterImage
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                titleText
-            }
-            if uiCustomization.cardPresentation.caption.showsMetadata {
-                yearText
-            }
+            titleText
+            yearText
         }
     }
 
@@ -331,6 +332,11 @@ struct MediaCard: View {
             // affordances always win the same corner if they conflict.
             if let overlayData, overlayStore.enabled {
                 CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
+                    .frame(width: cardWidth, height: cardHeight)
+            }
+
+            if let boxSet {
+                BoxSetCardBadges(boxSet: boxSet)
                     .frame(width: cardWidth, height: cardHeight)
             }
 
@@ -364,17 +370,29 @@ struct MediaCard: View {
         // One mask for every layer, so overlays and the progress bar stay
         // inside the rounded corners.
         .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+        .overlay {
+            if marksCurrentFilm {
+                BoxSetCurrentFilmMarker()
+            }
+        }
+        .background(alignment: .top) {
+            if boxSet != nil {
+                BoxSetCardSleeves(width: cardWidth)
+            }
+        }
     }
 
     private var isPlayed: Bool { personalState.isPlayed(userState) }
 
     private var accessibilityDescription: String {
-        mediaCardAccessibilityLabel(
+        if let boxSet { return boxSet.accessibilityLabel }
+        let label = mediaCardAccessibilityLabel(
             title: title,
             episodeLabel: episodeAccessibilityLabel,
             year: year,
             isWatched: isPlayed
         )
+        return marksCurrentFilm ? label + ", This film" : label
     }
 
     @ViewBuilder
@@ -460,16 +478,16 @@ struct MediaCard: View {
 // MARK: - tvOS Focusable wrapper
 
 #if os(tvOS)
-/// Wraps a poster inside a `.card` button so the image gets the native focus
-/// lift/parallax, and renders a title + year below that highlights on focus.
+/// Wraps a poster inside an outlined card button so the image lifts on
+/// focus, and renders a title + year below that highlights on focus.
 private struct FocusableMediaCard<Content: View>: View {
     let title: String
     let year: Int?
     /// Replaces the year on the metadata line when present.
     let subtitle: String?
     let episodeAccessibilityLabel: String?
-    let captionStyle: CardCaptionStyle
     let cardWidth: CGFloat
+    let cardHeight: CGFloat
     let action: () -> Void
     let playAction: (() -> Void)?
     /// Parent row's focus tracking binding. When paired with `itemId`,
@@ -509,17 +527,15 @@ private struct FocusableMediaCard<Content: View>: View {
                 standaloneFocused: standaloneFocused
             )
 
-            if captionStyle.showsTitle {
-                TVMediaCardCaption(
-                    title: title,
-                    secondLine: subtitle ?? year.map(String.init),
-                    showsMetadata: captionStyle.showsMetadata,
-                    cardWidth: cardWidth,
-                    focusedItemId: focusedItemId,
-                    itemId: itemId,
-                    standaloneFocused: standaloneFocused
-                )
-            }
+            TVMediaCardCaption(
+                title: title,
+                secondLine: subtitle ?? year.map(String.init),
+                cardWidth: cardWidth,
+                cardHeight: cardHeight,
+                focusedItemId: focusedItemId,
+                itemId: itemId,
+                standaloneFocused: standaloneFocused
+            )
         }
         .frame(width: cardWidth)
     }
@@ -533,7 +549,7 @@ private struct FocusableMediaCard<Content: View>: View {
         let button = Button(action: action) {
             content()
         }
-        .buttonStyle(.card)
+        .buttonStyle(TVCardOutlineButtonStyle())
         .applyCardFocus(
             focusedItemId,
             itemId: itemId,
@@ -613,13 +629,13 @@ private struct TVStandaloneCardFocus<Content: View>: View {
     }
 }
 
-/// Only the caption reads focus. The native card button owns its lift and
-/// parallax without rebuilding its artwork and menu when a caption highlights.
+/// Only the caption reads focus. The card button owns its lift and
+/// outline without rebuilding its artwork and menu when a caption highlights.
 private struct TVMediaCardCaption: View {
     let title: String
     let secondLine: String?
-    let showsMetadata: Bool
     let cardWidth: CGFloat
+    let cardHeight: CGFloat
     let focusedItemId: FocusState<String?>.Binding?
     let itemId: String?
     let standaloneFocused: FocusState<Bool>.Binding?
@@ -638,7 +654,7 @@ private struct TVMediaCardCaption: View {
                 .tvCardTitleFocus(isFocused: isFocused)
                 .frame(width: cardWidth, alignment: .leading)
 
-            if showsMetadata, let secondLine {
+            if let secondLine {
                 Text(secondLine)
                     .font(.siloPosterMetadata)
                     .tvCardSubtitleFocus(isFocused: isFocused)
@@ -649,7 +665,11 @@ private struct TVMediaCardCaption: View {
             }
         }
         .frame(width: cardWidth, alignment: .leading)
-        .tvCardCaptionFocus(isFocused: isFocused, spacing: tvMediaCardCaptionSpacing)
+        .tvCardCaptionFocus(
+            isFocused: isFocused,
+            posterOverhang: TVCardOutlineButtonStyle.focusedOverhang(forHeight: cardHeight),
+            spacing: tvMediaCardCaptionSpacing
+        )
     }
 }
 

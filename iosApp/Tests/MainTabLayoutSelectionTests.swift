@@ -29,5 +29,18 @@ final class MainTabLayoutSelectionTests: XCTestCase {
             isPad: true, isiOSAppOnMac: true, windowFillsScreen: false
         ))
     }
+
+    /// The bar matches the Android phone bar; nothing about it is
+    /// configurable. Search, Requests and Profile live in each page's header.
+    func testTabBarIsFixed() {
+        XCTAssertEqual(
+            mainTabDestinations(downloadsEnabled: false).map(\.id),
+            [.app(.home), .app(.libraries), .app(.recommendations), .app(.calendar)]
+        )
+        XCTAssertEqual(
+            mainTabDestinations(downloadsEnabled: true).map(\.id),
+            [.app(.home), .app(.libraries), .app(.recommendations), .app(.calendar), .app(.downloads)]
+        )
+    }
 }
 #endif

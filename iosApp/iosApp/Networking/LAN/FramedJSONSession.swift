@@ -31,6 +31,22 @@ enum SiloLANTLS {
     }
 }
 
+/// A layer under the framing that seals each frame body once both peers
+/// have exchanged one plain opening frame. SiloControl uses it for a Roku at
+/// level `sealed` (`SiloControlSealedChannel`), where TLS is unavailable.
+/// The session owns its value and calls it only from the actor.
+protocol SiloFrameSealing: Sendable {
+    /// The plain frame body this side sends before anything else.
+    var openingFrame: Data { get }
+    /// Whether the peer's opening frame has arrived and frames are sealed.
+    var isKeyed: Bool { get }
+    /// Reads the peer's first frame. Throws when it isn't an opening frame
+    /// this side can key from; the session then ends with that error.
+    mutating func receiveOpening(_ body: Data) throws
+    mutating func seal(_ payload: Data) throws -> Data
+    mutating func open(_ body: Data) throws -> Data
+}
+
 /// One `NWConnection` carrying length-prefixed JSON frames of a single
 /// message type. The shared transport under companion pairing and
 /// SiloControl — both sides of each protocol use it (inbound via
@@ -54,6 +70,13 @@ actor FramedJSONSession<Message: Codable & Sendable> {
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var isOpen = false
+    /// With sealing, nothing but the opening frame is written until the
+    /// peer's opening frame keys the session.
+    private var sealing: (any SiloFrameSealing)?
+    private var keyedWaiter: CheckedContinuation<Void, Error>?
+    /// The sealing layer's error that ended the session, handed to the sends
+    /// it fails so a caller can say why (e.g. the TV refused the pairing).
+    private var sealingFailure: Error?
 
     // Ordered outbound queue: enqueue() is nonisolated + FIFO; a single drain
     // task sends one frame at a time so messages never reorder. `send()` goes
@@ -73,9 +96,10 @@ actor FramedJSONSession<Message: Codable & Sendable> {
     }
 
     /// Outbound side: connect to a discovered endpoint using the protocol's
-    /// TLS-PSK parameters.
-    init(endpoint: NWEndpoint, parameters: NWParameters) {
+    /// parameters, sealing frames when `sealing` is given.
+    init(endpoint: NWEndpoint, parameters: NWParameters, sealing: (any SiloFrameSealing)? = nil) {
         connection = NWConnection(to: endpoint, using: parameters)
+        self.sealing = sealing
         (outbound, outboundContinuation) = AsyncStream.makeStream()
     }
 
@@ -128,9 +152,17 @@ actor FramedJSONSession<Message: Codable & Sendable> {
     }
 
     private func startDrainLoop() async {
+        if let opening = sealing?.openingFrame {
+            do {
+                try await writeFrame(opening)
+                try await waitUntilKeyed()
+            } catch {
+                teardown(error)
+            }
+        }
         for await item in outbound {
             guard isOpen else {
-                item.completion?.resume(throwing: SessionError.closed)
+                item.completion?.resume(throwing: sealingFailure ?? SessionError.closed)
                 continue
             }
             do {
@@ -151,14 +183,26 @@ actor FramedJSONSession<Message: Codable & Sendable> {
     /// write can't reorder relative to queued frames, and surfaces the write
     /// result to the caller.
     func send(_ message: Message) async throws {
-        guard isOpen else { throw SessionError.closed }
+        guard isOpen else { throw sealingFailure ?? SessionError.closed }
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             outboundContinuation.yield(OutboundItem(message: message, completion: cont))
         }
     }
 
     private func writeRaw(_ message: Message) async throws {
-        let payload = try encoder.encode(message)
+        var payload = try encoder.encode(message)
+        if sealing != nil {
+            do {
+                payload = try sealing!.seal(payload)
+            } catch {
+                sealingFailure = error
+                throw error
+            }
+        }
+        try await writeFrame(payload)
+    }
+
+    private func writeFrame(_ payload: Data) async throws {
         let framed = try SiloFrame.encode(payload)
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             connection.send(content: framed, completion: .contentProcessed { error in
@@ -193,9 +237,17 @@ actor FramedJSONSession<Message: Codable & Sendable> {
         teardown(nil)
     }
 
+    private func waitUntilKeyed() async throws {
+        guard isOpen else { throw sealingFailure ?? SessionError.closed }
+        guard sealing?.isKeyed == false else { return }
+        try await withCheckedThrowingContinuation { keyedWaiter = $0 }
+    }
+
     private func teardown(_ error: Error?) {
         guard isOpen else { return }
         isOpen = false
+        keyedWaiter?.resume(throwing: sealingFailure ?? SessionError.closed)
+        keyedWaiter = nil
         connection.cancel()
         // Don't cancel the drain task — finishing the stream lets it drain any
         // buffered items and resume their `send` continuations with
@@ -208,6 +260,22 @@ actor FramedJSONSession<Message: Codable & Sendable> {
             continuation?.finish()
         }
         continuation = nil
+    }
+
+    /// The message bytes in a received frame body, or nil for the peer's
+    /// opening frame, which keys a sealed session and wakes the writer.
+    private func unsealed(_ body: Data) throws -> Data? {
+        guard sealing != nil else { return body }
+        do {
+            if sealing!.isKeyed { return try sealing!.open(body) }
+            try sealing!.receiveOpening(body)
+        } catch {
+            sealingFailure = error
+            throw error
+        }
+        keyedWaiter?.resume()
+        keyedWaiter = nil
+        return nil
     }
 
     private func receiveLoop() {
@@ -225,7 +293,8 @@ actor FramedJSONSession<Message: Codable & Sendable> {
         }
         if let data, !data.isEmpty {
             do {
-                for payload in try frameBuffer.append(data) {
+                for body in try frameBuffer.append(data) {
+                    guard let payload = try unsealed(body) else { continue }
                     let message = try decoder.decode(Message.self, from: payload)
                     continuation?.yield(message)
                 }

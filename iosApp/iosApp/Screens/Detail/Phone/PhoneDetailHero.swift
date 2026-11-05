@@ -58,6 +58,9 @@ struct PhoneDetailPageSurface<Content: View>: View {
 
     @State private var sampledTint = Color(red: 0.04, green: 0.12, blue: 0.14)
     @State private var topSafeArea: CGFloat = 0
+    #if os(macOS)
+    @State private var pageHeight: CGFloat = 0
+    #endif
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -69,7 +72,13 @@ struct PhoneDetailPageSurface<Content: View>: View {
         // the sidebar's rounded panel.
         content()
             .ignoresSafeArea(edges: .vertical)
+            // The hero places its details column by the window's height.
+            .environment(\.detailPageVisibleHeight, pageHeight)
             .background { backdrop.ignoresSafeArea() }
+            // The page runs under the title bar, so its height includes it.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+            } action: { pageHeight = $0 }
             .task(id: backdropURL) { await sampleTint() }
         #else
         ZStack {
@@ -302,6 +311,16 @@ private struct PhoneDetailParallaxArtwork: View {
     }
 }
 
+/// The parts of `PhoneDetailHero` a split page lays out separately.
+enum PhoneDetailHeroPane {
+    /// The artwork, spread behind the whole page.
+    case artwork
+    /// Title, facts, and actions, for the glass sidebar.
+    case sidebar
+    /// Overview and credits, at the top of the content pane.
+    case overview
+}
+
 /// Chooses between `PhoneDetailHero`'s compact and expanded compositions.
 /// Shared with the floating top chrome, which times its backing strip to the
 /// hero it sits over.
@@ -322,14 +341,23 @@ enum PhoneDetailHeroLayout {
         return horizontalSizeClass == .regular
     }
 
+    /// How far a split page's sidebar floats in from the window's edges.
+    static let splitSidebarMargin: CGFloat = 14
+
+    /// Where the Close button sits in a split page's sidebar: 10pt inside
+    /// both edges, so the 44pt button is concentric with the sidebar's 32pt
+    /// corner (22 + 10).
+    static let splitCloseButtonInset: CGFloat = splitSidebarMargin + 10
+
     /// Narrowest page that splits into a hero pane and a content pane.
     static let splitMinimumWidth: CGFloat = 760
 
     /// A wide, short page — the iPhone Duo's open inner display held in
     /// landscape — leaves a single hero-first column showing little more
-    /// than artwork. It splits instead: the hero holds the leading half and
-    /// the rest of the page scrolls in the trailing half, so the halves meet
-    /// at the fold, and an iPad window in landscape splits the same way.
+    /// than artwork. It splits instead: the artwork spans the window, the
+    /// title and actions hold still in a sidebar, and the rest of the page
+    /// scrolls beside it (see `PhoneDetailPageLayout`). An iPad window in
+    /// landscape splits the same way.
     /// Taller pages (portrait, including iPad page sheets) keep one column,
     /// and so do compact-height ones: an iPhone turned to landscape for the
     /// player also rotates the pages beneath it, which must not re-lay out.
@@ -372,10 +400,19 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     let overlayData: OverlayData?
     var enablesArtworkParallax = false
     var artworkStyle: PhoneDetailArtworkStyle = .backdrop
-    /// Set when the hero fills the leading pane of a split page (see
-    /// `PhoneDetailHeroLayout.usesSplitLayout`); `belowOverview` then moves to
-    /// the content pane and is not drawn here.
-    var paneHeight: CGFloat? = nil
+    /// Set when the hero supplies one part of a split page (see
+    /// `PhoneDetailHeroLayout.usesSplitLayout`). `belowOverview` is not drawn
+    /// in any part; the page places it in the content pane.
+    var pane: PhoneDetailHeroPane? = nil
+    /// Scales the compact (iPhone) artwork's height. A page whose content
+    /// matters more than its art, such as a box set's movies, passes less
+    /// than 1 so that content starts in the first screen.
+    var compactArtworkHeightFactor: CGFloat = 1
+    /// Sizes the regular-width (iPad and Mac) hero to its text and actions
+    /// rather than the fixed backdrop height, with the backdrop filling
+    /// whatever height that is. For the same pages as
+    /// `compactArtworkHeightFactor`.
+    var fitsRegularHeroToContent = false
     @ViewBuilder let actions: () -> Actions
     @ViewBuilder let belowOverview: () -> BelowOverview
 
@@ -389,6 +426,12 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @ScaledMetric(relativeTo: .subheadline) private var ratingSize: CGFloat = 15
     @State private var availableWidth: CGFloat = 0
     @State private var showFullOverview = false
+    #if os(macOS)
+    @Environment(\.detailPageVisibleHeight) private var macPageHeight
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The Mac header's details column, measured without its offset.
+    @State private var macDetailsHeight: CGFloat = 0
+    #endif
     @ObservedObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
 
     var body: some View {
@@ -396,8 +439,12 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
             #if os(macOS)
             macHeader
             #else
-            if let paneHeight {
-                paneHeader(height: paneHeight)
+            if let pane {
+                switch pane {
+                case .artwork: paneArtwork
+                case .sidebar: paneSidebar
+                case .overview: paneOverview
+                }
             } else if usesExpandedLayout {
                 expandedHeader
             } else {
@@ -495,122 +542,105 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     private var compactArtworkHeight: CGFloat {
         let width = availableWidth > 0 ? availableWidth : 390
-        return min(max(width * 1.18, 430), 540)
+        return min(max(width * 1.18, 430), 540) * compactArtworkHeightFactor
     }
 
     private var compactLogoHeight: CGFloat {
         min(max(compactArtworkHeight * 0.24, 104), 138)
     }
 
-    // MARK: - Split page hero pane
+    // MARK: - Split page parts
 
-    /// The leading pane of a split page, composed like the compact hero:
-    /// artwork fills the pane and the title, facts, actions, and overview sit
-    /// over its lower part. The pane scrolls only when that block outgrows it
-    /// (large Dynamic Type); otherwise it holds still beside the content pane.
-    private func paneHeader(height: CGFloat) -> some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 16) {
-                // Smaller than the compact logo: the pane is a landscape
-                // display's full height, about 670pt, and shares it with
-                // the facts, actions, and overview.
-                titleBlock(textAlignment: .center, logoHeight: 100)
-                metadataBlock(alignment: .center, textAlignment: .center, isCompact: true)
-                actions()
-                    .padding(.top, 2)
-                overviewBlock
-                creditBlock(alignment: .leading)
-            }
-            .padding(.horizontal, 28)
-            // Keeps the top of the artwork clear when the text block is tall
-            // enough to scroll.
-            .padding(.top, height * 0.22)
-            .padding(.bottom, 24)
-            .frame(maxWidth: .infinity, minHeight: height, alignment: .bottom)
+    /// The sidebar of a split page: title, facts, and actions, aligned to
+    /// the leading edge of the glass panel the page draws around them.
+    private var paneSidebar: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            // Smaller than the compact logo: the sidebar is narrow and shares
+            // the display's height with the facts, actions, and selectors.
+            titleBlock(textAlignment: .leading, logoHeight: 84)
+            metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: true)
+            actions()
+                .padding(.top, 2)
         }
-        .scrollBounceBehavior(.basedOnSize)
-        .background { paneArtwork }
     }
 
-    /// Darkened under the text, and faded at the trailing edge into the page
-    /// surface that continues behind the content pane.
+    /// The overview and credits, which open the content pane.
+    private var paneOverview: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            overviewBlock
+            creditBlock(alignment: .leading)
+        }
+    }
+
+    /// The artwork the page spreads across the whole window, from edge to
+    /// edge under the sidebar and the content pane.
     private var paneArtwork: some View {
-        ZStack {
-            artwork
-            LinearGradient(
-                stops: [
-                    .init(color: .black.opacity(0.34), location: 0),
-                    .init(color: .clear, location: 0.2),
-                    .init(color: .clear, location: 0.36),
-                    .init(color: .black.opacity(0.7), location: 0.64),
-                    .init(color: .black.opacity(0.88), location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
-        .clipped()
-        .mask {
-            LinearGradient(
-                stops: [
-                    .init(color: .black, location: 0),
-                    .init(color: .black, location: 0.8),
-                    .init(color: .clear, location: 1),
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        artwork
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     // MARK: - Expanded iPad layout
 
+    @ViewBuilder
     private var expandedHeader: some View {
-        ZStack(alignment: .topLeading) {
-            expandedArtwork
-
-            VStack(alignment: .leading, spacing: 15) {
-                if let eyebrow, !eyebrow.isEmpty {
-                    Text(eyebrow.uppercased())
-                        .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
-                        .tracking(1.2)
-                        .foregroundStyle(Color.siloOnSurface.opacity(0.7))
-                }
-
-                titleBlock(textAlignment: .leading, logoHeight: 122)
-                    .frame(maxWidth: 430, alignment: .leading)
-
-                metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
-                overviewBlock
-                creditBlock(alignment: .leading)
-                belowOverview()
-
-                actions()
-                    .padding(.top, 2)
+        if fitsRegularHeroToContent {
+            expandedText
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(alignment: .topLeading) { expandedArtwork(fillsHeight: true) }
+                .clipped()
+        } else {
+            ZStack(alignment: .topLeading) {
+                expandedArtwork(fillsHeight: false)
+                expandedText
             }
-            .frame(maxWidth: expandedEditorialWidth, alignment: .leading)
-            .padding(.leading, expandedHorizontalPadding)
-            .padding(.top, 88)
-            .padding(.bottom, 38)
+            .frame(maxWidth: .infinity, minHeight: 550, alignment: .topLeading)
+            .clipped()
         }
-        .frame(maxWidth: .infinity, minHeight: 550, alignment: .topLeading)
-        .clipped()
     }
 
-    private var expandedArtwork: some View {
+    private var expandedText: some View {
+        VStack(alignment: .leading, spacing: 15) {
+            if let eyebrow, !eyebrow.isEmpty {
+                Text(eyebrow.uppercased())
+                    .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
+                    .tracking(1.2)
+                    .foregroundStyle(Color.siloOnSurface.opacity(0.7))
+            }
+
+            titleBlock(textAlignment: .leading, logoHeight: 122)
+                .frame(maxWidth: 430, alignment: .leading)
+
+            metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
+            overviewBlock
+            creditBlock(alignment: .leading)
+            belowOverview()
+
+            actions()
+                .padding(.top, 2)
+        }
+        .frame(maxWidth: expandedEditorialWidth, alignment: .leading)
+        .padding(.leading, expandedHorizontalPadding)
+        .padding(.top, 88)
+        .padding(.bottom, 38)
+    }
+
+    /// `fillsHeight` stretches the artwork to the hero's full height; otherwise
+    /// it keeps a 16:9 frame inside the fixed 550pt hero.
+    private func expandedArtwork(fillsHeight: Bool) -> some View {
         GeometryReader { geometry in
             artwork
                 .frame(
                     width: geometry.size.width * 0.66,
-                    height: min(550, geometry.size.width * 0.66 * 9 / 16)
+                    height: fillsHeight
+                        ? geometry.size.height
+                        : min(550, geometry.size.width * 0.66 * 9 / 16)
                 )
                 .clipped()
                 .mask(expandedArtworkMask)
                 .frame(
                     width: geometry.size.width,
-                    height: 550,
+                    height: fillsHeight ? geometry.size.height : 550,
                     alignment: .topTrailing
                 )
         }
@@ -653,71 +683,158 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
     /// Desktop composition: the backdrop runs the full width behind the
     /// header, with the poster on the leading side and the title, facts,
-    /// synopsis, and actions in a column beside it.
+    /// synopsis, and actions in a column beside it. With a backdrop, the
+    /// column starts lower than the poster (see `macDetailsOffset`) so more
+    /// of the art shows above it. The header ends below whichever of the two
+    /// ends lower.
     private var macHeader: some View {
-        ZStack(alignment: .topLeading) {
-            macBackdrop
-
-            HStack(alignment: .top, spacing: SiloTheme.largePadding) {
-                macPoster
-
-                VStack(alignment: .leading, spacing: 15) {
-                    if let eyebrow, !eyebrow.isEmpty {
-                        Text(eyebrow.uppercased())
-                            .font(.siloCaption.weight(.bold))
-                            .tracking(SiloTheme.macSidebarHeadingTracking)
-                            .foregroundStyle(Color.siloOnSurface.opacity(0.7))
-                    }
-
-                    macTitle
-                    metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
-                    overviewBlock
-                    creditBlock(alignment: .leading)
-                    belowOverview()
-
-                    actions()
-                        .padding(.top, 2)
-                }
-                .frame(maxWidth: SiloTheme.macDetailTextWidth, alignment: .leading)
+        let offset = macDetailsOffset
+        return macContent(detailsOffset: offset)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(alignment: .top) {
+                macBackdrop(detailsTop: SiloTheme.macDetailTopInset + offset)
             }
-            // Same gutter as the rows below, so the poster lines up with them.
-            .padding(.horizontal, SiloTheme.padding)
-            .padding(.top, SiloTheme.macDetailTopInset)
-            .padding(.bottom, SiloTheme.largePadding)
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    /// The backdrop behind the header, faded out at the bottom and dimmed on
-    /// the leading side where the text sits. Cover-style titles (audiobooks)
-    /// have no backdrop and show the page surface.
+    /// How much lower than the poster the details column starts. With a
+    /// backdrop, enough to put the column's top about a fifth of the way down
+    /// the page (capped for very tall windows), but never so much that the
+    /// column and `macDetailBelowHeaderReserve` below it (a series' seasons
+    /// and the top of its episode row) stop fitting on the first screen.
+    /// Box sets, which want their movies on the first screen, and titles
+    /// without a backdrop keep the column level with the poster.
+    private var macDetailsOffset: CGFloat {
+        guard !fitsRegularHeroToContent,
+              case .backdrop = artworkStyle,
+              nonEmpty(backdropUrl) != nil,
+              macPageHeight > 0 else { return 0 }
+        let inset = SiloTheme.macDetailTopInset
+        let preferredTop = min(
+            macPageHeight * SiloTheme.macDetailColumnTopFraction,
+            SiloTheme.macDetailColumnMaxTop
+        )
+        let roomBelow = macPageHeight - inset - macDetailsHeight
+            - SiloTheme.padding - SiloTheme.macDetailBelowHeaderReserve
+        return max(0, min(preferredTop - inset, roomBelow))
+    }
+
+    private func macContent(detailsOffset: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: SiloTheme.largePadding) {
+            macPoster
+
+            VStack(alignment: .leading, spacing: 12) {
+                if let eyebrow, !eyebrow.isEmpty {
+                    Text(eyebrow.uppercased())
+                        .font(.siloCaption.weight(.bold))
+                        .tracking(SiloTheme.macSidebarHeadingTracking)
+                        .foregroundStyle(Color.siloOnSurface.opacity(0.7))
+                }
+
+                macTitle
+                metadataBlock(alignment: .leading, textAlignment: .leading, isCompact: false)
+                overviewBlock
+                creditBlock(alignment: .leading)
+                belowOverview()
+                actions()
+            }
+            .frame(maxWidth: SiloTheme.macDetailTextWidth, alignment: .leading)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                guard abs(height - macDetailsHeight) > 1 else { return }
+                macDetailsHeight = height
+            }
+            .padding(.top, detailsOffset)
+        }
+        // Same gutter as the rows below, so the poster lines up with them.
+        .padding(.horizontal, SiloTheme.padding)
+        .padding(.top, SiloTheme.macDetailTopInset)
+        .padding(.bottom, SiloTheme.padding)
+    }
+
+    /// The backdrop behind the whole header, open above the details column.
+    /// From there down it darkens toward the bottom and a little on the
+    /// leading side so the text reads, then fades into the page surface.
+    /// It scrolls with the page, drifting a little slower than the text.
+    /// Cover-style titles (audiobooks) have no backdrop and show the page
+    /// surface.
     @ViewBuilder
-    private var macBackdrop: some View {
+    private func macBackdrop(detailsTop: CGFloat) -> some View {
         if case .backdrop = artworkStyle, let url = nonEmpty(backdropUrl) {
-            AsyncImageView(url: url, thumbhash: backdropThumbhash, contentMode: .fill)
-                .frame(maxWidth: .infinity)
-                .frame(height: SiloTheme.macDetailBackdropHeight)
-                .clipped()
-                .overlay {
-                    LinearGradient(
-                        colors: [Color.black.opacity(0.72), Color.black.opacity(0.2)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                }
-                .mask {
-                    LinearGradient(
-                        stops: [
-                            .init(color: .black, location: 0),
-                            .init(color: .black, location: 0.55),
-                            .init(color: .clear, location: 1),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
+            let parallax = reduceMotion ? 0 : SiloTheme.macDetailBackdropParallax
+            GeometryReader { proxy in
+                // Where the details column starts, as a fraction of the backdrop.
+                let detailsStart = min(max(detailsTop / max(proxy.size.height, 1), 0), 0.8)
+                // Where the details column ends across, as a fraction of the width.
+                let detailsEnd = min(macDetailsTrailingEdge / max(proxy.size.width, 1), 1)
+                AsyncImageView(url: url, thumbhash: backdropThumbhash, contentMode: .fill)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .visualEffect { content, proxy in
+                        let minY = proxy.frame(in: .named(PhoneDetailScrollCoordinateSpace.name)).minY
+                        return content.offset(y: max(0, -minY) * parallax)
+                    }
+                    .clipped()
+                    .overlay { macBackdropShade(detailsStart: detailsStart, detailsEnd: detailsEnd) }
+                    .mask {
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black, location: 0),
+                                .init(color: .black, location: 0.55),
+                                .init(color: .black.opacity(0.6), location: 0.8),
+                                .init(color: .clear, location: 1),
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
+
+    /// The details column's trailing edge, measured from the header's
+    /// leading edge, when the column is at its widest.
+    private var macDetailsTrailingEdge: CGFloat {
+        SiloTheme.padding + SiloTheme.macDetailPosterWidth + SiloTheme.largePadding
+            + SiloTheme.macDetailTextWidth
+    }
+
+    /// A light shade at the very top for the toolbar's back button, nothing
+    /// over the art above the details, then a leading-side shade behind them
+    /// from just above the column down, and a bottom-up shade over the
+    /// header's lower half, where the selectors and Play sit. The leading
+    /// shade ends a little past `detailsEnd`, the column's trailing edge, so
+    /// the art beyond the text stays clear.
+    private func macBackdropShade(detailsStart: CGFloat, detailsEnd: CGFloat) -> some View {
+        let shadeStart = max(detailsStart - 0.08, 0.06)
+        return ZStack {
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.3), location: 0),
+                    .init(color: .clear, location: min(0.1, shadeStart)),
+                    .init(color: .clear, location: 0.45),
+                    .init(color: .black.opacity(0.35), location: 0.75),
+                    .init(color: .black.opacity(0.55), location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            LinearGradient(
+                stops: [
+                    .init(color: .black.opacity(0.65), location: 0),
+                    .init(color: .black.opacity(0.5), location: detailsEnd * 0.55),
+                    .init(color: .black.opacity(0.35), location: detailsEnd),
+                    .init(color: .clear, location: min(detailsEnd + 0.18, 1)),
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .mask {
+                LinearGradient(
+                    colors: [.clear, .black],
+                    startPoint: UnitPoint(x: 0.5, y: shadeStart),
+                    endPoint: UnitPoint(x: 0.5, y: min(detailsStart + 0.08, 1))
+                )
+            }
         }
     }
 

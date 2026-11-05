@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 struct RefreshAccountIdentity: Hashable, Sendable {
     let serverId: String
@@ -7,6 +8,17 @@ struct RefreshAccountIdentity: Hashable, Sendable {
     /// change on login/sign-out/retarget; temporary scopes supply their stable
     /// handoff generation. Guarded refresh rotation preserves the epoch.
     let credentialGenerationID: UUID
+    /// The saved account (`Account.localAccountId`) whose credentials
+    /// requests send. Nil while no account is signed in on the server and
+    /// for a temporary playback scope, which belongs to another device.
+    let localAccountId: String?
+
+    init(serverId: String, serverURL: String, credentialGenerationID: UUID, localAccountId: String? = nil) {
+        self.serverId = serverId
+        self.serverURL = serverURL
+        self.credentialGenerationID = credentialGenerationID
+        self.localAccountId = localAccountId
+    }
 }
 
 struct CapturedRefreshCredential: Equatable, Sendable {
@@ -49,13 +61,42 @@ extension CapturedOrdinaryRequestAuth {
     }
 }
 
+/// Which credentials and profile requests would go out under, read without
+/// awaiting the token store. Work that must run under the owner it was
+/// started by records this when it starts and compares a later
+/// `CapturedOrdinaryRequestAuth` with `matches(_:)`.
+struct CredentialOwnerSnapshot: Equatable, Sendable {
+    let credentialGenerationID: UUID
+    let profileId: String?
+
+    func matches(_ auth: CapturedOrdinaryRequestAuth) -> Bool {
+        auth.account.credentialGenerationID == credentialGenerationID && auth.profileId == profileId
+    }
+}
+
 /// Durable account owner for queued or persisted work. Unlike the request
 /// owner it survives access-token rotation and profile switches: it is bound
 /// to the verified account id and the account epoch installed by a login.
 struct CapturedDurableAccountAuth: Sendable {
+    /// The server's user ID (`Account.serverUserId`).
     let accountID: String
     let accountEpoch: UUID
     let request: CapturedOrdinaryRequestAuth
+
+    /// The saved account on this device (`Account.localAccountId`), which
+    /// the request identity carries.
+    var localAccountId: String? { request.account.localAccountId }
+}
+
+/// One account signed out by `TokenStore.signOutActiveAccount()`.
+struct AccountSignOutResult: Equatable, Sendable {
+    let serverId: String
+    /// The removed account. Callers delete the local data keyed by it. Nil
+    /// when the server had no saved account.
+    let localAccountId: String?
+    /// False when the account record could not be removed, so the session
+    /// can return after a relaunch.
+    let durable: Bool
 }
 
 enum RejectedRefreshDisposition: Equatable, Sendable {
@@ -138,11 +179,14 @@ enum TemporaryAuthScopeEndResult: Equatable, Sendable {
     case differentGeneration(activeGenerationID: UUID)
 }
 
-/// Actor that owns session credentials. Per-server tokens live in the
-/// Keychain (`SharedStorage.*Account(for:)`), and the active server URL and
-/// profile id in `SharedDefaults`. The active access and profile tokens are
-/// mirrored to fixed Keychain accounts for the extensions. `HTTPClient`
-/// collapses concurrent 401s into one refresh per `RefreshAccountIdentity`.
+/// Actor that signs requests with the active account's credentials and
+/// owns their refresh. Accounts, their tokens and the selection persist in
+/// `AccountStore`; this actor caches the active server's selected account,
+/// routes every credential change through the store, and keeps the active
+/// server URL and profile id in `SharedDefaults`. The active access and
+/// profile tokens are mirrored to fixed Keychain accounts for the extensions.
+/// `HTTPClient` collapses concurrent 401s into one refresh per
+/// `RefreshAccountIdentity`.
 actor TokenStore {
     static let shared = TokenStore()
 
@@ -152,44 +196,34 @@ actor TokenStore {
     private let accountKeychain: SharedKeychain
     private let profileKeychain: SharedKeychain
     private let defaults: SharedDefaults
-    private let sessions: AccountSessionPersistence
+    private let accounts: AccountStore
     #if os(iOS)
     private let displayTargets: ApplePushDisplayTargetStore
     #endif
-    private var canonicalSession: CanonicalAccountSession?
+    /// The active server's selected account while it is signed in and saved
+    /// for the registry URL. Its tokens are what requests send.
+    private var activeAccount: Account?
+    /// Servers whose saved accounts could not be read or written. Requests on
+    /// them carry no credentials until the next install.
     private var runtimeBlockedServers: Set<String> = []
 
     private let serverUrlDefaultsKey = SharedStorage.serverUrlKey
     private let profileIdDefaultsKey = SharedStorage.profileIdKey
-
-    // MARK: - Keychain key derivation
-    //
-    // Per-server Keychain account names.
-    static func accessTokenKey(for serverId: String) -> String {
-        SharedStorage.accessTokenAccount(for: serverId)
-    }
-    static func refreshTokenKey(for serverId: String) -> String {
-        SharedStorage.refreshTokenAccount(for: serverId)
-    }
-    static func profileTokenKey(for serverId: String) -> String {
-        SharedStorage.profileTokenAccount(for: serverId)
-    }
-    static func accountEpochKey(for serverId: String) -> String {
-        SharedStorage.accountEpochAccount(for: serverId)
-    }
 
     /// Server whose tokens are currently cached in `cached*` and returned
     /// by `getAccessToken` etc. Empty string means "no active server" —
     /// reads return nil and saves no-op.
     private var activeServerId: String = ""
 
-    private var cachedAccessToken: String?
-    private var cachedRefreshToken: String?
+    private var cachedAccessToken: String? { activeAccount?.accessToken }
+    private var cachedRefreshToken: String? { activeAccount?.refreshToken }
     private var cachedProfileToken: String?
     /// Process-local identity for the persistent credential slot currently
     /// selected by `activeServerId`. Refresh rotation leaves it unchanged;
     /// every session replacement or routing boundary installs a fresh epoch.
-    private var persistentCredentialGenerationID = UUID()
+    private var persistentCredentialGenerationID = UUID() {
+        didSet { publishOwnerMirror() }
+    }
     /// Process-local identity for one installation of the persistent profile
     /// ID and proof. Every activation, deactivation, or direct profile write
     /// replaces it, so selecting the same profile again with the same proof
@@ -197,7 +231,12 @@ actor TokenStore {
     private var profileSelectionGeneration = UUID()
     /// Playback-scoped credentials received by a TV through remote handoff.
     /// They are process-only and never written into normal per-server slots.
-    private var temporaryScope: TemporaryAuthScope?
+    private var temporaryScope: TemporaryAuthScope? {
+        didSet { publishOwnerMirror() }
+    }
+    /// Lock-protected copy of the owner fields `ownerSnapshot` needs beyond
+    /// the persisted profile selection, kept in step by the `didSet`s above.
+    private let ownerMirror: Mutex<(persistentGeneration: UUID, temporary: (generation: UUID, profileId: String)?)>
     /// A terminally rejected temporary generation remains installed until
     /// remote-playback teardown, but it must never submit its refresh token
     /// again or emit duplicate expiry notifications.
@@ -214,11 +253,14 @@ actor TokenStore {
 
     init(keychain: SharedKeychain = SharedKeychain(),
          defaults: SharedDefaults = .shared,
-         sessionPersistence: AccountSessionPersistence? = nil) {
+         accounts: AccountStore? = nil) {
         self.accountKeychain = keychain.withAudience(Self.accountCredentialAudience)
         self.profileKeychain = keychain.withAudience(Self.profileCredentialAudience)
         self.defaults = defaults
-        self.sessions = sessionPersistence ?? AccountSessionPersistence(keychain: keychain)
+        self.accounts = accounts ?? AccountStore(keychain: keychain, defaults: defaults)
+        let generation = UUID()
+        self.persistentCredentialGenerationID = generation
+        self.ownerMirror = Mutex((persistentGeneration: generation, temporary: nil))
         #if os(iOS)
         self.displayTargets = ApplePushDisplayTargetStore(keychain: keychain.withAudience(Self.profileCredentialAudience))
         #endif
@@ -259,10 +301,11 @@ actor TokenStore {
     /// only one of these literals does.
     private static func persistenceFailureReason(_ error: Error) -> String {
         switch error {
-        case AccountSessionPersistenceError.unavailable: return "persistenceUnavailable"
-        case AccountSessionPersistenceError.invalidRecord: return "invalidSessionRecord"
-        case AccountSessionPersistenceError.invalidIdentity: return "invalidSessionIdentity"
-        case is DecodingError: return "invalidSessionRecord"
+        case AccountStoreError.writeFailed: return "persistenceUnavailable"
+        case AccountStoreError.corrupt, AccountStoreError.unsupportedVersion, AccountStoreError.keyMismatch:
+            return "invalidSessionRecord"
+        case AccountStoreError.invalidIdentity: return "invalidSessionIdentity"
+        case AccountStoreError.credentialsChanged, AccountStoreError.notFound: return "canonicalSessionMismatch"
         case is SharedKeychain.ReadError: return "keychainReadFailed"
         default: return "persistenceUnavailable"
         }
@@ -287,10 +330,54 @@ actor TokenStore {
         if serverId == activeServerId { return }
         persistentCredentialGenerationID = UUID()
         activeServerId = serverId
-        cachedAccessToken = nil
-        cachedRefreshToken = nil
+        activeAccount = nil
         cachedProfileToken = nil
         loadedForServerId = nil
+    }
+
+    /// Reads the active server's account again after a server merge
+    /// (`ServerRegistry.mergeDuplicateServers`) moved accounts onto it or
+    /// removed the one in use. A no-op while temporary credentials are in use.
+    func reloadAfterServerMerge() {
+        guard temporaryScope == nil, !activeServerId.isEmpty else { return }
+        let previous = activeAccount?.credentials
+        loadedForServerId = nil
+        ensureLoaded()
+        guard activeAccount?.credentials != previous else { return }
+        persistentCredentialGenerationID = UUID()
+        mirrorActiveTokensForExtension()
+    }
+
+    /// Make another saved account on the active server the one requests use,
+    /// for the current device user. The profile is cleared; the caller then
+    /// selects one of the account's profiles. False when the account isn't
+    /// saved and signed in on the active server, or the selection didn't save.
+    func switchActiveAccount(localAccountId: String) -> Bool {
+        guard temporaryScope == nil, !activeServerId.isEmpty else { return false }
+        ensureLoaded()
+        if activeAccount?.localAccountId == localAccountId { return true }
+        guard let account = try? accounts.account(localAccountId, onServer: activeServerId),
+              account.isSignedIn, accounts.select(account) else { return false }
+        try? accounts.markUsed(localAccountId, onServer: activeServerId)
+        defaults.removeObject(forKey: profileIdDefaultsKey)
+        profileSelectionGeneration = UUID()
+        persistentCredentialGenerationID = UUID()
+        // An explicit switch to a readable, signed-in account lifts a block
+        // left by signing out of another account here, as an install does;
+        // a read error while loading it blocks the server again.
+        runtimeBlockedServers.remove(activeServerId)
+        loadedForServerId = nil
+        ensureLoaded()
+        mirrorActiveTokensForExtension()
+        let switched = activeAccount?.localAccountId == localAccountId
+        #if os(iOS)
+        // The server's push installation moves to this account at the next
+        // generation, with the same key.
+        if switched {
+            Task { @MainActor in await ApplePushRegistrationCoordinator.shared.activeAccountDidChange() }
+        }
+        #endif
+        return switched
     }
 
     /// The current active server ID. Empty string if none.
@@ -308,11 +395,13 @@ actor TokenStore {
                 ?? ""
         )
         guard !serverId.isEmpty, !serverURL.isEmpty else { return nil }
+        if scope == nil { ensureLoaded() }
         return RefreshAccountIdentity(
             serverId: serverId,
             serverURL: serverURL,
             credentialGenerationID: scope?.credentialGenerationID
-                ?? persistentCredentialGenerationID
+                ?? persistentCredentialGenerationID,
+            localAccountId: scope == nil ? activeAccount?.localAccountId : nil
         )
     }
 
@@ -320,9 +409,9 @@ actor TokenStore {
     /// legacy sessions and temporary playback credentials cannot acquire it.
     func captureDurableAccountAuth() -> CapturedDurableAccountAuth? {
         guard temporaryScope == nil, let request = captureOrdinaryRequestAuth(),
-              !runtimeBlockedServers.contains(activeServerId), let session = canonicalSession,
-              let accountID = session.accountID, let epoch = session.epoch,
-              session.origin == request.account.serverURL, session.accessToken == request.accessToken else { return nil }
+              !runtimeBlockedServers.contains(activeServerId), let account = activeAccount,
+              let accountID = account.serverUserId, let epoch = account.epoch,
+              account.origin == request.account.serverURL, account.accessToken == request.accessToken else { return nil }
         return CapturedDurableAccountAuth(accountID: accountID, accountEpoch: epoch, request: request)
     }
 
@@ -575,6 +664,13 @@ actor TokenStore {
             )
             throw HTTPError.requestIdentityChanged
         }
+        // Work bound to an account never runs as another account's profile
+        // with the same ID. A temporary playback scope has no local account.
+        if temporaryScope == nil, let expectedAccount = expected.localAccountId,
+           account.localAccountId != expectedAccount {
+            recordSessionEvent(phase: "captureRequestAuth", outcome: "failed", reason: "accountChanged")
+            throw HTTPError.requestIdentityChanged
+        }
 
         if let temporaryScope {
             return CapturedHTTPRequestAuth(
@@ -619,7 +715,9 @@ actor TokenStore {
               !previousValue.isEmpty else { return false }
         guard let account = refreshAccountIdentity(),
               account.serverId == expected.serverId,
-              account.serverURL == expectedURL else { return false }
+              account.serverURL == expectedURL,
+              // A rotation captured for one account never lands on another.
+              expected.localAccountId == nil || expected.localAccountId == account.localAccountId else { return false }
         return saveRefreshedTokens(
             accessValue,
             value,
@@ -627,7 +725,8 @@ actor TokenStore {
                 account: RefreshAccountIdentity(
                     serverId: expected.serverId,
                     serverURL: expectedURL,
-                    credentialGenerationID: account.credentialGenerationID
+                    credentialGenerationID: account.credentialGenerationID,
+                    localAccountId: account.localAccountId
                 ),
                 refreshToken: previousValue,
                 owner: credentialOwner
@@ -702,33 +801,29 @@ actor TokenStore {
                 return false
             }
 
-            if let original = canonicalSession {
-                let stored: AccountSessionPersistence.State
-                do { stored = try sessions.load(serverId) }
-                catch {
-                    recordSessionEvent(
-                        phase: "tokenRefresh",
-                        outcome: "discarded",
-                        reason: Self.persistenceFailureReason(error)
-                    )
-                    return false
-                }
-                guard case .session(let current) = stored, current == original else {
-                    recordSessionEvent(
-                        phase: "tokenRefresh",
-                        outcome: "discarded",
-                        reason: "canonicalSessionMismatch"
-                    )
-                    return false
-                }
+            guard let original = activeAccount,
+                  captured.account.localAccountId == original.localAccountId else {
+                recordSessionEvent(
+                    phase: "tokenRefresh",
+                    outcome: "discarded",
+                    reason: "canonicalSessionMismatch"
+                )
+                return false
             }
-            let rotated = CanonicalAccountSession(version: 1, signedOut: false,
-                origin: canonicalSession?.origin ?? captured.account.serverURL,
-                accountID: canonicalSession?.accountID,
-                epoch: canonicalSession?.epoch ?? accountKeychain.get(accountEpochKey).flatMap(UUID.init(uuidString:)) ?? UUID(),
-                accessToken: accessValue, refreshToken: value)
-            do { try sessions.save(rotated, serverID: serverId) }
-            catch {
+            let rotated: Account
+            do {
+                rotated = try accounts.rotateTokens(expected: original.credentials, onServer: serverId,
+                                                    accessToken: accessValue, refreshToken: value)
+            } catch AccountStoreError.credentialsChanged {
+                // Another process (or a sign-out) changed the stored record
+                // since this cache was loaded; it wins.
+                recordSessionEvent(
+                    phase: "tokenRefresh",
+                    outcome: "discarded",
+                    reason: "canonicalSessionMismatch"
+                )
+                return false
+            } catch {
                 recordSessionEvent(
                     phase: "tokenRefresh",
                     outcome: "failed",
@@ -737,17 +832,12 @@ actor TokenStore {
                 blockRuntimeSession()
                 return false
             }
-            canonicalSession = rotated
-            mirrorCanonicalSession(rotated)
-            cachedAccessToken = accessValue
-            cachedRefreshToken = value
+            activeAccount = rotated
             recordSessionEvent(
                 phase: "tokenRefresh",
                 outcome: "succeeded",
                 reason: "persistentSession"
             )
-            accountKeychain.set(accessValue, for: Self.accessTokenKey(for: serverId))
-            accountKeychain.set(value, for: Self.refreshTokenKey(for: serverId))
             // Account refresh must not re-mirror a stale profile credential
             // during an in-progress profile transition.
             mirrorActiveAccessValueForExtension()
@@ -816,13 +906,15 @@ actor TokenStore {
                 return nil
             }
 
-            // The durable tombstone is written first. If it cannot be
-            // persisted, the canonical record still holds the rejected tokens
-            // and `ensureLoaded()` would restore them on the next launch, so
-            // nothing local is cleared and no expiry is reported: the caller
-            // sees the same outcome as any other skipped invalidation and the
-            // next 401 retries the whole sequence.
-            guard sessions.invalidate(serverId) else {
+            // The account is marked as needing sign-in first: it keeps its
+            // local data, but its tokens go. If that cannot be persisted, the
+            // record still holds the rejected tokens and `ensureLoaded()`
+            // would restore them on the next launch, so nothing local is
+            // cleared and no expiry is reported: the caller sees the same
+            // outcome as any other skipped invalidation and the next 401
+            // retries the whole sequence.
+            guard let rejected = activeAccount,
+                  (try? accounts.markNeedsSignIn(expected: rejected.credentials, onServer: serverId)) != nil else {
                 recordSessionEvent(
                     phase: "sessionInvalidation",
                     outcome: "failed",
@@ -835,16 +927,13 @@ actor TokenStore {
                 outcome: "cleared",
                 reason: "refreshRejected"
             )
-            runtimeBlockedServers.insert(serverId)
-            canonicalSession = nil
-            cachedAccessToken = nil
-            cachedRefreshToken = nil
+            activeAccount = nil
             cachedProfileToken = nil
-            accountKeychain.delete(Self.accessTokenKey(for: serverId))
-            accountKeychain.delete(Self.refreshTokenKey(for: serverId))
-            accountKeychain.delete(Self.accountEpochKey(for: serverId))
-            profileKeychain.delete(Self.profileTokenKey(for: serverId))
-            defaults.removeObject(forKey: profileIdDefaultsKey)
+            accounts.setProfileToken(nil, for: rejected.localAccountId, onServer: serverId)
+            // The selected profile stays: an account waiting to sign in again
+            // keeps its local data, and its downloads stay in scope
+            // (`AccountScope.current`). Requests carry no credentials until
+            // the next sign-in, which selects a profile again.
             clearMirroredTokensForExtension()
             removeDisplayTargets(registeredBy: serverId)
             return .persistentSessionCleared
@@ -856,7 +945,14 @@ actor TokenStore {
     /// refresh tasks before installing the replacement; this final actor check
     /// prevents a late event from routing or tearing down that replacement.
     func shouldConsumeSessionExpiryEvent(_ event: SessionExpiryEvent) -> Bool {
-        guard refreshAccountIdentity() == event.account else { return false }
+        // Clearing a refused session drops its account from the identity, so
+        // the cleared state names no account; the epoch still names the
+        // credentials the server refused.
+        let expected = event.disposition == .persistentSessionCleared
+            ? RefreshAccountIdentity(serverId: event.account.serverId, serverURL: event.account.serverURL,
+                                     credentialGenerationID: event.account.credentialGenerationID)
+            : event.account
+        guard refreshAccountIdentity() == expected else { return false }
 
         switch event.disposition {
         case .temporarySessionExpired:
@@ -871,10 +967,7 @@ actor TokenStore {
                 return false
             }
             ensureLoaded()
-            return cachedAccessToken == nil
-                && cachedRefreshToken == nil
-                && cachedProfileToken == nil
-                && defaults.string(forKey: profileIdDefaultsKey) == nil
+            return activeAccount == nil && cachedProfileToken == nil
         }
     }
 
@@ -899,64 +992,63 @@ actor TokenStore {
         guard !serverId.isEmpty else { return nil }
         if serverId == activeServerId {
             ensureLoaded()
-            if let canonicalSession, !Self.session(canonicalSession, belongsTo: serverId) { return nil }
+            if let activeAccount, !Self.account(activeAccount, belongsTo: serverId) { return nil }
             return cachedAccessToken
         }
-        guard !runtimeBlockedServers.contains(serverId) else { return nil }
-        do {
-            switch try sessions.load(serverId) {
-            case .session(let value): return Self.session(value, belongsTo: serverId) ? value.accessToken : nil
-            case .signedOut: return nil
-            case .legacy: return accountKeychain.get(Self.accessTokenKey(for: serverId))
-            }
-        } catch {
-            recordSessionEvent(
-                phase: "sessionLoad",
-                outcome: "failed",
-                reason: Self.persistenceFailureReason(error)
-            )
-            return nil
-        }
+        guard let account = savedAccount(onServer: serverId), Self.account(account, belongsTo: serverId) else { return nil }
+        return account.accessToken
     }
 
-    /// A saved server's stored session when that server is NOT the active
+    /// A saved server's stored account when that server is NOT the active
     /// one: what an approving phone needs to renew the bearer of a server it
     /// is not currently using. Nil for the active server (its credentials
-    /// rotate through `HTTPClient`'s single refresh flight), a blocked slot,
-    /// a signed-out slot, or a legacy record without a canonical session.
-    func inactiveServerSession(for serverId: String) -> CanonicalAccountSession? {
+    /// rotate through `HTTPClient`'s single refresh flight), a blocked
+    /// server, or a server with no refreshable account.
+    func inactiveServerSession(for serverId: String) -> Account? {
         guard !serverId.isEmpty, serverId != activeServerId, temporaryScope?.serverId != serverId,
-              !runtimeBlockedServers.contains(serverId) else { return nil }
-        guard case .session(let value)? = try? sessions.load(serverId), !value.signedOut,
-              Self.session(value, belongsTo: serverId),
+              let value = savedAccount(onServer: serverId), Self.account(value, belongsTo: serverId),
+              value.accessToken?.isEmpty == false, value.refreshToken?.isEmpty == false else { return nil }
+        return value
+    }
+
+    /// A saved account's stored session when requests do not use it: another
+    /// account on the active server, or any account on another server. What
+    /// an approving phone needs to approve a TV as that account. Nil for the
+    /// account in use (its credentials rotate through `HTTPClient`'s single
+    /// refresh flight), a blocked or temporary server, or an account with no
+    /// refreshable session.
+    func inactiveAccountSession(_ localAccountId: String, onServer serverId: String) -> Account? {
+        guard !serverId.isEmpty, temporaryScope?.serverId != serverId,
+              !runtimeBlockedServers.contains(serverId),
+              !(serverId == activeServerId && requestAccountId(onServer: serverId) == localAccountId),
+              let value = try? accounts.account(localAccountId, onServer: serverId), value.isSignedIn,
+              Self.account(value, belongsTo: serverId),
               value.accessToken?.isEmpty == false, value.refreshToken?.isEmpty == false else { return nil }
         return value
     }
 
     #if os(iOS)
-    /// The verified account and sign-in epoch of the session stored for a
-    /// saved server, active or not. Nil for a signed-out, blocked, legacy, or
-    /// temporary slot, which cannot keep a push registration current.
-    func savedSessionAccount(for serverId: String) -> (accountID: String, epoch: UUID)? {
-        guard !serverId.isEmpty, temporaryScope?.serverId != serverId,
-              !runtimeBlockedServers.contains(serverId) else { return nil }
-        let session: CanonicalAccountSession?
+    /// The verified account and sign-in epoch of the account that requests
+    /// on a saved server use, active or not. Nil for a signed-out, blocked,
+    /// unverified, or temporary slot, which cannot keep a push registration
+    /// current. On an inactive server this is the account last used there.
+    func savedSessionAccount(for serverId: String) -> ApplePushSessionAccount? {
+        guard !serverId.isEmpty, temporaryScope?.serverId != serverId else { return nil }
+        let account: Account?
         if serverId == activeServerId {
             ensureLoaded()
-            session = canonicalSession
-        } else if case .session(let value)? = try? sessions.load(serverId) {
-            session = value
+            account = activeAccount
         } else {
-            session = nil
+            account = savedAccount(onServer: serverId)
         }
-        guard let session, !session.signedOut, Self.session(session, belongsTo: serverId),
-              let accountID = session.accountID, let epoch = session.epoch else { return nil }
-        return (accountID, epoch)
+        guard let account, Self.account(account, belongsTo: serverId),
+              let accountID = account.serverUserId, let epoch = account.epoch else { return nil }
+        return (accountID, epoch, account.localAccountId)
     }
 
-    /// The profile verification proof stored for a saved server. The active
-    /// server's counts only while `profileID` is its selected profile; an
-    /// inactive server keeps the proof of the profile it last used.
+    /// The profile verification proof stored for a saved server's account.
+    /// The active server's counts only while `profileID` is its selected
+    /// profile; an inactive server keeps the proof of the profile it last used.
     func savedProfileToken(for serverId: String, profileID: String) -> String? {
         guard temporaryScope == nil else { return nil }
         if serverId == activeServerId {
@@ -964,7 +1056,8 @@ actor TokenStore {
             ensureLoaded()
             return cachedProfileToken
         }
-        return profileKeychain.get(Self.profileTokenKey(for: serverId))
+        guard let account = savedAccount(onServer: serverId) else { return nil }
+        return accounts.profileToken(for: account.localAccountId, onServer: serverId)
     }
 
     /// Runs a local push-registration write only while `owner`'s account
@@ -974,43 +1067,45 @@ actor TokenStore {
     func withSavedServerAuthority(_ owner: ApplePushIntentOwner,
                                   operation: @Sendable () throws -> Void) throws {
         try Task.checkCancellation()
-        guard let current = savedSessionAccount(for: owner.serverID), current.accountID == owner.accountID,
-              current.epoch == owner.accountEpoch else {
+        guard let current = savedSessionAccount(for: owner.serverID), owner.holds(current) else {
             throw HTTPError.authorityChanged
         }
         try operation()
     }
     #endif
 
-    /// Whether a stored session is bound to the address its slot is keyed
+    /// Whether a saved account is bound to the address its server is keyed
     /// by. A registry id is derived from the saved server's URL
     /// (`ServerRegistry.serverId(for:)`), so the id itself names the one
-    /// origin a bearer read for another device may send the session to. A
-    /// record bound elsewhere, or an id that names no URL, releases nothing.
-    static func session(_ value: CanonicalAccountSession, belongsTo serverId: String) -> Bool {
-        guard let address = ServerRegistry.url(forServerId: serverId), let origin = value.origin else { return false }
-        return ServerRegistry.normalize(url: origin) == address
+    /// origin a bearer read for another device may send the account's
+    /// tokens to. An account bound elsewhere, or an id that names no URL,
+    /// releases nothing.
+    static func account(_ value: Account, belongsTo serverId: String) -> Bool {
+        guard let address = ServerRegistry.url(forServerId: serverId) else { return false }
+        return ServerRegistry.normalize(url: value.origin) == address
     }
 
-    /// Store a rotated token pair for an inactive server, but only when that
-    /// slot still holds exactly the session the refresh was sent with. A slot
-    /// that became active, was signed out, or rotated meanwhile keeps what it
-    /// has; the caller then reports the approval as needing a fresh sign-in
-    /// rather than writing over newer credentials.
+    /// Store a rotated token pair for an account requests do not use (on an
+    /// inactive server, or another account on the active one), but only when
+    /// it still holds exactly the credentials the refresh was sent with. An
+    /// account that came into use, was signed out, or rotated meanwhile
+    /// keeps what it has; the caller then reports the approval as needing a
+    /// fresh sign-in rather than writing over newer credentials.
     func saveInactiveServerRefresh(
         accessToken: String,
         refreshToken: String,
-        replacing captured: CanonicalAccountSession,
+        replacing captured: Account,
         for serverId: String
     ) -> Bool {
         guard !accessToken.isEmpty, !refreshToken.isEmpty,
-              inactiveServerSession(for: serverId) == captured else {
+              inactiveAccountSession(captured.localAccountId, onServer: serverId)?.credentials == captured.credentials else {
             recordSessionEvent(phase: "tokenRefresh", outcome: "discarded", reason: "inactiveSlotChanged")
             return false
         }
-        let rotated = CanonicalAccountSession(version: 1, signedOut: false, origin: captured.origin,
-            accountID: captured.accountID, epoch: captured.epoch, accessToken: accessToken, refreshToken: refreshToken)
-        do { try sessions.save(rotated, serverID: serverId) } catch {
+        do {
+            _ = try accounts.rotateTokens(expected: captured.credentials, onServer: serverId,
+                                          accessToken: accessToken, refreshToken: refreshToken)
+        } catch {
             recordSessionEvent(phase: "tokenRefresh", outcome: "failed", reason: Self.persistenceFailureReason(error))
             return false
         }
@@ -1018,8 +1113,8 @@ actor TokenStore {
         return true
     }
 
-    /// Launch-time check for whether `serverId` has a stored access token.
-    /// Retargets to it and loads its session record.
+    /// Launch-time check for whether `serverId` has a signed-in account.
+    /// Retargets to it and loads that account.
     func hasAccessTokenForActiveServer(serverId: String) -> Bool {
         retargetActiveServer(serverId: serverId)
         ensureLoaded()
@@ -1054,48 +1149,66 @@ actor TokenStore {
 
     /// Explicit receiver targets are persisted without changing the active owner.
     /// Comparison and checked keychain publication occur in one actor turn.
+    @discardableResult
     func installAccountSessionForServer(serverID: String, origin: String, accessToken: String,
-        refreshToken: String, accountID: String, expected: AccountInstallationExpectation) throws {
+        refreshToken: String, accountID: String, username: String? = nil,
+        expected: AccountInstallationExpectation) throws -> AccountSignInResult {
         guard captureAccountInstallationExpectation() == expected, temporaryScope == nil else {
             throw HTTPError.requestIdentityChanged
         }
         let origin = ServerRegistry.normalize(url: origin)
         guard !serverID.isEmpty, !origin.isEmpty, !accountID.isEmpty,
-              !accessToken.isEmpty, !refreshToken.isEmpty else { throw AccountSessionPersistenceError.invalidIdentity }
-        let value = CanonicalAccountSession(version: 1, signedOut: false, origin: origin,
-            accountID: accountID, epoch: UUID(), accessToken: accessToken, refreshToken: refreshToken)
-        do { try sessions.save(value, serverID: serverID) }
-        catch {
+              !accessToken.isEmpty, !refreshToken.isEmpty else { throw AccountStoreError.invalidIdentity }
+        let result: AccountSignInResult
+        do {
+            result = try accounts.saveSignIn(serverId: serverID, origin: origin, serverUserId: accountID,
+                                             username: username, accessToken: accessToken,
+                                             refreshToken: refreshToken, replacingOtherAccounts: true)
+        } catch {
             runtimeBlockedServers.insert(serverID)
             if serverID == activeServerId { blockRuntimeSession() }
             throw error
         }
         runtimeBlockedServers.remove(serverID)
-        profileKeychain.delete(Self.profileTokenKey(for: serverID))
-        if serverID == activeServerId { defaults.removeObject(forKey: profileIdDefaultsKey) }
+        accounts.setProfileToken(nil, for: result.account.localAccountId, onServer: serverID)
+        if serverID == activeServerId {
+            accounts.select(result.account)
+            defaults.removeObject(forKey: profileIdDefaultsKey)
+        }
         // A successful install consumes this expectation even for an inactive target.
         persistentCredentialGenerationID = UUID()
         if serverID == activeServerId {
-            canonicalSession = nil
-            cachedAccessToken = nil
-            cachedRefreshToken = nil
+            activeAccount = nil
             cachedProfileToken = nil
             loadedForServerId = nil
         }
+        return result
     }
 
-    func installAccountSession(accessToken: String, refreshToken: String, accountID: String?, clearProfile: Bool = true, expectedAccount: RefreshAccountIdentity? = nil) throws {
+    /// Saves a sign-in on the active server and makes its account the one
+    /// requests use. Signing in as a saved server user refreshes that account.
+    /// With `replacingOtherAccounts`, any other account on the server is
+    /// replaced, so the server keeps one visible account; without it the
+    /// sign-in is added beside them. The result names the replaced accounts
+    /// so callers can forget what was stored for them.
+    @discardableResult
+    func installAccountSession(accessToken: String, refreshToken: String, accountID: String?,
+                               username: String? = nil, clearProfile: Bool = true,
+                               replacingOtherAccounts: Bool = true,
+                               expectedAccount: RefreshAccountIdentity? = nil) throws -> AccountSignInResult {
         if let expectedAccount, refreshAccountIdentity() != expectedAccount { throw HTTPError.requestIdentityChanged }
-        let value: CanonicalAccountSession
+        let result: AccountSignInResult
         do {
             guard temporaryScope == nil, !activeServerId.isEmpty, !accessToken.isEmpty, !refreshToken.isEmpty,
-                  accountID == nil || accountID?.isEmpty == false else { throw AccountSessionPersistenceError.invalidIdentity }
+                  accountID == nil || accountID?.isEmpty == false else { throw AccountStoreError.invalidIdentity }
             let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
-            guard !origin.isEmpty else { throw AccountSessionPersistenceError.invalidIdentity }
-            value = CanonicalAccountSession(version: 1, signedOut: false, origin: origin, accountID: accountID,
-                epoch: UUID(), accessToken: accessToken, refreshToken: refreshToken)
-            do { try sessions.save(value, serverID: activeServerId) }
-            catch { blockRuntimeSession(); throw error }
+            guard !origin.isEmpty else { throw AccountStoreError.invalidIdentity }
+            do {
+                result = try accounts.saveSignIn(serverId: activeServerId, origin: origin, serverUserId: accountID,
+                                                 username: username, accessToken: accessToken,
+                                                 refreshToken: refreshToken,
+                                                 replacingOtherAccounts: replacingOtherAccounts)
+            } catch { blockRuntimeSession(); throw error }
         } catch {
             // Recorded here rather than by each caller so login, pairing and
             // `saveTokens` all leave the same durable breadcrumb when the
@@ -1108,110 +1221,73 @@ actor TokenStore {
             throw error
         }
         runtimeBlockedServers.remove(activeServerId)
+        accounts.select(result.account)
         if clearProfile {
             defaults.removeObject(forKey: profileIdDefaultsKey)
-            profileKeychain.delete(profileTokenKey)
+            accounts.setProfileToken(nil, for: result.account.localAccountId, onServer: activeServerId)
             cachedProfileToken = nil
         } else {
             // The install marks the cache loaded below, so the profile proof
             // must reflect the Keychain now: a blocked or never-loaded slot
             // would otherwise hide a stored proof until the next switch.
-            cachedProfileToken = profileKeychain.get(profileTokenKey)
+            cachedProfileToken = accounts.profileToken(for: result.account.localAccountId, onServer: activeServerId)
         }
+        // A display target belongs to the session that registered it; a new
+        // sign-in registers its own.
+        removeDisplayTargets(registeredBy: activeServerId)
         persistentCredentialGenerationID = UUID()
-        canonicalSession = value
-        cachedAccessToken = accessToken
-        cachedRefreshToken = refreshToken
+        activeAccount = result.account
         loadedForServerId = activeServerId
-        mirrorCanonicalSession(value)
         mirrorActiveTokensForExtension()
+        return result
     }
 
-    /// Everything a server's credential slot held at one moment, so pairing
-    /// can put it back exactly when a later commit fails. The four states
-    /// mirror `AccountSessionPersistence.State` plus the never-adopted legacy
-    /// per-token slots, which are not a canonical record but are still the
-    /// user's session and must not be tombstoned by a rollback.
+    /// Everything a server's accounts held at one moment, with this device
+    /// user's profile proofs for them, so a sign-in or pairing can put it back
+    /// exactly when a later commit fails.
     enum AccountSessionSnapshot: Equatable, Sendable {
-        case session(CanonicalAccountSession, profileToken: String?)
-        case legacy(accessToken: String?, refreshToken: String?, epoch: String?, profileToken: String?)
-        case signedOut(profileToken: String?)
-        /// The slot could not be read. Restoring it fails closed.
+        case saved(AccountServerSnapshot, profileTokens: [String: String])
+        /// The accounts could not be read. Restoring fails closed.
         case unreadable
     }
 
     func accountSessionSnapshot(for serverID: String) -> AccountSessionSnapshot {
         guard !serverID.isEmpty else { return .unreadable }
         do {
-            let profileToken = try profileKeychain.getChecked(Self.profileTokenKey(for: serverID))
-            switch try sessions.load(serverID) {
-            case .session(let value): return .session(value, profileToken: profileToken)
-            case .signedOut: return .signedOut(profileToken: profileToken)
-            case .legacy:
-                return .legacy(accessToken: try accountKeychain.getChecked(Self.accessTokenKey(for: serverID)),
-                    refreshToken: try accountKeychain.getChecked(Self.refreshTokenKey(for: serverID)),
-                    epoch: try accountKeychain.getChecked(Self.accountEpochKey(for: serverID)), profileToken: profileToken)
+            let snapshot = try accounts.snapshot(ofServer: serverID)
+            var proofs: [String: String] = [:]
+            for account in snapshot.accounts {
+                proofs[account.localAccountId] = try accounts.checkedProfileToken(
+                    for: account.localAccountId, onServer: serverID)
             }
+            return .saved(snapshot, profileTokens: proofs)
         } catch {
             return .unreadable
         }
     }
 
     /// Reinstates `snapshot` for `serverID`. When the restore cannot be made
-    /// durable, returns false and blocks runtime use. If restoring the profile
-    /// proof fails after the account commit, invalidate that partial session
-    /// durably so it cannot return after relaunch.
+    /// durable, returns false and blocks runtime use. An account whose
+    /// profile proof can't be restored is marked as needing sign-in, so a
+    /// partial session cannot return after relaunch.
     @discardableResult
     func restoreAccountSession(_ snapshot: AccountSessionSnapshot, for serverID: String) -> Bool {
         guard !serverID.isEmpty else { return false }
-        var durable: Bool
-        let profileToken: String?
-        switch snapshot {
-        case .session(let value, let proof):
-            profileToken = proof
-            durable = (try? sessions.save(value, serverID: serverID)) != nil
-            if durable {
-                if let access = value.accessToken { accountKeychain.set(access, for: Self.accessTokenKey(for: serverID)) }
-                if let refresh = value.refreshToken { accountKeychain.set(refresh, for: Self.refreshTokenKey(for: serverID)) }
-                if let epoch = value.epoch { accountKeychain.set(epoch.uuidString, for: Self.accountEpochKey(for: serverID)) }
-            }
-        case .legacy(let access, let refresh, let epoch, let proof):
-            profileToken = proof
-            func put(_ value: String?, _ key: String) -> Bool {
-                if let value { return accountKeychain.set(value, for: key) }
-                return accountKeychain.delete(key)
-            }
-            let accessRestored = put(access, Self.accessTokenKey(for: serverID))
-            let refreshRestored = put(refresh, Self.refreshTokenKey(for: serverID))
-            let epochRestored = put(epoch, Self.accountEpochKey(for: serverID))
-            // Keep canonical authority until every legacy field is restored.
-            durable = accessRestored && refreshRestored && epochRestored
-            if durable { durable = sessions.forget(serverID) }
-        case .signedOut(let proof):
-            profileToken = proof
-            durable = sessions.invalidate(serverID)
-            if durable {
-                accountKeychain.delete(Self.accessTokenKey(for: serverID))
-                accountKeychain.delete(Self.refreshTokenKey(for: serverID))
-                accountKeychain.delete(Self.accountEpochKey(for: serverID))
-            }
-        case .unreadable:
-            profileToken = nil
-            durable = false
-        }
+        var durable = false
         var failureReason = "persistenceUnavailable"
-        if durable {
-            if let profileToken {
-                durable = profileKeychain.set(profileToken, for: Self.profileTokenKey(for: serverID))
-            } else {
-                durable = profileKeychain.delete(Self.profileTokenKey(for: serverID))
-            }
-            if !durable {
-                // Account and profile proofs use different Keychain audiences.
-                // Revoke the account if its profile proof cannot be restored.
-                failureReason = sessions.invalidate(serverID)
-                    ? "profileRestoreFailedSessionInvalidated"
-                    : "profileRestoreFailedInvalidationFailed"
+        if case .saved(let saved, let proofs) = snapshot, saved.serverId == serverID {
+            durable = (try? accounts.restore(saved)) != nil
+            if durable {
+                for account in saved.accounts
+                where !accounts.setProfileToken(proofs[account.localAccountId], for: account.localAccountId, onServer: serverID) {
+                    // Account and profile proofs use different Keychain
+                    // audiences. Drop the account's tokens if its profile
+                    // proof cannot be restored.
+                    durable = false
+                    failureReason = (try? accounts.markNeedsSignIn(expected: account.credentials, onServer: serverID)) != nil
+                        ? "profileRestoreFailedSessionInvalidated"
+                        : "profileRestoreFailedInvalidationFailed"
+                }
             }
         }
         if durable {
@@ -1222,8 +1298,8 @@ actor TokenStore {
         }
         if serverID == activeServerId {
             persistentCredentialGenerationID = UUID()
-            canonicalSession = nil
-            cachedAccessToken = nil; cachedRefreshToken = nil; cachedProfileToken = nil
+            activeAccount = nil
+            cachedProfileToken = nil
             loadedForServerId = nil
             ensureLoaded()
             mirrorActiveTokensForExtension()
@@ -1231,51 +1307,76 @@ actor TokenStore {
         return durable
     }
 
-    /// Bind a legacy/unverified session only after an authenticated account response
-    /// under this exact token and process identity. Existing queues are not relabelled.
-    func bindVerifiedAccount(_ accountID: String, expected: CapturedOrdinaryRequestAuth) throws {
+    /// Bind an unverified (migrated) account to the server user an
+    /// authenticated account response named under this exact token and
+    /// process identity, and record its username. Existing queues are not
+    /// relabelled.
+    func bindVerifiedAccount(_ accountID: String, username: String? = nil,
+                             expected: CapturedOrdinaryRequestAuth) throws {
         guard temporaryScope == nil else { return }
         ensureLoaded()
         guard !accountID.isEmpty, refreshAccountIdentity() == expected.account,
               cachedAccessToken == expected.accessToken else { throw HTTPError.requestIdentityChanged }
         // Access-only legacy credentials can still read account metadata, but cannot
         // establish a refreshable durable login envelope or queue authority.
-        guard let access = cachedAccessToken, let refresh = cachedRefreshToken else { return }
-        if let canonicalSession {
-            guard canonicalSession.accountID == nil || canonicalSession.accountID == accountID else {
-                throw AccountSessionPersistenceError.invalidIdentity
-            }
-            if canonicalSession.accountID == accountID { return }
+        guard let account = activeAccount, account.refreshToken != nil else { return }
+        guard account.serverUserId == nil || account.serverUserId == accountID else {
+            throw AccountStoreError.invalidIdentity
         }
-        let legacyEpoch = accountKeychain.get(accountEpochKey).flatMap(UUID.init(uuidString:))
-        let value = CanonicalAccountSession(version: 1, signedOut: false, origin: expected.account.serverURL,
-            accountID: accountID, epoch: canonicalSession?.epoch ?? legacyEpoch ?? UUID(), accessToken: access, refreshToken: refresh)
-        do { try sessions.save(value, serverID: activeServerId) }
-        catch { blockRuntimeSession(); throw error }
-        canonicalSession = value
-        mirrorCanonicalSession(value)
+        if account.serverUserId == accountID, username == nil || account.username == username { return }
+        do {
+            activeAccount = try accounts.bindServerUser(accountID, username: username,
+                                                        expected: account.credentials, onServer: activeServerId)
+        } catch AccountStoreError.credentialsChanged {
+            throw HTTPError.requestIdentityChanged
+        } catch AccountStoreError.invalidIdentity {
+            // Another saved account on this server already is this user.
+            // Merging the two waits for the account picker; until then this
+            // one stays unverified.
+            throw AccountStoreError.invalidIdentity
+        } catch {
+            blockRuntimeSession()
+            throw error
+        }
     }
 
-    private func mirrorCanonicalSession(_ value: CanonicalAccountSession) {
-        if let access = value.accessToken { accountKeychain.set(access, for: accessTokenKey) }
-        if let refresh = value.refreshToken { accountKeychain.set(refresh, for: refreshTokenKey) }
-        if let epoch = value.epoch { accountKeychain.set(epoch.uuidString, for: accountEpochKey) }
+    /// Caches the profiles a fresh list returned for the active account, so
+    /// the picker can draw them offline. Ignored when the account changed
+    /// since `expected` was captured.
+    func updateCachedProfiles(_ profiles: [AccountProfile], expected: RefreshAccountIdentity) {
+        guard temporaryScope == nil, refreshAccountIdentity() == expected,
+              let account = activeAccount, account.cachedProfiles != profiles else { return }
+        do {
+            try accounts.updateCachedProfiles(profiles, for: account.localAccountId, onServer: activeServerId)
+            activeAccount?.cachedProfiles = profiles
+        } catch {
+            recordSessionEvent(phase: "profileCache", outcome: "failed", reason: Self.persistenceFailureReason(error))
+        }
     }
 
     private func blockRuntimeSession() {
         runtimeBlockedServers.insert(activeServerId)
         persistentCredentialGenerationID = UUID()
-        cachedAccessToken = nil; cachedRefreshToken = nil; cachedProfileToken = nil; canonicalSession = nil
+        activeAccount = nil; cachedProfileToken = nil
         loadedForServerId = activeServerId
         clearMirroredTokensForExtension()
         removeDisplayTargets(registeredBy: activeServerId)
     }
 
-    /// Clear tokens for the active server only. Leaves other servers'
-    /// stored tokens intact and leaves the active-server registry entry
-    /// in place (sign-out keeps the URL / name).
+    /// Signs out of the active server's account: its record and this device
+    /// user's profile proof go, and the server stays saved. Leaves other
+    /// servers' and other accounts' credentials intact.
     @discardableResult
     func clearTokens() -> Bool {
+        signOutActiveAccount().durable
+    }
+
+    /// Signs out of the account requests on the active server use and
+    /// returns its `localAccountId`, so callers can delete the data keyed by
+    /// it. A temporary playback scope is ended instead, and reports no
+    /// account.
+    @discardableResult
+    func signOutActiveAccount() -> AccountSignOutResult {
         // The deliberate counterpart to `invalidateRejectedRefresh`: reaching
         // login through this path means the app dropped the session on
         // purpose (sign-out), not because the server rejected it. Reports that
@@ -1289,17 +1390,28 @@ actor TokenStore {
                 outcome: "cleared",
                 reason: "temporaryScope"
             )
-            return true
+            return AccountSignOutResult(serverId: temporaryScope.serverId, localAccountId: nil, durable: true)
         }
-        let durable = activeServerId.isEmpty || sessions.invalidate(activeServerId)
-        runtimeBlockedServers.insert(activeServerId)
-        canonicalSession = nil
-        ensureLoaded()
+        let serverId = activeServerId
+        var signedOut: String?
+        var durable = true
+        if !serverId.isEmpty {
+            ensureLoaded()
+            do {
+                // A server whose account needs sign-in has no loaded account,
+                // but signing out still removes it.
+                if let target = try activeAccount ?? accounts.activeAccount(onServer: serverId) {
+                    signedOut = try accounts.signOut(target.localAccountId, onServer: serverId)
+                }
+            } catch {
+                durable = false
+            }
+            runtimeBlockedServers.insert(serverId)
+        }
         persistentCredentialGenerationID = UUID()
-        cachedAccessToken = nil
-        cachedRefreshToken = nil
+        activeAccount = nil
         cachedProfileToken = nil
-        guard !activeServerId.isEmpty else {
+        guard !serverId.isEmpty else {
             // Cache dropped, but there is no server slot to delete from. A
             // sign-out here leaves nothing persisted to clear.
             recordSessionEvent(
@@ -1307,48 +1419,95 @@ actor TokenStore {
                 outcome: "cleared",
                 reason: "noActiveServer"
             )
-            return true
+            return AccountSignOutResult(serverId: serverId, localAccountId: nil, durable: true)
         }
         recordSessionEvent(
             phase: "clearTokens",
             outcome: durable ? "cleared" : "failed",
             reason: durable ? "persistentSession" : "persistenceUnavailable"
         )
-        accountKeychain.delete(accessTokenKey)
-        accountKeychain.delete(refreshTokenKey)
-        accountKeychain.delete(accountEpochKey)
-        profileKeychain.delete(profileTokenKey)
+        if let current = accounts.selection(), current.serverId == serverId {
+            accounts.select(nil)
+        }
         defaults.removeObject(forKey: profileIdDefaultsKey)
         clearMirroredTokensForExtension()
-        removeDisplayTargets(registeredBy: activeServerId)
-        return durable
+        removeDisplayTargets(registeredBy: serverId, account: signedOut)
+        return AccountSignOutResult(serverId: serverId, localAccountId: signedOut, durable: durable)
     }
 
-    /// Delete tokens for an arbitrary server. Used by the registry when
-    /// removing a server or signing out from a non-active server.
+    /// The account whose credentials requests send on `serverId` now. Nil
+    /// when none is loaded, such as a selected account that needs to sign in
+    /// again; `requestAccountId(onServer:)` falls back to the selection.
+    func loadedAccountId(onServer serverId: String) -> String? {
+        guard !serverId.isEmpty, serverId == activeServerId else { return nil }
+        ensureLoaded()
+        return activeAccount?.localAccountId
+    }
+
+    /// The saved account requests on `serverId` use now: the selected one on
+    /// the active server, otherwise the server's most recently used account.
+    /// Nil when the server has none, or its accounts can't be read.
+    func requestAccountId(onServer serverId: String) -> String? {
+        guard !serverId.isEmpty else { return nil }
+        if serverId == activeServerId {
+            ensureLoaded()
+            if let activeAccount { return activeAccount.localAccountId }
+        }
+        return (try? accounts.activeAccount(onServer: serverId))?.localAccountId
+    }
+
+    /// Signs out of a saved account that requests do not use: another
+    /// account on the active server, or any account on another server. Its
+    /// record and this device user's profile proof go; the account in use
+    /// is untouched. The loaded account (`loadedAccountId(onServer:)`) signs
+    /// out through `signOutActiveAccount()`, which this refuses.
+    func signOutInactiveAccount(_ localAccountId: String, onServer serverId: String) -> AccountSignOutResult {
+        let refused = AccountSignOutResult(serverId: serverId, localAccountId: nil, durable: false)
+        guard !serverId.isEmpty, temporaryScope?.serverId != serverId else { return refused }
+        if loadedAccountId(onServer: serverId) == localAccountId { return refused }
+        do {
+            try accounts.signOut(localAccountId, onServer: serverId)
+            // A selected account that needs to sign in again has no session
+            // loaded; it signs out here, and nothing stays selected.
+            if accounts.selection()?.localAccountId == localAccountId { _ = accounts.select(nil) }
+        } catch {
+            recordSessionEvent(phase: "clearTokens", outcome: "failed", reason: Self.persistenceFailureReason(error))
+            return refused
+        }
+        recordSessionEvent(phase: "clearTokens", outcome: "cleared", reason: "inactiveAccount")
+        removeDisplayTargets(registeredBy: serverId, account: localAccountId)
+        return AccountSignOutResult(serverId: serverId, localAccountId: localAccountId, durable: true)
+    }
+
+    /// Delete every account on an arbitrary server. Used by the registry
+    /// when removing a server.
     @discardableResult
     func deleteTokens(for serverId: String) -> Bool {
-        guard !serverId.isEmpty else { return true }
-        let durable = sessions.invalidate(serverId)
-        if !durable {
+        removeAccounts(onServer: serverId) != nil
+    }
+
+    /// Signs out of every account on `serverId` and returns their
+    /// `localAccountId`s, or nil when the removal could not be saved.
+    func removeAccounts(onServer serverId: String) -> [String]? {
+        guard !serverId.isEmpty else { return [] }
+        let removed: [String]?
+        do { removed = try accounts.removeServer(serverId) } catch {
             recordSessionEvent(phase: "deleteTokens", outcome: "failed", reason: "persistenceUnavailable")
+            removed = nil
         }
         runtimeBlockedServers.insert(serverId)
-        accountKeychain.delete(Self.accessTokenKey(for: serverId))
-        accountKeychain.delete(Self.refreshTokenKey(for: serverId))
-        accountKeychain.delete(Self.accountEpochKey(for: serverId))
-        profileKeychain.delete(Self.profileTokenKey(for: serverId))
         removeDisplayTargets(registeredBy: serverId)
+        if let current = accounts.selection(), current.serverId == serverId {
+            accounts.select(nil)
+        }
         if serverId == activeServerId {
-            canonicalSession = nil
+            activeAccount = nil
             persistentCredentialGenerationID = UUID()
-            cachedAccessToken = nil
-            cachedRefreshToken = nil
             cachedProfileToken = nil
             loadedForServerId = nil
             clearMirroredTokensForExtension()
         }
-        return durable
+        return removed
     }
 
     // MARK: - Profile
@@ -1356,6 +1515,27 @@ actor TokenStore {
     func getProfileId() -> String? {
         if let temporaryScope { return temporaryScope.profileId }
         return defaults.string(forKey: profileIdDefaultsKey)
+    }
+
+    /// The owner `captureOrdinaryRequestAuth` would report now, readable
+    /// without awaiting the actor: a remote-playback scope's credentials and
+    /// profile while one is installed, otherwise the persistent slot's
+    /// credential generation and the selected profile.
+    nonisolated var ownerSnapshot: CredentialOwnerSnapshot {
+        let mirror = ownerMirror.withLock { $0 }
+        if let temporary = mirror.temporary {
+            return CredentialOwnerSnapshot(credentialGenerationID: temporary.generation, profileId: temporary.profileId)
+        }
+        return CredentialOwnerSnapshot(
+            credentialGenerationID: mirror.persistentGeneration,
+            profileId: defaults.string(forKey: profileIdDefaultsKey)
+        )
+    }
+
+    private func publishOwnerMirror() {
+        let persistent = persistentCredentialGenerationID
+        let temporary = temporaryScope.map { (generation: $0.credentialGenerationID, profileId: $0.profileId) }
+        ownerMirror.withLock { $0 = (persistentGeneration: persistent, temporary: temporary) }
     }
 
     func setProfileId(_ profileId: String?) {
@@ -1382,10 +1562,12 @@ actor TokenStore {
         guard !activeServerId.isEmpty else { return false }
         ensureLoaded()
         let persisted: Bool
-        if let token {
-            persisted = profileKeychain.set(token, for: profileTokenKey)
+        if let account = activeAccount {
+            persisted = accounts.setProfileToken(token, for: account.localAccountId, onServer: activeServerId)
         } else {
-            persisted = profileKeychain.delete(profileTokenKey)
+            // Without an account there is no proof to keep: clearing succeeds,
+            // storing one fails.
+            persisted = token == nil
         }
         guard persisted else { return false }
         cachedProfileToken = token
@@ -1394,36 +1576,21 @@ actor TokenStore {
         return true
     }
 
+    /// The active account's sign-in epoch, which remembered profiles are
+    /// bound to. Every saved account has one; the name predates accounts,
+    /// when a session could lack it.
     func getOrCreateAccountEpoch() -> String? {
         guard temporaryScope == nil else { return nil }
         return getOrCreateAccountEpoch(for: activeServerId)
     }
 
     func getOrCreateAccountEpoch(for serverID: String) -> String? {
-        guard !serverID.isEmpty, !runtimeBlockedServers.contains(serverID) else { return nil }
-        do {
-            switch try sessions.load(serverID) {
-            case .session(let value): return value.epoch?.uuidString
-            case .signedOut: return nil
-            case .legacy: break
-            }
-        } catch {
-            recordSessionEvent(
-                phase: "sessionLoad",
-                outcome: "failed",
-                reason: Self.persistenceFailureReason(error)
-            )
-            return nil
+        guard !serverID.isEmpty else { return nil }
+        if serverID == activeServerId {
+            ensureLoaded()
+            return activeAccount?.epoch?.uuidString
         }
-        let epochKey = Self.accountEpochKey(for: serverID)
-        let accessKey = Self.accessTokenKey(for: serverID)
-        if let existing = accountKeychain.get(epochKey), !existing.isEmpty {
-            return existing
-        }
-        guard accountKeychain.get(accessKey) != nil else { return nil }
-        let epoch = UUID().uuidString
-        guard accountKeychain.set(epoch, for: epochKey) else { return nil }
-        return epoch
+        return savedAccount(onServer: serverID)?.epoch?.uuidString
     }
 
     /// Commits profile ID and verification proof in one actor turn after the
@@ -1440,13 +1607,10 @@ actor TokenStore {
             return false
         }
         ensureLoaded()
-        let persisted: Bool
-        if let profileToken {
-            persisted = profileKeychain.set(profileToken, for: profileTokenKey)
-        } else {
-            persisted = profileKeychain.delete(profileTokenKey)
+        guard let account = activeAccount,
+              accounts.setProfileToken(profileToken, for: account.localAccountId, onServer: activeServerId) else {
+            return false
         }
-        guard persisted else { return false }
         cachedProfileToken = profileToken
         // A display target names its own profile, so the previous profile's
         // stays until this profile's registration replaces it, as the
@@ -1480,8 +1644,8 @@ actor TokenStore {
             return false
         }
         ensureLoaded()
-        if !activeServerId.isEmpty,
-           !profileKeychain.delete(profileTokenKey) {
+        if let account = activeAccount,
+           !accounts.setProfileToken(nil, for: account.localAccountId, onServer: activeServerId) {
             return false
         }
         defaults.removeObject(forKey: profileIdDefaultsKey)
@@ -1545,50 +1709,51 @@ actor TokenStore {
         return "unknown"
     }
 
-    private var accessTokenKey: String { Self.accessTokenKey(for: activeServerId) }
-    private var refreshTokenKey: String { Self.refreshTokenKey(for: activeServerId) }
-    private var profileTokenKey: String { Self.profileTokenKey(for: activeServerId) }
-    private var accountEpochKey: String { Self.accountEpochKey(for: activeServerId) }
-
     private func ensureLoaded() {
         guard loadedForServerId != activeServerId else { return }
-        if activeServerId.isEmpty {
-            cachedAccessToken = nil
-            cachedRefreshToken = nil
-            cachedProfileToken = nil
-        } else {
-            canonicalSession = nil
-            cachedAccessToken = nil; cachedRefreshToken = nil; cachedProfileToken = nil
-            if !runtimeBlockedServers.contains(activeServerId) {
-                do {
-                    switch try sessions.load(activeServerId) {
-                    case .session(let value):
-                        let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
-                        if value.origin == origin {
-                            canonicalSession = value
-                            cachedAccessToken = value.accessToken
-                            cachedRefreshToken = value.refreshToken
-                            cachedProfileToken = profileKeychain.get(profileTokenKey)
-                        }
-                    case .signedOut: break
-                    case .legacy:
-                        cachedAccessToken = accountKeychain.get(accessTokenKey)
-                        cachedRefreshToken = accountKeychain.get(refreshTokenKey)
-                        cachedProfileToken = profileKeychain.get(profileTokenKey)
-                    }
-                } catch {
-                    // Fail closed: a record that cannot be read or decoded
-                    // blocks the runtime session until the next install.
-                    recordSessionEvent(
-                        phase: "sessionLoad",
-                        outcome: "blocked",
-                        reason: Self.persistenceFailureReason(error)
-                    )
-                    runtimeBlockedServers.insert(activeServerId)
+        activeAccount = nil
+        cachedProfileToken = nil
+        if !activeServerId.isEmpty, !runtimeBlockedServers.contains(activeServerId) {
+            do {
+                let origin = ServerRegistry.normalize(url: defaults.string(forKey: serverUrlDefaultsKey) ?? "")
+                if let account = try accounts.activeAccount(onServer: activeServerId),
+                   account.isSignedIn, account.origin == origin {
+                    activeAccount = account
+                    cachedProfileToken = accounts.profileToken(for: account.localAccountId, onServer: activeServerId)
+                    // Keep the selection mirror that `AccountScope.current`
+                    // reads in step with the account requests use.
+                    accounts.select(account)
                 }
+            } catch {
+                // Fail closed: a record that cannot be read or decoded
+                // blocks the runtime session until the next install.
+                recordSessionEvent(
+                    phase: "sessionLoad",
+                    outcome: "blocked",
+                    reason: Self.persistenceFailureReason(error)
+                )
+                runtimeBlockedServers.insert(activeServerId)
             }
         }
         loadedForServerId = activeServerId
+    }
+
+    /// A non-active server's signed-in account, as requests on it would use.
+    /// Nil for a blocked server, one with no signed-in account, and on a read
+    /// error, which is recorded.
+    private func savedAccount(onServer serverId: String) -> Account? {
+        guard !runtimeBlockedServers.contains(serverId) else { return nil }
+        do {
+            guard let account = try accounts.activeAccount(onServer: serverId), account.isSignedIn else { return nil }
+            return account
+        } catch {
+            recordSessionEvent(
+                phase: "sessionLoad",
+                outcome: "failed",
+                reason: Self.persistenceFailureReason(error)
+            )
+            return nil
+        }
     }
 
     /// Mirror the current active access + profile tokens to fixed-name
@@ -1621,11 +1786,17 @@ actor TokenStore {
 
     /// A display token belongs to its server's session, so it goes when that
     /// session's credentials do. Turning the registration off first is the
-    /// caller's job (`ApplePushRegistrationCoordinator.unregister`).
-    private func removeDisplayTargets(registeredBy serverId: String) {
+    /// caller's job (`ApplePushRegistrationCoordinator.unregister`). With
+    /// `account`, only that account's target goes: another account on the
+    /// server may hold its installation.
+    private func removeDisplayTargets(registeredBy serverId: String, account: String? = nil) {
         #if os(iOS)
         guard !serverId.isEmpty else { return }
-        displayTargets.removeTargets(registeredBy: serverId)
+        if let account {
+            displayTargets.removeTargets(registeredBy: serverId, account: account)
+        } else {
+            displayTargets.removeTargets(registeredBy: serverId)
+        }
         #endif
     }
 

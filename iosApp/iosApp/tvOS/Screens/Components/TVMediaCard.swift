@@ -1,9 +1,9 @@
 #if os(tvOS)
 import SwiftUI
 
-/// tvOS poster card on the cached Nuke renderer. `.nativeCard` uses the system
-/// `.card` lift and parallax; `.ring` uses a white ring and scale to match the
-/// episode and cast rails. The caption below highlights on focus.
+/// tvOS poster card on the cached Nuke renderer. `.nativeCard` uses the shared
+/// card lift and outline; `.ring` uses a smaller scale to match the episode
+/// and cast rails. The caption below highlights on focus.
 struct TVMediaCard: View {
     let title: String
     let posterUrl: String
@@ -31,11 +31,10 @@ struct TVMediaCard: View {
     var aspect: MediaCardAspect = .poster
     var prefersDefaultFocus: Bool = false
     var defaultFocusNamespace: Namespace.ID? = nil
-    /// Focus visual. `.nativeCard` keeps tvOS's `.card` lift + parallax
-    /// (library grids, search). `.ring` matches the white-ring + scale
-    /// treatment of the episode and cast rails so the detail-page
-    /// "Recommended / More Like This" rail reads consistently with its
-    /// neighbours instead of using the subtler native lift.
+    /// Focus visual. `.nativeCard` uses the shared card lift and outline
+    /// (library grids, search). `.ring` matches the smaller scale of the
+    /// episode and cast rails so the detail-page "Recommended / More Like
+    /// This" rail reads consistently with its neighbours.
     var focusTreatment: FocusTreatment = .nativeCard
     /// Optional external focus hook so a parent rail can make this card a
     /// `.defaultFocus` target on d-pad entry. The focusable element is the
@@ -46,6 +45,14 @@ struct TVMediaCard: View {
     /// Catalog identity for the long-press favorite/watchlist menu.
     /// `nil` (or a nil `userState`) leaves the card without a menu.
     var contentId: String? = nil
+    /// Draws the card as this movie box set: its label, film count and
+    /// watched progress over the poster. Leave `contentId` nil so the card
+    /// has no title menu.
+    var boxSet: CatalogBoxSet? = nil
+    /// Outlines the poster and labels it THIS FILM: the movie whose page
+    /// shows this card in its box set row. The focus ring replaces the
+    /// outline while focused.
+    var marksCurrentFilm = false
 
     enum FocusTreatment {
         case nativeCard
@@ -54,7 +61,6 @@ struct TVMediaCard: View {
 
     @FocusState private var isFocused: Bool
     @State private var personalState = MediaCardPersonalState()
-    @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
 
     private static let captionSpacing: CGFloat = 16
@@ -63,11 +69,11 @@ struct TVMediaCard: View {
     private var cardHeight: CGFloat { artworkSize.height }
     private var artworkSize: CGSize { Self.artworkSize(cardWidth: cardWidth, aspect: aspect) }
 
-    /// How far the focused poster extends below its frame: the native lift,
-    /// or half of what the ring style's scale adds.
+    /// How far the focused poster extends below its frame: half of what
+    /// either style's scale adds.
     private var focusedPosterOverhang: CGFloat {
         switch focusTreatment {
-        case .nativeCard: TVCardCaption.cardLiftOverhang
+        case .nativeCard: TVCardOutlineButtonStyle.focusedOverhang(forHeight: cardHeight)
         case .ring: (TVCardFocusButtonStyle().scale - 1) / 2 * cardHeight
         }
     }
@@ -86,13 +92,21 @@ struct TVMediaCard: View {
         VStack(alignment: .leading, spacing: Self.captionSpacing) {
             posterButton
                 .mediaStateContextMenu(hasPersonalActions ? stateMenu : nil)
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                caption.tvCardCaptionFocus(
-                    isFocused: isFocused,
-                    posterOverhang: focusedPosterOverhang,
-                    spacing: Self.captionSpacing
-                )
-            }
+                // Outside the button, which clips its label to the poster;
+                // scaled with the focus lift so they stay above the poster.
+                .background {
+                    if boxSet != nil {
+                        BoxSetCardSleeves(width: resolvedCardWidth)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                            .scaleEffect(isFocused ? 1 + 2 * focusedPosterOverhang / cardHeight : 1)
+                            .animation(.easeOut(duration: 0.2), value: isFocused)
+                    }
+                }
+            caption.tvCardCaptionFocus(
+                isFocused: isFocused,
+                posterOverhang: focusedPosterOverhang,
+                spacing: Self.captionSpacing
+            )
         }
         .frame(width: resolvedCardWidth)
         .mediaActionFeedback(personalState.feedback)
@@ -150,15 +164,14 @@ struct TVMediaCard: View {
     private var posterButton: some View {
         switch focusTreatment {
         case .nativeCard:
-            wired(Button(action: action) { posterImage }.buttonStyle(.card))
+            wired(Button(action: action) { posterImage }.buttonStyle(TVCardOutlineButtonStyle()))
         case .ring:
             // The ring is the focus cue; the style suppresses the system halo.
             wired(
                 Button(action: action) {
                     posterImage.tvFocusRing(
                         isFocused: isFocused,
-                        cornerRadius: SiloTheme.cornerRadius,
-                        lineWidth: 4
+                        cornerRadius: SiloTheme.cornerRadius
                     )
                 }
                 .buttonStyle(TVCardFocusButtonStyle(
@@ -204,9 +217,25 @@ struct TVMediaCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
+            if let boxSet {
+                ZStack(alignment: .bottom) {
+                    BoxSetCardBadges(boxSet: boxSet)
+                    if let progress = boxSet.watchedProgress {
+                        ProgressBar(value: progress)
+                    }
+                }
+                .frame(width: resolvedCardWidth, height: cardHeight)
+                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+            }
+
             if isPlayed {
                 watchedBadge
                     .padding(12)
+            }
+
+            if marksCurrentFilm {
+                BoxSetCurrentFilmMarker(showsOutline: !isFocused)
+                    .frame(width: resolvedCardWidth, height: cardHeight)
             }
         }
         .frame(width: resolvedCardWidth, height: cardHeight)
@@ -224,8 +253,7 @@ struct TVMediaCard: View {
                 .tvCardTitleFocus(isFocused: isFocused)
                 .frame(width: resolvedCardWidth, alignment: .center)
 
-            if uiCustomization.cardPresentation.caption.showsMetadata,
-               let secondLine = subtitle ?? year.map(String.init) {
+            if let secondLine = subtitle ?? year.map(String.init) {
                 Text(secondLine)
                     .font(.siloPosterMetadata)
                     .tvCardSubtitleFocus(isFocused: isFocused)
@@ -252,6 +280,7 @@ struct TVMediaCard: View {
     }
 
     private var accessibilityDescription: String {
+        if let boxSet { return boxSet.accessibilityLabel }
         let secondLine = subtitle ?? year.map(String.init)
         var components = [title]
         if let secondLine {
@@ -259,6 +288,9 @@ struct TVMediaCard: View {
         }
         if isPlayed {
             components.append("Watched")
+        }
+        if marksCurrentFilm {
+            components.append("This film")
         }
         return components.joined(separator: ", ")
     }

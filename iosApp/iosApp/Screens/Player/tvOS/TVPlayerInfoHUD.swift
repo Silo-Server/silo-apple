@@ -1763,7 +1763,8 @@ private struct SubtitlesPane: View {
                     HUDTrackRow(
                         name: track.primaryLabel,
                         attributes: attributes(for: track),
-                        isSelected: viewModel.selectedSubtitleId == track.trackId
+                        isSelected: viewModel.selectedSubtitleId == track.trackId,
+                        isDisabled: track.hasUnsupportedFormat
                     ) {
                         viewModel.selectSubtitle(track)
                     }
@@ -1804,7 +1805,10 @@ private struct SubtitlesPane: View {
     /// The track's attributes, followed by its sync status when it can be
     /// synced ("Syncing… 40%", "Synced −3.0 s").
     private func attributes(for track: PlayerTrack) -> String? {
-        let parts = [track.attributesLabel, viewModel.subtitleSyncStatus(for: track)].compactMap { $0 }.filter { !$0.isEmpty }
+        let status = track.hasUnsupportedFormat
+            ? PlayerTrack.unsupportedFormatLabel
+            : viewModel.subtitleSyncStatus(for: track)
+        let parts = [track.attributesLabel, status].compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 

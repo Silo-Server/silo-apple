@@ -483,13 +483,9 @@ struct WatchPartyMediaPicker: View {
                         // Home's own cards, so art, overlays and captions match it.
                         if isResume {
                             HomeStillCard(item: item, width: HomeFeedMetrics.stillWidth * scale,
-                                          showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
-                                          showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                           onTap: { openSection(item) })
                         } else {
                             HomePosterCard(item: item, width: HomeFeedMetrics.posterWidth * scale,
-                                           showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
-                                           showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                            showsProgress: section.id == Self.togetherSectionID,
                                            onTap: { openSection(item) },
                                            secondLineOverride: caption(for: item, in: section))
@@ -567,8 +563,6 @@ struct WatchPartyMediaPicker: View {
             LazyVGrid(columns: searchColumns, alignment: .leading, spacing: 18) {
                 ForEach(results) { item in
                     HomePosterCard(item: SectionItem(browseItem: item), width: searchCardWidth,
-                                   showsCaption: uiCustomization.cardPresentation.caption.showsTitle,
-                                   showsMetadata: uiCustomization.cardPresentation.caption.showsMetadata,
                                    onTap: { open(item) })
                         .onAppear {
                             if item.contentId == results.last?.contentId { Task { await search.loadMore() } }

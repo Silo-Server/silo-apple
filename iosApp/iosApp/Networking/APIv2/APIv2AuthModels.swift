@@ -52,6 +52,9 @@ struct APIv2DeviceCapability: Decodable {
     var cancel: Bool? = nil
     /// Whether polls report `opened` once an approver looked the request up.
     var openedSignal: Bool? = nil
+    /// Whether start takes `binding` and poll checks `binding_secret`
+    /// (pairing-session binding). Absent from older servers.
+    var sessionBinding: Bool? = nil
 
     /// Whether this server offers device sign-in at all. Older servers
     /// that answer the document always do; `disabled`, `not_configured`
@@ -59,6 +62,7 @@ struct APIv2DeviceCapability: Decodable {
     var offersDeviceSignIn: Bool { state == "available" }
     var supportsCancel: Bool { offersDeviceSignIn && cancel == true }
     var supportsOpenedSignal: Bool { offersDeviceSignIn && openedSignal == true }
+    var supportsSessionBinding: Bool { sessionBinding == true }
 
     /// Whether this server accepts a remote-playback handoff speaking
     /// `protocolVersion`. Only an `available` document counts; a principal the
@@ -110,10 +114,13 @@ struct APIv2DeviceLookup: Decodable {
     var requestedAt: Date? = nil
     var serverId: String? = nil
     var serverName: String? = nil
+    /// Omitted when the request has no binding.
+    var binding: String? = nil
     var presentation: DeviceLookupResponse {
         DeviceLookupResponse(matchCode: matchCode, deviceName: deviceName, devicePlatform: devicePlatform,
             status: status, clientPurpose: clientPurpose, temporary: temporary, userCode: userCode,
             ipAddressHint: ipAddressHint, expiresAt: expiresAt, requestedAt: requestedAt,
-            serverId: ServerIdentity.usable(serverId), serverName: ServerIdentity.usable(serverName))
+            serverId: ServerIdentity.usable(serverId), serverName: ServerIdentity.usable(serverName),
+            binding: ServerIdentity.usable(binding))
     }
 }

@@ -257,6 +257,7 @@ enum OfflinePlaybackBuilder {
             intro: manifest.intro,
             credits: manifest.credits,
             recap: manifest.recap,
+            markerSegments: manifest.markerSegments,
             // Without a manifest audio list the player picks by language.
             effectiveAudioLanguage: audioPref.map(\.audioLanguage).flatMap { $0.isEmpty ? nil : $0 }
         )

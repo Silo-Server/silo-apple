@@ -26,6 +26,8 @@ final class APIv2SubtitleTests: XCTestCase {
             defaults: SharedDefaults(suite: suite, standard: suite))
         await tokens.switchActiveServer(serverId: "server")
         await tokens.setServerUrl("https://subtitles.example")
+        // A profile proof belongs to a signed-in account.
+        _ = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
         await tokens.setProfileId(profile)
         let http = HTTPClient(session: stub.makeSession(), tokenStore: tokens)
         return (APIv2Client(http: http, tokenStore: tokens, isUpdateRequired: { false }), tokens)

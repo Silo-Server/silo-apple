@@ -23,6 +23,10 @@ struct PlayerPreviewBoundsKey: PreferenceKey {
 
 struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
     let isPreview: Bool
+    /// Fit keeps the picture clear of the Dynamic Island and notch, which a
+    /// scope-width video would otherwise run under. Fill and Stretch use the
+    /// whole screen, and the black backdrop always does.
+    var fitsSafeArea = false
     @ViewBuilder let surface: () -> Surface
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -33,47 +37,58 @@ struct PlayerSurfaceLayout<Surface: View, Content: View>: View {
     var body: some View {
         content()
             .overlayPreferenceValue(PlayerPreviewBoundsKey.self) { geometry in
-                GeometryReader { proxy in
-                    let playing = playingFrame(in: proxy)
-                    let frame = isPreview ? geometry.bounds.map { proxy[$0] } ?? playing : playing
-                    let viewport = isPreview ? geometry.viewport.map { proxy[$0] } ?? playing : playing
-                    // One structural identity in both modes. Only geometry changes;
-                    // expansion must not load, seek, bind a second host, or resume.
-                    surface()
-                        .frame(width: frame.width, height: frame.height)
-                        .clipShape(RoundedRectangle(cornerRadius: isPreview ? 8 : 0))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: isPreview ? 8 : 0)
-                                .stroke(.white.opacity(isPreview ? 0.16 : 0), lineWidth: 1)
-                        }
-                        .shadow(color: .black.opacity(isPreview ? 0.55 : 0), radius: isPreview ? 34 : 0, y: isPreview ? 18 : 0)
-                        .position(x: frame.midX, y: frame.midY)
-                        // Respect the original ScrollView's clipping even though
-                        // the video itself is a persistent sibling of that view.
-                        .mask {
-                            Rectangle()
-                                .frame(width: viewport.width, height: viewport.height)
-                                .position(x: viewport.midX, y: viewport.midY)
-                        }
-                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: isPreview)
+                // A reader that ignores the safe area reports zero insets, so
+                // the outer one supplies them.
+                GeometryReader { safeArea in
+                    let insets = safeArea.safeAreaInsets
+                    GeometryReader { proxy in
+                        let playing = playingFrame(in: proxy, insets: insets)
+                        let frame = isPreview ? geometry.bounds.map { proxy[$0] } ?? playing : playing
+                        let viewport = isPreview ? geometry.viewport.map { proxy[$0] } ?? playing : playing
+                        // One structural identity in both modes. Only geometry changes;
+                        // expansion must not load, seek, bind a second host, or resume.
+                        surface()
+                            .frame(width: frame.width, height: frame.height)
+                            .clipShape(RoundedRectangle(cornerRadius: isPreview ? 8 : 0))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: isPreview ? 8 : 0)
+                                    .stroke(.white.opacity(isPreview ? 0.16 : 0), lineWidth: 1)
+                            }
+                            .shadow(color: .black.opacity(isPreview ? 0.55 : 0), radius: isPreview ? 34 : 0, y: isPreview ? 18 : 0)
+                            .position(x: frame.midX, y: frame.midY)
+                            // Respect the original ScrollView's clipping even though
+                            // the video itself is a persistent sibling of that view.
+                            .mask {
+                                Rectangle()
+                                    .frame(width: viewport.width, height: viewport.height)
+                                    .position(x: viewport.midX, y: viewport.midY)
+                            }
+                            .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: isPreview)
+                    }
+                    .ignoresSafeArea()
                 }
-                .ignoresSafeArea()
                 .allowsHitTesting(false)
                 .accessibilityHidden(isPreview)
             }
     }
 
     /// The whole screen, or everything above the fold in the iPhone Duo's
-    /// tabletop posture.
-    private func playingFrame(in proxy: GeometryProxy) -> CGRect {
-        let screen = CGRect(origin: .zero, size: proxy.size)
+    /// tabletop posture, less the sensor housing when `fitsSafeArea`.
+    private func playingFrame(in proxy: GeometryProxy, insets: EdgeInsets) -> CGRect {
+        var frame = CGRect(origin: .zero, size: proxy.size)
         #if os(iOS)
         if let tabletopLayout {
             let videoMaxY = tabletopLayout.videoMaxY - proxy.frame(in: .global).minY
-            return CGRect(x: 0, y: 0, width: screen.width, height: min(max(videoMaxY, 0), screen.height))
+            frame.size.height = min(max(videoMaxY, 0), frame.height)
         }
+        guard fitsSafeArea else { return frame }
+        // Even side insets keep the picture centred. Only the top edge holds
+        // a sensor housing; the bottom inset is the home indicator, which may
+        // overlay video.
+        let side = max(insets.leading, insets.trailing)
+        frame = frame.inset(by: UIEdgeInsets(top: min(insets.top, frame.height), left: side, bottom: 0, right: side))
         #endif
-        return screen
+        return frame
     }
 }
 

@@ -240,7 +240,10 @@ struct SubtitlePrefRequest: TrackPrefBody {
     let externalSubtitlePath: String
     let subtitleMode: String
     let trackSignature: SubtitleTrackSignature?
-    let showForcedSubtitles: Bool?
+    /// A deliberate per-series forced-subtitle override. Omitted unless a
+    /// control exists for exactly that choice: the server stores any present
+    /// value above the profile toggle, so a track or Off pick leaves it nil.
+    var showForcedSubtitles: Bool? = nil
 }
 
 extension SubtitlePrefRequest {

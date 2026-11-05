@@ -1120,7 +1120,10 @@ final class WatchPartySession {
                 let detail = try await self.api.catalogItem(id: contentId, libraryId: room.selectedLibraryId,
                                                             artwork: await SiloAPI.shared.artworkQuery(.detail, slotWidthsOnly: true), auth: auth)
                 var item = WatchPartySelectedItem(detail)
-                if detail.type == "episode", let seriesId = detail.seriesId, !seriesId.isEmpty,
+                // Servers with `episode_parent_artwork` already put the
+                // season or series poster on the episode.
+                if detail.type == "episode", detail.episodeShowPoster == nil,
+                   let seriesId = detail.seriesId, !seriesId.isEmpty,
                    let poster = await self.showPoster(seriesId: seriesId, seasonNumber: detail.seasonNumber,
                                                       libraryId: room.selectedLibraryId, auth: auth) {
                     item.posterUrl = poster.url

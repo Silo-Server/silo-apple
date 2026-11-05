@@ -5,7 +5,6 @@ import SwiftUI
 /// the real episode rail. It is intentionally static—no shimmer, blur, or
 /// timer—so it stays cheap while artwork and playback metadata are decoding.
 struct PhoneEpisodeRailSkeleton: View {
-    var captionStyleOverride: CardCaptionStyle? = nil
     private var uiCustomization: UICustomizationPreferences { .shared }
 
     private var cardWidth: CGFloat {
@@ -13,10 +12,6 @@ struct PhoneEpisodeRailSkeleton: View {
     }
 
     private var stillHeight: CGFloat { cardWidth * 9 / 16 }
-
-    private var captionStyle: CardCaptionStyle {
-        captionStyleOverride ?? uiCustomization.cardPresentation.caption
-    }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -39,18 +34,14 @@ struct PhoneEpisodeRailSkeleton: View {
                 .fill(Color.white.opacity(0.09 + Double(index) * 0.01))
                 .frame(width: cardWidth, height: stillHeight)
 
-            if captionStyle.showsTitle {
-                VStack(alignment: .leading, spacing: 4) {
-                    skeletonLine(width: 62, height: 8, opacity: 0.12)
-                    skeletonLine(width: cardWidth * 0.68, height: 12, opacity: 0.16)
+            VStack(alignment: .leading, spacing: 4) {
+                skeletonLine(width: 62, height: 8, opacity: 0.12)
+                skeletonLine(width: cardWidth * 0.68, height: 12, opacity: 0.16)
 
-                    if captionStyle.showsMetadata {
-                        skeletonLine(width: cardWidth * 0.42, height: 9, opacity: 0.10)
-                        skeletonLine(width: cardWidth * 0.92, height: 9, opacity: 0.09)
-                        skeletonLine(width: cardWidth * 0.78, height: 9, opacity: 0.09)
-                        skeletonLine(width: cardWidth * 0.55, height: 9, opacity: 0.09)
-                    }
-                }
+                skeletonLine(width: cardWidth * 0.42, height: 9, opacity: 0.10)
+                skeletonLine(width: cardWidth * 0.92, height: 9, opacity: 0.09)
+                skeletonLine(width: cardWidth * 0.78, height: 9, opacity: 0.09)
+                skeletonLine(width: cardWidth * 0.55, height: 9, opacity: 0.09)
             }
         }
         .frame(width: cardWidth, alignment: .leading)

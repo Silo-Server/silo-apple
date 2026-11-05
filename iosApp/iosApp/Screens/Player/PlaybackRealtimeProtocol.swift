@@ -243,7 +243,27 @@ extension Dictionary where Key == String, Value == PlaybackRealtimeValue {
         }
         return .set(range)
     }
+
+    /// `marker_segments`: nil when absent or null, `.failure` when any entry
+    /// lacks its kind or bounds, so a broken snapshot is not half-applied.
+    func markerSegments(forKey key: String) -> Result<[PlaybackMarkerSegment], PlaybackRealtimeMalformedPayload>? {
+        guard let value = self[key], value != .null else { return nil }
+        guard case .array(let values) = value else { return .failure(PlaybackRealtimeMalformedPayload()) }
+        var segments: [PlaybackMarkerSegment] = []
+        for value in values {
+            guard case .object(let object) = value,
+                  let kind = object.string(forKeys: "kind"),
+                  let start = object.number(forKeys: "start_seconds"),
+                  let end = object.number(forKeys: "end_seconds") else {
+                return .failure(PlaybackRealtimeMalformedPayload())
+            }
+            segments.append(PlaybackMarkerSegment(kind: kind, startSeconds: start, endSeconds: end))
+        }
+        return .success(segments)
+    }
 }
+
+struct PlaybackRealtimeMalformedPayload: Error, Equatable {}
 
 struct PlaybackRealtimeCommandEnvelope: Decodable, Equatable {
     let type: PlaybackRealtimeMessageType
@@ -314,10 +334,18 @@ struct PlaybackRealtimeMarkersUpdatedPayload: Equatable {
     let introUpdate: PlaybackRealtimeMarkerRangeUpdate
     let creditsUpdate: PlaybackRealtimeMarkerRangeUpdate
     let recapUpdate: PlaybackRealtimeMarkerRangeUpdate
+    /// Every occurrence after the update, replacing the singular updates
+    /// above. Nil from a server that predates marker collections.
+    let markerSegments: [PlaybackMarkerSegment]?
 
     init?(payload: PlaybackRealtimePayload) {
         guard let fileId = payload.int(forKeys: "file_id", "fileId") else {
             return nil
+        }
+        switch payload.markerSegments(forKey: "marker_segments") {
+        case .failure: return nil
+        case .success(let segments): markerSegments = segments
+        case nil: markerSegments = nil
         }
         self.sessionId = payload.string(forKeys: "session_id", "sessionId")
         self.fileId = fileId
@@ -408,17 +436,6 @@ enum PlaybackRealtimeMarkerRangeUpdate: Equatable {
             return nil
         }
         return range
-    }
-
-    func resolving(current: TimeRange?) -> TimeRange? {
-        switch self {
-        case .unchanged:
-            return current
-        case .clear:
-            return nil
-        case .set(let range):
-            return range
-        }
     }
 }
 

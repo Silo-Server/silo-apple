@@ -12,7 +12,7 @@ final class CreditsAutoSkipPolicyTests: XCTestCase {
                 time: 1_500,
                 range: credits,
                 markerKey: "session:file:credits:1500:1790",
-                lastSkippedKey: nil
+                skippedKeys: []
             ),
             1_790
         )
@@ -39,7 +39,7 @@ final class CreditsAutoSkipPolicyTests: XCTestCase {
                 time: 1_600,
                 range: credits,
                 markerKey: key,
-                lastSkippedKey: key
+                skippedKeys: [key]
             )
         )
         XCTAssertEqual(
@@ -49,10 +49,27 @@ final class CreditsAutoSkipPolicyTests: XCTestCase {
                 time: 1_600,
                 range: credits,
                 markerKey: key + ":updated",
-                lastSkippedKey: key
+                skippedKeys: [key]
             ),
             1_790,
             "an updated marker is a new server-authored skip opportunity"
+        )
+    }
+
+    /// Skipping a later credits occurrence must not forget an earlier one:
+    /// seeking back into credits already skipped plays them.
+    func testEverySkippedOccurrenceStaysSkipped() {
+        let first = "session:file:credits:1500:1790"
+        let second = "session:file:credits:1900:2000"
+        XCTAssertNil(
+            CreditsAutoSkipPolicy.target(
+                enabled: true,
+                playbackEligible: true,
+                time: 1_600,
+                range: credits,
+                markerKey: first,
+                skippedKeys: [first, second]
+            )
         )
     }
 
@@ -76,7 +93,7 @@ final class CreditsAutoSkipPolicyTests: XCTestCase {
             time: time,
             range: range ?? credits,
             markerKey: markerKey,
-            lastSkippedKey: nil
+            skippedKeys: []
         )
     }
 }

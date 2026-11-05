@@ -8,7 +8,8 @@ private struct OnboardingTourGateModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .task(id: AuthService.shared.profileId) {
+            // Profile IDs repeat across accounts, so the account is part of the id.
+            .task(id: "\(AccountScope.current?.localAccountId ?? "")|\(AuthService.shared.profileId ?? "")") {
                 await model.check(profileId: AuthService.shared.profileId)
             }
             .sheet(isPresented: Binding(

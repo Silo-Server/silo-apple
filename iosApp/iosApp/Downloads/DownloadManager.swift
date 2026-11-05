@@ -69,12 +69,17 @@ final class DownloadManager {
     }
 
     private(set) var scopeServerId: String = ""
+    /// The active scope's account (`Account.localAccountId`). Profile IDs
+    /// repeat across accounts on one server, so every scope comparison
+    /// includes it.
+    private(set) var scopeAccountId: String = ""
     private(set) var scopeProfileId: String = ""
     /// The scope `file` was loaded for. While a scope switch waits on its
-    /// load, `scopeServerId`/`scopeProfileId` already name the new scope but
-    /// `file` still holds the old one, so saves and registry owners go by
-    /// this instead.
+    /// load, `scopeServerId`/`scopeAccountId`/`scopeProfileId` already name
+    /// the new scope but `file` still holds the old one, so saves and
+    /// registry owners go by this instead.
     private var fileServerId = ""
+    private var fileAccountId = ""
     private var fileProfileId = ""
 
     /// Coalesces the several legitimate app-lifecycle callers that can all ask
@@ -83,6 +88,7 @@ final class DownloadManager {
     private var scopeLoadTask: Task<DownloadStoreLoad, Never>?
     private var scopeLoadToken: UUID?
     private var scopeLoadServerId = ""
+    private var scopeLoadAccountId = ""
     private var scopeLoadProfileId = ""
 
     private let sessionDelegate = DownloadSessionDelegate()
@@ -433,6 +439,7 @@ final class DownloadManager {
         guard !fileServerId.isEmpty else { return nil }
         return DownloadFilePaths.fileURL(
             serverId: fileServerId,
+            localAccountId: fileAccountId,
             profileId: fileProfileId,
             downloadId: recordId,
             filename: filename
@@ -444,6 +451,7 @@ final class DownloadManager {
         guard !fileServerId.isEmpty else { return nil }
         return DownloadFilePaths.fileURLForWriting(
             serverId: fileServerId,
+            localAccountId: fileAccountId,
             profileId: fileProfileId,
             downloadId: recordId,
             filename: filename
@@ -454,6 +462,7 @@ final class DownloadManager {
         guard !fileServerId.isEmpty else { return }
         DownloadFilePaths.removeDownloadDirectory(
             serverId: fileServerId,
+            localAccountId: fileAccountId,
             profileId: fileProfileId,
             downloadId: recordId
         )
@@ -680,22 +689,42 @@ final class DownloadManager {
 
     // MARK: - Lifecycle
 
-    /// Re-point the manager at the active `(server, profile)` scope,
-    /// loading that scope's persisted blob. Returns false when there is no
-    /// signed-in scope.
+    /// Re-point the manager at the active `(server, account, profile)`
+    /// scope, loading that scope's persisted blob. Returns false when no
+    /// account and profile are selected on the active server.
+    ///
+    /// The scope comes from the selection mirrors (`AccountScope.current`),
+    /// not from a signed-in session, and needs no network: the selected
+    /// account's downloads stay playable offline, and while the account
+    /// waits to sign in again. Requests check the session itself
+    /// (`captureScopeOwner`).
     @discardableResult
     func activateScopeIfNeeded() async -> Bool {
         await removeLegacyDownloadsIfNeeded()
         await drainLegacySessionIfNeeded()
         let serverId = ServerRegistry.shared.activeServerId ?? ""
-        let profileId = await TokenStore.shared.getProfileId() ?? ""
-        guard !serverId.isEmpty, !profileId.isEmpty else {
+        var selected = AccountScope.current
+        if !serverId.isEmpty, selected?.serverId != serverId {
+            // Nothing has selected an account on this server yet in this
+            // install (the first launch after accounts arrived, or a cold
+            // background wake): loading the token store's account selects
+            // one, from the keychain alone.
+            _ = await TokenStore.shared.refreshAccountIdentity()
+            selected = AccountScope.current
+        }
+        let onServer = selected?.serverId == serverId ? selected : nil
+        let accountId = onServer?.localAccountId ?? ""
+        let profileId = onServer?.profileId ?? ""
+        // An account whose downloads were deleted stays unloaded while its
+        // sign-out finishes; `deleteAllDownloads` resets a load in flight.
+        guard !serverId.isEmpty, !accountId.isEmpty, !profileId.isEmpty,
+              !removedAccounts.contains(Self.accountKey(serverId, accountId)) else {
             deactivate()
             releaseHeldSessionEvents()
             return false
         }
-        if serverId == scopeServerId, profileId == scopeProfileId,
-           fileServerId == serverId, fileProfileId == profileId,
+        if serverId == scopeServerId, accountId == scopeAccountId, profileId == scopeProfileId,
+           fileServerId == serverId, fileAccountId == accountId, fileProfileId == profileId,
            !file.records.isEmpty || file.capability != nil {
             releaseHeldSessionEvents()
             // A switch away and back before the other store loaded keeps
@@ -706,9 +735,10 @@ final class DownloadManager {
             await awaitParkedSettle()
             return true
         }
-        if serverId != scopeServerId || profileId != scopeProfileId {
+        if serverId != scopeServerId || accountId != scopeAccountId || profileId != scopeProfileId {
             invalidatePendingRegistrations()
             scopeServerId = serverId
+            scopeAccountId = accountId
             scopeProfileId = profileId
         }
 
@@ -716,6 +746,7 @@ final class DownloadManager {
         let loadToken: UUID
         if let existing = scopeLoadTask,
            scopeLoadServerId == serverId,
+           scopeLoadAccountId == accountId,
            scopeLoadProfileId == profileId,
            let existingToken = scopeLoadToken {
             loadTask = existing
@@ -723,35 +754,45 @@ final class DownloadManager {
         } else {
             scopeLoadTask?.cancel()
             let token = UUID()
+            // Saves for the previous scope land first, including those queued
+            // while this waits: the load may move this server's downloads
+            // from before accounts, and nothing may write them meanwhile.
             let task = Task {
-                await DownloadStore.shared.loadScope(serverId: serverId, profileId: profileId)
+                await self.waitForQueuedSaves()
+                return await DownloadStore.shared.loadScope(
+                    serverId: serverId, localAccountId: accountId, profileId: profileId
+                )
             }
             scopeLoadTask = task
             scopeLoadToken = token
             scopeLoadServerId = serverId
+            scopeLoadAccountId = accountId
             scopeLoadProfileId = profileId
             loadTask = task
             loadToken = token
         }
 
         let loaded = await loadTask.value
-        guard scopeServerId == serverId, scopeProfileId == profileId else { return false }
+        guard scopeServerId == serverId, scopeAccountId == accountId, scopeProfileId == profileId else { return false }
         if scopeLoadToken == loadToken {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
             file = loaded.file
             fileServerId = serverId
+            fileAccountId = accountId
             fileProfileId = profileId
             adoptLegacySessionTasksIfNeeded()
             requeueOrphanedRecords()
             startParkedSettle(reclaimingUntracked: loaded.tracksScopeStorage)
-            if let released = releasedProgressClaims.removeValue(forKey: Self.progressClaimKey(serverId, profileId)),
-               OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
+            if let released = releasedProgressClaims.removeValue(
+                forKey: Self.progressClaimKey(serverId, accountId, profileId)
+            ), OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: released) {
                 persist()
             }
             scopeLoadTask = nil
             scopeLoadToken = nil
             scopeLoadServerId = ""
+            scopeLoadAccountId = ""
             scopeLoadProfileId = ""
         }
         releaseHeldSessionEvents()
@@ -857,7 +898,7 @@ final class DownloadManager {
         parkedSettle = (scope, Task { @MainActor [weak self] in
             // A later install of this scope has started its own settle.
             guard let self, self.loadedScope == scope else { return }
-            await self.settleParkedTransfers(serverId: scope.serverId, profileId: scope.profileId)
+            await self.settleParkedTransfers(scope)
             if reclaimingUntracked { await self.reclaimUntrackedDirectories(in: scope) }
         })
     }
@@ -874,10 +915,12 @@ final class DownloadManager {
     /// running). A record that accepts its file completes; any other parked
     /// file is removed, and so is a download directory with a parked file
     /// but no record. Directories without a parked file are never touched.
-    private func settleParkedTransfers(serverId: String, profileId: String) async {
-        guard let scope = loadedScope, scope.serverId == serverId, scope.profileId == profileId else { return }
+    private func settleParkedTransfers(_ scope: ScopeKey) async {
+        guard loadedScope == scope else { return }
         let parked = await Task.detached(priority: .utility) {
-            DownloadFilePaths.finishedTransfers(serverId: serverId, profileId: profileId)
+            DownloadFilePaths.finishedTransfers(
+                serverId: scope.serverId, localAccountId: scope.localAccountId, profileId: scope.profileId
+            )
         }.value
         guard !parked.isEmpty, loadedScope == scope else { return }
         // Directory names are sanitized download ids.
@@ -888,12 +931,14 @@ final class DownloadManager {
         let fm = FileManager.default
         for (directoryName, url) in parked {
             let recordId = recordIds[directoryName]
-            let tag = DownloadTaskTag(serverId: serverId, profileId: profileId, downloadId: recordId ?? directoryName)
+            let tag = DownloadTaskTag(serverId: scope.serverId, localAccountId: scope.localAccountId,
+                                      profileId: scope.profileId, downloadId: recordId ?? directoryName)
             // Evaluated against the current `file`: a live finish may have
             // completed the record since the scan.
             let disposition = Self.finishedTransferDisposition(
                 tag: tag,
                 loadedServerId: scope.serverId,
+                loadedAccountId: scope.localAccountId,
                 loadedProfileId: scope.profileId,
                 record: recordId.flatMap { file.records[$0] }
             )
@@ -923,7 +968,9 @@ final class DownloadManager {
     /// runs afterwards off the main actor.
     private func reclaimUntrackedDirectories(in scope: ScopeKey) async {
         let root = DownloadFilePaths.rootDirectory()
-        let scopeDirectory = DownloadFilePaths.scopeDirectory(serverId: scope.serverId, profileId: scope.profileId, root: root)
+        let scopeDirectory = DownloadFilePaths.scopeDirectory(
+            serverId: scope.serverId, localAccountId: scope.localAccountId, profileId: scope.profileId, root: root
+        )
         let candidates = await Task.detached(priority: .utility) {
             DownloadStorageReclaim.sweepCandidates(inScope: scopeDirectory)
         }.value
@@ -954,9 +1001,11 @@ final class DownloadManager {
     /// A scope's folder names. Callers pass `loadedScope`, which is nil while
     /// a scope switch is still loading its store, when nothing outside the
     /// active scope may be listed or removed.
-    private func scopeFolders(_ scope: ScopeKey?) -> (server: String, profile: String)? {
+    private func scopeFolders(_ scope: ScopeKey?) -> (server: String, account: String, profile: String)? {
         guard let scope else { return nil }
-        return DownloadFilePaths.scopeFolderNames(serverId: scope.serverId, profileId: scope.profileId)
+        return DownloadFilePaths.scopeFolderNames(
+            serverId: scope.serverId, localAccountId: scope.localAccountId, profileId: scope.profileId
+        )
     }
 
     func refreshOtherDownloadStorage() async {
@@ -970,7 +1019,7 @@ final class DownloadManager {
         let root = DownloadFilePaths.rootDirectory()
         let groups = await Task.detached(priority: .utility) {
             DownloadStorageReclaim.otherStorage(root: root, activeServerFolder: active.server,
-                activeProfileFolder: active.profile)
+                activeAccountFolder: active.account, activeProfileFolder: active.profile)
         }.value
         // A scan of the scope before a switch would list the new one as
         // other data.
@@ -996,7 +1045,8 @@ final class DownloadManager {
         // Set aside synchronously, against the scope active right now.
         DownloadStorageReclaim.setAside(
             DownloadStorageReclaim.removalTargets(folderName: group.folderName, root: root,
-                activeServerFolder: active.server, activeProfileFolder: active.profile),
+                activeServerFolder: active.server, activeAccountFolder: active.account,
+                activeProfileFolder: active.profile),
             root: root
         )
         let freed = await deleteSetAsideStorage(root: root)
@@ -1063,6 +1113,59 @@ final class DownloadManager {
         deactivate()
     }
 
+    // MARK: - Whole accounts
+
+    /// Accounts whose downloads were deleted in this process, keyed by
+    /// `accountKey`. A transfer of theirs that finishes afterwards is dropped.
+    private var removedAccounts: Set<String> = []
+
+    private static func accountKey(_ serverId: String, _ localAccountId: String) -> String {
+        serverId + "\n" + localAccountId
+    }
+
+    /// How many downloads an account has on this device, across all its
+    /// profiles and in any state, and the bytes they use. For the sign-out
+    /// confirmation. Needs no network.
+    func downloadSummary(forAccount localAccountId: String, serverId: String) async -> DownloadAccountSummary {
+        // The loaded scope's latest records are on disk once queued saves land.
+        await waitForQueuedSaves()
+        return await DownloadStore.shared.accountSummary(serverId: serverId, localAccountId: localAccountId)
+    }
+
+    /// Deletes every download of one account on this device: cancels its
+    /// transfers, then removes its files, stores, and queued offline
+    /// progress, on every profile. Other accounts, including others on the
+    /// same server, are untouched. When the account is the active scope,
+    /// the manager deactivates first.
+    ///
+    /// Call it before `AccountStore.signOut` removes the account: while the
+    /// account is still its server's legacy data owner, its transfers and
+    /// downloads from before accounts are found and deleted too. Returns
+    /// the bytes freed.
+    @discardableResult
+    func deleteAllDownloads(forAccount localAccountId: String, serverId: String) async -> Int64 {
+        guard !localAccountId.isEmpty, !serverId.isEmpty else { return 0 }
+        let key = Self.accountKey(serverId, localAccountId)
+        removedAccounts.insert(key)
+        if (scopeServerId == serverId && scopeAccountId == localAccountId)
+            || (fileServerId == serverId && fileAccountId == localAccountId) {
+            deactivate()
+        }
+        releasedProgressClaims = releasedProgressClaims.filter { !$0.key.hasPrefix(key + "\n") }
+        // Stopped first, so no transfer of the account lands after the delete.
+        let cancelled = await sessionDelegate.cancelTasks(
+            ofAccount: localAccountId, onServer: serverId, servers: attributionServers
+        )
+        for task in cancelled {
+            intentionalCancels.insert(IntentionalCancel(taskId: task.taskId, owner: task.owner))
+        }
+        // A save queued for the account before this would write its store back.
+        await waitForQueuedSaves()
+        let freed = await DownloadStore.shared.removeAccount(serverId: serverId, localAccountId: localAccountId)
+        if loadedScope != nil { await refreshOtherDownloadStorage() }
+        return freed
+    }
+
     private func deactivate() {
         pollTask?.cancel()
         pollTask = nil
@@ -1077,11 +1180,14 @@ final class DownloadManager {
         scopeLoadTask = nil
         scopeLoadToken = nil
         scopeLoadServerId = ""
+        scopeLoadAccountId = ""
         scopeLoadProfileId = ""
         scopeServerId = ""
+        scopeAccountId = ""
         scopeProfileId = ""
         file = .empty
         fileServerId = ""
+        fileAccountId = ""
         fileProfileId = ""
         parkedSettle = nil
         rateSamples.removeAll()
@@ -1683,7 +1789,8 @@ final class DownloadManager {
             auth: auth,
             allowsCellular: !DownloadSettings.shared.wifiOnly
         )
-        let tag = DownloadTaskTag(serverId: owner.scope.serverId, profileId: owner.scope.profileId, downloadId: recordId)
+        let tag = DownloadTaskTag(serverId: owner.scope.serverId, localAccountId: owner.scope.localAccountId,
+                                  profileId: owner.scope.profileId, downloadId: recordId)
         let taskId = sessionDelegate.start(request: request, tag: tag)
         record.taskIdentifier = taskId
         record.localStatus = .downloading
@@ -2271,12 +2378,18 @@ final class DownloadManager {
         // waits on its load, `scopeServerId` already names the new scope but
         // `file` still holds the old one.
         let scope = loadedScope
-        let disposition = Self.finishedTransferDisposition(
+        var disposition = Self.finishedTransferDisposition(
             tag: tag,
             loadedServerId: scope?.serverId ?? "",
+            loadedAccountId: scope?.localAccountId ?? "",
             loadedProfileId: scope?.profileId ?? "",
             record: loadedRecord(for: tag)
         )
+        // A transfer that finished as its account's downloads were deleted
+        // has no store left to land in.
+        if disposition == .keepForOwner, let tag, removedAccounts.contains(Self.accountKey(tag.serverId, tag.localAccountId)) {
+            disposition = .discardFile
+        }
         let fm = FileManager.default
         switch disposition {
         case .complete:
@@ -2288,9 +2401,8 @@ final class DownloadManager {
             // from staging.
             let parked = DownloadFilePaths.finishedTransferURL(for: tag)
             guard fileURL.standardizedFileURL.path != parked.standardizedFileURL.path else { return }
-            try? fm.removeItem(at: parked)
             do {
-                try fm.moveItem(at: fileURL, to: parked)
+                try DownloadFilePaths.park(fileURL, at: parked)
             } catch {
                 Self.logger.error("Failed to park finished download: \(String(describing: error), privacy: .private)")
                 try? fm.removeItem(at: fileURL)
@@ -2302,6 +2414,7 @@ final class DownloadManager {
             try? fm.removeItem(at: fileURL)
             DownloadFilePaths.removeDownloadDirectory(
                 serverId: tag.serverId,
+                localAccountId: tag.localAccountId,
                 profileId: tag.profileId,
                 downloadId: tag.downloadId
             )
@@ -2323,18 +2436,21 @@ final class DownloadManager {
         case discardDirectory
     }
 
-    /// `loadedServerId`/`loadedProfileId` name the loaded scope (empty when
-    /// none is), and `record` is that scope's record for the tag's download
-    /// id, looked up only when the tag names the loaded scope.
+    /// `loadedServerId`/`loadedAccountId`/`loadedProfileId` name the loaded
+    /// scope (empty when none is), and `record` is that scope's record for
+    /// the tag's download id, looked up only when the tag names the loaded
+    /// scope.
     nonisolated static func finishedTransferDisposition(
         tag: DownloadTaskTag?,
         loadedServerId: String,
+        loadedAccountId: String,
         loadedProfileId: String,
         record: DownloadRecord?
     ) -> FinishedTransferDisposition {
         guard let tag else { return .discardFile }
-        guard !loadedServerId.isEmpty, !loadedProfileId.isEmpty,
-              tag.isOwned(byServerId: loadedServerId, profileId: loadedProfileId) else { return .keepForOwner }
+        guard !loadedServerId.isEmpty, !loadedAccountId.isEmpty, !loadedProfileId.isEmpty,
+              tag.isOwned(byServerId: loadedServerId, localAccountId: loadedAccountId, profileId: loadedProfileId)
+        else { return .keepForOwner }
         guard let record else { return .discardDirectory }
         // A finish that races a pause still completes the record.
         switch record.localStatus {
@@ -2968,6 +3084,7 @@ final class DownloadManager {
     /// scope change, so a switch away and back gives a different key.
     fileprivate struct ScopeKey: Equatable, Sendable {
         let serverId: String
+        let localAccountId: String
         let profileId: String
         let generation: UInt64
     }
@@ -2975,19 +3092,24 @@ final class DownloadManager {
     /// The active scope, or nil when there is none or its store has not
     /// loaded into `file` yet.
     private var loadedScope: ScopeKey? {
-        guard !scopeServerId.isEmpty, !scopeProfileId.isEmpty,
-              fileServerId == scopeServerId, fileProfileId == scopeProfileId else { return nil }
-        return ScopeKey(serverId: scopeServerId, profileId: scopeProfileId, generation: registrationScopeGeneration)
+        guard !scopeServerId.isEmpty, !scopeAccountId.isEmpty, !scopeProfileId.isEmpty,
+              fileServerId == scopeServerId, fileAccountId == scopeAccountId,
+              fileProfileId == scopeProfileId else { return nil }
+        return ScopeKey(serverId: scopeServerId, localAccountId: scopeAccountId, profileId: scopeProfileId,
+                        generation: registrationScopeGeneration)
     }
 
     /// Captures the request owner of `expected`, or of the active scope when
     /// nil. Background work passes the scope it was started under, captured
     /// synchronously, so it never pairs a newer scope's auth with a store
-    /// it did not read.
+    /// it did not read. Nil while the scope's account is not the one
+    /// requests sign in as (for example, it needs to sign in again).
     private func captureScopeOwner(expecting expected: ScopeKey? = nil) async -> ScopeOwner? {
         guard let scope = loadedScope, expected == nil || expected == scope,
               let auth = await TokenStore.shared.captureOrdinaryRequestAuth(),
-              auth.account.serverId == scope.serverId, auth.profileId == scope.profileId else { return nil }
+              auth.account.serverId == scope.serverId,
+              auth.account.localAccountId == scope.localAccountId,
+              auth.profileId == scope.profileId else { return nil }
         let owner = ScopeOwner(scope: scope, auth: auth)
         return isCurrent(owner) ? owner : nil
     }
@@ -3171,6 +3293,7 @@ final class DownloadManager {
         // that record.
         let live = Self.liveTaskIds(
             loadedServerId: scope.serverId,
+            loadedAccountId: scope.localAccountId,
             loadedProfileId: scope.profileId,
             tasks: current.map { ($0.taskId, resolveTag($0)) }
         )
@@ -3241,13 +3364,16 @@ final class DownloadManager {
     /// one record has several live tasks, the newest (highest id) wins.
     nonisolated static func liveTaskIds(
         loadedServerId: String,
+        loadedAccountId: String,
         loadedProfileId: String,
         tasks: [(taskId: Int, tag: DownloadTaskTag?)]
     ) -> [String: Int] {
-        guard !loadedServerId.isEmpty, !loadedProfileId.isEmpty else { return [:] }
+        guard !loadedServerId.isEmpty, !loadedAccountId.isEmpty, !loadedProfileId.isEmpty else { return [:] }
         var live: [String: Int] = [:]
         for task in tasks {
-            guard let tag = task.tag, tag.isOwned(byServerId: loadedServerId, profileId: loadedProfileId) else {
+            guard let tag = task.tag,
+                  tag.isOwned(byServerId: loadedServerId, localAccountId: loadedAccountId, profileId: loadedProfileId)
+            else {
                 continue
             }
             live[tag.downloadId] = max(live[tag.downloadId] ?? task.taskId, task.taskId)
@@ -3785,7 +3911,7 @@ final class DownloadManager {
                 // reached the server (refused before dispatch, or deferred)
                 // goes back to pending there.
                 if OfflineProgressQueue.releasesClaims(outcome) {
-                    releaseProgressClaims(ids, serverId: owner.scope.serverId, profileId: owner.scope.profileId)
+                    releaseProgressClaims(ids, in: owner.scope)
                 }
                 return
             }
@@ -3803,22 +3929,25 @@ final class DownloadManager {
     /// Returns claimed entries of an inactive (or not yet reinstalled) scope
     /// to pending: in memory when that scope is installed again, and in its
     /// store file, ordered after every save already queued.
-    private func releaseProgressClaims(_ ids: Set<UUID>, serverId: String, profileId: String) {
-        if serverId == scopeServerId, profileId == scopeProfileId, scopeLoadTask == nil {
+    private func releaseProgressClaims(_ ids: Set<UUID>, in scope: ScopeKey) {
+        let (serverId, accountId, profileId) = (scope.serverId, scope.localAccountId, scope.profileId)
+        if serverId == scopeServerId, accountId == scopeAccountId, profileId == scopeProfileId, scopeLoadTask == nil {
             // Switched away and back: the scope's store is installed again.
             if OfflineProgressQueue.releaseClaims(&file.progressQueue, ids: ids) { persist() }
             return
         }
-        releasedProgressClaims[Self.progressClaimKey(serverId, profileId), default: []].formUnion(ids)
+        releasedProgressClaims[Self.progressClaimKey(serverId, accountId, profileId), default: []].formUnion(ids)
         let previous = saveChain
         saveChain = Task { @MainActor in
             await previous?.value
-            await DownloadStore.shared.releaseProgressClaims(ids, serverId: serverId, profileId: profileId)
+            await DownloadStore.shared.releaseProgressClaims(
+                ids, serverId: serverId, localAccountId: accountId, profileId: profileId
+            )
         }
     }
 
-    private static func progressClaimKey(_ serverId: String, _ profileId: String) -> String {
-        serverId + "\n" + profileId
+    private static func progressClaimKey(_ serverId: String, _ accountId: String, _ profileId: String) -> String {
+        [serverId, accountId, profileId].joined(separator: "\n")
     }
 
     // MARK: - Track preferences
@@ -3867,13 +3996,14 @@ final class DownloadManager {
 
     /// Records the outcome of a write sent at `sentAt` while streaming or
     /// from a detail page, for a key this scope has downloads of. A write
-    /// sent for another server or profile than the active scope's is not
+    /// sent for another server, account or profile than the active scope's is not
     /// this store's. `serverDate` is the response's `Date` header.
     func noteTrackPrefWrite<Body: TrackPrefBody>(_ body: Body?, key: String,
                                                  in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
                                                  auth: CapturedOrdinaryRequestAuth, sentAt: Date,
                                                  stored: Bool, serverDate: Date?) {
-        guard let scope = loadedScope, auth.account.serverId == scope.serverId, auth.profileId == scope.profileId,
+        guard let scope = loadedScope, auth.account.serverId == scope.serverId,
+              auth.account.localAccountId == scope.localAccountId, auth.profileId == scope.profileId,
               hasDownload(forPrefKey: key) else { return }
         updateTrackPrefs {
             $0.wrote(body, key: key, in: ledger, sentAt: sentAt, stored: stored, serverDate: serverDate)
@@ -3968,20 +4098,20 @@ final class DownloadManager {
 
     private func sendTrackPref<Body: TrackPrefBody>(_ pick: PendingTrackPref<Body>, key: String,
                                                     in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
-                                                    owner: ScopeOwner) async {
-        guard isCurrent(owner), trackPrefs[keyPath: ledger].pending[key]?.id == pick.id else { return }
+                                                    owner: ScopeOwner) async -> Bool {
+        guard isCurrent(owner), trackPrefs[keyPath: ledger].pending[key]?.id == pick.id else { return false }
         let client = SiloAPI.shared.apiV2Client
         do {
             let revision = trackPrefs[keyPath: ledger].revision(key)
             let read = try await client.readTrackPreference(Body.self, seriesId: key, auth: owner.auth)
             let readAt = Date()
-            guard isCurrent(owner) else { return }
+            guard isCurrent(owner) else { return false }
             guard TrackPrefLedger.shouldSend(pick, over: read.row, serverDate: read.serverDate, readAt: readAt) else {
                 updateTrackPrefs {
                     $0.observe(read.row, key: key, in: ledger, since: revision)
                     $0[keyPath: ledger].discard(pick, key: key)
                 }
-                return
+                return false
             }
             let serverDate: Date?
             if let body = pick.body {
@@ -3989,13 +4119,15 @@ final class DownloadManager {
             } else {
                 serverDate = try await client.deleteTrackPreference(kind: Body.kind, seriesId: key, auth: owner.auth)
             }
-            guard isCurrent(owner) else { return }
+            guard isCurrent(owner) else { return true }
             updateTrackPrefs { $0.acknowledge(pick, key: key, in: ledger, serverDate: serverDate) }
+            return true
         } catch {
             Self.logger.warning("track pref send failed key=\(key, privacy: .public): \(String(describing: error), privacy: .public)")
             if OfflineTrackPrefs.isRefusedForGood(error), isCurrent(owner) {
                 updateTrackPrefs { $0[keyPath: ledger].discard(pick, key: key) }
             }
+            return false
         }
     }
 
@@ -4353,14 +4485,18 @@ final class DownloadManager {
     /// The owner tag of a record in `file`: the scope `file` was loaded for
     /// and the record id. Nil when no store is loaded.
     private func ownedTag(recordId: String) -> DownloadTaskTag? {
-        guard !fileServerId.isEmpty, !fileProfileId.isEmpty else { return nil }
-        return DownloadTaskTag(serverId: fileServerId, profileId: fileProfileId, downloadId: recordId)
+        guard !fileServerId.isEmpty, !fileAccountId.isEmpty, !fileProfileId.isEmpty else { return nil }
+        return DownloadTaskTag(serverId: fileServerId, localAccountId: fileAccountId, profileId: fileProfileId,
+                               downloadId: recordId)
     }
 
     /// The owner of the task an event came from: its tag, or for a task an
-    /// earlier build started without one, the owner its request names.
+    /// earlier build started without one, the owner its request names. A
+    /// tag from before accounts is resolved again: its server's legacy data
+    /// owner may be known by now even if it wasn't when the delegate saw
+    /// the event.
     private func resolveTag(_ ref: DownloadTaskRef) -> DownloadTaskTag? {
-        ref.tag ?? DownloadTaskTag.attributing(
+        ref.tag ?? DownloadTaskTag(taskDescription: ref.taskDescription) ?? DownloadTaskTag.attributing(
             requestURL: ref.requestURL,
             profileId: ref.requestProfileId,
             servers: attributionServers
@@ -4379,7 +4515,8 @@ final class DownloadManager {
     /// no loaded scope, or the tag names another scope.
     private func loadedRecord(for tag: DownloadTaskTag?) -> DownloadRecord? {
         guard let tag, let scope = loadedScope,
-              tag.isOwned(byServerId: scope.serverId, profileId: scope.profileId) else { return nil }
+              tag.isOwned(byServerId: scope.serverId, localAccountId: scope.localAccountId, profileId: scope.profileId)
+        else { return nil }
         return file.records[tag.downloadId]
     }
 
@@ -4391,34 +4528,45 @@ final class DownloadManager {
     /// Saves `file` to the store of the scope it was loaded for, which lags
     /// the active scope while a switch waits on its load.
     private func persist() {
-        guard !fileServerId.isEmpty, !fileProfileId.isEmpty else { return }
+        guard !fileServerId.isEmpty, !fileAccountId.isEmpty, !fileProfileId.isEmpty else { return }
         lastProgressPersist = Date()
         let snapshot = file
         let serverId = fileServerId
+        let accountId = fileAccountId
         let profileId = fileProfileId
         // Chain each save after the previous so writes land in call order.
         let previous = saveChain
         saveChain = Task { @MainActor in
             await previous?.value
-            await DownloadStore.shared.save(snapshot, serverId: serverId, profileId: profileId)
+            await DownloadStore.shared.save(snapshot, serverId: serverId, localAccountId: accountId, profileId: profileId)
+        }
+    }
+
+    /// Returns once every queued save has landed, including saves queued
+    /// while it waits.
+    private func waitForQueuedSaves() async {
+        while let chain = saveChain {
+            await chain.value
+            if saveChain == chain { return }
         }
     }
 
     /// Recompute scope storage usage off the MainActor and publish it.
     private func refreshStorageUsage() {
         let serverId = scopeServerId
+        let accountId = scopeAccountId
         let profileId = scopeProfileId
-        guard !serverId.isEmpty, !profileId.isEmpty else {
+        guard !serverId.isEmpty, !accountId.isEmpty, !profileId.isEmpty else {
             totalBytesUsed = 0
             return
         }
         Task {
             let bytes = await Task.detached(priority: .utility) {
-                DownloadFilePaths.bytesUsed(serverId: serverId, profileId: profileId)
+                DownloadFilePaths.bytesUsed(serverId: serverId, localAccountId: accountId, profileId: profileId)
             }.value
             // A slower walk of a scope switched away from must not overwrite
             // the new scope's number.
-            guard serverId == scopeServerId, profileId == scopeProfileId else { return }
+            guard serverId == scopeServerId, accountId == scopeAccountId, profileId == scopeProfileId else { return }
             totalBytesUsed = bytes
         }
     }

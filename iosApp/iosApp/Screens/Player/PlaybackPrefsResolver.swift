@@ -94,12 +94,32 @@ struct SubtitleAutoResolver {
             self.currentAudioLanguage = currentAudioLanguage
             self.sourceContainer = sourceContainer
         }
+
+        func with(availableSubtitles: [PlayerTrack]) -> Inputs {
+            Inputs(
+                preferredLanguage: preferredLanguage,
+                additionalPreferredLanguages: additionalPreferredLanguages,
+                mode: mode,
+                showForced: showForced,
+                forcedOnly: forcedOnly,
+                preferAccessibilityTracks: preferAccessibilityTracks,
+                disableWhenNoLanguageMatch: disableWhenNoLanguageMatch,
+                trackSignature: trackSignature,
+                availableSubtitles: availableSubtitles,
+                currentAudioLanguage: currentAudioLanguage,
+                sourceContainer: sourceContainer
+            )
+        }
     }
 
     /// Resolve a subtitle pick. Caller is expected to skip this when
     /// the user already chose something explicit (e.g. via the route
     /// arguments) — the resolver is for the "no override" case.
     static func resolve(_ inputs: Inputs) -> SubtitleAutoSelection {
+        // A track the server refuses to deliver is never an automatic pick.
+        let inputs = inputs.availableSubtitles.contains(where: \.hasUnsupportedFormat)
+            ? inputs.with(availableSubtitles: inputs.availableSubtitles.filter { !$0.hasUnsupportedFormat })
+            : inputs
         if inputs.availableSubtitles.isEmpty {
             return inputs.disableWhenNoLanguageMatch ? .disable : .noChange
         }
@@ -227,6 +247,32 @@ struct SubtitleAutoResolver {
         return inputs.disableWhenNoLanguageMatch ? .disable : .noChange
     }
 
+    /// Whether a subtitle the viewer picked for this title (the server's
+    /// `effective_subtitle_track_signature`, which only a saved pick sets)
+    /// can play on a file with `tracks`. A saved pick outranks the device's
+    /// caption policy, so with Use Device Settings on this decides which of
+    /// the two chooses the subtitle. A pick in a language the file doesn't
+    /// offer leaves the choice to the device: a title such as "SUBRIP" names
+    /// the codec, not the track, so it can't stand in for the language.
+    static func savedPickApplies(
+        _ signature: SubtitleTrackSignature?,
+        to tracks: [SubtitleTrack]
+    ) -> Bool {
+        guard let signature else { return false }
+        // `resolve` never picks an unsupported track, so it can't carry the pick.
+        let tracks = tracks.filter { !$0.hasUnsupportedFormat }
+        if let language = signature.language, !language.isEmpty {
+            return tracks.contains { track in
+                guard let trackLanguage = track.language, !trackLanguage.isEmpty else { return false }
+                return languagesMatch(trackLanguage, language)
+            }
+        }
+        guard let label = signature.label, !label.isEmpty else { return false }
+        // The label was saved from `title ?? embeddedTitle`, and the player
+        // names catalog tracks the same way.
+        return tracks.contains { ($0.title ?? $0.embeddedTitle)?.localizedCaseInsensitiveContains(label) == true }
+    }
+
     // MARK: - Matching helpers
 
     /// Score-based signature match. Higher score = better. Returns the
@@ -240,6 +286,13 @@ struct SubtitleAutoResolver {
     ) -> PlayerTrack? {
         var best: (PlayerTrack, Int)?
         for track in tracks {
+            // A track in another known language can't be the remembered one,
+            // whatever its title or flags share with it.
+            if let sigLang = sig.language, !sigLang.isEmpty,
+               let trackLang = track.lang, !trackLang.isEmpty,
+               !languagesMatch(trackLang, sigLang) {
+                continue
+            }
             var score = 0
             var strongSignal = false
             if let sigLang = sig.language, !sigLang.isEmpty,
@@ -386,9 +439,9 @@ struct SubtitleAutoResolver {
     /// Whether showing the track needs a server burn-in on this player. The
     /// original-file route declares no bitmap sidecars, and renders an embedded
     /// bitmap track only when the container's native capability lists its
-    /// codec (`ApplePlaybackV3Capabilities`): PGS/DVD/DVB in MKV, none in MP4
-    /// or MPEG-TS. So a bitmap sidecar or download qualifies, as does embedded
-    /// bitmap in another container or XSUB. A nil container assumes MKV. The
+    /// codec (`ApplePlaybackV3Capabilities`): PGS/DVD/DVB in MKV, PGS only in
+    /// MPEG-TS and M2TS, none in MP4. So a bitmap sidecar or download
+    /// qualifies, as does other embedded bitmap or XSUB. A nil container assumes MKV. The
     /// inventory's `burn_in_only` is not used: it also marks embedded DVD/DVB,
     /// which play here without one.
     ///

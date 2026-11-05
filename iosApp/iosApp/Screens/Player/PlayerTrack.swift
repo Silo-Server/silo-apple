@@ -34,6 +34,13 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     /// `downloaded` source), as opposed to a sidecar next to the media. Such a
     /// track is also `isExternal`.
     var isDownloaded = false
+    /// An embedded row the server's inventory lists with no codec: its probe
+    /// didn't recognize the format, so the server refuses to deliver it. The
+    /// picker shows it disabled and automatic selection skips it.
+    var hasUnsupportedFormat = false
+
+    /// The picker's secondary line for a row that can't be chosen.
+    static let unsupportedFormatLabel = "Unsupported format"
 
     var id: String { "\(kind.rawValue)-\(trackId)" }
 

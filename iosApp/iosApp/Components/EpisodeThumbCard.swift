@@ -6,7 +6,7 @@ import SwiftUI
 /// Shows the episode still / backdrop, series title, and episode metadata.
 /// Episode numbering stays in accessibility and detail metadata rather than
 /// being drawn over the artwork.
-/// On tvOS the image sits inside a `.card` button for focus lift/parallax and
+/// On tvOS the image sits inside an outlined card button for its focus lift and
 /// a FocusState binding drives the title highlight.
 struct EpisodeThumbCard: View {
     let item: SectionItem
@@ -37,10 +37,8 @@ struct EpisodeThumbCard: View {
 
     @Environment(\.browseLibraryId) private var browseLibraryId
     @State private var personalState = MediaCardPersonalState()
-    @State private var uiCustomization = UICustomizationPreferences.shared
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var continueWatchingMetadata = TVContinueWatchingPlaybackMetadataStore.shared
     #endif
     #if !os(tvOS)
@@ -77,29 +75,30 @@ struct EpisodeThumbCard: View {
         VStack(alignment: .leading, spacing: Self.captionSpacing) {
             thumbnailButton
 
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(displayTitle)
-                        .font(.siloPosterTitle)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(displayTitle)
+                    .font(.siloPosterTitle)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .tvCardTitleFocus(isFocused: isFocused)
+                    .frame(width: cardWidth, alignment: .leading)
+
+                if let subtitle = subtitleLine {
+                    Text(subtitle)
+                        .font(.siloPosterMetadata)
+                        .tvCardSubtitleFocus(isFocused: isFocused)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .tvCardTitleFocus(isFocused: isFocused)
                         .frame(width: cardWidth, alignment: .leading)
-
-                    if uiCustomization.cardPresentation.caption.showsMetadata,
-                       let subtitle = subtitleLine {
-                        Text(subtitle)
-                            .font(.siloPosterMetadata)
-                            .tvCardSubtitleFocus(isFocused: isFocused)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(width: cardWidth, alignment: .leading)
-                            .clipped()
-                    }
+                        .clipped()
                 }
-                .frame(width: cardWidth, alignment: .leading)
-                .tvCardCaptionFocus(isFocused: isFocused, spacing: Self.captionSpacing)
             }
+            .frame(width: cardWidth, alignment: .leading)
+            .tvCardCaptionFocus(
+                isFocused: isFocused,
+                posterOverhang: TVCardOutlineButtonStyle.focusedOverhang(forHeight: cardHeight),
+                spacing: Self.captionSpacing
+            )
         }
         .frame(width: cardWidth)
         .focusSection()
@@ -138,14 +137,11 @@ struct EpisodeThumbCard: View {
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 thumbnail
-                if uiCustomization.cardPresentation.caption.showsTitle {
-                    Text(displayTitle)
-                        .font(.siloCardTitle)
-                        .foregroundStyle(Color.siloOnSurface)
-                        .lineLimit(1)
-                }
-                if uiCustomization.cardPresentation.caption.showsMetadata,
-                   let subtitle = subtitleLine {
+                Text(displayTitle)
+                    .font(.siloCardTitle)
+                    .foregroundStyle(Color.siloOnSurface)
+                    .lineLimit(1)
+                if let subtitle = subtitleLine {
                     Text(subtitle)
                         .font(.siloCardMetadata)
                         .foregroundColor(.siloSecondaryText)
@@ -346,13 +342,12 @@ struct EpisodeThumbCard: View {
         let button = Button(action: action) {
             thumbnail
         }
-        .buttonStyle(.card)
+        .buttonStyle(TVCardOutlineButtonStyle())
         .applyEpisodeFocus(
             focusedItemId,
             itemId: item.contentId,
             standaloneBinding: $standaloneFocused
         )
-        .scaleEffect(isFocused && !reduceMotion ? 1.025 : 1)
         .shadow(
             color: .black.opacity(isFocused ? 0.5 : 0.2),
             radius: isFocused ? 20 : 8,

@@ -19,10 +19,6 @@ struct RequestsHubView: View {
 #if !os(tvOS)
 private struct PhoneRequestsHubView: View {
     @State private var viewModel = RequestsHubViewModel()
-    @State private var uiCustomization = UICustomizationPreferences.shared
-    @State private var gridWidth: CGFloat = 0
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(AppRouter.self) private var router
 
     var body: some View {
@@ -116,91 +112,9 @@ private struct PhoneRequestsHubView: View {
         }
     }
 
-    // Library search's grid (`CatalogGrid`): the shared phone/pad column
-    // counts, 8pt gutters, and posters that fill their column.
-    private static let gridSpacing: CGFloat = 8
-    private static let gridRowSpacing: CGFloat = 12
-
-    private var searchColumns: [GridItem] {
-        if let fit = widePhonePosterFit {
-            return fit.columns
-        }
-        return AdaptiveColumns.posters(
-            for: horizontalSizeClass,
-            posterSize: uiCustomization.cardPresentation.posterSize,
-            spacing: Self.gridSpacing
-        )
-    }
-
-    /// A phone window too wide for the standard counts (the iPhone Duo's
-    /// inner display) adds columns rather than stretching posters.
-    private var widePhonePosterFit: AdaptiveColumns.PosterGridFit? {
-        #if os(iOS)
-        guard UIDevice.current.userInterfaceIdiom == .phone else { return nil }
-        return AdaptiveColumns.widePhonePosterFit(
-            containerWidth: gridWidth,
-            posterSize: uiCustomization.cardPresentation.posterSize,
-            verticalSizeClass: verticalSizeClass
-        )
-        #else
-        return nil
-        #endif
-    }
-
-    private var searchCardWidth: CGFloat {
-        #if os(macOS)
-        // The Mac grid is one adaptive column that repeats to fit, so the
-        // column count says nothing about the cell. Work the cell out the
-        // way the grid does. Before the first measurement the fit is nil
-        // and the card takes the cell's minimum width.
-        let minimumWidth = SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
-        return AdaptiveColumns.widthFittedPosters(
-            containerWidth: gridWidth,
-            minimumCardWidth: minimumWidth,
-            spacing: Self.gridSpacing,
-            minimumColumns: 1
-        )?.cardWidth ?? minimumWidth
-        #else
-        // Before the first measurement, a standard poster: the uncapped fit
-        // below would return its infinite maximum.
-        guard gridWidth > 0 else { return SiloTheme.posterCardWidth }
-        if let fit = widePhonePosterFit { return fit.cardWidth }
-        return AdaptiveColumns.fittedPosterWidth(
-            containerWidth: gridWidth,
-            columnCount: searchColumns.count,
-            spacing: Self.gridSpacing,
-            maximumWidth: .greatestFiniteMagnitude
-        )
-        #endif
-    }
-
     /// Results, or quiet placeholders in the same cells while a search runs.
     private func searchGrid(placeholderCount: Int) -> some View {
-        LazyVGrid(columns: searchColumns, alignment: .leading, spacing: Self.gridRowSpacing) {
-            if placeholderCount > 0 {
-                ForEach(0..<placeholderCount, id: \.self) { _ in
-                    VStack(alignment: .leading, spacing: 7) {
-                        RequestsSkeleton.block(
-                            width: nil,
-                            height: searchCardWidth * (SiloTheme.posterCardHeight / SiloTheme.posterCardWidth),
-                            cornerRadius: SiloTheme.cornerRadius
-                        )
-                        RequestsSkeleton.bar(width: searchCardWidth * 0.7, height: 10, opacity: 0.14)
-                    }
-                }
-            } else {
-                ForEach(viewModel.searchResults) { result in
-                    RequestMediaCard(result: result, onTap: { router.openRequestResult(result) })
-                        .cardWidth(searchCardWidth)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-        }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-            guard abs(width - gridWidth) >= 0.5 else { return }
-            gridWidth = width
-        }
-        .accessibilityHidden(placeholderCount > 0)
+        RequestPosterGrid(results: viewModel.searchResults, placeholderCount: placeholderCount)
     }
 
     // MARK: - Summary
@@ -285,7 +199,15 @@ private struct PhoneRequestsHubView: View {
 
     private func carouselRow(_ carousel: RequestCarousel, isFirst: Bool) -> some View {
         VStack(alignment: .leading, spacing: RequestsUI.headerSpacing) {
-            RequestsSectionHeader(label: isFirst ? "Discover" : nil, title: carousel.title)
+            // Only the server's own rows page; the merged carousels an older
+            // server gets have no single row behind them.
+            RequestsSectionHeader(
+                label: isFirst ? "Discover" : nil,
+                title: carousel.title,
+                trailing: carousel.seeAll ? "See all" : nil
+            ) {
+                router.navigate(to: .requestDiscoverRow(key: carousel.id, title: carousel.title))
+            }
 
             RequestCardRail(items: carousel.results) { result in
                 RequestMediaCard(result: result, onTap: { router.openRequestResult(result) })

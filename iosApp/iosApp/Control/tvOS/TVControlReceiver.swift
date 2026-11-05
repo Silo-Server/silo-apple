@@ -814,6 +814,23 @@ final class TVControlReceiver {
         let playback = launch.playback
         standbyState = nil
         let generation = RemotePlaybackIdentityManager.shared.activeIdentity?.generationID
+        if let player = playerViewModel,
+           SiloControlReceiverPolicy.canReplaceInPlayer(
+               playerGeneration: playerHandoffGeneration, activeGeneration: generation,
+               playerIsDisposed: player.needsReplacementForPresentation,
+               playerIsWatchParty: player.isWatchPartyPlayback
+           ) {
+            readyTimeoutTask?.cancel()
+            readyTimeoutTask = nil
+            playerContentId = playback.contentId
+            player.replaceSiloControlPlayback(playback)
+            DiagnosticsCoordinator.recordBreadcrumb(
+                category: .playback, tag: "SiloControl",
+                message: "remote playback replaced in existing player"
+            )
+            broadcastState()
+            return
+        }
         // Replacing a title: the outgoing player still owns this generation
         // and would end the temporary identity on its way out, just as the
         // incoming player starts loading under it. Hand the generation to

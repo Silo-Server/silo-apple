@@ -87,6 +87,12 @@ extension ItemDetail {
         self.posterUrl = value.posterUrl
         self.backdropUrl = value.backdropUrl
         self.logoUrl = value.logoUrl
+        self.seriesPosterUrl = value.seriesPosterUrl
+        self.seriesPosterThumbhash = value.seriesPosterThumbhash
+        self.seriesBackdropUrl = value.seriesBackdropUrl
+        self.seriesBackdropThumbhash = value.seriesBackdropThumbhash
+        self.seasonPosterUrl = value.seasonPosterUrl
+        self.seasonPosterThumbhash = value.seasonPosterThumbhash
     }
 }
 
@@ -224,6 +230,7 @@ extension FileVersion {
         self.intro = value.intro.map { TimeRange(catalog: $0) }
         self.credits = value.credits.map { TimeRange(catalog: $0) }
         self.recap = value.recap.map { TimeRange(catalog: $0) }
+        self.markerSegments = nil
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }
@@ -255,6 +262,7 @@ extension FileVersion {
         self.intro = value.intro.map { TimeRange(watch: $0) }
         self.credits = value.credits.map { TimeRange(watch: $0) }
         self.recap = value.recap.map { TimeRange(watch: $0) }
+        self.markerSegments = value.markerSegments
         self.presentationKind = value.presentationKind
         self.presentationGroupKey = value.presentationGroupKey
         self.presentationPartIndex = try value.presentationPartIndex.map { try catalogLegacyInt($0) }

@@ -13,6 +13,8 @@ import Foundation
 ///
 /// `supports_idempotent_writes` is deliberately not decoded: v2 advertises it
 /// while offering no mutation-id replay, so nothing may gate on it.
+/// `supports_atomic_shortcuts` is not decoded either: Apple clients no longer
+/// edit `nav.shortcuts`.
 struct APIv2SettingsContractCapabilities: Decodable, Hashable, Sendable {
     let revision: String
     /// `available`, `disabled`, `not_configured` or `unsupported`; kept as a
@@ -23,10 +25,6 @@ struct APIv2SettingsContractCapabilities: Decodable, Hashable, Sendable {
     /// The client families a `profile_client` value may name.
     let clientFamilies: [String]
     let supportsBatchedEffective: Bool
-    /// Revision-5 semantic shortcut mutations. Whole-document shortcut PUTs
-    /// are intentionally not a safe fallback because concurrent clients can
-    /// otherwise replace one another's pins.
-    let supportsAtomicShortcuts: Bool
 
     /// The capability gate every v2 capability document shares.
     var isAvailable: Bool { allowed && state == "available" }
@@ -48,13 +46,12 @@ struct APIv2SettingsContractCapabilities: Decodable, Hashable, Sendable {
             && supportsBatchedEffective
     }
 
-    /// Whether synced navigation and card presentation can run for
-    /// `clientFamily`. Card presentation is stored at `profile_client`, so the
-    /// server must accept this client's family for that scope.
+    /// Whether synced card presentation can run for `clientFamily`. Card
+    /// presentation is stored at `profile_client`, so the server must accept
+    /// this client's family for that scope.
     func supportsUICustomization(clientFamily: String) -> Bool {
         manifestRevision >= 5
             && supportsBatchedEffective
-            && supportsAtomicShortcuts
             && clientFamilies.contains(clientFamily)
     }
 }

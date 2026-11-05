@@ -71,8 +71,8 @@ final class RequestsHubViewModel {
         async let mine = api.myRequests()
         var succeeded = false
         do {
-            let (sections, requests) = try await (discover, mine)
-            carousels = RequestCarouselMerge.carousels(from: sections)
+            let (layout, requests) = try await (discover, mine)
+            carousels = RequestCarouselMerge.carousels(from: layout)
             myRequests = MyRequestsBucket.bucket(requests).flatMap(\.requests)
             RequestDetailCache.shared.storeOwnRecords(requests)
             RequestDetailCache.shared.prefetch(myRequests, api: api)
@@ -136,7 +136,7 @@ final class RequestsHubViewModel {
         carousels = carousels.map { carousel in
             var results = carousel.results
             results.applyTitleState(update)
-            return RequestCarousel(id: carousel.id, title: carousel.title, results: results)
+            return RequestCarousel(id: carousel.id, title: carousel.title, results: results, seeAll: carousel.seeAll)
         }
     }
 
@@ -147,7 +147,7 @@ final class RequestsHubViewModel {
         carousels = carousels.map { carousel in
             var results = carousel.results
             results.applyRequestUpdate(record)
-            return RequestCarousel(id: carousel.id, title: carousel.title, results: results)
+            return RequestCarousel(id: carousel.id, title: carousel.title, results: results, seeAll: carousel.seeAll)
         }
         if let index = myRequests.firstIndex(where: { $0.id == record.id }) {
             if record.outcome == .cancelled {

@@ -40,7 +40,7 @@ enum TVSignInPresentation {
             if let account { return "Signed in as \(account)" }
             return "Signed in"
         case .couldNotFinish: return "Couldn't finish signing in on this TV."
-        case .denied: return "Sign-in was declined on your phone."
+        case .denied: return "Sign-in was declined."
         case .paused: return "Sign-in paused."
         case .unreachable: return "Can't reach \(serverHost). Check this TV's connection."
         case .rateLimited: return "Too many sign-in attempts. Trying again shortly."
@@ -48,6 +48,14 @@ enum TVSignInPresentation {
         case .noDeviceSignIn: return "This server only supports password sign-in."
         case .failed(let message): return message
         }
+    }
+
+    /// The paragraph under the headline. It points at the code on screen, so
+    /// a declined sign-in, which withdraws the code, says what to do instead.
+    static func codeLead(for status: QRLoginViewModel.Status, typedURL: String?) -> String {
+        if status == .denied { return "Show a new code to try again." }
+        let page = typedURL ?? "your server's /activate page"
+        return "Scan the code with your phone's camera, or go to \(page) and enter it. Approve on your phone and this Apple TV signs in by itself."
     }
 
     /// What the one action button next to a state does, when it has one.

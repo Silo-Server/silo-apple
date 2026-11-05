@@ -92,30 +92,6 @@ extension APIv2Client {
         return try Self.settingReceipt(response, key: key, scope: scope, profileID: profileID)
     }
 
-    /// `updateNavigationShortcut` (200 with the stored `nav.shortcuts` row):
-    /// add (`present`) or remove one shortcut of the acting profile. Only that
-    /// entry changes, so concurrent edits of other shortcuts are kept.
-    @discardableResult
-    func updateNavigationShortcut(
-        _ item: PrimaryMenuItem,
-        present: Bool,
-        profileID: String,
-        expectedIdentity: HTTPRequestIdentity? = nil
-    ) async throws -> StoredSettingValue {
-        let body = try SettingsWireCoding.makeEncoder().encode(
-            NavigationShortcutMutation(item: item, present: present)
-        )
-        let response = try await settingsWrite(
-            "PUT",
-            path: "\(try Self.settingValuePath(.navShortcuts))/item",
-            query: [:],
-            body: body,
-            profileID: profileID,
-            expectedIdentity: expectedIdentity
-        )
-        return try Self.settingReceipt(response, key: .navShortcuts, scope: .profile, profileID: profileID)
-    }
-
     /// `deleteSettingValue` (204). A 404 means nothing is stored at that scope,
     /// which is the state the delete asked for, so it is reported as
     /// `SettingsAPIError.noValueAtScope` rather than as a failure.
@@ -182,10 +158,4 @@ extension APIv2Client {
         }
         return receipt
     }
-}
-
-/// `NavigationShortcutMutation`: both members are required.
-private struct NavigationShortcutMutation: Encodable {
-    let item: PrimaryMenuItem
-    let present: Bool
 }

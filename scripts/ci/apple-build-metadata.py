@@ -22,14 +22,23 @@ SHARED_SPM_LOCK_SHA256 = '40e3e0fbe264adac749a1f7db3f91a311e67f6419eeecad6bd4d88
 SHARED_SPM_PROJECT_SHA256 = 'b698ee86dc410c8ada9251778a655f5428b2ea663ccfc8ba1291f180aa472eca'
 SHARED_SPM_TOOLCHAIN_KEY = '5e23d2022187a1fa502ad4a6'
 
+COMMAND_TIMEOUT = 60
+COMMAND_ATTEMPTS = 3
+
+
 def command(*args, cwd=None):
-    try:
-        return subprocess.check_output(args, cwd=cwd, text=True, timeout=60).strip()
-    except subprocess.TimeoutExpired:
-        raise RuntimeError('Build metadata command timed out: ' + args[0]) from None
-    except (subprocess.CalledProcessError, OSError):
-        # The exception would print the full command line.
-        raise RuntimeError('Build metadata command failed: ' + args[0]) from None
+    # Every command here is a read-only query. Right after a simulator test run,
+    # xcrun and xcodebuild can stall past the bound, so retry a timed-out query
+    # before treating it as a failure.
+    for _ in range(COMMAND_ATTEMPTS):
+        try:
+            return subprocess.check_output(args, cwd=cwd, text=True, timeout=COMMAND_TIMEOUT).strip()
+        except subprocess.TimeoutExpired:
+            continue
+        except (subprocess.CalledProcessError, OSError):
+            # The exception would print the full command line.
+            raise RuntimeError('Build metadata command failed: ' + args[0]) from None
+    raise RuntimeError('Build metadata command timed out: ' + args[0])
 
 
 def parse_xcode(text):

@@ -15,11 +15,14 @@ struct SeriesSeasonScroll {
     var timing: Timing = .season
 
     func offset(at time: TimeInterval) -> CGFloat {
+        startOffset + (targetOffset - startOffset) * easedProgress(at: time)
+    }
+
+    private func easedProgress(at time: TimeInterval) -> CGFloat {
         let progress = min(1, max(0, (time - startedAt) / timing.duration))
-        let eased = timing == .season
+        return timing == .season
             ? progress * progress * (3 - 2 * progress)
             : 1 - pow(1 - progress, 3)
-        return startOffset + (targetOffset - startOffset) * eased
     }
 
     func isComplete(at time: TimeInterval) -> Bool {
@@ -35,5 +38,20 @@ struct SeriesSeasonScroll {
     mutating func rebase(by shift: CGFloat) {
         startOffset += shift
         targetOffset += shift
+    }
+
+    /// Changes the destination mid-flight, for example when a page load lets
+    /// a clamped move reach its card. The frame at `time` and the deadline stay
+    /// the same, so the remaining motion eases into the new target.
+    mutating func retarget(to target: CGFloat, at time: TimeInterval) {
+        let eased = easedProgress(at: time)
+        guard eased < 1 else {
+            startOffset = target
+            targetOffset = target
+            return
+        }
+        let current = offset(at: time)
+        startOffset = (current - target * eased) / (1 - eased)
+        targetOffset = target
     }
 }

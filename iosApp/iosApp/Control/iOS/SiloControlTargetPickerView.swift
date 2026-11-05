@@ -7,6 +7,9 @@ struct SiloControlTargetPickerView: View {
 
     @State private var browser = SiloControlBrowser()
     @State private var searchTimedOut = false
+    /// Read once: the picker lives for one search.
+    @State private var rememberedRoku = SiloControlClient.rememberedRoku
+    private let pairingKeys = SiloControlPairingKeys()
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -54,8 +57,17 @@ struct SiloControlTargetPickerView: View {
         ContentUnavailableView(
             "No Silo TVs Found",
             systemImage: "tv",
-            description: Text("Foreground Apple TVs on this server appear here.")
+            description: Text(missingRokuHint
+                ?? "TVs on this server appear here while Silo is open on them. On a Roku, open Silo with the Roku remote.")
         )
+    }
+
+    /// The phone can't open Silo on a Roku, so when the Roku it last
+    /// controlled hasn't turned up by the end of the search, the picker says
+    /// how to bring it back.
+    private var missingRokuHint: String? {
+        guard searchTimedOut, let roku = rememberedRoku, !browser.found.contains(where: { $0.id == roku.id }) else { return nil }
+        return "Don't see \(roku.name)? Open Silo on your Roku."
     }
 
     private var foundList: some View {
@@ -79,7 +91,11 @@ struct SiloControlTargetPickerView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(target.name).font(.headline)
-                        if request != nil, target.protocolVersion < 2 {
+                        if target.transport == .sealed, pairingKeys.key(for: target) == nil {
+                            Text("Scan this Roku's pairing code to connect")
+                                .font(.subheadline)
+                                .foregroundStyle(Color.siloSecondaryText)
+                        } else if request != nil, target.protocolVersion < 2 {
                             Text("Update Silo on this TV to use your profile")
                                 .font(.subheadline)
                                 .foregroundStyle(Color.siloSecondaryText)
@@ -107,6 +123,14 @@ struct SiloControlTargetPickerView: View {
             .buttonStyle(.plain)
             .disabled(request != nil && target.protocolVersion < 2)
             .listRowBackground(Color.siloSurface)
+        }
+        .safeAreaInset(edge: .bottom) {
+            if let missingRokuHint {
+                Text(missingRokuHint)
+                    .font(.footnote)
+                    .foregroundStyle(Color.siloSecondaryText)
+                    .padding(.bottom, 12)
+            }
         }
         .scrollContentBackground(.hidden)
     }

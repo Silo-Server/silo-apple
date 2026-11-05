@@ -6,6 +6,8 @@ import Foundation
 /// page. The server omits `page` because the collection is bounded.
 struct APIv2DiscoverSectionCollection: Decodable {
     let items: [RequestDiscoverySection]
+    /// Absent from a server without Discover layouts.
+    let rowOrder: [RequestDiscoverRowRef]?
 }
 
 /// `GET /api/v2/requests/mine` page. `page` is absent only on a bounded

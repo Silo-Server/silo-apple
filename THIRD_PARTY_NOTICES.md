@@ -17,10 +17,8 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 7.40.1 + Silo subtitle, HLS authorization and playback recovery patches, object-audio traits on | `185be1f52486f548086b4c0f5e70624885056e74` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
-| FFmpegBuild 3.7.1 | `013c48bd4d3073428f31cade039ec4ed958d0ceb` | Nine separately embedded dynamic frameworks | See the component table below |
-| LibTrueHD 3.0.0 | `aebd5ffe1046dadbea833ce87a75d00fd8b1edd1` | Static `TrueHD.xcframework` linked through AetherEngine | MIT; embedded `truehd` and `oamd` crates are Apache-2.0 |
-| LibDTSX 3.0.0 | `7d68c8bbda348a10e169b9bb9619c8b2b7a0c642` | Dynamic `DTSX.framework` embedded in each app | Built library LGPL-3.0-or-later (its `dca` decoder is a port of FFmpeg's); LibDTSX source Apache-2.0 |
+| AetherEngine 7.56.0 and upstream `main` through `a6fbf0a1` + Silo subtitle, HLS authorization and playback recovery patches, every optional component off | `10631a5136371a0f83d67a1e85f26163588d6094` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| FFmpegBuild 3.12.1 | `9c87af0231fd1403654c14a0e867fe8aa43c5bea` | Nine separately embedded dynamic frameworks | See the component table below |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
 
@@ -36,23 +34,25 @@ Copyright (C) 2026 Vincent Herbst.
 
 AetherEngine is licensed under GNU LGPL version 3 with its upstream Apple
 Store / DRM exception. Silo builds a published fork revision: upstream release
-`7.40.1` (upstream commit `93d54e50`), plus Silo patches for complete native subtitle
+`7.56.0` and upstream `main` through commit `a6fbf0a1`, plus Silo patches for complete native subtitle
 renditions, source timing after a media reanchor, ASS subtitle routing, refreshable
 authorization for native HLS, sidecar subtitles and font bundles, and audio-switch
-tracking. Upstream compiles TrueHD Atmos and DTS:X object rendering only for a host
-that enables its `TrueHDObjectAudio` and `DTSXObjectAudio` package traits, noting that
-those components may need third-party patent licenses. The Silo fork turns those two
-traits on by default, so LibTrueHD and LibDTSX are linked and the Playback setting can
-deliver TrueHD Atmos and DTS:X heights as Apple Positional Audio. The Profile 7
-dual-layer and Profile 5 still components stay off. Raw ASS events stay on the
-primary local overlay; secondary subtitles and software PiP receive normalized
-text, and packaged HLS retains
+tracking. Upstream compiles four optional components only for a host that enables
+their package traits, noting that they may need third-party patent licenses:
+`TrueHDObjectAudio` and `DTSXObjectAudio` (TrueHD Atmos and DTS:X object rendering),
+`DualLayerDolbyVision` (Profile 7 FEL composition) and `DolbyVisionStillReshaping`.
+The Silo fork leaves all four off, as upstream ships them, so LibTrueHD is neither
+resolved nor linked, TrueHD Atmos and DTS:X play through the channel bridge, and the
+TrueHD Atmos and DTS:X Playback setting is hidden. A unit test
+(`AetherOptionalComponentsTests`) fails if any of them is built in. Raw ASS events stay on the
+primary local overlay; secondary subtitles, secondary sidecars included, and software
+PiP receive normalized text, and packaged HLS retains
 its native text rendition for PiP and AirPlay. These modifications are
 published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/185be1f52486f548086b4c0f5e70624885056e74>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/10631a5136371a0f83d67a1e85f26163588d6094>
   (engine pull requests: <https://github.com/Silo-Server/AetherEngine/pull/2>,
   <https://github.com/Silo-Server/AetherEngine/pull/6>,
   <https://github.com/Silo-Server/AetherEngine/pull/15>,
@@ -63,8 +63,10 @@ the GNU GPL version 3 text incorporated by LGPLv3.
   <https://github.com/Silo-Server/AetherEngine/pull/21>,
   <https://github.com/Silo-Server/AetherEngine/pull/22>,
   <https://github.com/Silo-Server/AetherEngine/pull/23>,
-  <https://github.com/Silo-Server/AetherEngine/pull/24>)
-- Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/93d54e5067ca0ad856259c0ebc1693aeafa20677>
+  <https://github.com/Silo-Server/AetherEngine/pull/24>,
+  <https://github.com/Silo-Server/AetherEngine/pull/25>,
+  <https://github.com/Silo-Server/AetherEngine/pull/26>)
+- Upstream base: <https://github.com/superuser404notfound/AetherEngine/tree/a6fbf0a1c469df98df66d886482b9f062cdab7f8>
 - Rebuild input: `Package.swift` and the source tree at that revision
 - Bundled texts: `AetherEngine-LGPL-3.0-App-Store-Exception.txt`,
   `GPL-3.0.txt`
@@ -87,7 +89,7 @@ dynamic frameworks:
 | AetherLibavcodec, AetherLibavformat, AetherLibavutil, AetherLibswresample, AetherLibswscale, AetherLibavfilter | FFmpeg `n8.1.3` (currently `1041abdc962f4cc4f394aa8de9dc5236c0c3b9e7`) | LGPL-2.1-or-later |
 | AetherLibdav1d | dav1d `1.5.4` (currently `54706fc6bc0cdecab7e9593974a4039cc038fca7`) | BSD-2-Clause |
 | AetherLibzimg | zimg `release-3.0.6` (currently `f819b14e8f39d1282400b0d9543e8ef73c1b2bbd`) | WTFPL-2.0 |
-| AetherLibzvbi | libzvbi `v0.2.45` (currently `d3a5ee9f2b047bf16cd1ee5ccf6ec05ee75409d0`) | LGPL-2.0-or-later, conveyed under LGPL-2.1; `src/ure.c` is MIT |
+| AetherLibzvbi | libzvbi `v0.2.46` (currently `34bb6f660c5c1bacd4a66cc7b22311e4ca3c1ab5`) | LGPL-2.0-or-later, conveyed under LGPL-2.1; `src/ure.c` is MIT |
 
 FFmpegBuild 3.0.0 renamed every target, framework bundle, and install name
 with an `Aether` prefix so the build can coexist with another FFmpeg in the
@@ -97,11 +99,25 @@ support for the `dav1` (Dolby Vision AV1) MP4 sample entry. 3.5.0 moved to FFmpe
 `n8.1.3`, and 3.6.0 enabled the `dts`, `truehd` and `loas` raw demuxers and added a
 local patch that probes the payload of an MPEG-TS audio PID labelled MPEG-1 audio.
 3.7.0 patches the mp4 muxer's `dec3` box so an E-AC-3 track that carries its height
-channels and Atmos objects in a dependent substream keeps them, and the pinned 3.7.1
-release patches the mp4 muxer so a packet still queued behind a fragment's written
-samples cannot end that fragment's track early. Both releases keep FFmpeg `n8.1.3`
-and the same component set. The exact FFmpegBuild 3.7.1 `build.sh` is the rebuild
-recipe and patch record:
+channels and Atmos objects in a dependent substream keeps them, and 3.7.1 patches the
+mp4 muxer so a packet still queued behind a fragment's written samples cannot end that
+fragment's track early. 3.8.0 adds FFmpeg's native RealMedia, 3GP, Theora, VobSub and
+DVD LPCM support. 3.9.0 adds a local patch (`patches/dca-xll-x-heights.patch`) that
+lets FFmpeg's `dca` decoder read the height channels of DTS:X's standard presentation,
+which AetherEngine uses in place of LibDTSX. 3.10.0 adds FFmpeg's native AAC and ALAC
+encoders, which pad an audio track that ends before its video. 3.10.1 moves to libzvbi
+`v0.2.46` for CVE-2026-110654, and 3.10.2 ships a privacy manifest in the frameworks
+that stat files. 3.11.0 enables the audio filters AetherEngine's audio shaping runs and
+the `idet`, `fieldmatch` and `decimate` filters for inverse telecine; 3.11.1 adds a
+local patch (`patches/av1-delayed-rap.patch`) that treats AV1 full-refresh delayed
+random access points as keyframes. 3.12.0 adds a Matroska `skip_attachments` option
+(`patches/matroska-skip-attachments.patch`), and the pinned 3.12.1 release adds
+`patches/matroska-byte-seek-done.patch`, which clears a Matroska end of stream after a
+byte seek. Every release keeps FFmpeg `n8.1.3`, the same dav1d and zimg sources and the
+same nine frameworks, with no external codec library. The exact FFmpegBuild 3.12.1
+`build.sh` and `patches/` are the rebuild recipe and patch record, and its
+`BUILD-INFO.txt` records the upstream commits, patch hashes, toolchain, configure
+lines and binary hashes of the published build:
 
 - it builds FFmpeg with dynamic linkage and does not enable GPL, version-3,
   or nonfree FFmpeg components;
@@ -111,10 +127,15 @@ recipe and patch record:
   patch applied to those sources;
 - it does not build the FFmpeg `concat` demuxer, which 2.5.0 removed.
 
-libzvbi 0.2.45 is the GHSA-86rm-g7qf-j2fh security update (out-of-bounds
-read, out-of-bounds write, integer underflow reachable through the teletext
-decoder). The commit IDs in the table are the tags' dereferenced values
-observed on 2026-09-04 (FFmpeg `n8.1.3` on 2026-10-09). FFmpegBuild's script records tag names rather than immutable
+libzvbi 0.2.46 fixes an out-of-bounds write in teletext DRCS conversion
+(CVE-2026-110654, GHSA-p2vx-rpw8-hp43), reachable through the teletext decoder;
+0.2.45 was the GHSA-86rm-g7qf-j2fh update. The commit IDs in the table are the
+values FFmpegBuild 3.12.1's `BUILD-INFO.txt` records, and match the tags'
+dereferenced values observed on 2026-09-04 (FFmpeg `n8.1.3` on 2026-10-09). That
+`BUILD-INFO.txt` names repository HEAD `4eba1217` (the 3.12.0 merge) with
+`build.sh` or `patches/` differing from it, because the binaries were rebuilt
+with the byte-seek patch before the 3.12.1 commit; the file's patch hashes
+identify the applied patch set. FFmpegBuild's script records tag names rather than immutable
 upstream commit IDs; recording the dereferenced commits here pins them if the
 tags ever move. Forking the pinned FFmpegBuild revision is cheap,
 commit-immutable insurance if stronger provenance is ever wanted, but the
@@ -126,16 +147,16 @@ in the table under `SiloTV.app/Frameworks/`. Its `AetherLibavcodec` configure
 string contained `--enable-shared` without `--enable-gpl`, `--enable-version3`, or
 nonfree enablement, and the app binary exported no `avcodec_`/`avformat_`
 symbols of its own. These observations describe that older debug artifact;
-they are not a binary inventory of the current 3.7.1 dependency. Repeat this
+they are not a binary inventory of the current 3.12.1 dependency. Repeat this
 inventory against each release archive; debug evidence is not a release substitute.
 
 - Exact packaging source and rebuild script:
-  <https://github.com/superuser404notfound/FFmpegBuild/tree/013c48bd4d3073428f31cade039ec4ed958d0ceb>
+  <https://github.com/superuser404notfound/FFmpegBuild/tree/9c87af0231fd1403654c14a0e867fe8aa43c5bea>
 - Current upstream tag resolutions:
   [FFmpeg](https://github.com/FFmpeg/FFmpeg/tree/1041abdc962f4cc4f394aa8de9dc5236c0c3b9e7),
   [dav1d](https://code.videolan.org/videolan/dav1d/-/tree/54706fc6bc0cdecab7e9593974a4039cc038fca7),
   [zimg](https://github.com/sekrit-twc/zimg/tree/f819b14e8f39d1282400b0d9543e8ef73c1b2bbd),
-  and [libzvbi](https://github.com/zapping-vbi/zvbi/tree/d3a5ee9f2b047bf16cd1ee5ccf6ec05ee75409d0)
+  and [libzvbi](https://github.com/zapping-vbi/zvbi/tree/34bb6f660c5c1bacd4a66cc7b22311e4ca3c1ab5)
 - Bundled texts: `FFmpegBuild-LGPL-2.1.txt`,
   `dav1d-BSD-2-Clause.txt`, `zimg-WTFPL.txt`, `libzvbi-ure-MIT.txt`
 
@@ -165,48 +186,6 @@ embedded crate.
 - Exact embedded crate source:
   <https://github.com/quietvoid/dovi_tool/tree/d1abe0e27ff2c7ab3339614d06db9f8a058af6b2/dolby_vision>
 - Bundled texts: `LibDovi-Packaging-MIT.txt`, `libdovi-MIT.txt`
-
-## LibTrueHD and truehd
-
-LibTrueHD is the TrueHD and Dolby Atmos decoder library Silo wrote as SiloObjectAudio
-and transferred to AetherEngine's maintainer, who renamed it for release 2.0.0. Its C
-API, access-unit framer, and build and verification scripts are MIT licensed,
-Copyright (c) 2026 Quick104, with packaging changes since 2.0.0 Copyright (c) 2026
-Vincent Herbst. Its static `TrueHD.xcframework` contains the `truehd` crate (TrueHD/MLP
-decoder) from the truehdd project, Copyright Rainbaby and the truehdd contributors,
-built from the exact commit `33bae1657ceb25b5fe0347f42c544c3414e2760e` (upstream
-`02d29cd0` with harletty's performance changes and a build feature that discards matrix
-interpolation values), and the `oamd` crate 0.1.0 (object audio metadata), Copyright
-Rainbaby, both under the Apache License 2.0. It also compiles in the Rust standard
-library and the crates its NOTICE lists, each under the MIT license or the Apache
-License 2.0. The bundled texts reproduce LibTrueHD's MIT license, its NOTICE, and the
-Apache License.
-
-- Exact source and rebuild script:
-  <https://github.com/superuser404notfound/LibTrueHD/tree/aebd5ffe1046dadbea833ce87a75d00fd8b1edd1>
-- Embedded decoder source: <https://github.com/superuser404notfound/truehdd/tree/33bae1657ceb25b5fe0347f42c544c3414e2760e>
-- Embedded metadata parser source: <https://crates.io/crates/oamd/0.1.0>
-- Bundled texts: `LibTrueHD-MIT.txt`, `truehd-Apache-2.0.txt`
-
-## LibDTSX and dca
-
-LibDTSX is the DTS:X decoder AetherEngine uses for DTS:X heights. Its C API, DTS:X
-reconstruction and Apple packaging are Apache-2.0, Copyright 2026 kristofferR. The
-built library compiles in, unmodified, the `dca` crate 0.8.0 from the harletty-bridge
-project at the exact commit `a717bae441b116485f0254603dc20a6ede65d8c6`. That crate is
-labelled Apache-2.0 but is a port of FFmpeg's LGPL-2.1-or-later `dca` decoder, so the
-built library is distributed under the GNU LGPL version 3 or later. It ships as the
-dynamic `DTSX.framework`, embedded in each app beside the FFmpeg frameworks, so a user
-can replace it with a modified version. It also compiles in the Rust standard library
-and the crates its NOTICE lists, each under the MIT license or the Apache License 2.0.
-The bundled text reproduces LibDTSX's NOTICE, the LGPL version 3 and LibDTSX's Apache
-License; the GPL version 3 that LGPLv3 incorporates and the LGPL 2.1 FFmpeg grants are
-bundled with AetherEngine and FFmpegBuild.
-
-- Exact source and rebuild script (corresponding source with the `dca` commit above):
-  <https://github.com/superuser404notfound/LibDTSX/tree/7d68c8bbda348a10e169b9bb9619c8b2b7a0c642>
-- Embedded decoder source: <https://github.com/harletty/harletty-bridge/tree/a717bae441b116485f0254603dc20a6ede65d8c6/dca>
-- Bundled text: `LibDTSX-LGPL-3.0.txt`
 
 ## Nuke and NukeUI
 

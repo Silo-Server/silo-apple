@@ -66,18 +66,21 @@ struct TVCatalogGrid: View {
                 let row = rowItems(from: rowStart)
                 HStack(alignment: .top, spacing: columnSpacing) {
                     ForEach(Array(row.enumerated()), id: \.element.id) { column, item in
+                        // A box set card opens its own page and has no
+                        // title menu or Play shortcut.
+                        let boxSet = item.isBoxSet ? item.boxSet : nil
                         TVMediaCard(
                             title: EpisodeCardCaption.cardTitle(for: item),
-                            posterUrl: item.posterUrl ?? "",
-                            posterThumbhash: item.posterThumbhash,
+                            posterUrl: item.posterUrl ?? boxSet?.posterUrl ?? "",
+                            posterThumbhash: item.posterThumbhash ?? boxSet?.posterThumbhash,
                             episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
                             imageIsEpisodeStill: item.posterIsEpisodeStill,
-                            mediaType: item.type,
+                            mediaType: boxSet == nil ? item.type : "movie",
                             year: item.year,
-                            subtitle: EpisodeCardCaption.line(for: item),
-                            userState: item.userState,
-                            overlayData: OverlayData.from(item),
-                            action: { onItemTap(item) },
+                            subtitle: boxSet?.cardCaption ?? EpisodeCardCaption.line(for: item),
+                            userState: boxSet == nil ? item.userState : nil,
+                            overlayData: boxSet == nil ? OverlayData.from(item) : nil,
+                            action: { open(item) },
                             playAction: playAction(for: item),
                             cardWidth: cardWidth,
                             aspect: item.isAudiobook ? .square : .poster,
@@ -86,7 +89,8 @@ struct TVCatalogGrid: View {
                             defaultFocusNamespace: gridFocusNamespace,
                             focusBinding: $focusedItemId,
                             focusContentId: item.contentId,
-                            contentId: item.contentId
+                            contentId: boxSet == nil ? item.contentId : nil,
+                            boxSet: boxSet
                         )
                         .frame(maxWidth: .infinity)
                         .onAppear { onCellAppear(index: rowStart + column) }
@@ -137,6 +141,14 @@ struct TVCatalogGrid: View {
         if index >= threshold {
             onNearEnd(index)
         }
+    }
+
+    private func open(_ item: BrowseItem) {
+        if item.isBoxSet {
+            if let boxSet = item.boxSet, let route = Route.boxSet(boxSet) { router.navigate(to: route) }
+            return
+        }
+        onItemTap(item)
     }
 
     private func playAction(for item: BrowseItem) -> (() -> Void)? {

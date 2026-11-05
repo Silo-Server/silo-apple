@@ -16,6 +16,11 @@ enum Route: Hashable {
         seriesContext: SeriesDetailContext? = nil
     )
     case personDetail(personId: String)
+    /// A Home or library row opened as a full page.
+    case sectionCatalog(SectionCatalogTarget)
+    /// A movie box set: one TMDB collection's movies in one library. On
+    /// iPhone and iPad it opens in the same bottom card as a title.
+    case boxSet(id: String, libraryId: Int)
     /// `prefersLastUsedVersion` is the Continue Watching resume intent: pick
     /// the server's last-used file before the profile-wide quality
     /// preference. Audio and subtitle memory ride on the server's
@@ -45,6 +50,10 @@ enum Route: Hashable {
     case collectionDetail(collectionId: String)
     case settings
     case serverList
+    /// Settings › Accounts: saved servers and their accounts (spec §4.5).
+    case accounts
+    /// Change Account: every saved account, grouped by server (spec §4.1).
+    case changeAccount
 
     /// The active party or the create/join hub.
     case watchParty
@@ -61,6 +70,10 @@ enum Route: Hashable {
     /// The signed-in user's own request queue, bucketed by state.
     case myRequests
 
+    /// Every title of one row of the server's Discover layout (its See all
+    /// page). iOS and macOS only; tvOS shows the rows on its hub.
+    case requestDiscoverRow(key: String, title: String)
+
     /// Offline playback of a completed download. Distinct from `.player`
     /// so the player reads the local file + stored manifest instead of
     /// starting a server session.
@@ -76,6 +89,27 @@ enum Route: Hashable {
 
     /// Every series this device auto-downloads, reached from the Downloads tab.
     case autoDownloads
+}
+
+/// The row behind a full section page, read from the catalog's `section`
+/// source on the page it belongs to.
+struct SectionCatalogTarget: Hashable {
+    enum Scope: Hashable {
+        case home
+        case library(Int)
+    }
+
+    let scope: Scope
+    let sectionId: String
+    let title: String
+    /// A mixed library's Movies or Series view keeps that type on the page.
+    var mediaScope: LibraryVideoScope? = nil
+}
+
+extension SectionCatalogTarget {
+    init(_ section: ResolvedSection, scope: Scope, mediaScope: LibraryVideoScope? = nil) {
+        self.init(scope: scope, sectionId: section.id, title: section.title, mediaScope: mediaScope)
+    }
 }
 
 /// Card metadata that lets tvOS paint a branded detail frame before the
@@ -110,9 +144,17 @@ struct TVItemDetailRouteSeed: Hashable {
         logoUrl = item.logoUrl
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
-        backdropUrl = item.backdropUrl
-        backdropThumbhash = item.backdropThumbhash
-        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        // An episode opens on its series page, so the frame shows the series
+        // backdrop when the card carries it rather than the episode still.
+        if let seriesBackdrop = item.episodeSeriesBackdrop {
+            backdropUrl = seriesBackdrop.url
+            backdropThumbhash = seriesBackdrop.thumbhash
+            backdropIsEpisodeStill = false
+        } else {
+            backdropUrl = item.backdropUrl
+            backdropThumbhash = item.backdropThumbhash
+            backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        }
         episodeWatchState = item.isEpisodeItem ? EpisodeWatchState(sectionItem: item) : nil
     }
 
@@ -127,9 +169,17 @@ struct TVItemDetailRouteSeed: Hashable {
         logoUrl = nil
         posterUrl = item.posterUrl
         posterThumbhash = item.posterThumbhash
-        backdropUrl = item.backdropUrl
-        backdropThumbhash = item.backdropThumbhash
-        backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        // An episode opens on its series page, so the frame shows the series
+        // backdrop when the card carries it rather than the episode still.
+        if let seriesBackdrop = item.episodeSeriesBackdrop {
+            backdropUrl = seriesBackdrop.url
+            backdropThumbhash = seriesBackdrop.thumbhash
+            backdropIsEpisodeStill = false
+        } else {
+            backdropUrl = item.backdropUrl
+            backdropThumbhash = item.backdropThumbhash
+            backdropIsEpisodeStill = item.backdropIsEpisodeStill
+        }
         episodeWatchState = item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil
     }
 
@@ -146,11 +196,14 @@ struct TVItemDetailRouteSeed: Hashable {
         contentRating = nil
         genre = nil
         logoUrl = episode.logoUrl
-        posterUrl = episode.posterUrl
-        posterThumbhash = episode.posterThumbhash
-        backdropUrl = nil
-        backdropThumbhash = nil
-        backdropIsEpisodeStill = nil
+        // A server with `episode_parent_artwork` puts the series' own art on
+        // the episode card, so the frame can show it before detail loads.
+        let seriesPoster = episode.seriesPosterUrl.flatMap { $0.isEmpty ? nil : $0 }
+        posterUrl = seriesPoster ?? episode.posterUrl
+        posterThumbhash = seriesPoster != nil ? episode.seriesPosterThumbhash : episode.posterThumbhash
+        backdropUrl = episode.episodeSeriesBackdrop?.url
+        backdropThumbhash = episode.episodeSeriesBackdrop?.thumbhash
+        backdropIsEpisodeStill = episode.episodeSeriesBackdrop == nil ? nil : false
         episodeWatchState = nil
     }
 }
@@ -180,6 +233,12 @@ extension Route {
             contentId: resolvedID, tvSeed: seed, libraryId: libraryId,
             seriesContext: entryContext
         )
+    }
+
+    /// The box set page, or nil when the server named a library the app
+    /// cannot address.
+    static func boxSet(_ boxSet: CatalogBoxSet) -> Route? {
+        boxSet.appLibraryId.map { .boxSet(id: boxSet.id, libraryId: $0) }
     }
 
     /// Builds the platform-appropriate route from a catalog card. The seed is

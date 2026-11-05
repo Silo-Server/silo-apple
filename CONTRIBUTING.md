@@ -178,15 +178,16 @@ and include its disclosure block.
 
 ## Licensing of contributions
 
-This project is licensed under `AGPL-3.0-or-later` with the App Store /
-DRM additional permission in
-[APPSTORE-EXCEPTION.md](APPSTORE-EXCEPTION.md).
+This project is licensed under `AGPL-3.0-or-later` with two additional
+permissions: the App Store / DRM permission in
+[APPSTORE-EXCEPTION.md](APPSTORE-EXCEPTION.md) and the platform library
+permission in [PLATFORM-EXCEPTION.md](PLATFORM-EXCEPTION.md).
 
 By submitting a contribution, you agree that it is licensed under those
-same terms — the AGPL *including* the App Store additional permission —
-and that the project may distribute builds containing your contribution
-through application stores such as the Apple App Store and TestFlight as
-that permission describes. If you cannot agree to the additional
+same terms — the AGPL *including* both additional permissions — and that
+the project may distribute builds containing your contribution through
+application stores such as the Apple App Store and TestFlight as the App
+Store permission describes. If you cannot agree to an additional
 permission, say so in your pull request before it is merged.
 
 You retain copyright in your contribution; no assignment is requested.

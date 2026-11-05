@@ -24,6 +24,14 @@ struct APIv2HomeSectionsRead {
     var sections: [ResolvedSection] { response.sections }
 }
 
+/// `GET /api/v2/home/capabilities`. `sectionItemLimitMax` is present when
+/// the Home and library section reads accept `item_limit`.
+struct APIv2HomeCapabilities: Decodable, Sendable {
+    let state: String
+    let allowed: Bool
+    let sectionItemLimitMax: Int?
+}
+
 // MARK: Notifications (iOS)
 
 #if os(iOS)

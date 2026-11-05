@@ -25,8 +25,9 @@
 //      (PGS / DVD / DVB / VobSub, detected via `track.codec`) are never a
 //      translation source.
 //    - Transcribe: when no translatable text source exists, transcribe the
-//      default audio track (`-1`). If the target equals the spoken audio
-//      language it's a plain transcribe; otherwise transcribe-and-translate.
+//      spoken audio track (selected, else default, else first). If the
+//      target equals its language it's a plain transcribe; otherwise
+//      transcribe-and-translate.
 //      With translation off only the spoken language is served; when that
 //      language is unknown, a "Spoken language" row runs a plain transcribe.
 //
@@ -92,10 +93,19 @@ struct SubtitleTranslateMenu: View {
     /// The audio track whose language is treated as the "spoken" language:
     /// the selected one, else the default, else the first.
     private var spokenAudioTrack: PlayerTrack? {
-        let tracks = viewModel.audioTracks
-        return tracks.first(where: { $0.isSelected })
+        Self.spokenAudioTrack(in: viewModel.audioTracks)
+    }
+
+    static func spokenAudioTrack(in tracks: [PlayerTrack]) -> PlayerTrack? {
+        tracks.first(where: { $0.isSelected })
             ?? tracks.first(where: { $0.isDefault })
             ?? tracks.first
+    }
+
+    /// The audio ordinal a transcription sends: the spoken track's, or -1
+    /// (the server's default track) when no ordinal is known.
+    static func transcriptionSourceIndex(_ tracks: [PlayerTrack]) -> Int {
+        spokenAudioTrack(in: tracks)?.srcId ?? -1
     }
 
     private var spokenLanguageCode: String? {
@@ -228,7 +238,9 @@ struct SubtitleTranslateMenu: View {
         } else {
             guard canServe(target) else { return }
             let translateTo: String? = isSpokenLanguage(target) ? nil : target
-            viewModel.startSubtitleTranscription(audioIndex: -1, translateTo: translateTo)
+            // Transcribe the track whose language decided the job kind.
+            viewModel.startSubtitleTranscription(
+                audioIndex: Self.transcriptionSourceIndex(viewModel.audioTracks), translateTo: translateTo)
         }
         // The controller enters the player-surface preparing state on submit.
         // Close the whole subtitle UI so the pause/notice handoff plays out

@@ -62,6 +62,9 @@ struct HomeView: View {
                     isTopMenuFocused: isTopMenuFocused,
                     onTopMenuFocusRequest: onTopMenuFocusRequest,
                     onItemTap: navigateToDetail,
+                    onExploreAll: { section in
+                        router.navigate(to: .sectionCatalog(SectionCatalogTarget(section, scope: .home)))
+                    },
                     onRemoveFromContinueWatching: dismissContinueWatching,
                     onSetWatched: setWatched
                 )
@@ -155,7 +158,6 @@ struct HomeView: View {
                     onSwitchProfile: {
                         router.switchProfile()
                     },
-                    onSwitchServer: { router.navigate(to: .serverList) },
                     onSignOut: { router.signOutAndReset() }
                 )
             }
@@ -285,6 +287,7 @@ struct HomeView: View {
     private func feedRow(_ section: ResolvedSection) -> some View {
         HomeFeedRow(
             section: section,
+            onExploreAll: { router.navigate(to: .sectionCatalog(SectionCatalogTarget(section, scope: .home))) },
             onRemoveFromContinueWatching: dismissContinueWatching,
             onSetWatched: setWatched
         )

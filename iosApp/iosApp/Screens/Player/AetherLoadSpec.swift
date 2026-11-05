@@ -170,10 +170,12 @@ struct AetherLoadSpec {
     /// inside the media file. That response streams until the server has
     /// demuxed the whole file, which takes tens of seconds on a large remux.
     let declaresEmbeddedTrackExtract: Bool
-    /// The selected picker row of an `hls_rendition` plan. The track is a
-    /// legible option of the stream's own playlist, so it has no declared
-    /// external slot and no Aether id until AVPlayer publishes the option.
-    let hlsSubtitleRenditionAppTrackID: Int64?
+    /// Every picker row the stream carries as a legible option, selected or
+    /// not (`ApplePlaybackV3PlanAdapter.hlsSubtitleRenditionSlots`). Such a
+    /// track has no declared external slot and no Aether id until AVPlayer
+    /// publishes the option; switching among them is AVPlayer's own media
+    /// selection, and none needs a sidecar.
+    let hlsSubtitleRenditions: [Int64: HLSSubtitleRenditionSlot]
 
     /// The bridge for codecs Aether cannot stream-copy, when a caller does not
     /// name one. Lossless rather than Aether's `.surroundCompat` default;
@@ -263,7 +265,7 @@ struct AetherLoadSpec {
         })
         embeddedSubtitleAlias = nil
         declaresEmbeddedTrackExtract = false
-        hlsSubtitleRenditionAppTrackID = nil
+        hlsSubtitleRenditions = [:]
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -348,7 +350,7 @@ struct AetherLoadSpec {
         })
         embeddedSubtitleAlias = nil
         declaresEmbeddedTrackExtract = false
-        hlsSubtitleRenditionAppTrackID = nil
+        hlsSubtitleRenditions = [:]
         externalSubtitleAppTrackIDs = sidecars.map { sidecar -> Int64? in
             SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: sidecar.index)
         }
@@ -534,13 +536,7 @@ struct AetherLoadSpec {
         } else {
             embeddedSubtitleAlias = nil
         }
-        if plan.subtitle.hlsRendition != nil,
-           PlaybackProtocolV3.SubtitleMode.locallyRendered.contains(plan.subtitle.mode),
-           let combinedIndex = plan.selectedSubtitleCombinedIndex {
-            hlsSubtitleRenditionAppTrackID = SubtitleTrackIdSpace.makeSidecarTrackId(urlIndex: combinedIndex)
-        } else {
-            hlsSubtitleRenditionAppTrackID = nil
-        }
+        hlsSubtitleRenditions = ApplePlaybackV3PlanAdapter.hlsSubtitleRenditionSlots(plan: plan)
         let isServerHLS = [
             PlaybackProtocolV3.PlanDelivery.remuxHLS,
             PlaybackProtocolV3.PlanDelivery.transcodeHLS,
@@ -646,21 +642,32 @@ enum AetherObjectAudioPolicy {
     /// from rear heights for that renderer to fold down.
     static let layout: SpatialSpeakerLayout = .l714
 
-    /// The setting alone decides. tvOS doesn't say whether its output can carry
-    /// Atmos: `AVAudioSession.renderingMode` resolves for the content already
-    /// playing (stereo reads `monoStereo`, the lossless 7.1 bridge `surround`),
-    /// so a check before the load would turn heights off on an Atmos receiver
-    /// after any other stream. A setup without Atmos turns the setting off
-    /// instead and keeps `audioBridgeMode`'s channels.
-    static func rendering(enabled: Bool) -> ObjectAudioRendering {
-        enabled ? .apac(layout) : .off
+    /// Whether this build can render TrueHD Atmos or DTS:X heights at all. Silo's
+    /// AetherEngine fork leaves both object-audio components out, because they may
+    /// need third-party patent licenses, so the setting is hidden and never asks.
+    static var isAvailable: Bool {
+        AetherEngine.OptionalComponent.trueHDObjectAudio.isBuiltIn
+            || AetherEngine.OptionalComponent.dtsxObjectAudio.isBuiltIn
     }
 
-    /// `apac 7.1.4` or `off`, for the diagnostics line.
+    /// The setting decides when the build has the components. tvOS doesn't say
+    /// whether its output can carry Atmos: `AVAudioSession.renderingMode`
+    /// resolves for the content already playing (stereo reads `monoStereo`, the
+    /// lossless 7.1 bridge `surround`), so a check before the load would turn
+    /// heights off on an Atmos receiver after any other stream. A setup without
+    /// Atmos turns the setting off instead and keeps `audioBridgeMode`'s channels.
+    static func rendering(enabled: Bool) -> ObjectAudioRendering {
+        enabled && isAvailable ? .apac(layout) : .off
+    }
+
+    /// `apac 7.1.4` or `off`, for the diagnostics line. Silo asks only for
+    /// `.apac`; the other cases name what Aether would deliver.
     static func diagnosticName(_ rendering: ObjectAudioRendering) -> String {
         switch rendering {
         case .off: return "off"
         case .apac(let layout): return "apac \(layout.rawValue)"
+        case .lpcm(let layout): return "lpcm \(layout.rawValue)"
+        case .render(let layout): return "render \(layout.rawValue)"
         }
     }
 

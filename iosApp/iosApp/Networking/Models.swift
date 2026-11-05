@@ -42,11 +42,23 @@ struct BrowseItem: Codable, Identifiable, Hashable {
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
+    /// Episode cards from servers with `episode_parent_artwork`: the series'
+    /// and season's own art, never an episode still. Absent otherwise.
+    @ArtworkURL var seriesPosterUrl: String? = nil
+    var seriesPosterThumbhash: String? = nil
+    @ArtworkURL var seriesBackdropUrl: String? = nil
+    var seriesBackdropThumbhash: String? = nil
+    @ArtworkURL var seasonPosterUrl: String? = nil
+    var seasonPosterThumbhash: String? = nil
     let addedAt: String?
     let releaseDate: String?
     let lastAirDate: String?
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
+    /// Set on a box set search result lifted into a card
+    /// (`BrowseItem(boxSet:)`): the box set the card stands for. Absent on
+    /// every catalog card.
+    var boxSet: CatalogBoxSet? = nil
     var id: String { contentId }
 }
 
@@ -144,6 +156,14 @@ struct SectionItem: Codable, Identifiable, Hashable {
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
+    /// Episode cards from servers with `episode_parent_artwork`: the series'
+    /// and season's own art, never an episode still. Absent otherwise.
+    @ArtworkURL var seriesPosterUrl: String? = nil
+    var seriesPosterThumbhash: String? = nil
+    @ArtworkURL var seriesBackdropUrl: String? = nil
+    var seriesBackdropThumbhash: String? = nil
+    @ArtworkURL var seasonPosterUrl: String? = nil
+    var seasonPosterThumbhash: String? = nil
     @ArtworkURL var logoUrl: String? = nil
     let userState: MediaItemUserState?
     let overlaySummary: OverlaySummary?
@@ -190,6 +210,12 @@ struct SectionItem: Codable, Identifiable, Hashable {
         posterThumbhash = item.posterThumbhash
         backdropUrl = item.backdropUrl
         backdropThumbhash = item.backdropThumbhash
+        seriesPosterUrl = item.seriesPosterUrl
+        seriesPosterThumbhash = item.seriesPosterThumbhash
+        seriesBackdropUrl = item.seriesBackdropUrl
+        seriesBackdropThumbhash = item.seriesBackdropThumbhash
+        seasonPosterUrl = item.seasonPosterUrl
+        seasonPosterThumbhash = item.seasonPosterThumbhash
         logoUrl = nil
         userState = item.userState
         overlaySummary = item.overlaySummary
@@ -334,6 +360,12 @@ extension BrowseItem {
             posterThumbhash: item.posterThumbhash,
             backdropUrl: item.backdropUrl,
             backdropThumbhash: item.backdropThumbhash,
+            seriesPosterUrl: item.seriesPosterUrl,
+            seriesPosterThumbhash: item.seriesPosterThumbhash,
+            seriesBackdropUrl: item.seriesBackdropUrl,
+            seriesBackdropThumbhash: item.seriesBackdropThumbhash,
+            seasonPosterUrl: item.seasonPosterUrl,
+            seasonPosterThumbhash: item.seasonPosterThumbhash,
             addedAt: nil,
             releaseDate: nil,
             lastAirDate: nil,
@@ -346,6 +378,43 @@ extension BrowseItem {
 extension SectionItem {
     var isAudiobook: Bool { SiloMediaType.isAudiobook(type) }
 }
+
+/// Series and season art an episode card carries next to its own, from servers
+/// that advertise `episode_parent_artwork`. None of it is an episode still, so
+/// spoiler protection never hides it.
+protocol EpisodeParentArtwork {
+    var type: String { get }
+    var seriesPosterUrl: String? { get }
+    var seriesPosterThumbhash: String? { get }
+    var seriesBackdropUrl: String? { get }
+    var seriesBackdropThumbhash: String? { get }
+    var seasonPosterUrl: String? { get }
+    var seasonPosterThumbhash: String? { get }
+}
+
+extension EpisodeParentArtwork {
+    /// The series backdrop a hero draws for an episode in place of the
+    /// episode's own `backdrop_url`, which is usually a small still. Nil for
+    /// other types and on older servers, which keep the existing behavior.
+    var episodeSeriesBackdrop: (url: String, thumbhash: String?)? {
+        guard SiloMediaType.isEpisode(type),
+              let url = seriesBackdropUrl, !url.isEmpty else { return nil }
+        return (url, seriesBackdropThumbhash)
+    }
+
+    /// Portrait art for an episode: its season's poster, else its series'.
+    var episodeShowPoster: (url: String, thumbhash: String?)? {
+        guard SiloMediaType.isEpisode(type) else { return nil }
+        if let url = seasonPosterUrl, !url.isEmpty { return (url, seasonPosterThumbhash) }
+        if let url = seriesPosterUrl, !url.isEmpty { return (url, seriesPosterThumbhash) }
+        return nil
+    }
+}
+
+extension SectionItem: EpisodeParentArtwork {}
+extension BrowseItem: EpisodeParentArtwork {}
+extension ItemDetail: EpisodeParentArtwork {}
+extension APIv2CatalogRead.CatalogItemDetail: EpisodeParentArtwork {}
 
 struct ResolvedSection: Codable, Identifiable {
     let id: String
@@ -481,6 +550,14 @@ struct ItemDetail: Codable {
     let posterThumbhash: String?
     @ArtworkURL var backdropUrl: String? = nil
     let backdropThumbhash: String?
+    /// Episode cards from servers with `episode_parent_artwork`: the series'
+    /// and season's own art, never an episode still. Absent otherwise.
+    @ArtworkURL var seriesPosterUrl: String? = nil
+    var seriesPosterThumbhash: String? = nil
+    @ArtworkURL var seriesBackdropUrl: String? = nil
+    var seriesBackdropThumbhash: String? = nil
+    @ArtworkURL var seasonPosterUrl: String? = nil
+    var seasonPosterThumbhash: String? = nil
     @ArtworkURL var logoUrl: String? = nil
     let seasonCount: Int?
     let seriesId: String?
@@ -500,7 +577,11 @@ struct ItemDetail: Codable {
     /// during playback enrichment (absent on the raw catalog payload).
     /// The signature is only present when an explicit per-series /
     /// per-movie subtitle override is stored, so it doubles as the
-    /// "user picked a track" marker for selector seeding.
+    /// "user picked a track" marker for selector seeding. The language comes
+    /// only from the watch detail, which also sets the flag.
+    var effectiveSubtitleLanguage: String? = nil
+    /// Optional so payloads cached or written without it still decode.
+    var hasWatchDetailSubtitlePolicy: Bool? = nil
     let effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
     let effectiveSubtitleTrackSignature: SubtitleTrackSignature?
@@ -895,6 +976,10 @@ struct FileVersion: Codable, Identifiable, Hashable {
     let intro: TimeRange?
     let credits: TimeRange?
     let recap: TimeRange?
+    /// Every marker occurrence, in source-time order. When present it
+    /// replaces the singular fields above, which hold the first occurrence
+    /// of each kind for older clients.
+    let markerSegments: [PlaybackMarkerSegment]?
     let presentationKind: String?
     let presentationGroupKey: String?
     let presentationPartIndex: Int?
@@ -904,8 +989,10 @@ struct FileVersion: Codable, Identifiable, Hashable {
     let editionRaw: String?
     let editionKey: String?
     /// Server-resolved default audio track ordinal for this version.
-    let effectiveAudioTrackIndex: Int?
-    let effectiveAudioLanguage: String?
+    /// `var` so a read can fold in an audio pick the server has not stored
+    /// yet (`TrackSelectionPersistence.Settlement`).
+    var effectiveAudioTrackIndex: Int?
+    var effectiveAudioLanguage: String?
     /// Whether the server publishes seek-bar previews for this file.
     let trickplayAvailable: Bool?
     var id: Int { fileId }
@@ -932,6 +1019,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         intro: TimeRange? = nil,
         credits: TimeRange? = nil,
         recap: TimeRange? = nil,
+        markerSegments: [PlaybackMarkerSegment]? = nil,
         presentationKind: String? = nil,
         presentationGroupKey: String? = nil,
         presentationPartIndex: Int? = nil,
@@ -959,6 +1047,7 @@ struct FileVersion: Codable, Identifiable, Hashable {
         self.intro = intro
         self.credits = credits
         self.recap = recap
+        self.markerSegments = markerSegments
         self.presentationKind = presentationKind
         self.presentationGroupKey = presentationGroupKey
         self.presentationPartIndex = presentationPartIndex
@@ -1080,6 +1169,15 @@ struct SubtitleTrack: Codable, Identifiable, Hashable {
     var selectionIndex: Int? {
         if let index { return index }
         return external == true ? nil : 0
+    }
+
+    /// An embedded track the server stored with no codec: its probe didn't
+    /// recognize the format (a Matroska S_TEXT/WEBVTT track, for one), so the
+    /// server can neither deliver nor burn it in, and a start or switch that
+    /// asks for it is refused (`subtitle_codec_unsupported`). The same rule
+    /// marks the player's inventory rows (`ApplePlaybackV3PlanAdapter`).
+    var hasUnsupportedFormat: Bool {
+        external != true && (codec?.trimmingCharacters(in: .whitespaces) ?? "").isEmpty
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1234,7 +1332,7 @@ struct WatchDetail {
     let title: String
     let year: Int?
     let overview: String?
-    let versions: [FileVersion]
+    var versions: [FileVersion]
     let subtitles: [SubtitleInfoBasic]?
     let intro: TimeRange?
     let credits: TimeRange?
@@ -1248,10 +1346,13 @@ struct WatchDetail {
     /// per-series → library → profile prefs cascade. Absent when the
     /// user hasn't configured anything that applies. Consumed by the
     /// player at track-discovery time to auto-pick the right track.
-    let effectiveSubtitleLanguage: String?
-    let effectiveSubtitleMode: String?
+    /// The pick-derived fields (and `versions`) are `var` so a read can fold
+    /// in a pick the server has not stored yet
+    /// (`TrackSelectionPersistence.Settlement`).
+    var effectiveSubtitleLanguage: String?
+    var effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
-    let effectiveSubtitleTrackSignature: SubtitleTrackSignature?
+    var effectiveSubtitleTrackSignature: SubtitleTrackSignature?
 
     /// "Show forced subtitles" for this content. The server omits
     /// `effective_show_forced_subtitles` when no stored setting applies, and

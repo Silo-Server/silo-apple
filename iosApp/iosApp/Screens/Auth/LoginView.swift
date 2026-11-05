@@ -14,6 +14,7 @@ struct LoginView: View {
     @State private var expandsPasswordForm = false
     /// Counts failed password attempts so the fields shake on each one.
     @State private var passwordFailures = 0
+    @State private var showsForgotPassword = false
     @FocusState private var focusedField: Field?
     @Environment(\.scenePhase) private var scenePhase
 
@@ -22,10 +23,11 @@ struct LoginView: View {
     var body: some View {
         // Leaving mid-sign-in would let the finished sign-in pull the app
         // back from server setup, so going back waits until it settles.
-        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { router.resetToServerSetup() }) {
+        MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { leave() }) {
             MarqueeTopBar {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Change server") {
-                    router.resetToServerSetup()
+                MarqueeIconButton(systemImage: "chevron.left",
+                                  accessibilityLabel: backLabel) {
+                    leave()
                 }
                 .disabled(viewModel.isBusy)
             } trailing: {
@@ -36,6 +38,7 @@ struct LoginView: View {
                 title: "Sign in",
                 // An expired session says why sign-in is back on screen.
                 lead: router.loginNotice?.message(serverName: server.serverName)
+                    ?? addingLead
                     ?? server.branding?.loginSubtitle ?? "Use your \(server.serverName) account."
             )
             options
@@ -49,6 +52,10 @@ struct LoginView: View {
         .task {
             MarqueeScene.shared.focus = .account
             MarqueeScene.shared.personalTint = nil
+            // An account signing in again starts with its username.
+            if viewModel.username.isEmpty, let prefill = router.signInPrefill {
+                viewModel.username = prefill
+            }
             await server.load()
         }
         .task {
@@ -68,16 +75,37 @@ struct LoginView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .navigationDestination(isPresented: $showsForgotPassword) {
+            ForgotPasswordView(login: viewModel.username)
+        }
         .marqueeTransparentNavigation()
     }
 
     static let noSignInText = "This server doesn't offer a sign-in this app can use. Sign in on the web, or ask the server's admin."
 
+    /// Back to the picker while another saved account can be chosen, else to
+    /// Change Account while other accounts or servers are saved; otherwise to
+    /// server setup, as on a first sign-in (`AppRouter.leaveSignIn`).
+    private func leave() {
+        router.leaveSignIn()
+    }
+
+    private var backLabel: String {
+        if router.canReturnToPicker { return "Back" }
+        return router.signInLeavesForChangeAccount ? "Change account" : "Change server"
+    }
+
+    /// Adding an account beside the ones already saved on this server.
+    private var addingLead: String? {
+        guard let request = router.accountSignIn, request.renewingAccountId == nil else { return nil }
+        return "Sign in with another \(server.serverName) account."
+    }
+
     private var serverMenu: some View {
         Menu {
             Section(server.hostLabel) {
                 Button {
-                    router.resetToServerSetup()
+                    router.leaveSignInForServerSetup()
                 } label: {
                     Label("Use a different server", systemImage: "server.rack")
                 }
@@ -298,6 +326,21 @@ struct LoginView: View {
                     .padding(.leading, 4)
             }
 
+            if viewModel.offersPasswordReset {
+                Button("Forgot password?") {
+                    focusedField = nil
+                    showsForgotPassword = true
+                }
+                .buttonStyle(.marqueePressable)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.6))
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.top, 10)
+                .padding(.trailing, 4)
+                .disabled(viewModel.isBusy)
+                .accessibilityIdentifier("login.forgotPassword")
+            }
+
             Button(action: signIn) {
                 Text(viewModel.isLoading ? "Signing in…" : "Sign in")
             }
@@ -311,7 +354,7 @@ struct LoginView: View {
     @ViewBuilder
     private var footnote: some View {
         if let options = viewModel.signInOptions {
-            if options.browserProviders.isEmpty && options.showsPasswordForm {
+            if options.browserProviders.isEmpty && options.showsPasswordForm && !viewModel.offersPasswordReset {
                 footnoteText("Forgot your password? Ask the server admin.")
             } else if !options.browserProviders.isEmpty && !options.showsPasswordForm {
                 footnoteText("Password sign-in is turned off on this server.")

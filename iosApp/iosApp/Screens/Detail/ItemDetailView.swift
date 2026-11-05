@@ -101,6 +101,9 @@ struct PhoneDetailTopChrome: View {
     let onLeadingTap: () -> Void
     let trailingSystemName: String?
     let onTrailingTap: (() -> Void)?
+    /// Replaces the buttons' usual inset (18pt from the sides, 9pt from the
+    /// top) with one distance from both, to sit them in a split page's sidebar.
+    var cornerInset: CGFloat? = nil
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -152,8 +155,8 @@ struct PhoneDetailTopChrome: View {
                     trailingButton
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.top, 9)
+            .padding(.horizontal, cornerInset ?? 18)
+            .padding(.top, cornerInset ?? 9)
         }
         #if os(iOS)
         .overlay(alignment: statusColumn?.edge == .leading ? .topLeading : .topTrailing) {
@@ -398,6 +401,9 @@ private struct ItemDetailPhoneContent: View {
     @State private var preferredAudioTrackIndex: Int?
     @State private var preferredSubtitleTrackIndex: Int?
     @State private var preferredSubtitleTrackWasManuallySelected = false
+    /// Set when the viewer picks Auto on this visit; the next load reads the
+    /// cleared preference from the server.
+    @State private var didClearSubtitleOverride = false
     /// The file a manual subtitle track pick was made on; its index means
     /// nothing on another version.
     @State private var preferredSubtitleTrackFileId: Int?
@@ -405,6 +411,9 @@ private struct ItemDetailPhoneContent: View {
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
     @State private var nextUpWatchDetail: WatchDetail?
+    /// Set when the viewer picks Auto for the selected episode, until the
+    /// next episode load.
+    @State private var didClearNextUpSubtitleOverride = false
     /// Keeps the playback selector's footprint occupied while a newly focused
     /// episode is resolving its files and tracks. The series page renders a
     /// same-size skeleton from this state instead of collapsing the stack.
@@ -493,6 +502,7 @@ private struct ItemDetailPhoneContent: View {
             // and season the page was showing instead of the entry context.
             let isReturning = hasStartedDetailLoad
             hasStartedDetailLoad = true
+            didClearSubtitleOverride = false
             preferredVersionFileId = nil
             preferredAudioTrackIndex = nil
             // A subtitle picked in the selector on this visit, Off included,
@@ -700,7 +710,8 @@ private struct ItemDetailPhoneContent: View {
             trailingSystemName: siloControl.remotePlaybackEngaged
                 ? "appletvremote.gen4.fill"
                 : "appletvremote.gen4",
-            onTrailingTap: handleRemoteControlTap
+            onTrailingTap: handleRemoteControlTap,
+            cornerInset: isSplitPage ? PhoneDetailHeroLayout.splitCloseButtonInset : nil
         )
     }
 
@@ -814,6 +825,7 @@ private struct ItemDetailPhoneContent: View {
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                 nextUpWatchDetail: nextUpWatchDetail,
+                nextUpSubtitleOverrideCleared: didClearNextUpSubtitleOverride,
                 isLoadingSelectedEpisodePlayback: isLoadingNextUpWatchDetail,
                 selectedEpisodeContentId: playbackEpisode(for: detail)?.contentId,
                 onSelectSeason: { season in
@@ -873,6 +885,7 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 onSelectNextUpSubtitleTrack: { index in
+                    didClearNextUpSubtitleOverride = (index == nil)
                     preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: nextUpWatchDetail,
                         versionFileId: preferredNextUpFileId,
@@ -882,8 +895,7 @@ private struct ItemDetailPhoneContent: View {
                         prefKey: prefKey(for: nextUpWatchDetail),
                         version: effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId),
                         requested: index,
-                        sanitized: preferredNextUpSubtitleTrackIndex,
-                        showForced: nextUpWatchDetail?.effectiveShowForcedSubtitles
+                        sanitized: preferredNextUpSubtitleTrackIndex
                     )
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
@@ -906,7 +918,7 @@ private struct ItemDetailPhoneContent: View {
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
                 onPersonTap: { openPerson($0) },
-                onNavigateToItem: { openItem($0) },
+                onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
@@ -924,9 +936,11 @@ private struct ItemDetailPhoneContent: View {
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
+                boxSet: viewModel.boxSet,
                 selectedVersionFileId: preferredVersionFileId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
+                subtitleOverrideCleared: didClearSubtitleOverride,
                 onPlay: { startFromBeginning, resumePosition in
                     // Track picks only travel with a resolved file.
                     let fileId = playbackFileId(for: detail)
@@ -969,6 +983,7 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 onSelectSubtitleTrack: { index in
+                    didClearSubtitleOverride = (index == nil)
                     preferredSubtitleTrackWasManuallySelected = true
                     preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: detail,
@@ -983,15 +998,14 @@ private struct ItemDetailPhoneContent: View {
                         prefKey: prefKey(for: detail),
                         version: effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
                         requested: index,
-                        sanitized: preferredSubtitleTrackIndex,
-                        showForced: nil
+                        sanitized: preferredSubtitleTrackIndex
                     )
                 },
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
                 onPersonTap: { openPerson($0) },
-                onNavigateToItem: { openItem($0) },
+                onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 onPlayExtra: { id in playExtra(contentId: id) },
                 onFindTrailers: { viewModel.startTrailerFetch() },
                 trailerStatusMessage: viewModel.trailerFetch.statusMessage,
@@ -1097,7 +1111,9 @@ private struct ItemDetailPhoneContent: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
+        // A remembered pick of a track the server can't deliver falls back
+        // to Auto: starting on it would be refused.
+        let available = version.subtitleTracks?.filter { !$0.hasUnsupportedFormat }.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 
@@ -1111,7 +1127,9 @@ private struct ItemDetailPhoneContent: View {
         guard let version = effectiveVersion(for: detail, versionFileId: versionFileId) else {
             return nil
         }
-        let available = version.subtitleTracks?.compactMap(\.selectionIndex) ?? []
+        // A remembered pick of a track the server can't deliver falls back
+        // to Auto: starting on it would be refused.
+        let available = version.subtitleTracks?.filter { !$0.hasUnsupportedFormat }.compactMap(\.selectionIndex) ?? []
         return available.contains(candidate) ? candidate : nil
     }
 
@@ -1201,8 +1219,7 @@ private struct ItemDetailPhoneContent: View {
         prefKey: String?,
         version: FileVersion?,
         requested: Int?,
-        sanitized: Int?,
-        showForced: Bool?
+        sanitized: Int?
     ) {
         guard let prefKey else { return }
         guard let requested else {
@@ -1210,11 +1227,7 @@ private struct ItemDetailPhoneContent: View {
             return
         }
         guard requested == sanitized, let version,
-              let request = TrackSelectionPersistence.subtitleRequest(
-                  version: version,
-                  ffIndex: requested,
-                  showForced: showForced
-              )
+              let request = TrackSelectionPersistence.subtitleRequest(version: version, ffIndex: requested)
         else { return }
         TrackSelectionPersistence.saveSubtitle(prefKey: prefKey, request: request)
     }
@@ -1253,6 +1266,7 @@ private struct ItemDetailPhoneContent: View {
     }
 
     private func loadNextUpWatchDetail(for detail: ItemDetail) async {
+        didClearNextUpSubtitleOverride = false
         guard let nextUp = playbackEpisode(for: detail) else {
             nextUpWatchDetail = nil
             isLoadingNextUpWatchDetail = false

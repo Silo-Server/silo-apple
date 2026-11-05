@@ -23,11 +23,12 @@ struct TopShelfHTTPClient {
         case notAuthenticated
         case invalidURL
         case unexpectedStatus(Int)
+        /// A Home row read answered another `section_type` than the layout.
+        case sectionTypeChanged
     }
 
     let defaults: SharedDefaults
-    let accountKeychain: SharedKeychain
-    let profileKeychain: SharedKeychain
+    let accounts: AccountStore
     let session: URLSession
     /// Read once by `authenticated()` so each request skips the keychain.
     private var credentials: Credentials?
@@ -35,6 +36,7 @@ struct TopShelfHTTPClient {
     /// The account and profile a set of credentials was read for.
     private struct Scope: Equatable {
         let serverID: String
+        let localAccountID: String
         let profileID: String?
         let accountEpoch: String?
     }
@@ -75,29 +77,42 @@ struct TopShelfHTTPClient {
         }
     }
 
+    /// Refuses HTTPS-to-HTTP redirects, which would resend the bearer and the
+    /// refresh token unencrypted.
+    static let defaultSession = URLSession(configuration: .default,
+                                           delegate: InsecureRedirectRefusingDelegate.shared,
+                                           delegateQueue: nil)
+
     init(defaults: SharedDefaults = .shared,
          keychain: SharedKeychain = SharedKeychain(),
-         session: URLSession = .shared) {
+         session: URLSession = TopShelfHTTPClient.defaultSession) {
         self.defaults = defaults
-        self.accountKeychain = keychain.withAudience(.userIndependent)
-        self.profileKeychain = keychain.withAudience(.currentUser)
+        self.accounts = AccountStore(keychain: keychain, defaults: defaults)
         self.session = session
     }
 
+    /// The current device user's active account: the one this user (on
+    /// Apple TV, this Apple TV user) selected on their active server. Never
+    /// another account on that server, such as the one another Apple TV user
+    /// used last. Nil without a selection, while it needs signing in again,
+    /// and when it can't be read.
+    private func activeAccount() -> Account? {
+        guard let scope = AccountScope.current(defaults: defaults),
+              let account = try? accounts.account(scope.localAccountId, onServer: scope.serverId),
+              account.isSignedIn else { return nil }
+        return account
+    }
+
     var isPersonalizedContentAllowed: Bool {
-        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else {
-            return false
-        }
+        guard let account = activeAccount() else { return false }
         let state = ProfileLaunchState.load(from: defaults)
         return TopShelfProfilePolicy.allowsPersonalizedContent(
             state: state,
-            serverID: serverID,
+            localAccountID: account.localAccountId,
             activeProfileID: defaults.string(forKey: SharedStorage.profileIdKey),
-            accountEpoch: accountKeychain.get(
-                SharedStorage.accountEpochAccount(for: serverID)
-            ),
-            hasStoredProfileToken: profileKeychain.get(
-                SharedStorage.profileTokenAccount(for: serverID)
+            accountEpoch: account.epoch?.uuidString,
+            hasStoredProfileToken: accounts.profileToken(
+                for: account.localAccountId, onServer: account.serverId
             ) != nil
         )
     }
@@ -111,33 +126,41 @@ struct TopShelfHTTPClient {
     }
 
     private func currentScope() -> Scope? {
-        guard let serverID = defaults.string(forKey: SharedStorage.activeServerIdKey) else { return nil }
-        return Scope(
-            serverID: serverID,
+        guard let account = activeAccount() else { return nil }
+        return scope(of: account)
+    }
+
+    private func scope(of account: Account) -> Scope {
+        Scope(
+            serverID: account.serverId,
+            localAccountID: account.localAccountId,
             profileID: defaults.string(forKey: SharedStorage.profileIdKey),
-            accountEpoch: accountKeychain.get(SharedStorage.accountEpochAccount(for: serverID))
+            accountEpoch: account.epoch?.uuidString
         )
     }
 
-    /// A copy carrying the active server's credentials, or nil without an
+    /// A copy carrying the active account's credentials, or nil without an
     /// access token. Check `isPersonalizedContentAllowed` first.
     func authenticated() -> TopShelfHTTPClient? {
-        guard let scope = currentScope(),
+        guard let account = activeAccount(),
+              let accessToken = account.accessToken,
               let serverURL = defaults.string(forKey: SharedStorage.serverUrlKey),
               !serverURL.isEmpty,
-              let accessToken = accountKeychain.get(SharedStorage.accessTokenAccount(for: scope.serverID))
+              // The bearer only goes to the address the account was saved
+              // for. The app stores both normalized (`ServerRegistry.normalize`).
+              serverURL == account.origin
         else { return nil }
-        let serverID = scope.serverID
+        let scope = self.scope(of: account)
         var client = self
         client.credentials = Credentials(
             scope: scope,
             serverURL: serverURL,
             tokens: AccessTokenSlot(
                 accessToken: accessToken,
-                refreshToken: accountKeychain.get(SharedStorage.refreshTokenAccount(for: serverID))
+                refreshToken: account.refreshToken
             ),
             profileID: scope.profileID,
-            profileToken: profileKeychain.get(SharedStorage.profileTokenAccount(for: serverID))
+            profileToken: accounts.profileToken(for: account.localAccountId, onServer: account.serverId)
         )
         return client
     }
@@ -155,8 +178,58 @@ struct TopShelfHTTPClient {
         )
     }
 
+    /// The Continue Watching and Next Up rows, in display order. Reads the
+    /// layout, then only those rows: the whole of Home runs to about 1 MB on
+    /// a large server, too much for the extension's memory limit. A row read
+    /// answers at the row's own limit, as the full list does, so the shelf's
+    /// sort and cap pick the same cards; `item_limit` would cut each row in
+    /// the server's order first.
+    ///
+    /// A row whose read fails, or whose type no longer matches the layout (an
+    /// admin can retype a section and keep its id), is left out and counted,
+    /// as the full list answers a failed row empty. When every row fails, the
+    /// first row's error is thrown, as is a failed layout read, a scope
+    /// change during any read, or cancellation.
     func fetchHomeSections(imageSizeQuery: [String: String]) async throws -> TopShelfSectionsResponse {
-        try await get("/api/v2/home/sections", query: imageSizeQuery)
+        let layout: TopShelfHomeLayout = try await get("/api/v2/home/layout")
+        let entries = layout.sections.filter { TopShelfRow.isShown($0.sectionType) }
+        let results = try await withThrowingTaskGroup(of: (Int, Result<TopShelfSection, Swift.Error>).self) { group in
+            for (index, entry) in entries.enumerated() {
+                group.addTask { (index, try await fetchRow(entry, imageSizeQuery: imageSizeQuery)) }
+            }
+            // Layout order, whichever read finishes first: rows without
+            // progress timestamps keep this order through the shelf's sort.
+            var results = [Result<TopShelfSection, Swift.Error>?](repeating: nil, count: entries.count)
+            for try await (index, result) in group { results[index] = result }
+            return results.compactMap { $0 }
+        }
+        // A row that failed after a scope change was never scope-checked.
+        guard isCurrentScope else { throw Error.notAuthenticated }
+        let sections = results.compactMap { try? $0.get() }
+        if sections.isEmpty, case .failure(let error)? = results.first { throw error }
+        return TopShelfSectionsResponse(sections: sections, failedSectionCount: results.count - sections.count)
+    }
+
+    /// One row read's outcome. Throws only what ends the whole read: a scope
+    /// change or cancellation.
+    private func fetchRow(
+        _ entry: TopShelfHomeLayout.Entry,
+        imageSizeQuery: [String: String]
+    ) async throws -> Result<TopShelfSection, Swift.Error> {
+        guard let segment = CatalogPathSegment.encode(entry.id) else { return .failure(Error.invalidURL) }
+        do {
+            let row: TopShelfSection = try await get(
+                "/api/v2/home/sections/\(segment)/items",
+                query: imageSizeQuery
+            )
+            return row.sectionType == entry.sectionType ? .success(row) : .failure(Error.sectionTypeChanged)
+        } catch Error.notAuthenticated {
+            throw Error.notAuthenticated
+        } catch _ where Task.isCancelled {
+            throw CancellationError()
+        } catch {
+            return .failure(error)
+        }
     }
 
     func fetchSeasons(

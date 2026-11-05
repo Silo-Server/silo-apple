@@ -87,9 +87,20 @@ enum LocalRouteTrust {
 }
 
 /// Session delegate that applies `LocalRouteTrust` to the app's own sessions:
-/// the API client and the artwork loader.
+/// the API client and the artwork loader. It also refuses HTTPS-to-HTTP
+/// redirects (`InsecureRedirect`).
 final class LocalRouteTrustDelegate: NSObject, URLSessionTaskDelegate, Sendable {
     static let shared = LocalRouteTrustDelegate()
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(InsecureRedirect.allowed(request, for: task))
+    }
 
     func urlSession(
         _ session: URLSession,

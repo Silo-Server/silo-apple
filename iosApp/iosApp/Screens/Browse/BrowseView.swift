@@ -298,6 +298,7 @@ struct BrowseView: View {
                 }
             }
             .padding(.horizontal, SiloTheme.padding)
+            .mouseDragScrolling()
         }
     }
 
@@ -354,7 +355,7 @@ struct LibraryPageTabSelector: View {
     var body: some View {
         if scrolls {
             ScrollView(.horizontal, showsIndicators: false) {
-                chips
+                chips.mouseDragScrolling()
             }
         } else {
             chips
@@ -535,6 +536,11 @@ struct LibraryRecommendedView: View {
                                     libraryId: libraryId
                                 )
                             )
+                        },
+                        onExploreAll: {
+                            router.navigate(to: .sectionCatalog(SectionCatalogTarget(
+                                section, scope: .library(libraryId), mediaScope: mediaScope
+                            )))
                         }
                     )
                 }

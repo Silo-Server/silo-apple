@@ -8,9 +8,10 @@ working tree. Do not hand-edit the vendored files; re-run the script at a
 new server commit instead, then cd iosApp && xcodegen generate.
 
 Newer file: get_image_capabilities_ok.json is read with git show from server
-main at 2fe4518e96768b96666001b7ee53e9650563371c (2fe4518e9, silo-server#2627,
-per-slot widths and `slot_width_params`), after the commit above. The next run
-of the script vendors every file from one commit and drops this note.
+branch feat/episode-parent-artwork at b972d72f1b6fada358548b82c36cdda6a5180837
+(b972d72f1, silo-server#3197, `episode_parent_artwork`), after the commit
+above. Its index.json entry is unchanged. The next run of the script vendors
+every file from one commit and drops this note.
 
 Newer file: playback_capability_available.json is read with git show from server
 branch feat/buffering-quality at 4ab2b8e95bacfcec27f266de4c5c1823ea7f8b2e (4ab2b8e95,

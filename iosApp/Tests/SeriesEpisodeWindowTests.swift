@@ -65,9 +65,39 @@ final class SeriesEpisodeWindowTests: XCTestCase {
         XCTAssertEqual(newWindow.nextSeason, 19)
     }
 
+    func testSingleEpisodeSeasonsKeepEnoughEpisodesToFillTheRail() throws {
+        let seasons = try (1...20).map(season)
+        let pages = try Dictionary(uniqueKeysWithValues: (1...20).map { ($0, [try episode($0, 1)]) })
+        let retained = SeriesEpisodeWindow.retainedPages(seasons: seasons, selected: 10, pages: pages)
+        let window = SeriesEpisodeWindow.snapshot(seasons: seasons, selected: 10, pages: retained)
+        let focused = try XCTUnwrap(window.episodes.firstIndex(where: { $0.contentId == "s10e1" }))
+        XCTAssertGreaterThanOrEqual(focused, SeriesEpisodeWindow.minimumEpisodesPerSide)
+        XCTAssertGreaterThanOrEqual(
+            window.episodes.count - focused - 1, SeriesEpisodeWindow.minimumEpisodesPerSide
+        )
+    }
+
+    func testRepeatedEpisodesDoNotCountTowardTheRailMargin() throws {
+        let seasons = try (1...20).map(season)
+        var pages = try Dictionary(uniqueKeysWithValues: (1...20).map { ($0, [try episode($0, 1)]) })
+        // Each later season repeats the previous season's card, so only one
+        // of its two rows adds a card to the snapshot.
+        for number in 11...20 {
+            pages[number] = [try episode(number - 1, 1), try episode(number, 1)]
+        }
+        let retained = SeriesEpisodeWindow.retainedPages(seasons: seasons, selected: 10, pages: pages)
+        let window = SeriesEpisodeWindow.snapshot(seasons: seasons, selected: 10, pages: retained)
+        let focused = try XCTUnwrap(window.episodes.firstIndex(where: { $0.contentId == "s10e1" }))
+        XCTAssertGreaterThanOrEqual(
+            window.episodes.count - focused - 1, SeriesEpisodeWindow.minimumEpisodesPerSide
+        )
+    }
+
     func testEmptyPagesSurviveEvictionWithoutDisplacingRealEpisodes() throws {
         let seasons = try (1...9).map(season)
-        var pages = try Dictionary(uniqueKeysWithValues: (1...9).map { ($0, [try episode($0, 1)]) })
+        var pages = try Dictionary(uniqueKeysWithValues: (1...9).map { number in
+            (number, try (1...10).map { try episode(number, $0) })
+        })
         pages[2] = []
         pages[3] = []
         let retained = SeriesEpisodeWindow.retainedPages(seasons: seasons, selected: 7, pages: pages)

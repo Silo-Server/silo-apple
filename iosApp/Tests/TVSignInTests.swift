@@ -106,9 +106,8 @@ final class TVSignInTests: XCTestCase {
     }
 
     func testDeviceLinksMatchSavedServersByIdentityNotAddress() async throws {
-        let home = ServerEntry(id: "home", url: "https://home.example", fetchedName: "Home", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "srv-home")
-        let unverified = ServerEntry(id: "lan", url: "http://192.168.1.4:8090", fetchedName: "Lan", profileId: nil, lastUsedAt: Date())
+        let home = ServerEntry(id: "home", url: "https://home.example", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "srv-home")
+        let unverified = ServerEntry(id: "lan", url: "http://192.168.1.4:8090", fetchedName: "Lan", lastUsedAt: Date())
         func link(_ query: String) throws -> DeviceApprovalLink {
             try XCTUnwrap(DeviceApprovalLink(url: XCTUnwrap(URL(string: "silo://device?\(query)"))))
         }
@@ -143,11 +142,9 @@ final class TVSignInTests: XCTestCase {
     /// explicit sign-out keeps the entry) is matched, not offered for adding
     /// again from the link's address, which would save it twice.
     func testDeviceLinksMatchSignedOutSavedServers() async throws {
-        let home = ServerEntry(id: "home", url: "http://192.168.1.4:8090", fetchedName: "Home", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "srv-home")
-        let unverified = ServerEntry(id: "lan", url: "http://192.168.1.9:8090", fetchedName: "Lan", profileId: nil, lastUsedAt: Date())
-        let other = ServerEntry(id: "other", url: "https://other.example", fetchedName: "Other", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "srv-other")
+        let home = ServerEntry(id: "home", url: "http://192.168.1.4:8090", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "srv-home")
+        let unverified = ServerEntry(id: "lan", url: "http://192.168.1.9:8090", fetchedName: "Lan", lastUsedAt: Date())
+        let other = ServerEntry(id: "other", url: "https://other.example", fetchedName: "Other", lastUsedAt: Date(), verifiedServerId: "srv-other")
         func link(_ query: String) throws -> DeviceApprovalLink {
             try XCTUnwrap(DeviceApprovalLink(url: XCTUnwrap(URL(string: "silo://device?\(query)"))))
         }
@@ -164,8 +161,7 @@ final class TVSignInTests: XCTestCase {
             signedIn: [other], signedOut: [home], probe: probe)
         XCTAssertEqual(match, .savedSignedOut(home, learnedIdentity: nil))
         // A signed-in entry for the same identity wins over a signed-out one.
-        let homeAgain = ServerEntry(id: "home-2", url: "https://home.example", fetchedName: "Home", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "srv-home")
+        let homeAgain = ServerEntry(id: "home-2", url: "https://home.example", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "srv-home")
         match = await DeviceLinkServerMatch.resolve(try link("server=srv-home&url=https://home.example&code=1"),
             signedIn: [homeAgain], signedOut: [home], probe: probe)
         XCTAssertEqual(match, .saved(homeAgain, learnedIdentity: nil))
@@ -180,8 +176,7 @@ final class TVSignInTests: XCTestCase {
     }
 
     func testDeviceLinkRoundTripsForASavedServer() throws {
-        let home = ServerEntry(id: "home", url: "https://home.example", fetchedName: "Home", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "srv-home")
+        let home = ServerEntry(id: "home", url: "https://home.example", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "srv-home")
         let link = DeviceApprovalLink(server: home, code: "4821 7730")
         let url = try XCTUnwrap(link.url)
         XCTAssertEqual(DeviceApprovalLink(url: url), link)
@@ -203,10 +198,8 @@ final class TVSignInTests: XCTestCase {
         XCTAssertEqual(legacyTV.name, "TV", "never assume an Apple TV")
         XCTAssertNil(TVPairingBrowser.makeTV(txt: ["st": "reboot"], endpoint: endpoint), "unknown states are not offered")
 
-        let home = ServerEntry(id: "home", url: "https://home.example", fetchedName: "Home", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "srv-home")
-        let other = ServerEntry(id: "other", url: "https://other.example", fetchedName: "Other", profileId: nil,
-            lastUsedAt: Date(), verifiedServerId: "srv-other")
+        let home = ServerEntry(id: "home", url: "https://home.example", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "srv-home")
+        let other = ServerEntry(id: "other", url: "https://other.example", fetchedName: "Other", lastUsedAt: Date(), verifiedServerId: "srv-other")
         XCTAssertEqual(CompanionPairingOffer.server(for: loginTV, among: [other, home]), home)
         XCTAssertNil(CompanionPairingOffer.server(for: loginTV, among: [other]), "a phone without the TV's server stays quiet")
         XCTAssertNil(CompanionPairingOffer.server(for: legacyTV, among: [home]), "setup TVs use the chooser")
@@ -218,6 +211,36 @@ final class TVSignInTests: XCTestCase {
         XCTAssertEqual(CompanionPairingOffer.make(for: legacyTV, signedIn: [other]), CompanionPairingOffer(tv: legacyTV, server: nil))
         XCTAssertEqual(CompanionPairingOffer.make(for: loginTV, signedIn: [other, home])?.server, home)
         XCTAssertNil(CompanionPairingOffer.make(for: legacyTV, signedIn: []), "a signed-out phone offers nothing")
+    }
+
+    /// A Roku advertises the same record under `_silopair-roku._tcp` and is
+    /// dialed without TLS (silo-roku `docs/companion-pairing.md`).
+    func testRokusAreFoundUnderTheirOwnTypeAndDialedOverPlainTCP() throws {
+        let endpoint = NWEndpoint.hostPort(host: "192.168.1.20", port: 52827)
+        let txt = ["v": "1", "name": "Den Roku", "id": "roku-1", "sid": "s9", "st": "login", "srv": "srv-home"]
+        let roku = try XCTUnwrap(TVPairingBrowser.makeTV(txt: txt, endpoint: endpoint,
+            serviceType: PairingProtocol.rokuServiceType))
+        XCTAssertTrue(roku.isRoku)
+        XCTAssertEqual(roku.state, .login)
+        XCTAssertEqual(roku.serverIdentity, "srv-home")
+        XCTAssertEqual(roku.sid, "s9")
+        let appleTV = try XCTUnwrap(TVPairingBrowser.makeTV(txt: ["id": "tv-1", "name": "Living Room"], endpoint: endpoint))
+        XCTAssertFalse(appleTV.isRoku)
+
+        let merged = TVPairingBrowser.merged([
+            PairingProtocol.serviceType: [appleTV],
+            PairingProtocol.rokuServiceType: [roku, DiscoveredTV(id: "tv-1", name: "Living Room", state: .setup,
+                endpoint: endpoint, sid: nil, isRoku: true)],
+        ])
+        XCTAssertEqual(merged.map(\.id), ["tv-1", "roku-1"])
+        XCTAssertEqual(merged.first?.isRoku, false, "a device under both types keeps TLS")
+
+        func usesTLS(_ parameters: NWParameters) -> Bool {
+            parameters.defaultProtocolStack.applicationProtocols.contains { $0 is NWProtocolTLS.Options }
+        }
+        XCTAssertFalse(usesTLS(PairingSession.parameters(isRoku: true)))
+        XCTAssertTrue(usesTLS(PairingSession.parameters(isRoku: false)))
+        XCTAssertEqual(TVApprovalModel.platformLabel("roku"), "Roku")
     }
     #endif
 
@@ -469,16 +492,6 @@ final class TVSignInTests: XCTestCase {
             supportsSelectAccount: false, networkProviders: [network])), .signOut,
             "network sign-in only signs the same device owner back in")
         XCTAssertEqual(TVApprovalAccountSwitch(nil), .signOut, "unread discovery promises nothing")
-        #if os(iOS)
-        XCTAssertEqual(TVApprovalCard.switchAccountLink(.chooseAccount), "Not you? Switch account")
-        XCTAssertEqual(TVApprovalCard.switchAccountLink(.switchAccount), "Not you? Switch account")
-        XCTAssertEqual(TVApprovalCard.switchAccountLink(.signOut), "Not you? Sign out")
-        XCTAssertTrue(TVApprovalCard.switchAccountMessage(serverName: "Home", choosingAccount: true)
-            .contains("asked which account"))
-        let plain = TVApprovalCard.switchAccountMessage(serverName: "Home", choosingAccount: false)
-        XCTAssertFalse(plain.lowercased().contains("which account"), plain)
-        XCTAssertFalse(plain.lowercased().contains("choose"), plain)
-        #endif
     }
 
     /// The TV's password form on a server that lists an OAuth provider says
@@ -537,8 +550,7 @@ final class TVSignInTests: XCTestCase {
     }
     #endif
 
-    private static let home = ServerEntry(id: "home", url: "https://home.example", fetchedName: "Home", profileId: nil,
-        lastUsedAt: Date(), verifiedServerId: "srv-home")
+    private static let home = ServerEntry(id: "home", url: "https://home.example", fetchedName: "Home", lastUsedAt: Date(), verifiedServerId: "srv-home")
 }
 
 private final class FakeTVApprovalAPI: TVApprovalAPI, @unchecked Sendable {

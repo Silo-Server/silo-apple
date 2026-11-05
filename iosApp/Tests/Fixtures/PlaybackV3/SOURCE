@@ -52,3 +52,14 @@ surface with the ids as opaque strings. Re-vendor each file with
     > iosApp/Tests/Fixtures/PlaybackV3/<name>
 
 update the commit above, and run cd iosApp && xcodegen generate.
+
+Subtitle renditions for every embedded text track (hls_subtitle_renditions_all_v1)
+Source: silo-server docs/design/schemas/playback-v3/v3/fixtures/valid
+Server commit: 915e47c7da3d954acfc72a1e8dedf4d494714964 (branch feat/subtitle-renditions-all, not yet on main)
+Vendored: 2026-10-29
+
+  hls-subtitle-renditions-all-decision_response.json
+
+The protocol domain's decision, with integer file ids. Re-vendor it from main
+once the branch lands, with the same git show command as above, and update the
+commit here.

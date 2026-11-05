@@ -331,6 +331,23 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertEqual(englishPick([external, embedded]), .select(embedded))
     }
 
+    /// The server refuses an embedded track whose format its probe didn't
+    /// recognize, so automatic selection never picks one, even when it is
+    /// the only track in the language or matches a saved pick.
+    func testUnsupportedFormatTrackIsNeverPicked() {
+        var unsupported = track(id: 3, lang: "eng", codec: "")
+        unsupported.hasUnsupportedFormat = true
+        let external = track(id: 0, lang: "eng", codec: "srt", external: true)
+        XCTAssertEqual(englishPick([unsupported, external]), .select(external))
+        XCTAssertEqual(englishPick([unsupported]), .noChange)
+        let saved = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "en", mode: .always, showForced: false,
+            tracks: [unsupported, external], audioLanguage: "ja",
+            signature: SubtitleTrackSignature(source: "embedded", language: "eng")
+        ))
+        XCTAssertEqual(saved, .select(external))
+    }
+
     func testExternalBeatsDownloaded() {
         let downloaded = track(id: 0, lang: "eng", codec: "srt", downloaded: true)
         let external = track(id: 1, lang: "eng", codec: "srt", external: true)
@@ -366,14 +383,16 @@ final class SubtitleAutoResolverTests: XCTestCase {
         XCTAssertEqual(englishPick([externalPGS, xsub, externalText]), .select(externalText))
     }
 
-    /// Native embedded bitmap rendering is per container: MKV only. Embedded
-    /// PGS in MP4 or a Blu-ray M2TS needs a burn-in, so a sidecar wins there.
-    func testEmbeddedPGSOutsideMKVLosesToExternalText() {
+    /// Native embedded bitmap rendering is per container: PGS plays from MKV
+    /// and from a transport stream (TS, Blu-ray M2TS). Embedded PGS in MP4
+    /// needs a burn-in, so a sidecar wins there.
+    func testEmbeddedPGSLosesToExternalTextOnlyWhereItNeedsABurnIn() {
         let external = track(id: 0, lang: "eng", codec: "srt", external: true)
         let pgs = track(id: 3, lang: "eng", codec: "hdmv_pgs_subtitle")
         XCTAssertEqual(englishPick([external, pgs], sourceContainer: "mkv"), .select(pgs))
+        XCTAssertEqual(englishPick([external, pgs], sourceContainer: "m2ts"), .select(pgs))
+        XCTAssertEqual(englishPick([external, pgs], sourceContainer: "ts"), .select(pgs))
         XCTAssertEqual(englishPick([external, pgs], sourceContainer: "mp4"), .select(external))
-        XCTAssertEqual(englishPick([external, pgs], sourceContainer: "m2ts"), .select(external))
     }
 
     func testBurnInTrackStillWinsWhenItIsTheOnlyMatch() {
@@ -403,6 +422,52 @@ final class SubtitleAutoResolverTests: XCTestCase {
             )
         ))
         XCTAssertEqual(result, .select(external))
+    }
+
+    /// A remembered track's language outranks its title, codec, and flags: a
+    /// Danish SDH pick titled like the codec doesn't land on an English SDH
+    /// track with the same title when a Danish track exists.
+    func testSignatureLanguageOutranksMatchingTitleAndFlags() {
+        let englishSDH = track(id: 1, lang: "en", hearingImpaired: true, title: "SUBRIP")
+        let danishForced = track(id: 2, lang: "da", forced: true, title: "Forced", codec: "ass")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "da",
+            mode: .always,
+            showForced: false,
+            tracks: [englishSDH, danishForced],
+            audioLanguage: "en",
+            signature: SubtitleTrackSignature(
+                source: "embedded",
+                language: "da",
+                codec: "subrip",
+                label: "SUBRIP",
+                forced: false,
+                hearingImpaired: true
+            )
+        ))
+        XCTAssertEqual(result, .select(danishForced))
+    }
+
+    /// A title shared by tracks in other languages (here the codec name)
+    /// can't stand in for the remembered language.
+    func testSignatureTitleDoesNotSelectATrackInAnotherLanguage() {
+        let english = track(id: 1, lang: "en", title: "SUBRIP")
+        let result = SubtitleAutoResolver.resolve(inputs(
+            preferredLanguage: "da",
+            mode: .always,
+            showForced: false,
+            tracks: [english],
+            audioLanguage: "ja",
+            signature: SubtitleTrackSignature(
+                source: "embedded",
+                language: "da",
+                codec: "subrip",
+                label: "SUBRIP",
+                forced: false,
+                hearingImpaired: false
+            )
+        ))
+        XCTAssertNotEqual(result, .select(english))
     }
 
     // MARK: - Mode off with forced subtitles

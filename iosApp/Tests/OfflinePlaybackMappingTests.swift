@@ -19,7 +19,8 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         selectedAudioTrackIndex: Int? = nil,
         targetBitrateKbps: Int? = nil,
         fileSize: Int64? = 1_000_000_000,
-        durationSeconds: Double? = 1358.176
+        durationSeconds: Double? = 1358.176,
+        markerSegmentsJSON: String? = nil
     ) throws -> OfflineManifest {
         var fields = [
             "\"download_id\": \"d1\"",
@@ -37,6 +38,10 @@ final class OfflinePlaybackMappingTests: XCTestCase {
         if let audioTracksJSON { fields.append("\"audio_tracks\": \(audioTracksJSON)") }
         if let selectedAudioTrackIndex {
             fields.append("\"selected_audio_track_index\": \(selectedAudioTrackIndex)")
+        }
+        if let markerSegmentsJSON {
+            fields.append("\"credits\": {\"start\": 1100, \"end\": 1200}")
+            fields.append("\"marker_segments\": \(markerSegmentsJSON)")
         }
         if let targetBitrateKbps {
             fields.append("\"target_bitrate_kbps\": \(targetBitrateKbps)")
@@ -74,6 +79,25 @@ final class OfflinePlaybackMappingTests: XCTestCase {
       "default": true
     }]
     """
+
+    // MARK: - Markers
+
+    /// Offline playback honours every occurrence, from the server's manifest
+    /// and from the copy stored beside the media file.
+    func testEveryMarkerOccurrenceReachesOfflinePlayback() throws {
+        let fromServer = try manifest(markerSegmentsJSON: """
+        [{"kind": "credits", "start_seconds": 1100, "end_seconds": 1200},
+         {"kind": "credits", "start_seconds": 1250, "end_seconds": 1358}]
+        """)
+        let stored = try JSONDecoder().decode(OfflineManifest.self, from: JSONEncoder().encode(fromServer))
+
+        for manifest in [fromServer, stored] {
+            let timeline = PlayerMarkerTimeline(version: prepared(manifest).selectedVersion)
+            XCTAssertEqual(timeline.ranges(.credits), [
+                TimeRange(start: 1100, end: 1200), TimeRange(start: 1250, end: 1358),
+            ])
+        }
+    }
 
     // MARK: - Audio track identity
 

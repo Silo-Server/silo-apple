@@ -18,6 +18,9 @@ import SwiftUI
 /// swipes) live in `MobilePlayerGestureLayer` underneath this overlay.
 struct MobilePlayerControls: View {
     let viewModel: PlayerViewModel
+    /// The player's loading spinner is up; it takes the play/pause button's
+    /// place while the controls show.
+    let showsLoadingSpinner: Bool
     let onDismiss: () -> Void
 
     @State private var activeSheet: PlayerSheet?
@@ -328,19 +331,30 @@ struct MobilePlayerControls: View {
             .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward))
             .disabled(!viewModel.canRequestSeek)
 
+            // Still play/pause while it shows the spinner.
             Button {
                 viewModel.togglePlayPause()
             } label: {
-                Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(.black.opacity(0.85))
-                    // play.fill reads left-heavy inside a circle;
-                    // nudge it toward the optical center.
-                    .offset(x: viewModel.isPlaying ? 0 : 2)
-                    .frame(width: Self.playButtonSize, height: Self.playButtonSize)
+                Group {
+                    if showsLoadingSpinner {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(.black.opacity(0.85))
+                            .scaleEffect(1.4)
+                    } else {
+                        Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(.black.opacity(0.85))
+                            // play.fill reads left-heavy inside a circle;
+                            // nudge it toward the optical center.
+                            .offset(x: viewModel.isPlaying ? 0 : 2)
+                    }
+                }
+                .frame(width: Self.playButtonSize, height: Self.playButtonSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9), size: Self.playButtonSize))
             .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
+            .accessibilityValue(showsLoadingSpinner ? "Loading" : "")
             .disabled(!viewModel.canRequestPlayPause)
 
             Button {
@@ -708,9 +722,17 @@ struct MobilePlayerControls: View {
 private struct MobilePlayerTimeline: View {
     let viewModel: PlayerViewModel
     @Binding var showsRemainingTime: Bool
-    /// True only while a finger drags the scrub bar. Skip buttons and
-    /// hold-seek also set `isScrubbing`, but they shouldn't play chapter ticks.
-    @GestureState private var isDraggingScrubBar = false
+    /// Set only while a finger drags the scrub bar. Skip buttons and
+    /// hold-seek also set `isScrubbing`, but they shouldn't play chapter ticks
+    /// or change scrub speed.
+    @GestureState private var scrubDrag: MobileScrubDrag?
+
+    /// Space between the scrub bubble's bottom edge and the top of the bar's
+    /// 20pt touch strip, 4pt above the visible bar while scrubbing. The
+    /// bubble grows upward from here when it adds a line.
+    private static let scrubBubbleGap: CGFloat = 16
+    /// Taller than the bubble ever gets; the bubble sits at its bottom.
+    private static let scrubBubbleBoxHeight: CGFloat = 240
 
     var body: some View {
         VStack(spacing: 10) {
@@ -827,13 +849,15 @@ private struct MobilePlayerTimeline: View {
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .updating($isDraggingScrubBar) { _, dragging, _ in dragging = true }
-                    .onChanged { value in
-                        let fraction = min(max(value.location.x / width, 0), 1)
+                    .updating($scrubDrag) { value, drag, _ in
+                        guard width > 0 else { return }
+                        var next = drag ?? MobileScrubDrag(startX: value.startLocation.x, width: width)
+                        next.move(toX: value.location.x, heightAboveBar: -value.translation.height, width: width)
+                        drag = next
                         if viewModel.isScrubbing {
-                            viewModel.updateScrub(fraction: fraction)
+                            viewModel.updateScrub(fraction: next.fraction)
                         } else {
-                            viewModel.beginScrub(fraction: fraction)
+                            viewModel.beginScrub(fraction: next.fraction)
                         }
                     }
                     .onEnded { _ in
@@ -842,18 +866,24 @@ private struct MobilePlayerTimeline: View {
             )
             .scrubTickFeedback(
                 tickTimes: viewModel.chapters.map(\.time),
-                scrubTime: isDraggingScrubBar ? viewModel.scrubPreviewTime : nil
+                scrubTime: scrubDrag != nil ? viewModel.scrubPreviewTime : nil
             )
+            .sensoryFeedback(trigger: scrubDrag?.speed) { old, new in
+                old != nil && new != nil ? .impact(weight: .light) : nil
+            }
             .overlay(alignment: .topLeading) {
                 if viewModel.isScrubbing {
                     let previewInset: CGFloat = viewModel.scrubPreviewImage == nil ? 80 : 102
+                    // Pin the bubble's bottom above the bar so a speed label
+                    // grows it upward instead of over the bar.
                     scrubPreviewBubble
+                        .frame(height: Self.scrubBubbleBoxHeight, alignment: .bottom)
                         .position(
                             x: min(
                                 max(width * progress, previewInset),
                                 max(width - previewInset, previewInset)
                             ),
-                            y: viewModel.scrubPreviewImage == nil ? -36 : -92
+                            y: -Self.scrubBubbleGap - Self.scrubBubbleBoxHeight / 2
                         )
                         .transition(.opacity)
                         .allowsHitTesting(false)
@@ -903,6 +933,11 @@ private struct MobilePlayerTimeline: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.65))
                     .lineLimit(1)
+            }
+            if let speedLabel = scrubDrag?.speed.label {
+                Text(speedLabel)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
             }
         }
         .padding(7)

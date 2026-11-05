@@ -25,9 +25,15 @@ extension SiloAPI {
     }
 
     /// Curated TMDB carousels (trending/popular/upcoming/on-air).
-    func requestsDiscover() async throws -> [RequestDiscoverySection] {
+    func requestsDiscover() async throws -> RequestDiscoverLayout {
         try await reprobingWhenRequestsAreOff {
-            try await apiV2Client.requestDiscoverSections()
+            try await apiV2Client.requestDiscoverLayout()
+        }
+    }
+
+    func requestsDiscoverRow(key: String, page: Int) async throws -> RequestDiscoverySection {
+        try await reprobingWhenRequestsAreOff {
+            try await apiV2Client.requestDiscoverRow(key: key, page: page)
         }
     }
 

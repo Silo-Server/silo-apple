@@ -6,31 +6,24 @@ import SwiftUI
 /// charcoal wash with static tonal depth; it never samples page artwork.
 /// Other platforms retain their existing pure-black canvas.
 struct SiloPageBackdrop: View {
+    #if os(iOS)
+    @Environment(\.displayScale) private var displayScale
+    #endif
+
     var body: some View {
         #if os(iOS)
-        ZStack {
-            Color.siloPageCanvas
-
-            RadialGradient(
-                stops: [
-                    .init(color: .white.opacity(0.035), location: 0),
-                    .init(color: .white.opacity(0.018), location: 0.36),
-                    .init(color: .clear, location: 1),
-                ],
-                center: UnitPoint(x: 0.46, y: 0.42),
-                startRadius: 0,
-                endRadius: 520
-            )
-
-            LinearGradient(
-                stops: [
-                    .init(color: .white.opacity(0.012), location: 0),
-                    .init(color: .clear, location: 0.45),
-                    .init(color: .black.opacity(0.045), location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+        GeometryReader { geo in
+            ZStack {
+                Color.siloPageCanvas
+                if let wash = SiloPageWash.image(size: geo.size, scale: displayScale) {
+                    // Drawn at its own size, which can run past the page's
+                    // bottom and right edges; see `SiloPageWash.sizeStep`.
+                    Image(decorative: wash, scale: displayScale / SiloPageWash.downsample)
+                        .interpolation(.none)
+                        .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+                        .clipped()
+                }
+            }
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
@@ -48,6 +41,109 @@ struct SiloPageBackdrop: View {
         #endif
     }
 }
+
+#if os(iOS)
+/// The page canvas's washes, drawn as one dithered bitmap. They span only a
+/// few 8-bit levels over near-black, so a SwiftUI gradient rounds them into
+/// visible rings. Here each pixel is computed in floating point and dithered
+/// before rounding, which keeps the ramp smooth without changing its tone.
+@MainActor
+enum SiloPageWash {
+    /// Pixels per bitmap pixel. The noise is invisible at 2×2 on phone
+    /// displays and this quarters the work.
+    static let downsample: CGFloat = 2
+
+    /// Bitmaps round up to this many points, so a window being resized reuses
+    /// one bitmap across many layout passes instead of drawing a new one for
+    /// each. The wash is laid out for the size that first drew the bitmap;
+    /// within one step the difference is too soft to see.
+    static let sizeStep: CGFloat = 64
+
+    private static var cache: [String: CGImage] = [:]
+
+    static func image(size: CGSize, scale: CGFloat) -> CGImage? {
+        let pointWidth = (size.width / sizeStep).rounded(.up) * sizeStep
+        let pointHeight = (size.height / sizeStep).rounded(.up) * sizeStep
+        let width = Int((pointWidth * scale / downsample).rounded(.up))
+        let height = Int((pointHeight * scale / downsample).rounded(.up))
+        guard width > 0, height > 0 else { return nil }
+        let key = "\(width)x\(height)@\(scale)"
+        if let cached = cache[key] { return cached }
+        let pixelsPerPoint = scale / downsample
+        guard let image = render(
+            width: width,
+            height: height,
+            layout: CGSize(width: size.width * pixelsPerPoint, height: size.height * pixelsPerPoint),
+            pointsPerPixel: 1 / pixelsPerPoint
+        ) else {
+            return nil
+        }
+        // Sizes come from rotation and window changes; a handful is plenty.
+        if cache.count > 4 { cache.removeAll() }
+        cache[key] = image
+        return image
+    }
+
+    /// `layout` is the page size in bitmap pixels; the wash is positioned
+    /// for it, and the bitmap may extend past it.
+    nonisolated private static func render(
+        width: Int,
+        height: Int,
+        layout: CGSize,
+        pointsPerPixel: CGFloat
+    ) -> CGImage? {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        UIColor(Color.siloPageCanvas).getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        let base = Float(red + green + blue) / 3
+
+        let centerX = Float(layout.width) * 0.46
+        let centerY = Float(layout.height) * 0.42
+        let endRadius = Float(520 / pointsPerPixel)
+        var state: UInt32 = 0x9E37_79B9
+        func noise() -> Float {
+            state = state &* 1_664_525 &+ 1_013_904_223
+            return Float(state >> 8) / Float(1 << 24)
+        }
+
+        var bytes = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            let t = min(Float(y) / Float(max(layout.height - 1, 1)), 1)
+            // Top-to-bottom wash: faint white, then clear at 45%, then a
+            // light black at the bottom.
+            let topWhite = t < 0.45 ? 0.012 * (1 - t / 0.45) : 0
+            let bottomBlack = t > 0.45 ? 0.045 * (t - 0.45) / 0.55 : 0
+            let dy = Float(y) - centerY
+            for x in 0..<width {
+                let dx = Float(x) - centerX
+                let r = min((dx * dx + dy * dy).squareRoot() / endRadius, 1)
+                // Radial white: 3.5% at the center, 1.8% at 36%, clear at the edge.
+                let glow = r < 0.36
+                    ? 0.035 + (0.018 - 0.035) * (r / 0.36)
+                    : 0.018 * (1 - (r - 0.36) / 0.64)
+                var value = base + (1 - base) * glow
+                value += (1 - value) * topWhite
+                value *= 1 - bottomBlack
+                // Triangular noise of about ±1 level, added before rounding.
+                let level = value * 255 + noise() - noise()
+                let byte = UInt8(min(max(level.rounded(), 0), 255))
+                let offset = (y * width + x) * 4
+                bytes[offset] = byte
+                bytes[offset + 1] = byte
+                bytes[offset + 2] = byte
+            }
+        }
+
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        return CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: space,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent
+        )
+    }
+}
+#endif
 
 enum SiloNavigationTitleDisplayMode {
     case automatic

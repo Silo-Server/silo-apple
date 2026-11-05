@@ -18,6 +18,8 @@ final class RequestsScreensCloseTests: XCTestCase {
     func testOnlyTheRequestsPagesOnTopClose() {
         XCTAssertEqual(RequestsRouteVisibility.requestsRoutesOnTop(
             [.settings, .requestsHub, .myRequests, .requestDetail(mediaType: .movie, tmdbId: 949)]), 3)
+        XCTAssertEqual(RequestsRouteVisibility.requestsRoutesOnTop(
+            [.requestsHub, .requestDiscoverRow(key: "r_anime", title: "Anime")]), 2)
         // A title opened from Requests stays in view; the hub under it waits.
         XCTAssertEqual(RequestsRouteVisibility.requestsRoutesOnTop(
             [.requestsHub, .itemDetail(contentId: "movie-1")]), 0)

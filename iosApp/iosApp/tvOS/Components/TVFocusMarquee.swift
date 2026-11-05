@@ -120,6 +120,9 @@ struct TVMarqueeContent: Equatable {
     /// root hero upgrades to the series backdrop from detail enrichment rather
     /// than blowing the still up full-width.
     let isEpisode: Bool
+    /// `backdropUrl` is the episode's series backdrop from the card itself
+    /// (`episode_parent_artwork`), so the hero needs no detail enrichment.
+    var backdropIsSeriesArtwork = false
     /// Rebuilt from the current section watch state and profile preference.
     let protectsEpisodeImages: Bool
     /// Series hierarchy to warm while this card is resting under focus. A
@@ -165,6 +168,15 @@ extension TVMarqueeContent {
         let hidesBackdrop = isEpisode && spoilers.hidesImage(for: state, isEpisodeStill: item.backdropIsEpisodeStill)
         let hidesPoster = isEpisode && spoilers.hidesImage(for: state, isEpisodeStill: item.posterIsEpisodeStill)
         let isSeries = SiloMediaType.isSeries(item.type)
+        // Series art is never a still, so spoiler protection leaves it shown.
+        let seriesBackdrop = item.episodeSeriesBackdrop
+        let backdrop: (url: String?, thumbhash: String?) = if let seriesBackdrop {
+            (seriesBackdrop.url, seriesBackdrop.thumbhash)
+        } else if hidesBackdrop {
+            (nil, nil)
+        } else {
+            (Self.nonEmpty(item.backdropUrl), item.backdropThumbhash)
+        }
 
         var meta: [String] = []
         if isEpisode {
@@ -217,8 +229,8 @@ extension TVMarqueeContent {
             runtimeMetaIndex: runtimeMetaIndex,
             runtimeText: runtimeText,
             synopsis: hidesSynopsis ? nil : item.overview,
-            backdropUrl: hidesBackdrop ? nil : Self.nonEmpty(item.backdropUrl),
-            backdropThumbhash: hidesBackdrop ? nil : item.backdropThumbhash,
+            backdropUrl: backdrop.url,
+            backdropThumbhash: backdrop.thumbhash,
             fallbackArtworkUrl: hidesPoster ? nil : Self.nonEmpty(item.posterUrl),
             fallbackArtworkThumbhash: hidesPoster ? nil : item.posterThumbhash,
             baseOverlayData: OverlayData.from(item),
@@ -226,6 +238,7 @@ extension TVMarqueeContent {
             progressUpdatedAt: item.progressUpdatedAt,
             prefersLastUsedPlaybackMetadata: isContinueWatching,
             isEpisode: isEpisode,
+            backdropIsSeriesArtwork: seriesBackdrop != nil,
             protectsEpisodeImages: isEpisode && spoilers.hidesImage(for: state),
             seriesContextId: isSeries
                 ? item.contentId
@@ -586,9 +599,15 @@ struct TVMarqueeEnrichment: Equatable {
     let backdropIsEpisodeStill: Bool?
 
     init(detail: ItemDetail) {
-        backdropUrl = detail.backdropUrl
-        backdropThumbhash = detail.backdropThumbhash
-        backdropIsEpisodeStill = detail.backdropIsEpisodeStill
+        if let seriesBackdrop = detail.episodeSeriesBackdrop {
+            backdropUrl = seriesBackdrop.url
+            backdropThumbhash = seriesBackdrop.thumbhash
+            backdropIsEpisodeStill = false
+        } else {
+            backdropUrl = detail.backdropUrl
+            backdropThumbhash = detail.backdropThumbhash
+            backdropIsEpisodeStill = detail.backdropIsEpisodeStill
+        }
         let trimmedRating = detail.contentRating?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         contentRatingBadge = trimmedRating?.isEmpty == false
@@ -646,7 +665,8 @@ final class TVFocusMarqueeModel {
     private(set) var tints: HeroBackdropPalette.Tints = .flat(.siloBackground)
 
     /// Backdrop art for the root hero. Episodes need their detail-level series
-    /// backdrop, and any item missing a section backdrop gets one chance to
+    /// backdrop unless the card already carries it, and any item missing a
+    /// section backdrop gets one chance to
     /// obtain the real backdrop from detail. While that request is in flight
     /// the hero stays artwork-free instead of flashing the poster. Poster/still
     /// fallback is used only after detail confirms no backdrop exists (or for
@@ -663,7 +683,8 @@ final class TVFocusMarqueeModel {
                 url: content.fallbackArtworkUrl,
                 thumbhash: content.fallbackArtworkThumbhash
             ),
-            prefersEnrichedBackdrop: content.isEpisode || content.backdropUrl?.isEmpty != false,
+            prefersEnrichedBackdrop: (content.isEpisode && !content.backdropIsSeriesArtwork)
+                || content.backdropUrl?.isEmpty != false,
             canLoadEnrichment: content.contentId != nil,
             enrichmentState: enrichmentState,
             enrichedBackdrop: TVHeroArtwork(

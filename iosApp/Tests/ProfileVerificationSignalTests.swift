@@ -48,11 +48,12 @@ final class ProfileVerificationSignalTests: XCTestCase {
         let serverURL = "https://profile-verification.example"
         await tokens.switchActiveServer(serverId: serverId)
         await tokens.setServerUrl(serverURL)
+        // A profile proof belongs to a signed-in account, so sign in first.
+        let saved = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
+        XCTAssertTrue(saved)
         await tokens.setProfileId("profile")
         let savedProof = await tokens.setProfileToken("proof")
         XCTAssertTrue(savedProof)
-        let saved = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
-        XCTAssertTrue(saved)
 
         let stub = StubURLProtocol.Handler()
         let response = reply ?? .json(Self.verificationProblem, status: 403,

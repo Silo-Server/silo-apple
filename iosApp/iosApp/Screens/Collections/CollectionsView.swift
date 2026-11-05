@@ -680,24 +680,20 @@ private struct LibraryCollectionCard: View {
             .frame(width: cardWidth, height: cardHeight)
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius))
 
-            if uiCustomization.cardPresentation.caption.showsTitle {
-                Text(collection.name)
-                    .font(.siloCaption)
-                    .foregroundStyle(Color.siloOnSurface)
-                    #if os(iOS)
-                    // One line, like the 2:3 cards in the other iOS grids.
-                    .lineLimit(1)
-                    #else
-                    .lineLimit(2, reservesSpace: true)
-                    #endif
-            }
+            Text(collection.name)
+                .font(.siloCaption)
+                .foregroundStyle(Color.siloOnSurface)
+                #if os(iOS)
+                // One line, like the 2:3 cards in the other iOS grids.
+                .lineLimit(1)
+                #else
+                .lineLimit(2, reservesSpace: true)
+                #endif
 
-            if uiCustomization.cardPresentation.caption.showsMetadata {
-                Text(typeLabel)
-                    .font(.siloSmall)
-                    .foregroundStyle(Color.siloSecondaryText)
-                    .lineLimit(1)
-            }
+            Text(typeLabel)
+                .font(.siloSmall)
+                .foregroundStyle(Color.siloSecondaryText)
+                .lineLimit(1)
         }
         .frame(width: cardWidth, alignment: .leading)
     }

@@ -101,7 +101,12 @@ class ServerSetupViewModel {
         do {
             candidates = try buildCandidateURLs()
         } catch {
-            self.error = FormError(error.localizedDescription)
+            // A port typed into the address is the address's fault; only the
+            // Port field's own value is outlined there, and it is shown.
+            let portTypedInAddress = (try? parseInput())?.portOverride != nil
+            let portFieldAtFault = (error as? ServerSetupValidationError) == .invalidPort && !portTypedInAddress
+            if portFieldAtFault { showsAdvancedOptions = true }
+            self.error = FormError(error.localizedDescription, field: portFieldAtFault ? .port : nil)
             return
         }
 

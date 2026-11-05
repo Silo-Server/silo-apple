@@ -435,7 +435,9 @@ final class ApplePushDisplayClient {
         // The banner waits for the extension, so a missing route fails fast
         // and the retry backoff decides how long to keep trying.
         configuration.waitsForConnectivity = false
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration,
+                          delegate: InsecureRedirectRefusingDelegate.shared,
+                          delegateQueue: nil)
     }
 }
 

@@ -70,6 +70,11 @@ struct TVLibraryBrowseView: View {
                                 libraryId: library.id
                             )
                         )
+                    },
+                    onExploreAll: { section in
+                        router.navigate(to: .sectionCatalog(SectionCatalogTarget(
+                            section, scope: .library(library.id), mediaScope: mediaScope
+                        )))
                     }
                 )
                 .id(library.id)

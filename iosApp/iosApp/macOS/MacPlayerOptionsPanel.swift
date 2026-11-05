@@ -90,7 +90,8 @@ struct MacPlayerOptionsPanel: View {
                     trackButton(
                         title: track.primaryLabel,
                         detail: subtitleDetail(for: track),
-                        selected: viewModel.selectedSubtitleId == track.trackId
+                        selected: viewModel.selectedSubtitleId == track.trackId,
+                        disabled: track.hasUnsupportedFormat
                     ) {
                         viewModel.selectSubtitle(track)
                     }
@@ -208,6 +209,7 @@ struct MacPlayerOptionsPanel: View {
         detail: String?,
         trailing: String? = nil,
         selected: Bool,
+        disabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -247,6 +249,8 @@ struct MacPlayerOptionsPanel: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.4 : 1)
     }
 
     private func unavailable(_ title: String, systemImage: String) -> some View {
@@ -294,7 +298,9 @@ struct MacPlayerOptionsPanel: View {
         if !track.isExternal {
             parts.append("Embedded")
         }
-        if let status = viewModel.subtitleSyncStatus(for: track) {
+        if track.hasUnsupportedFormat {
+            parts.append(PlayerTrack.unsupportedFormatLabel)
+        } else if let status = viewModel.subtitleSyncStatus(for: track) {
             parts.append(status)
         }
         return parts.joined(separator: " · ")

@@ -211,27 +211,6 @@ final class PlanSummaryJournal {
         }
     }
 
-    #if os(iOS) || os(tvOS)
-    /// A background task that ends once, when the work does or when the
-    /// system's time for it runs out.
-    @MainActor
-    private final class BackgroundWork {
-        private var identifier: UIBackgroundTaskIdentifier = .invalid
-
-        init(name: String) {
-            identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
-                MainActor.assumeIsolated { self?.end() }
-            }
-        }
-
-        func end() {
-            guard identifier != .invalid else { return }
-            UIApplication.shared.endBackgroundTask(identifier)
-            identifier = .invalid
-        }
-    }
-    #endif
-
     private func store(_ entries: [Entry]) {
         if entries.isEmpty {
             defaults.removeObject(forKey: Self.storageKey)
@@ -240,3 +219,24 @@ final class PlanSummaryJournal {
         }
     }
 }
+
+#if os(iOS) || os(tvOS)
+/// A background task that ends once, when the work does or when the
+/// system's time for it runs out.
+@MainActor
+final class BackgroundWork {
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String) {
+        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}
+#endif

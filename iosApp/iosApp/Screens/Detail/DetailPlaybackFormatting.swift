@@ -260,8 +260,10 @@ enum DetailPlaybackFormatting {
         if SubtitleMode(rawValue: mode ?? "") == .off {
             return showForced ? nil : -1
         }
+        // The player's resolver never restores a track the server can't
+        // deliver, so the selector doesn't show one either.
         if let signature,
-           let tracks = version?.subtitleTracks,
+           let tracks = version?.subtitleTracks?.filter({ !$0.hasUnsupportedFormat }),
            let match = bestSignatureMatch(signature, in: tracks) {
             return match.selectionIndex
         }
@@ -316,6 +318,11 @@ enum DetailPlaybackFormatting {
         // Every row is a candidate, external ones included, exactly as the
         // player's `SubtitleAutoResolver.bestSignatureMatch` scores them.
         for track in tracks {
+            if let sigLang = sig.language, !sigLang.isEmpty,
+               let lang = track.language, !lang.isEmpty,
+               !SubtitleAutoResolver.languagesMatch(lang, sigLang) {
+                continue
+            }
             var score = 0
             var strongSignal = false
             if let sigLang = sig.language, !sigLang.isEmpty,
@@ -353,8 +360,10 @@ enum DetailPlaybackFormatting {
     /// Preview the track the player's `SubtitleAutoResolver` would auto-select
     /// for the "Auto" (no explicit override) case, applied to the detail
     /// payload's `SubtitleTrack` list. Returns nil when Auto resolves to no
-    /// subtitles (mode off with no forced track in the audio language, no
-    /// preference, or audio already in the preferred language). Runs the
+    /// subtitles (mode off with no forced track in the audio language, or
+    /// audio already in the preferred language). When the resolver leaves the
+    /// choice to the file, this names the default or forced track playback
+    /// starts on. Runs the
     /// resolver itself, with the inputs the detail page can supply, over the
     /// candidates the start request resolves (V3 combined order, externals
     /// first), so the preview names the track playback starts on. The returned ordinal stays the catalog offset so "Track N" labels
@@ -378,8 +387,21 @@ enum DetailPlaybackFormatting {
             currentAudioLanguage: context.audioLanguage,
             sourceContainer: version?.container
         ))
-        guard case .select(let pick) = resolution,
-              let position = candidates.firstIndex(of: pick) else {
+        let pick: PlayerTrack?
+        switch resolution {
+        case .select(let track):
+            pick = track
+        case .disable:
+            pick = nil
+        case .noChange:
+            // Playback then starts the file's default track, else a forced
+            // one (`PlaybackSessionBridge.initialProtocolV3SubtitleIntent`),
+            // skipping one the server can't deliver.
+            let deliverable = candidates.filter { !$0.hasUnsupportedFormat }
+            pick = deliverable.first(where: { $0.isDefault })
+                ?? deliverable.first(where: { $0.isForced })
+        }
+        guard let pick, let position = candidates.firstIndex(of: pick) else {
             return nil
         }
         return (ordered[position].element, ordered[position].offset)
@@ -410,9 +432,10 @@ enum DetailPlaybackFormatting {
         }
         return ordered.map { ordinal, track in
             // `selectionIndex` reads an embedded nil index as stream 0, so
-            // only external sidecars without a stream index are unselectable.
+            // only external sidecars without a stream index, and tracks the
+            // server can't deliver, are unselectable.
             let index = track.selectionIndex
-            let isSelectable = index != nil
+            let isSelectable = index != nil && !track.hasUnsupportedFormat
             return SubtitleOption(
                 selectionIndex: index,
                 title: subtitleTitle(track, ordinal: ordinal),
@@ -497,7 +520,9 @@ enum DetailPlaybackFormatting {
         if track.external == true {
             tokens.append("External")
         }
-        if !isSelectable {
+        if track.hasUnsupportedFormat {
+            tokens.append("Unsupported format")
+        } else if !isSelectable {
             tokens.append("Available in player")
         }
         return tokens.joined(separator: " · ")

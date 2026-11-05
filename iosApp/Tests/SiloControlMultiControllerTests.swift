@@ -89,6 +89,23 @@ final class SiloControlMultiControllerTests: XCTestCase {
         XCTAssertFalse(Policy.canLaunch(readyGeneration: nil, activeGeneration: nil))
     }
 
+    func testReplacementKeepsOnlyThePlayerThatOwnsTheActiveHandoff() {
+        let current = UUID()
+        func canReplace(_ player: UUID?, _ active: UUID?, disposed: Bool = false, party: Bool = false) -> Bool {
+            Policy.canReplaceInPlayer(
+                playerGeneration: player, activeGeneration: active,
+                playerIsDisposed: disposed, playerIsWatchParty: party
+            )
+        }
+        XCTAssertTrue(canReplace(current, current))
+        XCTAssertFalse(canReplace(current, UUID()), "another profile requires a fresh player")
+        XCTAssertFalse(canReplace(nil, current), "a local player does not own the phone's profile")
+        XCTAssertFalse(canReplace(current, nil))
+        XCTAssertFalse(canReplace(nil, nil))
+        XCTAssertFalse(canReplace(current, current, disposed: true))
+        XCTAssertFalse(canReplace(current, current, party: true))
+    }
+
     // MARK: - Identity reuse
 
     func testReuseOnTheConnectionThatCompletedTheHandoff() {

@@ -86,6 +86,10 @@ struct TVLoginView: View {
         .task {
             MarqueeScene.shared.focus = .account
             MarqueeScene.shared.personalTint = nil
+            // An account signing in again starts with its username.
+            if loginVM.username.isEmpty, let prefill = router.signInPrefill {
+                loginVM.username = prefill
+            }
             await server.load()
         }
         .task {
@@ -151,7 +155,7 @@ struct TVLoginView: View {
         MarqueeTVScreen {
             sessionExpiredChip
             serverCard
-            headline("Sign in to \(server.serverName)")
+            headline(signInHeadline)
                 .padding(.top, 44)
             if let provider = networkProvider {
                 networkSignInButton(provider)
@@ -175,6 +179,7 @@ struct TVLoginView: View {
         }
         .defaultFocus($focusedField, defaultCodeScreenFocus, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, defaultCodeScreenFocus)
+        .onExitCommand(perform: router.canReturnToPicker ? leave : nil)
     }
 
     /// Where focus enters the code screen: "Continue as …" when this TV can
@@ -187,38 +192,45 @@ struct TVLoginView: View {
     }
 
     private var codeLead: String {
-        let page = typedURL ?? "your server's /activate page"
-        return "Scan the code with your phone's camera, or go to \(page) and enter it. Approve on your phone and this Apple TV signs in by itself."
+        TVSignInPresentation.codeLead(for: qrVM.status, typedURL: typedURL)
     }
 
+    /// One row when it fits the 900-point copy column, else one button per
+    /// line: the labels never truncate.
     private var codeActions: some View {
-        HStack(spacing: 22) {
-            if let action = TVSignInPresentation.stateAction(for: qrVM.status) {
-                Button {
-                    Task { await qrVM.retry() }
-                } label: {
-                    Label(action == .tryAgain ? "Try again" : "Show a new code", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.marquee(.primary, fullWidth: false))
-                .focused($focusedField, equals: .stateAction)
-            }
-
-            if !isUpdateRequired && offersPassword {
-                Button {
-                    showPasswordForm = true
-                    focusedField = .username
-                } label: {
-                    Label("Sign in with a password", systemImage: "key")
-                }
-                .buttonStyle(.marquee(.glass, fullWidth: false))
-                .focused($focusedField, equals: .usePassword)
-            }
-
-            Button("Change server") { changeServer() }
-                .buttonStyle(.marquee(.plain, fullWidth: false))
-                .focused($focusedField, equals: .changeServer)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 22) { codeActionButtons }
+            VStack(alignment: .leading, spacing: 22) { codeActionButtons }
         }
         .focusSection()
+    }
+
+    @ViewBuilder
+    private var codeActionButtons: some View {
+        if let action = TVSignInPresentation.stateAction(for: qrVM.status) {
+            Button {
+                Task { await qrVM.retry() }
+            } label: {
+                Label(action == .tryAgain ? "Try again" : "Show a new code", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.marquee(.primary, fullWidth: false))
+            .focused($focusedField, equals: .stateAction)
+        }
+
+        if !isUpdateRequired && offersPassword {
+            Button {
+                showPasswordForm = true
+                focusedField = .username
+            } label: {
+                Label("Sign in with a password", systemImage: "key")
+            }
+            .buttonStyle(.marquee(.glass, fullWidth: false))
+            .focused($focusedField, equals: .usePassword)
+        }
+
+        Button(leaveTitle) { leave() }
+            .buttonStyle(.marquee(.plain, fullWidth: false))
+            .focused($focusedField, equals: .changeServer)
     }
 
     /// Whether "Sign in with a password" is offered: not on a server whose
@@ -329,7 +341,8 @@ struct TVLoginView: View {
                     text: $loginVM.username,
                     focus: $focusedField,
                     equals: .username,
-                    content: .username
+                    content: .username,
+                    isError: loginVM.error?.field == .username
                 )
                 // Advance to the password field once the username is entered.
                 .submitLabel(.next)
@@ -343,7 +356,7 @@ struct TVLoginView: View {
                         equals: .password,
                         content: .password,
                         isSecure: !showPassword,
-                        isError: loginVM.error != nil
+                        isError: loginVM.error != nil && loginVM.error?.field != .username
                     )
                     // Hand focus to the Sign In button once the password is entered.
                     .submitLabel(.done)
@@ -403,7 +416,7 @@ struct TVLoginView: View {
                     .disabled(isSubmittingPassword || isSubmittingNetwork)
                 }
 
-                Button("Change server") { changeServer() }
+                Button(leaveTitle) { leave() }
                     .buttonStyle(.marquee(.plain, fullWidth: false))
                     .focused($focusedField, equals: .changeServer)
                     // A password sign-in in flight would pull the app back.
@@ -481,13 +494,13 @@ struct TVLoginView: View {
         MarqueeTVScreen {
             sessionExpiredChip
             serverCard
-            headline("Sign in to \(server.serverName)")
+            headline(signInHeadline)
                 .padding(.top, 44)
             if let provider = networkProvider {
                 networkSignInButton(provider)
                     .padding(.top, 40)
             }
-            Button("Change server") { changeServer() }
+            Button(leaveTitle) { leave() }
                 .buttonStyle(.marquee(.plain, fullWidth: false))
                 .focused($focusedField, equals: .changeServer)
                 .padding(.top, 30)
@@ -505,6 +518,7 @@ struct TVLoginView: View {
         }
         .defaultFocus($focusedField, .networkSignIn, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, .networkSignIn)
+        .onExitCommand(perform: router.canReturnToPicker ? leave : nil)
     }
 
     // MARK: - Pieces
@@ -528,6 +542,25 @@ struct TVLoginView: View {
             badge: server.isSecure ? .init(text: "Secure", systemImage: "lock") : .init(text: "HTTP", systemImage: "lock.open", tone: .warning)
         )
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    /// "Add an account on Home" while adding one beside the accounts saved
+    /// there; otherwise "Sign in to Home".
+    private var signInHeadline: String {
+        if let request = router.accountSignIn, request.renewingAccountId == nil {
+            return "Add an account on \(server.serverName)"
+        }
+        return "Sign in to \(server.serverName)"
+    }
+
+    /// Back to Change Account when the sign-in started there, else to the
+    /// profiles while another saved account can be chosen, else to Change
+    /// Account while other accounts or servers are saved; otherwise to
+    /// server setup, as on a first sign-in.
+    private var leaveTitle: String {
+        if router.accountSignIn?.returnsToChangeAccount == true { return "Back to accounts" }
+        if router.canReturnToPicker { return "Back to profiles" }
+        return router.signInLeavesForChangeAccount ? "Change account" : "Change server"
     }
 
     private func headline(_ text: String) -> some View {
@@ -567,7 +600,7 @@ struct TVLoginView: View {
             qrVM.finishPasswordSignIn(succeeded: succeeded)
             if !succeeded {
                 passwordFailures += 1
-                focusedField = .password
+                focusedField = loginVM.error?.field == .username ? .username : .password
             }
         }
     }
@@ -582,9 +615,10 @@ struct TVLoginView: View {
         router.showProfileSelection()
     }
 
-    private func changeServer() {
+    private func leave() {
+        guard !isSubmittingPassword, !isSubmittingNetwork else { return }
         qrVM.stop()
-        router.resetToServerSetup()
+        router.leaveSignIn()
     }
 
     /// "Continue as …": the same single flight as a password sign-in, so a

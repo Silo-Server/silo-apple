@@ -167,7 +167,15 @@ struct TVCascadeSelector: View {
             libraryRowCenters = centers
         }
         .onPreferenceChange(TVCascadeFlyoutFirstSectionCenterKey.self) { center in
-            flyoutFirstSectionCenter = center
+            // `flyoutTopPadding` moves the flyout, which changes how its rows
+            // round to pixels, which changes this measurement by a fraction of
+            // a point. Taking every value made padding and measurement chase
+            // each other forever (a hard UI freeze when the overlay mounted on
+            // the way back from a detail page), so sub-point jitter is ignored.
+            flyoutFirstSectionCenter = TVCascadeFlyoutAlignment.settledCenter(
+                flyoutFirstSectionCenter,
+                measured: center
+            )
         }
         .fixedSize()
     }
@@ -594,6 +602,20 @@ private struct TVCascadeSectionRowLabel: View {
 }
 
 // MARK: - Flyout focus alignment (§5.3)
+
+/// Settles a measured flyout row center so pixel-rounding jitter caused by
+/// the alignment padding itself cannot feed back into that padding.
+enum TVCascadeFlyoutAlignment {
+    /// Changes smaller than this are rounding, not layout. Real layout
+    /// changes (font, padding, header) move rows by whole points.
+    static let jitterTolerance: CGFloat = 1
+
+    static func settledCenter(_ settled: CGFloat?, measured: CGFloat?) -> CGFloat? {
+        guard let measured else { return settled }
+        guard let settled else { return measured }
+        return abs(measured - settled) < jitterTolerance ? settled : measured
+    }
+}
 
 /// Each library row's vertical center, keyed by library id, in the level-1
 /// panel HStack's coordinate space. The flyout reads the anchored row's value

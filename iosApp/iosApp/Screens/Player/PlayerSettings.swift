@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Synchronization
 import SwiftUI
 
 /// How the iOS player should manage screen orientation while playback is
@@ -519,15 +520,16 @@ final class PlayerSettings {
 
     /// Device-local: whether TrueHD Atmos and DTS:X tracks keep their heights.
     /// Maps to `LoadOptions.objectAudioRendering` through
-    /// ``AetherObjectAudioPolicy``: Aether splits the track's own 7.1 mix into a
-    /// 7.1.4 bed by where the Atmos objects' energy lies (DTS:X: its four heights
-    /// one to one) and delivers Apple Positional Audio, which an Atmos receiver
-    /// or soundbar gets as Dolby Atmos and AirPods or the built-in speakers
-    /// render as Spatial Audio. The trade is a compressed stream in place of
+    /// ``AetherObjectAudioPolicy``: Aether decodes the Atmos objects exactly,
+    /// renders them into a 7.1.4 bed (DTS:X: its four heights one to one) and
+    /// delivers Apple Positional Audio, which an Atmos receiver or soundbar
+    /// gets as Dolby Atmos and AirPods or the built-in speakers render as
+    /// Spatial Audio. The trade is a compressed stream in place of
     /// lossless 7.1, so a setup without Atmos is better with it off.
     ///
     /// Never synced to the server: what this device plays into is a fact about
-    /// the room or the headphones, not the profile. Default on.
+    /// the room or the headphones, not the profile. Default on. Ignored and
+    /// hidden while ``AetherObjectAudioPolicy/isAvailable`` is false.
     private(set) var trueHDAtmosEnabled: Bool {
         didSet {
             guard !isLoadingCache else { return }
@@ -1343,7 +1345,8 @@ final class PlayerSettings {
             bufferAhead != .automatic,
             deinterlaceMode != .automatic,
             deinterlaceFieldRate != .fullMotion,
-            !trueHDAtmosEnabled,
+            // A build without the object-audio components hides this setting.
+            AetherObjectAudioPolicy.isAvailable && !trueHDAtmosEnabled,
         ].filter { $0 }.count
     }
 
@@ -1996,20 +1999,258 @@ final class PlayerSettings {
         return !flusher.hasPendingWrites
     }
 
-    /// The (server, profile, device) triple this device's settings belong to.
+    /// The (server, account, profile, device) this device's settings belong
+    /// to. Profile IDs repeat across accounts on one server, so the account
+    /// is part of it. Nil while no profile, or no account on the active
+    /// server, is selected. The account that owns the server's data from
+    /// before accounts takes over the old identifier's settings the first
+    /// time it resolves its own (`adoptLegacyScope`).
     ///
     /// Non-private because the flusher's write journal partitions the persisted
-    /// queue by it: a queued op restored after the user switched servers or
-    /// profiles would write the previous profile's choice onto the current one.
+    /// queue by it: a queued op restored after the user switched servers,
+    /// accounts, or profiles would write the previous profile's choice onto
+    /// the current one.
     static var currentScopeIdentifier: String? {
         let serverURL = ServerRegistry.shared.activeServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         let profileID = AuthService.shared.profileId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let deviceID = AppleDeviceIdentity.current.id.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !serverURL.isEmpty, !profileID.isEmpty, !deviceID.isEmpty else {
+        guard !serverURL.isEmpty, !profileID.isEmpty, !deviceID.isEmpty,
+              let serverId = ServerRegistry.activeServerIDSnapshot,
+              let localAccountId = AccountScope.localAccountId(onServer: serverId) else {
             return nil
         }
-        let raw = "\(serverURL)|\(profileID)|\(deviceID)"
+        let scopeID = makeScopeIdentifier(
+            serverURL: serverURL, localAccountId: localAccountId, profileID: profileID, deviceID: deviceID
+        )
+        adoptLegacyScopeOnce(
+            legacyScopeIdentifier(serverURL: serverURL, profileID: profileID, deviceID: deviceID),
+            into: scopeID,
+            serverId: serverId,
+            localAccountId: localAccountId
+        )
+        return scopeID
+    }
+
+    /// Base64 of `v2|<server URL>|<account>|<profile>|<device>`. No server
+    /// URL is the version marker, so no identifier from before accounts
+    /// (`legacyScopeIdentifier`) equals a new one.
+    static func makeScopeIdentifier(serverURL: String, localAccountId: String, profileID: String, deviceID: String) -> String {
+        let raw = "\(AccountScopedKeyAdoption.versionMarker)|\(serverURL)|\(localAccountId)|\(profileID)|\(deviceID)"
         return Data(raw.utf8).base64EncodedString()
+    }
+
+    /// Base64 of `<server URL>|<profile>|<device>`, the identifier from
+    /// before accounts. Only adoption and purge read it.
+    private static func legacyScopeIdentifier(serverURL: String, profileID: String, deviceID: String) -> String {
+        Data("\(serverURL)|\(profileID)|\(deviceID)".utf8).base64EncodedString()
+    }
+
+    /// `old>new` identifier pairs adopted in this process: the scan in
+    /// `adoptLegacyScope` runs once per pair.
+    private static let adoptedLegacyScopes = Mutex<Set<String>>([])
+
+    private static func adoptLegacyScopeOnce(_ legacyScopeID: String, into scopeID: String,
+                                             serverId: String, localAccountId: String) {
+        guard LegacyLocalDataOwner.localAccountId(forServer: serverId) == localAccountId else { return }
+        // Claimed under the lock, moved outside it: a defaults change can
+        // call back into `currentScopeIdentifier`.
+        let claimed = adoptedLegacyScopes.withLock { $0.insert("\(legacyScopeID)>\(scopeID)").inserted }
+        guard claimed else { return }
+        adoptLegacyScope(legacyScopeID, into: scopeID, serverId: serverId, localAccountId: localAccountId,
+                         defaults: .standard)
+    }
+
+    /// Moves what this device keeps under `legacyScopeID` (cached settings,
+    /// the one-time import markers, and the queue of writes not yet sent)
+    /// to `scopeID`, when `localAccountId` owns `serverId`'s data from
+    /// before accounts. Like every account-keyed store
+    /// (`AccountScopedKeyAdoption`), a value moves only into an empty key,
+    /// and the old key is deleted once the copy reads back. Queued writes are
+    /// rebound to `scopeID`: the flusher sends only entries of the scope
+    /// that is active.
+    static func adoptLegacyScope(
+        _ legacyScopeID: String,
+        into scopeID: String,
+        serverId: String,
+        localAccountId: String,
+        defaults: UserDefaults,
+        legacyOwner: AccountScopedKeyAdoption.LegacyOwner = LegacyLocalDataOwner.localAccountId(forServer:)
+    ) {
+        guard legacyScopeID != scopeID, legacyOwner(serverId) == localAccountId else { return }
+        let shared = SharedDefaults(suite: defaults, standard: defaults)
+        let legacyCachePrefix = cacheKey("", scopeID: legacyScopeID)
+        var moves = [
+            (migrationKey(for: legacyScopeID), migrationKey(for: scopeID)),
+            (retiredMigrationKey(for: legacyScopeID), retiredMigrationKey(for: scopeID)),
+            (leftoverSubtitleOffsetClearKey(for: legacyScopeID), leftoverSubtitleOffsetClearKey(for: scopeID)),
+        ]
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix(legacyCachePrefix) {
+            moves.append((key, cacheKey(String(key.dropFirst(legacyCachePrefix.count)), scopeID: scopeID)))
+        }
+        for (legacyKey, key) in moves {
+            AccountScopedKeyAdoption.adoptValue(from: legacyKey, to: key, serverId: serverId,
+                                                localAccountId: localAccountId, defaults: shared,
+                                                legacyOwner: legacyOwner)
+        }
+        adoptPendingWrites(from: legacyScopeID, to: scopeID, defaults: defaults)
+    }
+
+    /// The key `UserDefaultsSettingsWriteJournal` keeps a scope's queue
+    /// under.
+    private static func pendingWritesKey(for scopeID: String) -> String {
+        "player.pendingDeviceSettingWrites.\(scopeID)"
+    }
+
+    /// Prefixes of every key that ends in, or continues after, a scope
+    /// identifier. Purge and merge find a key's scope through them.
+    private static var scopedKeyPrefixes: [String] {
+        [
+            "player.serverDeviceSettings.",
+            migrationKey(for: ""),
+            retiredMigrationKey(for: ""),
+            leftoverSubtitleOffsetClearKey(for: ""),
+            pendingWritesKey(for: ""),
+        ]
+    }
+
+    /// The account and profile a scope identifier names. Nil for one from
+    /// before accounts.
+    static func scopeOwner(of scopeID: String) -> (localAccountId: String, profileId: String)? {
+        guard let parts = scopeIdentifierParts(scopeID), parts.count == 5,
+              parts[0] == AccountScopedKeyAdoption.versionMarker else { return nil }
+        return (parts[2], parts[3])
+    }
+
+    /// A scope identifier's `|`-separated fields, or nil when it isn't
+    /// base64 of UTF-8.
+    private static func scopeIdentifierParts(_ scopeID: String) -> [String]? {
+        guard let raw = Data(base64Encoded: scopeID).flatMap({ String(data: $0, encoding: .utf8) }) else { return nil }
+        return raw.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+    }
+
+    /// Unlike the other values, a queue already under `scopeID` doesn't stop
+    /// the move: the two merge, so the old scope's writes aren't left where
+    /// no flusher sends them. Where both have a key, the one already under
+    /// `scopeID` is the later edit and stays, keeping what the old one still
+    /// owes (`PendingSettingWrite.superseding`).
+    private static func adoptPendingWrites(from legacyScopeID: String, to scopeID: String, defaults: UserDefaults) {
+        let legacyKey = pendingWritesKey(for: legacyScopeID)
+        let key = pendingWritesKey(for: scopeID)
+        let decoder = SettingsWireCoding.makeDecoder()
+        guard let data = defaults.data(forKey: legacyKey),
+              let stored = try? decoder.decode([String: PendingSettingWrite].self, from: data)
+        else { return }
+        let existingData = defaults.data(forKey: key)
+        var existing: [String: PendingSettingWrite] = [:]
+        if defaults.object(forKey: key) != nil {
+            // An unreadable queue there stays as it is, and so does this one.
+            guard let existingData,
+                  let decoded = try? decoder.decode([String: PendingSettingWrite].self, from: existingData) else { return }
+            existing = decoded
+        }
+        let rebound = stored.mapValues { write in
+            guard write.scopeIdentifier == nil || write.scopeIdentifier == legacyScopeID else { return write }
+            return PendingSettingWrite(
+                operation: write.operation,
+                scope: write.scope,
+                clearsDeviceValue: write.clearsDeviceValue,
+                onlyWhereProfileScoped: write.onlyWhereProfileScoped,
+                fallbackDeviceValue: write.fallbackDeviceValue,
+                owedProfileValue: write.owedProfileValue,
+                storedProfileValue: write.storedProfileValue,
+                scopeIdentifier: scopeID,
+                profileId: write.profileId,
+                failedAttempts: write.failedAttempts,
+                isHeld: write.isHeld
+            )
+        }
+        let merged = rebound.merging(existing) { older, later in
+            older.scopeIdentifier == scopeID ? later.superseding(older) : later
+        }
+        guard let encoded = try? SettingsWireCoding.makeEncoder().encode(merged) else { return }
+        defaults.set(encoded, forKey: key)
+        guard defaults.data(forKey: key) == encoded else {
+            if let existingData {
+                defaults.set(existingData, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+            return
+        }
+        defaults.removeObject(forKey: legacyKey)
+    }
+
+    /// Deletes everything this device keeps for `localAccountId`'s settings
+    /// scopes on `serverId` (cached settings, import markers, queued
+    /// writes), and with `includingLegacy` the server's scopes from before
+    /// accounts. For sign-out (`AccountLocalData.purge`).
+    static func purgeLocalData(
+        localAccountId: String,
+        serverId: String,
+        includingLegacy: Bool,
+        defaults: UserDefaults = .standard
+    ) {
+        let prefixes = scopedKeyPrefixes
+        for key in defaults.dictionaryRepresentation().keys {
+            guard let prefix = prefixes.first(where: { key.hasPrefix($0) }) else { continue }
+            let scopeID = key.dropFirst(prefix.count).prefix { $0 != "." }
+            guard let parts = scopeIdentifierParts(String(scopeID)) else { continue }
+            let belongs: Bool
+            if parts.count == 5, parts[0] == AccountScopedKeyAdoption.versionMarker {
+                belongs = parts[2] == localAccountId && ServerRegistry.serverId(for: parts[1]) == serverId
+            } else if parts.count == 3 {
+                belongs = includingLegacy && ServerRegistry.serverId(for: parts[0]) == serverId
+            } else {
+                belongs = false
+            }
+            if belongs { defaults.removeObject(forKey: key) }
+        }
+    }
+
+    /// Moves the settings scopes of a server merged into another
+    /// (`ServerMerge`) to the survivor's URL: each listed account's scopes
+    /// keep their account (`accounts` maps it to itself), and with a
+    /// `legacyTarget` the scopes from before accounts become that account's.
+    /// A value moves only into an empty key; queued writes are rebound.
+    static func moveLocalData(
+        fromServerURL: String,
+        toServerURL: String,
+        accounts: Set<String>,
+        legacyTarget: String?,
+        defaults: UserDefaults = .standard
+    ) {
+        let from = ServerRegistry.normalize(url: fromServerURL)
+        let to = ServerRegistry.normalize(url: toServerURL)
+        guard from != to else { return }
+        let prefixes = scopedKeyPrefixes
+        let shared = SharedDefaults(suite: defaults, standard: defaults)
+        var movedScopes: [String: String] = [:]
+        for key in defaults.dictionaryRepresentation().keys {
+            guard let prefix = prefixes.first(where: { key.hasPrefix($0) }) else { continue }
+            let rest = key.dropFirst(prefix.count)
+            let scopeID = String(rest.prefix { $0 != "." })
+            guard let parts = scopeIdentifierParts(scopeID) else { continue }
+            let target: String
+            if parts.count == 5, parts[0] == AccountScopedKeyAdoption.versionMarker,
+               ServerRegistry.normalize(url: parts[1]) == from, accounts.contains(parts[2]) {
+                target = makeScopeIdentifier(serverURL: to, localAccountId: parts[2], profileID: parts[3], deviceID: parts[4])
+            } else if parts.count == 3, let legacyTarget, ServerRegistry.normalize(url: parts[0]) == from {
+                target = makeScopeIdentifier(serverURL: to, localAccountId: legacyTarget, profileID: parts[1], deviceID: parts[2])
+            } else {
+                continue
+            }
+            if prefix == pendingWritesKey(for: "") {
+                movedScopes[scopeID] = target
+            } else {
+                let newKey = prefix + target + rest.dropFirst(scopeID.count)
+                guard !shared.containsObject(forKey: newKey), let value = defaults.object(forKey: key) else { continue }
+                defaults.set(value, forKey: newKey)
+                if defaults.object(forKey: newKey) != nil { defaults.removeObject(forKey: key) }
+            }
+        }
+        for (scopeID, target) in movedScopes {
+            adoptPendingWrites(from: scopeID, to: target, defaults: defaults)
+        }
     }
 
     private static func migrationKey(for scopeID: String) -> String {
@@ -2022,15 +2263,15 @@ final class PlayerSettings {
 
     private func markMigrationComplete(for scopeID: String) {
         defaults.set(true, forKey: Self.migrationKey(for: scopeID))
-        defaults.removeObject(forKey: retiredMigrationKey(for: scopeID))
+        defaults.removeObject(forKey: Self.retiredMigrationKey(for: scopeID))
     }
 
-    private func retiredMigrationKey(for scopeID: String) -> String {
+    private static func retiredMigrationKey(for scopeID: String) -> String {
         "player.serverDeviceSettingsMigrationRetired.\(scopeID)"
     }
 
     private func retiredMigrationKeys(for scopeID: String) -> Set<SettingKey> {
-        let stored = defaults.stringArray(forKey: retiredMigrationKey(for: scopeID)) ?? []
+        let stored = defaults.stringArray(forKey: Self.retiredMigrationKey(for: scopeID)) ?? []
         return Set(stored.compactMap(SettingKey.init(rawValue:)))
     }
 
@@ -2040,7 +2281,7 @@ final class PlayerSettings {
     func retireMigration(of keys: [SettingKey], for scopeID: String) {
         guard !isMigrationComplete(for: scopeID) else { return }
         let retired = retiredMigrationKeys(for: scopeID).union(keys)
-        defaults.set(retired.map(\.rawValue).sorted(), forKey: retiredMigrationKey(for: scopeID))
+        defaults.set(retired.map(\.rawValue).sorted(), forKey: Self.retiredMigrationKey(for: scopeID))
     }
 
     /// Store the canonical reset state in one explicit cache partition.
