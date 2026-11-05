@@ -29,6 +29,14 @@ actionable item can be a real focus target.
   `defaultFocus` is evaluated when the view first appears and on automatic
   focus-state updates, not on user-driven moves, unless you pass
   `priority: .userInitiated`.
+- When the user leaves a row and comes back to it, focus returns to the
+  control they left. Store the last focused value and pass it to
+  `defaultFocus(_:_:priority: .userInitiated)` on the row's focus section,
+  as `TVEpisodeRail` and `TVDetailActionRow` do. Without it, entry picks the
+  control geometrically nearest to the one below. When the remembered control
+  is gone or disabled, name a fallback that can take focus:
+  `TVDetailActionRow` uses Play when Start Over has disappeared or a playback
+  selector is disabled while an episode's versions load.
 - Do not move focus programmatically in response to app state unless the
   focused item disappeared. Apple's Human Interface Guidelines say to avoid
   changing focus without the user's interaction; the one exception is moving
