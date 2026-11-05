@@ -7073,12 +7073,13 @@ class PlayerViewModel {
         // Nothing can play until the reconnect hands over a new transport.
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(isPlaying ? .pause : .play) == true { return }
-        // While a replan replaces the transport, the outgoing engine can sit
-        // paused under a recorded Play (a resuming scrub's reanchor). The
-        // press toggles that intent, not the paused engine, so a Pause there
+        // While a replan replaces the transport, the outgoing engine's state
+        // can disagree with the viewer's: it sits paused under a recorded Play
+        // (a resuming scrub's reanchor), and `isPlaying` lags a Pause until the
+        // engine reports it. The press toggles the viewer's intent, so a Pause
         // keeps the replacement paused instead of starting the old stream.
         let replacingTransport = seekReplanTask != nil || protocolV3ReplanTask != nil
-        let playing = isPlaying || (replacingTransport && aetherPlaybackController.shouldPlayWhenReady)
+        let playing = replacingTransport ? viewerWantsToPlay : isPlaying
         noteViewerTransportCommand(play: !playing)
         if holdPlayIntentForFreshLoad(!playing) {
             scheduleHideControls()
