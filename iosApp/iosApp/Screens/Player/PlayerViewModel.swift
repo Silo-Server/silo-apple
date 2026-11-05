@@ -7618,6 +7618,14 @@ class PlayerViewModel {
             return false
         }()
 
+        // A scrub that resumes playback skips Play on a replan so the old
+        // transport doesn't run on at its old position; the replacement load
+        // reads this intent instead.
+        let resumesOnReplan = requiresReplan && requestedPaused == false
+        if resumesOnReplan {
+            aetherPlaybackController.playWhenReplacementLoads()
+        }
+
         Self.logger.info(
             "[CMP-SEEK] commit requested source=\(source, privacy: .public) target=\(clampedTarget, privacy: .public) current=\(self.currentTime, privacy: .public) route=\(self.activeRouteLabel, privacy: .public) replan=\(requiresReplan, privacy: .public)"
         )
@@ -7685,6 +7693,11 @@ class PlayerViewModel {
                         operation: PlaybackProtocolV3.ReplanOperation.seekReanchor
                     ) else {
                         self.isLoading = false
+                        // The scrub asked to resume; if no Pause came since,
+                        // resume where playback was.
+                        if resumesOnReplan, self.aetherPlaybackController.shouldPlayWhenReady {
+                            self.aetherPlaybackController.play()
+                        }
                         self.showNotice(
                             title: "Couldn't seek",
                             message: "Playback couldn't move to that position. Try again.",
