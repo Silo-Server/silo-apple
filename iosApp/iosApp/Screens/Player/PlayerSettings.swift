@@ -528,7 +528,8 @@ final class PlayerSettings {
     /// lossless 7.1, so a setup without Atmos is better with it off.
     ///
     /// Never synced to the server: what this device plays into is a fact about
-    /// the room or the headphones, not the profile. Default on.
+    /// the room or the headphones, not the profile. Default on. Ignored and
+    /// hidden while ``AetherObjectAudioPolicy/isAvailable`` is false.
     private(set) var trueHDAtmosEnabled: Bool {
         didSet {
             guard !isLoadingCache else { return }
@@ -1344,7 +1345,8 @@ final class PlayerSettings {
             bufferAhead != .automatic,
             deinterlaceMode != .automatic,
             deinterlaceFieldRate != .fullMotion,
-            !trueHDAtmosEnabled,
+            // A build without the object-audio components hides this setting.
+            AetherObjectAudioPolicy.isAvailable && !trueHDAtmosEnabled,
         ].filter { $0 }.count
     }
 
