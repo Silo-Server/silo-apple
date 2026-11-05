@@ -1259,13 +1259,15 @@ final class DownloadManager {
         )
     }
 
-    func downloadSeason(seriesId: String, seasonNumber: Int, quality: String? = nil) async throws {
-        try await requestDownload(contentId: seriesId, quality: quality, series: true, seasonNumber: seasonNumber,
-            seriesId: seriesId)
+    /// `fileId` is the version each episode should match, on a server that
+    /// supports it.
+    func downloadSeason(seriesId: String, seasonNumber: Int, fileId: Int? = nil, quality: String? = nil) async throws {
+        try await requestDownload(contentId: seriesId, fileId: fileId, quality: quality, series: true,
+            seasonNumber: seasonNumber, seriesId: seriesId)
     }
 
-    func downloadSeries(seriesId: String, quality: String? = nil) async throws {
-        try await requestDownload(contentId: seriesId, quality: quality, series: true, seriesId: seriesId)
+    func downloadSeries(seriesId: String, fileId: Int? = nil, quality: String? = nil) async throws {
+        try await requestDownload(contentId: seriesId, fileId: fileId, quality: quality, series: true, seriesId: seriesId)
     }
 
     private func requestDownload(
@@ -1307,8 +1309,25 @@ final class DownloadManager {
         let isBatch = series || seasonNumber != nil
         do {
             if isBatch {
-                try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
-                    quality: batchQuality(requestedQuality), owner: owner)
+                let version = batchVersion(fileId)
+                var pagesStored = 0
+                do {
+                    try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
+                        quality: batchQuality(requestedQuality), versionFileId: version, owner: owner,
+                        pagesStored: &pagesStored)
+                } catch where version != nil && pagesStored == 0
+                    && APIv2Client.downloadRegistryFailure(error) == .rejected {
+                    // A cached `batchVersion` can outlive a server downgrade,
+                    // and such a server refuses the template on the first page,
+                    // before it registers anything. Read the capability again
+                    // and, when it no longer offers versions, send the batch
+                    // without one. A refusal after a stored page is shown as is.
+                    await refreshCapability()
+                    guard isCurrent(owner), batchVersion(fileId) == nil else { throw error }
+                    try await createSeriesPages(seriesId: contentId, seasonNumber: seasonNumber,
+                        quality: batchQuality(requestedQuality), versionFileId: nil, owner: owner,
+                        pagesStored: &pagesStored)
+                }
             } else {
                 let request = APIv2DownloadCreateRequest.single(
                     contentId: contentId,
@@ -1341,13 +1360,15 @@ final class DownloadManager {
     /// repeats the same client-chosen batch id, and each page's entries are
     /// stored as soon as it arrives.
     private func createSeriesPages(seriesId: String, seasonNumber: Int?, quality: String,
-                                   owner: ScopeOwner) async throws {
+                                   versionFileId: String?, owner: ScopeOwner,
+                                   pagesStored: inout Int) async throws {
         let request = APIv2DownloadCreateRequest.seriesPage(
             seriesId: seriesId,
             seasonNumber: seasonNumber,
             batchId: UUID().uuidString.lowercased(),
             caps: DownloadCaps.current(),
-            quality: quality
+            quality: quality,
+            mediaFileId: versionFileId
         )
         var cursor: String?
         var cursors: Set<String> = []
@@ -1357,6 +1378,7 @@ final class DownloadManager {
             guard isCurrent(owner) else { throw DownloadError.scopeChangedDuringRegistration }
             applyCreatedEntries(page.items, displayTitle: nil, displaySubtitle: nil, type: nil,
                 seriesId: seriesId, posterThumbhash: nil)
+            pagesStored += 1
             registered += page.items.count
             guard page.page.hasMore else {
                 if registered == 0 { throw DownloadError.emptyRegistrationResponse }
@@ -1467,6 +1489,12 @@ final class DownloadManager {
     /// A batch's quality. A server without `bulkQuality` takes original only.
     private func batchQuality(_ requestedQuality: String?) -> String {
         canChooseBatchQuality ? resolvedDownloadQuality(requestedQuality) : DownloadFormat.original.rawValue
+    }
+
+    /// A batch's version template. A server without `batchVersion` rejects
+    /// one, so the server picks each episode's version there.
+    private func batchVersion(_ fileId: Int?) -> String? {
+        capability?.batchVersion == true ? fileId.map(String.init) : nil
     }
 
     /// The quality a monitor write sends, or nil for a server without

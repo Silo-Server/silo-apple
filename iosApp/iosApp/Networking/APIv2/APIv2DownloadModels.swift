@@ -24,6 +24,9 @@ struct APIv2DownloadCapability: Decodable, Sendable {
     /// quality; they download originals only.
     let bulkQuality: Bool?
     let monitorQuality: Bool?
+    /// Season and series pages take `media_file_id` as a version template.
+    /// Absent on older servers, which reject a batch that names a file.
+    let batchVersion: Bool?
     /// An administrator revocation means "delete the local copy, then the
     /// entry". Absent on older servers, which keep revoked files playable.
     let revokedRemovesLocal: Bool?
@@ -103,13 +106,14 @@ enum APIv2DownloadCreateRequest: Encodable, Sendable {
     case single(contentId: String, episodeId: String?, mediaFileId: String?, quality: String,
                 caps: DownloadCaps, expected: Guard)
     /// One page of a series or season request. Every page repeats the same
-    /// client-chosen `batchId` and `quality`. A server without `bulkQuality`
-    /// accepts only `original`.
+    /// client-chosen `batchId`, `quality` and `mediaFileId`. A server without
+    /// `bulkQuality` accepts only `original`; one without `batchVersion`
+    /// rejects a `mediaFileId`, the version each episode should match.
     case seriesPage(seriesId: String, seasonNumber: Int?, batchId: String, caps: DownloadCaps,
-                    quality: String = DownloadFormat.original.rawValue)
+                    quality: String = DownloadFormat.original.rawValue, mediaFileId: String? = nil)
 
     var batchId: String? {
-        if case .seriesPage(_, _, let batchId, _, _) = self { return batchId }
+        if case .seriesPage(_, _, let batchId, _, _, _) = self { return batchId }
         return nil
     }
 
@@ -142,11 +146,12 @@ enum APIv2DownloadCreateRequest: Encodable, Sendable {
                 try container.encode(revision, forKey: .expectedRevision)
                 try container.encode(id, forKey: .expectedDownloadId)
             }
-        case let .seriesPage(seriesId, seasonNumber, batchId, caps, quality):
+        case let .seriesPage(seriesId, seasonNumber, batchId, caps, quality, mediaFileId):
             try container.encode(seriesId, forKey: .contentId)
             try container.encode(true, forKey: .series)
             try container.encodeIfPresent(seasonNumber, forKey: .seasonNumber)
             try container.encode(quality, forKey: .quality)
+            try container.encodeIfPresent(mediaFileId, forKey: .mediaFileId)
             try container.encode(caps, forKey: .caps)
             try container.encode(batchId, forKey: .batchId)
         }
@@ -160,8 +165,8 @@ enum APIv2DownloadCreateRequest: Encodable, Sendable {
             guard !contentId.isEmpty, mediaFileId?.isEmpty != true else { return false }
             if case let .entry(id, revision) = expected { return !id.isEmpty && revision >= 1 }
             return true
-        case let .seriesPage(seriesId, _, batchId, _, _):
-            return !seriesId.isEmpty && !batchId.isEmpty
+        case let .seriesPage(seriesId, _, batchId, _, _, mediaFileId):
+            return !seriesId.isEmpty && !batchId.isEmpty && mediaFileId?.isEmpty != true
         }
     }
 }

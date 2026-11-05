@@ -26,6 +26,9 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     let bulkQuality: Bool
     /// Monitors store a quality; without it they download originals.
     let monitorQuality: Bool
+    /// Season and series batches can follow a chosen version; without it the
+    /// server picks each episode's version.
+    let batchVersion: Bool
     /// A `revoked` entry was revoked by an administrator: delete the local
     /// copy, then the entry. Without it revoked files stay playable.
     let revokedRemovesLocal: Bool
@@ -54,6 +57,7 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         case monitoringModes
         case bulkQuality
         case monitorQuality
+        case batchVersion
         case revokedRemovesLocal
     }
 
@@ -73,6 +77,7 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         monitoringModes = wire.monitoringModes
         bulkQuality = wire.bulkQuality ?? false
         monitorQuality = wire.monitorQuality ?? false
+        batchVersion = wire.batchVersion ?? false
         revokedRemovesLocal = wire.revokedRemovesLocal ?? false
     }
 
@@ -93,6 +98,7 @@ struct DownloadCapability: Codable, Hashable, Sendable {
         monitoringModes = try container.decode([String].self, forKey: .monitoringModes)
         bulkQuality = try container.decodeIfPresent(Bool.self, forKey: .bulkQuality) ?? false
         monitorQuality = try container.decodeIfPresent(Bool.self, forKey: .monitorQuality) ?? false
+        batchVersion = try container.decodeIfPresent(Bool.self, forKey: .batchVersion) ?? false
         revokedRemovesLocal = try container.decodeIfPresent(Bool.self, forKey: .revokedRemovesLocal) ?? false
     }
 }

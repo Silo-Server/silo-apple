@@ -422,10 +422,13 @@ struct SeriesDownloadSheet: View {
                     )
                 case .season:
                     guard let season = oneTimeSeason else { break }
+                    // Every episode follows the version the series page shows.
                     try await manager.downloadSeason(
-                        seriesId: seriesId, seasonNumber: season.seasonNumber, quality: oneTimeEffectiveQuality)
+                        seriesId: seriesId, seasonNumber: season.seasonNumber, fileId: episodeFileId,
+                        quality: oneTimeEffectiveQuality)
                 case .all:
-                    try await manager.downloadSeries(seriesId: seriesId, quality: oneTimeEffectiveQuality)
+                    try await manager.downloadSeries(
+                        seriesId: seriesId, fileId: episodeFileId, quality: oneTimeEffectiveQuality)
                 }
                 dismiss()
             } catch DownloadError.registrationAlreadyInFlight {
