@@ -281,20 +281,22 @@ enum OfflineTrackPrefs {
     /// Like the server, every step skips tracks no decoder can play while
     /// the file has one that can.
     ///
-    /// Without a manifest list there is nothing to match against. A saved
-    /// language then answers nil, so the player opens the file by that
-    /// language (`effectiveAudioLanguage`) instead of the download-time index.
+    /// Without a manifest list it answers the download-time index; the
+    /// player matches the saved language against the probed file
+    /// (`AetherLoadSpec.offlineAudioStreamIndex`).
     static func audioOrdinal(tracks: [OfflineAudioTrack], pref: AudioPrefRequest?,
                              sourceOrdinals: Bool, fallback: Int?) -> Int? {
-        guard let pref else { return fallback }
-        guard !tracks.isEmpty else {
-            let language = pref.audioLanguage.trimmingCharacters(in: .whitespaces)
-            let names = !["", "und"].contains(language.lowercased())
-                && language.caseInsensitiveCompare(PlaybackPrefSentinel.originalLanguage) != .orderedSame
-            return names ? nil : fallback
-        }
+        guard let pref, !tracks.isEmpty else { return fallback }
         let decodable = tracks.indices.filter { isDecodable(tracks[$0]) }
         let candidates = decodable.isEmpty ? Array(tracks.indices) : decodable
+        // An untagged pick is found by the rest of its signature, among the
+        // untagged tracks, as streaming does; the saved index breaks a tie on
+        // an original download.
+        if let signature = pref.trackSignature, isUntagged(signature.language) {
+            let untagged = candidates.filter { isUntagged(tracks[$0].language) && sameDetails(tracks[$0], signature) }
+            if untagged.count == 1 { return untagged[0] }
+            if sourceOrdinals, untagged.contains(pref.audioTrackIndex) { return pref.audioTrackIndex }
+        }
         if let signature = pref.trackSignature,
            let match = soleBestLanguageTrack(candidates.filter { matches(tracks[$0], signature) },
                                              in: tracks, language: signature.language ?? "") {
@@ -320,14 +322,21 @@ enum OfflineTrackPrefs {
     /// The manifest folds a track's title and embedded title into `title`,
     /// so the signature's are folded the same way before comparing.
     private static func matches(_ track: OfflineAudioTrack, _ signature: AudioTrackSignature) -> Bool {
+        languageRank(track.language, signature.language ?? "") != nil && sameDetails(track, signature)
+    }
+
+    private static func sameDetails(_ track: OfflineAudioTrack, _ signature: AudioTrackSignature) -> Bool {
         func same(_ a: String?, _ b: String?) -> Bool {
             (a ?? "").trimmingCharacters(in: .whitespaces)
                 .caseInsensitiveCompare((b ?? "").trimmingCharacters(in: .whitespaces)) == .orderedSame
         }
         let title = [signature.title, signature.embeddedTitle].compactMap { $0 }.first { !$0.isEmpty }
-        return languageRank(track.language, signature.language ?? "") != nil
-            && same(track.title, title) && same(track.codec, signature.codec)
+        return same(track.title, title) && same(track.codec, signature.codec)
             && same(track.layout, signature.layout) && (track.channels ?? 0) == (signature.channels ?? 0)
+    }
+
+    private static func isUntagged(_ language: String?) -> Bool {
+        ["", "und"].contains((language ?? "").trimmingCharacters(in: .whitespaces).lowercased())
     }
 
     /// The best language match among signature matches, or nil when two

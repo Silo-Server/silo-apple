@@ -97,11 +97,23 @@ final class OfflineTrackPrefsTests: XCTestCase {
         XCTAssertEqual(pick(commentaryIndex, [], fallback: nil), nil, "no inventory, no guess")
     }
 
-    func testWithoutAManifestListTheSavedLanguageDecidesInsteadOfTheDownloadTimeTrack() {
-        XCTAssertNil(OfflineTrackPrefs.audioOrdinal(tracks: [], pref: audio("ja"), sourceOrdinals: true, fallback: 0),
-                     "an explicit index would stop the player from choosing the saved language")
-        XCTAssertEqual(OfflineTrackPrefs.audioOrdinal(tracks: [], pref: audio(""), sourceOrdinals: true, fallback: 0), 0)
-        XCTAssertEqual(OfflineTrackPrefs.audioOrdinal(tracks: [], pref: nil, sourceOrdinals: true, fallback: 0), 0)
+    func testWithoutAManifestListTheProbedTrackInTheSavedLanguageWins() {
+        let probed: [(id: Int, language: String?)] = [(id: 1, language: "eng"), (id: 2, language: "jpn")]
+        XCTAssertEqual(AetherLoadSpec.offlineAudioStreamIndex(manifestOrdinal: 0, probedTracks: probed, savedLanguage: "ja"), 2)
+        XCTAssertEqual(AetherLoadSpec.offlineAudioStreamIndex(manifestOrdinal: 0, probedTracks: probed, savedLanguage: "fr"), 1,
+                       "a language the file lacks keeps the track chosen at download time")
+        XCTAssertEqual(AetherLoadSpec.offlineAudioStreamIndex(manifestOrdinal: 1, probedTracks: probed, savedLanguage: nil), 2)
+    }
+
+    func testAnUntaggedPickIsFoundByItsSignatureLikeStreaming() {
+        let tracks = [track(nil, title: "Main"), track(nil, title: "Commentary", codec: "aac", layout: "stereo", channels: 2)]
+        let commentary = AudioPrefRequest(
+            audioTrackIndex: 1, audioLanguage: "",
+            trackSignature: AudioTrackSignature(title: "Commentary", codec: "aac", layout: "stereo", channels: 2)
+        )
+
+        XCTAssertEqual(OfflineTrackPrefs.audioOrdinal(tracks: tracks, pref: commentary, sourceOrdinals: false, fallback: 0), 1,
+                       "the saved Commentary track, not the download-time Main track")
     }
 
     func testFoldedTitlesThatMatchTwoTracksFallBackToTheSavedIndex() {

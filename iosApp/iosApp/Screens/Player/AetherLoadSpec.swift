@@ -214,6 +214,21 @@ struct AetherLoadSpec {
         return Int32(exactly: probedTrackIDs[manifestOrdinal])
     }
 
+    /// The stream a download opens on when its manifest lists no audio
+    /// tracks: the first probed track in the saved series language, else the
+    /// download-time ordinal's track.
+    static func offlineAudioStreamIndex(manifestOrdinal: Int, probedTracks: [(id: Int, language: String?)],
+                                        savedLanguage: String?) -> Int32? {
+        if let saved = savedLanguage?.trimmingCharacters(in: .whitespaces), !["", "und"].contains(saved.lowercased()),
+           let match = probedTracks.first(where: { track in
+               guard let language = track.language, !["", "und"].contains(language.lowercased()) else { return false }
+               return SubtitleAutoResolver.languagesMatch(language, saved)
+           }) {
+            return Int32(exactly: match.id)
+        }
+        return offlineAudioStreamIndex(manifestOrdinal: manifestOrdinal, probedTrackIDs: probedTracks.map(\.id))
+    }
+
     @MainActor
     init(
         offlineURL: URL,

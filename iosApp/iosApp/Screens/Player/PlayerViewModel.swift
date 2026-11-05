@@ -4704,9 +4704,15 @@ class PlayerViewModel {
                     try AetherEngine.probe(url: localURL)
                 }.value
                 try requireCurrentStreamLoad(expectedStreamLoadGeneration)
+                // With a manifest audio list the series preference already
+                // chose `ordinal`; without one, the probe is the only list to
+                // match the saved language against.
+                let savedLanguage = (prepared.selectedVersion.audioTracks ?? []).isEmpty
+                    ? prepared.selectedVersion.effectiveAudioLanguage : nil
                 audioStreamIndex = AetherLoadSpec.offlineAudioStreamIndex(
                     manifestOrdinal: ordinal,
-                    probedTrackIDs: probe.audioTracks.map(\.id)
+                    probedTracks: probe.audioTracks.map { (id: $0.id, language: $0.language) },
+                    savedLanguage: savedLanguage
                 )
                 if audioStreamIndex == nil {
                     // A download has no server to replan against, so a stale
