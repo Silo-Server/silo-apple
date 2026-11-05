@@ -97,6 +97,13 @@ final class OfflineTrackPrefsTests: XCTestCase {
         XCTAssertEqual(pick(commentaryIndex, [], fallback: nil), nil, "no inventory, no guess")
     }
 
+    func testWithoutAManifestListTheSavedLanguageDecidesInsteadOfTheDownloadTimeTrack() {
+        XCTAssertNil(OfflineTrackPrefs.audioOrdinal(tracks: [], pref: audio("ja"), sourceOrdinals: true, fallback: 0),
+                     "an explicit index would stop the player from choosing the saved language")
+        XCTAssertEqual(OfflineTrackPrefs.audioOrdinal(tracks: [], pref: audio(""), sourceOrdinals: true, fallback: 0), 0)
+        XCTAssertEqual(OfflineTrackPrefs.audioOrdinal(tracks: [], pref: nil, sourceOrdinals: true, fallback: 0), 0)
+    }
+
     func testFoldedTitlesThatMatchTwoTracksFallBackToTheSavedIndex() {
         // Source titles both `English`; embedded titles `Commentary` and `Main`.
         // The manifest folds each to `English`.

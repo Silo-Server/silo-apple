@@ -280,9 +280,19 @@ enum OfflineTrackPrefs {
     ///
     /// Like the server, every step skips tracks no decoder can play while
     /// the file has one that can.
+    ///
+    /// Without a manifest list there is nothing to match against. A saved
+    /// language then answers nil, so the player opens the file by that
+    /// language (`effectiveAudioLanguage`) instead of the download-time index.
     static func audioOrdinal(tracks: [OfflineAudioTrack], pref: AudioPrefRequest?,
                              sourceOrdinals: Bool, fallback: Int?) -> Int? {
-        guard let pref, !tracks.isEmpty else { return fallback }
+        guard let pref else { return fallback }
+        guard !tracks.isEmpty else {
+            let language = pref.audioLanguage.trimmingCharacters(in: .whitespaces)
+            let names = !["", "und"].contains(language.lowercased())
+                && language.caseInsensitiveCompare(PlaybackPrefSentinel.originalLanguage) != .orderedSame
+            return names ? nil : fallback
+        }
         let decodable = tracks.indices.filter { isDecodable(tracks[$0]) }
         let candidates = decodable.isEmpty ? Array(tracks.indices) : decodable
         if let signature = pref.trackSignature,
