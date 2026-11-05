@@ -154,6 +154,8 @@ final class DownloadManager {
     /// Offline progress entries a running flush has sent and is still
     /// waiting on. Dispatched entries outside this set are held.
     private var progressUploadsInFlight: Set<UUID> = []
+    /// The running pass over the queued track-preference picks, if any.
+    private var trackPrefFlush: Task<Void, Never>?
     /// The last complete watch-state read applied in the active scope, and
     /// the items it covered. See `refreshWatchState()`.
     private var lastWatchStateRead: (scope: ScopeKey, at: Date, itemIds: Set<String>)?
@@ -244,6 +246,7 @@ final class DownloadManager {
             }
         }
         observeConnectivity()
+        observeServerReachability()
     }
 
     /// Starts the queue again whenever the device regains a network path.
@@ -256,6 +259,17 @@ final class DownloadManager {
             Task { @MainActor in self.observeConnectivity() }
         }
         if online { processQueue() }
+    }
+
+    /// Sends queued track-preference picks whenever the server can be
+    /// reached again.
+    private func observeServerReachability() {
+        let reachable = withObservationTracking {
+            ConnectionMonitor.shared.isServerReachable
+        } onChange: {
+            Task { @MainActor in self.observeServerReachability() }
+        }
+        if reachable { flushTrackPrefs() }
     }
 
     // MARK: - Observable surface
@@ -3096,7 +3110,7 @@ final class DownloadManager {
 
     /// One activation of a download scope. The generation advances on every
     /// scope change, so a switch away and back gives a different key.
-    private struct ScopeKey: Equatable {
+    fileprivate struct ScopeKey: Equatable, Sendable {
         let serverId: String
         let localAccountId: String
         let profileId: String
@@ -3781,6 +3795,7 @@ final class DownloadManager {
             registered = await syncSubscriptions(owner: owner)
         }
         await flushProgressQueue()
+        await flushTrackPrefs()?.value
         let watchStateOwner = await refreshWatchState()
         await reconcileWithServer(triggerPipeline: true)
         notifyMonitoringBatch(registered: registered, priorRecordIds: priorRecordIds)
@@ -3961,6 +3976,209 @@ final class DownloadManager {
 
     private static func progressClaimKey(_ serverId: String, _ accountId: String, _ profileId: String) -> String {
         [serverId, accountId, profileId].joined(separator: "\n")
+    }
+
+    // MARK: - Track preferences
+
+    /// The local file and scope a downloaded playback opened. A pick made in
+    /// it is recorded only while both are still current, so it never lands
+    /// in another profile's store or describes a replaced file.
+    struct OfflinePlaybackOwner: Sendable {
+        fileprivate let scope: ScopeKey
+        fileprivate let opened: DownloadRecord
+    }
+
+    func offlinePlaybackOwner(for record: DownloadRecord) -> OfflinePlaybackOwner? {
+        guard let scope = loadedScope, let current = file.records[record.id],
+              Self.holdsSameLocalFile(current, as: record) else { return nil }
+        return OfflinePlaybackOwner(scope: scope, opened: record)
+    }
+
+    func isCurrentOfflinePlayback(_ owner: OfflinePlaybackOwner) -> Bool {
+        guard owner.scope == loadedScope, let current = file.records[owner.opened.id] else { return false }
+        return Self.holdsSameLocalFile(current, as: owner.opened)
+    }
+
+    /// Whether `current` still holds the playable file `opened` described.
+    /// A sync stamps a revision on a download saved before revisions existed
+    /// without replacing its file, so a nil revision matches any.
+    static func holdsSameLocalFile(_ current: DownloadRecord, as opened: DownloadRecord) -> Bool {
+        opened.isPlayableOffline && current.isPlayableOffline
+            && current.mediaFileId == opened.mediaFileId
+            && current.format == opened.format
+            && current.mediaFilename == opened.mediaFilename
+            && (opened.revision == nil || current.revision == opened.revision)
+    }
+
+    var trackPrefs: TrackPrefsStore { file.trackPrefs ?? TrackPrefsStore() }
+
+    /// Records a pick made during downloaded playback, then sends it when
+    /// the server can be reached. A nil body clears the series row.
+    func recordTrackPref<Body: TrackPrefBody>(_ body: Body?, key: String,
+                                              in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                              owner: OfflinePlaybackOwner) {
+        guard isCurrentOfflinePlayback(owner) else { return }
+        updateTrackPrefs { $0.record(body, key: key, in: ledger, at: Date()) }
+        flushTrackPrefs()
+    }
+
+    /// Records the outcome of a write sent at `sentAt` while streaming or
+    /// from a detail page, for a key this scope has downloads of. A write
+    /// sent for another server, account or profile than the active scope's is not
+    /// this store's. `serverDate` is the response's `Date` header.
+    func noteTrackPrefWrite<Body: TrackPrefBody>(_ body: Body?, key: String,
+                                                 in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                                 auth: CapturedOrdinaryRequestAuth, sentAt: Date,
+                                                 stored: Bool, serverDate: Date?) {
+        guard let scope = loadedScope, auth.account.serverId == scope.serverId,
+              auth.account.localAccountId == scope.localAccountId, auth.profileId == scope.profileId,
+              hasDownload(forPrefKey: key) else { return }
+        updateTrackPrefs {
+            $0.wrote(body, key: key, in: ledger, sentAt: sentAt, stored: stored, serverDate: serverDate)
+        }
+    }
+
+    /// Keeps the subtitle cascade a streamed item resolved to, for its
+    /// downloads to start with offline.
+    func noteEffectiveSubtitlePrefs(_ detail: WatchDetail) {
+        guard let key = TrackSelectionPersistence.prefKey(seriesId: detail.seriesId, contentId: detail.contentId),
+              hasDownload(forPrefKey: key) else { return }
+        let prefs = EffectiveSubtitlePrefs(detail)
+        guard trackPrefs.effectiveSubtitle[key] != prefs else { return }
+        updateTrackPrefs { $0.effectiveSubtitle[key] = prefs }
+    }
+
+    /// Reads both series rows for `key` into the store, giving up after
+    /// `limit` so a slow server doesn't hold up playback.
+    ///
+    /// The reads run unstructured: a token refresh they wait on ignores
+    /// cancellation, so a task group would outlast `limit`. A read that
+    /// lands later still updates the store, fenced by its scope owner and
+    /// dropped if the key changed while it ran.
+    func refreshTrackPrefs(key: String, owner: OfflinePlaybackOwner, limit: Duration) async {
+        guard ConnectionMonitor.shared.isServerReachable,
+              let scopeOwner = await captureScopeOwner(expecting: owner.scope) else { return }
+        let (done, finish) = AsyncStream<Void>.makeStream()
+        Task {
+            async let audio: Void = self.refreshTrackPref(key: key, in: \.audio, owner: scopeOwner)
+            async let subtitle: Void = self.refreshTrackPref(key: key, in: \.subtitle, owner: scopeOwner)
+            _ = await (audio, subtitle)
+            finish.finish()
+        }
+        let deadline = Task {
+            try? await Task.sleep(for: limit)
+            finish.finish()
+        }
+        for await _ in done {}
+        deadline.cancel()
+    }
+
+    private func refreshTrackPref<Body: TrackPrefBody>(key: String,
+                                                       in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                                       owner: ScopeOwner) async {
+        let revision = trackPrefs[keyPath: ledger].revision(key)
+        guard let read = try? await SiloAPI.shared.apiV2Client.readTrackPreference(Body.self, seriesId: key, auth: owner.auth),
+              isCurrent(owner), trackPrefs[keyPath: ledger].observed[key] != ObservedTrackPref(read.row) else { return }
+        updateTrackPrefs { $0.observe(read.row, key: key, in: ledger, since: revision) }
+    }
+
+    /// Sends the queued picks, one at a time and in the same per-key order
+    /// as every other preference write. A pass stops at the first pick that
+    /// could not be sent, or when the scope changes; picks recorded during
+    /// the pass are sent in it. A pass the scope changed under starts one
+    /// for the new scope as it ends.
+    @discardableResult
+    func flushTrackPrefs() -> Task<Void, Never>? {
+        guard trackPrefFlush == nil, trackPrefs.hasPending, ConnectionMonitor.shared.isServerReachable else {
+            return trackPrefFlush
+        }
+        let scope = loadedScope
+        let task = Task {
+            if let owner = await self.captureScopeOwner() {
+                var tried: Set<UUID> = []
+                while self.isCurrent(owner) {
+                    var sent = await self.sendNextTrackPref(in: \.audio, owner: owner, tried: &tried)
+                    if sent == nil { sent = await self.sendNextTrackPref(in: \.subtitle, owner: owner, tried: &tried) }
+                    guard sent == true else { break }
+                }
+            }
+            self.trackPrefFlush = nil
+            if self.loadedScope != scope { self.flushTrackPrefs() }
+        }
+        trackPrefFlush = task
+        return task
+    }
+
+    /// Sends the next pick of a kind not tried in this pass: nil when there
+    /// is none, false when it stayed queued.
+    private func sendNextTrackPref<Body: TrackPrefBody>(in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                                        owner: ScopeOwner, tried: inout Set<UUID>) async -> Bool? {
+        guard let next = trackPrefs[keyPath: ledger].pending.first(where: { !tried.contains($0.value.id) }) else {
+            return nil
+        }
+        let (key, pick) = (next.key, next.value)
+        tried.insert(pick.id)
+        await TrackSelectionPersistence.ordered(kind: Body.kind, prefKey: key, owner: owner.auth) {
+            await self.sendTrackPref(pick.id, key: key, in: ledger, owner: owner)
+        }.value
+        return trackPrefs[keyPath: ledger].pending[key]?.id != pick.id
+    }
+
+    /// Sends the queued pick `id`, read when its turn comes: a write that
+    /// stored while it waited may have rebased it.
+    private func sendTrackPref<Body: TrackPrefBody>(_ id: UUID, key: String,
+                                                    in ledger: WritableKeyPath<TrackPrefsStore, TrackPrefLedger<Body>>,
+                                                    owner: ScopeOwner) async -> Bool {
+        guard isCurrent(owner), let pick = trackPrefs[keyPath: ledger].pending[key], pick.id == id else { return false }
+        let client = SiloAPI.shared.apiV2Client
+        // Only a refused write ends a pick; a failed read says nothing about it.
+        var writing = false
+        do {
+            let revision = trackPrefs[keyPath: ledger].revision(key)
+            let read = try await client.readTrackPreference(Body.self, seriesId: key, auth: owner.auth)
+            let readAt = Date()
+            guard isCurrent(owner) else { return false }
+            guard TrackPrefLedger.shouldSend(pick, over: read.row, serverDate: read.serverDate, readAt: readAt) else {
+                updateTrackPrefs {
+                    $0.observe(read.row, key: key, in: ledger, since: revision)
+                    $0[keyPath: ledger].discard(pick, key: key)
+                }
+                return false
+            }
+            let serverDate: Date?
+            writing = true
+            if let body = pick.body {
+                serverDate = try await client.writeTrackPreference(kind: Body.kind, seriesId: key, body: body, auth: owner.auth)
+            } else {
+                serverDate = try await client.deleteTrackPreference(kind: Body.kind, seriesId: key, auth: owner.auth)
+            }
+            guard isCurrent(owner) else { return true }
+            updateTrackPrefs {
+                // The write omits members the server keeps (the forced
+                // override), so it lands on the row just read, not the
+                // cached one.
+                $0.observe(read.row, key: key, in: ledger, since: revision)
+                $0.acknowledge(pick, key: key, in: ledger, serverDate: serverDate)
+            }
+            return true
+        } catch {
+            Self.logger.warning("track pref send failed key=\(key, privacy: .public): \(String(describing: error), privacy: .public)")
+            if writing, OfflineTrackPrefs.isRefusedForGood(error), isCurrent(owner) {
+                updateTrackPrefs { $0[keyPath: ledger].discard(pick, key: key) }
+            }
+            return false
+        }
+    }
+
+    private func hasDownload(forPrefKey key: String) -> Bool {
+        loadedScope != nil && file.records.values.contains { $0.seriesId == key || $0.contentId == key }
+    }
+
+    private func updateTrackPrefs(_ change: (inout TrackPrefsStore) -> Void) {
+        var prefs = trackPrefs
+        change(&prefs)
+        file.trackPrefs = prefs
+        persist()
     }
 
     // MARK: - Watch state

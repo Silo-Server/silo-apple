@@ -1181,6 +1181,8 @@ class PlayerViewModel {
     private struct OfflinePlaybackContext {
         let mediaItemId: String
         let isServerPreparedFile: Bool
+        let owner: DownloadManager.OfflinePlaybackOwner
+        let trackPrefKey: String?
     }
     private var offlinePlaybackContext: OfflinePlaybackContext?
     /// Mirrors the server's default watched threshold (90%) so an offline
@@ -4565,9 +4567,7 @@ class PlayerViewModel {
         abandonedLoadPlayIntent = nil
         let preferredSubtitles = subtitleOrderingLanguage.map { [$0] } ?? []
         let preferredAudio = AetherInitialAudioPreference.languages(
-            selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
-            tracks: prepared.selectedVersion.audioTracks ?? [],
-            fallbackLanguage: settings.audioLanguage
+            for: prepared, profileLanguage: settings.audioLanguage
         )
         // The explicit Buffer Ahead choice wins; `automatic` has no count of
         // its own and keeps the historical mapping from the synced Seek Cache
@@ -4723,9 +4723,15 @@ class PlayerViewModel {
                     try AetherEngine.probe(url: localURL)
                 }.value
                 try requireCurrentStreamLoad(expectedStreamLoadGeneration)
+                // With a manifest audio list the series preference already
+                // chose `ordinal`; without one, the probe is the only list to
+                // match the saved language against.
+                let savedLanguage = (prepared.selectedVersion.audioTracks ?? []).isEmpty
+                    ? prepared.selectedVersion.effectiveAudioLanguage : nil
                 audioStreamIndex = AetherLoadSpec.offlineAudioStreamIndex(
                     manifestOrdinal: ordinal,
-                    probedTrackIDs: probe.audioTracks.map(\.id)
+                    probedTracks: probe.audioTracks.map { (id: $0.id, language: $0.language) },
+                    savedLanguage: savedLanguage
                 )
                 if audioStreamIndex == nil {
                     // A download has no server to replan against, so a stale
@@ -6182,7 +6188,9 @@ class PlayerViewModel {
                     )
                     preparedOfflineContext = OfflinePlaybackContext(
                         mediaItemId: offline.mediaItemId,
-                        isServerPreparedFile: offline.isServerPreparedFile
+                        isServerPreparedFile: offline.isServerPreparedFile,
+                        owner: offline.owner,
+                        trackPrefKey: offline.trackPrefKey
                     )
                     preparedOfflineArtworkURL = offline.posterFileURL
                     prepared = offline.prepared
@@ -6257,7 +6265,8 @@ class PlayerViewModel {
                 if !self.hasExplicitSubtitleChoice {
                     let followsSystem = self.subtitleSelectionFollowsSystem(
                         prepared.watchDetail,
-                        prepared.selectedVersion
+                        prepared.selectedVersion,
+                        offline: preparedOfflineContext != nil
                     )
                     self.prefsForCurrentItem = followsSystem
                         ? self.systemCaptionPrefsSnapshot()
@@ -6276,6 +6285,7 @@ class PlayerViewModel {
                 // already published its cached poster above and has no
                 // server to resolve a next episode against.
                 if request.offlineDownloadId == nil {
+                    DownloadManager.shared.noteEffectiveSubtitlePrefs(prepared.watchDetail)
                     self.pushNowPlayingArtwork(contentId: prepared.watchDetail.contentId)
                     // The panel still describes the successor being loaded.
                     // Fetch its following episode only once it has a picture,
@@ -8400,10 +8410,10 @@ class PlayerViewModel {
         scheduleHideControls()
     }
 
-    /// Server pref key for remembering explicit track picks: series id
-    /// for episodes (one choice covers the series), the item's own
-    /// content id for movies. Nil during offline playback — there is no
-    /// server to remember anything for.
+    /// Server pref key for remembering explicit track picks while
+    /// streaming: series id for episodes (one choice covers the series),
+    /// the item's own content id for movies. Downloaded playback records
+    /// its picks through `DownloadManager` instead.
     private var trackPrefPersistKey: String? {
         guard offlinePlaybackContext == nil, let detail = currentWatchDetail else { return nil }
         return TrackSelectionPersistence.prefKey(
@@ -8418,8 +8428,18 @@ class PlayerViewModel {
     /// switching never calls). Prefers the server's probed metadata for
     /// the signature so re-resolution gets an exact match.
     private func persistAudioSelection(_ track: PlayerTrack) {
-        guard let key = trackPrefPersistKey else { return }
         let ordinal = audioSelectionIndex(for: track)
+        if let offline = offlinePlaybackContext {
+            guard let key = offline.trackPrefKey,
+                  let request = OfflineTrackPrefs.audioRequest(
+                      track: track, ordinal: ordinal, shownTrackCount: audioTracks.count,
+                      manifestTracks: currentSelectedVersion?.audioTracks,
+                      sourceOrdinals: !offline.isServerPreparedFile
+                  ) else { return }
+            DownloadManager.shared.recordTrackPref(request, key: key, in: \.audio, owner: offline.owner)
+            return
+        }
+        guard let key = trackPrefPersistKey else { return }
         let request: AudioPrefRequest
         if let ordinal,
            let version = currentSelectedVersion,
@@ -8433,8 +8453,22 @@ class PlayerViewModel {
 
     /// Best-effort write of an explicit subtitle pick (or explicit
     /// "Off" when `track` is nil). Live AI translation tracks are
-    /// session-scoped and never persisted.
+    /// session-scoped and never persisted. The player has no forced-subtitle
+    /// control, so the series row keeps whatever override it has.
     private func persistSubtitleSelection(_ track: PlayerTrack?) {
+        if let offline = offlinePlaybackContext {
+            if let track, SubtitleTrackIdSpace.isAILive(track.trackId) { return }
+            guard let key = offline.trackPrefKey else { return }
+            let request: SubtitlePrefRequest
+            if let track {
+                guard let pick = OfflineTrackPrefs.subtitleRequest(track: track) else { return }
+                request = pick
+            } else {
+                request = TrackSelectionPersistence.subtitleOffRequest()
+            }
+            DownloadManager.shared.recordTrackPref(request, key: key, in: \.subtitle, owner: offline.owner)
+            return
+        }
         guard let write = subtitlePreferenceWrite(track) else { return }
         TrackSelectionPersistence.saveSubtitle(prefKey: write.prefKey, request: write.request)
     }
@@ -10438,7 +10472,7 @@ class PlayerViewModel {
     }
 
     private func applyAutoSubtitlePreferencesIfNeeded(forceReevaluation: Bool = false) {
-        guard !hasExplicitSubtitleChoice, let prefs = prefsForCurrentItem else { return }
+        guard !hasExplicitSubtitleChoice, let savedPrefs = prefsForCurrentItem else { return }
         if prefsResolvedForCurrentItem && !forceReevaluation {
             return
         }
@@ -10448,6 +10482,14 @@ class PlayerViewModel {
             prefsResolvedForCurrentItem = false
             return
         }
+        // A download's load let a saved pick that names a track outrank Use
+        // Device Settings before its subtitles were known. Now that they are,
+        // the device policy decides when the pick names none of them, as it
+        // does for a streamed title.
+        let prefs = offlinePlaybackContext != nil && settings.subtitleMatchesSystemAppearance
+            && savedPrefs.trackSignature != nil && !savedPickApplies(savedPrefs.trackSignature)
+            ? systemCaptionPrefsSnapshot()
+            : savedPrefs
 
         // When the playing track carries no usable language (none, blank or
         // "und"), resolve it as the start request did: by that track's
@@ -10503,10 +10545,7 @@ class PlayerViewModel {
         // The viewer's own pick, in this player or saved for the title,
         // outranks the system's ask.
         guard !hasExplicitSubtitleChoice,
-              !SubtitleAutoResolver.savedPickApplies(
-                  currentWatchDetail?.effectiveSubtitleTrackSignature,
-                  to: currentSelectedVersion?.subtitleTracks ?? []
-              ) else { return }
+              !savedPickApplies(currentWatchDetail?.effectiveSubtitleTrackSignature) else { return }
         guard let language = request.language, !language.isEmpty else { return }
         guard !subtitleTracks.isEmpty else { return }
 
@@ -10537,16 +10576,36 @@ class PlayerViewModel {
     /// Whether the device's caption policy chooses the subtitle for a load:
     /// Use Device Settings is on and the viewer has no saved pick for the
     /// title that `version` offers. A saved pick outranks the device policy;
-    /// caption appearance follows the setting alone.
-    private func subtitleSelectionFollowsSystem(_ watchDetail: WatchDetail?, _ version: FileVersion?) -> Bool {
-        settings.subtitleMatchesSystemAppearance && !SubtitleAutoResolver.savedPickApplies(
-            watchDetail?.effectiveSubtitleTrackSignature,
-            to: version?.subtitleTracks ?? []
-        )
+    /// caption appearance follows the setting alone. A downloaded file's
+    /// subtitles are known only once it is probed, so there a saved pick
+    /// that names a track decides, as it does for a streamed title.
+    private func subtitleSelectionFollowsSystem(_ watchDetail: WatchDetail?, _ version: FileVersion?,
+                                                offline: Bool) -> Bool {
+        let saved = watchDetail?.effectiveSubtitleTrackSignature
+        let savedPickDecides = offline
+            ? SubtitleAutoResolver.savedPickNamesATrack(saved)
+            : SubtitleAutoResolver.savedPickApplies(saved, to: version?.subtitleTracks ?? [])
+        return settings.subtitleMatchesSystemAppearance && !savedPickDecides
     }
 
+    /// Whether a saved pick names a track this file has: the server's
+    /// inventory for a streamed title, the probed tracks for a download,
+    /// which has no server inventory.
+    private func savedPickApplies(_ signature: SubtitleTrackSignature?) -> Bool {
+        offlinePlaybackContext != nil
+            ? SubtitleAutoResolver.savedPickApplies(signature, toPlayerTracks: subtitleTracks)
+            : SubtitleAutoResolver.savedPickApplies(signature, to: currentSelectedVersion?.subtitleTracks ?? [])
+    }
+
+    /// The policy for the item playing. A download's probed tracks decide
+    /// once they are known, so a later device caption change still reapplies
+    /// the device policy after a saved pick fell back to it.
     private var subtitleSelectionFollowsSystem: Bool {
-        subtitleSelectionFollowsSystem(currentWatchDetail, currentSelectedVersion)
+        if offlinePlaybackContext != nil, subtitleTracks.isEmpty {
+            return subtitleSelectionFollowsSystem(currentWatchDetail, currentSelectedVersion, offline: true)
+        }
+        return settings.subtitleMatchesSystemAppearance
+            && !savedPickApplies(currentWatchDetail?.effectiveSubtitleTrackSignature)
     }
 
     private func reapplySystemSubtitlePolicy() {

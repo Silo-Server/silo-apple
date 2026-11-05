@@ -294,6 +294,12 @@ actor DownloadStore {
         // Legacy cleanup either store still owes stays owed, or the next sync
         // would import old rows and monitors instead of retiring them.
         if incoming.legacyRowsPending == true { kept.legacyRowsPending = true }
+        // Picks made offline under the merged-away entry still owe a write.
+        if let prefs = incoming.trackPrefs {
+            var merged = kept.trackPrefs ?? TrackPrefsStore()
+            merged.merge(prefs)
+            kept.trackPrefs = merged
+        }
         if incoming.legacyMonitorsPending == true { kept.legacyMonitorsPending = true }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]

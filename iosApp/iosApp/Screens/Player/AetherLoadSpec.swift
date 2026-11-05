@@ -12,6 +12,19 @@ import Foundation
 /// tracks are resolved to an exact stream id before loading; the existing
 /// post-open reconciliation remains a fallback for partial metadata.
 enum AetherInitialAudioPreference {
+    /// The languages Aether starts from for `prepared`: the selected track's,
+    /// else the version's effective audio language (a download's stored
+    /// series preference), else the profile's.
+    static func languages(for prepared: PreparedPlayback, profileLanguage: String) -> [String] {
+        let effective = prepared.selectedVersion.effectiveAudioLanguage?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return languages(
+            selectedOrdinal: prepared.protocolV3?.plan.selectedTracks.audio?.index,
+            tracks: prepared.selectedVersion.audioTracks ?? [],
+            fallbackLanguage: effective.isEmpty ? profileLanguage : effective
+        )
+    }
+
     static func languages(
         selectedOrdinal: Int?,
         tracks: [AudioTrack],
@@ -199,6 +212,21 @@ struct AetherLoadSpec {
     static func offlineAudioStreamIndex(manifestOrdinal: Int, probedTrackIDs: [Int]) -> Int32? {
         guard probedTrackIDs.indices.contains(manifestOrdinal) else { return nil }
         return Int32(exactly: probedTrackIDs[manifestOrdinal])
+    }
+
+    /// The stream a download opens on when its manifest lists no audio
+    /// tracks: the first probed track in the saved series language, else the
+    /// download-time ordinal's track.
+    static func offlineAudioStreamIndex(manifestOrdinal: Int, probedTracks: [(id: Int, language: String?)],
+                                        savedLanguage: String?) -> Int32? {
+        if let saved = savedLanguage?.trimmingCharacters(in: .whitespaces), !["", "und"].contains(saved.lowercased()),
+           let match = probedTracks.first(where: { track in
+               guard let language = track.language, !["", "und"].contains(language.lowercased()) else { return false }
+               return SubtitleAutoResolver.languagesMatch(language, saved)
+           }) {
+            return Int32(exactly: match.id)
+        }
+        return offlineAudioStreamIndex(manifestOrdinal: manifestOrdinal, probedTrackIDs: probedTracks.map(\.id))
     }
 
     @MainActor
