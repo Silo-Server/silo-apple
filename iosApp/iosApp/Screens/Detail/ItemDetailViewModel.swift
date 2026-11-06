@@ -343,7 +343,8 @@ class ItemDetailViewModel {
                 item,
                 contentId: contentId,
                 generation: generation,
-                coalescesMetadataRequest: coalescesMetadataRequests
+                coalescesMetadataRequest: coalescesMetadataRequests,
+                ratingRevisionAtRead: ratingRevisionAtStart
             )
 
             // Superseded: a newer payload is already on screen. Deriving
@@ -467,9 +468,18 @@ class ItemDetailViewModel {
         _ item: ItemDetail,
         contentId: String,
         generation: Int,
-        coalescesMetadataRequest: Bool = true
+        coalescesMetadataRequest: Bool = true,
+        ratingRevisionAtRead: Int? = nil
     ) async -> ItemDetail? {
         guard !Task.isCancelled, generation == detailGeneration else { return nil }
+        // A rating change that overlapped the read means this payload's
+        // `user_rating` may predate it. The page shows the pending rating
+        // either way, but the payload must not go back into the cache that
+        // the write just invalidated. Checked at each cache write.
+        let mayCache: () -> Bool = { [weak self] in
+            guard let self, let ratingRevisionAtRead else { return true }
+            return !self.isSendingRating && self.ratingRevision == ratingRevisionAtRead
+        }
 
         #if os(tvOS)
         // Non-blocking: the movie cast portraits join the already-installed
@@ -489,7 +499,9 @@ class ItemDetailViewModel {
         }
 
         detail = initial
-        ResponseCache.shared.set(initial, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
+        if mayCache() {
+            ResponseCache.shared.set(initial, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
+        }
 
         guard supportsPlaybackMetadata(item) else { return initial }
 
@@ -504,7 +516,9 @@ class ItemDetailViewModel {
                   generation == self.detailGeneration else { return }
 
             self.detail = enriched
-            ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
+            if mayCache() {
+                ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
+            }
             self.playbackEnrichmentTask = nil
         }
 
