@@ -245,7 +245,7 @@ class ItemDetailViewModel {
             // including any failure notice, instead of touching this title.
             ratingOverride = nil
             confirmedRating = nil
-            // `isSavingRating` and `unsettledRatingContentId` stay set: a
+            // `isSavingRating` and `unsettledRatingWrites` stay set: a
             // write for the previous title may still be running or may still
             // land, and the viewer can come back to it.
             ratingTitleGeneration += 1
@@ -1599,11 +1599,12 @@ class ItemDetailViewModel {
     /// was read. A failed write falls back to this, not to the loaded
     /// detail, which predates any write that succeeded since.
     @ObservationIgnored private var confirmedRating: Int??
-    /// The title whose last write was sent with its answer and read-back
-    /// both lost, so it may still land. The next write for that title reads
-    /// the stored rating first and is refused if that still can't settle it.
-    /// Kept across title changes; it describes the server, not the page.
-    @ObservationIgnored private var unsettledRatingContentId: String?
+    /// Writes sent with their answer and read-back both lost, so they may
+    /// still land, keyed by owner and title (`unsettledRatingKey`). The next
+    /// write for that owner and title reads the stored rating first and is
+    /// refused if that still can't settle it. Kept across title changes; it
+    /// describes the server, not the page.
+    @ObservationIgnored private var unsettledRatingWrites: Set<String> = []
     /// Bumped when the page moves to another title; a write that finishes
     /// for the old title drops its result.
     @ObservationIgnored private var ratingTitleGeneration = 0
@@ -1638,10 +1639,11 @@ class ItemDetailViewModel {
         }
         let owner = await currentPersonalStateOwner()
 
-        if unsettledRatingContentId == contentId, send == nil {
+        let unsettledKey = Self.unsettledRatingKey(contentId: contentId, owner: owner)
+        if unsettledRatingWrites.contains(unsettledKey), send == nil {
             let stored = await readStoredRating(contentId: contentId, owner: owner)
-            if case .some = stored, unsettledRatingContentId == contentId {
-                unsettledRatingContentId = nil
+            if case .some = stored {
+                unsettledRatingWrites.remove(unsettledKey)
             }
             guard await isRatingScopeCurrent(generation, owner: owner) else { return }
             guard case .some(let settled) = stored else {
@@ -1668,9 +1670,9 @@ class ItemDetailViewModel {
         // Server-side state for this title, so recorded even if the page has
         // moved on.
         if result.isUncertain, result.storedRating == nil {
-            unsettledRatingContentId = contentId
-        } else if unsettledRatingContentId == contentId {
-            unsettledRatingContentId = nil
+            unsettledRatingWrites.insert(unsettledKey)
+        } else {
+            unsettledRatingWrites.remove(unsettledKey)
         }
         // Every page-state change below belongs to this title and owner.
         guard await isRatingScopeCurrent(generation, owner: owner) else { return }
@@ -1687,6 +1689,12 @@ class ItemDetailViewModel {
             ratingOverride = confirmedRating
             personalStateNotice = PersonalStateNotice(result.outcome)
         }
+    }
+
+    /// One unsettled write per owner (account and profile) and title, so a
+    /// write for another title or profile can't replace or clear it.
+    private static func unsettledRatingKey(contentId: String, owner: CapturedOrdinaryRequestAuth?) -> String {
+        [String(describing: owner?.account), owner?.profileId ?? "", contentId].joined(separator: "\u{1F}")
     }
 
     /// Whether a rating result may still change the page: the same title is
