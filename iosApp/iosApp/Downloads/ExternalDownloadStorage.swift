@@ -398,16 +398,29 @@ final class ExternalDownloadStorage {
     /// that a later removal deleted.
     /// Runs and queues under one lock, so a refresh publishing a folder sees
     /// either the work done or the work waiting.
+    /// A published folder where the action fails leaves use at once, here,
+    /// and on the main actor through a refresh, which retries the work.
     nonisolated private static func schedule(_ action: FolderWork.Action) {
-        folderState.withLock { state in
+        let failedInUse = folderState.withLock { state -> Bool in
             let behind = state.work.reduce(into: Set<String>()) { $0.formUnion($1.waitingLocationIds) }
-            let waiting = state.registeredIds.filter { id in
+            var failedInUse = false
+            let registered = state.registeredIds
+            let waiting = registered.filter { id in
                 guard let root = state.roots[id], !behind.contains(id) else { return true }
-                return !perform(action, at: root)
+                guard perform(action, at: root) else {
+                    state.roots[id] = nil
+                    failedInUse = true
+                    return true
+                }
+                return false
             }
-            guard !waiting.isEmpty else { return }
+            guard !waiting.isEmpty else { return false }
             state.work.append(FolderWork(action: action, waitingLocationIds: Set(waiting)))
             saveFolderWork(state.work)
+            return failedInUse
+        }
+        if failedInUse {
+            Task { @MainActor in await ExternalDownloadStorage.shared.refreshAvailability() }
         }
     }
 
