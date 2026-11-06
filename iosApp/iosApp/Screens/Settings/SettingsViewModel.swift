@@ -337,19 +337,29 @@ final class SettingsViewModel {
         // Independent reads, so none waits behind another.
         async let deviceSettings = PlayerSettings.shared.refreshFromServer()
         async let user: UserInfo? = try? SiloAPI.shared.currentUser()
-        async let profile: UserProfile? = Self.loadActiveProfile()
-        let (_, loadedUser, loadedProfile) = await (deviceSettings, user, profile)
+        async let profiles: [UserProfile]? = try? AuthService.shared.getProfiles()
+        let (_, loadedUser, loadedProfiles) = await (deviceSettings, user, profiles)
+
+        // A server or profile switch while the reads ran made them stale.
+        guard accountKey == Self.accountCacheKey else { return }
 
         // A failed read keeps the account the card is already showing.
         if let loadedUser {
             userInfo = loadedUser
-            if let accountKey, accountKey == Self.accountCacheKey {
+            if let accountKey {
                 Self.lastUserInfo = (accountKey, loadedUser)
             }
         }
 
+        // The fresh profile carries edits made since the session loaded it.
+        // The store keeps its avatar URL while the avatar is unchanged, so the
+        // card and the top bar do not download the same image again.
         let activeProfileId = AuthService.shared.profileId
-        activeProfile = loadedProfile?.id == activeProfileId ? loadedProfile : nil
+        let store = CurrentProfileStore.shared
+        if let fresh = loadedProfiles?.first(where: { $0.id == activeProfileId }) {
+            store.adopt(fresh)
+        }
+        activeProfile = store.profile?.id == activeProfileId ? store.profile : nil
 
         // Paint the profile's own values first, then let the batched effective
         // read replace them: it is the only source that accounts for a library,
@@ -382,22 +392,6 @@ final class SettingsViewModel {
         if userInfo == nil, let key = Self.accountCacheKey, let last = Self.lastUserInfo, last.key == key {
             userInfo = last.user
         }
-    }
-
-    /// The active profile from `CurrentProfileStore`, which loads the profile
-    /// list once per session for the top-bar avatar. Settings used to fetch
-    /// the list again on every visit, and each fetch re-signs an uploaded
-    /// avatar's URL, so the avatar image downloaded again under the new URL.
-    @MainActor
-    private static func loadActiveProfile() async -> UserProfile? {
-        guard let profileId = AuthService.shared.profileId else { return nil }
-        let store = CurrentProfileStore.shared
-        await store.refresh()
-        if store.profile?.id != profileId {
-            // The cached profile predates a switch that has not reset it yet.
-            await store.refresh(force: true)
-        }
-        return store.profile?.id == profileId ? store.profile : nil
     }
 
     /// Apply a shared preset to the cellular pair.
