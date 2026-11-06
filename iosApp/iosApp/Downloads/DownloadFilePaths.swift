@@ -291,6 +291,14 @@ enum DownloadFilePaths {
         relativePath(accountPath(serverId: serverId, localAccountId: localAccountId, root: relativeBase))
     }
 
+    /// `url`'s path inside `root`, or nil when it isn't inside it.
+    static func relativePath(of url: URL, under root: URL) -> String? {
+        let base = root.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        guard path.hasPrefix(base + "/") else { return nil }
+        return String(path.dropFirst(base.count + 1))
+    }
+
     private static let relativeBase = URL(fileURLWithPath: "/", isDirectory: true)
 
     private static func relativePath(_ url: URL) -> String {

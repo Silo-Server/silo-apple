@@ -315,13 +315,23 @@ final class ExternalDownloadStorage {
 
     // MARK: - Persistence
 
+    /// Publishes the reachable roots for work off the main actor. A folder
+    /// with work still waiting is left out, here and in
+    /// `availableLocationIds`, until a refresh runs that work. Checked under
+    /// the lock `schedule` queues under, so work queued during a refresh
+    /// can't slip past it.
     private func publishRoots() {
         let snapshot = roots
         let registered = Set(locations.keys)
-        Self.folderState.withLock {
-            $0.roots = snapshot
-            $0.registeredIds = registered
+        let blocked = Self.folderState.withLock { state -> Set<String> in
+            let waiting = state.work.reduce(into: Set<String>()) { $0.formUnion($1.waitingLocationIds) }
+            state.roots = snapshot.filter { !waiting.contains($0.key) }
+            state.registeredIds = registered
+            return waiting.intersection(snapshot.keys)
         }
+        guard !blocked.isEmpty else { return }
+        for id in blocked { roots[id] = nil }
+        availableLocationIds.subtract(blocked)
     }
 
     nonisolated private static func loadSavedLocations() -> [ExternalDownloadLocation] {
@@ -386,16 +396,16 @@ final class ExternalDownloadStorage {
     /// A folder that still has earlier work waiting gets this action queued
     /// behind it, never run ahead: a retried move must not bring back media
     /// that a later removal deleted.
+    /// Runs and queues under one lock, so a refresh publishing a folder sees
+    /// either the work done or the work waiting.
     nonisolated private static func schedule(_ action: FolderWork.Action) {
-        let (roots, registered, behind) = folderState.withLock { state in
-            (state.roots, state.registeredIds, state.work.reduce(into: Set<String>()) { $0.formUnion($1.waitingLocationIds) })
-        }
-        let waiting = registered.filter { id in
-            guard let root = roots[id], !behind.contains(id) else { return true }
-            return !perform(action, at: root)
-        }
-        guard !waiting.isEmpty else { return }
         folderState.withLock { state in
+            let behind = state.work.reduce(into: Set<String>()) { $0.formUnion($1.waitingLocationIds) }
+            let waiting = state.registeredIds.filter { id in
+                guard let root = state.roots[id], !behind.contains(id) else { return true }
+                return !perform(action, at: root)
+            }
+            guard !waiting.isEmpty else { return }
             state.work.append(FolderWork(action: action, waitingLocationIds: Set(waiting)))
             saveFolderWork(state.work)
         }

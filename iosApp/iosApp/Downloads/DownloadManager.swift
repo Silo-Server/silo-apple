@@ -1066,13 +1066,18 @@ final class DownloadManager {
             return
         }
         let root = DownloadFilePaths.rootDirectory()
+        let targets = DownloadStorageReclaim.removalTargets(folderName: group.folderName, root: root,
+            activeServerFolder: active.server, activeAccountFolder: active.account,
+            activeProfileFolder: active.profile)
+        // Their media on external folders goes too, now or once each is back:
+        // with the stores gone, no record would reach it.
+        for target in targets {
+            if let path = DownloadFilePaths.relativePath(of: target, under: root) {
+                ExternalDownloadStorage.removeFromExternalFolders(path)
+            }
+        }
         // Set aside synchronously, against the scope active right now.
-        DownloadStorageReclaim.setAside(
-            DownloadStorageReclaim.removalTargets(folderName: group.folderName, root: root,
-                activeServerFolder: active.server, activeAccountFolder: active.account,
-                activeProfileFolder: active.profile),
-            root: root
-        )
+        DownloadStorageReclaim.setAside(targets, root: root)
         let freed = await deleteSetAsideStorage(root: root)
         Self.logger.notice("Removed \(freed, privacy: .public) bytes of download data outside the active scope")
         await refreshOtherDownloadStorage()
@@ -4760,7 +4765,14 @@ final class DownloadManager {
                 Self.logger.error("Kept a moved download's source: its new location could not be saved")
                 return true
             }
-            await Task.detached(priority: .utility) { DownloadMediaTransfer.removeMedia(at: source) }.value
+            // A newer revision may have saved its own file at the source path
+            // during the save; that file isn't this move's to delete. Checked
+            // and deleted in one main-actor step, so no download can finish
+            // in between.
+            guard loadedScope == scope, let saved = file.records[record.id], saved.mediaFilename == filename,
+                  saved.revision == record.revision, saved.resolvedMediaVolume == job.target
+            else { return true }
+            DownloadMediaTransfer.removeMedia(at: source)
             refreshStorageUsage()
             return true
         case .failure(let error):
