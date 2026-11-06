@@ -589,13 +589,15 @@ class ItemDetailViewModel {
         item: ItemDetail,
         contentId: String,
         preserveSeasonSelection: Bool,
-        watchedGeneration: Int
+        watchedGeneration: Int,
+        ratingRevisionAtRead: Int? = nil
     ) async {
         let generation = beginDetailWrite()
         guard let enriched = await adoptDetail(
             item,
             contentId: contentId,
-            generation: generation
+            generation: generation,
+            ratingRevisionAtRead: ratingRevisionAtRead
         ) else { return }
         if userStateMutationGeneration == watchedGeneration {
             isWatched = enriched.userData?.played ?? false
@@ -839,6 +841,9 @@ class ItemDetailViewModel {
         // Captured once per run: a resumed poll reuses this closure, and the
         // payload it finds may have been read before a later watched change.
         let watchedGeneration = userStateMutationGeneration
+        // Conservative: a rating write any time during this run keeps the
+        // found payload out of the cache, since it may predate the write.
+        let ratingRevisionAtStart = ratingRevision
         trailerFetch.start(
             baseline: detail,
             remoteVideosDisplayable: remoteVideosDisplayable
@@ -864,7 +869,8 @@ class ItemDetailViewModel {
                 item: found,
                 contentId: contentId,
                 preserveSeasonSelection: true,
-                watchedGeneration: watchedGeneration
+                watchedGeneration: watchedGeneration,
+                ratingRevisionAtRead: ratingRevisionAtStart
             )
         }
     }
@@ -1602,9 +1608,10 @@ class ItemDetailViewModel {
     /// Writes sent with their answer and read-back both lost, so they may
     /// still land, keyed by owner and title (`unsettledRatingKey`). The next
     /// write for that owner and title reads the stored rating first and is
-    /// refused if that still can't settle it. Kept across title changes; it
-    /// describes the server, not the page.
-    @ObservationIgnored private var unsettledRatingWrites: Set<String> = []
+    /// refused if that still can't settle it. App-wide rather than per model:
+    /// it describes the server, so it must survive title changes and a page
+    /// (and its model) being replaced or evicted.
+    private static var unsettledRatingWrites: Set<String> = []
     /// Bumped when the page moves to another title; a write that finishes
     /// for the old title drops its result.
     @ObservationIgnored private var ratingTitleGeneration = 0
@@ -1640,10 +1647,10 @@ class ItemDetailViewModel {
         let owner = await currentPersonalStateOwner()
 
         let unsettledKey = Self.unsettledRatingKey(contentId: contentId, owner: owner)
-        if unsettledRatingWrites.contains(unsettledKey), send == nil {
+        if Self.unsettledRatingWrites.contains(unsettledKey), send == nil {
             let stored = await readStoredRating(contentId: contentId, owner: owner)
             if case .some = stored {
-                unsettledRatingWrites.remove(unsettledKey)
+                Self.unsettledRatingWrites.remove(unsettledKey)
             }
             guard await isRatingScopeCurrent(generation, owner: owner) else { return }
             guard case .some(let settled) = stored else {
@@ -1673,9 +1680,9 @@ class ItemDetailViewModel {
         // Server-side state for this title, so recorded even if the page has
         // moved on.
         if result.isUncertain, result.storedRating == nil {
-            unsettledRatingWrites.insert(unsettledKey)
+            Self.unsettledRatingWrites.insert(unsettledKey)
         } else {
-            unsettledRatingWrites.remove(unsettledKey)
+            Self.unsettledRatingWrites.remove(unsettledKey)
         }
         // Every page-state change below belongs to this title and owner.
         guard await isRatingScopeCurrent(generation, owner: owner) else { return }
