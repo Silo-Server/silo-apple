@@ -1,9 +1,19 @@
-// macOS app signing defaults. CI and paid-team builds can use these as-is.
-// Local contributors can override the bundle identifier by dropping a
-// `Local.xcconfig` into this directory.
+// macOS app signing defaults. CI and the paid team use these as-is.
+// Local contributors without access to the paid team can override any of
+// these by dropping a `Local.xcconfig` into this directory — see
+// `Local.xcconfig.sample` for the template.
+//
+// The Mac app shares the iOS and tvOS bundle ID so all three ship as one
+// App Store app (Universal Purchase) with one TestFlight build sequence.
+//
+// The Mac App Store requires the App Sandbox. SiloMac.entitlements also
+// allows incoming connections because AetherEngine serves HLS to AVPlayer
+// from a loopback listener.
 
-SILO_MAC_BUNDLE_ID = org.siloserver.silo.mac
+SILO_MAC_BUNDLE_ID = org.siloserver.silo
+SILO_MAC_ENTITLEMENTS = SiloMac.entitlements
 
 PRODUCT_BUNDLE_IDENTIFIER = $(SILO_MAC_BUNDLE_ID)
+CODE_SIGN_ENTITLEMENTS = $(SILO_MAC_ENTITLEMENTS)
 
 #include? "Local.xcconfig"

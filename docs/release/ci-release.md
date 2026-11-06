@@ -6,12 +6,14 @@ build number.
 ## TestFlight build
 
 Actions → **TestFlight Release** → Run workflow, leaving `bump` on `build` and
-`platform` on `both` (or pick `ios` / `tvos`). The very first run has no
+`platform` on `all` (or pick `ios` / `tvos` / `macos`). The very first run has no
 earlier tag to continue from: enter `1.0.0` as `version`.
 
 The run tags the commit `v1.0.0-beta.66`, publishes a GitHub prerelease with the
 pull requests merged since the previous build (grouped by label), and uploads
-iOS and tvOS `1.0.0 (66)` to TestFlight's external groups.
+iOS, tvOS, and macOS `1.0.0 (66)` to TestFlight's external groups. The Mac app
+shares the `org.siloserver.silo` App Store app with iPhone and Apple TV
+(Universal Purchase), so the same groups get all three.
 
 TestFlight's "What to Test" is Claude's short summary of those pull request
 titles: what's new, and where to test. The run sends Claude only the section
@@ -35,7 +37,7 @@ the same build number. To abandon the build instead, delete its GitHub release
 and tag. The next run refuses to start while the newest prerelease lacks that
 line, so its notes don't skip changes no tester got. Promote only accepts a
 build distributed on both iOS and tvOS, because one App Store release covers
-both.
+both. macOS is TestFlight-only for now: Promote neither requires nor submits it.
 
 ## Store release
 
@@ -66,8 +68,8 @@ started, `bump: build` continues that one. Promote the new build.
 - `1.0.0` is the marketing version. It stays the same for every TestFlight build
   until it is promoted to the App Store. The first build of each version goes
   through Beta App Review; later builds of the same version usually don't.
-- `66` is the build number, shared by iOS and tvOS: one more than the latest
-  TestFlight build on either platform (and any build already tagged).
+- `66` is the build number, shared by iOS, tvOS, and macOS: one more than the
+  latest TestFlight build on any of them (and any build already tagged).
 - Tags: `vX.Y.Z-beta.B` for TestFlight builds (GitHub prereleases) and `vX.Y.Z`
   for App Store releases. Earlier manual runs published `source-<commit>`
   releases instead; those stay, because shipped builds link their archives.
@@ -90,7 +92,8 @@ CI runs `match` read-only and cannot create certs/profiles. When a cert expires,
 a device is added, or entitlements / App IDs change (e.g. the keychain-group or
 bundle-namespace change), regenerate locally and push to the certs repo:
 
-    bundle exec fastlane match appstore --platform ios  --readonly false
-    bundle exec fastlane match appstore --platform tvos --readonly false
+    bundle exec fastlane ios sync_signing
 
-Then re-run the release. If CI fails with a missing-profile error, this is the fix.
+That covers iOS, tvOS, and macOS. macOS also needs a Mac Installer Distribution
+certificate to sign the `.pkg` uploaded to TestFlight; `sync_signing` creates it
+alongside the Mac App Store profile. Then re-run the release. If CI fails with a missing-profile error, this is the fix.
