@@ -240,10 +240,14 @@ class ItemDetailViewModel {
             seasonsLoadGeneration += 1
             episodeLoadGeneration += 1
             self.detail = nil
-            // A pending rating belongs to the previous title. Bumping the
-            // generation also stops its write's failure from touching this one.
+            // Rating state belongs to the previous title. A write still
+            // running for it sees the new generation and drops its result,
+            // including any failure notice, instead of touching this title.
             ratingOverride = nil
-            ratingMutationGeneration += 1
+            confirmedRating = nil
+            pendingRatingTarget = nil
+            isSendingRating = false
+            ratingTitleGeneration += 1
             seriesContentId = nil
             seasons = []
             selectedSeason = nil
@@ -304,13 +308,20 @@ class ItemDetailViewModel {
         do {
             let userStateGeneration = userStateMutationGeneration
             let ratingRevisionAtStart = ratingRevision
+            let ratingFreshness = ratingFreshnessToken
             personalStateOwner = await TokenStore.shared.captureOrdinaryRequestAuth()
 
             let item: ItemDetail
             if let fetchDetail {
                 item = try await fetchDetail(contentId)
             } else if coalescesMetadataRequests {
-                item = try await MetadataRequestPool.shared.itemDetail(contentId: contentId, libraryId: libraryId)
+                // After a rating save, the token keeps this read from joining
+                // a shared request dispatched before the save landed.
+                item = try await MetadataRequestPool.shared.itemDetail(
+                    contentId: contentId,
+                    libraryId: libraryId,
+                    freshnessDiscriminator: ratingFreshness
+                )
             } else {
                 item = try await SiloAPI.shared.itemDetail(contentId: contentId, libraryId: libraryId)
             }
@@ -345,13 +356,14 @@ class ItemDetailViewModel {
             if userStateMutationGeneration == userStateGeneration {
                 isWatched = enriched.userData?.played ?? false
             }
-            // The optimistic rating only bridges its own write. Release it
-            // once a read that overlapped no rating write lands, so a rating
+            // The optimistic rating only bridges its own writes. Release it
+            // once a read that overlapped no rating change lands, so a rating
             // changed on another client shows up (tvOS keeps this model across
-            // visits). A write still open, or one that started or finished
-            // during this read, keeps it.
-            if pendingRatingWrites == 0, ratingRevision == ratingRevisionAtStart {
+            // visits). A write still running, or a choice or completion during
+            // this read, keeps it.
+            if !isSendingRating, ratingRevision == ratingRevisionAtStart {
                 ratingOverride = nil
+                confirmedRating = nil
             }
 
             refreshBoxSet(for: enriched)
@@ -1560,51 +1572,66 @@ class ItemDetailViewModel {
         return detail?.userRating
     }
 
-    /// Outer optional: whether a write is being shown. Inner: the rating it
-    /// shows, where nil means "cleared".
+    /// Outer optional: whether a value is being shown over the detail.
+    /// Inner: the rating it shows, where nil means "cleared".
     private var ratingOverride: Int??
-    /// Owns the override. Separate from `userStateMutationGeneration`, which
-    /// the favorite, watchlist and watched toggles bump too: sharing it would
-    /// let an unrelated toggle make a failed rating write look superseded.
-    @ObservationIgnored private var ratingMutationGeneration = 0
-    /// Advances when a rating write starts and again when it finishes, so a
-    /// detail read can tell whether any write overlapped it.
+    /// The newest choice not yet sent. Writes go one at a time, newest
+    /// choice next, so an older choice can never land after a newer one.
+    @ObservationIgnored private var pendingRatingTarget: Int??
+    @ObservationIgnored private var isSendingRating = false
+    /// The last rating the server confirmed for this title since the detail
+    /// was read. A failed write falls back to this, not to the loaded
+    /// detail, which predates any write that succeeded since.
+    @ObservationIgnored private var confirmedRating: Int??
+    /// Bumped when the page moves to another title; a write that finishes
+    /// for the old title drops its result.
+    @ObservationIgnored private var ratingTitleGeneration = 0
+    /// Advances on every choice and every completed write, so a detail read
+    /// can tell whether any rating change overlapped it.
     @ObservationIgnored private var ratingRevision = 0
-    /// Rating writes still waiting for an answer. Covers a write that started
-    /// before a read captured `ratingRevision` and is still open.
-    @ObservationIgnored private var pendingRatingWrites = 0
+    /// Changes after each confirmed write and keys the next detail read, so
+    /// that read can't join a shared request dispatched before the write.
+    @ObservationIgnored private var ratingFreshnessToken: String?
 
     /// Saves the viewer's rating, or clears it when `stars` is nil. Sets
-    /// exactly what it is given rather than toggling.
+    /// exactly what it is given rather than toggling. Choices made while a
+    /// write is running are coalesced: only the newest is sent next.
     func setRating(_ stars: Int?) async {
         guard let contentId = detail?.contentId, stars.map(UserStarRating.range.contains) ?? true else { return }
-        ratingMutationGeneration += 1
-        let generation = ratingMutationGeneration
-        ratingRevision += 1
-        pendingRatingWrites += 1
-        defer {
-            pendingRatingWrites -= 1
-            ratingRevision += 1
-        }
         ratingOverride = .some(stars)
+        pendingRatingTarget = .some(stars)
+        ratingRevision += 1
+        // The running write's loop sends this choice when it finishes.
+        guard !isSendingRating else { return }
+        isSendingRating = true
+        let generation = ratingTitleGeneration
         let owner = await currentPersonalStateOwner()
-        let outcome = await PersonalStateSync.outcome {
-            guard let owner else { throw HTTPError.requestIdentityChanged }
-            try await SiloAPI.shared.apiV2Client.setRating(id: contentId, stars: stars, auth: owner)
-            guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
-                throw HTTPError.authorityChanged
+        while ratingTitleGeneration == generation, case .some(let target) = pendingRatingTarget {
+            pendingRatingTarget = nil
+            let outcome = await PersonalStateSync.outcome {
+                guard let owner else { throw HTTPError.requestIdentityChanged }
+                try await SiloAPI.shared.apiV2Client.setRating(id: contentId, stars: target, auth: owner)
+                guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
+                    throw HTTPError.authorityChanged
+                }
+            }
+            // The page moved to another title; this result is no longer its.
+            guard ratingTitleGeneration == generation else { return }
+            ratingRevision += 1
+            if outcome == .applied {
+                confirmedRating = .some(target)
+                ratingFreshnessToken = UUID().uuidString
+                invalidateRelatedCaches(contentId: contentId)
+            } else if pendingRatingTarget == nil {
+                // Nothing newer queued: show the last rating the server
+                // confirmed. A newer queued choice is sent next and decides
+                // what shows instead.
+                ratingOverride = confirmedRating
+                personalStateNotice = PersonalStateNotice(outcome)
             }
         }
-        if outcome == .applied {
-            invalidateRelatedCaches(contentId: contentId)
-        } else {
-            // Fall back to the last rating the server confirmed, but only
-            // while this write still owns the control: a newer rating made
-            // during this request wins.
-            if ratingMutationGeneration == generation {
-                ratingOverride = nil
-            }
-            personalStateNotice = PersonalStateNotice(outcome)
+        if ratingTitleGeneration == generation {
+            isSendingRating = false
         }
     }
 
