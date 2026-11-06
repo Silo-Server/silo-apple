@@ -14,6 +14,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let isWatched: Bool
     /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
     let userRating: Int?
+    let isSavingRating: Bool
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
@@ -276,7 +277,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     action: toggleNextUpEpisodeWatched
                 )
                 .disabled(isUpdatingWatched || nextUpEpisode == nil)
-                PhoneRatingMenu(rating: userRating, onRate: onRate)
+                PhoneRatingMenu(rating: userRating, isSaving: isSavingRating, onRate: onRate)
                 if DownloadManager.shared.downloadsEnabled {
                     SeriesDownloadButton(
                         detail: detail,

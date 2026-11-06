@@ -245,8 +245,7 @@ class ItemDetailViewModel {
             // including any failure notice, instead of touching this title.
             ratingOverride = nil
             confirmedRating = nil
-            pendingRatingTarget = nil
-            isSendingRating = false
+            isSavingRating = false
             hasUnsettledRatingWrite = false
             ratingTitleGeneration += 1
             seriesContentId = nil
@@ -363,7 +362,7 @@ class ItemDetailViewModel {
             // changed on another client shows up (tvOS keeps this model across
             // visits). A write still running, or a choice or completion during
             // this read, keeps it.
-            if !isSendingRating, ratingRevision == ratingRevisionAtStart {
+            if !isSavingRating, ratingRevision == ratingRevisionAtStart {
                 ratingOverride = nil
                 confirmedRating = nil
             }
@@ -479,7 +478,7 @@ class ItemDetailViewModel {
         // the write just invalidated. Checked at each cache write.
         let mayCache: () -> Bool = { [weak self] in
             guard let self, let ratingRevisionAtRead else { return true }
-            return !self.isSendingRating && self.ratingRevision == ratingRevisionAtRead
+            return !self.isSavingRating && self.ratingRevision == ratingRevisionAtRead
         }
 
         #if os(tvOS)
@@ -1580,116 +1579,113 @@ class ItemDetailViewModel {
     }
 
     /// The acting profile's own rating, 1 to 5 stars, or nil when unrated.
-    /// Shows a pending write over the loaded detail, so a refresh that lands
-    /// mid-write can't put the old rating back under the viewer.
+    /// Shows a pending or confirmed write over the loaded detail, so a
+    /// refresh that lands mid-write can't put the old rating back.
     var userRating: Int? {
         if case .some(let pending) = ratingOverride { return pending }
         return detail?.userRating
     }
 
+    /// True while a rating write is running. Writes go one at a time: a
+    /// choice made meanwhile is ignored rather than queued, so two writes
+    /// are never in flight and an older one can't land after a newer one.
+    private(set) var isSavingRating = false
     /// Outer optional: whether a value is being shown over the detail.
     /// Inner: the rating it shows, where nil means "cleared".
     private var ratingOverride: Int??
-    /// The newest choice not yet sent. Writes go one at a time, newest
-    /// choice next, so an older choice can never land after a newer one.
-    @ObservationIgnored private var pendingRatingTarget: Int??
-    @ObservationIgnored private var isSendingRating = false
     /// The last rating the server confirmed for this title since the detail
     /// was read. A failed write falls back to this, not to the loaded
     /// detail, which predates any write that succeeded since.
     @ObservationIgnored private var confirmedRating: Int??
     /// A write was sent, its answer was lost and the read-back failed too,
-    /// so it may still land. Nothing else is sent until a read-back settles
-    /// it, or a later write could be overwritten by it.
+    /// so it may still land. The next write reads the stored rating first
+    /// and is refused if that still can't be settled.
     @ObservationIgnored private var hasUnsettledRatingWrite = false
     /// Bumped when the page moves to another title; a write that finishes
     /// for the old title drops its result.
     @ObservationIgnored private var ratingTitleGeneration = 0
-    /// Advances on every choice and every completed write, so a detail read
-    /// can tell whether any rating change overlapped it.
+    /// Advances when a write starts and when it finishes, so a detail read
+    /// can tell whether a write overlapped it.
     @ObservationIgnored private var ratingRevision = 0
-    /// Changes after each confirmed write and keys the next detail read, so
-    /// that read can't join a shared request dispatched before the write.
+    /// Changes after each confirmed or uncertain write and keys the next
+    /// detail read, so it can't join a request dispatched before the write.
     @ObservationIgnored private var ratingFreshnessToken: String?
 
     /// Saves the viewer's rating, or clears it when `stars` is nil. Sets
-    /// exactly what it is given rather than toggling. Choices made while a
-    /// write is running are coalesced: only the newest is sent next.
-    /// `send` replaces the server write in tests.
+    /// exactly what it is given rather than toggling, and does nothing while
+    /// another rating write is running. `send` replaces the server write in
+    /// tests.
     func setRating(
         _ stars: Int?,
         send: ((_ contentId: String, _ stars: Int?) async -> PersonalStateOutcome)? = nil
     ) async {
-        guard let contentId = detail?.contentId, stars.map(UserStarRating.range.contains) ?? true else { return }
+        guard !isSavingRating,
+              let contentId = detail?.contentId,
+              stars.map(UserStarRating.range.contains) ?? true else { return }
         let seriesId = detail?.seriesId
-        ratingOverride = .some(stars)
-        pendingRatingTarget = .some(stars)
-        ratingRevision += 1
-        // The running write's loop sends this choice when it finishes.
-        guard !isSendingRating else { return }
-        isSendingRating = true
         let generation = ratingTitleGeneration
+        isSavingRating = true
+        ratingRevision += 1
+        ratingOverride = .some(stars)
+        defer {
+            // A title change has already reset this state for the new title.
+            if ratingTitleGeneration == generation {
+                isSavingRating = false
+                ratingRevision += 1
+            }
+        }
         let owner = await currentPersonalStateOwner()
-        while ratingTitleGeneration == generation, case .some(let target) = pendingRatingTarget {
-            pendingRatingTarget = nil
-            if hasUnsettledRatingWrite, send == nil {
-                let stored = await readStoredRating(contentId: contentId, owner: owner)
-                guard ratingTitleGeneration == generation else { return }
-                guard case .some(let settled) = stored else {
-                    // Still unknown whether the earlier write landed; sending
-                    // now could be overwritten by it. Drop this choice.
-                    var ownerIsCurrent = false
-                    if let owner {
-                        ownerIsCurrent = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil
-                    }
-                    guard ratingTitleGeneration == generation else { return }
-                    pendingRatingTarget = nil
-                    ratingRevision += 1
-                    ratingOverride = confirmedRating
-                    if ownerIsCurrent {
-                        personalStateNotice = .failed(nil)
-                    }
-                    break
-                }
-                hasUnsettledRatingWrite = false
-                confirmedRating = .some(settled)
-            }
-            let result: RatingWriteResult
-            if let send {
-                result = RatingWriteResult(outcome: await send(contentId, target))
-            } else {
-                result = await writeRating(target, contentId: contentId, owner: owner)
-            }
-            if result.outcome == .applied || result.isUncertain {
-                // The server changed, or may have, for this title even if
-                // the page has moved on, so its cached reads go stale.
-                PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId)
-            }
-            // The page moved to another title; the rest of this result is
-            // no longer its.
-            guard ratingTitleGeneration == generation else { return }
-            ratingRevision += 1
-            if result.isUncertain {
-                ratingFreshnessToken = UUID().uuidString
-                hasUnsettledRatingWrite = result.storedRating == nil
-            }
-            if case .some(let stored) = result.storedRating {
-                confirmedRating = .some(stored)
-            }
-            if result.outcome == .applied {
-                confirmedRating = .some(target)
-                ratingFreshnessToken = UUID().uuidString
-            } else if pendingRatingTarget == nil {
-                // Nothing newer queued: show the last rating the server
-                // confirmed. A newer queued choice is sent next and decides
-                // what shows instead.
+
+        if hasUnsettledRatingWrite, send == nil {
+            let stored = await readStoredRating(contentId: contentId, owner: owner)
+            guard await isRatingScopeCurrent(generation, owner: owner) else { return }
+            guard case .some(let settled) = stored else {
+                // Still unknown whether the earlier write will land, and it
+                // could overwrite this one, so this choice isn't sent.
                 ratingOverride = confirmedRating
-                personalStateNotice = PersonalStateNotice(result.outcome)
+                personalStateNotice = .failed(nil)
+                return
             }
+            hasUnsettledRatingWrite = false
+            confirmedRating = .some(settled)
         }
-        if ratingTitleGeneration == generation {
-            isSendingRating = false
+
+        let result: RatingWriteResult
+        if let send {
+            result = RatingWriteResult(outcome: await send(contentId, stars))
+        } else {
+            result = await writeRating(stars, contentId: contentId, owner: owner)
         }
+        if result.outcome == .applied || result.isUncertain {
+            // The server changed, or may have, for this title even if the
+            // page has moved on, so its cached reads go stale either way.
+            PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId)
+        }
+        // Every page-state change below belongs to this title and owner.
+        guard await isRatingScopeCurrent(generation, owner: owner) else { return }
+        if result.isUncertain {
+            ratingFreshnessToken = UUID().uuidString
+            hasUnsettledRatingWrite = result.storedRating == nil
+        }
+        if case .some(let stored) = result.storedRating {
+            confirmedRating = .some(stored)
+        }
+        if result.outcome == .applied {
+            confirmedRating = .some(stars)
+            ratingFreshnessToken = UUID().uuidString
+        } else {
+            ratingOverride = confirmedRating
+            personalStateNotice = PersonalStateNotice(result.outcome)
+        }
+    }
+
+    /// Whether a rating result may still change the page: the same title is
+    /// showing and, for a real write, the same owner is signed in.
+    private func isRatingScopeCurrent(_ generation: Int, owner: CapturedOrdinaryRequestAuth?) async -> Bool {
+        guard ratingTitleGeneration == generation else { return false }
+        guard let owner else { return true }
+        let ownerIsCurrent = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil
+        return ownerIsCurrent && ratingTitleGeneration == generation
     }
 
     private struct RatingWriteResult {
@@ -1710,23 +1706,17 @@ class ItemDetailViewModel {
         contentId: String,
         owner: CapturedOrdinaryRequestAuth?
     ) async -> RatingWriteResult {
-        let api = SiloAPI.shared.apiV2Client
         do {
             guard let owner else { throw HTTPError.requestIdentityChanged }
-            try await api.setRating(id: contentId, stars: stars, auth: owner)
-            guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
-                throw HTTPError.authorityChanged
-            }
+            try await SiloAPI.shared.apiV2Client.setRating(id: contentId, stars: stars, auth: owner)
             return RatingWriteResult(outcome: .applied)
         } catch {
             let outcome = PersonalStateSync.outcome(for: error)
-            guard MutationDelivery(error) == .unconfirmed, let owner else {
+            guard MutationDelivery(error) == .unconfirmed else {
                 return RatingWriteResult(outcome: outcome)
             }
             guard case .some(let stored) = await readStoredRating(contentId: contentId, owner: owner) else {
-                // A profile switch ends this quietly; anything else is a failure.
-                let ownerIsCurrent = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil
-                return RatingWriteResult(outcome: ownerIsCurrent ? outcome : .skipped, isUncertain: true)
+                return RatingWriteResult(outcome: outcome, isUncertain: true)
             }
             return RatingWriteResult(
                 outcome: stored == stars ? .applied : outcome,
@@ -1736,23 +1726,16 @@ class ItemDetailViewModel {
         }
     }
 
-    /// The rating the server holds for the current owner. Outer nil means
-    /// it couldn't be read, or the owner changed while it was being read.
+    /// The rating the server holds, or nil when it couldn't be read.
     private func readStoredRating(contentId: String, owner: CapturedOrdinaryRequestAuth?) async -> Int?? {
         guard let owner else { return nil }
         // `try?` would flatten a successful "unrated" (nil) into a failed
         // read, so keep the two apart.
-        let stored: Int?
         do {
-            stored = try await SiloAPI.shared.apiV2Client.rating(id: contentId, auth: owner)
+            return .some(try await SiloAPI.shared.apiV2Client.rating(id: contentId, auth: owner))
         } catch {
             return nil
         }
-        // An answer read under a previous profile must not be shown.
-        guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
-            return nil
-        }
-        return .some(stored)
     }
 
     func toggleFavorite() async {

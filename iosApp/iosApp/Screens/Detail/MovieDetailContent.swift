@@ -10,6 +10,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let isWatched: Bool
     /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
     let userRating: Int?
+    let isSavingRating: Bool
     /// The box set the movie belongs to; nil draws no row.
     let boxSet: CatalogBoxSetDetail?
     let selectedVersionFileId: Int?
@@ -192,7 +193,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
                         ? "Mark as Unwatched" : "Mark as Watched",
                     action: onToggleWatched
                 )
-                PhoneRatingMenu(rating: userRating, onRate: onRate)
+                PhoneRatingMenu(rating: userRating, isSaving: isSavingRating, onRate: onRate)
                 if showsDownloadButton {
                     DownloadActionButton(
                         detail: detail,

@@ -17,7 +17,7 @@ final class ItemDetailRatingTests: XCTestCase {
         XCTAssertEqual(model.personalStateNotice, .failed(nil))
     }
 
-    func testChoicesDuringAWriteAreSentInOrderWithOnlyTheNewestQueued() async throws {
+    func testAChoiceMadeWhileAWriteRunsIsIgnored() async throws {
         let model = ItemDetailViewModel()
         model.detail = try detail(rating: nil)
         let sent = SentRatings()
@@ -34,16 +34,16 @@ final class ItemDetailRatingTests: XCTestCase {
 
         let first = Task { await model.setRating(3, send: send) }
         await fulfillment(of: [firstStarted], timeout: 2)
-        // Both return at once: the running write sends the newest next.
-        await model.setRating(1, send: send)
+        XCTAssertTrue(model.isSavingRating)
         await model.setRating(5, send: send)
-        XCTAssertEqual(model.userRating, 5)
+        XCTAssertEqual(model.userRating, 3, "a choice during a write neither sends nor shows")
 
         await releaseFirst.open()
         await first.value
         let values = await sent.values
-        XCTAssertEqual(values, [3, 5], "1 was superseded before it was sent; 5 went last")
-        XCTAssertEqual(model.userRating, 5)
+        XCTAssertEqual(values, [3])
+        XCTAssertEqual(model.userRating, 3)
+        XCTAssertFalse(model.isSavingRating)
     }
 
     private func detail(rating: Int?) throws -> ItemDetail {

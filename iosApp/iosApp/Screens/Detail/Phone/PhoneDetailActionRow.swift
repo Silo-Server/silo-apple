@@ -99,6 +99,8 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
 /// caption shows the saved rating; the menu sets a new one or clears it.
 struct PhoneRatingMenu: View {
     let rating: Int?
+    /// A rating write is running; the menu waits for it.
+    var isSaving = false
     /// nil clears the rating.
     let onRate: (Int?) -> Void
 
@@ -142,6 +144,7 @@ struct PhoneRatingMenu: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         #endif
+        .disabled(isSaving)
         .sensoryFeedback(.impact(weight: .light), trigger: rating)
         .accessibilityLabel("Your rating")
         .accessibilityValue(UserStarRating.accessibilityValue(rating))
