@@ -143,6 +143,8 @@ final class AppLanguagePreferences {
     /// language switches back at once.
     private(set) var displayed: String
     private(set) var isSaving = false
+    /// A system choice is being written back; the picker waits for it.
+    private(set) var isWritingBack = false
     private(set) var errorMessage: String?
     /// The answer for ``loadedIdentity``; nil before one arrives or on a
     /// server without the setting.
@@ -156,9 +158,6 @@ final class AppLanguagePreferences {
     /// A system choice still to write back. Held for this process only: until
     /// it is sent the ledger is untouched, so the next launch finds it again.
     @ObservationIgnored private var pendingSystemChoice: AppLanguageSystemChoice?
-    /// One write-back at a time, so a profile switch mid-write can't send it
-    /// to a second profile.
-    @ObservationIgnored private var isWritingBack = false
     @ObservationIgnored private var refreshSequence = 0
 
     init(
@@ -181,6 +180,8 @@ final class AppLanguagePreferences {
     }
 
     var locale: Locale { AppLanguage.locale(for: displayed) }
+    /// A save or write-back is running: the picker takes no new choice.
+    var isBusy: Bool { isSaving || isWritingBack }
     var isRightToLeft: Bool { AppLanguage.isRightToLeft(displayed) }
 
     /// The stored value for the active profile; nil hides the picker.
@@ -204,6 +205,8 @@ final class AppLanguagePreferences {
         // Only Silo and the system write the key, and Silo updates the ledger
         // with each of its own writes.
         if !isWritingBack { pendingSystemChoice = currentSystemChoice() }
+        // The picker returns once the server holds the system choice.
+        if pendingSystemChoice != nil { choice = nil }
         refreshSequence += 1
         let sequence = refreshSequence
         switch await transport.contractCapabilities(requestIdentity: identity) {
@@ -234,6 +237,7 @@ final class AppLanguagePreferences {
     private func writeBack(_ pending: AppLanguageSystemChoice, identity: HTTPRequestIdentity) async -> Bool {
         isWritingBack = true
         defer { isWritingBack = false }
+        let sent = system.appValue
         do {
             try await transport.putValue(
                 key: .uiAppLanguage,
@@ -244,15 +248,18 @@ final class AppLanguagePreferences {
         } catch {
             guard SettingsAPIError.from(error).writeFailure == .release else { return false }
             // Refused for good: the profile's value applies again, and the
-            // user's value stays the one to come back to.
+            // user's value becomes the one to come back to.
             pendingSystemChoice = nil
+            system.ledger = nil
             return true
         }
-        // The user changed it again meanwhile: send that one next time.
-        let now = currentSystemChoice()
-        guard now == pending else {
-            pendingSystemChoice = now
-            return now == nil
+        guard system.appValue == sent else {
+            // Changed again meanwhile, even back to Silo's own value: the
+            // server now holds `pending`, so the newer value is a change
+            // against that and goes next.
+            system.ledger = pending.tag.map { AppLanguageLedger(applied: $0, baseline: system.ledger?.baseline) }
+            pendingSystemChoice = currentSystemChoice()
+            return pendingSystemChoice == nil
         }
         pendingSystemChoice = nil
         // The server now holds it, so record it even if the read fails.
@@ -268,6 +275,11 @@ final class AppLanguagePreferences {
         guard let response = try? await transport.effectiveValues(keys: [.uiAppLanguage], requestIdentity: identity),
               isCurrent(identity, sequence), pendingSystemChoice == nil, !isSaving,
               let row = response.value(for: .uiAppLanguage) else { return }
+        // A system change made during the read goes first.
+        if let changed = currentSystemChoice() {
+            pendingSystemChoice = changed
+            return
+        }
         var tag: String?
         if case .string(let value) = row.value { tag = value }
         choice = Choice(tag: tag, isDeviceValue: row.source == .scope(.profileDevice))
@@ -330,7 +342,8 @@ final class AppLanguagePreferences {
         // The shown language over this device's own row still saves: it makes
         // that language the profile's.
         guard let identity = requestIdentity(), identity == loadedIdentity,
-              let current = choice, current.tag != tag || current.isDeviceValue, !isSaving else { return }
+              let current = choice, current.tag != tag || current.isDeviceValue, !isBusy,
+              pendingSystemChoice == nil else { return }
         isSaving = true
         errorMessage = nil
         // Reads already in flight answer for the state before this save.
@@ -354,8 +367,9 @@ final class AppLanguagePreferences {
             failure = error
         }
         isSaving = false
-        // Another profile is active now: its own refresh owns the picker.
-        guard requestIdentity() == identity, loadedIdentity == identity else { return }
+        // Another profile is active now. Its refresh skipped its read while
+        // this save ran, so read for it now.
+        guard requestIdentity() == identity, loadedIdentity == identity else { return await refresh() }
         if let failure {
             choice = current
             errorMessage = Self.writeFailureMessage(for: failure)

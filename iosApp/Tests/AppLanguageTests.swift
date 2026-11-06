@@ -421,6 +421,48 @@ final class AppLanguagePreferencesTests: XCTestCase {
         XCTAssertNil(system.ledger)
     }
 
+    /// Changing the system language back to Silo's during the write-back
+    /// is itself written back, not lost to the value just sent.
+    func testRevertDuringWriteBackIsWrittenBackNext() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        system.ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+        transport.onPut = { system.appValue = ["es"] }
+
+        await store.refresh()
+        XCTAssertEqual(transport.effectiveReads, 0, "nothing applied over the newer choice")
+        XCTAssertEqual(system.appValue, ["es"])
+
+        await store.refresh()
+        XCTAssertEqual(transport.calls.last, .put(.profileDevice, "A", .string("es")))
+        XCTAssertEqual(store.currentChoice, .init(tag: "es", isDeviceValue: true))
+        XCTAssertEqual(system.appValue, ["es"])
+    }
+
+    /// A profile switch during a picker save still loads the new profile.
+    func testProfileSwitchDuringSaveLoadsTheNewProfile() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        transport.profileValues["B"] = "fr"
+        let system = FakeAppLanguageSystem()
+        var active = profileA
+        let store = makeStore(transport: transport, system: system) { active }
+        await store.refresh()
+        var concurrent: Task<Void, Never>?
+        transport.onPut = {
+            active = self.profileB
+            concurrent = Task { await store.refresh() }
+        }
+
+        await store.select("ar")
+        await concurrent?.value
+        XCTAssertEqual(store.currentChoice, .init(tag: "fr", isDeviceValue: false))
+        XCTAssertEqual(store.displayed, "fr")
+    }
+
     func testServerWithoutTheSettingFollowsTheDevice() async {
         let transport = FakeAppLanguageTransport()
         transport.revision = 26

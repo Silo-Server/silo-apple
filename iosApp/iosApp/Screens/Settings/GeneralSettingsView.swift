@@ -67,7 +67,7 @@ struct GeneralSettingsView: View {
             }
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
-            .disabled(appLanguage.isSaving)
+            .disabled(appLanguage.isBusy)
             .accessibilityValue(appLanguage.selectedLabel)
         } header: {
             Text("Language")
