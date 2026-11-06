@@ -51,17 +51,21 @@ final class CurrentProfileStore {
         profile = Self.keepingCachedAvatar(fresh, from: profile)
     }
 
-    /// `fresh`, with `cached`'s avatar URL while it names the same avatar and
-    /// its image is still cached. Every profile read re-signs an uploaded
-    /// avatar's URL, and the new URL would download the same image again.
-    /// Once the image leaves the cache, the fresh URL wins, so an expired
-    /// signature never sticks.
+    /// `fresh`, with `cached`'s avatar URL while both name the same avatar
+    /// object under different signatures and its image is still cached.
+    /// Every profile read re-signs an uploaded avatar's URL, and the new URL
+    /// would download the same image again. Once the image leaves the cache,
+    /// the fresh URL wins, so an expired signature never sticks.
+    ///
+    /// The server keeps an upload's key across re-uploads, so a new image
+    /// uploaded elsewhere looks the same here until the old one is evicted.
     static func keepingCachedAvatar(_ fresh: UserProfile, from cached: UserProfile?) -> UserProfile {
         guard let cached, cached.id == fresh.id, cached.avatarEmoji == fresh.avatarEmoji,
-              cached.avatarImageUrl != fresh.avatarImageUrl,
-              let resolved = ProfileAvatarResolver.serverResolvedImageURL(cached.avatarImageUrl),
-              let url = URL(string: resolved),
-              PosterImageCache.cachedVariant(of: url, for: CGSize(width: 1, height: 1)) != nil else {
+              let cachedURL = avatarURL(of: cached), let freshURL = avatarURL(of: fresh),
+              cachedURL != freshURL,
+              let identity = ArtworkCacheKey.unsignedIdentity(for: cachedURL),
+              identity == ArtworkCacheKey.unsignedIdentity(for: freshURL),
+              PosterImageCache.cachedVariant(of: cachedURL, for: CGSize(width: 1, height: 1)) != nil else {
             return fresh
         }
         return UserProfile(
@@ -77,6 +81,10 @@ final class CurrentProfileStore {
             showForcedSubtitles: fresh.showForcedSubtitles,
             preferredMetadataLanguage: fresh.preferredMetadataLanguage
         )
+    }
+
+    private static func avatarURL(of profile: UserProfile) -> URL? {
+        ProfileAvatarResolver.serverResolvedImageURL(profile.avatarImageUrl).flatMap(URL.init(string:))
     }
 
     func reset() {
