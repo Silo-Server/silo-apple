@@ -12,6 +12,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
+    let userRating: Int?
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
@@ -45,6 +47,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
+    /// Saves a 1 to 5 star rating, or clears it with nil.
+    let onRate: (Int?) -> Void
     let onSetSeasonWatched: (Season, Bool) async -> PersonalStateOutcome
     let onSetEpisodeWatched: (EpisodeListItem, Bool) async -> PersonalStateOutcome
     let onSetEpisodeFavorite: (String, Bool) async -> PersonalStateOutcome
@@ -272,6 +276,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     action: toggleNextUpEpisodeWatched
                 )
                 .disabled(isUpdatingWatched || nextUpEpisode == nil)
+                PhoneRatingMenu(rating: userRating, onRate: onRate)
                 if DownloadManager.shared.downloadsEnabled {
                     SeriesDownloadButton(
                         detail: detail,

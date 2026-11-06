@@ -240,6 +240,10 @@ class ItemDetailViewModel {
             seasonsLoadGeneration += 1
             episodeLoadGeneration += 1
             self.detail = nil
+            // A pending rating belongs to the previous title. Bumping the
+            // generation also stops its write's failure from touching this one.
+            ratingOverride = nil
+            ratingMutationGeneration += 1
             seriesContentId = nil
             seasons = []
             selectedSeason = nil
@@ -299,6 +303,7 @@ class ItemDetailViewModel {
 
         do {
             let userStateGeneration = userStateMutationGeneration
+            let ratingRevisionAtStart = ratingRevision
             personalStateOwner = await TokenStore.shared.captureOrdinaryRequestAuth()
 
             let item: ItemDetail
@@ -339,6 +344,14 @@ class ItemDetailViewModel {
             // A Watched tap made while this request was in flight wins.
             if userStateMutationGeneration == userStateGeneration {
                 isWatched = enriched.userData?.played ?? false
+            }
+            // The optimistic rating only bridges its own write. Release it
+            // once a read that overlapped no rating write lands, so a rating
+            // changed on another client shows up (tvOS keeps this model across
+            // visits). A write still open, or one that started or finished
+            // during this read, keeps it.
+            if pendingRatingWrites == 0, ratingRevision == ratingRevisionAtStart {
+                ratingOverride = nil
             }
 
             refreshBoxSet(for: enriched)
@@ -707,6 +720,7 @@ class ItemDetailViewModel {
                 airDate: item.airDate,
                 isSpecials: item.isSpecials,
                 userData: item.userData,
+                userRating: item.userRating,
                 versions: watchDetail.versions,
                 playbackVariants: item.playbackVariants,
                 subtitles: watchDetail.subtitles,
@@ -1538,6 +1552,62 @@ class ItemDetailViewModel {
         }
     }
 
+    /// The acting profile's own rating, 1 to 5 stars, or nil when unrated.
+    /// Shows a pending write over the loaded detail, so a refresh that lands
+    /// mid-write can't put the old rating back under the viewer.
+    var userRating: Int? {
+        if case .some(let pending) = ratingOverride { return pending }
+        return detail?.userRating
+    }
+
+    /// Outer optional: whether a write is being shown. Inner: the rating it
+    /// shows, where nil means "cleared".
+    private var ratingOverride: Int??
+    /// Owns the override. Separate from `userStateMutationGeneration`, which
+    /// the favorite, watchlist and watched toggles bump too: sharing it would
+    /// let an unrelated toggle make a failed rating write look superseded.
+    @ObservationIgnored private var ratingMutationGeneration = 0
+    /// Advances when a rating write starts and again when it finishes, so a
+    /// detail read can tell whether any write overlapped it.
+    @ObservationIgnored private var ratingRevision = 0
+    /// Rating writes still waiting for an answer. Covers a write that started
+    /// before a read captured `ratingRevision` and is still open.
+    @ObservationIgnored private var pendingRatingWrites = 0
+
+    /// Saves the viewer's rating, or clears it when `stars` is nil. Sets
+    /// exactly what it is given rather than toggling.
+    func setRating(_ stars: Int?) async {
+        guard let contentId = detail?.contentId, stars.map(UserStarRating.range.contains) ?? true else { return }
+        ratingMutationGeneration += 1
+        let generation = ratingMutationGeneration
+        ratingRevision += 1
+        pendingRatingWrites += 1
+        defer {
+            pendingRatingWrites -= 1
+            ratingRevision += 1
+        }
+        ratingOverride = .some(stars)
+        let owner = await currentPersonalStateOwner()
+        let outcome = await PersonalStateSync.outcome {
+            guard let owner else { throw HTTPError.requestIdentityChanged }
+            try await SiloAPI.shared.apiV2Client.setRating(id: contentId, stars: stars, auth: owner)
+            guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
+                throw HTTPError.authorityChanged
+            }
+        }
+        if outcome == .applied {
+            invalidateRelatedCaches(contentId: contentId)
+        } else {
+            // Fall back to the last rating the server confirmed, but only
+            // while this write still owns the control: a newer rating made
+            // during this request wins.
+            if ratingMutationGeneration == generation {
+                ratingOverride = nil
+            }
+            personalStateNotice = PersonalStateNotice(outcome)
+        }
+    }
+
     func toggleFavorite() async {
         guard let contentId = detail?.contentId else { return }
         userStateMutationGeneration += 1
@@ -1822,6 +1892,21 @@ class ItemDetailViewModel {
     /// Watching and Next Up rows.
     private func invalidateRelatedCaches(contentId: String, seriesId: String? = nil) {
         PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId ?? detail?.seriesId)
+    }
+}
+
+/// The viewer's own title rating, as the server stores it: whole stars,
+/// 1 to 5.
+enum UserStarRating {
+    static let range = 1...5
+
+    /// "1 Star", "4 Stars": the control's caption and menu entries.
+    static func label(_ stars: Int) -> String {
+        stars == 1 ? "1 Star" : "\(stars) Stars"
+    }
+
+    static func accessibilityValue(_ stars: Int?) -> String {
+        stars.map { "\($0) of \(range.upperBound) stars" } ?? "Not rated"
     }
 }
 

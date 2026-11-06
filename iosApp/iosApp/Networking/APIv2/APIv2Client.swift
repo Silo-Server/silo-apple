@@ -669,7 +669,16 @@ struct APIv2Client: Sendable {
         try await setMembership(method: included ? "PUT" : "DELETE", collection: "watchlist", id: id, auth: auth)
     }
 
-    private func setMembership(method: String, collection: String, id: String,
+    /// Records the acting profile's rating (1 to 5 stars), replacing any
+    /// earlier one, or removes it when `stars` is nil. Dispatched once like
+    /// the membership writes above.
+    func setRating(id: String, stars: Int?, auth: CapturedOrdinaryRequestAuth) async throws {
+        let body = try stars.map { try JSONEncoder().encode(["rating": $0]) }
+        try await setMembership(method: stars == nil ? "DELETE" : "PUT", collection: "ratings", id: id,
+                                body: body, auth: auth)
+    }
+
+    private func setMembership(method: String, collection: String, id: String, body: Data? = nil,
                                auth: CapturedOrdinaryRequestAuth) async throws {
         try await gate()
         guard let profile = auth.profileId, !profile.isEmpty,
@@ -681,6 +690,7 @@ struct APIv2Client: Sendable {
         let raw = try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: "/api/v2/\(collection)/\(try catalogPathSegment(id))",
+                    body: body,
                     requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
             }
         }

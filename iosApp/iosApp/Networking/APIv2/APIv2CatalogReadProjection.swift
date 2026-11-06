@@ -62,6 +62,7 @@ extension ItemDetail {
         self.airDate = value.airDate
         self.isSpecials = value.isSpecials
         self.userData = try value.userData.map { try LeafItemUserData(catalog: $0) }
+        self.userRating = try value.userRating.map(catalogLegacyInt)
         self.versions = try value.versions.map { try FileVersion(catalog: $0) }
         self.playbackVariants = try value.playbackVariants.map { variants in
             try variants.map { try PlaybackVariant(catalog: $0) }

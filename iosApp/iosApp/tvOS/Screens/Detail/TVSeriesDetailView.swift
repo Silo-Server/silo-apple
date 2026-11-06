@@ -179,6 +179,9 @@ struct TVSeriesDetailView: View {
 
     let detail: ItemDetail
     let isFavorite: Bool
+    /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
+    let userRating: Int?
+    let onRate: (Int?) -> Void
     let inWatchlist: Bool
     /// Whole-series state for More's series entry.
     let isSeriesWatched: Bool
@@ -527,6 +530,11 @@ struct TVSeriesDetailView: View {
             isPlaybackLoading: isLoadingEpisodes && playbackEpisode == nil,
             allowsInitialPlayFocus: !userNavigated,
             tracksInitialFocusNavigation: true,
+            userRating: userRating,
+            onRate: { stars in
+                userNavigated = true
+                onRate(stars)
+            },
             playbackSelectors: { focusedAction in
                 // Keep all three triggers mounted while a newly focused
                 // episode's playback detail loads. They disable themselves

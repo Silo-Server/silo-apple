@@ -95,6 +95,59 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
     }
 }
 
+/// The viewer's own 1 to 5 star rating, as a menu in the action row. The
+/// caption shows the saved rating; the menu sets a new one or clears it.
+struct PhoneRatingMenu: View {
+    let rating: Int?
+    /// nil clears the rating.
+    let onRate: (Int?) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(UserStarRating.range.reversed(), id: \.self) { stars in
+                Button {
+                    onRate(stars)
+                } label: {
+                    if stars == rating {
+                        Label(UserStarRating.label(stars), systemImage: "checkmark")
+                    } else {
+                        Text(UserStarRating.label(stars))
+                    }
+                }
+            }
+            if rating != nil {
+                Divider()
+                Button("Clear Rating", systemImage: "star.slash", role: .destructive) {
+                    onRate(nil)
+                }
+            }
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: rating == nil ? "star" : "star.fill")
+                    .font(.system(size: 19, weight: .regular))
+                    .foregroundStyle(Color.siloOnSurface)
+                    .frame(width: 42, height: 42)
+                    .background(Circle().fill(Color.white.opacity(rating == nil ? 0.10 : 0.18)))
+                    .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
+                Text(rating.map(UserStarRating.label) ?? "Rate")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.siloOnSurface.opacity(rating == nil ? 0.6 : 0.92))
+                    .phoneActionCaption()
+            }
+            .frame(maxWidth: .infinity, minHeight: 58)
+            .contentShape(Rectangle())
+        }
+        #if os(macOS)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        #endif
+        .sensoryFeedback(.impact(weight: .light), trigger: rating)
+        .accessibilityLabel("Your rating")
+        .accessibilityValue(UserStarRating.accessibilityValue(rating))
+    }
+}
+
 // MARK: - Action row container
 
 /// Evenly distributes the named actions across the content width and rules

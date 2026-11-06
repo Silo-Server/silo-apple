@@ -8,6 +8,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
+    let userRating: Int?
     /// The box set the movie belongs to; nil draws no row.
     let boxSet: CatalogBoxSetDetail?
     let selectedVersionFileId: Int?
@@ -28,6 +30,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
+    /// Saves a 1 to 5 star rating, or clears it with nil.
+    let onRate: (Int?) -> Void
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// Play a local extra from the trailers rail. Routed separately from
@@ -188,6 +192,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
                         ? "Mark as Unwatched" : "Mark as Watched",
                     action: onToggleWatched
                 )
+                PhoneRatingMenu(rating: userRating, onRate: onRate)
                 if showsDownloadButton {
                     DownloadActionButton(
                         detail: detail,

@@ -239,6 +239,55 @@ struct TVCircleMenuButton: View {
     }
 }
 
+// MARK: - Rating button
+
+/// The viewer's own 1 to 5 star rating in the detail action row. A circle
+/// menu like Versions and More, so the remote moves through plain focus
+/// targets and the popover hands focus straight back on close.
+struct TVRatingMenuButton: View {
+    private static let clearId = "clear"
+
+    let rating: Int?
+    let stabilizesFocusMotion: Bool
+    /// nil clears the rating.
+    let onRate: (Int?) -> Void
+
+    var body: some View {
+        TVCircleMenuButton(
+            icon: rating == nil ? "star" : "star.fill",
+            title: rating.map(UserStarRating.label) ?? "Rate",
+            accessibilityLabel: "Your rating, \(UserStarRating.accessibilityValue(rating))",
+            stabilizesFocusMotion: stabilizesFocusMotion,
+            menuTitle: "Your Rating",
+            items: items,
+            onSelect: select
+        )
+    }
+
+    private func items() -> [TVActionPopoverItem] {
+        var items = UserStarRating.range.reversed().map { stars in
+            TVActionPopoverItem(
+                id: String(stars),
+                title: UserStarRating.label(stars),
+                systemImage: "star.fill",
+                isSelected: stars == rating
+            )
+        }
+        if rating != nil {
+            items.append(TVActionPopoverItem(id: Self.clearId, title: "Clear Rating", systemImage: "star.slash"))
+        }
+        return items
+    }
+
+    private func select(_ item: TVActionPopoverItem) {
+        if item.id == Self.clearId {
+            onRate(nil)
+        } else if let stars = Int(item.id) {
+            onRate(stars)
+        }
+    }
+}
+
 // MARK: - Circle button
 
 /// Compact secondary action circle: icon-only at rest so the primary play
@@ -422,6 +471,7 @@ enum TVDetailAction: Hashable {
     case audio
     case subtitles
     case watchlist
+    case rating
     case more
 }
 
@@ -468,6 +518,11 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     var isPlaybackLoading = false
     var allowsInitialPlayFocus = true
     var tracksInitialFocusNavigation = false
+    /// The viewer's own rating, 1 to 5 stars, or nil when unrated. The
+    /// rating button shows only when `onRate` is set, so pages that can't
+    /// rate keep the row as it was.
+    var userRating: Int? = nil
+    var onRate: ((Int?) -> Void)? = nil
     /// Receives the row's focus binding; bind each selector to its
     /// `TVDetailAction` so the row can restore it.
     @ViewBuilder let playbackSelectors: (FocusState<TVDetailAction?>.Binding) -> PlaybackSelectors
@@ -531,6 +586,15 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                 action: onToggleWatchlist
             )
             .focused($focusedAction, equals: .watchlist)
+
+            if let onRate {
+                TVRatingMenuButton(
+                    rating: userRating,
+                    stabilizesFocusMotion: stabilizesFocusMotion,
+                    onRate: onRate
+                )
+                .focused($focusedAction, equals: .rating)
+            }
 
             moreMenu()
                 .focused($focusedAction, equals: .more)
