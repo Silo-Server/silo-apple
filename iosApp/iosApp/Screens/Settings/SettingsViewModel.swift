@@ -342,9 +342,11 @@ final class SettingsViewModel {
         async let profiles: [UserProfile]? = try? AuthService.shared.getProfiles()
         let (_, loadedUser, loadedProfiles) = await (deviceSettings, user, profiles)
 
-        // A newer load, or a server or profile switch while the reads ran,
-        // made them stale.
-        guard generation == loadGeneration, accountKey == Self.accountCacheKey else { return }
+        // A newer load, a server or profile switch, or leaving the screen
+        // while the reads ran made them stale. A cancelled read can still
+        // return a value, so cancellation is checked as well.
+        guard !Task.isCancelled, generation == loadGeneration,
+              accountKey == Self.accountCacheKey else { return }
 
         // A failed read keeps the account the card is already showing.
         if let loadedUser {
