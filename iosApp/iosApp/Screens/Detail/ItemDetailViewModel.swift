@@ -457,10 +457,16 @@ class ItemDetailViewModel {
     /// with it so an in-flight load can't land its older copy afterwards.
     /// Used by the description translator, which polls the catalog directly
     /// and (deliberately) skips playback enrichment.
-    func publishRefetchedDetail(_ item: ItemDetail, contentId: String) {
+    func publishRefetchedDetail(_ item: ItemDetail, contentId: String, ratingRevisionAtRead: Int? = nil) {
         _ = beginDetailWrite()
+        // A rating write overlapped the read, so its `user_rating` may be
+        // older than the rating on screen: keep showing that one.
+        if isSavingRating || ratingRevisionAtRead.map({ $0 != ratingRevision }) == true,
+           item.userRating != userRating {
+            ratingOverride = .some(userRating)
+        }
         detail = item
-        cacheDetail(item, contentId: contentId)
+        cacheDetail(item, contentId: contentId, ratingRevisionAtRead: ratingRevisionAtRead)
     }
 
     /// The one place this page writes a detail payload to `ResponseCache`.
