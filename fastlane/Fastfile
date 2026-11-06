@@ -1,7 +1,7 @@
 require "base64"
 require "shellwords"
 
-# iOS and tvOS release automation. CI reserves each platform's build number
+# iOS, tvOS, and macOS release automation. CI reserves one build number
 # before launching parallel TestFlight builds. Signing credentials come from
 # the environment; bundle identifiers match the checked-in Apple targets.
 
@@ -286,13 +286,21 @@ end
 
 # ── TestFlight release ────────────────────────────────────────────────────────
 
-# Everything that differs between the iOS and tvOS TestFlight builds.
+# Everything that differs between the iOS, tvOS, and macOS TestFlight builds.
 # testflight_release reads one entry; sync_signing reads every entry's targets.
 #
-# match_platform:        match's platform ("ios" / "tvos").
+# match_platform:        match's platform ("ios" / "tvos" / "macos").
 # build_number_platform: latest_testflight_build_number's platform. Each
 #                        platform has its own build-number sequence under
-#                        Universal Purchase ("appletvos" for tvOS).
+#                        Universal Purchase ("appletvos" for tvOS, "osx" for
+#                        macOS).
+# output_name:           artifact and archive name, without an extension.
+# match_cert_types:      extra certificates match installs. The Mac App Store
+#                        takes a .pkg signed with a Mac Installer Distribution
+#                        certificate as well as the app's Apple Distribution
+#                        one; the export picks that certificate by default.
+# package:               :ipa, or :pkg for macOS: the artifact's extension and
+#                        the key upload_to_testflight takes it under.
 # targets:               every signed target in the archive, mapped to its
 #                        bundle ID, app first. Each needs its own App Store
 #                        profile: the bundle IDs differ, and so do the
@@ -308,7 +316,8 @@ TESTFLIGHT_PLATFORMS = {
     scheme:                "Silo",
     destination:           "generic/platform=iOS",
     output_directory:      "build/ios",
-    output_name:           "Silo.ipa",
+    output_name:           "Silo",
+    package:               :ipa,
     targets: {
       "Silo"                    => "org.siloserver.silo",
       "SiloNotificationService" => "org.siloserver.silo.NotificationService",
@@ -321,16 +330,30 @@ TESTFLIGHT_PLATFORMS = {
     scheme:                "SiloTV",
     destination:           "generic/platform=tvOS",
     output_directory:      "build/tvos",
-    output_name:           "SiloTV.ipa",
+    output_name:           "SiloTV",
+    package:               :ipa,
     targets: {
       "SiloTV"         => "org.siloserver.silo",
       "SiloTVTopShelf" => "org.siloserver.silo.topshelf",
     }.freeze,
   }.freeze,
+  macos: {
+    match_platform:        "macos",
+    build_number_platform: "osx",
+    scheme:                "SiloMac",
+    destination:           "generic/platform=macOS",
+    output_directory:      "build/macos",
+    output_name:           "Silo",
+    package:               :pkg,
+    match_cert_types:      ["mac_installer_distribution"].freeze,
+    targets: {
+      "SiloMac" => "org.siloserver.silo",
+    }.freeze,
+  }.freeze,
 }.freeze
 
 # Builds one platform's app with App Store signing and uploads it to TestFlight.
-# beta_ios and beta_tvos call this with :ios and :tvos.
+# beta_ios, beta_tvos, and beta_macos call this with :ios, :tvos, and :macos.
 def testflight_release(platform)
   config     = TESTFLIGHT_PLATFORMS.fetch(platform)
   targets    = config[:targets]
@@ -369,11 +392,12 @@ def testflight_release(platform)
   # Sync the distribution cert and a profile for every signed target. CI is
   # read-only; run sync_signing locally to create or renew them.
   match(
-    type:           "appstore",
-    platform:       config[:match_platform],
-    app_identifier: bundle_ids,
-    readonly:       is_ci,
-    api_key:        api_key
+    type:                  "appstore",
+    platform:              config[:match_platform],
+    app_identifier:        bundle_ids,
+    additional_cert_types: config[:match_cert_types],
+    readonly:              is_ci,
+    api_key:               api_key
   )
 
   # Injected by CI's release workflow, or queried directly for local runs.
@@ -405,7 +429,8 @@ def testflight_release(platform)
     )
   end
 
-  ipa = "#{config[:output_directory]}/#{config[:output_name]}"
+  artifact = "#{config[:output_directory]}/#{config[:output_name]}"
+  package  = "#{artifact}.#{config[:package]}"
 
   build_app(
     project:          project,
@@ -414,6 +439,7 @@ def testflight_release(platform)
     export_method:    "app-store",
     output_directory: config[:output_directory],
     output_name:      config[:output_name],
+    archive_path:     "#{artifact}.xcarchive",
     cloned_source_packages_path: source_packages_path,
     skip_package_dependencies_resolution: true,
     disable_package_automatic_updates: true,
@@ -429,7 +455,7 @@ def testflight_release(platform)
             "CURRENT_PROJECT_VERSION=#{build_number} " \
             "DEVELOPMENT_TEAM=#{team_id}",
     # export_options.provisioningProfiles maps each bundle ID to its profile
-    # name for the IPA packaging step (separate from the archive step above).
+    # name for the packaging step (separate from the archive step above).
     export_options: {
       method:               "app-store",
       signingStyle:         "manual",
@@ -437,13 +463,18 @@ def testflight_release(platform)
     }
   )
 
-  validate_subtitle_packaging(ipa)
+  # The validator reads .app and .ipa, not .pkg, so check the archived app on macOS.
+  if config[:package] == :pkg
+    validate_subtitle_packaging("#{artifact}.xcarchive/Products/Applications/Silo.app")
+  else
+    validate_subtitle_packaging(package)
+  end
 
   upload_to_testflight(
     api_key:                 api_key,
     app_identifier:          app_id,
     app_platform:            config[:build_number_platform],
-    ipa:                     ipa,
+    config[:package] =>      package,
     # With a changelog, Pilot still waits for the build to appear even when
     # skip_waiting_for_build_processing is true. The distribution lane supplies
     # the notes and groups after this upload has released the macOS runner.
@@ -596,7 +627,7 @@ end
 # Keychains only exist on macOS; the next_build_number lane runs on a
 # Linux runner where `security` is absent, so gate every hook on mac? too.
 
-API_ONLY_LANES = %i[next_build_number distribute_ios distribute_tvos].freeze
+API_ONLY_LANES = %i[next_build_number distribute_ios distribute_tvos distribute_macos].freeze
 
 def ci_keychain_managed?(lane)
   is_ci && FastlaneCore::Helper.mac? && !API_ONLY_LANES.include?(lane.to_sym)
@@ -649,7 +680,7 @@ def restore_ci_keychain_state
   end
 end
 
-# ── iOS + tvOS ────────────────────────────────────────────────────────────────
+# ── iOS + tvOS + macOS ────────────────────────────────────────────────────────
 
 platform :ios do
 
@@ -659,16 +690,18 @@ platform :ios do
   lane :sync_signing do
     api_key = setup_api_key
 
-    # One read-write match per platform (iOS, then tvOS), covering every target
-    # testflight_release signs: iOS has the app plus the notification service
-    # and downloads Live Activity extensions; tvOS has the app plus Top Shelf.
+    # One read-write match per platform (iOS, tvOS, then macOS), covering every
+    # target testflight_release signs: iOS has the app plus the notification
+    # service and downloads Live Activity extensions; tvOS has the app plus Top
+    # Shelf; macOS has the app and the installer certificate for its .pkg.
     TESTFLIGHT_PLATFORMS.each_value do |config|
       match(
-        type:           "appstore",
-        platform:       config[:match_platform],
-        app_identifier: config[:targets].values,
-        readonly:       false,
-        api_key:        api_key
+        type:                  "appstore",
+        platform:              config[:match_platform],
+        app_identifier:        config[:targets].values,
+        additional_cert_types: config[:match_cert_types],
+        readonly:              false,
+        api_key:               api_key
       )
     end
   end
@@ -685,6 +718,11 @@ platform :ios do
     testflight_release(:tvos)
   end
 
+  desc "Build the macOS app and upload to TestFlight"
+  lane :beta_macos do
+    testflight_release(:macos)
+  end
+
   desc "Wait for the exact uploaded iOS build and distribute it to TestFlight groups"
   lane :distribute_ios do
     distribute_testflight_release(:ios)
@@ -695,25 +733,33 @@ platform :ios do
     distribute_testflight_release(:tvos)
   end
 
+  desc "Wait for the exact uploaded macOS build and distribute it to TestFlight groups"
+  lane :distribute_macos do
+    distribute_testflight_release(:macos)
+  end
+
   # ── Build-number reservation ────────────────────────────────────────────────
 
-  desc "Print the next TestFlight build number, shared by iOS and tvOS (CI)"
+  desc "Print the next TestFlight build number, shared by iOS, tvOS, and macOS (CI)"
   lane :next_build_number do
     # Query-only: no keychain/signing setup needed, so this runs on a plain
-    # Linux runner. One number for both platforms, so "1.0.0 (66)" names the
-    # same build on iPhone and Apple TV and in the release tag v1.0.0-beta.66.
+    # Linux runner. One number for every platform, so "1.0.0 (66)" names the
+    # same build on iPhone, Apple TV, and Mac and in the release tag
+    # v1.0.0-beta.66.
     api_key = setup_api_key
     app_id  = "org.siloserver.silo"
 
-    latest = %w[ios appletvos].map do |platform|
-      latest_testflight_build_number(api_key: api_key, app_identifier: app_id, platform: platform)
+    latest = TESTFLIGHT_PLATFORMS.values.map do |config|
+      latest_testflight_build_number(
+        api_key: api_key, app_identifier: app_id, platform: config[:build_number_platform]
+      )
     end.max
 
     # Emit a key=value line to BUILD_NUMBERS_FILE (release.yml reads it back).
     # Append so we never clobber other lines already there.
     out = ENV.fetch("BUILD_NUMBERS_FILE", "build_numbers.env")
     File.open(out, "a") { |f| f.puts "next_build=#{latest + 1}" }
-    UI.success("Next build number for iOS and tvOS: #{latest + 1}")
+    UI.success("Next build number for iOS, tvOS, and macOS: #{latest + 1}")
   end
 
   # ── Unsigned IPAs for third-party signing / sideloading ─────────────────────

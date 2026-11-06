@@ -11,7 +11,7 @@ import subprocess
 
 LOCK = Path('iosApp/Silo.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved')
 SDKS = {'Silo': 'iphonesimulator', 'SiloTV': 'appletvsimulator', 'SiloMac': 'macosx'}
-DEVICE_SDKS = {'Silo-device': 'iphoneos', 'SiloTV-device': 'appletvos'}
+DEVICE_SDKS = {'Silo-device': 'iphoneos', 'SiloTV-device': 'appletvos', 'SiloMac-device': 'macosx'}
 # Simulator runtime prefix and device type that each mobile scheme tests on.
 TEST_SIMULATORS = {
     'Silo': ('com.apple.CoreSimulator.SimRuntime.iOS-', 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro'),

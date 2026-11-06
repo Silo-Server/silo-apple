@@ -2,6 +2,7 @@
 # Exercise the release lanes without Fastlane, Xcode, signing, or network access.
 # Every action and App Store Connect query below uses an in-memory replacement.
 require_relative "fastlane-test-helper"
+require "tmpdir"
 
 module FastlaneCore
   class Configuration
@@ -44,7 +45,7 @@ module Spaceship
 
     module Platform
       def self.map(value)
-        { "ios" => "IOS", "appletvos" => "TV_OS" }.fetch(value)
+        { "ios" => "IOS", "appletvos" => "TV_OS", "osx" => "MAC_OS" }.fetch(value)
       end
     end
   end
@@ -152,8 +153,45 @@ class FastlaneReleaseTest < Minitest::Test
     assert_includes action_options(:build_app)[:xcargs], "CURRENT_PROJECT_VERSION=42 "
   end
 
+  def test_macos_upload_signs_and_sends_a_pkg
+    ENV["SILO_DEFER_TESTFLIGHT_DISTRIBUTION"] = "true"
+    @lane.run_lane(:beta_macos)
+    match = action_options(:match)
+    assert_equal "macos", match[:platform]
+    assert_equal ["org.siloserver.silo"], match[:app_identifier]
+    assert_equal ["mac_installer_distribution"], match[:additional_cert_types]
+    assert_equal ["SiloMac"], action_options(:update_code_signing_settings)[:targets]
+    build = action_options(:build_app)
+    assert_equal "SiloMac", build[:scheme]
+    assert_equal "generic/platform=macOS", build[:destination]
+    assert_equal "build/macos/Silo.xcarchive", build[:archive_path]
+    assert_equal({ "org.siloserver.silo" => "app-profile" }, build[:export_options][:provisioningProfiles])
+    validator = @lane.actions.find { |action, args| action == :sh && args[0] == "python3" }.last
+    assert validator[2].end_with?("build/macos/Silo.xcarchive/Products/Applications/Silo.app")
+    upload = action_options(:testflight)
+    assert_equal "osx", upload[:app_platform]
+    assert_equal "build/macos/Silo.pkg", upload[:pkg]
+    refute upload.key?(:ipa)
+  end
 
+  def test_ios_and_tvos_uploads_keep_their_ipa_names
+    ENV["SILO_DEFER_TESTFLIGHT_DISTRIBUTION"] = "true"
+    @lane.run_lane(:beta_tvos)
+    assert_equal "build/tvos/SiloTV.ipa", action_options(:testflight)[:ipa]
+    assert_nil action_options(:match)[:additional_cert_types]
+  end
 
+  def test_next_build_number_covers_every_platform
+    Dir.mktmpdir do |dir|
+      ENV["BUILD_NUMBERS_FILE"] = File.join(dir, "build_numbers.env")
+      @lane.run_lane(:next_build_number)
+      assert_equal "next_build=42\n", File.read(ENV["BUILD_NUMBERS_FILE"])
+    ensure
+      ENV.delete("BUILD_NUMBERS_FILE")
+    end
+    platforms = @lane.actions.select { |action, _| action == :latest_build }.map { |_, options| options[:platform] }
+    assert_equal %w[ios appletvos osx], platforms
+  end
 
   def test_ios_distribution_waits_for_and_verifies_only_the_pinned_build
     @lane.run_lane(:distribute_ios)
@@ -180,6 +218,15 @@ class FastlaneReleaseTest < Minitest::Test
     assert_distribution_options("appletvos")
     wait = Spaceship::ConnectAPI.calls.find { |call| call.first == :wait }.last
     assert_equal "appletvos", wait[:platform]
+  end
+
+  def test_macos_distribution_uses_its_own_platform_sequence
+    @build.platform = "MAC_OS"
+    @lane.run_lane(:distribute_macos)
+    assert_distribution_options("osx")
+    assert_equal [:api_key], @lane.actions.map(&:first)
+    wait = Spaceship::ConnectAPI.calls.find { |call| call.first == :wait }.last
+    assert_equal "osx", wait[:platform]
   end
 
   def test_distribution_hooks_do_not_access_keychains_even_on_macos_ci
