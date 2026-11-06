@@ -456,6 +456,19 @@ class ItemDetailViewModel {
     func publishRefetchedDetail(_ item: ItemDetail, contentId: String) {
         _ = beginDetailWrite()
         detail = item
+        cacheDetail(item, contentId: contentId)
+    }
+
+    /// The one place this page writes a detail payload to `ResponseCache`.
+    /// A rating write invalidates that cache, so a payload that may predate
+    /// it must not go back in: skipped while a write runs, when a rating
+    /// change happened since the read started (if the caller knows), and
+    /// whenever the payload's rating disagrees with one this page wrote or
+    /// confirmed. The page itself shows the newer rating either way.
+    private func cacheDetail(_ item: ItemDetail, contentId: String, ratingRevisionAtRead: Int? = nil) {
+        if isSavingRating { return }
+        if let ratingRevisionAtRead, ratingRevisionAtRead != ratingRevision { return }
+        if case .some(let shown) = ratingOverride, item.userRating != shown { return }
         ResponseCache.shared.set(item, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
     }
 
@@ -473,14 +486,6 @@ class ItemDetailViewModel {
         ratingRevisionAtRead: Int? = nil
     ) async -> ItemDetail? {
         guard !Task.isCancelled, generation == detailGeneration else { return nil }
-        // A rating change that overlapped the read means this payload's
-        // `user_rating` may predate it. The page shows the pending rating
-        // either way, but the payload must not go back into the cache that
-        // the write just invalidated. Checked at each cache write.
-        let mayCache: () -> Bool = { [weak self] in
-            guard let self, let ratingRevisionAtRead else { return true }
-            return !self.isSavingRating && self.ratingRevision == ratingRevisionAtRead
-        }
 
         #if os(tvOS)
         // Non-blocking: the movie cast portraits join the already-installed
@@ -500,9 +505,7 @@ class ItemDetailViewModel {
         }
 
         detail = initial
-        if mayCache() {
-            ResponseCache.shared.set(initial, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
-        }
+        cacheDetail(initial, contentId: contentId, ratingRevisionAtRead: ratingRevisionAtRead)
 
         guard supportsPlaybackMetadata(item) else { return initial }
 
@@ -517,9 +520,7 @@ class ItemDetailViewModel {
                   generation == self.detailGeneration else { return }
 
             self.detail = enriched
-            if mayCache() {
-                ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
-            }
+            self.cacheDetail(enriched, contentId: contentId, ratingRevisionAtRead: ratingRevisionAtRead)
             self.playbackEnrichmentTask = nil
         }
 
