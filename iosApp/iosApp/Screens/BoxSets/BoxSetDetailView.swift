@@ -43,7 +43,6 @@ struct BoxSetDetailView: View {
         .environment(\.browseLibraryId, viewModel.libraryId)
         .animation(.smooth(duration: 0.3), value: viewModel.detail == nil)
         #if os(iOS)
-        .toolbar(.hidden, for: .navigationBar)
         .overlay(alignment: .top) { topControls }
         #elseif os(macOS)
         .navigationTitle(viewModel.detail?.boxSet.title ?? "")

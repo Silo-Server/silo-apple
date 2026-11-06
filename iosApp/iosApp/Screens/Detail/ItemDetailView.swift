@@ -138,7 +138,7 @@ struct PhoneDetailTopChrome: View {
             )
 
             HStack {
-                if let leadingSystemName {
+                if let leadingSystemName, !usesStatusColumnNavigation {
                     Button(action: onLeadingTap) {
                         controlIcon(
                             systemName: leadingSystemName,
@@ -170,8 +170,31 @@ struct PhoneDetailTopChrome: View {
         } action: { column in
             statusColumn = column
         }
+        // The page hides the navigation bar so its artwork reaches the top.
+        // On the folded iPhone Duo the bar runs down the status column
+        // beside the artwork and carries Close or Back.
+        .toolbar(usesStatusColumnNavigation ? .visible : .hidden, for: .navigationBar)
+        .toolbar {
+            if usesStatusColumnNavigation, leadingSystemName == "xmark" {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(action: onLeadingTap) {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel(leadingAccessibilityLabel ?? "Close")
+                }
+            }
+        }
         #endif
         .zIndex(20)
+    }
+
+    /// On the folded iPhone Duo, Close and Back go at the top of the status
+    /// column as system bar buttons, where Apple places a page's primary
+    /// navigation and where row pages and pushed pages already show theirs.
+    /// The system keeps them clear of the time and any Live Activity. The
+    /// open Duo's split page keeps its own button in the sidebar.
+    private var usesStatusColumnNavigation: Bool {
+        isBesideStatusColumn && horizontalSizeClass == .compact
     }
 
     /// Beside the iPhone Duo's status column the buttons keep their own
@@ -637,9 +660,8 @@ private struct ItemDetailPhoneContent: View {
                 : "You're offline. Connect to a network to stream, or play a downloaded title.")
         }
         #if os(iOS)
-        // Hide the navigation bar so the artwork reaches the card's top edge;
-        // the card draws its own floating controls.
-        .toolbar(.hidden, for: .navigationBar)
+        // The card draws its own floating controls, which also decide when
+        // the navigation bar shows (see `PhoneDetailTopChrome`).
         .overlay(alignment: .top) {
             detailTopControls
         }

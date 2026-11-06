@@ -71,7 +71,6 @@ struct RequestDetailView: View {
         #if os(iOS)
         // Same card chrome as a library title: controls float over the
         // artwork, and glass fades in behind them as the page scrolls.
-        .toolbar(.hidden, for: .navigationBar)
         .overlay(alignment: .top) { topControls }
         #elseif os(macOS)
         .navigationTitle(viewModel.detail?.title ?? "")

@@ -3,9 +3,10 @@ import SwiftUI
 
 /// The iPhone Duo's folded screen shows the time and connection status in a
 /// column down one side instead of across the top. The window reports that
-/// column as a side safe-area inset with no top inset, which no other iPhone
-/// or iPad window does: portrait phones inset the top, and landscape phones
-/// inset both sides.
+/// column as a wide safe-area inset on one side only, which no other iPhone
+/// or iPad window does: portrait phones and iPads inset neither side, and
+/// landscape phones inset both. The top inset doesn't decide it: a page in
+/// the column's window gains one when it shows a navigation bar.
 ///
 /// Builds against an SDK older than iOS 27.1 run letterboxed on that screen
 /// and never see the column, so they keep the bottom tab bar.
@@ -18,7 +19,6 @@ struct StatusColumnLayout: Equatable {
     static let minimumWidth: CGFloat = 60
 
     init?(safeArea: EdgeInsets) {
-        guard safeArea.top < 1 else { return nil }
         if safeArea.leading < 1, safeArea.trailing >= Self.minimumWidth {
             edge = .trailing
             width = safeArea.trailing
