@@ -911,8 +911,7 @@ private struct WatchPartyEpisodePicker: View {
                             currentContentId: resumeEpisode?.contentId,
                             baseCardWidth: 400,
                             cardSpacing: 36,
-                            // Not when the viewer moved up to the seasons
-                            // while the episodes loaded.
+                            // Not once the viewer moves up to the seasons.
                             claimsFocusOnAppear: opensOnResumeEpisode && focusedSeasonNumber == nil
                         )
                         .padding(.horizontal, -WatchPartyMetrics.pageInset)
