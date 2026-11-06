@@ -1596,8 +1596,13 @@ class ItemDetailViewModel {
     /// Saves the viewer's rating, or clears it when `stars` is nil. Sets
     /// exactly what it is given rather than toggling. Choices made while a
     /// write is running are coalesced: only the newest is sent next.
-    func setRating(_ stars: Int?) async {
+    /// `send` replaces the server write in tests.
+    func setRating(
+        _ stars: Int?,
+        send: ((_ contentId: String, _ stars: Int?) async -> PersonalStateOutcome)? = nil
+    ) async {
         guard let contentId = detail?.contentId, stars.map(UserStarRating.range.contains) ?? true else { return }
+        let seriesId = detail?.seriesId
         ratingOverride = .some(stars)
         pendingRatingTarget = .some(stars)
         ratingRevision += 1
@@ -1608,20 +1613,30 @@ class ItemDetailViewModel {
         let owner = await currentPersonalStateOwner()
         while ratingTitleGeneration == generation, case .some(let target) = pendingRatingTarget {
             pendingRatingTarget = nil
-            let outcome = await PersonalStateSync.outcome {
-                guard let owner else { throw HTTPError.requestIdentityChanged }
-                try await SiloAPI.shared.apiV2Client.setRating(id: contentId, stars: target, auth: owner)
-                guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
-                    throw HTTPError.authorityChanged
+            let outcome: PersonalStateOutcome
+            if let send {
+                outcome = await send(contentId, target)
+            } else {
+                outcome = await PersonalStateSync.outcome {
+                    guard let owner else { throw HTTPError.requestIdentityChanged }
+                    try await SiloAPI.shared.apiV2Client.setRating(id: contentId, stars: target, auth: owner)
+                    guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
+                        throw HTTPError.authorityChanged
+                    }
                 }
             }
-            // The page moved to another title; this result is no longer its.
+            if outcome == .applied {
+                // The server changed for this title even if the page has
+                // moved on, so its cached reads go stale either way.
+                PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId)
+            }
+            // The page moved to another title; the rest of this result is
+            // no longer its.
             guard ratingTitleGeneration == generation else { return }
             ratingRevision += 1
             if outcome == .applied {
                 confirmedRating = .some(target)
                 ratingFreshnessToken = UUID().uuidString
-                invalidateRelatedCaches(contentId: contentId)
             } else if pendingRatingTarget == nil {
                 // Nothing newer queued: show the last rating the server
                 // confirmed. A newer queued choice is sent next and decides
