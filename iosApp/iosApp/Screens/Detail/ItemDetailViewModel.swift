@@ -459,11 +459,19 @@ class ItemDetailViewModel {
     /// and (deliberately) skips playback enrichment.
     func publishRefetchedDetail(_ item: ItemDetail, contentId: String, ratingRevisionAtRead: Int? = nil) {
         _ = beginDetailWrite()
-        // A rating write overlapped the read, so its `user_rating` may be
-        // older than the rating on screen: keep showing that one.
-        if isSavingRating || ratingRevisionAtRead.map({ $0 != ratingRevision }) == true,
-           item.userRating != userRating {
-            ratingOverride = .some(userRating)
+        let overlappedRatingWrite = isSavingRating
+            || ratingRevisionAtRead.map({ $0 != ratingRevision }) == true
+        if overlappedRatingWrite {
+            // Its `user_rating` may be older than the rating on screen:
+            // keep showing that one.
+            if item.userRating != userRating {
+                ratingOverride = .some(userRating)
+            }
+        } else if ratingRevisionAtRead != nil {
+            // A read that overlapped no rating write is as fresh as a detail
+            // load, so it releases the page's rating the same way.
+            ratingOverride = nil
+            confirmedRating = nil
         }
         detail = item
         cacheDetail(item, contentId: contentId, ratingRevisionAtRead: ratingRevisionAtRead)
