@@ -331,8 +331,9 @@ final class AppRouter {
     @ObservationIgnored private var itemDetailSeriesSelection: SeriesDetailContext?
 
     /// Opens or restores the detail card in the presentation the window calls
-    /// for now. Request details and row pages stay sheets: their pages have
-    /// no split layout.
+    /// for now. Request details stay sheets: their page has no split layout
+    /// and would stretch one column across the window. Row pages fill it, as
+    /// their grids widen to fit.
     private func openItemDetail(_ presentation: ItemDetailPresentation?) {
         if presentation?.id != presentedItemDetail?.id {
             itemDetailSeriesSelection = nil
@@ -345,7 +346,7 @@ final class AppRouter {
     }
 
     private func fillsWindow(_ presentation: ItemDetailPresentation) -> Bool {
-        presentsItemDetailFullWindow && presentation.request == nil && presentation.section == nil
+        presentsItemDetailFullWindow && presentation.request == nil
     }
 
     /// Moves an open detail to the presentation the window now calls for,
