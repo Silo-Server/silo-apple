@@ -405,7 +405,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             )
         }
         .disabled(isUpdatingWatched)
-        PhoneRateMenuItem(rating: userRating, isSaving: isSavingRating) {
+        PhoneRateMenuItem(rating: userRating, noun: "Series", isSaving: isSavingRating) {
             showsRatingDialog = true
         }
         Divider()

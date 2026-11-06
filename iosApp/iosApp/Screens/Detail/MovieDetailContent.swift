@@ -282,7 +282,11 @@ struct MovieDetailContent<BelowOverview: View>: View {
                 Label("Download Options…", systemImage: "slider.horizontal.3")
             }
         }
-        PhoneRateMenuItem(rating: userRating, isSaving: isSavingRating) {
+        PhoneRateMenuItem(
+            rating: userRating,
+            noun: detail.type == "movie" ? "Movie" : nil,
+            isSaving: isSavingRating
+        ) {
             showsRatingDialog = true
         }
         if detail.type == "movie" {

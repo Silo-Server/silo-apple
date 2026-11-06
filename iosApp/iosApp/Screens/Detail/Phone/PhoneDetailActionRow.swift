@@ -97,11 +97,15 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
 
 // MARK: - Rating
 
-/// The More menu's entry for the viewer's own 1 to 5 star rating: "Rate…",
-/// or the saved rating ("Your Rating: 4 Stars") once there is one. Opens the rating dialog
+/// The More menu's entry for the viewer's own 1 to 5 star rating: "Rate
+/// Movie" or "Rate Series", or the saved rating ("Your Rating: 4 Stars")
+/// once there is one. Opens the rating dialog
 /// (`phoneRatingDialog`) rather than listing the stars in the menu.
 struct PhoneRateMenuItem: View {
     let rating: Int?
+    /// What is being rated, in title case ("Movie", "Series"); nil reads
+    /// just "Rate".
+    var noun: String?
     /// A rating write is running; the entry waits for it.
     var isSaving = false
     let action: () -> Void
@@ -109,7 +113,7 @@ struct PhoneRateMenuItem: View {
     var body: some View {
         Button(action: action) {
             Label(
-                rating.map { "Your Rating: \(UserStarRating.label($0))" } ?? "Rate…",
+                rating.map { "Your Rating: \(UserStarRating.label($0))" } ?? ["Rate", noun].compactMap { $0 }.joined(separator: " "),
                 systemImage: rating == nil ? "star" : "star.fill"
             )
         }
