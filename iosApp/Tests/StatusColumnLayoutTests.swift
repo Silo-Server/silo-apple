@@ -14,6 +14,16 @@ final class StatusColumnLayoutTests: XCTestCase {
         XCTAssertEqual(layout.width, 84)
     }
 
+    /// A detail page showing its navigation bar in the column gains a small
+    /// top inset; it still sits beside the column.
+    func testPageWithANavigationBarStillGetsTheColumn() throws {
+        let layout = try XCTUnwrap(StatusColumnLayout(
+            safeArea: EdgeInsets(top: 16, leading: 0, bottom: 0, trailing: 76)
+        ))
+        XCTAssertEqual(layout.edge, .trailing)
+        XCTAssertEqual(layout.width, 76)
+    }
+
     /// Right-to-left layouts report the same physical column as leading.
     func testRightToLeftReportsTheColumnAsLeading() throws {
         let layout = try XCTUnwrap(StatusColumnLayout(
