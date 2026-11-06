@@ -58,10 +58,15 @@ extension EnvironmentValues {
     @Entry var statusColumn: StatusColumnLayout? = nil
 }
 
-/// Navigation for the status column, laid out like the iOS 27.1 vertical
-/// bars: page actions in a pill under the system status, destinations in a
-/// pill along the bottom. The system's own vertical tab bar lists up to seven
-/// destinations and leaves no room for the page actions.
+/// Navigation for the status column: page actions in a pill stacked on the
+/// destinations pill, both along the bottom. The system's own vertical tab
+/// bar lists up to seven destinations and leaves no room for the page
+/// actions.
+///
+/// The top of the column belongs to the system, and its height varies: a
+/// Live Activity such as Now Playing sits above the time and pushes the time
+/// and connection status well past where they usually end. Anchoring both
+/// pills to the bottom keeps them clear of it.
 struct StatusColumnBar: View {
     let layout: StatusColumnLayout
     let destinations: [MainTabDestination]
@@ -71,21 +76,25 @@ struct StatusColumnBar: View {
     @Namespace private var selectionNamespace
 
     /// Clears the system time and connection indicators at the top of the
-    /// column. iOS 27.1 starts its vertical toolbar at the same height.
+    /// column when no Live Activity sits above them. iOS 27.1 starts its
+    /// vertical toolbar at the same height.
     static let actionsTop: CGFloat = 168
-    private let bottomMargin: CGFloat = 26
+    static let bottomMargin: CGFloat = 26
+    static let pillSpacing: CGFloat = 12
     private let pillWidth: CGFloat = 52
     private let itemHeight: CGFloat = 50
 
     var body: some View {
         let (primary, overflow) = StatusColumnLayout.split(destinations)
         VStack(spacing: 0) {
+            Spacer(minLength: 0)
+
             topBarActions
                 .padding(.vertical, 4)
                 .frame(width: pillWidth)
                 .siloGlass(in: Capsule())
 
-            Spacer(minLength: 12)
+            Spacer().frame(height: Self.pillSpacing)
 
             VStack(spacing: 0) {
                 ForEach(primary) { destination in
@@ -100,8 +109,7 @@ struct StatusColumnBar: View {
             .siloGlass(in: Capsule())
             .animation(.snappy(duration: 0.25), value: selection)
         }
-        .padding(.top, Self.actionsTop)
-        .padding(.bottom, bottomMargin)
+        .padding(.bottom, Self.bottomMargin)
         .statusColumnCentered(layout)
         .frame(maxHeight: .infinity)
     }

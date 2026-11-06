@@ -158,18 +158,6 @@ struct PhoneDetailTopChrome: View {
             .padding(.horizontal, cornerInset ?? 18)
             .padding(.top, cornerInset ?? 9)
         }
-        #if os(iOS)
-        .overlay(alignment: statusColumn?.edge == .leading ? .topLeading : .topTrailing) {
-            if let statusColumn {
-                // In the status column, where the tab pages keep the same
-                // action under the time and connection status.
-                trailingButton
-                    .statusColumnCentered(statusColumn)
-                    .padding(.top, StatusColumnBar.actionsTop - Self.cardTopInset)
-                    .ignoresSafeArea(edges: statusColumn.edgeSet)
-            }
-        }
-        #endif
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
@@ -196,9 +184,6 @@ struct PhoneDetailTopChrome: View {
         false
         #endif
     }
-
-    /// How far below the top of the screen the detail card starts.
-    private static let cardTopInset: CGFloat = 8
 
     @ViewBuilder
     private var trailingButton: some View {
@@ -436,9 +421,10 @@ private struct ItemDetailPhoneContent: View {
     @State private var isSplitPage = false
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     #if os(iOS)
-    /// Beside the iPhone Duo's status column, where the TV remote covers the
-    /// window.
-    @State private var isBesideStatusColumn = false
+    /// The iPhone Duo's status column beside the page, where the TV remote
+    /// covers the window and the Remote button moves into the column.
+    @State private var statusColumn: StatusColumnLayout?
+    private var isBesideStatusColumn: Bool { statusColumn != nil }
     @Environment(SiloControlClient.self) private var siloControl
     @State private var controlRequestBox: ControlRequestBox?
     /// The cast button's in-flight watch-state read. A second tap replaces it.
@@ -662,10 +648,15 @@ private struct ItemDetailPhoneContent: View {
         } action: { isSplit in
             isSplitPage = isSplit
         }
-        .onGeometryChange(for: Bool.self) { proxy in
-            StatusColumnLayout(safeArea: proxy.safeAreaInsets) != nil
-        } action: { besideColumn in
-            isBesideStatusColumn = besideColumn
+        .onGeometryChange(for: StatusColumnLayout?.self) { proxy in
+            StatusColumnLayout(safeArea: proxy.safeAreaInsets)
+        } action: { column in
+            statusColumn = column
+        }
+        .overlay {
+            if let statusColumn {
+                statusColumnRemoteButton(statusColumn)
+            }
         }
         .sheet(item: $controlRequestBox, onDismiss: { router.refitItemDetail() }) { box in
             SiloControlTargetPickerView(request: box.request, controller: siloControl)
@@ -738,6 +729,26 @@ private struct ItemDetailPhoneContent: View {
     /// Movie and episode leaves cast the visible item. Containers (series,
     /// seasons, audiobooks) have no single file, so the button opens the
     /// connected remote or the TV picker.
+    /// The Remote button in the status column, at the bottom where the tab
+    /// pages keep their actions. The top of the column belongs to the system
+    /// and grows when the Dynamic Island shows an activity.
+    private func statusColumnRemoteButton(_ layout: StatusColumnLayout) -> some View {
+        Button(action: handleRemoteControlTap) {
+            Image(systemName: siloControl.remotePlaybackEngaged ? "appletvremote.gen4.fill" : "appletvremote.gen4")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
+                .siloGlass(in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Remote Control")
+        .statusColumnCentered(layout)
+        .padding(.bottom, StatusColumnBar.bottomMargin)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: layout.edge == .leading ? .bottomLeading : .bottomTrailing)
+        .ignoresSafeArea(edges: [layout.edgeSet, .bottom])
+    }
+
     private func handleRemoteControlTap() {
         if let detail = viewModel.detail, isDirectlyPlayable(detail) {
             // The TV resumes from the request's explicit position, so read
