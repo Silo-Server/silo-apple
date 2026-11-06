@@ -142,16 +142,15 @@ enum AppLanguage {
     ) -> String {
         guard let key, !key.isEmpty, language != development,
               let template = catalogLookup(key, language) else { return text }
-        let specifiers = template.replacingOccurrences(of: "%%", with: "").filter { $0 == "%" }.count
+        // The argument slots the template uses, by position (`%@` is `%1$@`).
+        // A template without any keeps a literal `%` unescaped.
+        let slots = Set(template.replacingOccurrences(of: "%%", with: "")
+            .matches(of: #/%(\d+\$)?(@|l{0,2}[df])/#)
+            .map { "\($0.output.1 ?? "1$")\($0.output.2)" })
         let values = args.map { Array($0.values) } ?? []
-        switch (specifiers, values.count) {
-        case (0, _):
-            return template
-        case (1, 1) where template.contains("%1$@") || template.contains("%@"):
-            return String(format: template, locale: locale(for: language), isolated(values[0], language: language))
-        default:
-            return text
-        }
+        if slots.isEmpty { return template }
+        guard slots == ["1$@"], values.count == 1 else { return text }
+        return String(format: template, locale: locale(for: language), isolated(values[0], language: language))
     }
 
     /// Looks a key up in one shipped language's own table, with no fallback

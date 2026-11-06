@@ -76,6 +76,18 @@ final class ServerTextTests: XCTestCase {
         )
     }
 
+    func testLiteralPercentAndARepeatedPlaceholderStillTranslate() {
+        AppLanguage.catalogLookup = { key, _ in
+            ["a": "Mejores 10 %", "b": "Vuelve a %1$@: más de %1$@", "c": "Sube un 5 %% en %1$@"][key]
+        }
+        XCTAssertEqual(AppLanguage.serverText("x", key: "a", language: "es"), "Mejores 10 %")
+        XCTAssertEqual(AppLanguage.serverText("x", key: "b", args: ["title": "Dune"], language: "es"), "Vuelve a Dune: más de Dune")
+        XCTAssertEqual(AppLanguage.serverText("x", key: "c", args: ["library": "Films"], language: "es"), "Sube un 5 % en Films")
+        // Two different slots can't be filled from a named map.
+        AppLanguage.catalogLookup = { _, _ in "%1$@ y %2$@" }
+        XCTAssertEqual(AppLanguage.serverText("x", key: "d", args: ["a": "1"], language: "es"), "x")
+    }
+
     // MARK: Problem details (D33)
 
     private func problem(_ id: String, detail: String, fieldCode: String? = nil) -> APIv2Problem {

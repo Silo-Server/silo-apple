@@ -98,10 +98,12 @@ final class StandardAppLanguageSystem: AppLanguageSystem {
     /// the app (subtitle fallback, D31). Writing the app's `AppleLanguages`
     /// changes `Locale.preferredLanguages`, so while that value is Silo's own
     /// this reads the list from before Silo's write instead:
-    /// - over a per-app language the user chose, the list from just before
-    ///   Silo wrote (theirs, as subtitles used it then);
-    /// - otherwise the global list, or that recorded list when the global one
-    ///   isn't readable (a fresh simulator has none).
+    /// - over a per-app language the user chose, that choice (the ledger's
+    ///   baseline), as subtitles used it then;
+    /// - otherwise the global list, or the list recorded just before Silo
+    ///   wrote when the global one isn't readable (a fresh simulator has
+    ///   none). Without a baseline Silo only owns the value by writing it, so
+    ///   that record is from the write.
     nonisolated static func deviceLanguages(
         defaults: UserDefaults = .standard,
         global: [String]? = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?["AppleLanguages"] as? [String]
@@ -109,10 +111,9 @@ final class StandardAppLanguageSystem: AppLanguageSystem {
         guard let ledger = storedLedger(defaults), storedAppValue(defaults) == [ledger.applied] else {
             return Locale.preferredLanguages
         }
-        let beforeSilo = defaults.stringArray(forKey: deviceListKey)
-        if let baseline = ledger.baseline { return beforeSilo ?? baseline }
+        if let baseline = ledger.baseline { return baseline }
         if let global, !global.isEmpty { return global }
-        return beforeSilo ?? []
+        return defaults.stringArray(forKey: deviceListKey) ?? []
     }
 
     private nonisolated static func storedAppValue(_ defaults: UserDefaults) -> [String]? {

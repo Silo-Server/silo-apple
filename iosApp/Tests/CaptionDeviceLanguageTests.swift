@@ -33,14 +33,14 @@ final class CaptionDeviceLanguageTests: XCTestCase {
         XCTAssertEqual(StandardAppLanguageSystem.deviceLanguages(global: nil), ["fr-CA", "en-US"])
     }
 
-    /// Over a per-app language the user chose, their list from before Silo's
-    /// write still counts, as it did then.
+    /// Over a per-app language the user chose, that choice still counts, as
+    /// it did then, even with an older record left by an earlier override.
     func testFallbackKeepsTheUsersAppLanguageUnderSilos() {
         defaults.set(["fr", "en-US"], forKey: "appLanguage.deviceList.v1")
-        defaults.set(Data(#"{"applied":"is","baseline":["fr"]}"#.utf8), forKey: "appLanguage.ledger.v1")
+        defaults.set(Data(#"{"applied":"is","baseline":["en"]}"#.utf8), forKey: "appLanguage.ledger.v1")
         defaults.set(["is"], forKey: "AppleLanguages")
 
-        XCTAssertEqual(StandardAppLanguageSystem.deviceLanguages(global: ["de-DE"]), ["fr", "en-US"])
+        XCTAssertEqual(StandardAppLanguageSystem.deviceLanguages(global: ["de-DE"]), ["en"])
     }
 
     /// Silo's first write keeps the list the device resolved before it.
