@@ -247,6 +247,7 @@ class ItemDetailViewModel {
             confirmedRating = nil
             pendingRatingTarget = nil
             isSendingRating = false
+            hasUnsettledRatingWrite = false
             ratingTitleGeneration += 1
             seriesContentId = nil
             seasons = []
@@ -1597,6 +1598,10 @@ class ItemDetailViewModel {
     /// was read. A failed write falls back to this, not to the loaded
     /// detail, which predates any write that succeeded since.
     @ObservationIgnored private var confirmedRating: Int??
+    /// A write was sent, its answer was lost and the read-back failed too,
+    /// so it may still land. Nothing else is sent until a read-back settles
+    /// it, or a later write could be overwritten by it.
+    @ObservationIgnored private var hasUnsettledRatingWrite = false
     /// Bumped when the page moves to another title; a write that finishes
     /// for the old title drops its result.
     @ObservationIgnored private var ratingTitleGeneration = 0
@@ -1627,6 +1632,28 @@ class ItemDetailViewModel {
         let owner = await currentPersonalStateOwner()
         while ratingTitleGeneration == generation, case .some(let target) = pendingRatingTarget {
             pendingRatingTarget = nil
+            if hasUnsettledRatingWrite, send == nil {
+                let stored = await readStoredRating(contentId: contentId, owner: owner)
+                guard ratingTitleGeneration == generation else { return }
+                guard case .some(let settled) = stored else {
+                    // Still unknown whether the earlier write landed; sending
+                    // now could be overwritten by it. Drop this choice.
+                    var ownerIsCurrent = false
+                    if let owner {
+                        ownerIsCurrent = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil
+                    }
+                    guard ratingTitleGeneration == generation else { return }
+                    pendingRatingTarget = nil
+                    ratingRevision += 1
+                    ratingOverride = confirmedRating
+                    if ownerIsCurrent {
+                        personalStateNotice = .failed(nil)
+                    }
+                    break
+                }
+                hasUnsettledRatingWrite = false
+                confirmedRating = .some(settled)
+            }
             let result: RatingWriteResult
             if let send {
                 result = RatingWriteResult(outcome: await send(contentId, target))
@@ -1644,6 +1671,7 @@ class ItemDetailViewModel {
             ratingRevision += 1
             if result.isUncertain {
                 ratingFreshnessToken = UUID().uuidString
+                hasUnsettledRatingWrite = result.storedRating == nil
             }
             if case .some(let stored) = result.storedRating {
                 confirmedRating = .some(stored)
@@ -1695,18 +1723,10 @@ class ItemDetailViewModel {
             guard MutationDelivery(error) == .unconfirmed, let owner else {
                 return RatingWriteResult(outcome: outcome)
             }
-            // `try?` would flatten a successful "unrated" (nil) into a failed
-            // read, so keep the two apart.
-            let stored: Int?
-            do {
-                stored = try await api.rating(id: contentId, auth: owner)
-            } catch {
-                return RatingWriteResult(outcome: outcome, isUncertain: true)
-            }
-            // The profile may have changed while the read was in flight; its
-            // answer then belongs to another owner and must not be shown.
-            guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
-                return RatingWriteResult(outcome: .skipped, isUncertain: true)
+            guard case .some(let stored) = await readStoredRating(contentId: contentId, owner: owner) else {
+                // A profile switch ends this quietly; anything else is a failure.
+                let ownerIsCurrent = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil
+                return RatingWriteResult(outcome: ownerIsCurrent ? outcome : .skipped, isUncertain: true)
             }
             return RatingWriteResult(
                 outcome: stored == stars ? .applied : outcome,
@@ -1714,6 +1734,25 @@ class ItemDetailViewModel {
                 storedRating: .some(stored)
             )
         }
+    }
+
+    /// The rating the server holds for the current owner. Outer nil means
+    /// it couldn't be read, or the owner changed while it was being read.
+    private func readStoredRating(contentId: String, owner: CapturedOrdinaryRequestAuth?) async -> Int?? {
+        guard let owner else { return nil }
+        // `try?` would flatten a successful "unrated" (nil) into a failed
+        // read, so keep the two apart.
+        let stored: Int?
+        do {
+            stored = try await SiloAPI.shared.apiV2Client.rating(id: contentId, auth: owner)
+        } catch {
+            return nil
+        }
+        // An answer read under a previous profile must not be shown.
+        guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
+            return nil
+        }
+        return .some(stored)
     }
 
     func toggleFavorite() async {
