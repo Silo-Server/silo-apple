@@ -811,7 +811,7 @@ struct CreateProfileFailure: Equatable {
            [403, 409, 422].contains(problem.status) {
             let reason = problem.errors?.first(where: { !$0.detail.isEmpty })?.detail ?? problem.detail
             self.init(title: "Can't Create Profile",
-                      message: reason.isEmpty ? ErrorState(error).message : reason)
+                      message: reason.isEmpty ? ErrorState(error).message : problem.localized(reason))
             return
         }
         self.init(message: ErrorState(error).message)

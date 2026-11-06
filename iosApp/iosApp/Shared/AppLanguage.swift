@@ -98,11 +98,67 @@ enum AppLanguage {
         return String(localized: resource)
     }
 
-    /// Wraps a title or name in first-strong isolates (FSI…PDI) so text of
-    /// the other direction keeps its neighbours' punctuation in place. For
-    /// text joined outside the catalog; catalog placeholders are isolated by
-    /// the system.
-    static func isolated(_ value: String) -> String {
-        "\u{2068}\(value)\u{2069}"
+    /// Wraps a title or name in first-strong isolates (FSI…PDI) when the
+    /// interface reads right to left, so text of the other direction keeps
+    /// its neighbours' punctuation in place. Left-to-right output keeps its
+    /// bytes (D28). For text joined outside the catalog; catalog placeholders
+    /// formatted by SwiftUI are isolated by the system.
+    static func isolated(_ value: String, language: String = displayedLanguage) -> String {
+        isRightToLeft(language) ? "\u{2068}\(value)\u{2069}" : value
+    }
+
+    // MARK: Server text
+
+    /// The shipped language on screen; the development language before the
+    /// app has stored one.
+    static var displayedLanguage: String {
+        displayedTag ?? development
+    }
+
+    /// The shipped language a view's `\.locale` shows. The root sets it to
+    /// the app language, so a view that reads it re-renders on a switch.
+    static func language(of locale: Locale) -> String {
+        match(locale.identifier(.bcp47)) ?? development
+    }
+
+    private static var development: String { shipped.first ?? "en" }
+
+    /// Text the server wrote that may carry a catalog key: a section's
+    /// `title_key`, a problem's `type`, a settings-manifest label. Shows the
+    /// translation when `language`'s own table has the key, otherwise the
+    /// server's `text`. English shows exactly what the server sent, never the
+    /// catalog's English.
+    ///
+    /// A key that takes an argument gets the one value in `args`. Apple
+    /// arguments are positional and the catalog doesn't name them, so any
+    /// other shape shows the server's text.
+    static func serverText(
+        _ text: String,
+        key: String?,
+        args: [String: String]? = nil,
+        language: String = displayedLanguage
+    ) -> String {
+        guard let key, !key.isEmpty, language != development,
+              let template = catalogLookup(key, language) else { return text }
+        let specifiers = template.replacingOccurrences(of: "%%", with: "").filter { $0 == "%" }.count
+        let values = args.map { Array($0.values) } ?? []
+        switch (specifiers, values.count) {
+        case (0, _):
+            return template
+        case (1, 1) where template.contains("%1$@") || template.contains("%@"):
+            return String(format: template, locale: locale(for: language), isolated(values[0], language: language))
+        default:
+            return text
+        }
+    }
+
+    /// Looks a key up in one shipped language's own table, with no fallback
+    /// to English: nil when that language doesn't translate it. Tests swap it.
+    nonisolated(unsafe) static var catalogLookup: (_ key: String, _ language: String) -> String? = { key, language in
+        guard let path = Bundle.main.path(forResource: language, ofType: "lproj"),
+              let bundle = Bundle(path: path) else { return nil }
+        let missing = "\u{0}"
+        let value = bundle.localizedString(forKey: key, value: missing, table: nil)
+        return value == missing ? nil : value
     }
 }

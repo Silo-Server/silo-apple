@@ -32,8 +32,11 @@ final class AppLanguageMatchingTests: XCTestCase {
         XCTAssertEqual(locale.hourCycle, .zeroToTwentyThree)
     }
 
-    func testIsolatedWrapsInFirstStrongIsolates() {
-        XCTAssertEqual(AppLanguage.isolated("Severance"), "\u{2068}Severance\u{2069}")
+    /// D28: isolates only in a right-to-left interface; LTR keeps its bytes.
+    func testIsolatedWrapsInFirstStrongIsolatesOnlyRightToLeft() {
+        XCTAssertEqual(AppLanguage.isolated("Severance", language: "ar"), "\u{2068}Severance\u{2069}")
+        XCTAssertEqual(AppLanguage.isolated("Severance", language: "de"), "Severance")
+        XCTAssertEqual(AppLanguage.isolated("Severance", language: "en"), "Severance")
     }
 }
 

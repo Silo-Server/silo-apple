@@ -426,9 +426,24 @@ struct ResolvedSection: Codable, Identifiable {
     let isCustom: Bool?
     let customized: Bool?
     let items: [SectionItem]
+    /// The catalog key of the server's own title (`home.section.*`), sent
+    /// only while the title is the server's text, never an admin's rename.
+    let titleKey: String?
+    /// The values that key's placeholder takes (`{"library": "Movies"}`).
+    let titleArgs: [String: String]?
 
     /// Whether this section is featured (defaults to false if nil).
     var isFeatured: Bool { featured ?? false }
+
+    /// The title in the language `locale` shows: the catalog's translation of
+    /// the server's own title, else `title` as sent.
+    func displayTitle(in locale: Locale) -> String {
+        displayTitle(language: AppLanguage.language(of: locale))
+    }
+
+    func displayTitle(language: String) -> String {
+        AppLanguage.serverText(title, key: titleKey, args: titleArgs, language: language)
+    }
 
     init(
         id: String,
@@ -439,7 +454,9 @@ struct ResolvedSection: Codable, Identifiable {
         totalCount: Int?,
         isCustom: Bool?,
         customized: Bool?,
-        items: [SectionItem]
+        items: [SectionItem],
+        titleKey: String? = nil,
+        titleArgs: [String: String]? = nil
     ) {
         self.id = id
         self.sectionType = sectionType
@@ -450,6 +467,8 @@ struct ResolvedSection: Codable, Identifiable {
         self.isCustom = isCustom
         self.customized = customized
         self.items = items
+        self.titleKey = titleKey
+        self.titleArgs = titleArgs
     }
 
     init(from decoder: Decoder) throws {
@@ -463,6 +482,10 @@ struct ResolvedSection: Codable, Identifiable {
         isCustom = try c.decodeIfPresent(Bool.self, forKey: .isCustom)
         customized = try c.decodeIfPresent(Bool.self, forKey: .customized)
         items = try c.decodeIfPresent([SectionItem].self, forKey: .items) ?? []
+        // Optional extras: a malformed key or argument map shows `title`
+        // rather than failing the row.
+        titleKey = (try? c.decodeIfPresent(String.self, forKey: .titleKey)) ?? nil
+        titleArgs = (try? c.decodeIfPresent([String: String].self, forKey: .titleArgs)) ?? nil
     }
 }
 
@@ -500,7 +523,9 @@ struct SectionsResponse: Codable {
                 totalCount: section.totalCount,
                 isCustom: section.isCustom,
                 customized: section.customized,
-                items: kept
+                items: kept,
+                titleKey: section.titleKey,
+                titleArgs: section.titleArgs
             )
         }
     }

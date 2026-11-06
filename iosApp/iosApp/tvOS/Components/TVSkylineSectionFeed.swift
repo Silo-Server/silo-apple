@@ -13,6 +13,8 @@ struct TVSkylineSectionFeed: View {
     /// Section rows to page through, in order (already filtered to
     /// non-empty, non-featured by the caller).
     let sections: [ResolvedSection]
+    /// The app language, so a switch gives the marquee the row's current title.
+    @Environment(\.locale) private var locale
     /// Marquee scale. Every Skyline landing currently uses `.home` so the
     /// pages render identically; kept as a parameter for explicit variants.
     var marqueeScale: TVFocusMarquee.Scale = .home
@@ -293,7 +295,7 @@ struct TVSkylineSectionFeed: View {
         TVMarqueeContent(
             item: item,
             rowId: section.id,
-            rowTitle: section.title,
+            rowTitle: section.displayTitle(in: locale),
             isContinueWatching: section.isContinueWatchingSection,
             isFeatured: section.isFeatured,
             spoilers: EpisodeSpoilerPreferences.shared.settings

@@ -109,8 +109,7 @@ enum TVSettingsOptions {
         unsetID: String,
         fallbackUnsetLabel: String
     ) -> [TVSettingsOption] {
-        let unsetLabel = SettingPresentationMetadata.definitions[key]?.unsetLabel
-            ?? fallbackUnsetLabel
+        let unsetLabel = SettingPresentationMetadata.unsetLabel(for: key, fallback: fallbackUnsetLabel)
         return [.init(id: unsetID, label: unsetLabel)]
             + languages.map { .init(id: $0.code, label: $0.label) }
     }

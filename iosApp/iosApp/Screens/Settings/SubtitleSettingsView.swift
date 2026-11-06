@@ -41,8 +41,7 @@ struct SubtitleSettingsView: View {
                 )
             ) {
                 Text(
-                    SettingPresentationMetadata.definitions[.catalogMetadataLanguage]?.unsetLabel
-                        ?? "Library default"
+                    SettingPresentationMetadata.unsetLabel(for: .catalogMetadataLanguage, fallback: "Library default")
                 ).tag(PlaybackPrefSentinel.none)
                 ForEach(viewModel.metadataLanguageOptions) { option in
                     Text(option.label).tag(option.code)
@@ -74,8 +73,7 @@ struct SubtitleSettingsView: View {
                 )
             ) {
                 Text(
-                    SettingPresentationMetadata.definitions[.playbackSubtitleLanguage]?.unsetLabel
-                        ?? "None"
+                    SettingPresentationMetadata.unsetLabel(for: .playbackSubtitleLanguage, fallback: "None")
                 ).tag(PlaybackPrefSentinel.none)
                 ForEach(viewModel.subtitleLanguageOptions) { option in
                     Text(option.label).tag(option.code)

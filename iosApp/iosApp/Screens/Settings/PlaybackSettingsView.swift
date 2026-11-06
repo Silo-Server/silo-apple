@@ -383,7 +383,7 @@ struct PlaybackSettingsView: View {
     #endif
 
     private var noAudioLanguageLabel: String {
-        SettingPresentationMetadata.definitions[.playbackAudioLanguage]?.unsetLabel ?? "No preference"
+        SettingPresentationMetadata.unsetLabel(for: .playbackAudioLanguage, fallback: "No preference")
     }
 
     private var audioLanguageLabel: String {

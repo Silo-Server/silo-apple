@@ -12,6 +12,8 @@ struct HomeFeedRow: View {
     var onSetWatched: ((SectionItem, Bool) async -> Bool)? = nil
     @State private var visibleItemId: String?
     @Environment(AppRouter.self) private var router
+    /// The app language, so a switch re-renders the title.
+    @Environment(\.locale) private var locale
 
     private var isResume: Bool { HomeFeed.isResume(section) }
     private var usesStills: Bool { Self.usesStills(section) }
@@ -58,7 +60,7 @@ struct HomeFeedRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
             HomeSectionHeader(
-                title: section.title,
+                title: section.displayTitle(in: locale),
                 icon: isResume ? "play.circle.fill" : nil,
                 action: onExploreAll
             )
@@ -121,7 +123,7 @@ struct HomeFeedRow: View {
                             ? HomeStillCard.artworkSize(width: Self.stillWidth)
                             : HomePosterCard.artworkSize(width: Self.posterWidth, aspect: isAudiobookRow ? .square : .poster),
                         cornerRadius: usesStills ? HomeFeedMetrics.stillRadius : HomeFeedMetrics.posterRadius,
-                        rowTitle: section.title,
+                        rowTitle: section.displayTitle(in: locale),
                         action: onExploreAll
                     )
                 }

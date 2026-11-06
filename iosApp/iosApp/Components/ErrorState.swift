@@ -114,7 +114,7 @@ struct ErrorState: Equatable {
     private static func forbiddenMessage(for problem: APIv2Problem) -> String {
         let detail = problem.detail.trimmingCharacters(in: .whitespacesAndNewlines)
         if problem.identifier == "permission_denied", !detail.isEmpty {
-            return detail
+            return problem.localized(detail)
         }
         if problem.identifier == PasswordChangeModel.requiredProblem {
             return passwordChangeRequiredMessage

@@ -344,6 +344,15 @@ struct APIv2Problem: Decodable, Hashable, Sendable {
     var identifier: String {
         type.split(separator: "/").last.map(String.init) ?? type
     }
+
+    /// The server's `text` for this problem in the language on screen (D33).
+    /// English shows `text` as sent. Another language shows the first field
+    /// error's `error.field.<code>`, then `error.<identifier>`, when the
+    /// catalog translates it, else `text`.
+    func localized(_ text: String, language: String = AppLanguage.displayedLanguage) -> String {
+        let byType = AppLanguage.serverText(text, key: "error.\(identifier)", language: language)
+        return AppLanguage.serverText(byType, key: errors?.first.map { "error.field.\($0.code)" }, language: language)
+    }
 }
 
 struct APIv2ProblemError: Decodable, Hashable, Sendable {

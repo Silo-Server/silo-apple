@@ -65,7 +65,7 @@ enum APIv2Error: LocalizedError, Sendable {
             return UpdateRequirement.serverMessage
         case .problem(let problem):
             if UpdateRequirement.isClientUpgradeRequired(problem) { return UpdateRequirement.appMessage }
-            return problem.detail.isEmpty ? problem.title : problem.detail
+            return problem.localized(problem.detail.isEmpty ? problem.title : problem.detail)
         case .httpStatus(let status):
             return "The server returned HTTP \(status)."
         }
