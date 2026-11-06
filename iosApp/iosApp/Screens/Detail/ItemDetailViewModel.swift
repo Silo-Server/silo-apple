@@ -1666,6 +1666,9 @@ class ItemDetailViewModel {
             // The server changed, or may have, for this title even if the
             // page has moved on, so its cached reads go stale either way.
             PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId)
+            // Also before the scope check: a later read of this title, after
+            // the page left and came back, must not join a pre-write request.
+            ratingFreshnessToken = UUID().uuidString
         }
         // Server-side state for this title, so recorded even if the page has
         // moved on.
@@ -1676,15 +1679,11 @@ class ItemDetailViewModel {
         }
         // Every page-state change below belongs to this title and owner.
         guard await isRatingScopeCurrent(generation, owner: owner) else { return }
-        if result.isUncertain {
-            ratingFreshnessToken = UUID().uuidString
-        }
         if case .some(let stored) = result.storedRating {
             confirmedRating = .some(stored)
         }
         if result.outcome == .applied {
             confirmedRating = .some(stars)
-            ratingFreshnessToken = UUID().uuidString
         } else {
             ratingOverride = confirmedRating
             personalStateNotice = PersonalStateNotice(result.outcome)
