@@ -245,7 +245,8 @@ class ItemDetailViewModel {
             // including any failure notice, instead of touching this title.
             ratingOverride = nil
             confirmedRating = nil
-            isSavingRating = false
+            // `isSavingRating` stays set: a write for the previous title may
+            // still be running, and a new one must not overlap it.
             hasUnsettledRatingWrite = false
             ratingTitleGeneration += 1
             seriesContentId = nil
@@ -1586,9 +1587,10 @@ class ItemDetailViewModel {
         return detail?.userRating
     }
 
-    /// True while a rating write is running. Writes go one at a time: a
-    /// choice made meanwhile is ignored rather than queued, so two writes
-    /// are never in flight and an older one can't land after a newer one.
+    /// True while a rating write is running. Writes go one at a time, across
+    /// titles too: a choice made meanwhile is ignored rather than queued, so
+    /// two writes are never in flight and an older one can't land after a
+    /// newer one, even if the viewer leaves the title and comes back.
     private(set) var isSavingRating = false
     /// Outer optional: whether a value is being shown over the detail.
     /// Inner: the rating it shows, where nil means "cleared".
@@ -1628,9 +1630,9 @@ class ItemDetailViewModel {
         ratingRevision += 1
         ratingOverride = .some(stars)
         defer {
-            // A title change has already reset this state for the new title.
+            isSavingRating = false
+            // A title change has already reset the rest for the new title.
             if ratingTitleGeneration == generation {
-                isSavingRating = false
                 ratingRevision += 1
             }
         }
