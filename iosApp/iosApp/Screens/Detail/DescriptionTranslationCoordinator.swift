@@ -126,15 +126,17 @@ final class DescriptionTranslationCoordinator {
         return true
     }
 
-    /// Cancel any in-flight run and reset to idle. A cancelled automatic run
-    /// may start again the next time its surface appears. Safe to call from
-    /// `onDisappear`.
+    /// Cancel any in-flight run and reset to idle. A cancelled automatic run,
+    /// including one past its cap that was still re-reading, may start again
+    /// the next time its surface appears. Safe to call from `onDisappear`.
     func cancel() {
-        if phase == .translating, let key { automaticKeys.remove(key) }
+        let wasPolling = phase == .translating || isSettling
+        if wasPolling, let key { automaticKeys.remove(key) }
         stopTask()
-        if phase == .translating { phase = .idle }
+        if wasPolling { phase = .idle }
     }
 
+    /// End the current run's task without touching its phase or keys.
     private func stopTask() {
         activeRunID = nil
         task?.cancel()
@@ -150,6 +152,9 @@ final class DescriptionTranslationCoordinator {
         phase = .idle
     }
 
+    /// The run behind ``translate(_:fetch:apply:)``: capture the owner, POST
+    /// the job, then re-read on `schedule` until the text arrives. At the cap
+    /// it reports `.failed` and keeps re-reading on `settleSchedule`.
     private func run<Value>(
         _ key: Key,
         runID: UUID,

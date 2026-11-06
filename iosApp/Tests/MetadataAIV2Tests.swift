@@ -292,6 +292,27 @@ final class MetadataAIV2Tests: XCTestCase {
     }
 
     @MainActor
+    func testCancelledRunPastItsCapMayStartAgain() async throws {
+        let coordinator = try await coordinator(
+            settleSchedule: [.seconds(60)],
+            sleep: { delay in
+                if delay == .zero { await Task.yield() } else { try await Task.sleep(for: delay) }
+            }
+        )
+        stub.reply(202, Self.job)
+        XCTAssertTrue(coordinator.translateAutomatically(Self.heatKey, fetch: { 0 }, apply: { _ in false }))
+        try await waitUntil { coordinator.hasFailed(Self.heatKey) }
+        XCTAssertTrue(coordinator.isRunning, "still re-reading after the cap")
+
+        // Leaving the page while the job may still finish lets the next visit poll again.
+        coordinator.cancel()
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertFalse(coordinator.isRunning)
+        XCTAssertTrue(coordinator.translateAutomatically(Self.heatKey, fetch: { 0 }, apply: { _ in true }))
+        coordinator.cancel()
+    }
+
+    @MainActor
     func testRefusedTranslationChecksOnceWhetherTheTextArrived() async throws {
         let coordinator = try await coordinator()
         let refused = #"{"type":"https://siloserver.org/docs/api/v2/problems/validation","title":"T","status":422,"detail":"nothing to translate","instance":"urn:x"}"#
