@@ -115,8 +115,10 @@ final class SettingsViewModel {
     /// the screen's bindings against an isolated instance.
     let playerSettings: PlayerSettings
 
+    @MainActor
     init(playerSettings: PlayerSettings = .shared) {
         self.playerSettings = playerSettings
+        showCachedAccount()
     }
 
     var hdrEnabled: Bool {
@@ -328,21 +330,26 @@ final class SettingsViewModel {
     /// itself main-actor bound.
     @MainActor
     func loadSettings() async {
+        let accountKey = Self.accountCacheKey
         prefs.bindProfile(id: AuthService.shared.profileId)
-        await PlayerSettings.shared.refreshFromServer()
+        showCachedAccount()
 
+        // Independent reads, so none waits behind another.
+        async let deviceSettings = PlayerSettings.shared.refreshFromServer()
         async let user: UserInfo? = try? SiloAPI.shared.currentUser()
-        async let profiles: [UserProfile] = (try? AuthService.shared.getProfiles()) ?? []
+        async let profile: UserProfile? = Self.loadActiveProfile()
+        let (_, loadedUser, loadedProfile) = await (deviceSettings, user, profile)
 
-        let (loadedUser, loadedProfiles) = await (user, profiles)
-        userInfo = loadedUser
+        // A failed read keeps the account the card is already showing.
+        if let loadedUser {
+            userInfo = loadedUser
+            if let accountKey, accountKey == Self.accountCacheKey {
+                Self.lastUserInfo = (accountKey, loadedUser)
+            }
+        }
 
         let activeProfileId = AuthService.shared.profileId
-        if let activeProfileId {
-            activeProfile = loadedProfiles.first(where: { $0.id == activeProfileId })
-        } else {
-            activeProfile = nil
-        }
+        activeProfile = loadedProfile?.id == activeProfileId ? loadedProfile : nil
 
         // Paint the profile's own values first, then let the batched effective
         // read replace them: it is the only source that accounts for a library,
@@ -350,6 +357,47 @@ final class SettingsViewModel {
         prefs.bindProfile(id: activeProfileId)
         prefs.seed(from: activeProfile)
         await prefs.load()
+    }
+
+    // MARK: Account card
+
+    /// The account details the last Settings visit read, so the next visit
+    /// draws the card at once instead of after `/api/v2/account/me` answers.
+    /// Keyed by server and profile so it never shows under another sign-in.
+    @MainActor private static var lastUserInfo: (key: String, user: UserInfo)?
+
+    @MainActor private static var accountCacheKey: String? {
+        guard let profileId = AuthService.shared.profileId else { return nil }
+        return "\(ServerRegistry.shared.activeServerUrl)|\(profileId)"
+    }
+
+    /// Fill the account card from what this session already loaded, so it
+    /// does not open empty and fill in a moment later.
+    @MainActor
+    private func showCachedAccount() {
+        let profileId = AuthService.shared.profileId
+        if activeProfile == nil, let cached = CurrentProfileStore.shared.profile, cached.id == profileId {
+            activeProfile = cached
+        }
+        if userInfo == nil, let key = Self.accountCacheKey, let last = Self.lastUserInfo, last.key == key {
+            userInfo = last.user
+        }
+    }
+
+    /// The active profile from `CurrentProfileStore`, which loads the profile
+    /// list once per session for the top-bar avatar. Settings used to fetch
+    /// the list again on every visit, and each fetch re-signs an uploaded
+    /// avatar's URL, so the avatar image downloaded again under the new URL.
+    @MainActor
+    private static func loadActiveProfile() async -> UserProfile? {
+        guard let profileId = AuthService.shared.profileId else { return nil }
+        let store = CurrentProfileStore.shared
+        await store.refresh()
+        if store.profile?.id != profileId {
+            // The cached profile predates a switch that has not reset it yet.
+            await store.refresh(force: true)
+        }
+        return store.profile?.id == profileId ? store.profile : nil
     }
 
     /// Apply a shared preset to the cellular pair.
