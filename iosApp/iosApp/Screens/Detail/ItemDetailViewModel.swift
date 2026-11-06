@@ -1681,8 +1681,18 @@ class ItemDetailViewModel {
             guard MutationDelivery(error) == .unconfirmed, let owner else {
                 return RatingWriteResult(outcome: outcome)
             }
-            guard let stored = try? await api.rating(id: contentId, auth: owner) else {
+            // `try?` would flatten a successful "unrated" (nil) into a failed
+            // read, so keep the two apart.
+            let stored: Int?
+            do {
+                stored = try await api.rating(id: contentId, auth: owner)
+            } catch {
                 return RatingWriteResult(outcome: outcome, isUncertain: true)
+            }
+            // The profile may have changed while the read was in flight; its
+            // answer then belongs to another owner and must not be shown.
+            guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
+                return RatingWriteResult(outcome: .skipped, isUncertain: true)
             }
             return RatingWriteResult(
                 outcome: stored == stars ? .applied : outcome,
