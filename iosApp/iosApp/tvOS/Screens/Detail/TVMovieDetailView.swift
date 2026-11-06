@@ -10,6 +10,7 @@ struct TVMovieDetailView: View {
     /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
     let userRating: Int?
     let onRate: (Int?) -> Void
+    let isSavingRating: Bool
     let inWatchlist: Bool
     let isWatched: Bool
     /// The box set the movie belongs to; nil draws no row.
@@ -178,6 +179,7 @@ struct TVMovieDetailView: View {
             stabilizesFocusMotion: true,
             primaryButtonWidth: 340,
             userRating: userRating,
+            isSavingRating: isSavingRating,
             onRate: onRate,
             playbackSelectors: { focusedAction in
                 TVPlaybackActionSelectors(

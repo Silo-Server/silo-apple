@@ -245,9 +245,9 @@ class ItemDetailViewModel {
             // including any failure notice, instead of touching this title.
             ratingOverride = nil
             confirmedRating = nil
-            // `isSavingRating` stays set: a write for the previous title may
-            // still be running, and a new one must not overlap it.
-            hasUnsettledRatingWrite = false
+            // `isSavingRating` and `unsettledRatingContentId` stay set: a
+            // write for the previous title may still be running or may still
+            // land, and the viewer can come back to it.
             ratingTitleGeneration += 1
             seriesContentId = nil
             seasons = []
@@ -1599,10 +1599,11 @@ class ItemDetailViewModel {
     /// was read. A failed write falls back to this, not to the loaded
     /// detail, which predates any write that succeeded since.
     @ObservationIgnored private var confirmedRating: Int??
-    /// A write was sent, its answer was lost and the read-back failed too,
-    /// so it may still land. The next write reads the stored rating first
-    /// and is refused if that still can't be settled.
-    @ObservationIgnored private var hasUnsettledRatingWrite = false
+    /// The title whose last write was sent with its answer and read-back
+    /// both lost, so it may still land. The next write for that title reads
+    /// the stored rating first and is refused if that still can't settle it.
+    /// Kept across title changes; it describes the server, not the page.
+    @ObservationIgnored private var unsettledRatingContentId: String?
     /// Bumped when the page moves to another title; a write that finishes
     /// for the old title drops its result.
     @ObservationIgnored private var ratingTitleGeneration = 0
@@ -1631,15 +1632,17 @@ class ItemDetailViewModel {
         ratingOverride = .some(stars)
         defer {
             isSavingRating = false
-            // A title change has already reset the rest for the new title.
-            if ratingTitleGeneration == generation {
-                ratingRevision += 1
-            }
+            // Always, even if the page moved on: a read that overlapped this
+            // write, on whichever title, must not treat its payload as fresh.
+            ratingRevision += 1
         }
         let owner = await currentPersonalStateOwner()
 
-        if hasUnsettledRatingWrite, send == nil {
+        if unsettledRatingContentId == contentId, send == nil {
             let stored = await readStoredRating(contentId: contentId, owner: owner)
+            if case .some = stored, unsettledRatingContentId == contentId {
+                unsettledRatingContentId = nil
+            }
             guard await isRatingScopeCurrent(generation, owner: owner) else { return }
             guard case .some(let settled) = stored else {
                 // Still unknown whether the earlier write will land, and it
@@ -1648,7 +1651,6 @@ class ItemDetailViewModel {
                 personalStateNotice = .failed(nil)
                 return
             }
-            hasUnsettledRatingWrite = false
             confirmedRating = .some(settled)
         }
 
@@ -1663,11 +1665,17 @@ class ItemDetailViewModel {
             // page has moved on, so its cached reads go stale either way.
             PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId)
         }
+        // Server-side state for this title, so recorded even if the page has
+        // moved on.
+        if result.isUncertain, result.storedRating == nil {
+            unsettledRatingContentId = contentId
+        } else if unsettledRatingContentId == contentId {
+            unsettledRatingContentId = nil
+        }
         // Every page-state change below belongs to this title and owner.
         guard await isRatingScopeCurrent(generation, owner: owner) else { return }
         if result.isUncertain {
             ratingFreshnessToken = UUID().uuidString
-            hasUnsettledRatingWrite = result.storedRating == nil
         }
         if case .some(let stored) = result.storedRating {
             confirmedRating = .some(stored)
@@ -2035,6 +2043,12 @@ enum UserStarRating {
     /// "1 Star", "4 Stars": the control's caption and menu entries.
     static func label(_ stars: Int) -> String {
         stars == 1 ? "1 Star" : "\(stars) Stars"
+    }
+
+    /// What picking `stars` means when the title is rated `current`: the
+    /// same rating again clears it, anything else sets it.
+    static func choosing(_ stars: Int, current: Int?) -> Int? {
+        stars == current ? nil : stars
     }
 
     static func accessibilityValue(_ stars: Int?) -> String {

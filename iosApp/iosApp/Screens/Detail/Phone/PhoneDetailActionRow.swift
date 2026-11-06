@@ -96,7 +96,8 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
 }
 
 /// The viewer's own 1 to 5 star rating, as a menu in the action row. The
-/// caption shows the saved rating; the menu sets a new one or clears it.
+/// caption shows the saved rating and the menu ticks it; picking another
+/// rating sets it, and picking the ticked one again clears it.
 struct PhoneRatingMenu: View {
     let rating: Int?
     /// A rating write is running; the menu waits for it.
@@ -108,7 +109,7 @@ struct PhoneRatingMenu: View {
         Menu {
             ForEach(UserStarRating.range.reversed(), id: \.self) { stars in
                 Button {
-                    onRate(stars)
+                    onRate(UserStarRating.choosing(stars, current: rating))
                 } label: {
                     if stars == rating {
                         Label(UserStarRating.label(stars), systemImage: "checkmark")
@@ -116,12 +117,7 @@ struct PhoneRatingMenu: View {
                         Text(UserStarRating.label(stars))
                     }
                 }
-            }
-            if rating != nil {
-                Divider()
-                Button("Clear Rating", systemImage: "star.slash", role: .destructive) {
-                    onRate(nil)
-                }
+                .accessibilityHint(stars == rating ? "Removes your rating" : "")
             }
         } label: {
             VStack(spacing: 6) {

@@ -182,6 +182,7 @@ struct TVSeriesDetailView: View {
     /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
     let userRating: Int?
     let onRate: (Int?) -> Void
+    let isSavingRating: Bool
     let inWatchlist: Bool
     /// Whole-series state for More's series entry.
     let isSeriesWatched: Bool
@@ -531,6 +532,7 @@ struct TVSeriesDetailView: View {
             allowsInitialPlayFocus: !userNavigated,
             tracksInitialFocusNavigation: true,
             userRating: userRating,
+            isSavingRating: isSavingRating,
             onRate: { stars in
                 userNavigated = true
                 onRate(stars)
