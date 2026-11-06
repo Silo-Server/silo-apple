@@ -145,7 +145,9 @@ final class ExternalDownloadStorage {
         var keepAccess = false
         defer { if scoped && !keepAccess { folder.stopAccessingSecurityScopedResource() } }
 
-        let values = try? folder.resourceValues(forKeys: [.isUbiquitousItemKey, .volumeIsReadOnlyKey])
+        let values = try? folder.resourceValues(
+            forKeys: [.isUbiquitousItemKey, .volumeIsReadOnlyKey, .localizedNameKey]
+        )
         if values?.isUbiquitousItem == true { throw ChooseError.cloudFolder }
         if values?.volumeIsReadOnly == true { throw ChooseError.readOnly }
 
@@ -165,7 +167,8 @@ final class ExternalDownloadStorage {
         let location = ExternalDownloadLocation(
             id: existing?.id ?? UUID().uuidString,
             bookmark: bookmark,
-            displayName: folder.lastPathComponent
+            // A drive's root folder is named after the drive.
+            displayName: values?.localizedName ?? folder.lastPathComponent
         )
         locations[location.id] = location
         if let previous = scopedFolders[location.id], previous != folder {
