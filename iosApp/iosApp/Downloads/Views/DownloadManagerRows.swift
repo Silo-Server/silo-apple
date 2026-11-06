@@ -370,6 +370,7 @@ struct DownloadMovieRow: View {
         if let sub = record.subtitle, !sub.isEmpty { parts.append(sub) }
         parts.append(DownloadFormatting.bytes(record.fileSize))
         if watched { parts.append("watched") }
+        if !DownloadManager.shared.isMediaReachable(record) { parts.append("drive not connected") }
         return parts.joined(separator: " · ")
     }
 }
@@ -587,7 +588,8 @@ struct DownloadEpisodeRow: View {
 
     private var meta: String {
         let size = DownloadFormatting.bytes(record.fileSize)
-        return watched ? "Watched · \(size)" : size
+        let line = watched ? "Watched · \(size)" : size
+        return DownloadManager.shared.isMediaReachable(record) ? line : "\(line) · Drive not connected"
     }
 }
 #endif

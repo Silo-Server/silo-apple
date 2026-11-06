@@ -7,6 +7,9 @@ enum OfflinePlaybackError: LocalizedError {
     case downloadNotFound
     case manifestUnavailable
     case mediaFileMissing
+    /// The media is on an external folder that can't be reached; carries
+    /// the folder's name.
+    case driveNotConnected(String)
 
     var errorDescription: String? {
         switch self {
@@ -16,6 +19,8 @@ enum OfflinePlaybackError: LocalizedError {
             return "The offline playback data for this download is missing. Delete and re-download it."
         case .mediaFileMissing:
             return "The downloaded video file is missing. Delete and re-download it."
+        case .driveNotConnected(let name):
+            return "This download is saved on \u{201C}\(name)\u{201D}. Connect the drive to play it."
         }
     }
 }
@@ -83,7 +88,17 @@ enum OfflinePlaybackBuilder {
             throw OfflinePlaybackError.downloadNotFound
         }
         let trackPrefs = manager.trackPrefs
-        guard let mediaURL = manager.absoluteMediaURL(for: record),
+        let volume = record.resolvedMediaVolume
+        if volume != .device {
+            let storage = ExternalDownloadStorage.shared
+            await storage.refreshAvailability()
+            guard storage.isAvailable(volume) else {
+                throw OfflinePlaybackError.driveNotConnected(storage.displayName(for: volume))
+            }
+        }
+        // The current record: a move to or from a drive may have finished
+        // while this waited.
+        guard let mediaURL = manager.record(id: downloadId).flatMap(manager.absoluteMediaURL(for:)),
               FileManager.default.fileExists(atPath: mediaURL.path) else {
             throw OfflinePlaybackError.mediaFileMissing
         }

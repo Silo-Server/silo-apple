@@ -180,7 +180,14 @@ actor DownloadStore {
             targets.filter { FileManager.default.fileExists(atPath: $0.path) },
             root: root
         )
-        let freed = DownloadStorageReclaim.deleteSetAside(root: root)
+        var freed = DownloadStorageReclaim.deleteSetAside(root: root)
+        // Media moved to an external folder; one out of reach keeps its copy.
+        for externalRoot in ExternalDownloadStorage.availableExternalRoots() {
+            let account = DownloadFilePaths.accountPath(serverId: serverId, localAccountId: localAccountId,
+                                                        root: externalRoot)
+            let bytes = DownloadFilePaths.bytes(under: account)
+            if (try? FileManager.default.removeItem(at: account)) != nil { freed += bytes }
+        }
         Self.logger.notice("Deleted an account's downloads (\(freed, privacy: .public) bytes)")
         return freed
     }

@@ -270,14 +270,32 @@ enum DownloadFilePaths {
 
     /// Delete every on-disk asset for one download (media, manifest,
     /// artwork, subtitles). The JSON store record is removed separately.
+    /// Also removes the download's media from every external folder that
+    /// can be reached; a folder out of reach keeps its copy.
     static func removeDownloadDirectory(serverId: String, localAccountId: String, profileId: String, downloadId: String) {
-        try? FileManager.default.removeItem(
-            at: downloadPath(serverId: serverId, localAccountId: localAccountId, profileId: profileId, downloadId: downloadId)
-        )
+        let fm = FileManager.default
+        for root in [rootURL] + ExternalDownloadStorage.availableExternalRoots() {
+            try? fm.removeItem(
+                at: downloadPath(serverId: serverId, localAccountId: localAccountId, profileId: profileId,
+                                 downloadId: downloadId, root: root)
+            )
+        }
     }
 
-    private static func downloadPath(serverId: String, localAccountId: String, profileId: String, downloadId: String) -> URL {
-        scopePath(serverId: serverId, localAccountId: localAccountId, profileId: profileId, root: rootURL)
+    /// A download's file in the download tree at `root`, such as an external
+    /// folder's. Path only.
+    static func fileURL(
+        serverId: String, localAccountId: String, profileId: String, downloadId: String, filename: String, root: URL
+    ) -> URL {
+        downloadPath(serverId: serverId, localAccountId: localAccountId, profileId: profileId,
+                     downloadId: downloadId, root: root)
+            .appendingPathComponent(filename, isDirectory: false)
+    }
+
+    private static func downloadPath(
+        serverId: String, localAccountId: String, profileId: String, downloadId: String, root: URL = rootURL
+    ) -> URL {
+        scopePath(serverId: serverId, localAccountId: localAccountId, profileId: profileId, root: root)
             .appendingPathComponent(sanitize(downloadId), isDirectory: true)
     }
 

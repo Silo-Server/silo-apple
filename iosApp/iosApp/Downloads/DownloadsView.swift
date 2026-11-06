@@ -61,6 +61,9 @@ struct DownloadsView: View {
         .safeAreaInset(edge: .bottom) { bottomBar }
         .sheet(isPresented: $showReclaim) { DownloadReclaimSheet() }
         .task { await AutoDownloadSchedule.shared.refresh() }
+        // Notices a drive connected or removed since the last look, and
+        // moves media waiting for it.
+        .task { DownloadManager.shared.requestMediaTransfers() }
         // An alert, not a confirmation dialog: on iPhone the dialog anchors
         // to this whole page and appears at its top, far from the row or
         // bottom bar that asked for it.
@@ -150,6 +153,7 @@ struct DownloadsView: View {
             LazyVStack(spacing: 0) {
                 DownloadsStorageHeader(
                     used: manager.totalBytesUsed,
+                    externalUsed: manager.externalBytesUsed,
                     breakdown: manager.storageBreakdown,
                     activeCount: inProgress.count
                 )

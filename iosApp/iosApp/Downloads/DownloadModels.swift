@@ -741,6 +741,16 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// the server sends one. A finished transfer of any other size is
     /// discarded and downloaded again.
     var expectedBytes: Int64? = nil
+    /// Where the media file is. Nil is the app container, as for every
+    /// download saved before external folders existed.
+    var mediaVolume: DownloadMediaVolume? = nil
+    /// Where the media file is waiting to move: set when a download finishes
+    /// while an external folder is chosen, or when the user moves their
+    /// downloads. Cleared once it moves, or when moving fails for a reason
+    /// other than a folder being out of reach.
+    var pendingMediaVolume: DownloadMediaVolume? = nil
+
+    var resolvedMediaVolume: DownloadMediaVolume { mediaVolume ?? .device }
 
     /// ThumbHash for the record's 2:3 poster tile: an episode's series
     /// poster, since its own poster is the episode still.

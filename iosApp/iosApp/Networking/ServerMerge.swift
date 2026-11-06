@@ -176,6 +176,20 @@ enum ServerMerge {
                 complete = false
             }
         }
+        // Media moved to external folders follow their accounts. A folder
+        // out of reach keeps them under the dropped server, where the merged
+        // records no longer look.
+        for externalRoot in ExternalDownloadStorage.availableExternalRoots() {
+            for move in merge.downloadMoves {
+                let source = DownloadFilePaths.accountPath(serverId: move.serverId, localAccountId: move.localAccountId,
+                                                           root: externalRoot)
+                let target = DownloadFilePaths.accountPath(serverId: survivorServerId, localAccountId: move.target,
+                                                           root: externalRoot)
+                guard source.standardizedFileURL.path != target.standardizedFileURL.path,
+                      FileManager.default.fileExists(atPath: source.path) else { continue }
+                _ = DownloadFilePaths.merge(source, into: target)
+            }
+        }
         if let owner = merge.legacyDataTarget {
             let scopes = DownloadFilePaths.scopesFromBeforeAccounts(serverId: merge.droppedServerId, root: root)
             let target = DownloadFilePaths.accountPath(serverId: survivorServerId, localAccountId: owner, root: root)
