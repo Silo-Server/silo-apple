@@ -88,7 +88,7 @@ final class DownloadMediaTransferTests: XCTestCase {
         return url
     }
 
-    func testCopyReplacesTheDestinationAndLeavesNoPartialFile() throws {
+    func testMovedFileReplacesTheDestinationOnlyWhenTheMoveCommits() throws {
         let folder = try temporaryFolder()
         let source = folder.appendingPathComponent("source.mp4")
         let destination = folder.appendingPathComponent("drive/scope/d1/media.mp4")
@@ -97,11 +97,14 @@ final class DownloadMediaTransferTests: XCTestCase {
                                                 withIntermediateDirectories: true)
         try Data("old".utf8).write(to: destination)
 
-        try DownloadMediaTransfer.copy(source, to: destination)
+        let partial = try DownloadMediaTransfer.copyToPartial(source, for: destination)
+        XCTAssertEqual(try Data(contentsOf: destination), Data("old".utf8),
+                       "the destination changes only when the move commits")
+        try DownloadMediaTransfer.finish(partial, at: destination)
 
         XCTAssertEqual(try Data(contentsOf: destination), Data("new bytes".utf8))
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path), "the source goes only after the record saves")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathExtension("partial").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: partial.path))
     }
 
     func testFailedCopyKeepsTheExistingDestination() throws {
@@ -109,10 +112,44 @@ final class DownloadMediaTransferTests: XCTestCase {
         let destination = folder.appendingPathComponent("media.mp4")
         try Data("old".utf8).write(to: destination)
 
-        XCTAssertThrowsError(try DownloadMediaTransfer.copy(folder.appendingPathComponent("missing.mp4"),
-                                                            to: destination))
+        XCTAssertThrowsError(try DownloadMediaTransfer.copyToPartial(folder.appendingPathComponent("missing.mp4"),
+                                                                     for: destination))
         XCTAssertEqual(try Data(contentsOf: destination), Data("old".utf8))
         XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathExtension("partial").path))
+    }
+
+    // MARK: - Work on external folders
+
+    func testWorkOnAFolderThatIsGoneStaysPending() throws {
+        let folder = try temporaryFolder()
+        let unplugged = folder.appendingPathComponent("Unplugged/Silo Downloads", isDirectory: true)
+        XCTAssertFalse(ExternalDownloadStorage.perform(.remove(path: "srv/acct-a/p/d1"), at: unplugged),
+                       "a removal on a drive that isn't there must wait for it")
+
+        let root = folder.appendingPathComponent("Drive/Silo Downloads", isDirectory: true)
+        let media = root.appendingPathComponent("srv/acct-a/p/d1/media.mp4")
+        try FileManager.default.createDirectory(at: media.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: media)
+        XCTAssertTrue(ExternalDownloadStorage.perform(.remove(path: "srv/acct-a/p/d1"), at: root))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: media.path))
+    }
+
+    func testAccountMoveKeepsTheSurvivingAccountsMediaOnAClash() throws {
+        let root = try temporaryFolder().appendingPathComponent("Silo Downloads", isDirectory: true)
+        let dropped = root.appendingPathComponent("old/acct-a/p/d1/media.mp4")
+        let kept = root.appendingPathComponent("new/acct-b/p/d1/media.mp4")
+        let onlyDropped = root.appendingPathComponent("old/acct-a/p/d2/media.mp4")
+        for (url, bytes) in [(kept, "kept"), (dropped, "dropped, written later"), (onlyDropped, "d2")] {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(bytes.utf8).write(to: url)
+        }
+
+        XCTAssertTrue(ExternalDownloadStorage.perform(.move(from: "old/acct-a", to: "new/acct-b"), at: root))
+
+        XCTAssertEqual(try Data(contentsOf: kept), Data("kept".utf8),
+                       "the merged store keeps the surviving account's record, so its media must stay")
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("new/acct-b/p/d2/media.mp4")), Data("d2".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("old/acct-a").path))
     }
 
     func testRemovingTheLastFileRemovesItsFolder() throws {

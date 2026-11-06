@@ -110,9 +110,10 @@ enum DownloadFilePaths {
     /// Moves `source` to `destination`, creating its parent. When
     /// `destination` already exists, their contents merge: directories in
     /// both merge the same way, and of two files with one name the newer
-    /// stays. Returns true once nothing is left at `source`; a failed move
-    /// leaves the rest in place to try again.
-    static func merge(_ source: URL, into destination: URL) -> Bool {
+    /// stays, or with `keepingDestination` the destination's. Returns true
+    /// once nothing is left at `source`; a failed move leaves the rest in
+    /// place to try again.
+    static func merge(_ source: URL, into destination: URL, keepingDestination: Bool = false) -> Bool {
         let fm = FileManager.default
         guard fm.fileExists(atPath: destination.path) else {
             do {
@@ -127,12 +128,13 @@ enum DownloadFilePaths {
         if isDirectory(source), isDirectory(destination) {
             let children = (try? fm.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)) ?? []
             for child in children {
-                _ = merge(child, into: destination.appendingPathComponent(child.lastPathComponent))
+                _ = merge(child, into: destination.appendingPathComponent(child.lastPathComponent),
+                          keepingDestination: keepingDestination)
             }
             if (try? fm.contentsOfDirectory(atPath: source.path))?.isEmpty == true {
                 try? fm.removeItem(at: source)
             }
-        } else if modificationDate(source) > modificationDate(destination) {
+        } else if !keepingDestination, modificationDate(source) > modificationDate(destination) {
             guard (try? fm.removeItem(at: destination)) != nil else { return false }
             return merge(source, into: destination)
         } else {
@@ -270,16 +272,29 @@ enum DownloadFilePaths {
 
     /// Delete every on-disk asset for one download (media, manifest,
     /// artwork, subtitles). The JSON store record is removed separately.
-    /// Also removes the download's media from every external folder that
-    /// can be reached; a folder out of reach keeps its copy.
+    /// Also removes the download's media from every external folder, now
+    /// or, for a folder out of reach, once it is back.
     static func removeDownloadDirectory(serverId: String, localAccountId: String, profileId: String, downloadId: String) {
-        let fm = FileManager.default
-        for root in [rootURL] + ExternalDownloadStorage.availableExternalRoots() {
-            try? fm.removeItem(
-                at: downloadPath(serverId: serverId, localAccountId: localAccountId, profileId: profileId,
-                                 downloadId: downloadId, root: root)
-            )
-        }
+        try? FileManager.default.removeItem(
+            at: downloadPath(serverId: serverId, localAccountId: localAccountId, profileId: profileId,
+                             downloadId: downloadId)
+        )
+        ExternalDownloadStorage.removeFromExternalFolders(relativePath(
+            downloadPath(serverId: serverId, localAccountId: localAccountId, profileId: profileId,
+                         downloadId: downloadId, root: relativeBase)
+        ))
+    }
+
+    /// An account's directory relative to a download tree's root, for work
+    /// on external folders.
+    static func relativeAccountPath(serverId: String, localAccountId: String) -> String {
+        relativePath(accountPath(serverId: serverId, localAccountId: localAccountId, root: relativeBase))
+    }
+
+    private static let relativeBase = URL(fileURLWithPath: "/", isDirectory: true)
+
+    private static func relativePath(_ url: URL) -> String {
+        String(url.path.drop { $0 == "/" })
     }
 
     /// A download's file in the download tree at `root`, such as an external

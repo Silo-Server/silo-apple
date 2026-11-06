@@ -59,14 +59,17 @@ final class ExternalDownloadStorage {
     private var scopedFolders: [String: URL] = [:]
     private var refreshGeneration = 0
 
-    /// `roots`, readable off the main actor for deleting a download's files.
-    nonisolated private static let rootsSnapshot = Mutex<[String: URL]>([:])
+    /// The reachable roots and registered folders, readable off the main
+    /// actor, and the work folders missed while out of reach.
+    nonisolated private static let folderState = Mutex(FolderState(
+        registeredIds: Set(loadSavedLocations().map(\.id)),
+        work: loadFolderWork()
+    ))
 
     private let defaults = UserDefaults.standard
 
     private init() {
-        let saved = defaults.data(forKey: Keys.locations)
-            .flatMap { try? JSONDecoder().decode([ExternalDownloadLocation].self, from: $0) } ?? []
+        let saved = Self.loadSavedLocations()
         locations = Dictionary(saved.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let current = defaults.string(forKey: Keys.currentLocationId)
         currentLocationId = current.flatMap { locations[$0] == nil ? nil : $0 }
@@ -95,11 +98,6 @@ final class ExternalDownloadStorage {
         }
     }
 
-    /// The download trees on every reachable external folder, for removing
-    /// a download's or an account's files from wherever they are.
-    nonisolated static func availableExternalRoots() -> [URL] {
-        rootsSnapshot.withLock { Array($0.values) }
-    }
 
     /// A label for the volume, such as the drive folder's name.
     func displayName(for volume: DownloadMediaVolume) -> String {
@@ -163,7 +161,9 @@ final class ExternalDownloadStorage {
         else { throw ChooseError.noAccess }
 
         let path = folder.standardizedFileURL.path
-        let existing = locations.values.first { resolvedPath(of: $0) == path }
+        let existing = locations.values.first { registeredPath(of: $0) == path }
+        // A refresh still resolving would apply what it saw before this choice.
+        refreshGeneration += 1
         let location = ExternalDownloadLocation(
             id: existing?.id ?? UUID().uuidString,
             bookmark: bookmark,
@@ -217,7 +217,15 @@ final class ExternalDownloadStorage {
         let snapshot = Array(locations.values)
         let held = scopedFolders
         let resolved = await Task.detached(priority: .utility) {
-            snapshot.map { Self.resolve($0, holding: held[$0.id]) }
+            snapshot.map { location in
+                let result = Self.resolve(location, holding: held[location.id])
+                // Work missed while away runs before anything uses the folder.
+                if result.reachable, let folder = result.folder {
+                    Self.catchUp(locationId: location.id,
+                                 root: folder.appendingPathComponent(Self.downloadsFolderName, isDirectory: true))
+                }
+                return result
+            }
         }.value
         guard generation == refreshGeneration else {
             // A newer refresh owns the outcome; drop access this one started.
@@ -291,16 +299,31 @@ final class ExternalDownloadStorage {
         return FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    private func resolvedPath(of location: ExternalDownloadLocation) -> String? {
-        guard let root = roots[location.id] else { return nil }
-        return root.deletingLastPathComponent().standardizedFileURL.path
+    /// The folder a registration names: its reachable root, or else where
+    /// its bookmark resolves now.
+    private func registeredPath(of location: ExternalDownloadLocation) -> String? {
+        if let root = roots[location.id] {
+            return root.deletingLastPathComponent().standardizedFileURL.path
+        }
+        var stale = false
+        return (try? URL(resolvingBookmarkData: location.bookmark, options: Self.resolveOptions,
+                         relativeTo: nil, bookmarkDataIsStale: &stale))?.standardizedFileURL.path
     }
 
     // MARK: - Persistence
 
     private func publishRoots() {
         let snapshot = roots
-        Self.rootsSnapshot.withLock { $0 = snapshot }
+        let registered = Set(locations.keys)
+        Self.folderState.withLock {
+            $0.roots = snapshot
+            $0.registeredIds = registered
+        }
+    }
+
+    nonisolated private static func loadSavedLocations() -> [ExternalDownloadLocation] {
+        UserDefaults.standard.data(forKey: Keys.locations)
+            .flatMap { try? JSONDecoder().decode([ExternalDownloadLocation].self, from: $0) } ?? []
     }
 
     private func save() {
@@ -321,5 +344,100 @@ final class ExternalDownloadStorage {
     private enum Keys {
         static let locations = "downloads.externalLocations"
         static let currentLocationId = "downloads.externalCurrentLocationId"
+        static let folderWork = "downloads.externalFolderWork"
+    }
+
+    // MARK: - Work for every folder
+
+    /// Removes a path, relative to the download tree, from every registered
+    /// folder: now from those in reach, and from the rest when they are next
+    /// found in reach.
+    nonisolated static func removeFromExternalFolders(_ relativePath: String) {
+        schedule(.remove(path: relativePath))
+    }
+
+    /// Merges one path of the download tree into another in every
+    /// registered folder, like `removeFromExternalFolders`. Where both hold a
+    /// file, the destination's stays: a server merge keeps the surviving
+    /// account's records, so its media is the one they name.
+    nonisolated static func moveInExternalFolders(from source: String, to destination: String) {
+        schedule(.move(from: source, to: destination))
+    }
+
+    struct FolderWork: Codable, Sendable {
+        enum Action: Codable, Sendable {
+            case remove(path: String)
+            case move(from: String, to: String)
+        }
+        var id = UUID()
+        let action: Action
+        var waitingLocationIds: Set<String>
+    }
+
+    private struct FolderState: Sendable {
+        var roots: [String: URL] = [:]
+        var registeredIds: Set<String>
+        var work: [FolderWork]
+    }
+
+    nonisolated private static func schedule(_ action: FolderWork.Action) {
+        let (roots, registered) = folderState.withLock { ($0.roots, $0.registeredIds) }
+        let waiting = registered.filter { id in
+            guard let root = roots[id] else { return true }
+            return !perform(action, at: root)
+        }
+        guard !waiting.isEmpty else { return }
+        folderState.withLock { state in
+            state.work.append(FolderWork(action: action, waitingLocationIds: Set(waiting)))
+            saveFolderWork(state.work)
+        }
+    }
+
+    /// Runs, in order, the work a folder missed while out of reach. Stops at
+    /// the first step that fails, so later steps never run ahead of it.
+    nonisolated private static func catchUp(locationId: String, root: URL) {
+        let pending = folderState.withLock { $0.work.filter { $0.waitingLocationIds.contains(locationId) } }
+        var done: Set<UUID> = []
+        for work in pending {
+            guard perform(work.action, at: root) else { break }
+            done.insert(work.id)
+        }
+        guard !done.isEmpty else { return }
+        folderState.withLock { state in
+            for index in state.work.indices where done.contains(state.work[index].id) {
+                state.work[index].waitingLocationIds.remove(locationId)
+            }
+            state.work.removeAll { $0.waitingLocationIds.isEmpty }
+            saveFolderWork(state.work)
+        }
+    }
+
+    /// Whether the action's outcome now holds in the download tree at `root`.
+    nonisolated static func perform(_ action: FolderWork.Action, at root: URL) -> Bool {
+        guard DownloadMediaTransfer.isReachable(root) else { return false }
+        let fm = FileManager.default
+        switch action {
+        case .remove(let path):
+            let url = root.appendingPathComponent(path)
+            try? fm.removeItem(at: url)
+            return !fm.fileExists(atPath: url.path)
+        case .move(let from, let to):
+            let source = root.appendingPathComponent(from)
+            guard fm.fileExists(atPath: source.path) else { return true }
+            return DownloadFilePaths.merge(source, into: root.appendingPathComponent(to), keepingDestination: true)
+        }
+    }
+
+    nonisolated private static func loadFolderWork() -> [FolderWork] {
+        UserDefaults.standard.data(forKey: Keys.folderWork)
+            .flatMap { try? JSONDecoder().decode([FolderWork].self, from: $0) } ?? []
+    }
+
+    nonisolated private static func saveFolderWork(_ work: [FolderWork]) {
+        if work.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Keys.folderWork)
+        } else if let data = try? JSONEncoder().encode(work) {
+            UserDefaults.standard.set(data, forKey: Keys.folderWork)
+        }
     }
 }

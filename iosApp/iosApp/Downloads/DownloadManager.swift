@@ -151,6 +151,9 @@ final class DownloadManager {
     /// Serializes disk saves so a rapid burst of `persist()` calls can't land
     /// out of order and overwrite a newer snapshot with an older one.
     private var saveChain: Task<Void, Never>?
+    /// Saves of `file` that did not reach disk, so a step that must follow a
+    /// durable save (deleting a moved file's source) can tell.
+    @ObservationIgnored private var failedSaveCount = 0
     /// Offline progress entries a running flush has sent and is still
     /// waiting on. Dispatched entries outside this set are held.
     private var progressUploadsInFlight: Set<UUID> = []
@@ -4607,7 +4610,10 @@ final class DownloadManager {
         let previous = saveChain
         saveChain = Task { @MainActor in
             await previous?.value
-            await DownloadStore.shared.save(snapshot, serverId: serverId, localAccountId: accountId, profileId: profileId)
+            let saved = await DownloadStore.shared.save(
+                snapshot, serverId: serverId, localAccountId: accountId, profileId: profileId
+            )
+            if !saved { DownloadManager.shared.failedSaveCount += 1 }
         }
     }
 
@@ -4693,10 +4699,31 @@ final class DownloadManager {
     private func moveMedia(_ job: DownloadMediaTransfer.Job, in scope: ScopeKey) async -> Bool {
         let record = job.record
         let origin = record.resolvedMediaVolume
+        let storage = ExternalDownloadStorage.shared
         guard let filename = record.mediaFilename,
               let source = mediaURL(recordId: record.id, filename: filename, on: origin),
-              let destination = mediaURL(recordId: record.id, filename: filename, on: job.target)
+              let destination = mediaURL(recordId: record.id, filename: filename, on: job.target),
+              let originRoot = storage.downloadsRoot(for: origin),
+              let targetRoot = storage.downloadsRoot(for: job.target)
         else { return false }
+        // The same file, still waiting for this move. A deletion, a newer
+        // revision, or another choice of location during the copy cancels it.
+        let stillWanted: (DownloadRecord?) -> Bool = { current in
+            guard let current else { return false }
+            return current.mediaFilename == filename && current.resolvedMediaVolume == origin
+                && current.revision == record.revision && current.isPlayableOffline
+                && current.pendingMediaVolume == job.target
+        }
+        // Two registrations of one folder: the file is already there, and
+        // deleting the "source" would delete it.
+        if source.standardizedFileURL.path == destination.standardizedFileURL.path {
+            guard var current = file.records[record.id], stillWanted(current) else { return true }
+            current.mediaVolume = job.target == .device ? nil : job.target
+            current.pendingMediaVolume = nil
+            file.records[record.id] = current
+            persist()
+            return true
+        }
         movingMediaRecordId = record.id
         defer { movingMediaRecordId = nil }
         #if os(iOS) || os(tvOS)
@@ -4704,41 +4731,57 @@ final class DownloadManager {
         defer { background.end() }
         #endif
         let copied = await Task.detached(priority: .utility) {
-            Result { try DownloadMediaTransfer.copy(source, to: destination) }
+            Result { try DownloadMediaTransfer.copyToPartial(source, for: destination) }
         }.value
 
-        // Deleted, replaced, or moved some other way while copying.
-        let unchanged: (DownloadRecord) -> Bool = { current in
-            current.mediaFilename == filename && current.resolvedMediaVolume == origin
-                && current.revision == record.revision && current.isPlayableOffline
-        }
         switch copied {
-        case .success:
-            guard loadedScope == scope, var current = file.records[record.id], unchanged(current) else {
-                await Task.detached(priority: .utility) { DownloadMediaTransfer.removeMedia(at: destination) }.value
+        case .success(let partial):
+            guard loadedScope == scope, stillWanted(file.records[record.id]), var current = file.records[record.id]
+            else {
+                try? FileManager.default.removeItem(at: partial)
                 return true
             }
+            do {
+                try DownloadMediaTransfer.finish(partial, at: destination)
+            } catch {
+                Self.logger.error("Failed to place moved media: \(String(describing: error), privacy: .private)")
+                try? FileManager.default.removeItem(at: partial)
+                return false
+            }
             current.mediaVolume = job.target == .device ? nil : job.target
-            if current.pendingMediaVolume == job.target { current.pendingMediaVolume = nil }
+            current.pendingMediaVolume = nil
             file.records[record.id] = current
+            let failedSaves = failedSaveCount
             persist()
             // The source goes only once the record naming the copy is saved.
             await waitForQueuedSaves()
+            guard failedSaveCount == failedSaves else {
+                // The store on disk still names the source: point the record
+                // back at it, drop the copy, and try again on a later pass.
+                if var reverted = file.records[record.id], reverted.mediaFilename == filename,
+                   reverted.mediaVolume == current.mediaVolume {
+                    reverted.mediaVolume = record.mediaVolume
+                    reverted.pendingMediaVolume = job.target
+                    file.records[record.id] = reverted
+                }
+                await Task.detached(priority: .utility) { DownloadMediaTransfer.removeMedia(at: destination) }.value
+                return false
+            }
             await Task.detached(priority: .utility) { DownloadMediaTransfer.removeMedia(at: source) }.value
             refreshStorageUsage()
             return true
         case .failure(let error):
-            guard loadedScope == scope, var current = file.records[record.id], unchanged(current) else { return false }
-            let storage = ExternalDownloadStorage.shared
-            await storage.refreshAvailability()
+            let reachable = await Task.detached(priority: .utility) {
+                DownloadMediaTransfer.isReachable(originRoot) && DownloadMediaTransfer.isReachable(targetRoot)
+            }.value
             // A drive unplugged mid-copy: try again once it is back.
-            guard storage.isAvailable(job.target), storage.isAvailable(origin) else { return false }
-            Self.logger.error("Failed to move downloaded media: \(String(describing: error), privacy: .public)")
-            if current.pendingMediaVolume == job.target {
-                current.pendingMediaVolume = nil
-                file.records[record.id] = current
-                persist()
-            }
+            guard reachable else { return false }
+            guard loadedScope == scope, stillWanted(file.records[record.id]), var current = file.records[record.id]
+            else { return false }
+            Self.logger.error("Failed to move downloaded media: \(String(describing: error), privacy: .private)")
+            current.pendingMediaVolume = nil
+            file.records[record.id] = current
+            persist()
             let title = record.title.map { "\u{201C}\($0)\u{201D}" } ?? "a download"
             let reason: String
             if DownloadSessionDelegate.isOutOfSpace(error) {

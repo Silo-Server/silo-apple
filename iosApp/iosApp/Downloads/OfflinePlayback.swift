@@ -92,6 +92,9 @@ enum OfflinePlaybackBuilder {
         if volume != .device {
             let storage = ExternalDownloadStorage.shared
             await storage.refreshAvailability()
+            guard manager.isCurrentOfflinePlayback(owner) else {
+                throw OfflinePlaybackError.downloadNotFound
+            }
             guard storage.isAvailable(volume) else {
                 throw OfflinePlaybackError.driveNotConnected(storage.displayName(for: volume))
             }

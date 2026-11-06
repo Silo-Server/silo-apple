@@ -367,10 +367,11 @@ struct DownloadMovieRow: View {
 
     private var meta: String {
         var parts: [String] = []
+        // First, so a long line can't truncate it away.
+        if !DownloadManager.shared.isMediaReachable(record) { parts.append("Drive not connected") }
         if let sub = record.subtitle, !sub.isEmpty { parts.append(sub) }
         parts.append(DownloadFormatting.bytes(record.fileSize))
         if watched { parts.append("watched") }
-        if !DownloadManager.shared.isMediaReachable(record) { parts.append("drive not connected") }
         return parts.joined(separator: " · ")
     }
 }
@@ -589,7 +590,7 @@ struct DownloadEpisodeRow: View {
     private var meta: String {
         let size = DownloadFormatting.bytes(record.fileSize)
         let line = watched ? "Watched · \(size)" : size
-        return DownloadManager.shared.isMediaReachable(record) ? line : "\(line) · Drive not connected"
+        return DownloadManager.shared.isMediaReachable(record) ? line : "Drive not connected · \(line)"
     }
 }
 #endif

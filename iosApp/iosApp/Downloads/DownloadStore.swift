@@ -91,24 +91,28 @@ actor DownloadStore {
     }
 
     /// Atomically persist the blob for a scope. No-op for an empty scope.
-    func save(_ file: DownloadStoreFile, serverId: String, localAccountId: String, profileId: String) {
-        guard !serverId.isEmpty, !localAccountId.isEmpty, !profileId.isEmpty else { return }
+    /// Returns whether the store reached disk.
+    @discardableResult
+    func save(_ file: DownloadStoreFile, serverId: String, localAccountId: String, profileId: String) -> Bool {
+        guard !serverId.isEmpty, !localAccountId.isEmpty, !profileId.isEmpty else { return false }
         let scope = scopeKey(serverId: serverId, localAccountId: localAccountId, profileId: profileId)
         guard !unsavableScopes.contains(scope) else {
             // `load` already logged the cause at error level.
             Self.logger.debug("Download store save skipped: the scope's store could not be loaded")
-            return
+            return false
         }
         guard !removedAccounts.contains(accountKey(serverId: serverId, localAccountId: localAccountId)) else {
             Self.logger.debug("Download store save skipped: the account's downloads were deleted")
-            return
+            return false
         }
         let url = storeFileURL(serverId: serverId, localAccountId: localAccountId, profileId: profileId)
         do {
             let data = try encoder.encode(file)
             try data.write(to: url, options: .atomic)
+            return true
         } catch {
             Self.logger.error("Download store save failed: \(String(describing: error), privacy: .public)")
+            return false
         }
     }
 
@@ -180,14 +184,11 @@ actor DownloadStore {
             targets.filter { FileManager.default.fileExists(atPath: $0.path) },
             root: root
         )
-        var freed = DownloadStorageReclaim.deleteSetAside(root: root)
-        // Media moved to an external folder; one out of reach keeps its copy.
-        for externalRoot in ExternalDownloadStorage.availableExternalRoots() {
-            let account = DownloadFilePaths.accountPath(serverId: serverId, localAccountId: localAccountId,
-                                                        root: externalRoot)
-            let bytes = DownloadFilePaths.bytes(under: account)
-            if (try? FileManager.default.removeItem(at: account)) != nil { freed += bytes }
-        }
+        let freed = DownloadStorageReclaim.deleteSetAside(root: root)
+        // Media moved to external folders goes too, now or once each is back.
+        ExternalDownloadStorage.removeFromExternalFolders(
+            DownloadFilePaths.relativeAccountPath(serverId: serverId, localAccountId: localAccountId)
+        )
         Self.logger.notice("Deleted an account's downloads (\(freed, privacy: .public) bytes)")
         return freed
     }

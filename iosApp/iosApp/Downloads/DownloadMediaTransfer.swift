@@ -4,10 +4,12 @@ import Foundation
 /// external folder. `DownloadManager` runs the moves one at a time and
 /// updates the record; this holds the selection and file work.
 ///
-/// A move copies to `<media>.partial`, checks the size, and renames it into
-/// place. The record switches volume only after that, and the source goes
-/// only after the record is saved, so a move cut short at any point leaves
-/// the record naming a complete file.
+/// A move copies to `<media>.partial` and checks the size off the main
+/// actor, then renames it into place on the main actor in the same step that
+/// switches the record's volume, so a newer download of the record can't be
+/// replaced by an older copy. The source goes only after the record is
+/// saved, so a move cut short at any point leaves the record naming a
+/// complete file.
 enum DownloadMediaTransfer {
     struct Job: Equatable {
         let record: DownloadRecord
@@ -55,10 +57,10 @@ enum DownloadMediaTransfer {
         return record.resolvedMediaVolume == target ? nil : target
     }
 
-    /// Copies `source` to `destination` through a `.partial` file, replacing
-    /// any file already at `destination`. Slow for large files on a USB
-    /// drive; run it off the main actor.
-    static func copy(_ source: URL, to destination: URL) throws {
+    /// Copies `source` beside `destination` as `<destination>.partial` and
+    /// checks its size, returning the partial file. Slow for large files on a
+    /// USB drive; run it off the main actor.
+    static func copyToPartial(_ source: URL, for destination: URL) throws -> URL {
         let fm = FileManager.default
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         let partial = destination.appendingPathExtension("partial")
@@ -67,12 +69,26 @@ enum DownloadMediaTransfer {
             try fm.copyItem(at: source, to: partial)
             let expected = fileSize(source)
             guard expected > 0, fileSize(partial) == expected else { throw TransferError.sizeMismatch }
-            try? fm.removeItem(at: destination)
-            try fm.moveItem(at: partial, to: destination)
+            return partial
         } catch {
             try? fm.removeItem(at: partial)
             throw error
         }
+    }
+
+    /// Renames a checked partial file into place, replacing any file there.
+    /// A rename within one folder, so quick enough for the main actor.
+    static func finish(_ partial: URL, at destination: URL) throws {
+        try? FileManager.default.removeItem(at: destination)
+        try FileManager.default.moveItem(at: partial, to: destination)
+    }
+
+    /// Whether a volume's download tree is there, read fresh: the drive may
+    /// have gone since the last availability refresh.
+    static func isReachable(_ root: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: root.deletingLastPathComponent().path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
     }
 
     /// Removes a media file and, when nothing else is left in it, its
