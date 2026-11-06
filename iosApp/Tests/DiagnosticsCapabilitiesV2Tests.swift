@@ -17,9 +17,10 @@ final class DiagnosticsCapabilitiesV2Tests: XCTestCase {
         state: String = "available",
         allowed: Bool = true,
         status: String = "available",
-        uploadChunkBytes: Int = 786_432
+        uploadChunkBytes: Int = 786_432,
+        acceptedCrashSources: String = ""
     ) -> String {
-        #"{"revision":"r1","state":"\#(state)","allowed":\#(allowed),"status":"\#(status)","server_instance_id":"srv_123","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":2,"upload_chunk_bytes":\#(uploadChunkBytes)}"#
+        #"{"revision":"r1","state":"\#(state)","allowed":\#(allowed),"status":"\#(status)","server_instance_id":"srv_123","accepted_schema_versions":[1],"max_bundle_bytes":10485760,"max_manifest_bytes":65536,"retention_days":30,"consent_notice_version":2,"upload_chunk_bytes":\#(uploadChunkBytes)\#(acceptedCrashSources)}"#
     }
 
     private func makeClient(_ response: StubURLProtocol.Response) async throws -> (APIv2Client, StubURLProtocol.Handler) {
@@ -80,6 +81,30 @@ final class DiagnosticsCapabilitiesV2Tests: XCTestCase {
         let request = try XCTUnwrap(handler.requests.first)
         XCTAssertEqual(handler.requests.count, 1)
         XCTAssertEqual(request.header("Authorization"), "Bearer access")
+    }
+
+    /// Servers that predate `accepted_crash_sources` omit it; the list is
+    /// read when present and survives the last-known-status cache an
+    /// offline capture uses.
+    func testReadsAcceptedCrashSourcesWhenTheServerListsThem() async throws {
+        let (legacyClient, _) = try await makeClient(.json(document()))
+        let legacy = try await legacyClient.diagnosticsCapabilities()
+        XCTAssertNil(legacy.acceptedCrashSources)
+
+        let (currentClient, _) = try await makeClient(.json(document(
+            acceptedCrashSources: #","accepted_crash_sources":["ueh","exit_info","metrickit","exit_sentinel","watchdog"]"#
+        )))
+        let current = try await currentClient.diagnosticsCapabilities()
+        XCTAssertEqual(
+            current.acceptedCrashSources,
+            ["ueh", "exit_info", "metrickit", "exit_sentinel", "watchdog"]
+        )
+
+        let cached = try DiagnosticsJSONCoding.makeDecoder().decode(
+            DiagnosticsStatusResponse.self,
+            from: DiagnosticsJSONCoding.makeEncoder().encode(current)
+        )
+        XCTAssertEqual(cached, current)
     }
 
     func testAvailabilityRequiresAllowedAndAvailableState() async throws {
