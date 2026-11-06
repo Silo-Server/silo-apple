@@ -200,13 +200,10 @@ final class AppLanguagePreferences {
             errorMessage = nil
         }
         // Also a change made in system settings while Silo runs (macOS keeps
-        // the app open). Only Silo and the system write the key, and Silo
-        // updates the ledger with each of its own writes.
-        if pendingSystemChoice == nil, !isWritingBack {
-            pendingSystemChoice = AppLanguageReconciler.systemChoice(
-                current: system.appValue, ledger: system.ledger, shipped: shipped
-            )
-        }
+        // the app open), and a newer one replacing a choice still unsent.
+        // Only Silo and the system write the key, and Silo updates the ledger
+        // with each of its own writes.
+        if !isWritingBack { pendingSystemChoice = currentSystemChoice() }
         refreshSequence += 1
         let sequence = refreshSequence
         switch await transport.contractCapabilities(requestIdentity: identity) {
@@ -245,17 +242,17 @@ final class AppLanguagePreferences {
                 requestIdentity: identity
             )
         } catch {
-            switch SettingsAPIError.from(error) {
-            case .transport, .ownerChanged:
-                return false
-            case .server(let status, _, _) where status >= 500 || status == 429:
-                return false
-            default:
-                // Refused for good: the profile's value applies again, and the
-                // user's value stays the one to come back to.
-                pendingSystemChoice = nil
-                return true
-            }
+            guard SettingsAPIError.from(error).writeFailure == .release else { return false }
+            // Refused for good: the profile's value applies again, and the
+            // user's value stays the one to come back to.
+            pendingSystemChoice = nil
+            return true
+        }
+        // The user changed it again meanwhile: send that one next time.
+        let now = currentSystemChoice()
+        guard now == pending else {
+            pendingSystemChoice = now
+            return now == nil
         }
         pendingSystemChoice = nil
         // The server now holds it, so record it even if the read fails.
@@ -263,9 +260,13 @@ final class AppLanguagePreferences {
         return true
     }
 
+    private func currentSystemChoice() -> AppLanguageSystemChoice? {
+        AppLanguageReconciler.systemChoice(current: system.appValue, ledger: system.ledger, shipped: shipped)
+    }
+
     private func read(identity: HTTPRequestIdentity, sequence: Int) async {
         guard let response = try? await transport.effectiveValues(keys: [.uiAppLanguage], requestIdentity: identity),
-              isCurrent(identity, sequence), pendingSystemChoice == nil,
+              isCurrent(identity, sequence), pendingSystemChoice == nil, !isSaving,
               let row = response.value(for: .uiAppLanguage) else { return }
         var tag: String?
         if case .string(let value) = row.value { tag = value }
@@ -332,8 +333,11 @@ final class AppLanguagePreferences {
               let current = choice, current.tag != tag || current.isDeviceValue, !isSaving else { return }
         isSaving = true
         errorMessage = nil
+        // Reads already in flight answer for the state before this save.
+        refreshSequence += 1
         // Show the choice at once; the read below settles it.
         choice = Choice(tag: tag, isDeviceValue: false)
+        var failure: Error?
         do {
             try await transport.putValue(
                 key: .uiAppLanguage,
@@ -346,20 +350,23 @@ final class AppLanguagePreferences {
                     try await transport.deleteValue(key: .uiAppLanguage, scope: .profileDevice, requestIdentity: identity)
                 } catch SettingsAPIError.noValueAtScope {}
             }
-            // An explicit Match Device also clears the app's own system
-            // language, instead of bringing back one from before Silo's.
-            if tag == nil, var ledger = system.ledger {
-                ledger.baseline = nil
-                system.ledger = ledger
-            }
         } catch {
-            choice = current
-            errorMessage = Self.writeFailureMessage(for: error)
+            failure = error
         }
         isSaving = false
+        // Another profile is active now: its own refresh owns the picker.
+        guard requestIdentity() == identity, loadedIdentity == identity else { return }
+        if let failure {
+            choice = current
+            errorMessage = Self.writeFailureMessage(for: failure)
+        } else if tag == nil, var ledger = system.ledger {
+            // An explicit Match Device also clears the app's own system
+            // language, instead of bringing back one from before Silo's.
+            ledger.baseline = nil
+            system.ledger = ledger
+        }
         // Success or not, show what the server now resolves: a failed step may
         // have landed anyway.
-        guard requestIdentity() == identity else { return }
         refreshSequence += 1
         await read(identity: identity, sequence: refreshSequence)
     }

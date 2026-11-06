@@ -148,7 +148,12 @@ final class AppLanguagePreferencesTests: XCTestCase {
         await store.refresh()
         XCTAssertEqual(store.displayed, "en")
         XCTAssertNil(system.appValue)
-        XCTAssertEqual(store.options.map(\.tag), [nil, "en", "es", "fr", "ar", "it"])
+        // Match Device first, the shipped languages (sorted for the reader's
+        // locale), then the stored tag the build doesn't ship.
+        let tags = store.options.map(\.tag)
+        XCTAssertEqual(tags.first, .some(nil))
+        XCTAssertEqual(Set(tags.dropFirst().dropLast()), ["en", "es", "fr", "ar"])
+        XCTAssertEqual(tags.last, "it")
         XCTAssertEqual(store.selectedLabel, "Italiano")
         XCTAssertTrue(store.footer.contains("isn’t available in Italiano"))
     }
@@ -363,6 +368,57 @@ final class AppLanguagePreferencesTests: XCTestCase {
         await store.select("fr")
         XCTAssertEqual(transport.calls, [.put(.profile, "A", .string("fr")), .delete(.profileDevice, "A")])
         XCTAssertEqual(store.currentChoice, .init(tag: "fr", isDeviceValue: false))
+    }
+
+    /// A retryable HTTP answer (408) keeps the system choice to send again.
+    func testRetryableRefusalKeepsTheWriteBack() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        transport.putError = SettingsAPIError.server(status: 408, code: nil, message: nil)
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        system.ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+
+        await store.refresh()
+        XCTAssertEqual(system.appValue, ["fr"])
+        XCTAssertEqual(transport.effectiveReads, 0)
+        XCTAssertEqual(store.displayed, "fr")
+    }
+
+    /// A newer system change replaces a choice still unsent.
+    func testNewerSystemChangeReplacesAnUnsentOne() async {
+        let transport = FakeAppLanguageTransport()
+        transport.putError = SettingsAPIError.transport(description: "offline")
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        system.ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+        await store.refresh()
+
+        system.appValue = ["ar"]
+        transport.putError = nil
+        await store.refresh()
+        XCTAssertEqual(transport.calls.last, .put(.profileDevice, "A", .string("ar")))
+        XCTAssertEqual(system.appValue, ["ar"])
+    }
+
+    /// A refresh that lands during a Match Device save can't bring back the
+    /// language from before Silo's.
+    func testRefreshDuringMatchDeviceSaveDoesNotRestoreTheOldValue() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+        await store.refresh()
+        var concurrent: Task<Void, Never>?
+        transport.onPut = { concurrent = Task { await store.refresh() } }
+
+        await store.select(nil)
+        await concurrent?.value
+        XCTAssertNil(system.appValue)
+        XCTAssertNil(system.ledger)
     }
 
     func testServerWithoutTheSettingFollowsTheDevice() async {

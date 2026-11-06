@@ -291,7 +291,9 @@ struct TVGeneralSettingsPane: View {
                 selection: Binding(
                     get: { appLanguage.currentChoice?.tag ?? "" },
                     set: { id in Task { await appLanguage.select(id.isEmpty ? nil : id) } }
-                )
+                ),
+                allowsSelection: !appLanguage.isSaving,
+                disabledMessage: "Saving the app language…"
             )
         case .posterSize:
             TVSettingsPickerSheet(
