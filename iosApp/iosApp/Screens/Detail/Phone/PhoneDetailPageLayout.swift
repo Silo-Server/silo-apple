@@ -77,7 +77,7 @@ struct PhoneDetailPageLayout<Column: View, PaneArtwork: View, PaneSidebar: View,
     #if os(iOS)
     private var statusColumn: StatusColumnLayout? {
         StatusColumnLayout(safeArea: EdgeInsets(
-            top: topSafeArea,
+            top: 0,
             leading: page.leadingInset,
             bottom: 0,
             trailing: page.trailingInset
