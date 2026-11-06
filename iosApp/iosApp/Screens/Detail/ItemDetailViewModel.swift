@@ -308,8 +308,8 @@ class ItemDetailViewModel {
 
         do {
             let userStateGeneration = userStateMutationGeneration
-            let ratingRevisionAtStart = ratingRevision
-            let ratingFreshness = ratingFreshnessToken
+            let ratingRevisionAtStart = Self.ratingRevision(for: contentId)
+            let ratingFreshness = Self.ratingFreshnessTokens[contentId]
             personalStateOwner = await TokenStore.shared.captureOrdinaryRequestAuth()
 
             let item: ItemDetail
@@ -364,7 +364,7 @@ class ItemDetailViewModel {
             // visits). A write still running, or a choice or completion during
             // this read, keeps it.
             let ratingKey = Self.unsettledRatingKey(contentId: contentId, owner: personalStateOwner)
-            if !isSavingRating, ratingRevision == ratingRevisionAtStart {
+            if !Self.isRatingWriteActive(contentId), Self.ratingRevision(for: contentId) == ratingRevisionAtStart {
                 ratingOverride = nil
                 confirmedRating = nil
                 // The server is the authority again for this title.
@@ -462,7 +462,7 @@ class ItemDetailViewModel {
 
     /// The rating revision a re-fetch captures before its read, so its
     /// publisher can tell whether a rating write overlapped the read.
-    var ratingReadRevision: Int { ratingRevision }
+    var ratingReadRevision: Int { detail.map { Self.ratingRevision(for: $0.contentId) } ?? 0 }
 
     /// Publish a payload the caller re-fetched itself, taking the generation
     /// with it so an in-flight load can't land its older copy afterwards.
@@ -470,8 +470,8 @@ class ItemDetailViewModel {
     /// and (deliberately) skips playback enrichment.
     func publishRefetchedDetail(_ item: ItemDetail, contentId: String, ratingRevisionAtRead: Int? = nil) {
         _ = beginDetailWrite()
-        let overlappedRatingWrite = isSavingRating
-            || ratingRevisionAtRead.map({ $0 != ratingRevision }) == true
+        let overlappedRatingWrite = Self.isRatingWriteActive(contentId)
+            || ratingRevisionAtRead.map({ $0 != Self.ratingRevision(for: contentId) }) == true
         if overlappedRatingWrite {
             // Its `user_rating` may be older than the rating on screen:
             // keep showing that one.
@@ -495,8 +495,8 @@ class ItemDetailViewModel {
     /// whenever the payload's rating disagrees with one this page wrote or
     /// confirmed. The page itself shows the newer rating either way.
     private func cacheDetail(_ item: ItemDetail, contentId: String, ratingRevisionAtRead: Int? = nil) {
-        if isSavingRating { return }
-        if let ratingRevisionAtRead, ratingRevisionAtRead != ratingRevision { return }
+        if Self.isRatingWriteActive(contentId) { return }
+        if let ratingRevisionAtRead, ratingRevisionAtRead != Self.ratingRevision(for: contentId) { return }
         if case .some(let shown) = ratingOverride, item.userRating != shown { return }
         ResponseCache.shared.set(item, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
     }
@@ -873,7 +873,7 @@ class ItemDetailViewModel {
         let watchedGeneration = userStateMutationGeneration
         // Conservative: a rating write any time during this run keeps the
         // found payload out of the cache, since it may predate the write.
-        let ratingRevisionAtStart = ratingRevision
+        let ratingRevisionAtStart = Self.ratingRevision(for: contentId)
         trailerFetch.start(
             baseline: detail,
             remoteVideosDisplayable: remoteVideosDisplayable
@@ -1650,12 +1650,27 @@ class ItemDetailViewModel {
     /// Bumped when the page moves to another title; a write that finishes
     /// for the old title drops its result.
     @ObservationIgnored private var ratingTitleGeneration = 0
-    /// Advances when a write starts and when it finishes, so a detail read
-    /// can tell whether a write overlapped it.
-    @ObservationIgnored private var ratingRevision = 0
-    /// Changes after each confirmed or uncertain write and keys the next
-    /// detail read, so it can't join a request dispatched before the write.
-    @ObservationIgnored private var ratingFreshnessToken: String?
+    /// Per title, app-wide: advances when a rating write starts and when it
+    /// finishes, so any page's detail read (including a page opened while
+    /// another page's write runs) can tell whether a write overlapped it.
+    private static var ratingRevisions: [String: Int] = [:]
+    /// Per title, app-wide: changes after each confirmed or uncertain write
+    /// and keys the next detail read of that title from any page, so it
+    /// can't join a request dispatched before the write.
+    private static var ratingFreshnessTokens: [String: String] = [:]
+
+    private static func ratingRevision(for contentId: String) -> Int {
+        ratingRevisions[contentId, default: 0]
+    }
+
+    private static func bumpRatingRevision(_ contentId: String) {
+        ratingRevisions[contentId, default: 0] += 1
+    }
+
+    /// A rating write for this title is in flight on any page.
+    private static func isRatingWriteActive(_ contentId: String) -> Bool {
+        PersonalStateHolds.shared.isRatingWriteInFlight(contentId: contentId)
+    }
 
     /// Saves the viewer's rating, or clears it when `stars` is nil. Sets
     /// exactly what it is given rather than toggling, and does nothing while
@@ -1674,14 +1689,14 @@ class ItemDetailViewModel {
         let seriesId = detail?.seriesId
         let generation = ratingTitleGeneration
         isSavingRating = true
-        ratingRevision += 1
+        Self.bumpRatingRevision(contentId)
         ratingOverride = .some(stars)
         defer {
             PersonalStateHolds.shared.endRatingWrite(contentId: contentId)
             isSavingRating = false
             // Always, even if the page moved on: a read that overlapped this
             // write, on whichever title, must not treat its payload as fresh.
-            ratingRevision += 1
+            Self.bumpRatingRevision(contentId)
         }
         let owner = await currentPersonalStateOwner()
 
@@ -1714,7 +1729,7 @@ class ItemDetailViewModel {
             PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId)
             // Also before the scope check: a later read of this title, after
             // the page left and came back, must not join a pre-write request.
-            ratingFreshnessToken = UUID().uuidString
+            Self.ratingFreshnessTokens[contentId] = UUID().uuidString
         }
         // Server-side state for this title, so recorded even if the page has
         // moved on.

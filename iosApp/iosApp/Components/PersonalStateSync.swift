@@ -107,6 +107,10 @@ final class PersonalStateHolds {
         end(Self.ratingKey(contentId))
     }
 
+    func isRatingWriteInFlight(contentId: String) -> Bool {
+        inFlight.contains(Self.ratingKey(contentId))
+    }
+
     private static func ratingKey(_ contentId: String) -> String {
         "rating\u{1F}\(contentId)"
     }
