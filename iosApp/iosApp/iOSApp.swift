@@ -46,6 +46,9 @@ struct SiloApp: App {
         #if os(macOS)
         BandwidthProbeScheduler.shared.followMacVisibility()
         #endif
+        // Before the first view, so the root starts in the language on screen
+        // and every request names it.
+        _ = AppLanguagePreferences.shared
     }
 
     var body: some Scene {
@@ -69,6 +72,7 @@ struct SiloApp: App {
                 // Tall enough for the sign-in screens without scrolling.
                 .frame(minWidth: 900, minHeight: 640)
                 #endif
+                .modifier(AppLanguageEnvironment())
         }
         #if os(macOS)
         // First launch only; after that MacWindowPlacement restores the
@@ -76,6 +80,18 @@ struct SiloApp: App {
         .defaultSize(width: 1280, height: 800)
         .commands { MacSettingsCommands() }
         #endif
+    }
+}
+
+/// The app language at the root, live: every view's text, plurals and
+/// formatting follow `\.locale`, and layout follows its direction.
+private struct AppLanguageEnvironment: ViewModifier {
+    @State private var language = AppLanguagePreferences.shared
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.locale, language.locale)
+            .environment(\.layoutDirection, language.isRightToLeft ? .rightToLeft : .leftToRight)
     }
 }
 

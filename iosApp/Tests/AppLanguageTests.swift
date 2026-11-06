@@ -1,0 +1,505 @@
+@testable import Silo
+import XCTest
+
+/// `ui.app_language`: matching (D6), the `AppleLanguages` ledger, the write-back
+/// of a system per-app change (D18), the picker's options (D5), and the
+/// `Accept-Language` header.
+final class AppLanguageMatchingTests: XCTestCase {
+    private let shipped = ["en", "es", "de", "fr", "pt-BR", "ja", "zh-Hans", "ar"]
+
+    func testRegionalTagsMatchTheirShippedLanguage() {
+        XCTAssertEqual(AppLanguage.match("es-MX", shipped: shipped), "es")
+        XCTAssertEqual(AppLanguage.match("es-419", shipped: shipped), "es")
+        XCTAssertEqual(AppLanguage.match("en-GB", shipped: shipped), "en")
+        XCTAssertEqual(AppLanguage.match("pt-PT", shipped: shipped), "pt-BR")
+        XCTAssertEqual(AppLanguage.match("zh-CN", shipped: shipped), "zh-Hans")
+        XCTAssertEqual(AppLanguage.match("zh-SG", shipped: shipped), "zh-Hans")
+        XCTAssertEqual(AppLanguage.match("ar-EG", shipped: shipped), "ar")
+    }
+
+    /// The system falls back to the first shipped language; that is no match.
+    func testUnshippedLanguagesMatchNothing() {
+        XCTAssertNil(AppLanguage.match("it", shipped: shipped))
+        XCTAssertNil(AppLanguage.match("zh-TW", shipped: shipped))
+        XCTAssertNil(AppLanguage.match("zh-Hant", shipped: shipped))
+        XCTAssertNil(AppLanguage.match("es", shipped: ["en"]))
+    }
+
+    func testLocaleKeepsTheDeviceRegionAndHourCycle() {
+        let locale = AppLanguage.locale(for: "es", base: Locale(identifier: "en_GB@hours=h23"))
+        XCTAssertEqual(locale.language.languageCode, .spanish)
+        XCTAssertEqual(locale.region, .unitedKingdom)
+        XCTAssertEqual(locale.hourCycle, .zeroToTwentyThree)
+    }
+
+    func testIsolatedWrapsInFirstStrongIsolates() {
+        XCTAssertEqual(AppLanguage.isolated("Severance"), "\u{2068}Severance\u{2069}")
+    }
+}
+
+final class AppLanguageReconcilerTests: XCTestCase {
+    private typealias R = AppLanguageReconciler
+    private typealias Ledger = AppLanguageLedger
+
+    func testFirstOverrideRecordsWhatWasThere() {
+        XCTAssertEqual(
+            R.reconcile(current: nil, override: "es", ledger: nil),
+            R.Decision(write: .set(["es"]), ledger: Ledger(applied: "es", baseline: nil))
+        )
+        XCTAssertEqual(
+            R.reconcile(current: ["fr"], override: "es", ledger: nil),
+            R.Decision(write: .set(["es"]), ledger: Ledger(applied: "es", baseline: ["fr"]))
+        )
+    }
+
+    func testProfileWithoutOverrideRestoresTheUsersValue() {
+        XCTAssertEqual(
+            R.reconcile(current: ["es"], override: nil, ledger: Ledger(applied: "es", baseline: nil)),
+            R.Decision(write: .remove, ledger: nil)
+        )
+        XCTAssertEqual(
+            R.reconcile(current: ["es"], override: nil, ledger: Ledger(applied: "es", baseline: ["fr"])),
+            R.Decision(write: .set(["fr"]), ledger: nil)
+        )
+    }
+
+    func testSwitchingBetweenOverridesKeepsTheOriginalBaseline() {
+        XCTAssertEqual(
+            R.reconcile(current: ["es"], override: "de", ledger: Ledger(applied: "es", baseline: ["fr"])),
+            R.Decision(write: .set(["de"]), ledger: Ledger(applied: "de", baseline: ["fr"]))
+        )
+        XCTAssertEqual(
+            R.reconcile(current: ["es"], override: "es", ledger: Ledger(applied: "es", baseline: nil)),
+            R.Decision(write: nil, ledger: Ledger(applied: "es", baseline: nil))
+        )
+    }
+
+    /// A value the user set in system settings after Silo's is never overwritten
+    /// by a restore, and becomes the one to come back to.
+    func testSystemChangeAfterSiloIsKept() {
+        XCTAssertEqual(
+            R.reconcile(current: ["fr"], override: nil, ledger: Ledger(applied: "es", baseline: nil)),
+            R.Decision(write: nil, ledger: nil)
+        )
+        XCTAssertEqual(
+            R.reconcile(current: ["fr"], override: "de", ledger: Ledger(applied: "es", baseline: nil)),
+            R.Decision(write: .set(["de"]), ledger: Ledger(applied: "de", baseline: ["fr"]))
+        )
+    }
+
+    func testSystemChoiceIsOnlyAChangeAfterSiloApplied() {
+        let shipped = ["en", "es", "fr"]
+        XCTAssertNil(R.systemChoice(current: ["fr"], ledger: nil, shipped: shipped))
+        XCTAssertNil(R.systemChoice(current: ["es"], ledger: Ledger(applied: "es", baseline: nil), shipped: shipped))
+        XCTAssertEqual(
+            R.systemChoice(current: ["fr"], ledger: Ledger(applied: "es", baseline: nil), shipped: shipped),
+            AppLanguageSystemChoice(tag: "fr")
+        )
+        // The key removed: follow the device, written as null.
+        XCTAssertEqual(
+            R.systemChoice(current: nil, ledger: Ledger(applied: "es", baseline: ["fr"]), shipped: shipped),
+            AppLanguageSystemChoice(tag: nil)
+        )
+    }
+}
+
+@MainActor
+final class AppLanguagePreferencesTests: XCTestCase {
+    private let shipped = ["en", "es", "fr", "ar"]
+    private let profileA = HTTPRequestIdentity(serverId: "s", serverURL: "http://s", profileId: "A", clientFamily: "mobile")
+    private let profileB = HTTPRequestIdentity(serverId: "s", serverURL: "http://s", profileId: "B", clientFamily: "mobile")
+
+    private func makeStore(
+        transport: FakeAppLanguageTransport,
+        system: FakeAppLanguageSystem,
+        identity: @escaping @MainActor () -> HTTPRequestIdentity?
+    ) -> AppLanguagePreferences {
+        AppLanguagePreferences(transport: transport, requestIdentity: identity, system: system, shipped: shipped)
+    }
+
+    func testProfileLanguageAppliesAndAProfileWithoutOneRestores() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        let system = FakeAppLanguageSystem()
+        var active = profileA
+        let store = makeStore(transport: transport, system: system) { active }
+        XCTAssertEqual(store.displayed, "en")
+
+        await store.refresh()
+        XCTAssertEqual(store.displayed, "es")
+        XCTAssertEqual(system.appValue, ["es"])
+        XCTAssertEqual(system.displayedStored, "es")
+        XCTAssertEqual(store.currentChoice, .init(tag: "es", isDeviceValue: false))
+
+        active = profileB
+        await store.refresh()
+        XCTAssertEqual(store.displayed, "en", "follows the device again at once")
+        XCTAssertNil(system.appValue)
+        XCTAssertNil(system.ledger)
+        XCTAssertEqual(store.currentChoice, .init(tag: nil, isDeviceValue: false))
+    }
+
+    func testUnshippedTagFollowsTheDeviceButStaysTheChoice() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "it"
+        let system = FakeAppLanguageSystem()
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+
+        await store.refresh()
+        XCTAssertEqual(store.displayed, "en")
+        XCTAssertNil(system.appValue)
+        XCTAssertEqual(store.options.map(\.tag), [nil, "en", "es", "fr", "ar", "it"])
+        XCTAssertEqual(store.selectedLabel, "Italiano")
+        XCTAssertTrue(store.footer.contains("isn’t available in Italiano"))
+    }
+
+    func testRegionalTagIsAppliedWithoutTheUnavailableFooter() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es-MX"
+        let store = makeStore(transport: transport, system: FakeAppLanguageSystem()) { self.profileA }
+
+        await store.refresh()
+        XCTAssertEqual(store.displayed, "es")
+        XCTAssertTrue(store.options.contains { $0.tag == "es-MX" }, "the stored tag stays selectable")
+        XCTAssertFalse(store.footer.contains("isn’t available"))
+    }
+
+    /// D18: the user picked French in system settings after Silo applied
+    /// Spanish. The next launch shows French at once and writes it back as this
+    /// device's value before reading the profile's.
+    func testSystemChangeIsWrittenBackAsTheDeviceValue() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        system.ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+        XCTAssertEqual(store.displayed, "fr", "seeded from the system choice, not the ledger")
+
+        await store.refresh()
+        XCTAssertEqual(transport.calls.first, .put(.profileDevice, "A", .string("fr")))
+        XCTAssertEqual(store.displayed, "fr")
+        XCTAssertEqual(system.appValue, ["fr"])
+        XCTAssertEqual(store.currentChoice, .init(tag: "fr", isDeviceValue: true))
+    }
+
+    func testRemovedSystemValueIsWrittenBackAsNull() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        let system = FakeAppLanguageSystem()
+        system.ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+
+        await store.refresh()
+        XCTAssertEqual(transport.calls.first, .put(.profileDevice, "A", .null))
+        XCTAssertEqual(store.displayed, "en")
+        XCTAssertNil(system.appValue)
+    }
+
+    /// Offline write-back: nothing from the server is applied, so the
+    /// profile's Spanish never replaces the user's French, and the ledger is
+    /// kept for the next launch to find the change again.
+    func testUnsentWriteBackAppliesNothing() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        transport.putError = SettingsAPIError.transport(description: "offline")
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        let ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        system.ledger = ledger
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+
+        await store.refresh()
+        XCTAssertEqual(store.displayed, "fr")
+        XCTAssertEqual(system.appValue, ["fr"])
+        XCTAssertEqual(system.ledger, ledger)
+        XCTAssertEqual(transport.effectiveReads, 0)
+
+        transport.putError = nil
+        await store.refresh()
+        XCTAssertEqual(transport.calls.last, .put(.profileDevice, "A", .string("fr")))
+        XCTAssertEqual(store.displayed, "fr")
+    }
+
+    /// The picker saves the profile's value and clears this device's own row,
+    /// so the choice takes effect here.
+    func testPickerSavesProfileAndClearsTheDeviceValue() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        transport.deviceValues["A"] = "fr"
+        let system = FakeAppLanguageSystem()
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+        await store.refresh()
+        XCTAssertEqual(store.displayed, "fr")
+
+        await store.select("de")
+        XCTAssertEqual(transport.calls, [.put(.profile, "A", .string("de")), .delete(.profileDevice, "A")])
+        // "de" isn't shipped in this test: stored and shown, device language on screen.
+        XCTAssertEqual(store.currentChoice, .init(tag: "de", isDeviceValue: false))
+        XCTAssertEqual(store.displayed, "en")
+
+        await store.select(nil)
+        XCTAssertEqual(transport.calls.last, .put(.profile, "A", .null))
+        XCTAssertEqual(store.currentChoice, .init(tag: nil, isDeviceValue: false))
+    }
+
+    /// The profile write lands but clearing the device row fails: the error
+    /// shows and the screen follows what the server now resolves.
+    func testPartialPickerWriteReadsBack() async {
+        let transport = FakeAppLanguageTransport()
+        transport.deviceValues["A"] = "fr"
+        transport.deleteError = SettingsAPIError.transport(description: "offline")
+        let system = FakeAppLanguageSystem()
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+        await store.refresh()
+
+        await store.select("es")
+        XCTAssertEqual(transport.profileValues["A"], "es")
+        XCTAssertEqual(store.currentChoice, .init(tag: "fr", isDeviceValue: true))
+        XCTAssertEqual(store.displayed, "fr")
+        XCTAssertNotNil(store.errorMessage)
+        XCTAssertFalse(store.isSaving)
+    }
+
+    /// A write-back the server refuses for good doesn't lock the profile's
+    /// value out: it applies, and the user's value is the one to come back to.
+    func testRefusedWriteBackLetsTheProfileValueApply() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        transport.putError = SettingsAPIError.scopeNotAllowed(key: "ui.app_language", scope: .profileDevice)
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        system.ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+
+        await store.refresh()
+        XCTAssertEqual(store.displayed, "es")
+        XCTAssertEqual(system.ledger, AppLanguageLedger(applied: "es", baseline: ["fr"]))
+        XCTAssertEqual(store.currentChoice, .init(tag: "es", isDeviceValue: false))
+    }
+
+    /// A server without the setting keeps a pending write-back and the ledger
+    /// for a server that has it.
+    func testServerWithoutTheSettingKeepsAPendingWriteBack() async {
+        let transport = FakeAppLanguageTransport()
+        transport.revision = 26
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        let ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        system.ledger = ledger
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+
+        await store.refresh()
+        XCTAssertEqual(system.ledger, ledger)
+        XCTAssertEqual(store.displayed, "fr")
+
+        transport.revision = 28
+        await store.refresh()
+        XCTAssertEqual(transport.calls, [.put(.profileDevice, "A", .string("fr"))])
+    }
+
+    /// A profile switch while the write-back is in flight sends it once, to
+    /// the profile it started for, then reads the new profile.
+    func testWriteBackGoesToOneProfile() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["B"] = "es"
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        system.ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        var active = profileA
+        let store = makeStore(transport: transport, system: system) { active }
+        transport.onPut = {
+            active = self.profileB
+            Task { await store.refresh() }
+        }
+
+        await store.refresh()
+        XCTAssertEqual(transport.calls.filter { if case .put(.profileDevice, _, _) = $0 { true } else { false } },
+                       [.put(.profileDevice, "A", .string("fr"))])
+        XCTAssertEqual(store.currentChoice, .init(tag: "es", isDeviceValue: false))
+        XCTAssertEqual(store.displayed, "es")
+    }
+
+    /// macOS keeps the app open when its language changes in System Settings:
+    /// the next refresh writes it back instead of overwriting it.
+    func testSystemChangeWhileRunningIsWrittenBack() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        let system = FakeAppLanguageSystem()
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+        await store.refresh()
+        XCTAssertEqual(system.appValue, ["es"])
+
+        system.appValue = ["fr"]
+        await store.refresh()
+        XCTAssertEqual(transport.calls.last, .put(.profileDevice, "A", .string("fr")))
+        XCTAssertEqual(store.displayed, "fr")
+    }
+
+    /// Choosing Match Device clears the app's own language rather than
+    /// bringing back the one from before Silo's.
+    func testMatchDeviceClearsTheAppLanguage() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["A"] = "es"
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+        await store.refresh()
+        XCTAssertEqual(system.ledger, AppLanguageLedger(applied: "es", baseline: ["fr"]))
+
+        await store.select(nil)
+        XCTAssertNil(system.appValue)
+        XCTAssertNil(system.ledger)
+        XCTAssertEqual(store.displayed, "en")
+    }
+
+    /// Re-picking the language a device row shows makes it the profile's.
+    func testPickingTheShownDeviceLanguageSavesItForTheProfile() async {
+        let transport = FakeAppLanguageTransport()
+        transport.deviceValues["A"] = "fr"
+        let store = makeStore(transport: transport, system: FakeAppLanguageSystem()) { self.profileA }
+        await store.refresh()
+
+        await store.select("fr")
+        XCTAssertEqual(transport.calls, [.put(.profile, "A", .string("fr")), .delete(.profileDevice, "A")])
+        XCTAssertEqual(store.currentChoice, .init(tag: "fr", isDeviceValue: false))
+    }
+
+    func testServerWithoutTheSettingFollowsTheDevice() async {
+        let transport = FakeAppLanguageTransport()
+        transport.revision = 26
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["es"]
+        system.ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        let store = makeStore(transport: transport, system: system) { self.profileA }
+
+        await store.refresh()
+        XCTAssertNil(store.currentChoice, "no picker")
+        XCTAssertNil(system.appValue)
+        XCTAssertEqual(store.displayed, "en")
+        XCTAssertEqual(transport.effectiveReads, 0)
+    }
+}
+
+final class AppLanguageHeaderTests: XCTestCase {
+    /// Every Silo request names the language the app shows.
+    func testRequestsCarryTheDisplayedLanguage() {
+        let key = "appLanguage.displayed.v1"
+        let defaults = SharedStorage.suite
+        let saved = defaults.object(forKey: key)
+        defer { defaults.set(saved, forKey: key) }
+        defaults.set("es", forKey: key)
+
+        var request = URLRequest(url: URL(string: "http://example.invalid/api/v2/home")!)
+        AppleDeviceIdentity.current.applyHeaders(to: &request)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept-Language"), "es")
+    }
+}
+
+// MARK: Fakes
+
+@MainActor
+private final class FakeAppLanguageSystem: AppLanguageSystem {
+    var appValue: [String]?
+    var deviceList = ["en-US"]
+    var ledger: AppLanguageLedger?
+    private(set) var displayedStored: String?
+
+    var effectiveList: [String] { appValue ?? deviceList }
+
+    func write(_ write: AppLanguageReconciler.Write) {
+        switch write {
+        case .set(let tags): appValue = tags
+        case .remove: appValue = nil
+        }
+    }
+
+    func storeDisplayed(_ tag: String) { displayedStored = tag }
+}
+
+/// Stores values the way the server resolves them: this device's row, then
+/// the profile's, then the default `null`.
+@MainActor
+private final class FakeAppLanguageTransport: TitleArtTransport, @unchecked Sendable {
+    enum Call: Equatable {
+        case put(SettingScope, String, SettingJSONValue)
+        case delete(SettingScope, String)
+    }
+
+    var revision = 28
+    var profileValues: [String: String?] = [:]
+    var deviceValues: [String: String?] = [:]
+    var putError: Error?
+    var deleteError: Error?
+    /// Runs inside the next write, before it answers.
+    var onPut: (@MainActor () -> Void)?
+    private(set) var calls: [Call] = []
+    private(set) var effectiveReads = 0
+
+    nonisolated func contractCapabilities(requestIdentity: HTTPRequestIdentity) async -> SettingsCapabilitiesResult {
+        await MainActor.run {
+            .available(APIv2SettingsContractCapabilities(
+                revision: "capabilities-\(revision)",
+                state: "available",
+                allowed: true,
+                manifestRevision: revision,
+                clientFamilies: ["tv", "mobile", "tablet", "desktop", "web"],
+                supportsBatchedEffective: true
+            ))
+        }
+    }
+
+    nonisolated func effectiveValues(
+        keys: [SettingKey],
+        requestIdentity: HTTPRequestIdentity
+    ) async throws -> EffectiveSettingValuesResponse {
+        try await MainActor.run {
+            effectiveReads += 1
+            let profile = requestIdentity.profileId
+            let (value, source): (String?, String) = if let device = deviceValues[profile] {
+                (device, "profile_device")
+            } else if let stored = profileValues[profile] {
+                (stored, "profile")
+            } else {
+                (nil, "default")
+            }
+            let row: [String: Any] = ["key": "ui.app_language", "value": value ?? NSNull(), "source": source]
+            let data = try JSONSerialization.data(withJSONObject: ["items": [row], "revision": revision])
+            return try SettingsWireCoding.makeDecoder().decode(EffectiveSettingValuesResponse.self, from: data)
+        }
+    }
+
+    nonisolated func putValue(
+        key: SettingKey,
+        scope: SettingScopeIdentity,
+        value: SettingJSONValue,
+        requestIdentity: HTTPRequestIdentity
+    ) async throws {
+        try await MainActor.run {
+            calls.append(.put(scope.scope, requestIdentity.profileId, value))
+            let hook = onPut
+            onPut = nil
+            hook?()
+            if let putError { throw putError }
+            var tag: String?
+            if case .string(let stored) = value { tag = stored }
+            if scope.scope == .profileDevice {
+                deviceValues[requestIdentity.profileId] = .some(tag)
+            } else {
+                profileValues[requestIdentity.profileId] = .some(tag)
+            }
+        }
+    }
+
+    nonisolated func deleteValue(
+        key: SettingKey,
+        scope: SettingScopeIdentity,
+        requestIdentity: HTTPRequestIdentity
+    ) async throws {
+        try await MainActor.run {
+            calls.append(.delete(scope.scope, requestIdentity.profileId))
+            if let deleteError { throw deleteError }
+            deviceValues[requestIdentity.profileId] = nil
+        }
+    }
+}
