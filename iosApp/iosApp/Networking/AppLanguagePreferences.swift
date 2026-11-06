@@ -91,7 +91,23 @@ protocol AppLanguageSystem: AnyObject {
 final class StandardAppLanguageSystem: AppLanguageSystem {
     private static let key = "AppleLanguages"
     private static let ledgerKey = "appLanguage.ledger.v1"
+    private static let deviceListKey = "appLanguage.deviceList.v1"
     private let defaults = UserDefaults.standard
+
+    /// The device's language list, for what follows the device rather than
+    /// the app (subtitle fallback, D31). Writing the app's `AppleLanguages`
+    /// changes `Locale.preferredLanguages`, so while that value is Silo's own
+    /// this reads the global list, or the list from just before Silo wrote it
+    /// when the global one isn't readable (a fresh simulator has none).
+    nonisolated static func deviceLanguages(defaults: UserDefaults = .standard) -> [String] {
+        let app = Bundle.main.bundleIdentifier.flatMap { defaults.persistentDomain(forName: $0)?[key] as? [String] }
+        let ledger = defaults.data(forKey: ledgerKey).flatMap { try? JSONDecoder().decode(AppLanguageLedger.self, from: $0) }
+        guard let ledger, app == [ledger.applied] else { return Locale.preferredLanguages }
+        if let global = defaults.persistentDomain(forName: UserDefaults.globalDomain)?[key] as? [String], !global.isEmpty {
+            return global
+        }
+        return defaults.stringArray(forKey: deviceListKey) ?? []
+    }
 
     var appValue: [String]? {
         guard let domain = Bundle.main.bundleIdentifier else { return nil }
@@ -114,6 +130,11 @@ final class StandardAppLanguageSystem: AppLanguageSystem {
     }
 
     func write(_ write: AppLanguageReconciler.Write) {
+        // Before Silo's own value hides it, keep the list the device resolves
+        // without it, for what follows the device rather than the app (D31).
+        if appValue == nil || appValue != ledger.map({ [$0.applied] }) {
+            defaults.set(Locale.preferredLanguages, forKey: Self.deviceListKey)
+        }
         switch write {
         case .set(let tags): defaults.set(tags, forKey: Self.key)
         case .remove: defaults.removeObject(forKey: Self.key)

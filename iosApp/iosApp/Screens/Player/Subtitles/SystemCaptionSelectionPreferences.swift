@@ -38,7 +38,7 @@ struct SystemCaptionSelectionPreferences: Equatable {
 
         let selectedLanguages = MACaptionAppearanceCopySelectedLanguages(.user)
             .takeRetainedValue() as? [String] ?? []
-        let languages = selectedLanguages.isEmpty ? Locale.preferredLanguages : selectedLanguages
+        let languages = selectedLanguages.isEmpty ? StandardAppLanguageSystem.deviceLanguages() : selectedLanguages
         let characteristics = MACaptionAppearanceCopyPreferredCaptioningMediaCharacteristics(.user)
             .takeRetainedValue() as? [String] ?? []
         let accessibilityCharacteristics = Set([
