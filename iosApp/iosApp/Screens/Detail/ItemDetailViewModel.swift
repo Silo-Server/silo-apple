@@ -1613,28 +1613,28 @@ class ItemDetailViewModel {
         let owner = await currentPersonalStateOwner()
         while ratingTitleGeneration == generation, case .some(let target) = pendingRatingTarget {
             pendingRatingTarget = nil
-            let outcome: PersonalStateOutcome
+            let result: RatingWriteResult
             if let send {
-                outcome = await send(contentId, target)
+                result = RatingWriteResult(outcome: await send(contentId, target))
             } else {
-                outcome = await PersonalStateSync.outcome {
-                    guard let owner else { throw HTTPError.requestIdentityChanged }
-                    try await SiloAPI.shared.apiV2Client.setRating(id: contentId, stars: target, auth: owner)
-                    guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
-                        throw HTTPError.authorityChanged
-                    }
-                }
+                result = await writeRating(target, contentId: contentId, owner: owner)
             }
-            if outcome == .applied {
-                // The server changed for this title even if the page has
-                // moved on, so its cached reads go stale either way.
+            if result.outcome == .applied || result.isUncertain {
+                // The server changed, or may have, for this title even if
+                // the page has moved on, so its cached reads go stale.
                 PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId)
             }
             // The page moved to another title; the rest of this result is
             // no longer its.
             guard ratingTitleGeneration == generation else { return }
             ratingRevision += 1
-            if outcome == .applied {
+            if result.isUncertain {
+                ratingFreshnessToken = UUID().uuidString
+            }
+            if case .some(let stored) = result.storedRating {
+                confirmedRating = .some(stored)
+            }
+            if result.outcome == .applied {
                 confirmedRating = .some(target)
                 ratingFreshnessToken = UUID().uuidString
             } else if pendingRatingTarget == nil {
@@ -1642,11 +1642,53 @@ class ItemDetailViewModel {
                 // confirmed. A newer queued choice is sent next and decides
                 // what shows instead.
                 ratingOverride = confirmedRating
-                personalStateNotice = PersonalStateNotice(outcome)
+                personalStateNotice = PersonalStateNotice(result.outcome)
             }
         }
         if ratingTitleGeneration == generation {
             isSendingRating = false
+        }
+    }
+
+    private struct RatingWriteResult {
+        var outcome: PersonalStateOutcome
+        /// The write was sent but its answer was lost.
+        var isUncertain = false
+        /// What the server holds, when it was read back after an uncertain
+        /// write. Outer optional: whether it was read.
+        var storedRating: Int?? = nil
+    }
+
+    /// Sends one rating write. When the answer is lost after the write was
+    /// sent, it may still have landed, so the server's stored rating is read
+    /// back: a match counts as saved, and anything else is what the page
+    /// falls back to instead of guessing.
+    private func writeRating(
+        _ stars: Int?,
+        contentId: String,
+        owner: CapturedOrdinaryRequestAuth?
+    ) async -> RatingWriteResult {
+        let api = SiloAPI.shared.apiV2Client
+        do {
+            guard let owner else { throw HTTPError.requestIdentityChanged }
+            try await api.setRating(id: contentId, stars: stars, auth: owner)
+            guard await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil else {
+                throw HTTPError.authorityChanged
+            }
+            return RatingWriteResult(outcome: .applied)
+        } catch {
+            let outcome = PersonalStateSync.outcome(for: error)
+            guard MutationDelivery(error) == .unconfirmed, let owner else {
+                return RatingWriteResult(outcome: outcome)
+            }
+            guard let stored = try? await api.rating(id: contentId, auth: owner) else {
+                return RatingWriteResult(outcome: outcome, isUncertain: true)
+            }
+            return RatingWriteResult(
+                outcome: stored == stars ? .applied : outcome,
+                isUncertain: true,
+                storedRating: .some(stored)
+            )
         }
     }
 

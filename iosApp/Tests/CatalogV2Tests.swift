@@ -343,6 +343,25 @@ final class CatalogV2Tests: XCTestCase {
         }
     }
 
+    func testRatingReadReturnsTheStarsOn200AndNilOnProblem404() async throws {
+        let (api, tokens) = try await client()
+        let authValue = await tokens.captureOrdinaryRequestAuth()
+        let auth = try XCTUnwrap(authValue)
+        stub.reply(200, #"{"item_id":"movie:one","rating":4,"rated_at":"2026-01-02T03:04:05.000Z"}"#)
+        let rated = try await api.rating(id: "movie:one", auth: auth)
+        XCTAssertEqual(rated, 4)
+        stub.reply(404, #"{"type":"https://siloserver.org/docs/api/v2/problems/not_found","title":"Not found","status":404,"detail":"No rating"}"#)
+        let unrated = try await api.rating(id: "movie:one", auth: auth)
+        XCTAssertNil(unrated)
+        stub.reply(200, #"{"item_id":"movie:other","rating":4,"rated_at":"2026-01-02T03:04:05.000Z"}"#)
+        do {
+            _ = try await api.rating(id: "movie:one", auth: auth)
+            XCTFail("an answer for another item is not this item's rating")
+        } catch APIv2Error.incompleteCatalogRead { }
+        XCTAssertEqual(Set(stub.methods), ["GET"])
+        XCTAssertEqual(stub.requestedPaths.first, "/api/v2/ratings/movie:one")
+    }
+
     func testMembershipMutationFailuresAreTypedAndSentOnce() async throws {
         let (api, tokens) = try await client()
         let authValue = await tokens.captureOrdinaryRequestAuth()

@@ -678,6 +678,41 @@ struct APIv2Client: Sendable {
                                 body: body, auth: auth)
     }
 
+    /// The acting profile's stored rating of an item, or nil when it has not
+    /// rated it (`404 not_found`). Used to settle a rating write whose answer
+    /// was lost.
+    func rating(id: String, auth: CapturedOrdinaryRequestAuth) async throws -> Int? {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "GET", path: "/api/v2/ratings/\(try catalogPathSegment(id))",
+                    quietStatuses: [404], requestIdentity: identity, acceptedStatuses: [404],
+                    expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        try Task.checkCancellation()
+        if raw.statusCode == 404 {
+            let problem = try HTTPClient.makeJSONDecoder().decode(APIv2Problem.self, from: raw.data)
+            guard problem.status == 404, problem.identifier == "not_found" else {
+                throw APIv2Error.problem(problem)
+            }
+            return nil
+        }
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        struct Entry: Decodable { let itemId: String; let rating: Int }
+        let entry = try HTTPClient.makeJSONDecoder().decode(Entry.self, from: raw.data)
+        guard entry.itemId == id, UserStarRating.range.contains(entry.rating) else {
+            throw APIv2Error.incompleteCatalogRead
+        }
+        return entry.rating
+    }
+
     private func setMembership(method: String, collection: String, id: String, body: Data? = nil,
                                auth: CapturedOrdinaryRequestAuth) async throws {
         try await gate()
