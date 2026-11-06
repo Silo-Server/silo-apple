@@ -478,6 +478,24 @@ final class CatalogV2Tests: XCTestCase {
         XCTAssertEqual(variant.parts.first?.versions.first?.fileId, 41)
     }
 
+    func testReadProjectionCarriesTheProfilesOwnRating() throws {
+        var body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(playableDetail().utf8)) as? [String: Any]
+        )
+        let unrated = try HTTPClient.makeJSONDecoder().decode(
+            APIv2CatalogRead.CatalogItemDetail.self,
+            from: JSONSerialization.data(withJSONObject: body)
+        )
+        XCTAssertNil(try ItemDetail(catalog: unrated).userRating)
+
+        body["user_rating"] = 4
+        let rated = try HTTPClient.makeJSONDecoder().decode(
+            APIv2CatalogRead.CatalogItemDetail.self,
+            from: JSONSerialization.data(withJSONObject: body)
+        )
+        XCTAssertEqual(try ItemDetail(catalog: rated).userRating, 4)
+    }
+
     func testReadProjectionRejectsUnrepresentableLegacyIDs() throws {
         let decoder = HTTPClient.makeJSONDecoder()
         for id in ["opaque-file", "0", "-1", "999999999999999999999999999999"] {
