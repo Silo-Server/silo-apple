@@ -775,6 +775,8 @@ private struct WatchPartyEpisodePicker: View {
     @State private var seasons: [Season] = []
     @State private var episodes: [EpisodeListItem] = []
     @State private var seasonNumber: Int?
+    /// The season `episodes` holds, once its read succeeds.
+    @State private var loadedSeasonNumber: Int?
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var chosen: WatchPartyMediaChoice?
@@ -790,8 +792,16 @@ private struct WatchPartyEpisodePicker: View {
             .navigationDestination(item: $chosen) { choice in
                 WatchPartyMediaChoiceView(session: session, purpose: purpose, choice: choice, onComplete: onComplete)
             }
-            .task { await loadSeasons() }
-            .task(id: seasonNumber) { await loadEpisodes() }
+            // Coming back from the confirmation page restarts these tasks.
+            // Keep what the viewer left, so the rail and its focus survive.
+            .task {
+                guard seasons.isEmpty else { return }
+                await loadSeasons()
+            }
+            .task(id: seasonNumber) {
+                guard loadedSeasonNumber != seasonNumber else { return }
+                await loadEpisodes()
+            }
     }
 
     @ViewBuilder
@@ -1057,6 +1067,7 @@ private struct WatchPartyEpisodePicker: View {
         isLoading = true
         errorMessage = nil
         episodes = []
+        loadedSeasonNumber = nil
         do {
             let auth = try await session.catalogAuth()
             let values = try await SiloAPI.shared.apiV2Client.catalogEpisodes(seriesId: series.contentId,
@@ -1066,6 +1077,7 @@ private struct WatchPartyEpisodePicker: View {
             // the earliest unwatched one.
             episodes = try values.map { try EpisodeListItem(catalog: $0) }
                 .sorted { $0.episodeNumber < $1.episodeNumber }
+            loadedSeasonNumber = seasonNumber
         } catch {
             guard !Task.isCancelled, roomId == session.room?.roomId, self.seasonNumber == seasonNumber else { return }
             errorMessage = error.localizedDescription
