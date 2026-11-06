@@ -531,12 +531,6 @@ struct TVSeriesDetailView: View {
             isPlaybackLoading: isLoadingEpisodes && playbackEpisode == nil,
             allowsInitialPlayFocus: !userNavigated,
             tracksInitialFocusNavigation: true,
-            userRating: userRating,
-            isSavingRating: isSavingRating,
-            onRate: { stars in
-                userNavigated = true
-                onRate(stars)
-            },
             playbackSelectors: { focusedAction in
                 // Keep all three triggers mounted while a newly focused
                 // episode's playback detail loads. They disable themselves
@@ -929,8 +923,11 @@ struct TVSeriesDetailView: View {
     }
 
     private enum MoreAction: String {
-        case shuffleSeason, shuffleSeries, watchParty, overview, favorite, seriesWatched, watched, trailers, translate
+        case shuffleSeason, shuffleSeries, watchParty, overview, favorite, seriesWatched, watched, rate, trailers, translate
     }
+
+    /// More's rating entry opens the rating dialog.
+    @State private var showsRatingDialog = false
 
     private var canShuffleSeries: Bool {
         ShuffleFeatureStore.shared.supports(.series)
@@ -998,6 +995,13 @@ struct TVSeriesDetailView: View {
                         systemImage: isSeasonWatched ? "checkmark.circle.fill" : "checkmark.circle"
                     ))
                 }
+                items.append(TVActionPopoverItem(
+                    id: MoreAction.rate.rawValue,
+                    title: UserStarRating.menuTitle(rating: userRating, noun: "Series"),
+                    systemImage: UserStarRating.menuSymbol(rating: userRating),
+                    // Waits for a running save; the dialog would ignore a pick.
+                    isEnabled: !isSavingRating
+                ))
                 if supportsTrailerFetch {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.trailers.rawValue,
@@ -1040,10 +1044,20 @@ struct TVSeriesDetailView: View {
                 case .favorite: onToggleFavorite()
                 case .seriesWatched: onToggleSeriesWatched()
                 case .watched: onToggleSeasonWatched()
+                case .rate: showsRatingDialog = true
                 case .trailers: onFindTrailers()
                 case .translate: onTranslateDescription?()
                 case .none: break
                 }
+            }
+        )
+        .ratingDialog(
+            isPresented: $showsRatingDialog,
+            title: detail.title,
+            rating: userRating,
+            onRate: { stars in
+                userNavigated = true
+                onRate(stars)
             }
         )
     }

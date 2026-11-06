@@ -39,10 +39,7 @@ struct TVActionPopoverMenu: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // An empty title draws no header (the Rating menu needs none).
-            if !title.isEmpty {
-                header
-            }
+            header
             rows
         }
         .padding(SiloTheme.Skyline.dropdownPadding)

@@ -178,9 +178,6 @@ struct TVMovieDetailView: View {
             rowFocused: $actionRowFocused,
             stabilizesFocusMotion: true,
             primaryButtonWidth: 340,
-            userRating: userRating,
-            isSavingRating: isSavingRating,
-            onRate: onRate,
             playbackSelectors: { focusedAction in
                 TVPlaybackActionSelectors(
                     versions: availableVersions,
@@ -209,8 +206,11 @@ struct TVMovieDetailView: View {
     // MARK: - More menu
 
     private enum MoreAction: String {
-        case watchParty, favorite, watched, trailers, translate
+        case watchParty, favorite, watched, rate, trailers, translate
     }
+
+    /// More's rating entry opens the rating dialog.
+    @State private var showsRatingDialog = false
 
     @Environment(AppRouter.self) private var partyRouter
     @Environment(\.browseLibraryId) private var partyLibraryId
@@ -233,6 +233,13 @@ struct TVMovieDetailView: View {
                         systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
                     ),
                 ]
+                items.append(TVActionPopoverItem(
+                    id: MoreAction.rate.rawValue,
+                    title: UserStarRating.menuTitle(rating: userRating, noun: detail.type == "movie" ? "Movie" : nil),
+                    systemImage: UserStarRating.menuSymbol(rating: userRating),
+                    // Waits for a running save; the dialog would ignore a pick.
+                    isEnabled: !isSavingRating
+                ))
                 if supportsTrailerFetch {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.trailers.rawValue,
@@ -263,6 +270,8 @@ struct TVMovieDetailView: View {
                     onToggleFavorite()
                 case .watched:
                     onToggleWatched()
+                case .rate:
+                    showsRatingDialog = true
                 case .trailers:
                     onFindTrailers()
                 case .translate:
@@ -271,6 +280,12 @@ struct TVMovieDetailView: View {
                     break
                 }
             }
+        )
+        .ratingDialog(
+            isPresented: $showsRatingDialog,
+            title: detail.title,
+            rating: userRating,
+            onRate: onRate
         )
     }
 

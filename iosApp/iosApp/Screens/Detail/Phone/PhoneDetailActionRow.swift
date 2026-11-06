@@ -97,10 +97,9 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
 
 // MARK: - Rating
 
-/// The More menu's entry for the viewer's own 1 to 5 star rating: "Rate
-/// Movie" or "Rate Series", or the saved rating ("Your Rating: 4 Stars")
-/// once there is one. Opens the rating dialog
-/// (`phoneRatingDialog`) rather than listing the stars in the menu.
+/// The More menu's entry for the viewer's own 1 to 5 star rating
+/// (`UserStarRating.menuTitle`). Opens the rating dialog (`ratingDialog`)
+/// rather than listing the stars in the menu.
 struct PhoneRateMenuItem: View {
     let rating: Int?
     /// What is being rated, in title case ("Movie", "Series"); nil reads
@@ -113,41 +112,11 @@ struct PhoneRateMenuItem: View {
     var body: some View {
         Button(action: action) {
             Label(
-                rating.map { "Your Rating: \(UserStarRating.label($0))" } ?? ["Rate", noun].compactMap { $0 }.joined(separator: " "),
-                systemImage: rating == nil ? "star" : "star.fill"
+                UserStarRating.menuTitle(rating: rating, noun: noun),
+                systemImage: UserStarRating.menuSymbol(rating: rating)
             )
         }
         .disabled(isSaving)
-    }
-}
-
-extension View {
-    /// The dialog the More menu's Rate entry opens: one button per rating,
-    /// 5 stars first. Picking a rating sets it; picking the current one
-    /// again clears it, as the message says.
-    func phoneRatingDialog(
-        isPresented: Binding<Bool>,
-        title: String,
-        rating: Int?,
-        isSaving: Bool,
-        onRate: @escaping (Int?) -> Void
-    ) -> some View {
-        confirmationDialog("Rate \(title)", isPresented: isPresented, titleVisibility: .visible) {
-            ForEach(UserStarRating.range.reversed(), id: \.self) { stars in
-                Button(UserStarRating.label(stars)) {
-                    onRate(UserStarRating.choosing(stars, current: rating))
-                }
-                .disabled(isSaving)
-                .accessibilityHint(stars == rating ? "Removes your rating" : "")
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            if let rating {
-                Text("Your rating is \(UserStarRating.label(rating)). Choose it again to remove it.")
-            } else {
-                Text("Choose how many stars to give it.")
-            }
-        }
     }
 }
 

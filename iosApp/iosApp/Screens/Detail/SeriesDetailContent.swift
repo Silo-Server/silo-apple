@@ -311,11 +311,10 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
         .frame(maxWidth: .infinity)
         .animation(.easeInOut(duration: 0.18), value: trailerStatusMessage)
-        .phoneRatingDialog(
+        .ratingDialog(
             isPresented: $showsRatingDialog,
             title: detail.title,
             rating: userRating,
-            isSaving: isSavingRating,
             onRate: onRate
         )
     }
