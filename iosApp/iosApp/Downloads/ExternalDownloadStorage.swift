@@ -218,11 +218,14 @@ final class ExternalDownloadStorage {
         let held = scopedFolders
         let resolved = await Task.detached(priority: .utility) {
             snapshot.map { location in
-                let result = Self.resolve(location, holding: held[location.id])
-                // Work missed while away runs before anything uses the folder.
-                if result.reachable, let folder = result.folder {
-                    Self.catchUp(locationId: location.id,
-                                 root: folder.appendingPathComponent(Self.downloadsFolderName, isDirectory: true))
+                var result = Self.resolve(location, holding: held[location.id])
+                // Work missed while away runs before anything uses the folder,
+                // and a folder whose work can't finish stays out of use: its
+                // media may not be where the records look yet.
+                if result.reachable, let folder = result.folder,
+                   !Self.catchUp(locationId: location.id,
+                                 root: folder.appendingPathComponent(Self.downloadsFolderName, isDirectory: true)) {
+                    result.reachable = false
                 }
                 return result
             }
@@ -264,7 +267,7 @@ final class ExternalDownloadStorage {
     private struct Resolution: Sendable {
         let id: String
         let folder: URL?
-        let reachable: Bool
+        var reachable: Bool
         let startedAccess: Bool
         let refreshedBookmark: Data?
         var smallFileLimit = false
@@ -380,10 +383,15 @@ final class ExternalDownloadStorage {
         var work: [FolderWork]
     }
 
+    /// A folder that still has earlier work waiting gets this action queued
+    /// behind it, never run ahead: a retried move must not bring back media
+    /// that a later removal deleted.
     nonisolated private static func schedule(_ action: FolderWork.Action) {
-        let (roots, registered) = folderState.withLock { ($0.roots, $0.registeredIds) }
+        let (roots, registered, behind) = folderState.withLock { state in
+            (state.roots, state.registeredIds, state.work.reduce(into: Set<String>()) { $0.formUnion($1.waitingLocationIds) })
+        }
         let waiting = registered.filter { id in
-            guard let root = roots[id] else { return true }
+            guard let root = roots[id], !behind.contains(id) else { return true }
             return !perform(action, at: root)
         }
         guard !waiting.isEmpty else { return }
@@ -395,14 +403,15 @@ final class ExternalDownloadStorage {
 
     /// Runs, in order, the work a folder missed while out of reach. Stops at
     /// the first step that fails, so later steps never run ahead of it.
-    nonisolated private static func catchUp(locationId: String, root: URL) {
+    /// Returns whether none is left.
+    nonisolated private static func catchUp(locationId: String, root: URL) -> Bool {
         let pending = folderState.withLock { $0.work.filter { $0.waitingLocationIds.contains(locationId) } }
         var done: Set<UUID> = []
         for work in pending {
             guard perform(work.action, at: root) else { break }
             done.insert(work.id)
         }
-        guard !done.isEmpty else { return }
+        guard !done.isEmpty else { return pending.isEmpty }
         folderState.withLock { state in
             for index in state.work.indices where done.contains(state.work[index].id) {
                 state.work[index].waitingLocationIds.remove(locationId)
@@ -410,6 +419,7 @@ final class ExternalDownloadStorage {
             state.work.removeAll { $0.waitingLocationIds.isEmpty }
             saveFolderWork(state.work)
         }
+        return done.count == pending.count
     }
 
     /// Whether the action's outcome now holds in the download tree at `root`.

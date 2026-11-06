@@ -151,9 +151,9 @@ final class DownloadManager {
     /// Serializes disk saves so a rapid burst of `persist()` calls can't land
     /// out of order and overwrite a newer snapshot with an older one.
     private var saveChain: Task<Void, Never>?
-    /// Saves of `file` that did not reach disk, so a step that must follow a
-    /// durable save (deleting a moved file's source) can tell.
-    @ObservationIgnored private var failedSaveCount = 0
+    /// Whether the latest save of `file` reached disk. Once the saves are
+    /// idle, true means the store on disk matches `file`.
+    @ObservationIgnored private var lastSaveSucceeded = true
     /// Offline progress entries a running flush has sent and is still
     /// waiting on. Dispatched entries outside this set are held.
     private var progressUploadsInFlight: Set<UUID> = []
@@ -4613,7 +4613,7 @@ final class DownloadManager {
             let saved = await DownloadStore.shared.save(
                 snapshot, serverId: serverId, localAccountId: accountId, profileId: profileId
             )
-            if !saved { DownloadManager.shared.failedSaveCount += 1 }
+            DownloadManager.shared.lastSaveSucceeded = saved
         }
     }
 
@@ -4751,21 +4751,14 @@ final class DownloadManager {
             current.mediaVolume = job.target == .device ? nil : job.target
             current.pendingMediaVolume = nil
             file.records[record.id] = current
-            let failedSaves = failedSaveCount
             persist()
-            // The source goes only once the record naming the copy is saved.
+            // The source goes only once the store on disk names the copy. When
+            // the latest save failed, the store may name either file, so both
+            // stay: an extra copy, never a missing one.
             await waitForQueuedSaves()
-            guard failedSaveCount == failedSaves else {
-                // The store on disk still names the source: point the record
-                // back at it, drop the copy, and try again on a later pass.
-                if var reverted = file.records[record.id], reverted.mediaFilename == filename,
-                   reverted.mediaVolume == current.mediaVolume {
-                    reverted.mediaVolume = record.mediaVolume
-                    reverted.pendingMediaVolume = job.target
-                    file.records[record.id] = reverted
-                }
-                await Task.detached(priority: .utility) { DownloadMediaTransfer.removeMedia(at: destination) }.value
-                return false
+            guard lastSaveSucceeded else {
+                Self.logger.error("Kept a moved download's source: its new location could not be saved")
+                return true
             }
             await Task.detached(priority: .utility) { DownloadMediaTransfer.removeMedia(at: source) }.value
             refreshStorageUsage()
