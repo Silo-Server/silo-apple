@@ -331,6 +331,8 @@ final class SettingsViewModel {
     @MainActor
     func loadSettings() async {
         let accountKey = Self.accountCacheKey
+        loadGeneration &+= 1
+        let generation = loadGeneration
         prefs.bindProfile(id: AuthService.shared.profileId)
         showCachedAccount()
 
@@ -340,8 +342,9 @@ final class SettingsViewModel {
         async let profiles: [UserProfile]? = try? AuthService.shared.getProfiles()
         let (_, loadedUser, loadedProfiles) = await (deviceSettings, user, profiles)
 
-        // A server or profile switch while the reads ran made them stale.
-        guard accountKey == Self.accountCacheKey else { return }
+        // A newer load, or a server or profile switch while the reads ran,
+        // made them stale.
+        guard generation == loadGeneration, accountKey == Self.accountCacheKey else { return }
 
         // A failed read keeps the account the card is already showing.
         if let loadedUser {
@@ -375,6 +378,10 @@ final class SettingsViewModel {
     /// draws the card at once instead of after `/api/v2/account/me` answers.
     /// Keyed by server and profile so it never shows under another sign-in.
     @MainActor private static var lastUserInfo: (key: String, user: UserInfo)?
+
+    /// Bumped by every `loadSettings()` so an older load that finishes last
+    /// does not publish over a newer one.
+    @ObservationIgnored private var loadGeneration: UInt64 = 0
 
     @MainActor private static var accountCacheKey: String? {
         guard let profileId = AuthService.shared.profileId else { return nil }
