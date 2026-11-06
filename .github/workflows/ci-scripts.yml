@@ -64,5 +64,5 @@ jobs:
               echo "::notice::.silo-translations pins a local build ($version); check it with scripts/sync-translations --local <checkout> (docs/i18n.md)." ;;
             *)
               scripts/sync-translations
-              git diff --exit-code -- iosApp/iosApp/Localizable.xcstrings .silo-translations ;;
+              git diff --exit-code -- iosApp/iosApp/Localizable.xcstrings .silo-translations .silo-translations-files ;;
           esac
