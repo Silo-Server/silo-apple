@@ -9,6 +9,9 @@ struct PlaybackSettingsView: View {
     @State private var spoilers = EpisodeSpoilerPreferences.shared
     @State private var showUseProfileSettingsConfirmation = false
 
+    /// The app language, so a switch re-renders the labels.
+    @Environment(\.locale) private var locale
+
     var body: some View {
         List {
             if viewModel.hasHeldPlaybackChanges {
@@ -383,7 +386,9 @@ struct PlaybackSettingsView: View {
     #endif
 
     private var noAudioLanguageLabel: String {
-        SettingPresentationMetadata.unsetLabel(for: .playbackAudioLanguage, fallback: "No preference")
+        SettingPresentationMetadata.unsetLabel(
+            for: .playbackAudioLanguage, fallback: "No preference", language: AppLanguage.language(of: locale)
+        )
     }
 
     private var audioLanguageLabel: String {

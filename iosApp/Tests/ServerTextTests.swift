@@ -96,6 +96,12 @@ final class ServerTextTests: XCTestCase {
         XCTAssertEqual(error.errorDescription, "Este campo es obligatorio.")
     }
 
+    func testTheShownFieldErrorPicksTheFieldKey() throws {
+        let json = #"{"type":"https://siloserver.org/problems/validation_failed","title":"T","status":422,"detail":"Invalid.","errors":[{"location":"body.pin","code":"invalid","detail":""},{"location":"body.name","code":"required","detail":"name is required"}]}"#
+        let problem = try JSONDecoder().decode(APIv2Problem.self, from: Data(json.utf8))
+        XCTAssertEqual(problem.localized("name is required", field: problem.errors?[1], language: "es"), "Este campo es obligatorio.")
+    }
+
     func testProblemDetailStaysTheServersInEnglishOrWithoutAKey() {
         SharedStorage.suite.set("en", forKey: displayedKey)
         XCTAssertEqual(APIv2Error.problem(problem("not_found", detail: "Library 12 was not found.")).errorDescription,

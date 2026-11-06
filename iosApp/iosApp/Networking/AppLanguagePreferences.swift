@@ -97,29 +97,40 @@ final class StandardAppLanguageSystem: AppLanguageSystem {
     /// The device's language list, for what follows the device rather than
     /// the app (subtitle fallback, D31). Writing the app's `AppleLanguages`
     /// changes `Locale.preferredLanguages`, so while that value is Silo's own
-    /// this reads the global list, or the list from just before Silo wrote it
-    /// when the global one isn't readable (a fresh simulator has none).
-    nonisolated static func deviceLanguages(defaults: UserDefaults = .standard) -> [String] {
-        let app = Bundle.main.bundleIdentifier.flatMap { defaults.persistentDomain(forName: $0)?[key] as? [String] }
-        let ledger = defaults.data(forKey: ledgerKey).flatMap { try? JSONDecoder().decode(AppLanguageLedger.self, from: $0) }
-        guard let ledger, app == [ledger.applied] else { return Locale.preferredLanguages }
-        if let global = defaults.persistentDomain(forName: UserDefaults.globalDomain)?[key] as? [String], !global.isEmpty {
-            return global
+    /// this reads the list from before Silo's write instead:
+    /// - over a per-app language the user chose, the list from just before
+    ///   Silo wrote (theirs, as subtitles used it then);
+    /// - otherwise the global list, or that recorded list when the global one
+    ///   isn't readable (a fresh simulator has none).
+    nonisolated static func deviceLanguages(
+        defaults: UserDefaults = .standard,
+        global: [String]? = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)?["AppleLanguages"] as? [String]
+    ) -> [String] {
+        guard let ledger = storedLedger(defaults), storedAppValue(defaults) == [ledger.applied] else {
+            return Locale.preferredLanguages
         }
-        return defaults.stringArray(forKey: deviceListKey) ?? []
+        let beforeSilo = defaults.stringArray(forKey: deviceListKey)
+        if let baseline = ledger.baseline { return beforeSilo ?? baseline }
+        if let global, !global.isEmpty { return global }
+        return beforeSilo ?? []
     }
 
-    var appValue: [String]? {
-        guard let domain = Bundle.main.bundleIdentifier else { return nil }
-        return defaults.persistentDomain(forName: domain)?[Self.key] as? [String]
+    private nonisolated static func storedAppValue(_ defaults: UserDefaults) -> [String]? {
+        Bundle.main.bundleIdentifier.flatMap { defaults.persistentDomain(forName: $0)?[key] as? [String] }
     }
+
+    private nonisolated static func storedLedger(_ defaults: UserDefaults) -> AppLanguageLedger? {
+        defaults.data(forKey: ledgerKey).flatMap { try? JSONDecoder().decode(AppLanguageLedger.self, from: $0) }
+    }
+
+    var appValue: [String]? { Self.storedAppValue(defaults) }
 
     var effectiveList: [String] {
         defaults.stringArray(forKey: Self.key) ?? Locale.preferredLanguages
     }
 
     var ledger: AppLanguageLedger? {
-        get { defaults.data(forKey: Self.ledgerKey).flatMap { try? JSONDecoder().decode(AppLanguageLedger.self, from: $0) } }
+        get { Self.storedLedger(defaults) }
         set {
             if let newValue, let data = try? JSONEncoder().encode(newValue) {
                 defaults.set(data, forKey: Self.ledgerKey)
@@ -132,7 +143,7 @@ final class StandardAppLanguageSystem: AppLanguageSystem {
     func write(_ write: AppLanguageReconciler.Write) {
         // Before Silo's own value hides it, keep the list the device resolves
         // without it, for what follows the device rather than the app (D31).
-        if appValue == nil || appValue != ledger.map({ [$0.applied] }) {
+        if ledger.map({ appValue != [$0.applied] }) ?? true {
             defaults.set(Locale.preferredLanguages, forKey: Self.deviceListKey)
         }
         switch write {

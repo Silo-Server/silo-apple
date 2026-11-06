@@ -118,7 +118,9 @@ enum AppLanguage {
     /// The shipped language a view's `\.locale` shows. The root sets it to
     /// the app language, so a view that reads it re-renders on a switch.
     static func language(of locale: Locale) -> String {
-        match(locale.identifier(.bcp47)) ?? development
+        // Most views ask in the development language; skip the matching.
+        if locale.language.languageCode == Locale.Language(identifier: development).languageCode { return development }
+        return match(locale.identifier(.bcp47)) ?? development
     }
 
     private static var development: String { shipped.first ?? "en" }

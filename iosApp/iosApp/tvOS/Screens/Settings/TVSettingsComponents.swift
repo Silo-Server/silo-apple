@@ -41,9 +41,10 @@ enum TVSettingsOptions {
             + choicesKbps.map { .init(id: String($0), label: SiloQualityPresets.bitrateLabel($0)) }
     }
 
-    static func audioLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
+    static func audioLanguage(_ languages: [PlaybackLanguageOption], language: String) -> [TVSettingsOption] {
         languageOptions(
             languages,
+            language: language,
             key: .playbackAudioLanguage,
             unsetID: "",
             fallbackUnsetLabel: "No preference"
@@ -54,9 +55,10 @@ enum TVSettingsOptions {
     /// a device, so it only appears for a value an earlier build stored.
     static func deviceAudioLanguage(
         _ languages: [PlaybackLanguageOption],
-        includingNoPreference: Bool
+        includingNoPreference: Bool,
+        language: String
     ) -> [TVSettingsOption] {
-        let options = audioLanguage(languages)
+        let options = audioLanguage(languages, language: language)
         return [useProfileSetting] + (includingNoPreference ? options : Array(options.dropFirst()))
     }
 
@@ -85,18 +87,20 @@ enum TVSettingsOptions {
         TVSettingsOption(id: $0.wireValue, label: $0.label)
     }
 
-    static func subtitleLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
+    static func subtitleLanguage(_ languages: [PlaybackLanguageOption], language: String) -> [TVSettingsOption] {
         languageOptions(
             languages,
+            language: language,
             key: .playbackSubtitleLanguage,
             unsetID: PlaybackPrefSentinel.none,
             fallbackUnsetLabel: "None"
         )
     }
 
-    static func metadataLanguage(_ languages: [PlaybackLanguageOption]) -> [TVSettingsOption] {
+    static func metadataLanguage(_ languages: [PlaybackLanguageOption], language: String) -> [TVSettingsOption] {
         languageOptions(
             languages,
+            language: language,
             key: .catalogMetadataLanguage,
             unsetID: PlaybackPrefSentinel.none,
             fallbackUnsetLabel: "Library default"
@@ -105,11 +109,12 @@ enum TVSettingsOptions {
 
     private static func languageOptions(
         _ languages: [PlaybackLanguageOption],
+        language: String,
         key: SettingKey,
         unsetID: String,
         fallbackUnsetLabel: String
     ) -> [TVSettingsOption] {
-        let unsetLabel = SettingPresentationMetadata.unsetLabel(for: key, fallback: fallbackUnsetLabel)
+        let unsetLabel = SettingPresentationMetadata.unsetLabel(for: key, fallback: fallbackUnsetLabel, language: language)
         return [.init(id: unsetID, label: unsetLabel)]
             + languages.map { .init(id: $0.code, label: $0.label) }
     }

@@ -22,14 +22,25 @@ final class CaptionDeviceLanguageTests: XCTestCase {
         super.tearDown()
     }
 
-    /// Silo's own value, recorded in its ledger, with the list from before it.
-    func testCaptionFallbackIgnoresSilosAppLanguage() throws {
+    /// Silo's own value hides the device's list: read the global list, or
+    /// the one recorded before Silo wrote when the global one is unreadable.
+    func testFallbackIgnoresSilosAppLanguage() {
         defaults.set(["fr-CA", "en-US"], forKey: "appLanguage.deviceList.v1")
         defaults.set(Data(#"{"applied":"is"}"#.utf8), forKey: "appLanguage.ledger.v1")
         defaults.set(["is"], forKey: "AppleLanguages")
-        let global = defaults.persistentDomain(forName: UserDefaults.globalDomain)?["AppleLanguages"] as? [String] ?? []
 
-        XCTAssertEqual(StandardAppLanguageSystem.deviceLanguages(), global.isEmpty ? ["fr-CA", "en-US"] : global)
+        XCTAssertEqual(StandardAppLanguageSystem.deviceLanguages(global: ["de-DE"]), ["de-DE"])
+        XCTAssertEqual(StandardAppLanguageSystem.deviceLanguages(global: nil), ["fr-CA", "en-US"])
+    }
+
+    /// Over a per-app language the user chose, their list from before Silo's
+    /// write still counts, as it did then.
+    func testFallbackKeepsTheUsersAppLanguageUnderSilos() {
+        defaults.set(["fr", "en-US"], forKey: "appLanguage.deviceList.v1")
+        defaults.set(Data(#"{"applied":"is","baseline":["fr"]}"#.utf8), forKey: "appLanguage.ledger.v1")
+        defaults.set(["is"], forKey: "AppleLanguages")
+
+        XCTAssertEqual(StandardAppLanguageSystem.deviceLanguages(global: ["de-DE"]), ["fr", "en-US"])
     }
 
     /// Silo's first write keeps the list the device resolved before it.

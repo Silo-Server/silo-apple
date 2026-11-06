@@ -7,6 +7,8 @@ import SwiftUI
 /// keeps its own ("Only on This Device").
 struct SubtitleSettingsView: View {
     let viewModel: SettingsViewModel
+    /// The app language, so a switch re-renders the labels.
+    @Environment(\.locale) private var locale
 
     var body: some View {
         List {
@@ -41,7 +43,9 @@ struct SubtitleSettingsView: View {
                 )
             ) {
                 Text(
-                    SettingPresentationMetadata.unsetLabel(for: .catalogMetadataLanguage, fallback: "Library default")
+                    SettingPresentationMetadata.unsetLabel(
+                        for: .catalogMetadataLanguage, fallback: "Library default", language: AppLanguage.language(of: locale)
+                    )
                 ).tag(PlaybackPrefSentinel.none)
                 ForEach(viewModel.metadataLanguageOptions) { option in
                     Text(option.label).tag(option.code)
@@ -73,7 +77,9 @@ struct SubtitleSettingsView: View {
                 )
             ) {
                 Text(
-                    SettingPresentationMetadata.unsetLabel(for: .playbackSubtitleLanguage, fallback: "None")
+                    SettingPresentationMetadata.unsetLabel(
+                        for: .playbackSubtitleLanguage, fallback: "None", language: AppLanguage.language(of: locale)
+                    )
                 ).tag(PlaybackPrefSentinel.none)
                 ForEach(viewModel.subtitleLanguageOptions) { option in
                     Text(option.label).tag(option.code)
