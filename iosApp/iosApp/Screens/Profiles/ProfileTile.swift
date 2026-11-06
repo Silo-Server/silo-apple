@@ -51,9 +51,7 @@ private let kidsFont: CGFloat = 11
 /// One person in "Who's watching?": a round avatar like the cast rows on
 /// detail pages, with lock and KIDS badges riding on the circle.
 struct ProfileTile: View {
-    /// How far a focused tile's name drops to clear the enlarged avatar. It's
-    /// an offset, not padding, so focus doesn't change the tile's height: a
-    /// taller tile grows its grid row and moves the picker's other rows.
+    /// How far a focused tile's name drops to clear the enlarged avatar.
     static let focusedNameDrop: CGFloat = 18
 
     let profile: UserProfile
@@ -109,8 +107,7 @@ struct ProfileTile: View {
                             .padding(.top, 2)
                     }
                 }
-                .padding(.top, nameSpacing)
-                .offset(y: isFocused ? ProfileTile.focusedNameDrop : 0)
+                .tileNameSpacing(focused: isFocused)
             }
             .frame(maxWidth: .infinity)
             .contentShape(.rect)
@@ -246,6 +243,22 @@ private struct ProfileTileButtonStyle: ButtonStyle {
     }
 }
 
+private extension View {
+    /// Spaces a tile's name below its avatar, dropping it further while the
+    /// tile is focused. On tvOS the drop is an offset, so focus doesn't change
+    /// the tile's height: a taller tile grows its grid row and moves the
+    /// picker's other rows. The tvOS picker reserves the drop below its grid.
+    @ViewBuilder
+    func tileNameSpacing(focused: Bool) -> some View {
+        #if os(tvOS)
+        padding(.top, nameSpacing)
+            .offset(y: focused ? ProfileTile.focusedNameDrop : 0)
+        #else
+        padding(.top, focused ? nameSpacing + ProfileTile.focusedNameDrop : nameSpacing)
+        #endif
+    }
+}
+
 /// Names grow more slowly than avatars so large avatars keep short labels.
 private func scaledNameSize(_ size: CGFloat) -> CGFloat {
     nameSize * (1 + (size / tileSize - 1) * 0.35)
@@ -286,8 +299,7 @@ struct AddProfileTile: View {
                 Text(title)
                     .font(.system(size: scaledNameSize(size), weight: .semibold))
                     .foregroundStyle(Color.siloOnSurface.opacity(isFocused ? 1 : 0.62))
-                    .padding(.top, nameSpacing)
-                    .offset(y: isFocused ? ProfileTile.focusedNameDrop : 0)
+                    .tileNameSpacing(focused: isFocused)
             }
             .frame(maxWidth: .infinity)
             .contentShape(.rect)
