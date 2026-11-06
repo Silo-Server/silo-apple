@@ -32,6 +32,9 @@ struct TVEpisodeRail: View {
     var cardHeightRatio: CGFloat = 9 / 16
     var cardSpacing: CGFloat = 54
     var anchorsFocusedCard = false
+    /// The plain rail takes focus on its entry card when it appears, so a page
+    /// whose episodes arrive after it opens still opens on its next episode.
+    var claimsFocusOnAppear = false
     /// Explicit season-chip jumps scroll the existing carousel without
     /// taking focus from the chip. Loaded edges extend the same episode row.
     var scrollRequest = 0
@@ -217,6 +220,32 @@ struct TVEpisodeRail: View {
                     proxy.scrollTo(id, anchor: .center)
                 }
             }
+            // Keyed to the parent's current intent and entry card, so a viewer
+            // moving to the season row, or a new entry card, cancels retries
+            // aimed at the old one.
+            .task(id: EntryFocusClaim(isRequested: claimsFocusOnAppear, contentId: legacyEntryContentId)) {
+                await claimEntryFocus()
+            }
+        }
+    }
+
+    private struct EntryFocusClaim: Equatable {
+        let isRequested: Bool
+        let contentId: String?
+    }
+
+    /// Claims the entry card, then re-asserts until the claim sticks. The
+    /// focus engine silently drops a write to a card lazy layout has not
+    /// mounted yet, and one made while a pushed page is still animating in.
+    /// Stops once any card holds focus, so a viewer already moving along the
+    /// row keeps their place.
+    private func claimEntryFocus() async {
+        guard claimsFocusOnAppear, let id = legacyEntryContentId else { return }
+        for _ in 0..<12 {
+            await Task.yield()
+            guard !Task.isCancelled, focusedCardId == nil else { return }
+            focusedCardId = id
+            try? await Task.sleep(for: .milliseconds(80))
         }
     }
 
