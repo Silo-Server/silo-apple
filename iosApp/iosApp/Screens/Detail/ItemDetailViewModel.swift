@@ -13,6 +13,7 @@ class ItemDetailViewModel {
         self.libraryId = libraryId
         self.descriptionTranslation = descriptionTranslation ?? DescriptionTranslationCoordinator()
         self.seasonDescriptionTranslation = seasonDescriptionTranslation ?? DescriptionTranslationCoordinator()
+        Self.liveModels.add(self)
     }
 
     var detail: ItemDetail?
@@ -1743,6 +1744,10 @@ class ItemDetailViewModel {
         } else if case .some(let stored) = result.storedRating {
             Self.recentlyConfirmedRatings[unsettledKey] = .some(stored)
         }
+        if case .some(let confirmed) = Self.recentlyConfirmedRatings[unsettledKey],
+           result.outcome == .applied || result.storedRating != nil {
+            Self.shareConfirmedRating(confirmed, contentId: contentId, key: unsettledKey, from: self)
+        }
         // Every page-state change below belongs to this title and owner.
         guard await isRatingScopeCurrent(generation, owner: owner) else { return }
         if case .some(let stored) = result.storedRating {
@@ -1753,6 +1758,32 @@ class ItemDetailViewModel {
         } else {
             ratingOverride = confirmedRating
             personalStateNotice = PersonalStateNotice(result.outcome)
+        }
+    }
+
+    /// Every live detail model, held weakly, so a confirmed rating can reach
+    /// other pages showing the same title (a page reopened mid-write on iOS,
+    /// or a second model on tvOS).
+    private static let liveModels = NSHashTable<ItemDetailViewModel>.weakObjects()
+
+    /// Shows a rating the server just confirmed on every other live page for
+    /// the same owner and title, including one whose own load overlapped the
+    /// write and may be showing the older rating. A page with its own write
+    /// running keeps its state; that write's result decides it.
+    private static func shareConfirmedRating(
+        _ confirmed: Int?,
+        contentId: String,
+        key: String,
+        from writer: ItemDetailViewModel
+    ) {
+        for model in liveModels.allObjects where model !== writer {
+            guard model.detail?.contentId == contentId,
+                  !model.isSavingRating,
+                  unsettledRatingKey(contentId: contentId, owner: model.personalStateOwner) == key else { continue }
+            model.ratingOverride = .some(confirmed)
+            // A later failed write on that page falls back to this, not to
+            // its older loaded detail.
+            model.confirmedRating = .some(confirmed)
         }
     }
 
