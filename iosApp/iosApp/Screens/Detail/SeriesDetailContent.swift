@@ -87,6 +87,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
     @State private var resumeLookupTask: Task<Void, Never>?
     @State private var isUpdatingWatched = false
+    /// The More menu's Rate entry opens the rating dialog.
+    @State private var showsRatingDialog = false
     @State private var watchedUpdateFailed = false
     @State private var watchedNotice: PersonalStateNotice?
     /// Bumped when a season or episode watched change lands, so the success
@@ -277,7 +279,6 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     action: toggleNextUpEpisodeWatched
                 )
                 .disabled(isUpdatingWatched || nextUpEpisode == nil)
-                PhoneRatingMenu(rating: userRating, isSaving: isSavingRating, onRate: onRate)
                 if DownloadManager.shared.downloadsEnabled {
                     SeriesDownloadButton(
                         detail: detail,
@@ -310,6 +311,13 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
         .frame(maxWidth: .infinity)
         .animation(.easeInOut(duration: 0.18), value: trailerStatusMessage)
+        .phoneRatingDialog(
+            isPresented: $showsRatingDialog,
+            title: detail.title,
+            rating: userRating,
+            isSaving: isSavingRating,
+            onRate: onRate
+        )
     }
 
     /// A fixed-height selector slot is the anchor that keeps the whole page
@@ -397,6 +405,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             )
         }
         .disabled(isUpdatingWatched)
+        PhoneRateMenuItem(rating: userRating, isSaving: isSavingRating) {
+            showsRatingDialog = true
+        }
         Divider()
         Button(action: onFindTrailers) {
             Label("Find Trailers", systemImage: "film")

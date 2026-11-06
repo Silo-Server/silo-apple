@@ -95,55 +95,55 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
     }
 }
 
-/// The viewer's own 1 to 5 star rating, as a menu in the action row. The
-/// caption shows the saved rating and the menu ticks it; picking another
-/// rating sets it, and picking the ticked one again clears it.
-struct PhoneRatingMenu: View {
+// MARK: - Rating
+
+/// The More menu's entry for the viewer's own 1 to 5 star rating: "Rate…",
+/// or the saved rating ("Your Rating: 4 Stars") once there is one. Opens the rating dialog
+/// (`phoneRatingDialog`) rather than listing the stars in the menu.
+struct PhoneRateMenuItem: View {
     let rating: Int?
-    /// A rating write is running; the menu waits for it.
+    /// A rating write is running; the entry waits for it.
     var isSaving = false
-    /// nil clears the rating.
-    let onRate: (Int?) -> Void
+    let action: () -> Void
 
     var body: some View {
-        Menu {
+        Button(action: action) {
+            Label(
+                rating.map { "Your Rating: \(UserStarRating.label($0))" } ?? "Rate…",
+                systemImage: rating == nil ? "star" : "star.fill"
+            )
+        }
+        .disabled(isSaving)
+    }
+}
+
+extension View {
+    /// The dialog the More menu's Rate entry opens: one button per rating,
+    /// 5 stars first. Picking a rating sets it; picking the current one
+    /// again clears it, as the message says.
+    func phoneRatingDialog(
+        isPresented: Binding<Bool>,
+        title: String,
+        rating: Int?,
+        isSaving: Bool,
+        onRate: @escaping (Int?) -> Void
+    ) -> some View {
+        confirmationDialog("Rate \(title)", isPresented: isPresented, titleVisibility: .visible) {
             ForEach(UserStarRating.range.reversed(), id: \.self) { stars in
-                Button {
+                Button(UserStarRating.label(stars)) {
                     onRate(UserStarRating.choosing(stars, current: rating))
-                } label: {
-                    if stars == rating {
-                        Label(UserStarRating.label(stars), systemImage: "checkmark")
-                    } else {
-                        Text(UserStarRating.label(stars))
-                    }
                 }
+                .disabled(isSaving)
                 .accessibilityHint(stars == rating ? "Removes your rating" : "")
             }
-        } label: {
-            VStack(spacing: 6) {
-                Image(systemName: rating == nil ? "star" : "star.fill")
-                    .font(.system(size: 19, weight: .regular))
-                    .foregroundStyle(Color.siloOnSurface)
-                    .frame(width: 42, height: 42)
-                    .background(Circle().fill(Color.white.opacity(rating == nil ? 0.10 : 0.18)))
-                    .contentTransition(.symbolEffect(.replace.magic(fallback: .replace)))
-                Text(rating.map(UserStarRating.label) ?? "Rate")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Color.siloOnSurface.opacity(rating == nil ? 0.6 : 0.92))
-                    .phoneActionCaption()
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let rating {
+                Text("Your rating is \(UserStarRating.label(rating)). Choose it again to remove it.")
+            } else {
+                Text("Choose how many stars to give it.")
             }
-            .frame(maxWidth: .infinity, minHeight: 58)
-            .contentShape(Rectangle())
         }
-        #if os(macOS)
-        .menuStyle(.button)
-        .buttonStyle(.plain)
-        .menuIndicator(.hidden)
-        #endif
-        .disabled(isSaving)
-        .sensoryFeedback(.impact(weight: .light), trigger: rating)
-        .accessibilityLabel("Your rating")
-        .accessibilityValue(UserStarRating.accessibilityValue(rating))
     }
 }
 

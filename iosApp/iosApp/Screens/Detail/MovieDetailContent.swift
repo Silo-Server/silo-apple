@@ -61,6 +61,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @State private var resumeLookupTask: Task<Void, Never>?
     /// The download options sheet, opened from the More menu.
     @State private var showDownloadOptions = false
+    /// The More menu's Rate entry opens the rating dialog.
+    @State private var showsRatingDialog = false
 
     var body: some View {
         PhoneDetailPageSurface(
@@ -193,7 +195,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
                         ? "Mark as Unwatched" : "Mark as Watched",
                     action: onToggleWatched
                 )
-                PhoneRatingMenu(rating: userRating, isSaving: isSavingRating, onRate: onRate)
                 if showsDownloadButton {
                     DownloadActionButton(
                         detail: detail,
@@ -202,10 +203,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
                         showOptions: $showDownloadOptions
                     )
                 }
-                if hasOverflowMenu {
-                    PhoneLabeledMenu(label: "More") {
-                        overflowMenuItems
-                    }
+                // Always shown: it holds Rate, whatever else applies.
+                PhoneLabeledMenu(label: "More") {
+                    overflowMenuItems
                 }
             }
 
@@ -220,6 +220,13 @@ struct MovieDetailContent<BelowOverview: View>: View {
         }
         .frame(maxWidth: .infinity)
         .animation(.easeInOut(duration: 0.18), value: trailerStatusMessage)
+        .phoneRatingDialog(
+            isPresented: $showsRatingDialog,
+            title: detail.title,
+            rating: userRating,
+            isSaving: isSavingRating,
+            onRate: onRate
+        )
     }
 
     private func playbackSelectors(for version: FileVersion) -> some View {
@@ -261,11 +268,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
             && detail.type == "movie"
     }
 
-    /// Movies always get the More menu: it holds "Find Trailers" and, with
-    /// downloads on, the download options sheet.
-    private var hasOverflowMenu: Bool {
-        detail.type == "movie"
-    }
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
     private var overflowMenuItems: some View {
@@ -279,6 +281,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
             } label: {
                 Label("Download Options…", systemImage: "slider.horizontal.3")
             }
+        }
+        PhoneRateMenuItem(rating: userRating, isSaving: isSavingRating) {
+            showsRatingDialog = true
         }
         if detail.type == "movie" {
             Button(action: onFindTrailers) {
