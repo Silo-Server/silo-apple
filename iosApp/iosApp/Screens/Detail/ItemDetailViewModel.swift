@@ -449,6 +449,10 @@ class ItemDetailViewModel {
         return detailGeneration
     }
 
+    /// The rating revision a re-fetch captures before its read, so its
+    /// publisher can tell whether a rating write overlapped the read.
+    var ratingReadRevision: Int { ratingRevision }
+
     /// Publish a payload the caller re-fetched itself, taking the generation
     /// with it so an in-flight load can't land its older copy afterwards.
     /// Used by the description translator, which polls the catalog directly
@@ -1633,13 +1637,17 @@ class ItemDetailViewModel {
     ) async {
         guard !isSavingRating,
               let contentId = detail?.contentId,
-              stars.map(UserStarRating.range.contains) ?? true else { return }
+              stars.map(UserStarRating.range.contains) ?? true,
+              // App-wide: also refuses while another page's model (this
+              // title closed and reopened mid-write) is still writing it.
+              PersonalStateHolds.shared.beginRatingWrite(contentId: contentId) else { return }
         let seriesId = detail?.seriesId
         let generation = ratingTitleGeneration
         isSavingRating = true
         ratingRevision += 1
         ratingOverride = .some(stars)
         defer {
+            PersonalStateHolds.shared.endRatingWrite(contentId: contentId)
             isSavingRating = false
             // Always, even if the page moved on: a read that overlapped this
             // write, on whichever title, must not treat its payload as fresh.
