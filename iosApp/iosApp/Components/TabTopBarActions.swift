@@ -136,7 +136,8 @@ struct ProfileAvatarMenu: View {
 
     #if os(iOS)
     @State private var isPanelPresented = false
-    /// Runs once the panel has closed, so navigation never starts under it.
+    /// Runs once the panel has closed: a sheet or confirmation cannot be
+    /// presented while the popover is still dismissing.
     @State private var pendingAction: (() -> Void)?
     #endif
 
@@ -250,8 +251,14 @@ struct ProfileAvatarMenu: View {
                 serverName: serverLine,
                 sections: panelSections,
                 choose: { row in
-                    pendingAction = row.action
                     isPanelPresented = false
+                    // A push can start while the popover closes. Waiting for
+                    // the close to finish first made Settings open late.
+                    if row.pushesScreen {
+                        row.action()
+                    } else {
+                        pendingAction = row.action
+                    }
                 }
             )
             .presentationCompactAdaptation(.popover)
@@ -326,18 +333,24 @@ struct ProfileAvatarMenu: View {
     private var panelSections: [[ProfileMenuPanel.Row]] {
         var features: [ProfileMenuPanel.Row] = []
         if requestsEnabled {
-            features.append(.init(title: "Requests", systemImage: "sparkles", action: onOpenRequests))
+            features.append(.init(
+                title: "Requests",
+                systemImage: "sparkles",
+                pushesScreen: true,
+                action: onOpenRequests
+            ))
         }
         if showsWatchParty {
             features.append(.init(
                 title: WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party",
-                systemImage: "person.3"
+                systemImage: "person.3",
+                pushesScreen: true
             ) { router.navigate(to: .watchParty) })
         }
         return [
             features,
             [
-                .init(title: "Settings", systemImage: "gearshape", action: onOpenSettings),
+                .init(title: "Settings", systemImage: "gearshape", pushesScreen: true, action: onOpenSettings),
                 .init(title: "Switch Profile", systemImage: "person.2", action: onSwitchProfile),
                 .init(
                     title: "Change Account",
@@ -366,6 +379,9 @@ struct ProfileMenuPanel: View {
         let title: String
         let systemImage: String
         var isDestructive = false
+        /// The action pushes a screen, so it runs as the panel starts to
+        /// close. Other actions present something and wait for the close.
+        var pushesScreen = false
         let action: () -> Void
 
         var id: String { title }
