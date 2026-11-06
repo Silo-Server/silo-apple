@@ -363,9 +363,20 @@ class ItemDetailViewModel {
             // changed on another client shows up (tvOS keeps this model across
             // visits). A write still running, or a choice or completion during
             // this read, keeps it.
+            let ratingKey = Self.unsettledRatingKey(contentId: contentId, owner: personalStateOwner)
             if !isSavingRating, ratingRevision == ratingRevisionAtStart {
                 ratingOverride = nil
                 confirmedRating = nil
+                // The server is the authority again for this title.
+                Self.recentlyConfirmedRatings[ratingKey] = nil
+            } else if ratingOverride == nil,
+                      case .some(let confirmed) = Self.recentlyConfirmedRatings[ratingKey],
+                      enriched.userRating != confirmed {
+                // The read overlapped a rating write, and the page lost its
+                // own copy of the result (it left this title and came back
+                // mid-write). Show the rating the server confirmed rather
+                // than the payload's possibly older one.
+                ratingOverride = .some(confirmed)
             }
 
             refreshBoxSet(for: enriched)
@@ -1631,6 +1642,11 @@ class ItemDetailViewModel {
     /// it describes the server, so it must survive title changes and a page
     /// (and its model) being replaced or evicted.
     private static var unsettledRatingWrites: Set<String> = []
+    /// The last rating a write confirmed, by owner and title, kept app-wide
+    /// until a detail read that overlapped no write lands. Lets a page that
+    /// left and came back mid-write show the saved rating even if its load
+    /// joined a request dispatched before the write.
+    private static var recentlyConfirmedRatings: [String: Int?] = [:]
     /// Bumped when the page moves to another title; a write that finishes
     /// for the old title drops its result.
     @ObservationIgnored private var ratingTitleGeneration = 0
@@ -1706,6 +1722,11 @@ class ItemDetailViewModel {
             Self.unsettledRatingWrites.insert(unsettledKey)
         } else {
             Self.unsettledRatingWrites.remove(unsettledKey)
+        }
+        if result.outcome == .applied {
+            Self.recentlyConfirmedRatings[unsettledKey] = .some(stars)
+        } else if case .some(let stored) = result.storedRating {
+            Self.recentlyConfirmedRatings[unsettledKey] = .some(stored)
         }
         // Every page-state change below belongs to this title and owner.
         guard await isRatingScopeCurrent(generation, owner: owner) else { return }
