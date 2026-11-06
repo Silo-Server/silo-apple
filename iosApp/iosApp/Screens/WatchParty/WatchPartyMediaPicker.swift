@@ -781,6 +781,9 @@ private struct WatchPartyEpisodePicker: View {
     #if os(tvOS)
     @State private var focusedEpisodeId: String?
     @FocusState private var focusedSeasonNumber: Int?
+    /// The page opens on the resume episode, as the series page opens on
+    /// Play, until focus reaches the rail or the viewer picks a season.
+    @State private var opensOnResumeEpisode = true
     #endif
 
     private var spoilers: EpisodeSpoilerSettings { EpisodeSpoilerPreferences.shared.settings }
@@ -861,6 +864,7 @@ private struct WatchPartyEpisodePicker: View {
                                     isSelected: seasonNumber == season.seasonNumber,
                                     rendersFocusedAppearance: focusedSeasonNumber == season.seasonNumber
                                 ) {
+                                    opensOnResumeEpisode = false
                                     seasonNumber = season.seasonNumber
                                 }
                                 .focused($focusedSeasonNumber, equals: season.seasonNumber)
@@ -875,9 +879,11 @@ private struct WatchPartyEpisodePicker: View {
                     .padding(.bottom, 24)
                 }
                 Group {
-                    if isLoading && episodes.isEmpty && seasons.isEmpty {
+                    if isLoading && episodes.isEmpty && (seasons.isEmpty || opensOnResumeEpisode) {
                         // Nothing else on the page can hold focus until the
                         // seasons arrive; without an owner Menu cannot leave.
+                        // It holds focus through the first episodes too, so
+                        // the rail can take it from here.
                         ProgressView().tint(Color.siloSecondaryText).frame(maxWidth: .infinity)
                             .tvPageFocusOwner(focusRequest: 0, isTopMenuFocused: false,
                                               accessibilityLabel: "Loading episodes", onMoveUp: nil)
@@ -897,10 +903,17 @@ private struct WatchPartyEpisodePicker: View {
                                 guard let episode = episodes.first(where: { $0.contentId == id }) else { return }
                                 chosen = WatchPartyMediaChoice(series: series, episode: episode)
                             },
-                            onFocusedEpisodeChange: { id in if let id { focusedEpisodeId = id } },
+                            onFocusedEpisodeChange: { id in
+                                guard let id else { return }
+                                focusedEpisodeId = id
+                                opensOnResumeEpisode = false
+                            },
                             currentContentId: resumeEpisode?.contentId,
                             baseCardWidth: 400,
-                            cardSpacing: 36
+                            cardSpacing: 36,
+                            // Not when the viewer moved up to the seasons
+                            // while the episodes loaded.
+                            claimsFocusOnAppear: opensOnResumeEpisode && focusedSeasonNumber == nil
                         )
                         .padding(.horizontal, -WatchPartyMetrics.pageInset)
                     }
