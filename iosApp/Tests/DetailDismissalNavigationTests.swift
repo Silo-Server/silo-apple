@@ -93,7 +93,8 @@ final class DetailDismissalNavigationTests: XCTestCase {
 
         let card = try XCTUnwrap(router.presentedItemDetail)
         XCTAssertEqual(card.section, target)
-        XCTAssertFalse(card.fillsWindow)
+        // Fills the open iPhone Duo instead of a capped centered card.
+        XCTAssertTrue(card.fillsWindow)
         XCTAssertTrue(router.path.isEmpty)
 
         router.presentItemDetail(contentId: "movie", libraryId: 4)
@@ -103,6 +104,13 @@ final class DetailDismissalNavigationTests: XCTestCase {
             .itemDetail(contentId: "movie", libraryId: 4, seriesContext: nil),
         ])
         XCTAssertTrue(router.path.isEmpty)
+    }
+
+    func testRequestDetailStaysASheetWhenTheWindowWouldSplit() throws {
+        let router = AppRouter()
+        router.presentsItemDetailFullWindow = true
+        router.navigate(to: .requestDetail(mediaType: .movie, tmdbId: 603))
+        XCTAssertFalse(try XCTUnwrap(router.presentedItemDetail).fillsWindow)
     }
 
     func testMoreLikeThisHopsReplaceEachOtherSoBackLeavesInTwoSteps() {
