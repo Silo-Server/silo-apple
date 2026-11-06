@@ -270,6 +270,9 @@ struct ProfileSelectionView: View {
                 .padding(.horizontal, 80)
                 .frame(maxWidth: .infinity)
                 .padding(.top, 84)
+                // Room for a focused name in the last row, which drops below
+                // the tile's frame, so it clears the footer.
+                .padding(.bottom, ProfileTile.focusedNameDrop)
             Spacer(minLength: 0)
             // Full width so Down from any avatar column finds the section,
             // not only from the avatars directly above the two buttons.

@@ -51,6 +51,11 @@ private let kidsFont: CGFloat = 11
 /// One person in "Who's watching?": a round avatar like the cast rows on
 /// detail pages, with lock and KIDS badges riding on the circle.
 struct ProfileTile: View {
+    /// How far a focused tile's name drops to clear the enlarged avatar. It's
+    /// an offset, not padding, so focus doesn't change the tile's height: a
+    /// taller tile grows its grid row and moves the picker's other rows.
+    static let focusedNameDrop: CGFloat = 18
+
     let profile: UserProfile
     var isRemembered: Bool = false
     /// Avatar diameter. The picker sizes avatars to the household; badges
@@ -90,19 +95,22 @@ struct ProfileTile: View {
                     .scaleEffect(isFocused && !reduceMotion ? focusScale : 1.0)
                     .shadow(color: .black.opacity(isFocused ? 0.6 : 0), radius: isFocused ? 30 : 0, y: isFocused ? 20 : 0)
 
-                Text(profile.name)
-                    .font(.system(size: scaledNameSize(size), weight: .semibold))
-                    .foregroundStyle(isFocused ? Color.siloOnSurface : Color.siloOnSurface.opacity(nameOpacity))
-                    .lineLimit(1)
-                    .padding(.top, isFocused ? nameSpacing + 18 : nameSpacing)
-
-                if isRemembered {
-                    Text(rememberedBadgeLabel)
-                        .font(.system(size: metaSize))
-                        .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                VStack(spacing: 0) {
+                    Text(profile.name)
+                        .font(.system(size: scaledNameSize(size), weight: .semibold))
+                        .foregroundStyle(isFocused ? Color.siloOnSurface : Color.siloOnSurface.opacity(nameOpacity))
                         .lineLimit(1)
-                        .padding(.top, 2)
+
+                    if isRemembered {
+                        Text(rememberedBadgeLabel)
+                            .font(.system(size: metaSize))
+                            .foregroundStyle(Color.siloOnSurface.opacity(0.4))
+                            .lineLimit(1)
+                            .padding(.top, 2)
+                    }
                 }
+                .padding(.top, nameSpacing)
+                .offset(y: isFocused ? ProfileTile.focusedNameDrop : 0)
             }
             .frame(maxWidth: .infinity)
             .contentShape(.rect)
@@ -278,7 +286,8 @@ struct AddProfileTile: View {
                 Text(title)
                     .font(.system(size: scaledNameSize(size), weight: .semibold))
                     .foregroundStyle(Color.siloOnSurface.opacity(isFocused ? 1 : 0.62))
-                    .padding(.top, isFocused ? nameSpacing + 18 : nameSpacing)
+                    .padding(.top, nameSpacing)
+                    .offset(y: isFocused ? ProfileTile.focusedNameDrop : 0)
             }
             .frame(maxWidth: .infinity)
             .contentShape(.rect)
