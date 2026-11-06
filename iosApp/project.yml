@@ -96,6 +96,8 @@ targets:
           - "tvOS-Info.plist"
       - path: Resources
         buildPhase: resources
+      # This app's permission prompt text (docs/i18n.md).
+      - path: InfoPlist/iOS/InfoPlist.xcstrings
       # Silo's own license and App Store permission, shown under Settings >
       # About > Open Source Licenses. Bundled from the repository root so the
       # app cannot drift from the published terms.
@@ -160,6 +162,8 @@ targets:
           - "macOS/**"
       - path: Resources
         buildPhase: resources
+      # This app's permission prompt text (docs/i18n.md).
+      - path: InfoPlist/tvOS/InfoPlist.xcstrings
       # Silo's own license and App Store permission, shown under Settings >
       # About > Open Source Licenses. Bundled from the repository root so the
       # app cannot drift from the published terms.
@@ -218,6 +222,8 @@ targets:
           - "Screens/WatchParty/**"
       - path: Resources
         buildPhase: resources
+      # This app's permission prompt text (docs/i18n.md).
+      - path: InfoPlist/macOS/InfoPlist.xcstrings
       # Silo's own license and App Store permission, shown under Settings >
       # About > Open Source Licenses. Bundled from the repository root so the
       # app cannot drift from the published terms.
@@ -260,6 +266,8 @@ targets:
     platform: tvOS
     sources:
       - path: TopShelf
+      # The generated string catalog; extensions list it (docs/i18n.md).
+      - path: iosApp/Localizable.xcstrings
       - path: iosApp/Shared
         excludes:
           - "Diagnostics/**"
@@ -290,6 +298,8 @@ targets:
     platform: iOS
     sources:
       - path: NotificationService
+      # The generated string catalog; extensions list it (docs/i18n.md).
+      - path: iosApp/Localizable.xcstrings
       - path: iosApp/Notifications/ApplePushDisplayMetadata.swift
       - path: iosApp/Notifications/ApplePushDisplayTargets.swift
       - path: iosApp/Shared/InsecureRedirectGuard.swift
@@ -319,6 +329,8 @@ targets:
     platform: iOS
     sources:
       - path: DownloadsActivity
+      # The generated string catalog; extensions list it (docs/i18n.md).
+      - path: iosApp/Localizable.xcstrings
       - path: iosApp/Downloads/DownloadActivityAttributes.swift
     configFiles:
       Debug: Signing/SiloDownloadsActivity.xcconfig

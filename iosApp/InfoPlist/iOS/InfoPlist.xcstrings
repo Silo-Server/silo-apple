@@ -1,0 +1,18 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSLocalNetworkUsageDescription" : {
+      "comment" : "iOS permission prompt text the system shows when Silo first asks for this access. Keep it in step with iosApp/iosApp/Info.plist.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo uses your local network to find Silo servers, and to set up, find, and control Silo on your TV."
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

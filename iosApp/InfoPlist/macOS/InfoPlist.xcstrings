@@ -1,0 +1,18 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSLocalNetworkUsageDescription" : {
+      "comment" : "macOS permission prompt text the system shows when Silo first asks for this access. Keep it in step with iosApp/macOS-Info.plist.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo uses your local network to find Silo servers."
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

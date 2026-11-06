@@ -49,3 +49,20 @@ jobs:
         run: bash scripts/ci/check-string-localized.test.sh
       - name: Block text resolved in the process language
         run: bash scripts/ci/check-string-localized.sh
+      # The committed catalog must be exactly what the pinned silo-translations
+      # release generates. A local pin (no release exists yet) can only be
+      # checked against a checkout; see docs/i18n.md.
+      - name: Check the generated string catalog
+        env:
+          # Read access to Silo-Server/silo-translations releases (private
+          # repository). Not configured yet.
+          GH_TOKEN: ${{ secrets.SILO_TRANSLATIONS_READ_TOKEN }}
+        run: |
+          version=$(sed -n 's/^version=//p' .silo-translations)
+          case $version in
+            local-*)
+              echo "::notice::.silo-translations pins a local build ($version); check it with scripts/sync-translations --local <checkout> (docs/i18n.md)." ;;
+            *)
+              scripts/sync-translations
+              git diff --exit-code -- iosApp/iosApp/Localizable.xcstrings .silo-translations ;;
+          esac
