@@ -283,7 +283,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
         }
         PhoneRateMenuItem(
             rating: userRating,
-            noun: detail.type == "movie" ? "Movie" : nil,
+            noun: SiloMediaType.isMovieLibrary(detail.type) ? "Movie" : nil,
             isSaving: isSavingRating
         ) {
             showsRatingDialog = true

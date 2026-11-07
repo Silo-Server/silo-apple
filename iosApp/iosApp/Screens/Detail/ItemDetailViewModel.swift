@@ -481,9 +481,11 @@ class ItemDetailViewModel {
             }
         } else if ratingRevisionAtRead != nil {
             // A read that overlapped no rating write is as fresh as a detail
-            // load, so it releases the page's rating the same way.
+            // load, so it releases the page's rating the same way, including
+            // the app-wide confirmed rating another page could apply later.
             ratingOverride = nil
             confirmedRating = nil
+            Self.recentlyConfirmedRatings[Self.unsettledRatingKey(contentId: contentId, owner: personalStateOwner)] = nil
         }
         detail = item
         cacheDetail(item, contentId: contentId, ratingRevisionAtRead: ratingRevisionAtRead)

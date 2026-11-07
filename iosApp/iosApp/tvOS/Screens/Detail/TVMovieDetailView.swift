@@ -235,7 +235,7 @@ struct TVMovieDetailView: View {
                 ]
                 items.append(TVActionPopoverItem(
                     id: MoreAction.rate.rawValue,
-                    title: UserStarRating.menuTitle(rating: userRating, noun: detail.type == "movie" ? "Movie" : nil),
+                    title: UserStarRating.menuTitle(rating: userRating, noun: SiloMediaType.isMovieLibrary(detail.type) ? "Movie" : nil),
                     systemImage: UserStarRating.menuSymbol(rating: userRating),
                     // Waits for a running save; the dialog would ignore a pick.
                     isEnabled: !isSavingRating
