@@ -8,8 +8,14 @@ struct MacPlayerTimeline: View {
     @State private var hoverFraction: Double?
     @State private var isDragging = false
 
+    /// Dragging the bar or swiping the trackpad. Keyboard skips also set
+    /// `isScrubbing` but show no preview.
+    private var showsScrubPreview: Bool {
+        isDragging || viewModel.isTrackpadScrubbing
+    }
+
     private var displayTime: Double {
-        if isDragging {
+        if showsScrubPreview {
             return viewModel.scrubPreviewTime
         }
         if let hoverFraction, viewModel.duration > 0 {
@@ -89,7 +95,7 @@ struct MacPlayerTimeline: View {
             .monospacedDigit()
         }
         .overlay(alignment: .top) {
-            if isDragging, let image = viewModel.scrubPreviewImage {
+            if showsScrubPreview, let image = viewModel.scrubPreviewImage {
                 scrubPreviewCard(image)
                     .offset(y: -138)
                     .transition(.opacity)

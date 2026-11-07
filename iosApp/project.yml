@@ -406,6 +406,8 @@ targets:
           - "OnboardingInvitationTests.swift"
           # AutoDownloadRules / AutoDownloadSchedule are declared under #if !os(tvOS).
           - "AutoDownloadStatusTests.swift"
+          # TrackpadScrub and the trackpad scrub API are declared under #if os(iOS) || os(macOS).
+          - "TrackpadScrubTests.swift"
           # Same non-fixture files as SiloTests, re-added below with no phase.
           - "Fixtures/ASS/README.md"
           - "Fixtures/ASS/generate-font.py"

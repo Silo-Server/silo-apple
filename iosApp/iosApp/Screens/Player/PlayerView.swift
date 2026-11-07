@@ -417,6 +417,13 @@ struct PlayerView: View {
                         || showsPartyPanel || !viewModel.canRequestPlayPause
                 )
         }
+        .gesture(
+            PlayerTrackpadScrubRecognizer(
+                viewModel: viewModel,
+                isEnabled: !viewModel.isStartingPlayback && viewModel.error == nil
+                    && !viewModel.showNextUpScreen
+            )
+        )
         #endif
         #if os(tvOS)
         // Physical Play/Pause on the Siri remote always toggles playback

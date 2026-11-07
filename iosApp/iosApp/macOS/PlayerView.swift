@@ -161,6 +161,14 @@ private struct MacPlayerScreen: View {
                 .frame(width: 0, height: 0)
             }
         }
+        .background {
+            // The picture runs under the title bar, so swipes there count too.
+            MacPlayerTrackpadScrubCapture(
+                viewModel: viewModel,
+                isEnabled: viewModel.error == nil && !viewModel.isStartingPlayback && !isOptionsPresented
+            )
+            .ignoresSafeArea()
+        }
         .playerLoadingSpinnerVisibility(isActive: viewModel.isWaitingToPlay, isVisible: $showsLoadingSpinner)
         .onHover { hovering in
             if hovering {
