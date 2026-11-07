@@ -1551,7 +1551,11 @@ struct PlayerNextUpScreen: View {
                 }
                 .siloSecondaryButton()
                 .frame(minHeight: 44)
-                if compact && hasNextEpisode && viewModel.shuffleState == nil { autoPlayToggle }
+                if compact && hasNextEpisode && viewModel.shuffleState == nil {
+                    // Keep Watching stretches, so the toggle claims its width
+                    // first; a longer translation would otherwise truncate it.
+                    autoPlayToggle.layoutPriority(1)
+                }
             }
             // With Stop shuffling beside it, the footer needs its own line.
             if compact && hasNextEpisode && viewModel.shuffleState != nil { autoPlayFooter }
