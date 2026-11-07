@@ -72,8 +72,13 @@ final class CatalogQueryBuilderTests: XCTestCase {
             XCTAssertFalse(keys.contains(.latestEpisodeAdded), "\(mediaType)")
             XCTAssertFalse(keys.contains(.lastAirDate), "\(mediaType)")
         }
-        let narrowed = CatalogSortKey.sortMediaType(.mixed, mediaScope: "series")
-        XCTAssertTrue(CatalogSortKey.available(for: narrowed).contains(.latestEpisodeAdded))
+        var seriesOnly = CatalogFilterState(); seriesOnly.mediaScope = "series"
+        XCTAssertTrue(CatalogSortKey.available(for: CatalogSortKey.sortMediaType(.mixed, filter: seriesOnly))
+            .contains(.latestEpisodeAdded))
+        // Under Match Any another filter can let movies back in.
+        var matchAny = seriesOnly; matchAny.matchAll = false; matchAny.genres = ["Drama"]
+        XCTAssertFalse(CatalogSortKey.available(for: CatalogSortKey.sortMediaType(.mixed, filter: matchAny))
+            .contains(.latestEpisodeAdded))
         XCTAssertEqual(
             CatalogSortKey.available(for: .audiobook),
             [.title, .addedAt, .releaseDate, .year, .runtime, .bitrate, .progress, .dateViewed, .plays,

@@ -152,11 +152,13 @@ enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
     }
 
     /// The media a sort list is for: a mixed library narrowed to Movies or
-    /// Series by its Type filter (`mediaScope`) sorts as that type, as the
-    /// web client does.
-    static func sortMediaType(_ mediaType: BrowseMediaType, mediaScope: String?) -> BrowseMediaType {
-        guard mediaType == .mixed else { return mediaType }
-        switch mediaScope {
+    /// Series by its Type filter sorts as that type, as the web client does.
+    /// The Type filter only narrows the results when every filter must match
+    /// or it is the only filter; under Match Any another filter can let the
+    /// other type back in, so the list stays the mixed one.
+    static func sortMediaType(_ mediaType: BrowseMediaType, filter: CatalogFilterState) -> BrowseMediaType {
+        guard mediaType == .mixed, filter.matchAll || filter.activeFacetCount <= 1 else { return mediaType }
+        switch filter.mediaScope {
         case "series": return .series
         case "movie": return .movie
         default: return .mixed

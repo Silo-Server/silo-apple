@@ -386,7 +386,7 @@ struct BrowseView: View {
         Menu {
             ForEach(
                 CatalogSortKey.available(
-                    for: CatalogSortKey.sortMediaType(viewModel.mediaType, mediaScope: viewModel.filterState.mediaScope),
+                    for: CatalogSortKey.sortMediaType(viewModel.mediaType, filter: viewModel.filterState),
                     shownRatingSources: RatingSourcesStore.shared.shown,
                     current: viewModel.filterState.sort
                 ),
