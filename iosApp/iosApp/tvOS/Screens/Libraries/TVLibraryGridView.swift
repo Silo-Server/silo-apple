@@ -137,7 +137,7 @@ struct TVLibraryGridView: View {
         switch panel {
         case .sort:
             TVBrowseSortPanel(
-                mediaType: viewModel.mediaType,
+                mediaType: CatalogSortKey.sortMediaType(viewModel.mediaType, mediaScope: viewModel.filter.mediaScope),
                 current: viewModel.filter.sort,
                 order: viewModel.filter.effectiveOrder,
                 onSelect: { key in

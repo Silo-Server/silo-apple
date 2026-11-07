@@ -41,19 +41,29 @@ enum BrowseMediaType: String, Codable, Hashable {
 }
 
 /// One sortable field. The raw value is the canonical server `sort` field
-/// (silo-server `query_definition.go` `querySortDefs`). `defaultOrder`
-/// mirrors the server's per-field default so the first selection lands the
-/// natural direction and a flip is meaningful. This enum is the single
-/// source of truth that eliminates the old `sort=added` phantom (the real
-/// field is `added_at`).
+/// (silo-server `query_definition.go` `querySortDefs`). Cases, names, order,
+/// default directions, and which libraries list them mirror the web client's
+/// `web/src/lib/querySortOptions.ts`, so every client offers the same sorts.
+/// `defaultOrder` is the direction a newly picked sort starts in.
 enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
     case title
     case addedAt = "added_at"
     case releaseDate = "release_date"
+    case lastAirDate = "last_air_date"
+    case latestEpisodeAdded = "latest_episode_added"
     case year
-    case ratingImdb = "rating_imdb"
+    case contentRating = "content_rating"
     case runtime
+    case ratingImdb = "rating_imdb"
+    case ratingTmdb = "rating_tmdb"
+    case ratingRtCritic = "rating_rt_critic"
+    case ratingRtAudience = "rating_rt_audience"
     case resolution
+    case bitrate
+    // per-profile: ordered by this profile's own watching
+    case progress
+    case dateViewed = "date_viewed"
+    case plays
     // audiobook-native
     case author
     case narrator
@@ -64,9 +74,11 @@ enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
 
     var defaultOrder: CatalogSortOrder {
         switch self {
-        case .title, .author, .narrator, .series:
+        case .title, .contentRating, .author, .narrator, .series:
             return .asc
-        case .addedAt, .releaseDate, .year, .ratingImdb, .runtime, .resolution:
+        case .addedAt, .releaseDate, .lastAirDate, .latestEpisodeAdded, .year, .runtime,
+             .ratingImdb, .ratingTmdb, .ratingRtCritic, .ratingRtAudience, .resolution, .bitrate,
+             .progress, .dateViewed, .plays:
             return .desc
         }
     }
@@ -77,10 +89,20 @@ enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
         case .title: return .catalogSortTitle
         case .addedAt: return .catalogSortAdded
         case .releaseDate: return .catalogSortReleased
+        case .lastAirDate: return .catalogSortLatestEpisodeAirDate
+        case .latestEpisodeAdded: return .catalogSortLatestEpisodeAdded
         case .year: return .catalogSortYear
-        case .ratingImdb: return .catalogSortRating
-        case .runtime: return .catalogSortRuntime
+        case .contentRating: return .catalogSortContentRating
+        case .runtime: return .catalogSortDuration
+        case .ratingImdb: return .catalogSortImdbRating
+        case .ratingTmdb: return .catalogSortTmdbRating
+        case .ratingRtCritic: return .catalogSortRtCriticRating
+        case .ratingRtAudience: return .catalogSortRtAudienceRating
         case .resolution: return .catalogSortResolution
+        case .bitrate: return .catalogSortBitrate
+        case .progress: return .catalogSortProgress
+        case .dateViewed: return .catalogSortDateViewed
+        case .plays: return .catalogSortPlays
         case .author: return .catalogSortAuthor
         case .narrator: return .catalogSortNarrator
         case .series: return .catalogSortSeries
@@ -90,24 +112,72 @@ enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
     /// Short hint for the active direction, shown next to the active key.
     func directionLabel(for order: CatalogSortOrder) -> LocalizedStringResource {
         switch self {
-        case .title, .author, .narrator, .series:
+        case .title, .contentRating, .author, .narrator, .series:
             return order == .asc ? .libraryDirectionAz : .libraryDirectionZa
-        case .releaseDate, .year, .addedAt:
+        case .addedAt, .releaseDate, .lastAirDate, .latestEpisodeAdded, .year, .dateViewed:
             return order == .asc ? .libraryDirectionOldest : .libraryDirectionNewest
         case .runtime:
             return order == .asc ? .libraryDirectionShortest : .libraryDirectionLongest
-        case .ratingImdb, .resolution:
+        case .ratingImdb, .ratingTmdb, .ratingRtCritic, .ratingRtAudience, .resolution, .bitrate, .progress:
             return order == .asc ? .libraryDirectionLowest : .libraryDirectionHighest
+        case .plays:
+            return order == .asc ? .libraryDirectionFewest : .libraryDirectionMost
         }
     }
 
-    /// Sort keys offered for a library media type, in display order.
-    static func available(for mediaType: BrowseMediaType) -> [CatalogSortKey] {
-        switch mediaType {
-        case .audiobook:
-            return [.title, .author, .narrator, .series, .addedAt, .runtime]
-        case .movie, .series, .mixed:
-            return [.title, .addedAt, .releaseDate, .year, .ratingImdb, .runtime, .resolution]
+    /// The rating source a rating sort needs the server to show
+    /// (`GET /api/v2/capabilities/ratings`); nil for every other sort.
+    var ratingSource: String? {
+        switch self {
+        case .ratingRtCritic: return "rt_critic"
+        case .ratingRtAudience: return "rt_audience"
+        default: return nil
+        }
+    }
+
+    /// Whether the key orders a library of `mediaType`, as the web client
+    /// decides. A mixed library lists only keys that order movies and series
+    /// alike, so the episode sorts appear once it is narrowed to Series.
+    func applies(to mediaType: BrowseMediaType) -> Bool {
+        switch self {
+        case .title, .addedAt, .releaseDate, .year, .runtime, .bitrate, .progress, .dateViewed, .plays:
+            return true
+        case .lastAirDate, .latestEpisodeAdded:
+            return mediaType == .series
+        case .contentRating, .ratingImdb, .ratingTmdb, .ratingRtCritic, .ratingRtAudience, .resolution:
+            return mediaType != .audiobook
+        case .author, .narrator, .series:
+            return mediaType == .audiobook
+        }
+    }
+
+    /// The media a sort list is for: a mixed library narrowed to Movies or
+    /// Series by its Type filter (`mediaScope`) sorts as that type, as the
+    /// web client does.
+    static func sortMediaType(_ mediaType: BrowseMediaType, mediaScope: String?) -> BrowseMediaType {
+        guard mediaType == .mixed else { return mediaType }
+        switch mediaScope {
+        case "series": return .series
+        case "movie": return .movie
+        default: return .mixed
+        }
+    }
+
+    /// Sort keys offered for a library of `mediaType`, in the web client's
+    /// order. A rating sort is listed only while the server shows its source
+    /// (`shownRatingSources`). `current`, the sort in use, is always listed,
+    /// so a sort restored from saved preferences stays visible and can be
+    /// changed even where the list would not otherwise offer it.
+    static func available(
+        for mediaType: BrowseMediaType,
+        shownRatingSources: Set<String> = [],
+        current: CatalogSortKey? = nil
+    ) -> [CatalogSortKey] {
+        allCases.filter { key in
+            key == current || (
+                key.applies(to: mediaType) &&
+                    (key.ratingSource.map(shownRatingSources.contains) ?? true)
+            )
         }
     }
 }

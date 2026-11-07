@@ -129,7 +129,38 @@ struct TVBrowseSortPanel: View {
                 .padding(.horizontal, 18)
                 .padding(.bottom, 8)
 
-            ForEach(CatalogSortKey.available(for: mediaType), id: \.self) { key in
+            // A series library lists up to 17 sorts, more than the screen
+            // holds: a long list scrolls as focus moves through it, and a
+            // short one keeps its own height.
+            ViewThatFits(in: .vertical) {
+                rows
+                ScrollView(.vertical, showsIndicators: false) {
+                    rows
+                        // Room for the focused row's lift so it is not clipped.
+                        .padding(.vertical, 8)
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 460)
+        // Centered on screen: 720 keeps a long list clear of the top tab bar.
+        .frame(maxHeight: 720)
+        .modifier(TVSkylinePanelChrome())
+        .focusScope(sortFocusScope)
+        .focusSection()
+        .onExitCommand(perform: onClose)
+        .onAppear { claimFocus() }
+        .onChange(of: current) { _, _ in claimFocus() }
+    }
+
+    private var rows: some View {
+        let keys = CatalogSortKey.available(
+            for: mediaType,
+            shownRatingSources: RatingSourcesStore.shared.shown,
+            current: current
+        )
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(keys, id: \.self) { key in
                 Button { onSelect(key) } label: {
                     HStack(spacing: 14) {
                         Image(systemName: "checkmark")
@@ -149,31 +180,22 @@ struct TVBrowseSortPanel: View {
                 // On Apple TV the `resetFocus(in:)` in `claimFocus()` decides
                 // where focus lands, so the row `claimFocus()` targets has to
                 // be the scope's preferred default too.
-                .prefersDefaultFocus(key == focusTarget, in: sortFocusScope)
+                .prefersDefaultFocus(key == current, in: sortFocusScope)
             }
         }
-        .padding(14)
-        .frame(width: 460)
-        .modifier(TVSkylinePanelChrome())
-        .focusScope(sortFocusScope)
-        .focusSection()
-        .onExitCommand(perform: onClose)
-        .onAppear { claimFocus() }
-        .onChange(of: current) { _, _ in claimFocus() }
+        // The rows lay out after the panel appears (and inside a scroll view
+        // for a long list), so the focus state alone does not catch: seed
+        // entry focus on the current sort.
+        .defaultFocus($focusedSort, current, priority: .userInitiated)
     }
 
-    private var focusTarget: CatalogSortKey? {
-        let keys = CatalogSortKey.available(for: mediaType)
-        if keys.contains(current) { return current }
-        return keys.first
-    }
-
+    /// The current sort is always listed, so entry focus lands on it.
     private func claimFocus() {
-        focusedSort = focusTarget
+        focusedSort = current
         Task { @MainActor in
             await Task.yield()
             resetFocus(in: sortFocusScope)
-            focusedSort = focusTarget
+            focusedSort = current
         }
     }
 }

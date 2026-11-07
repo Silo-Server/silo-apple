@@ -525,6 +525,7 @@ final class AuthService: @unchecked Sendable {
             await ImageSizeCapability.shared.refresh()
             await RequestsFeatureStore.shared.refresh()
             await ShuffleFeatureStore.shared.refresh()
+            await RatingSourcesStore.shared.refresh()
             await CurrentProfileStore.shared.refresh(force: true)
             // Unlike the two above, this one gates *enablement* of an entry
             // point that stays visible either way, and it defaults to
@@ -933,6 +934,7 @@ final class AuthService: @unchecked Sendable {
         WatchPartySession.shared.leave(forgetRecent: forgetWatchPartyRecent)
         RequestsFeatureStore.shared.reset()
         ShuffleFeatureStore.shared.reset()
+        RatingSourcesStore.shared.reset()
         // Theme music and its capability belong to the outgoing profile.
         ThemeMusicCenter.shared.reset()
         ThemeMusicPreferences.shared.reset()

@@ -30,6 +30,7 @@ struct BrowseView: View {
     @Environment(\.locale) private var locale
     @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
     @Environment(\.libraryPageFilteredCount) private var reportFilteredCount
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @ViewBuilder
     var body: some View {
@@ -308,29 +309,39 @@ struct BrowseView: View {
     // MARK: - Control bar (Sort + Filter + Shuffle)
 
     private var controlBar: some View {
-        // At accessibility text sizes the chips no longer fit side by
-        // side and SwiftUI broke their labels mid-word; stack them instead.
-        // Longer translations can miss one row by a few points on a narrow
-        // phone, so try sort above filter and shuffle before a full stack.
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 9) {
-                sortMenu
-                filterButton
-                shuffleButton
-                Spacer(minLength: 0)
-            }
-            VStack(alignment: .leading, spacing: 9) {
-                sortMenu
-                HStack(spacing: 9) {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                // At accessibility text sizes the chips no longer fit side
+                // by side and SwiftUI broke their labels mid-word (#625);
+                // stack them along the page's leading edge instead.
+                VStack(alignment: .leading, spacing: 9) {
+                    sortMenu
                     filterButton
                     shuffleButton
                 }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            VStack(alignment: .leading, spacing: 9) {
-                sortMenu
-                filterButton
-                shuffleButton
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                // One row when the chips fit. A long sort name ("Latest
+                // Episode Air Date") or a longer translation takes its own
+                // line, with Filter and Shuffle wrapped below it along the
+                // leading edge (#899). Only a name too long for a line of
+                // its own ends in an ellipsis.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 9) {
+                        sortMenu
+                        filterButton
+                        shuffleButton
+                        Spacer(minLength: 0)
+                    }
+                    VStack(alignment: .leading, spacing: 9) {
+                        sortMenu
+                        HStack(spacing: 9) {
+                            filterButton
+                            shuffleButton
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
         .padding(.horizontal, SiloTheme.padding)
@@ -373,7 +384,14 @@ struct BrowseView: View {
 
     private var sortMenu: some View {
         Menu {
-            ForEach(CatalogSortKey.available(for: viewModel.mediaType), id: \.self) { key in
+            ForEach(
+                CatalogSortKey.available(
+                    for: CatalogSortKey.sortMediaType(viewModel.mediaType, mediaScope: viewModel.filterState.mediaScope),
+                    shownRatingSources: RatingSourcesStore.shared.shown,
+                    current: viewModel.filterState.sort
+                ),
+                id: \.self
+            ) { key in
                 Button {
                     Task { await viewModel.setSort(key) }
                 } label: {
@@ -403,13 +421,18 @@ struct BrowseView: View {
                 .font(.system(size: 13, weight: .semibold))
             Text(text)
                 .font(.siloBody)
+                .lineLimit(1)
+                .truncationMode(.tail)
             if let trailing {
                 Text(trailing)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
+                    .lineLimit(1)
+                    .fixedSize()
             }
             if let badge, badge > 0 {
                 Text("\(badge)")
+                    .fixedSize()
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.siloBackground)
                     .padding(.horizontal, 5)
