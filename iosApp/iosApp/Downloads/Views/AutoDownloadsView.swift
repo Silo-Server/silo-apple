@@ -165,10 +165,11 @@ struct AutoDownloadsEntryRow: View {
     let count: Int
     let nextEpisodeDay: AutoDownloadRules.RelativeDay?
     let action: () -> Void
+    @Environment(\.locale) private var locale
 
     private var subtitle: LocalizedStringResource {
         guard count > 0 else { return .downloadsMonitorListEntryEmpty }
-        let countText = String(count)
+        let countText = LocaleFormat.integer(count, locale: locale)
         switch nextEpisodeDay {
         case nil: return .downloadsMonitorListEntryCount(count: count, countText)
         case .today: return .downloadsMonitorListEntryCountNextToday(count: count, countText)
