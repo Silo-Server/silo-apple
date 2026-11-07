@@ -174,6 +174,22 @@ class FastlaneReleaseTest < Minitest::Test
     refute upload.key?(:ipa)
   end
 
+  def test_match_can_rewrite_the_macos_certificate_types_in_place
+    # match's portal lookup rewrites additional_cert_types with map!.
+    lane = @lane
+    @lane.define_singleton_method(:match) do |**options|
+      options[:additional_cert_types]&.map!(&:upcase)
+      lane.actions << [:match, options]
+    end
+    @lane.run_lane(:sync_signing)
+    ENV["SILO_DEFER_TESTFLIGHT_DISTRIBUTION"] = "true"
+    @lane.run_lane(:beta_macos)
+    macos = @lane.actions.select { |action, options| action == :match && options[:platform] == "macos" }
+    assert_equal 2, macos.length
+    macos.each { |_, options| assert_equal ["MAC_INSTALLER_DISTRIBUTION"], options[:additional_cert_types] }
+    assert_equal ["mac_installer_distribution"], @lane.singleton_class::TESTFLIGHT_PLATFORMS[:macos][:match_cert_types]
+  end
+
   def test_ios_and_tvos_uploads_keep_their_ipa_names
     ENV["SILO_DEFER_TESTFLIGHT_DISTRIBUTION"] = "true"
     @lane.run_lane(:beta_tvos)
