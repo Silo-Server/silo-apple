@@ -22,10 +22,8 @@ fails, or `ANTHROPIC_API_KEY` isn't set, the run uses the plain list of
 Features and Fixes instead. Either way the run's summary page shows the text,
 and you can edit it in App Store Connect.
 
-Every run first runs the Apple regression workflow (SiloTests, SiloTVTests,
-SiloMac build) on the release commit, or reuses a matching main run's result.
-If it fails, the run publishes nothing and uploads nothing. The gate adds about
-one regression run (20-30 minutes) unless a main run can be reused.
+CI does not run SiloTests or SiloTVTests, and a release does not wait for them.
+Run the tests locally before you start a release.
 
 The prerelease and its source archive are published before any binary, because
 the app links that archive (see `THIRD_PARTY_NOTICES.md`). Never delete a

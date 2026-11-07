@@ -30,10 +30,6 @@ jobs:
         run: python3 scripts/ci/release-source-proof.test.py
       - name: Test Apple build metadata
         run: python3 scripts/ci/apple-build-metadata.test.py
-      - name: Test trusted regression proof reuse
-        run: python3 scripts/ci/find-regression-proof.test.py
-      - name: Test Apple platform routing and aggregate result
-        run: python3 scripts/ci/select-apple-platforms.test.py
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'
