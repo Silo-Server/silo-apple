@@ -56,7 +56,7 @@ struct AccountsSettingsView: View {
                             router.beginSignIn(onServer: server.id, renewing: account.localAccountId)
                         }
                     }
-                    Button(.settingsAccountsSignOut, systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                    Button(.settingsAccountsSignOut, systemImage: "rectangle.portrait.and.arrow.forward", role: .destructive) {
                         signOut(account)
                     }
                 }

@@ -230,7 +230,7 @@ struct TVSettingsView: View {
 
                 Spacer(minLength: 0)
 
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.system(size: 17, weight: .semibold))
                     .opacity(0.5)
             }
@@ -273,7 +273,7 @@ struct TVSettingsView: View {
             router.signOutAndReset()
         } label: {
             HStack(spacing: 16) {
-                Image(systemName: "rectangle.portrait.and.arrow.right")
+                Image(systemName: "rectangle.portrait.and.arrow.forward")
                     .font(.system(size: 22, weight: .medium))
                     .frame(width: 34)
                 Text(.settingsSignOut)
@@ -523,7 +523,7 @@ struct TVSettingsView: View {
                     Text(.accountsTitle)
                         .font(.system(size: 26))
                     Spacer(minLength: 0)
-                    Image(systemName: "chevron.right")
+                    Image(systemName: "chevron.forward")
                         .font(.system(size: 18, weight: .semibold))
                         .opacity(0.55)
                 }

@@ -45,7 +45,7 @@ struct SectionExploreAllCard: View {
 
     private var tile: some View {
         VStack(spacing: iconSpacing) {
-            Image(systemName: "arrow.right")
+            Image(systemName: "arrow.forward")
                 .font(.system(size: iconSize, weight: .semibold))
                 .frame(width: iconSize * 2.2, height: iconSize * 2.2)
                 .background(Circle().fill(Color.siloOnSurface.opacity(0.12)))

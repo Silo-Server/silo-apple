@@ -31,7 +31,7 @@ struct ServerSetupView: View {
                      onBack: router.canReturnToPicker && !viewModel.isLoading ? { router.returnToPicker() } : nil) {
             MarqueeTopBar {
                 if router.canReturnToPicker {
-                    MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: AppLanguage.string(.commonBack)) {
+                    MarqueeIconButton(systemImage: "chevron.backward", accessibilityLabel: AppLanguage.string(.commonBack)) {
                         router.returnToPicker()
                     }
                     .disabled(viewModel.isLoading)

@@ -227,7 +227,7 @@ struct CollectionsView: View {
 
                 Spacer()
 
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
             }

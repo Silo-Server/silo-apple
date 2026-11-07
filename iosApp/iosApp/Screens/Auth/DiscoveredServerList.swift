@@ -149,7 +149,7 @@ struct ServerPickerRow: View {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Image(systemName: "chevron.right")
+                    Image(systemName: "chevron.forward")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                 }

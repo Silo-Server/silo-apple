@@ -156,7 +156,7 @@ struct RequestDetailView: View {
             title: viewModel.detail?.title ?? "",
             isScrollGlassEnabled: viewModel.detail != nil,
             scrollState: scrollState,
-            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.backward" : nil),
             leadingAccessibilityLabel: showsClose
                 ? AppLanguage.string(.requestsDetailClose)
                 : (showsBack ? AppLanguage.string(.commonBack) : nil),
@@ -464,7 +464,7 @@ struct RequestDetailView: View {
                 .controlSize(.small)
                 .tint(.siloSecondaryText)
         case .openInLibrary:
-            Image(systemName: "arrow.up.right")
+            Image(systemName: "arrow.up.forward")
         case .status(let state):
             Circle()
                 .fill(state.tint.color)

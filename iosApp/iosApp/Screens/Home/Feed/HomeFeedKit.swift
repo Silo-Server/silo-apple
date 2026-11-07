@@ -694,7 +694,7 @@ struct HomeSectionHeader: View {
                 Button(action: action) {
                     HStack(spacing: 7) {
                         label
-                        Image(systemName: "chevron.right")
+                        Image(systemName: "chevron.forward")
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(Color.siloOnSurface.opacity(0.5))
                     }

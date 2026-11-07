@@ -66,7 +66,7 @@ struct TVDiagnosticsSettingsPane: View {
                             ))
                                 .font(.system(size: 20))
                                 .opacity(0.62)
-                            Image(systemName: "chevron.right")
+                            Image(systemName: "chevron.forward")
                                 .font(.system(size: 18, weight: .semibold))
                                 .opacity(0.55)
                         }

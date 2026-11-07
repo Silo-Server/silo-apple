@@ -371,7 +371,7 @@ struct ProfileSelectionView: View {
                 #endif
                 router.signOutAndReset()
             } label: {
-                Label(.commonSignOut, systemImage: "rectangle.portrait.and.arrow.right")
+                Label(.commonSignOut, systemImage: "rectangle.portrait.and.arrow.forward")
             }
             .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
             #if os(tvOS)

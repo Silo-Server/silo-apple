@@ -15,7 +15,7 @@ struct ServerNeedsSetupView: View {
     var body: some View {
         MarqueeStage(scrim: .bottom, frostStart: 0.45, onBack: changeServer) {
             MarqueeTopBar {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: AppLanguage.string(.commonChangeServer), action: changeServer)
+                MarqueeIconButton(systemImage: "chevron.backward", accessibilityLabel: AppLanguage.string(.commonChangeServer), action: changeServer)
             } trailing: { EmptyView() }
         } content: {
             MarqueeServerCard(
@@ -45,7 +45,7 @@ struct ServerNeedsSetupView: View {
 
             if let url = URL(string: serverURL) {
                 Link(destination: url) {
-                    Label(.setupNotReadyOpenInBrowser, systemImage: "arrow.up.right.square")
+                    Label(.setupNotReadyOpenInBrowser, systemImage: "arrow.up.forward.square")
                 }
                 .buttonStyle(.marqueeGlass)
                 .padding(.top, 12)

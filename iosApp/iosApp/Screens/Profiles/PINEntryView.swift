@@ -63,7 +63,7 @@ struct PINEntryView: View {
     private func phoneBody(compact: Bool) -> some View {
         VStack(spacing: 0) {
             HStack {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: AppLanguage.string(.commonBack), action: cancel)
+                MarqueeIconButton(systemImage: "chevron.backward", accessibilityLabel: AppLanguage.string(.commonBack), action: cancel)
                     .disabled(isVerifying)
                 Spacer()
             }

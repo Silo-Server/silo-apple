@@ -129,7 +129,7 @@ struct AutoDownloadRow: View {
                 .padding(.top, 4)
             }
             Spacer(minLength: 8)
-            Image(systemName: "chevron.right")
+            Image(systemName: "chevron.forward")
                 .font(.footnote.weight(.semibold))
                 .foregroundColor(.siloSecondaryText.opacity(0.7))
         }
@@ -195,7 +195,7 @@ struct AutoDownloadsEntryRow: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.footnote.weight(.semibold))
                     .foregroundColor(.siloSecondaryText.opacity(0.7))
             }

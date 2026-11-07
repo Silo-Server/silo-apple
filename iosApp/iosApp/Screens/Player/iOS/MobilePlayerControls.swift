@@ -376,6 +376,7 @@ struct MobilePlayerControls: View {
             .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward))
             .disabled(!viewModel.canRequestSeek)
         }
+        .mediaLayoutDirection()
     }
 
     static let playButtonSize: CGFloat = 64
@@ -749,6 +750,7 @@ private struct MobilePlayerTimeline: View {
             timeRow
             progressSlider
         }
+        .mediaLayoutDirection()
     }
 
     private var timeRow: some View {

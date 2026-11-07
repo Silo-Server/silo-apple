@@ -143,7 +143,7 @@ struct PhoneDetailTopChrome: View {
                     Button(action: onLeadingTap) {
                         controlIcon(
                             systemName: leadingSystemName,
-                            size: leadingSystemName == "chevron.left" ? 17 : 16
+                            size: leadingSystemName == "chevron.backward" ? 17 : 16
                         )
                     }
                     .buttonStyle(.plain)
@@ -713,7 +713,7 @@ private struct ItemDetailPhoneContent: View {
             title: scrollTitle,
             isScrollGlassEnabled: supportsScrollGlassChrome,
             scrollState: detailScrollState,
-            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.backward" : nil),
             leadingAccessibilityLabel: showsClose
                 ? AppLanguage.string(.detailCloseDetails, locale: locale)
                 : (showsBack ? AppLanguage.string(.commonBack, locale: locale) : nil),

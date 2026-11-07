@@ -286,7 +286,7 @@ struct ProfileAvatarMenu: View {
                 Button(role: .destructive) {
                     onSignOut()
                 } label: {
-                    Label(.menuSignOut, systemImage: "rectangle.portrait.and.arrow.right")
+                    Label(.menuSignOut, systemImage: "rectangle.portrait.and.arrow.forward")
                 }
             }
         } label: {
@@ -361,7 +361,7 @@ struct ProfileAvatarMenu: View {
             [
                 .init(
                     title: .menuSignOut,
-                    systemImage: "rectangle.portrait.and.arrow.right",
+                    systemImage: "rectangle.portrait.and.arrow.forward",
                     isDestructive: true,
                     action: onSignOut
                 ),

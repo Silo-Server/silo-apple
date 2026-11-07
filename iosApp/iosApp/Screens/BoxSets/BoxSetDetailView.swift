@@ -199,7 +199,7 @@ struct BoxSetDetailView: View {
             title: viewModel.detail?.boxSet.title ?? "",
             isScrollGlassEnabled: viewModel.detail != nil,
             scrollState: scrollState,
-            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.backward" : nil),
             leadingAccessibilityLabel: showsClose
                 ? AppLanguage.string(.detailCloseDetails, locale: locale)
                 : (showsBack ? AppLanguage.string(.commonBack, locale: locale) : nil),

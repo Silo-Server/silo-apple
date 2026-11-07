@@ -585,7 +585,7 @@ private struct HUDSettingRowLabel: View {
                     .lineLimit(1)
                     .foregroundStyle(isFocused ? .black.opacity(0.78) : .white.opacity(0.72))
                 if showsChevron {
-                    Image(systemName: "chevron.right")
+                    Image(systemName: "chevron.forward")
                         .font(.system(size: 15, weight: .bold))
                         .foregroundStyle(isFocused ? .black.opacity(0.55) : .white.opacity(0.45))
                 }

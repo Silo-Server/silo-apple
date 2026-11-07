@@ -39,7 +39,7 @@ struct CalendarWeekStrip: View {
     /// the card chrome above this (assembled by `CalendarView`).
     private var phoneBody: some View {
         HStack(spacing: 6) {
-            phoneNavButton(systemImage: "chevron.left", action: onPreviousWeek)
+            phoneNavButton(systemImage: "chevron.backward", action: onPreviousWeek)
                 .accessibilityLabel(Text(.calendarPreviousWeek))
 
             HStack(spacing: 0) {
@@ -55,7 +55,7 @@ struct CalendarWeekStrip: View {
                 }
             }
 
-            phoneNavButton(systemImage: "chevron.right", action: onNextWeek)
+            phoneNavButton(systemImage: "chevron.forward", action: onNextWeek)
                 .accessibilityLabel(Text(.calendarNextWeek))
         }
         .animation(SiloTheme.springAnimation, value: selectedDay)
@@ -82,7 +82,7 @@ struct CalendarWeekStrip: View {
     #if os(tvOS)
     private var tvBody: some View {
         HStack(spacing: stripSpacing) {
-            chevronButton(systemImage: "chevron.left", control: .previous, action: onPreviousWeek)
+            chevronButton(systemImage: "chevron.backward", control: .previous, action: onPreviousWeek)
                 .accessibilityLabel(Text(.calendarPreviousWeek))
 
             HStack(spacing: dayButtonSpacing) {
@@ -99,7 +99,7 @@ struct CalendarWeekStrip: View {
                 }
             }
 
-            chevronButton(systemImage: "chevron.right", control: .next, action: onNextWeek)
+            chevronButton(systemImage: "chevron.forward", control: .next, action: onNextWeek)
                 .accessibilityLabel(Text(.calendarNextWeek))
 
             if !isCurrentWeek {

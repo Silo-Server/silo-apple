@@ -154,9 +154,12 @@ private struct PortraitPlayerLayout: View {
     private var controls: some View {
         VStack(spacing: 0) {
             AudioScrubberSection(player: player)
+                .mediaLayoutDirection()
                 .padding(.horizontal, 8)
 
             AudioTransportControls(player: player)
+
+                .mediaLayoutDirection()
                 .padding(.top, 20)
 
             optionsRow
@@ -372,6 +375,8 @@ private struct TVPlayerLayout: View {
 
                 AudioScrubberSection(player: player)
 
+                    .mediaLayoutDirection()
+
                 HStack(spacing: 20) {
                     Button {
                         player.previousChapter()
@@ -410,6 +415,7 @@ private struct TVPlayerLayout: View {
                     .accessibilityLabel(Text(.audiobookTransportNextChapter))
                 }
                 .buttonStyle(.bordered)
+                .mediaLayoutDirection()
 
                 HStack(spacing: 20) {
                     Menu {

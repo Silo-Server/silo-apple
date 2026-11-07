@@ -19,7 +19,7 @@ struct ForgotPasswordView: View {
     var body: some View {
         MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: model.isSending ? nil : { dismiss() }) {
             MarqueeTopBar {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: AppLanguage.string(.accountBackToSignIn)) { dismiss() }
+                MarqueeIconButton(systemImage: "chevron.backward", accessibilityLabel: AppLanguage.string(.accountBackToSignIn)) { dismiss() }
                     .disabled(model.isSending)
             } trailing: { EmptyView() }
         } content: {

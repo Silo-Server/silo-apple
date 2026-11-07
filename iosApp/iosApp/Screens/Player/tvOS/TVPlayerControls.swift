@@ -335,6 +335,7 @@ struct TVPlayerControls: View {
                 TVPassiveTimelineBar(viewModel: viewModel)
                 TVPlayerTimeRow(viewModel: viewModel, mode: timeDisplayMode)
             }
+            .mediaLayoutDirection()
             .padding(.horizontal, Self.transportHorizontalInset)
             .padding(.bottom, 48)
         }
@@ -510,7 +511,9 @@ struct TVPlayerControls: View {
                 resumePlaybackAfterTimelineSelection: $resumePlaybackAfterTimelineSelection,
                 cancelOnBlur: cancelPendingScrub
             )
+            .mediaLayoutDirection()
             TVPlayerTimeRow(viewModel: viewModel, mode: timeDisplayMode)
+                .mediaLayoutDirection()
             TVPlayerTransportCluster(
                 viewModel: viewModel,
                 onOpenHUD: { openHUD() },
@@ -528,6 +531,7 @@ struct TVPlayerControls: View {
                 allowsFocus: !isTimelineScrubbing && !trapsTransportFocus,
                 focusedButton: $focusedTransportButton
             )
+            .mediaLayoutDirection()
         }
     }
 

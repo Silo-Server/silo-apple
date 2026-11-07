@@ -52,6 +52,8 @@ struct PlayerView: View {
     @Environment(\.scenePhase) private var scenePhase
     #endif
     #if os(tvOS)
+    /// The buffering prompt's buttons mirror in RTL; remote presses don't.
+    @Environment(\.layoutDirection) private var layoutDirection
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
     @State private var isTimelinePreviewVisible = false
     @State private var timelineTimeDisplayMode: TVPlayerTimeDisplayMode = .elapsedRemaining
@@ -317,6 +319,9 @@ struct PlayerView: View {
                             // hold-2×, edge swipes, pinch) live in a dedicated
                             // layer under the button overlay.
                             MobilePlayerGestureLayer(viewModel: viewModel)
+                                // Double-tap left skips back, as the timeline
+                                // runs left to right in every language.
+                                .mediaLayoutDirection()
                                 // Above the controls while they show, so the
                                 // volume buttons' chip isn't dimmed by the
                                 // scrim. The layer takes no touches then.
@@ -885,8 +890,10 @@ struct PlayerView: View {
             return false
         }
         switch direction {
-        case .left: bufferingSelectTarget = .primary
-        case .right: bufferingSelectTarget = .secondary
+        case .left, .right:
+            // The prompt's buttons mirror in RTL; presses are physical.
+            let towardLeading = (direction == .left) == (layoutDirection == .leftToRight)
+            bufferingSelectTarget = towardLeading ? .primary : .secondary
         case .up, .down: return false
         }
         return true
@@ -1482,7 +1489,7 @@ struct PlayerNextUpScreen: View {
 
                 Button(action: onBack) {
                     HStack(spacing: 16) {
-                        Image(systemName: "chevron.left")
+                        Image(systemName: "chevron.backward")
                             .font(.system(size: 26, weight: .semibold))
                         Text(.commonBack)
                             .font(.system(size: 26, weight: .semibold))
@@ -1539,7 +1546,7 @@ struct PlayerNextUpScreen: View {
                     .disabled(viewModel.isStartingNextUp)
                 }
                 Button(action: onBack) {
-                    Label(.commonBack, systemImage: "chevron.left")
+                    Label(.commonBack, systemImage: "chevron.backward")
                         .frame(minHeight: compact ? 24 : 44)
                 }
                 .siloSecondaryButton()

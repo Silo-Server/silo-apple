@@ -30,6 +30,8 @@ import SwiftUI
 /// persistence and the page swap stay in the host.
 struct TVCascadeSelector: View {
     @Environment(\.locale) private var locale
+    /// The flyout opens on the trailing side, so its left/right swap in RTL.
+    @Environment(\.layoutDirection) private var layoutDirection
     let type: TVLibraryTabType
     /// Libraries of `type`, already ordered by sort order.
     let libraries: [Library]
@@ -242,7 +244,7 @@ struct TVCascadeSelector: View {
         let label = TVCascadeLibraryRowLabel(
             title: library.name,
             systemImage: library.isMixedLibrary ? "square.stack.3d.up" : type.systemImage,
-            trailingGlyph: isCurrent ? "checkmark" : "chevron.right",
+            trailingGlyph: isCurrent ? "checkmark" : "chevron.forward",
             isFocused: isFocused
         )
 
@@ -444,7 +446,7 @@ struct TVCascadeSelector: View {
     private func handleMoveCommand(_ direction: MoveCommandDirection) {
         guard entersPanel, panelFocused, let focus else { return }
 
-        switch (focus, direction) {
+        switch (focus, direction.inLayout(layoutDirection)) {
         case (.library(let libraryId), .up):
             moveLibrary(from: libraryId, by: -1)
         case (.library(let libraryId), .down):

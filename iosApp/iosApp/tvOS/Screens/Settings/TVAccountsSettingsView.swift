@@ -163,7 +163,7 @@ struct TVAccountsSettingsView: View {
                         .lineLimit(1)
                 }
                 if !isDestructive {
-                    Image(systemName: "chevron.right")
+                    Image(systemName: "chevron.forward")
                         .font(.system(size: 18, weight: .semibold))
                         .opacity(0.55)
                 }

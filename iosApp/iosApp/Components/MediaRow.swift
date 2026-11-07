@@ -368,7 +368,7 @@ struct MediaRow: View {
                 Button(action: onExploreAll) {
                     HStack(spacing: headerIconSpacing) {
                         headerTitle
-                        Image(systemName: "chevron.right")
+                        Image(systemName: "chevron.forward")
                             .font(.system(size: headerIconSize * 0.8, weight: .semibold))
                             .foregroundColor(.siloOnSurface.opacity(0.6))
                     }

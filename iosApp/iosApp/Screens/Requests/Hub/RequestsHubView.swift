@@ -180,7 +180,7 @@ private struct PhoneRequestsHubView: View {
                     }
                 }
                 Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.footnote.weight(.semibold))
                     .foregroundColor(.siloSecondaryText)
             }

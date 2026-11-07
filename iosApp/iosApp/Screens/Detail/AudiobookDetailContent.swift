@@ -452,7 +452,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                                 }
                             }
                             Spacer()
-                            Image(systemName: "chevron.right")
+                            Image(systemName: "chevron.forward")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                         }

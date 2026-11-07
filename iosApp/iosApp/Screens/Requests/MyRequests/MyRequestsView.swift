@@ -277,9 +277,9 @@ struct MyRequestRow: View {
     @ViewBuilder
     private func trailing(progress: RequestProgress) -> some View {
         if let onOpenInLibrary, progress.display == .inLibrary {
-            RequestRowCapsuleButton(title: .requestsRowOpen, systemImage: "arrow.up.right", action: onOpenInLibrary)
+            RequestRowCapsuleButton(title: .requestsRowOpen, systemImage: "arrow.up.forward", action: onOpenInLibrary)
         } else {
-            Image(systemName: "chevron.right")
+            Image(systemName: "chevron.forward")
                 .font(.footnote.weight(.semibold))
                 .foregroundColor(.siloSecondaryText.opacity(0.7))
         }

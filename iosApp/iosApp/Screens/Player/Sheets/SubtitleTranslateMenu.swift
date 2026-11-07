@@ -645,7 +645,7 @@ private struct TVLanguageRow: View {
                 }
             }
             Spacer(minLength: 8)
-            Image(systemName: "chevron.right")
+            Image(systemName: "chevron.forward")
                 .font(.system(size: 18, weight: .semibold))
                 .opacity(0.55)
         }

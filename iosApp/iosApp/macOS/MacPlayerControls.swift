@@ -22,6 +22,7 @@ struct MacPlayerControls: View {
     private var bottomControls: some View {
         VStack(spacing: 12) {
             MacPlayerTimeline(viewModel: viewModel)
+                .mediaLayoutDirection()
 
             // Transport sits in the middle of the bar; options stay on the
             // leading side and speed and full screen on the trailing side.
@@ -92,6 +93,7 @@ struct MacPlayerControls: View {
                         viewModel.skipForward()
                     }
                 }
+                .mediaLayoutDirection()
             }
         }
         .padding(14)
