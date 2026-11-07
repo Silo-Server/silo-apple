@@ -1,15 +1,32 @@
 import SwiftUI
 
-/// Movies / TV Shows split for the saved-list screens (Favorites and
-/// Watchlist on iOS, Favorites on tvOS).
+/// All / Movies / TV Shows switch for the saved-list screens (Favorites and
+/// Watchlist on iPhone, iPad and Apple TV).
 enum PersonalMediaSection: String, CaseIterable, Identifiable {
+    case all = "All"
     case movies = "Movies"
     case tvShows = "TV Shows"
 
+    /// Where Favorites and Watchlist each remember the option used last.
+    static let favoritesStorageKey = "favorites.mediaSection"
+    static let watchlistStorageKey = "watchlist.mediaSection"
+
     var id: Self { self }
 
+    var systemImage: String {
+        switch self {
+        case .all: "square.grid.2x2"
+        case .movies: "film"
+        case .tvShows: "tv"
+        }
+    }
+
+    /// Keeps the server's order (newest saved first); only drops items
+    /// outside the chosen type.
     func includes(_ item: BrowseItem) -> Bool {
         switch self {
+        case .all:
+            return true
         case .movies:
             return SiloMediaType.isMovieLibrary(item.type)
         case .tvShows:
@@ -182,16 +199,14 @@ struct FavoritesView: View {
     @State private var isLoading = false
     @State private var error: ErrorState?
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @AppStorage(PersonalMediaSection.favoritesStorageKey)
+    private var selectedSection: PersonalMediaSection = .all
     #if os(tvOS)
-    @State private var selectedSection: PersonalMediaSection = .movies
     @FocusState private var focusedSection: PersonalMediaSection?
     @State private var lastAppliedFocusRequest = 0
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
-    #if os(iOS)
-    @State private var selectedSection: PersonalMediaSection = .movies
-    #endif
 
     private var columns: [GridItem] {
         #if os(tvOS)
@@ -250,8 +265,8 @@ struct FavoritesView: View {
 
     private var iosSelectedSectionEmptyState: some View {
         ContentUnavailableView(
-            "No Favorite \(selectedSection.rawValue)",
-            systemImage: selectedSection == .movies ? "film" : "tv",
+            selectedSection == .all ? "No Favorites" : "No Favorite \(selectedSection.rawValue)",
+            systemImage: selectedSection.systemImage,
             description: Text("Add favorites from a detail page and they will appear here.")
         )
         .frame(maxWidth: .infinity, minHeight: 360)
@@ -362,7 +377,11 @@ struct FavoritesView: View {
                         .foregroundStyle(Color.siloOnSurface)
                 }
 
-                sectionSelector
+                TVPersonalMediaSectionSelector(
+                    selection: $selectedSection,
+                    focusedSection: $focusedSection,
+                    onMoveUp: onTopMenuFocusRequest
+                )
 
                 if visibleItems.isEmpty {
                     selectedSectionEmptyState
@@ -387,48 +406,14 @@ struct FavoritesView: View {
         .modifier(TVMenuEntryScroll(request: focusRequest, isTopMenuFocused: isTopMenuFocused, onReady: applyFocusRequest))
     }
 
-    private var sectionSelector: some View {
-        HStack(spacing: 14) {
-            ForEach(PersonalMediaSection.allCases) { section in
-                Button {
-                    withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
-                        selectedSection = section
-                    }
-                } label: {
-                    Text(section.rawValue)
-                        .font(.system(size: 24, weight: .semibold))
-                        .lineLimit(1)
-                }
-                .buttonStyle(FavoriteSectionPillStyle(isSelected: selectedSection == section))
-                .accessibilityAddTraits(selectedSection == section ? .isSelected : [])
-                .focused($focusedSection, equals: section)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .focusSection()
-        .onMoveCommand { direction in
-            if direction == .up {
-                onTopMenuFocusRequest?()
-            }
-        }
-    }
-
     private var selectedSectionEmptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: selectedSection == .movies ? "film" : "tv")
-                .font(.system(size: 54, weight: .light))
-                .foregroundStyle(Color.siloOnSurface.opacity(0.34))
-
-            Text("No favorite \(selectedSection.rawValue.lowercased())")
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(Color.siloOnSurface)
-
-            Text("Add favorites from any detail page and they will appear here.")
-                .font(.system(size: 22))
-                .foregroundStyle(Color.siloSecondaryText)
-        }
-        .frame(maxWidth: .infinity, minHeight: 430)
+        TVPersonalMediaSectionEmptyState(
+            section: selectedSection,
+            title: selectedSection == .all
+                ? "No favorites"
+                : "No favorite \(selectedSection.rawValue.lowercased())",
+            subtitle: "Add favorites from any detail page and they will appear here."
+        )
     }
 
     private func favoriteCard(for item: BrowseItem) -> some View {
@@ -513,18 +498,76 @@ struct FavoritesView: View {
 }
 
 #if os(tvOS)
-private struct FavoriteSectionPillStyle: ButtonStyle {
+/// Apple TV pill row shared by Favorites and Watchlist. Moving up from the
+/// pills hands focus to the top menu.
+struct TVPersonalMediaSectionSelector: View {
+    @Binding var selection: PersonalMediaSection
+    var focusedSection: FocusState<PersonalMediaSection?>.Binding
+    var onMoveUp: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ForEach(PersonalMediaSection.allCases) { section in
+                Button {
+                    withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
+                        selection = section
+                    }
+                } label: {
+                    Text(section.rawValue)
+                        .font(.system(size: 24, weight: .semibold))
+                        .lineLimit(1)
+                }
+                .buttonStyle(PersonalMediaSectionPillStyle(isSelected: selection == section))
+                .accessibilityAddTraits(selection == section ? .isSelected : [])
+                .focused(focusedSection, equals: section)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .focusSection()
+        .onMoveCommand { direction in
+            if direction == .up {
+                onMoveUp?()
+            }
+        }
+    }
+}
+
+struct TVPersonalMediaSectionEmptyState: View {
+    let section: PersonalMediaSection
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: section.systemImage)
+                .font(.system(size: 54, weight: .light))
+                .foregroundStyle(Color.siloOnSurface.opacity(0.34))
+
+            Text(title)
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(Color.siloOnSurface)
+
+            Text(subtitle)
+                .font(.system(size: 22))
+                .foregroundStyle(Color.siloSecondaryText)
+        }
+        .frame(maxWidth: .infinity, minHeight: 430)
+    }
+}
+
+private struct PersonalMediaSectionPillStyle: ButtonStyle {
     let isSelected: Bool
 
     func makeBody(configuration: Configuration) -> some View {
-        FavoriteSectionPillBody(
+        PersonalMediaSectionPillBody(
             configuration: configuration,
             isSelected: isSelected
         )
     }
 }
 
-private struct FavoriteSectionPillBody: View {
+private struct PersonalMediaSectionPillBody: View {
     let configuration: ButtonStyleConfiguration
     let isSelected: Bool
     @Environment(\.isFocused) private var isFocused

@@ -12,14 +12,13 @@ struct WatchlistView: View {
     @State private var isLoading = false
     @State private var error: ErrorState?
     @State private var uiCustomization = UICustomizationPreferences.shared
-    #if os(iOS)
-    @State private var selectedSection: PersonalMediaSection = .movies
-    #endif
+    @AppStorage(PersonalMediaSection.watchlistStorageKey)
+    private var selectedSection: PersonalMediaSection = .all
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
 
     #if os(tvOS)
-    @FocusState private var focusedContentId: String?
+    @FocusState private var focusedSection: PersonalMediaSection?
     @State private var lastAppliedFocusRequest = 0
     #endif
 
@@ -157,50 +156,65 @@ struct WatchlistView: View {
     }
 
     #if os(tvOS)
+    private var filteredItems: [BrowseItem] {
+        items.filter(selectedSection.includes)
+    }
+
     private var tvGridContent: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 40) {
+                let visibleItems = filteredItems
                 if usesTVTopMenu {
                     Text("Watchlist")
                         .font(.system(size: 64, weight: .bold))
                         .foregroundStyle(Color.siloOnSurface)
                 }
 
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 60) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        MediaCard(
-                            title: item.title,
-                            posterUrl: item.posterUrl ?? "",
-                            thumbhash: item.posterThumbhash,
-                            episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
-                            imageIsEpisodeStill: item.posterIsEpisodeStill,
-                            mediaType: item.type,
-                            year: item.year,
-                            userState: item.userState,
-                            overlayData: OverlayData.from(item),
-                            action: {
-                                router.navigate(to: .itemDetail(contentId: item.contentId))
-                            },
-                            playAction: playAction(for: item),
-                            focusedItemId: $focusedContentId,
-                            contentId: item.contentId,
-                            cardWidthOverride: tvCardWidthOverride,
-                            onUserStateChanged: { state in
-                                guard !state.inWatchlist else { return }
-                                withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
-                                    items.removeAll { $0.contentId == item.contentId }
+                TVPersonalMediaSectionSelector(
+                    selection: $selectedSection,
+                    focusedSection: $focusedSection,
+                    onMoveUp: onTopMenuFocusRequest
+                )
+
+                if visibleItems.isEmpty {
+                    TVPersonalMediaSectionEmptyState(
+                        section: selectedSection,
+                        title: selectedSection == .all
+                            ? "Watchlist is empty"
+                            : "No \(selectedSection.rawValue.lowercased()) on your watchlist",
+                        subtitle: "Add titles from any detail page and they will appear here."
+                    )
+                } else {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 60) {
+                        ForEach(visibleItems) { item in
+                            MediaCard(
+                                title: item.title,
+                                posterUrl: item.posterUrl ?? "",
+                                thumbhash: item.posterThumbhash,
+                                episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
+                                imageIsEpisodeStill: item.posterIsEpisodeStill,
+                                mediaType: item.type,
+                                year: item.year,
+                                userState: item.userState,
+                                overlayData: OverlayData.from(item),
+                                action: {
+                                    router.navigate(to: .itemDetail(contentId: item.contentId))
+                                },
+                                playAction: playAction(for: item),
+                                contentId: item.contentId,
+                                cardWidthOverride: tvCardWidthOverride,
+                                onUserStateChanged: { state in
+                                    guard !state.inWatchlist else { return }
+                                    withAnimation(.easeInOut(duration: SiloTheme.normalDuration)) {
+                                        items.removeAll { $0.contentId == item.contentId }
+                                    }
                                 }
-                            }
-                        )
-                        .frame(maxWidth: .infinity)
-                        .onMoveCommand { direction in
-                            if direction == .up, index < columns.count {
-                                onTopMenuFocusRequest?()
-                            }
+                            )
+                            .frame(maxWidth: .infinity)
                         }
                     }
+                    .focusSection()
                 }
-                .focusSection()
             }
             .padding(.horizontal, SiloTheme.safePadding)
             .padding(.top, usesTVTopMenu ? TVTopMenuLayout.contentTopInset : SiloTheme.smallPadding)
@@ -222,9 +236,9 @@ struct WatchlistView: View {
               request > 0,
               request != lastAppliedFocusRequest,
               !isTopMenuFocused,
-              let firstId = items.first?.contentId else { return }
+              !items.isEmpty else { return }
         lastAppliedFocusRequest = request
-        focusedContentId = firstId
+        focusedSection = selectedSection
     }
     #elseif os(iOS)
     private var filteredIOSItems: [BrowseItem] {
@@ -233,8 +247,8 @@ struct WatchlistView: View {
 
     private var iosSelectedSectionEmptyState: some View {
         ContentUnavailableView(
-            "No Watchlist \(selectedSection.rawValue)",
-            systemImage: selectedSection == .movies ? "film" : "tv",
+            selectedSection == .all ? "Watchlist Is Empty" : "No Watchlist \(selectedSection.rawValue)",
+            systemImage: selectedSection.systemImage,
             description: Text("Add titles from a detail page and they will appear here.")
         )
         .frame(maxWidth: .infinity, minHeight: 360)
