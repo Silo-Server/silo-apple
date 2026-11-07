@@ -12,7 +12,8 @@ func mediaCardAccessibilityLabel(
     title: String,
     episodeLabel: String?,
     year: Int?,
-    isWatched: Bool
+    isWatched: Bool,
+    locale: Locale = AppLanguage.formattingLocale
 ) -> String {
     var components = [title]
     if let episodeLabel, !episodeLabel.isEmpty {
@@ -22,7 +23,7 @@ func mediaCardAccessibilityLabel(
         components.append(String(year))
     }
     if isWatched {
-        components.append("Watched")
+        components.append(AppLanguage.string(.shellCardWatched, locale: locale))
     }
     return components.joined(separator: ", ")
 }
@@ -33,10 +34,10 @@ func episodeRailAccessibilityLabel(
     title: String?,
     metadata: String?,
     isCurrent: Bool,
-    isPlayed: Bool
+    isPlayed: Bool,
+    locale: Locale = AppLanguage.formattingLocale
 ) -> String {
-    let seasonLabel = seasonNumber == 0 ? "Specials" : "Season \(seasonNumber)"
-    var components = ["\(seasonLabel), Episode \(episodeNumber)"]
+    var components = [EpisodeCardCaption.spokenCode(season: seasonNumber, episode: episodeNumber, locale: locale)]
     if let title, !title.isEmpty {
         components.append(title)
     }
@@ -44,10 +45,10 @@ func episodeRailAccessibilityLabel(
         components.append(metadata)
     }
     if isCurrent {
-        components.append("Now viewing")
+        components.append(AppLanguage.string(.detailA11YNowViewing, locale: locale))
     }
     if isPlayed {
-        components.append("Watched")
+        components.append(AppLanguage.string(.shellCardWatched, locale: locale))
     }
     return components.joined(separator: ", ")
 }
@@ -128,6 +129,7 @@ struct MediaCard: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.browseLibraryId) private var browseLibraryId
     #endif
+    @Environment(\.locale) private var locale
 
     private var cardWidth: CGFloat { artworkSize.width }
     private var cardHeight: CGFloat { artworkSize.height }
@@ -238,7 +240,7 @@ struct MediaCard: View {
             Button(role: .destructive) {
                 onRemoveFromContinueWatching()
             } label: {
-                Label("Remove from Continue Watching", systemImage: "xmark.circle")
+                Label(.cardMenuRemoveContinueWatching, systemImage: "xmark.circle")
             }
         }
     }
@@ -390,9 +392,10 @@ struct MediaCard: View {
             title: title,
             episodeLabel: episodeAccessibilityLabel,
             year: year,
-            isWatched: isPlayed
+            isWatched: isPlayed,
+            locale: locale
         )
-        return marksCurrentFilm ? label + ", This film" : label
+        return marksCurrentFilm ? label + ", " + AppLanguage.string(.shellCardThisFilm, locale: locale) : label
     }
 
     @ViewBuilder
@@ -503,6 +506,7 @@ private struct FocusableMediaCard<Content: View>: View {
     let onRemoveFromContinueWatching: (() -> Void)?
     let stateMenu: MediaStateMenuItems?
     @ViewBuilder var content: () -> Content
+    @Environment(\.locale) private var locale
 
     @ViewBuilder
     var body: some View {
@@ -585,7 +589,8 @@ private struct FocusableMediaCard<Content: View>: View {
             title: title,
             episodeLabel: episodeAccessibilityLabel,
             year: year,
-            isWatched: isWatched
+            isWatched: isWatched,
+            locale: locale
         )
     }
 
@@ -609,7 +614,7 @@ private struct FocusableMediaCard<Content: View>: View {
             Button(role: .destructive) {
                 onRemoveFromContinueWatching()
             } label: {
-                Label("Remove from Continue Watching", systemImage: "xmark.circle")
+                Label(.cardMenuRemoveContinueWatching, systemImage: "xmark.circle")
             }
         }
     }
