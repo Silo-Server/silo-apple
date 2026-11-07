@@ -488,8 +488,7 @@ jobs:
     needs: [ios, prepare, release, source]
     if: >-
       !cancelled() && needs.ios.result == 'success' &&
-      needs.prepare.result == 'success' &&
-      needs.source.result == 'success'
+      needs.prepare.result == 'success' && needs.source.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -515,8 +514,7 @@ jobs:
     needs: [tvos, prepare, release, source]
     if: >-
       !cancelled() && needs.tvos.result == 'success' &&
-      needs.prepare.result == 'success' &&
-      needs.source.result == 'success'
+      needs.prepare.result == 'success' && needs.source.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -543,8 +541,7 @@ jobs:
     needs: [macos, prepare, release, source]
     if: >-
       !cancelled() && needs.macos.result == 'success' &&
-      needs.prepare.result == 'success' &&
-      needs.source.result == 'success'
+      needs.prepare.result == 'success' && needs.source.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
