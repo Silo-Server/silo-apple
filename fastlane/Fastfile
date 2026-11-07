@@ -352,6 +352,13 @@ TESTFLIGHT_PLATFORMS = {
   }.freeze,
 }.freeze
 
+# A fresh, unfrozen copy of the platform's extra certificate types. match's
+# portal lookup converts the list in place with map!, which fails on the frozen
+# constant and would otherwise leave it holding API constants.
+def match_cert_types(config)
+  config[:match_cert_types]&.dup
+end
+
 # Builds one platform's app with App Store signing and uploads it to TestFlight.
 # beta_ios, beta_tvos, and beta_macos call this with :ios, :tvos, and :macos.
 def testflight_release(platform)
@@ -395,7 +402,7 @@ def testflight_release(platform)
     type:                  "appstore",
     platform:              config[:match_platform],
     app_identifier:        bundle_ids,
-    additional_cert_types: config[:match_cert_types],
+    additional_cert_types: match_cert_types(config),
     readonly:              is_ci,
     api_key:               api_key
   )
@@ -699,7 +706,7 @@ platform :ios do
         type:                  "appstore",
         platform:              config[:match_platform],
         app_identifier:        config[:targets].values,
-        additional_cert_types: config[:match_cert_types],
+        additional_cert_types: match_cert_types(config),
         readonly:              false,
         api_key:               api_key
       )
