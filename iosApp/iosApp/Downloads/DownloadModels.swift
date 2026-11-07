@@ -811,12 +811,17 @@ extension DownloadRecord {
         (type == "episode" ? episodeTag(locale: locale) : nil) ?? subtitle
     }
 
-    /// `title` as the app shows it, or nil when there is none to show. A
-    /// blank title counts as missing (a manifest can carry ""), and an
-    /// untitled episode is "Episode 2".
+    /// The name stored for an untitled episode: English "Episode 2" (D44).
+    /// `shownTitle(locale:)` shows it in the app language.
+    static func storedEpisodeName(_ number: Int) -> String {
+        AppLanguage.inEnglish { AppLanguage.string(.detailEpisode(LocaleFormat.integer(number))) }
+    }
+
+    /// `title` as the app shows it: the stored stand-in name of an untitled
+    /// episode in `locale`, any other title as stored.
     func shownTitle(locale: Locale = AppLanguage.formattingLocale) -> String? {
-        if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return title }
-        guard type == "episode", let episodeNumber = shownNumbers.episode else { return nil }
+        guard let title, type == "episode", let episodeNumber = shownNumbers.episode,
+              title == Self.storedEpisodeName(episodeNumber) else { return title }
         return AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber, locale: locale)), locale: locale)
     }
 

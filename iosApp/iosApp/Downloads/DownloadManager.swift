@@ -1252,8 +1252,8 @@ final class DownloadManager {
     }
 
     /// `seasonNumber` and `episodeNumber` let the row show its season and
-    /// episode in the app language before the manifest arrives, and name an
-    /// untitled episode; `displaySubtitle` is stored as is.
+    /// episode in the app language before the manifest arrives;
+    /// `displaySubtitle` is stored as is.
     func downloadEpisode(
         seriesId: String,
         episodeId: String,
@@ -1275,9 +1275,6 @@ final class DownloadManager {
             displayTitle: displayTitle,
             displaySubtitle: displaySubtitle,
             displayNumbers: (seasonNumber, episodeNumber),
-            progressTitle: displayTitle ?? episodeNumber.map {
-                AppLanguage.string(.detailEpisode(LocaleFormat.integer($0)))
-            },
             posterThumbhash: posterThumbhash
         )
     }
@@ -1305,7 +1302,6 @@ final class DownloadManager {
         displayTitle: String? = nil,
         displaySubtitle: String? = nil,
         displayNumbers: (season: Int?, episode: Int?) = (nil, nil),
-        progressTitle: String? = nil,
         posterThumbhash: String? = nil
     ) async throws {
         guard downloadsEnabled else { throw DownloadError.unavailable }
@@ -1317,7 +1313,7 @@ final class DownloadManager {
         let registrationToken = UUID()
         let capturedScopeGeneration = registrationScopeGeneration
         pendingRegistrationTokens[registrationContentId] = registrationToken
-        beginContinuedProcessing(title: progressTitle ?? displayTitle)
+        beginContinuedProcessing(title: displayTitle)
         defer {
             finishPendingRegistration(
                 contentId: registrationContentId,

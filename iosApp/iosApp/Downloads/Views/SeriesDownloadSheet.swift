@@ -433,8 +433,8 @@ struct SeriesDownloadSheet: View {
                     try await manager.downloadEpisode(
                         seriesId: seriesId,
                         episodeId: episode.contentId,
-                        // Rows name an untitled episode in the app language.
-                        displayTitle: episode.title,
+                        // Stored English (D44); rows show it in the app language.
+                        displayTitle: episode.title ?? DownloadRecord.storedEpisodeName(episode.episodeNumber),
                         displaySubtitle: "S\(episode.seasonNumber) · E\(episode.episodeNumber)", // i18n-ignore: stored English (D44)
                         seasonNumber: episode.seasonNumber,
                         episodeNumber: episode.episodeNumber,
