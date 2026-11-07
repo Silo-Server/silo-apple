@@ -182,6 +182,8 @@ struct BrowseView: View {
     private var controlBar: some View {
         // At accessibility text sizes the chips no longer fit side by
         // side and SwiftUI broke their labels mid-word; stack them instead.
+        // Longer translations can miss one row by a few points on a narrow
+        // phone, so try sort above filter and shuffle before a full stack.
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 9) {
                 sortMenu
@@ -189,6 +191,14 @@ struct BrowseView: View {
                 shuffleButton
                 Spacer(minLength: 0)
             }
+            VStack(alignment: .leading, spacing: 9) {
+                sortMenu
+                HStack(spacing: 9) {
+                    filterButton
+                    shuffleButton
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .leading, spacing: 9) {
                 sortMenu
                 filterButton
