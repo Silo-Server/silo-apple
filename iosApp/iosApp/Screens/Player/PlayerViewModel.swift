@@ -7574,6 +7574,10 @@ class PlayerViewModel {
     /// fired after the user stops pressing.
     private func queueSkipDebounce(delta: Double) {
         let wasScrubbing = isScrubbing
+        #if os(iOS) || os(macOS)
+        // Something else ended the swipe's scrub, so this skip starts its own.
+        if trackpadScrub.ownsScrub, !wasScrubbing { abandonTrackpadScrub() }
+        #endif
         let base = isScrubbing ? scrubPreviewTime : currentTime
         let target = RelativeSeek.target(
             current: currentTime,
@@ -7594,6 +7598,12 @@ class PlayerViewModel {
         )
 
         skipDebounceTask?.cancel()
+        skipDebounceTask = nil
+        #if os(iOS) || os(macOS)
+        // A swipe owns the scrub and seeks when the fingers lift, carrying
+        // this skip. A delayed seek would end the scrub under the fingers.
+        if trackpadScrub.ownsScrub { return }
+        #endif
         skipDebounceTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: self?.skipDebounceNanos ?? 200_000_000)
             guard !Task.isCancelled, let self else { return }
@@ -8200,10 +8210,8 @@ class PlayerViewModel {
                 abandonTrackpadScrub()
             }
         case .move(let points):
-            // A skip pressed mid-swipe moved the preview; the swipe carries it
-            // rather than letting its seek fire under the fingers.
-            skipDebounceTask?.cancel()
-            skipDebounceTask = nil
+            // A skip pressed mid-swipe moved the preview without queuing a
+            // seek (see `queueSkipDebounce`); the swipe carries it.
             hideControlsTask?.cancel()
             updateScrub(fraction: (scrubPreviewTime + trackpadScrubSeconds(points)) / duration)
         }

@@ -60,6 +60,21 @@ final class TrackpadScrubTests: XCTestCase {
         XCTAssertEqual(seeks(), [.seek(155)])
     }
 
+    /// Resting the fingers after a skip must not let the skip seek mid-swipe.
+    func testASkipDuringAPausedSwipeWaitsForTheLift() async throws {
+        let (player, seeks, stop) = partyPlayer(at: 100)
+        defer { stop() }
+        player.trackpadScrubBegan()
+        player.trackpadScrubMoved(by: CGSize(width: 40, height: 0))
+        player.skipForward(10)
+        // Past the skip's 200 ms debounce.
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertEqual(seeks(), [])
+        player.trackpadScrubMoved(by: CGSize(width: 5, height: 0))
+        player.trackpadScrubEnded(committing: true)
+        XCTAssertEqual(seeks(), [.seek(155)])
+    }
+
     /// Once something else commits the scrub, lifting the fingers must not seek again.
     func testAScrubCommittedElsewhereIsNotSeekedAgain() {
         let (player, seeks, stop) = partyPlayer(at: 100)
