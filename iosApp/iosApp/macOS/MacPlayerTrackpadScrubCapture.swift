@@ -9,8 +9,8 @@ import SwiftUI
 /// them instead, keeping only gesture-phased scrolls with precise deltas
 /// (trackpad and Magic Mouse, not wheels) that start over the player. A
 /// scrub's events, and the momentum after it, are consumed so no other scroll
-/// handler acts on the same swipe. When the capture is disabled mid-swipe, the
-/// swipe's next event abandons the scrub without seeking.
+/// handler acts on the same swipe. Disabling the capture mid-swipe abandons the
+/// scrub without seeking, and the rest of that swipe does nothing.
 struct MacPlayerTrackpadScrubCapture: NSViewRepresentable {
     let viewModel: PlayerViewModel
     let isEnabled: Bool
@@ -30,7 +30,13 @@ struct MacPlayerTrackpadScrubCapture: NSViewRepresentable {
 
 final class TrackpadScrubCaptureView: NSView {
     var viewModel: PlayerViewModel?
-    var isEnabled = false
+    /// Turning off abandons a swipe in progress at once, so a swipe that rests
+    /// while the options panel opens and closes doesn't seek on lift-off.
+    var isEnabled = false {
+        didSet {
+            if oldValue, !isEnabled { viewModel?.trackpadScrubEnded(committing: false) }
+        }
+    }
 
     private var monitor: Any?
     private var consumesMomentum = false
