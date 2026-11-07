@@ -58,6 +58,9 @@ final class ExternalDownloadStorage {
     /// Folders whose access was started and must be stopped when they go.
     private var scopedFolders: [String: URL] = [:]
     private var refreshGeneration = 0
+    /// Bumped by each choice of location, so a choice still waiting can tell
+    /// a newer one replaced it.
+    private var choiceGeneration = 0
 
     /// The reachable roots and registered folders, readable off the main
     /// actor, and the work folders missed while out of reach.
@@ -82,10 +85,12 @@ final class ExternalDownloadStorage {
         currentLocationId.map { .external(id: $0) } ?? .device
     }
 
+    /// Also false the moment queued work fails on the folder, before the
+    /// refresh that follows has run.
     func isAvailable(_ volume: DownloadMediaVolume) -> Bool {
         switch volume {
         case .device: return true
-        case .external(let id): return availableLocationIds.contains(id)
+        case .external(let id): return availableLocationIds.contains(id) && Self.isPublished(id)
         }
     }
 
@@ -94,8 +99,14 @@ final class ExternalDownloadStorage {
     func downloadsRoot(for volume: DownloadMediaVolume) -> URL? {
         switch volume {
         case .device: return DownloadFilePaths.rootDirectory()
-        case .external(let id): return roots[id]
+        case .external(let id): return Self.isPublished(id) ? roots[id] : nil
         }
+    }
+
+    /// Whether the folder is in the published roots, which `schedule` drops
+    /// a folder from as soon as work on it fails.
+    nonisolated private static func isPublished(_ id: String) -> Bool {
+        folderState.withLock { $0.roots[id] != nil }
     }
 
 
@@ -138,7 +149,11 @@ final class ExternalDownloadStorage {
     /// Registers a folder from the system folder picker and makes it where
     /// new downloads go. Reuses the registration of a folder picked before,
     /// so downloads already there keep their volume.
+    /// Throws `CancellationError` when a newer choice was made while this one
+    /// waited.
     func choose(folder: URL) async throws {
+        choiceGeneration += 1
+        let choice = choiceGeneration
         let scoped = folder.startAccessingSecurityScopedResource()
         var keepAccess = false
         defer { if scoped && !keepAccess { folder.stopAccessingSecurityScopedResource() } }
@@ -169,6 +184,7 @@ final class ExternalDownloadStorage {
                 paths[location.id] = Self.bookmarkPath(location.bookmark)
             }
         }.value
+        guard choice == choiceGeneration else { throw CancellationError() }
         let existing = locations.values.first { location in
             let registered = roots[location.id].map { $0.deletingLastPathComponent().standardizedFileURL.path }
                 ?? resolvedPaths[location.id]
@@ -206,6 +222,7 @@ final class ExternalDownloadStorage {
     /// Makes the app container where new downloads go. Registered folders
     /// stay, so downloads already on a drive still play from it.
     func useDeviceStorage() {
+        choiceGeneration += 1
         currentLocationId = nil
         save()
     }

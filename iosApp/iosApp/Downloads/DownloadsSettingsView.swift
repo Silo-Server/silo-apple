@@ -364,6 +364,8 @@ struct DownloadsSettingsView: View {
                 do {
                     try await storage.choose(folder: folder)
                     offerMove()
+                } catch is CancellationError {
+                    // A newer choice replaced this one; it makes its own offer.
                 } catch {
                     locationError = error.localizedDescription
                 }
