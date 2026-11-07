@@ -88,20 +88,24 @@ enum OfflinePlaybackBuilder {
             throw OfflinePlaybackError.downloadNotFound
         }
         let trackPrefs = manager.trackPrefs
-        let volume = record.resolvedMediaVolume
-        if volume != .device {
-            let storage = ExternalDownloadStorage.shared
+        let storage = ExternalDownloadStorage.shared
+        if record.resolvedMediaVolume != .device {
             await storage.refreshAvailability()
             guard manager.isCurrentOfflinePlayback(owner) else {
                 throw OfflinePlaybackError.downloadNotFound
             }
-            guard storage.isAvailable(volume) else {
-                throw OfflinePlaybackError.driveNotConnected(storage.displayName(for: volume))
-            }
         }
-        // The current record: a move to or from a drive may have finished
-        // while this waited.
-        guard let mediaURL = manager.record(id: downloadId).flatMap(manager.absoluteMediaURL(for:)),
+        // The current record, read after the last wait: a move to or from a
+        // drive may have finished meanwhile. Its volume is checked and its
+        // URL built with no wait in between.
+        guard let current = manager.record(id: downloadId) else {
+            throw OfflinePlaybackError.downloadNotFound
+        }
+        let volume = current.resolvedMediaVolume
+        guard storage.isAvailable(volume) else {
+            throw OfflinePlaybackError.driveNotConnected(storage.displayName(for: volume))
+        }
+        guard let mediaURL = manager.absoluteMediaURL(for: current),
               FileManager.default.fileExists(atPath: mediaURL.path) else {
             throw OfflinePlaybackError.mediaFileMissing
         }

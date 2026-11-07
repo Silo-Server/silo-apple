@@ -138,7 +138,7 @@ final class ExternalDownloadStorage {
     /// Registers a folder from the system folder picker and makes it where
     /// new downloads go. Reuses the registration of a folder picked before,
     /// so downloads already there keep their volume.
-    func choose(folder: URL) throws {
+    func choose(folder: URL) async throws {
         let scoped = folder.startAccessingSecurityScopedResource()
         var keepAccess = false
         defer { if scoped && !keepAccess { folder.stopAccessingSecurityScopedResource() } }
@@ -161,7 +161,19 @@ final class ExternalDownloadStorage {
         else { throw ChooseError.noAccess }
 
         let path = folder.standardizedFileURL.path
-        let existing = locations.values.first { registeredPath(of: $0) == path }
+        // Registrations out of reach resolve off the main actor: a bookmark to
+        // a slow or missing volume can take a while.
+        let unreached = locations.values.filter { roots[$0.id] == nil }
+        let resolvedPaths = await Task.detached(priority: .userInitiated) {
+            unreached.reduce(into: [String: String]()) { paths, location in
+                paths[location.id] = Self.bookmarkPath(location.bookmark)
+            }
+        }.value
+        let existing = locations.values.first { location in
+            let registered = roots[location.id].map { $0.deletingLastPathComponent().standardizedFileURL.path }
+                ?? resolvedPaths[location.id]
+            return registered == path
+        }
         // A refresh still resolving would apply what it saw before this choice.
         refreshGeneration += 1
         let location = ExternalDownloadLocation(
@@ -334,14 +346,10 @@ final class ExternalDownloadStorage {
         return FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    /// The folder a registration names: its reachable root, or else where
-    /// its bookmark resolves now.
-    private func registeredPath(of location: ExternalDownloadLocation) -> String? {
-        if let root = roots[location.id] {
-            return root.deletingLastPathComponent().standardizedFileURL.path
-        }
+    /// Where a bookmark resolves now, without starting access.
+    nonisolated private static func bookmarkPath(_ bookmark: Data) -> String? {
         var stale = false
-        return (try? URL(resolvingBookmarkData: location.bookmark, options: Self.resolveOptions,
+        return (try? URL(resolvingBookmarkData: bookmark, options: resolveOptions,
                          relativeTo: nil, bookmarkDataIsStale: &stale))?.standardizedFileURL.path
     }
 

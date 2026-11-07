@@ -360,11 +360,13 @@ struct DownloadsSettingsView: View {
     private func chooseFolder(_ result: Result<URL, Error>) {
         switch result {
         case .success(let folder):
-            do {
-                try storage.choose(folder: folder)
-                offerMove()
-            } catch {
-                locationError = error.localizedDescription
+            Task {
+                do {
+                    try await storage.choose(folder: folder)
+                    offerMove()
+                } catch {
+                    locationError = error.localizedDescription
+                }
             }
         case .failure(let error):
             locationError = error.localizedDescription
