@@ -95,6 +95,31 @@ struct PhoneLabeledMenu<MenuContent: View>: View {
     }
 }
 
+// MARK: - Rating
+
+/// The More menu's entry for the viewer's own 1 to 5 star rating
+/// (`UserStarRating.menuTitle`). Opens the rating dialog (`ratingDialog`)
+/// rather than listing the stars in the menu.
+struct PhoneRateMenuItem: View {
+    let rating: Int?
+    /// What is being rated, in title case ("Movie", "Series"); nil reads
+    /// just "Rate".
+    var noun: String?
+    /// A rating write is running; the entry waits for it.
+    var isSaving = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(
+                UserStarRating.menuTitle(rating: rating, noun: noun),
+                systemImage: UserStarRating.menuSymbol(rating: rating)
+            )
+        }
+        .disabled(isSaving)
+    }
+}
+
 // MARK: - Action row container
 
 /// Evenly distributes the named actions across the content width and rules

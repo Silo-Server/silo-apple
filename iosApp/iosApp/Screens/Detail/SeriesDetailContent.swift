@@ -12,6 +12,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
+    let userRating: Int?
+    let isSavingRating: Bool
     let seasons: [Season]
     let selectedSeason: Season?
     let episodes: [EpisodeListItem]
@@ -45,6 +48,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
+    /// Saves a 1 to 5 star rating, or clears it with nil.
+    let onRate: (Int?) -> Void
     let onSetSeasonWatched: (Season, Bool) async -> PersonalStateOutcome
     let onSetEpisodeWatched: (EpisodeListItem, Bool) async -> PersonalStateOutcome
     let onSetEpisodeFavorite: (String, Bool) async -> PersonalStateOutcome
@@ -82,6 +87,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
     @State private var resumeLookupTask: Task<Void, Never>?
     @State private var isUpdatingWatched = false
+    /// The More menu's Rate entry opens the rating dialog.
+    @State private var showsRatingDialog = false
     @State private var watchedUpdateFailed = false
     @State private var watchedNotice: PersonalStateNotice?
     /// Bumped when a season or episode watched change lands, so the success
@@ -304,6 +311,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         }
         .frame(maxWidth: .infinity)
         .animation(.easeInOut(duration: 0.18), value: trailerStatusMessage)
+        .ratingDialog(
+            isPresented: $showsRatingDialog,
+            title: detail.title,
+            rating: userRating,
+            onRate: onRate
+        )
     }
 
     /// A fixed-height selector slot is the anchor that keeps the whole page
@@ -391,6 +404,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             )
         }
         .disabled(isUpdatingWatched)
+        PhoneRateMenuItem(rating: userRating, noun: "Series", isSaving: isSavingRating) {
+            showsRatingDialog = true
+        }
         Divider()
         Button(action: onFindTrailers) {
             Label("Find Trailers", systemImage: "film")

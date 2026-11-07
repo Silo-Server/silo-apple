@@ -846,6 +846,8 @@ private struct ItemDetailPhoneContent: View {
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
+                userRating: viewModel.userRating,
+                isSavingRating: viewModel.isSavingRating,
                 seasons: viewModel.seasons,
                 selectedSeason: viewModel.selectedSeason,
                 episodes: viewModel.episodes,
@@ -934,6 +936,7 @@ private struct ItemDetailPhoneContent: View {
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
+                onRate: { stars in Task { await viewModel.setRating(stars) } },
                 onSetSeasonWatched: { season, played in
                     await viewModel.setSeasonWatched(season, played: played)
                 },
@@ -969,6 +972,8 @@ private struct ItemDetailPhoneContent: View {
                 isFavorite: viewModel.isFavorite,
                 inWatchlist: viewModel.inWatchlist,
                 isWatched: viewModel.isWatched,
+                userRating: viewModel.userRating,
+                isSavingRating: viewModel.isSavingRating,
                 boxSet: viewModel.boxSet,
                 selectedVersionFileId: preferredVersionFileId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
@@ -1037,6 +1042,7 @@ private struct ItemDetailPhoneContent: View {
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
                 onToggleWatchlist: { Task { await viewModel.toggleWatchlist() } },
                 onToggleWatched: { Task { await viewModel.toggleWatched() } },
+                onRate: { stars in Task { await viewModel.setRating(stars) } },
                 onPersonTap: { openPerson($0) },
                 onNavigateToItem: { router.openRelatedTitle(contentId: $0) },
                 onPlayExtra: { id in playExtra(contentId: id) },

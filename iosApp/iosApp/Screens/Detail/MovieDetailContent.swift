@@ -8,6 +8,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let isFavorite: Bool
     let inWatchlist: Bool
     let isWatched: Bool
+    /// The viewer's own rating, 1 to 5 stars, or nil when unrated.
+    let userRating: Int?
+    let isSavingRating: Bool
     /// The box set the movie belongs to; nil draws no row.
     let boxSet: CatalogBoxSetDetail?
     let selectedVersionFileId: Int?
@@ -28,6 +31,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let onToggleFavorite: () -> Void
     let onToggleWatchlist: () -> Void
     let onToggleWatched: () -> Void
+    /// Saves a 1 to 5 star rating, or clears it with nil.
+    let onRate: (Int?) -> Void
     let onPersonTap: (String) -> Void
     let onNavigateToItem: (String) -> Void
     /// Play a local extra from the trailers rail. Routed separately from
@@ -56,6 +61,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @State private var resumeLookupTask: Task<Void, Never>?
     /// The download options sheet, opened from the More menu.
     @State private var showDownloadOptions = false
+    /// The More menu's Rate entry opens the rating dialog.
+    @State private var showsRatingDialog = false
 
     var body: some View {
         PhoneDetailPageSurface(
@@ -196,10 +203,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
                         showOptions: $showDownloadOptions
                     )
                 }
-                if hasOverflowMenu {
-                    PhoneLabeledMenu(label: "More") {
-                        overflowMenuItems
-                    }
+                // Always shown: it holds Rate, whatever else applies.
+                PhoneLabeledMenu(label: "More") {
+                    overflowMenuItems
                 }
             }
 
@@ -214,6 +220,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
         }
         .frame(maxWidth: .infinity)
         .animation(.easeInOut(duration: 0.18), value: trailerStatusMessage)
+        .ratingDialog(
+            isPresented: $showsRatingDialog,
+            title: detail.title,
+            rating: userRating,
+            onRate: onRate
+        )
     }
 
     private func playbackSelectors(for version: FileVersion) -> some View {
@@ -255,11 +267,6 @@ struct MovieDetailContent<BelowOverview: View>: View {
             && detail.type == "movie"
     }
 
-    /// Movies always get the More menu: it holds "Find Trailers" and, with
-    /// downloads on, the download options sheet.
-    private var hasOverflowMenu: Bool {
-        detail.type == "movie"
-    }
     /// Menu contents for the action row's named "More" entry.
     @ViewBuilder
     private var overflowMenuItems: some View {
@@ -273,6 +280,13 @@ struct MovieDetailContent<BelowOverview: View>: View {
             } label: {
                 Label("Download Options…", systemImage: "slider.horizontal.3")
             }
+        }
+        PhoneRateMenuItem(
+            rating: userRating,
+            noun: SiloMediaType.isMovieLibrary(detail.type) ? "Movie" : nil,
+            isSaving: isSavingRating
+        ) {
+            showsRatingDialog = true
         }
         if detail.type == "movie" {
             Button(action: onFindTrailers) {

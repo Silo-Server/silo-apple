@@ -13,6 +13,7 @@ class ItemDetailViewModel {
         self.libraryId = libraryId
         self.descriptionTranslation = descriptionTranslation ?? DescriptionTranslationCoordinator()
         self.seasonDescriptionTranslation = seasonDescriptionTranslation ?? DescriptionTranslationCoordinator()
+        Self.liveModels.add(self)
     }
 
     var detail: ItemDetail?
@@ -240,6 +241,15 @@ class ItemDetailViewModel {
             seasonsLoadGeneration += 1
             episodeLoadGeneration += 1
             self.detail = nil
+            // Rating state belongs to the previous title. A write still
+            // running for it sees the new generation and drops its result,
+            // including any failure notice, instead of touching this title.
+            ratingOverride = nil
+            confirmedRating = nil
+            // `isSavingRating` and `unsettledRatingWrites` stay set: a
+            // write for the previous title may still be running or may still
+            // land, and the viewer can come back to it.
+            ratingTitleGeneration += 1
             seriesContentId = nil
             seasons = []
             selectedSeason = nil
@@ -299,13 +309,21 @@ class ItemDetailViewModel {
 
         do {
             let userStateGeneration = userStateMutationGeneration
+            let ratingRevisionAtStart = Self.ratingRevision(for: contentId)
+            let ratingFreshness = Self.ratingFreshnessTokens[contentId]
             personalStateOwner = await TokenStore.shared.captureOrdinaryRequestAuth()
 
             let item: ItemDetail
             if let fetchDetail {
                 item = try await fetchDetail(contentId)
             } else if coalescesMetadataRequests {
-                item = try await MetadataRequestPool.shared.itemDetail(contentId: contentId, libraryId: libraryId)
+                // After a rating save, the token keeps this read from joining
+                // a shared request dispatched before the save landed.
+                item = try await MetadataRequestPool.shared.itemDetail(
+                    contentId: contentId,
+                    libraryId: libraryId,
+                    freshnessDiscriminator: ratingFreshness
+                )
             } else {
                 item = try await SiloAPI.shared.itemDetail(contentId: contentId, libraryId: libraryId)
             }
@@ -327,7 +345,8 @@ class ItemDetailViewModel {
                 item,
                 contentId: contentId,
                 generation: generation,
-                coalescesMetadataRequest: coalescesMetadataRequests
+                coalescesMetadataRequest: coalescesMetadataRequests,
+                ratingRevisionAtRead: ratingRevisionAtStart
             )
 
             // Superseded: a newer payload is already on screen. Deriving
@@ -339,6 +358,26 @@ class ItemDetailViewModel {
             // A Watched tap made while this request was in flight wins.
             if userStateMutationGeneration == userStateGeneration {
                 isWatched = enriched.userData?.played ?? false
+            }
+            // The optimistic rating only bridges its own writes. Release it
+            // once a read that overlapped no rating change lands, so a rating
+            // changed on another client shows up (tvOS keeps this model across
+            // visits). A write still running, or a choice or completion during
+            // this read, keeps it.
+            let ratingKey = Self.unsettledRatingKey(contentId: contentId, owner: personalStateOwner)
+            if !Self.isRatingWriteActive(contentId), Self.ratingRevision(for: contentId) == ratingRevisionAtStart {
+                ratingOverride = nil
+                confirmedRating = nil
+                // The server is the authority again for this title.
+                Self.recentlyConfirmedRatings[ratingKey] = nil
+            } else if ratingOverride == nil,
+                      case .some(let confirmed) = Self.recentlyConfirmedRatings[ratingKey],
+                      enriched.userRating != confirmed {
+                // The read overlapped a rating write, and the page lost its
+                // own copy of the result (it left this title and came back
+                // mid-write). Show the rating the server confirmed rather
+                // than the payload's possibly older one.
+                ratingOverride = .some(confirmed)
             }
 
             refreshBoxSet(for: enriched)
@@ -422,13 +461,46 @@ class ItemDetailViewModel {
         return detailGeneration
     }
 
+    /// The rating revision a re-fetch captures before its read, so its
+    /// publisher can tell whether a rating write overlapped the read.
+    var ratingReadRevision: Int { detail.map { Self.ratingRevision(for: $0.contentId) } ?? 0 }
+
     /// Publish a payload the caller re-fetched itself, taking the generation
     /// with it so an in-flight load can't land its older copy afterwards.
     /// Used by the description translator, which polls the catalog directly
     /// and (deliberately) skips playback enrichment.
-    func publishRefetchedDetail(_ item: ItemDetail, contentId: String) {
+    func publishRefetchedDetail(_ item: ItemDetail, contentId: String, ratingRevisionAtRead: Int? = nil) {
         _ = beginDetailWrite()
+        let overlappedRatingWrite = Self.isRatingWriteActive(contentId)
+            || ratingRevisionAtRead.map({ $0 != Self.ratingRevision(for: contentId) }) == true
+        if overlappedRatingWrite {
+            // Its `user_rating` may be older than the rating on screen:
+            // keep showing that one.
+            if item.userRating != userRating {
+                ratingOverride = .some(userRating)
+            }
+        } else if ratingRevisionAtRead != nil {
+            // A read that overlapped no rating write is as fresh as a detail
+            // load, so it releases the page's rating the same way, including
+            // the app-wide confirmed rating another page could apply later.
+            ratingOverride = nil
+            confirmedRating = nil
+            Self.recentlyConfirmedRatings[Self.unsettledRatingKey(contentId: contentId, owner: personalStateOwner)] = nil
+        }
         detail = item
+        cacheDetail(item, contentId: contentId, ratingRevisionAtRead: ratingRevisionAtRead)
+    }
+
+    /// The one place this page writes a detail payload to `ResponseCache`.
+    /// A rating write invalidates that cache, so a payload that may predate
+    /// it must not go back in: skipped while a write runs, when a rating
+    /// change happened since the read started (if the caller knows), and
+    /// whenever the payload's rating disagrees with one this page wrote or
+    /// confirmed. The page itself shows the newer rating either way.
+    private func cacheDetail(_ item: ItemDetail, contentId: String, ratingRevisionAtRead: Int? = nil) {
+        if Self.isRatingWriteActive(contentId) { return }
+        if let ratingRevisionAtRead, ratingRevisionAtRead != Self.ratingRevision(for: contentId) { return }
+        if case .some(let shown) = ratingOverride, item.userRating != shown { return }
         ResponseCache.shared.set(item, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
     }
 
@@ -442,7 +514,8 @@ class ItemDetailViewModel {
         _ item: ItemDetail,
         contentId: String,
         generation: Int,
-        coalescesMetadataRequest: Bool = true
+        coalescesMetadataRequest: Bool = true,
+        ratingRevisionAtRead: Int? = nil
     ) async -> ItemDetail? {
         guard !Task.isCancelled, generation == detailGeneration else { return nil }
 
@@ -464,7 +537,7 @@ class ItemDetailViewModel {
         }
 
         detail = initial
-        ResponseCache.shared.set(initial, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
+        cacheDetail(initial, contentId: contentId, ratingRevisionAtRead: ratingRevisionAtRead)
 
         guard supportsPlaybackMetadata(item) else { return initial }
 
@@ -479,7 +552,7 @@ class ItemDetailViewModel {
                   generation == self.detailGeneration else { return }
 
             self.detail = enriched
-            ResponseCache.shared.set(enriched, for: CacheKey.itemDetail(contentId, libraryId: libraryId))
+            self.cacheDetail(enriched, contentId: contentId, ratingRevisionAtRead: ratingRevisionAtRead)
             self.playbackEnrichmentTask = nil
         }
 
@@ -549,13 +622,15 @@ class ItemDetailViewModel {
         item: ItemDetail,
         contentId: String,
         preserveSeasonSelection: Bool,
-        watchedGeneration: Int
+        watchedGeneration: Int,
+        ratingRevisionAtRead: Int? = nil
     ) async {
         let generation = beginDetailWrite()
         guard let enriched = await adoptDetail(
             item,
             contentId: contentId,
-            generation: generation
+            generation: generation,
+            ratingRevisionAtRead: ratingRevisionAtRead
         ) else { return }
         if userStateMutationGeneration == watchedGeneration {
             isWatched = enriched.userData?.played ?? false
@@ -707,6 +782,7 @@ class ItemDetailViewModel {
                 airDate: item.airDate,
                 isSpecials: item.isSpecials,
                 userData: item.userData,
+                userRating: item.userRating,
                 versions: watchDetail.versions,
                 playbackVariants: item.playbackVariants,
                 subtitles: watchDetail.subtitles,
@@ -798,6 +874,9 @@ class ItemDetailViewModel {
         // Captured once per run: a resumed poll reuses this closure, and the
         // payload it finds may have been read before a later watched change.
         let watchedGeneration = userStateMutationGeneration
+        // Conservative: a rating write any time during this run keeps the
+        // found payload out of the cache, since it may predate the write.
+        let ratingRevisionAtStart = Self.ratingRevision(for: contentId)
         trailerFetch.start(
             baseline: detail,
             remoteVideosDisplayable: remoteVideosDisplayable
@@ -823,7 +902,8 @@ class ItemDetailViewModel {
                 item: found,
                 contentId: contentId,
                 preserveSeasonSelection: true,
-                watchedGeneration: watchedGeneration
+                watchedGeneration: watchedGeneration,
+                ratingRevisionAtRead: ratingRevisionAtStart
             )
         }
     }
@@ -1538,6 +1618,242 @@ class ItemDetailViewModel {
         }
     }
 
+    /// The acting profile's own rating, 1 to 5 stars, or nil when unrated.
+    /// Shows a pending or confirmed write over the loaded detail, so a
+    /// refresh that lands mid-write can't put the old rating back.
+    var userRating: Int? {
+        if case .some(let pending) = ratingOverride { return pending }
+        return detail?.userRating
+    }
+
+    /// True while a rating write is running. Writes go one at a time, across
+    /// titles too: a choice made meanwhile is ignored rather than queued, so
+    /// two writes are never in flight and an older one can't land after a
+    /// newer one, even if the viewer leaves the title and comes back.
+    private(set) var isSavingRating = false
+    /// Outer optional: whether a value is being shown over the detail.
+    /// Inner: the rating it shows, where nil means "cleared".
+    private var ratingOverride: Int??
+    /// The last rating the server confirmed for this title since the detail
+    /// was read. A failed write falls back to this, not to the loaded
+    /// detail, which predates any write that succeeded since.
+    @ObservationIgnored private var confirmedRating: Int??
+    /// Writes sent with their answer and read-back both lost, so they may
+    /// still land, keyed by owner and title (`unsettledRatingKey`). The next
+    /// write for that owner and title reads the stored rating first and is
+    /// refused if that still can't settle it. App-wide rather than per model:
+    /// it describes the server, so it must survive title changes and a page
+    /// (and its model) being replaced or evicted.
+    private static var unsettledRatingWrites: Set<String> = []
+    /// The last rating a write confirmed, by owner and title, kept app-wide
+    /// until a detail read that overlapped no write lands. Lets a page that
+    /// left and came back mid-write show the saved rating even if its load
+    /// joined a request dispatched before the write.
+    private static var recentlyConfirmedRatings: [String: Int?] = [:]
+    /// Bumped when the page moves to another title; a write that finishes
+    /// for the old title drops its result.
+    @ObservationIgnored private var ratingTitleGeneration = 0
+    /// Per title, app-wide: advances when a rating write starts and when it
+    /// finishes, so any page's detail read (including a page opened while
+    /// another page's write runs) can tell whether a write overlapped it.
+    private static var ratingRevisions: [String: Int] = [:]
+    /// Per title, app-wide: changes after each confirmed or uncertain write
+    /// and keys the next detail read of that title from any page, so it
+    /// can't join a request dispatched before the write.
+    private static var ratingFreshnessTokens: [String: String] = [:]
+
+    private static func ratingRevision(for contentId: String) -> Int {
+        ratingRevisions[contentId, default: 0]
+    }
+
+    private static func bumpRatingRevision(_ contentId: String) {
+        ratingRevisions[contentId, default: 0] += 1
+    }
+
+    /// A rating write for this title is in flight on any page.
+    private static func isRatingWriteActive(_ contentId: String) -> Bool {
+        PersonalStateHolds.shared.isRatingWriteInFlight(contentId: contentId)
+    }
+
+    /// Saves the viewer's rating, or clears it when `stars` is nil. Sets
+    /// exactly what it is given rather than toggling, and does nothing while
+    /// another rating write is running. `send` replaces the server write in
+    /// tests.
+    func setRating(
+        _ stars: Int?,
+        send: ((_ contentId: String, _ stars: Int?) async -> PersonalStateOutcome)? = nil
+    ) async {
+        guard !isSavingRating,
+              let contentId = detail?.contentId,
+              stars.map(UserStarRating.range.contains) ?? true,
+              // App-wide: also refuses while another page's model (this
+              // title closed and reopened mid-write) is still writing it.
+              PersonalStateHolds.shared.beginRatingWrite(contentId: contentId) else { return }
+        let seriesId = detail?.seriesId
+        let generation = ratingTitleGeneration
+        isSavingRating = true
+        Self.bumpRatingRevision(contentId)
+        ratingOverride = .some(stars)
+        defer {
+            PersonalStateHolds.shared.endRatingWrite(contentId: contentId)
+            isSavingRating = false
+            // Always, even if the page moved on: a read that overlapped this
+            // write, on whichever title, must not treat its payload as fresh.
+            Self.bumpRatingRevision(contentId)
+        }
+        let owner = await currentPersonalStateOwner()
+
+        let unsettledKey = Self.unsettledRatingKey(contentId: contentId, owner: owner)
+        if Self.unsettledRatingWrites.contains(unsettledKey), send == nil {
+            let stored = await readStoredRating(contentId: contentId, owner: owner)
+            if case .some = stored {
+                Self.unsettledRatingWrites.remove(unsettledKey)
+            }
+            guard await isRatingScopeCurrent(generation, owner: owner) else { return }
+            guard case .some(let settled) = stored else {
+                // Still unknown whether the earlier write will land, and it
+                // could overwrite this one, so this choice isn't sent.
+                ratingOverride = confirmedRating
+                personalStateNotice = .failed(nil)
+                return
+            }
+            confirmedRating = .some(settled)
+        }
+
+        let result: RatingWriteResult
+        if let send {
+            result = RatingWriteResult(outcome: await send(contentId, stars))
+        } else {
+            result = await writeRating(stars, contentId: contentId, owner: owner)
+        }
+        if result.outcome == .applied || result.isUncertain {
+            // The server changed, or may have, for this title even if the
+            // page has moved on, so its cached reads go stale either way.
+            PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId)
+            // Also before the scope check: a later read of this title, after
+            // the page left and came back, must not join a pre-write request.
+            Self.ratingFreshnessTokens[contentId] = UUID().uuidString
+        }
+        // Server-side state for this title, so recorded even if the page has
+        // moved on.
+        if result.isUncertain, result.storedRating == nil {
+            Self.unsettledRatingWrites.insert(unsettledKey)
+        } else {
+            Self.unsettledRatingWrites.remove(unsettledKey)
+        }
+        if result.outcome == .applied {
+            Self.recentlyConfirmedRatings[unsettledKey] = .some(stars)
+        } else if case .some(let stored) = result.storedRating {
+            Self.recentlyConfirmedRatings[unsettledKey] = .some(stored)
+        }
+        if case .some(let confirmed) = Self.recentlyConfirmedRatings[unsettledKey],
+           result.outcome == .applied || result.storedRating != nil {
+            Self.shareConfirmedRating(confirmed, contentId: contentId, key: unsettledKey, from: self)
+        }
+        // Every page-state change below belongs to this title and owner.
+        guard await isRatingScopeCurrent(generation, owner: owner) else { return }
+        if case .some(let stored) = result.storedRating {
+            confirmedRating = .some(stored)
+        }
+        if result.outcome == .applied {
+            confirmedRating = .some(stars)
+        } else {
+            ratingOverride = confirmedRating
+            personalStateNotice = PersonalStateNotice(result.outcome)
+        }
+    }
+
+    /// Every live detail model, held weakly, so a confirmed rating can reach
+    /// other pages showing the same title (a page reopened mid-write on iOS,
+    /// or a second model on tvOS).
+    private static let liveModels = NSHashTable<ItemDetailViewModel>.weakObjects()
+
+    /// Shows a rating the server just confirmed on every other live page for
+    /// the same owner and title, including one whose own load overlapped the
+    /// write and may be showing the older rating. A page with its own write
+    /// running keeps its state; that write's result decides it.
+    private static func shareConfirmedRating(
+        _ confirmed: Int?,
+        contentId: String,
+        key: String,
+        from writer: ItemDetailViewModel
+    ) {
+        for model in liveModels.allObjects where model !== writer {
+            guard model.detail?.contentId == contentId,
+                  !model.isSavingRating,
+                  unsettledRatingKey(contentId: contentId, owner: model.personalStateOwner) == key else { continue }
+            model.ratingOverride = .some(confirmed)
+            // A later failed write on that page falls back to this, not to
+            // its older loaded detail.
+            model.confirmedRating = .some(confirmed)
+        }
+    }
+
+    /// One unsettled write per owner (account and profile) and title, so a
+    /// write for another title or profile can't replace or clear it.
+    private static func unsettledRatingKey(contentId: String, owner: CapturedOrdinaryRequestAuth?) -> String {
+        [String(describing: owner?.account), owner?.profileId ?? "", contentId].joined(separator: "\u{1F}")
+    }
+
+    /// Whether a rating result may still change the page: the same title is
+    /// showing and, for a real write, the same owner is signed in.
+    private func isRatingScopeCurrent(_ generation: Int, owner: CapturedOrdinaryRequestAuth?) async -> Bool {
+        guard ratingTitleGeneration == generation else { return false }
+        guard let owner else { return true }
+        let ownerIsCurrent = await TokenStore.shared.currentOrdinaryRequestAuth(matchingIdentityOf: owner) != nil
+        return ownerIsCurrent && ratingTitleGeneration == generation
+    }
+
+    private struct RatingWriteResult {
+        var outcome: PersonalStateOutcome
+        /// The write was sent but its answer was lost.
+        var isUncertain = false
+        /// What the server holds, when it was read back after an uncertain
+        /// write. Outer optional: whether it was read.
+        var storedRating: Int?? = nil
+    }
+
+    /// Sends one rating write. When the answer is lost after the write was
+    /// sent, it may still have landed, so the server's stored rating is read
+    /// back: a match counts as saved, and anything else is what the page
+    /// falls back to instead of guessing.
+    private func writeRating(
+        _ stars: Int?,
+        contentId: String,
+        owner: CapturedOrdinaryRequestAuth?
+    ) async -> RatingWriteResult {
+        do {
+            guard let owner else { throw HTTPError.requestIdentityChanged }
+            try await SiloAPI.shared.apiV2Client.setRating(id: contentId, stars: stars, auth: owner)
+            return RatingWriteResult(outcome: .applied)
+        } catch {
+            let outcome = PersonalStateSync.outcome(for: error)
+            guard MutationDelivery(error) == .unconfirmed else {
+                return RatingWriteResult(outcome: outcome)
+            }
+            guard case .some(let stored) = await readStoredRating(contentId: contentId, owner: owner) else {
+                return RatingWriteResult(outcome: outcome, isUncertain: true)
+            }
+            return RatingWriteResult(
+                outcome: stored == stars ? .applied : outcome,
+                isUncertain: true,
+                storedRating: .some(stored)
+            )
+        }
+    }
+
+    /// The rating the server holds, or nil when it couldn't be read.
+    private func readStoredRating(contentId: String, owner: CapturedOrdinaryRequestAuth?) async -> Int?? {
+        guard let owner else { return nil }
+        // `try?` would flatten a successful "unrated" (nil) into a failed
+        // read, so keep the two apart.
+        do {
+            return .some(try await SiloAPI.shared.apiV2Client.rating(id: contentId, auth: owner))
+        } catch {
+            return nil
+        }
+    }
+
     func toggleFavorite() async {
         guard let contentId = detail?.contentId else { return }
         userStateMutationGeneration += 1
@@ -1822,6 +2138,27 @@ class ItemDetailViewModel {
     /// Watching and Next Up rows.
     private func invalidateRelatedCaches(contentId: String, seriesId: String? = nil) {
         PersonalStateSync.invalidateItemState(contentId: contentId, seriesId: seriesId ?? detail?.seriesId)
+    }
+}
+
+/// The viewer's own title rating, as the server stores it: whole stars,
+/// 1 to 5.
+enum UserStarRating {
+    static let range = 1...5
+
+    /// "1 Star", "4 Stars": the control's caption and menu entries.
+    static func label(_ stars: Int) -> String {
+        stars == 1 ? "1 Star" : "\(stars) Stars"
+    }
+
+    /// What picking `stars` means when the title is rated `current`: the
+    /// same rating again clears it, anything else sets it.
+    static func choosing(_ stars: Int, current: Int?) -> Int? {
+        stars == current ? nil : stars
+    }
+
+    static func accessibilityValue(_ stars: Int?) -> String {
+        stars.map { "\($0) of \(range.upperBound) stars" } ?? "Not rated"
     }
 }
 

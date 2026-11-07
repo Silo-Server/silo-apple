@@ -142,21 +142,33 @@ extension ItemDetailViewModel {
 
     // MARK: Item
 
-    private func itemTranslationFetch(_ key: DescriptionTranslationCoordinator.Key) -> @MainActor () async -> ItemDetail? {
-        { [libraryId] in
-            try? await SiloAPI.shared.itemDetail(contentId: key.contentId, libraryId: libraryId)
+    /// An item re-read, with the rating revision it started at.
+    struct TranslatedItemRead {
+        let item: ItemDetail
+        let ratingRevision: Int
+    }
+
+    private func itemTranslationFetch(_ key: DescriptionTranslationCoordinator.Key) -> @MainActor () async -> TranslatedItemRead? {
+        { [weak self, libraryId] in
+            guard let revision = self?.ratingReadRevision,
+                  let item = try? await SiloAPI.shared.itemDetail(contentId: key.contentId, libraryId: libraryId)
+            else { return nil }
+            return TranslatedItemRead(item: item, ratingRevision: revision)
         }
     }
 
-    private func itemTranslationApply(_ key: DescriptionTranslationCoordinator.Key) -> @MainActor (ItemDetail) -> Bool {
-        { [weak self] refreshed in
+    private func itemTranslationApply(_ key: DescriptionTranslationCoordinator.Key) -> @MainActor (TranslatedItemRead) -> Bool {
+        { [weak self] read in
             // The page moved on to another item (tvOS reuses view models):
             // nothing here shows this item any more.
             guard let self, self.detail?.contentId == key.contentId else { return true }
+            let refreshed = read.item
             // Through the view model's generation gate, so a detail load
             // still suspended in enrichment can't land its pre-translation
-            // copy on top of this one.
-            self.publishRefetchedDetail(refreshed, contentId: key.contentId)
+            // copy on top of this one. The translation is always kept; if a
+            // rating write overlapped the read, the publisher keeps the
+            // page's rating and leaves this copy out of the cache.
+            self.publishRefetchedDetail(refreshed, contentId: key.contentId, ratingRevisionAtRead: read.ratingRevision)
             return refreshed.pendingTranslationLanguage == nil
         }
     }

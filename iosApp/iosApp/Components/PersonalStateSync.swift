@@ -94,6 +94,26 @@ final class PersonalStateHolds {
     fileprivate func end(_ key: String) {
         inFlight.remove(key)
     }
+
+    /// App-wide "a rating write for this item is in flight" guard, the one
+    /// the favorite, watchlist and watched writes use. Lives here rather than
+    /// on a detail view model, so a page closed and reopened mid-write (a new
+    /// model) can't start a second write for the same item.
+    func beginRatingWrite(contentId: String) -> Bool {
+        begin(Self.ratingKey(contentId))
+    }
+
+    func endRatingWrite(contentId: String) {
+        end(Self.ratingKey(contentId))
+    }
+
+    func isRatingWriteInFlight(contentId: String) -> Bool {
+        inFlight.contains(Self.ratingKey(contentId))
+    }
+
+    private static func ratingKey(_ contentId: String) -> String {
+        "rating\u{1F}\(contentId)"
+    }
 }
 
 /// The one dispatcher for favorite, watchlist and watched writes. It sends
