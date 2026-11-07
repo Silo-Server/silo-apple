@@ -170,20 +170,26 @@ enum ServerMerge {
             let scopes = (try? FileManager.default.contentsOfDirectory(
                 at: source, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
             )) ?? []
-            if DownloadStore.mergeScopes(scopes, into: target) {
+            var accountComplete = true
+            for scope in scopes {
+                let scopeTarget = target.appendingPathComponent(scope.lastPathComponent, isDirectory: true)
+                guard DownloadStore.mergeScopes([scope], into: target) else {
+                    accountComplete = false
+                    continue
+                }
+                // Media on external folders follows only a scope whose records
+                // moved: a scope left behind still names the old path. It
+                // moves now or, on a folder out of reach, once it is back.
+                if let from = DownloadFilePaths.relativePath(of: scope, under: root),
+                   let to = DownloadFilePaths.relativePath(of: scopeTarget, under: root) {
+                    ExternalDownloadStorage.moveInExternalFolders(from: from, to: to)
+                }
+            }
+            if accountComplete {
                 try? FileManager.default.removeItem(at: source)
             } else {
                 complete = false
             }
-        }
-        // Media moved to external folders follows its account, now or, on a
-        // folder out of reach, once it is back.
-        for move in merge.downloadMoves {
-            let source = DownloadFilePaths.relativeAccountPath(serverId: move.serverId,
-                                                               localAccountId: move.localAccountId)
-            let target = DownloadFilePaths.relativeAccountPath(serverId: survivorServerId, localAccountId: move.target)
-            guard source != target else { continue }
-            ExternalDownloadStorage.moveInExternalFolders(from: source, to: target)
         }
         if let owner = merge.legacyDataTarget {
             let scopes = DownloadFilePaths.scopesFromBeforeAccounts(serverId: merge.droppedServerId, root: root)

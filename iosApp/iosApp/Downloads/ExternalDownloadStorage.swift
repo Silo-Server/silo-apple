@@ -211,7 +211,39 @@ final class ExternalDownloadStorage {
     /// Re-reads which registered folders can be reached. Bookmarks resolve
     /// off the main actor; a drive that went away loses its access, and one
     /// that came back gets it again.
+    ///
+    /// Refreshes run one at a time, so a folder's waiting work never runs
+    /// twice at once. A call while one waits to start joins it: it starts
+    /// after the running one, so it reads the latest state.
     func refreshAvailability() async {
+        if let waiting = waitingRefresh {
+            await waiting.value
+            return
+        }
+        let previous = runningRefresh
+        let refresh = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self else { return }
+            // Running now: the next call queues behind this one.
+            if let waiting = self.waitingRefresh {
+                self.runningRefresh = waiting
+                self.waitingRefresh = nil
+            }
+            await self.resolveAvailability()
+        }
+        if previous == nil {
+            runningRefresh = refresh
+        } else {
+            waitingRefresh = refresh
+        }
+        await refresh.value
+        if runningRefresh == refresh { runningRefresh = nil }
+    }
+
+    @ObservationIgnored private var runningRefresh: Task<Void, Never>?
+    @ObservationIgnored private var waitingRefresh: Task<Void, Never>?
+
+    private func resolveAvailability() async {
         refreshGeneration += 1
         let generation = refreshGeneration
         let snapshot = Array(locations.values)
