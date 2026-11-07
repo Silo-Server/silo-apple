@@ -451,7 +451,7 @@ struct TVSeriesDetailView: View {
         guard !isShowingSeriesOverview else { return detail.overview }
         let episodeTitle = matchingPlaybackDetail?.title
             ?? displayedEpisode?.title
-            ?? displayedEpisode.map { AppLanguage.string(.detailEpisode(String($0.episodeNumber)), locale: locale) }
+            ?? displayedEpisode.map { AppLanguage.string(.detailEpisode(LocaleFormat.integer($0.episodeNumber, locale: locale)), locale: locale) }
         let overview = heroEpisodeOverview?.text
         switch (episodeTitle, overview) {
         case let (.some(title), .some(line)) where !title.isEmpty && !line.isEmpty:

@@ -525,7 +525,7 @@ struct SubtitleTranslateMenu: View {
     private var quotaText: LocalizedStringResource? {
         guard let quota = controller.quota, quota.limited else { return nil }
         if isQuotaExhausted { return .playerAiTranslateQuotaReached }
-        let used = String(quota.used ?? 0)
+        let used = LocaleFormat.integer(quota.used ?? 0)
         if let limit = quota.limit {
             // The period is the server's own token, shown as sent.
             if let period = quota.period {

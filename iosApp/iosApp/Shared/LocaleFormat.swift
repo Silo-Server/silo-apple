@@ -59,7 +59,8 @@ enum LocaleFormat {
     /// "1h 42m" ("1h 42min" in German, "1時間42分" in Japanese). With
     /// `showZeroMinutes`, a whole hour reads "1h 0m"; otherwise "1h".
     static func duration(minutes: Int, showZeroMinutes: Bool, locale: Locale = AppLanguage.formattingLocale) -> String {
-        let minutes = max(0, minutes)
+        // Far beyond any real length; keeps `minutes * 60` from overflowing.
+        let minutes = min(max(0, minutes), Int.max / 60)
         let style: Duration.UnitsFormatStyle = minutes >= 60
             ? .units(allowed: [.hours, .minutes], width: .narrow,
                      zeroValueUnits: showZeroMinutes ? .show(length: 1) : .hide)

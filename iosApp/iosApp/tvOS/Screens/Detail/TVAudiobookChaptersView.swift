@@ -324,7 +324,8 @@ private struct TVAudiobookRowBody: View {
                         .stroke(Color.white.opacity(0.22), lineWidth: 1)
                 }
             }
-            .overlay(alignment: .bottomLeading) { progressUnderline }
+            // Chapter progress fills left to right in every language.
+            .overlay(alignment: .bottomLeading) { progressUnderline.mediaLayoutDirection() }
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.smallCornerRadius, style: .continuous))
             .shadow(
                 color: isFocused ? .black.opacity(0.4) : .clear,

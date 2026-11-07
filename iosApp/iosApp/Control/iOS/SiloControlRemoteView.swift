@@ -382,7 +382,10 @@ private struct RemoteNowPlayingContent: View {
         }
     }
 
-    private var scrubber: some View {
+    /// The timeline and transport read left to right in every language.
+    private var scrubber: some View { scrubberContent.mediaLayoutDirection() }
+
+    private var scrubberContent: some View {
         // Ticks only while playing; a paused clock's time doesn't move.
         TimelineView(.animation(minimumInterval: 0.25, paused: !clock.isPlaying())) { ctx in
             let live = scrubPreview ?? clock.displayTime(asOf: ctx.date)
@@ -458,7 +461,9 @@ private struct RemoteNowPlayingContent: View {
         ))
     }
 
-    private var transport: some View {
+    private var transport: some View { transportContent.mediaLayoutDirection() }
+
+    private var transportContent: some View {
         HStack(spacing: 28) {
             if state.hasNextEpisode {
                 Image(systemName: "forward.end.fill")
