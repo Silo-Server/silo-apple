@@ -254,7 +254,7 @@ struct TVMediaCard: View {
                 .tvCardTitleFocus(isFocused: isFocused)
                 .frame(width: resolvedCardWidth, alignment: .center)
 
-            if let secondLine = subtitle ?? year.map(String.init) {
+            if let secondLine = subtitle ?? year.map({ LocaleFormat.integer($0, locale: locale) }) {
                 Text(secondLine)
                     .font(.siloPosterMetadata)
                     .tvCardSubtitleFocus(isFocused: isFocused)
@@ -282,7 +282,7 @@ struct TVMediaCard: View {
 
     private var accessibilityDescription: String {
         if let boxSet { return boxSet.accessibilityLabel }
-        let secondLine = subtitle ?? year.map(String.init)
+        let secondLine = subtitle ?? year.map { LocaleFormat.integer($0, locale: locale) }
         var components = [title]
         if let secondLine {
             components.append(secondLine)

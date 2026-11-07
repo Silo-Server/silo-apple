@@ -805,10 +805,13 @@ extension DownloadRecord {
     }
 
     /// `subtitle` as a row shows it: an episode's season and episode in
-    /// `locale` when the record knows them, otherwise what was stored (a
-    /// movie's year).
+    /// `locale` when the record knows them, a movie's stored year in
+    /// `locale`'s digits, otherwise what was stored.
     func displaySubtitle(locale: Locale = AppLanguage.formattingLocale) -> String? {
-        (type == "episode" ? episodeTag(locale: locale) : nil) ?? subtitle
+        if type == "episode" { return episodeTag(locale: locale) ?? subtitle }
+        // A movie's year is stored in ASCII digits (D44).
+        guard let subtitle, subtitle.allSatisfy({ $0.isASCII && $0.isNumber }), let year = Int(subtitle) else { return subtitle }
+        return LocaleFormat.integer(year, locale: locale)
     }
 
     /// The name stored for an untitled episode: English "Episode 2" (D44).

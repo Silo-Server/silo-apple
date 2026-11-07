@@ -307,7 +307,7 @@ struct MobilePlayerControls: View {
             parts.append(tag)
         }
         if parts.isEmpty, let year = metadata.year {
-            parts.append(String(year))
+            parts.append(LocaleFormat.integer(year, locale: locale))
         }
         guard !parts.isEmpty else { return nil }
         return parts.joined(separator: " · ").uppercased()

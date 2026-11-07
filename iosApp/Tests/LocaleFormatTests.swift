@@ -94,6 +94,48 @@ final class LocaleFormatTests: XCTestCase {
         XCTAssertEqual(LocaleFormat.integer(1234, locale: japanese), "1234")
     }
 
+    // MARK: Years and decades (D77)
+
+    /// A decade chip writes its year in the format locale's digits: Arabic-
+    /// Indic in Egypt, Latin where the locale's default is Latin, and
+    /// English unchanged. The chip's value stays Latin data (D44).
+    func testDecadeChipWritesTheFormatLocalesDigits() {
+        func chip(_ locale: Locale) -> String {
+            CatalogFilterState.chipLabel(facet: .decade, value: "1990", locale: locale)
+        }
+        assertDigits(chip(arabic), "١٩٩٠")
+        assertDigits(chip(Locale(identifier: "ar")), "1990")
+        XCTAssertEqual(chip(english), "1990s")
+    }
+
+    /// A year is a number on screen like any other, never grouped.
+    func testYearsWriteTheFormatLocalesDigits() {
+        XCTAssertEqual(
+            mediaCardAccessibilityLabel(title: "Heat", episodeLabel: nil, year: 1995, isWatched: false, locale: arabic),
+            "Heat, ١٩٩٥"
+        )
+        withDisplayedTag("ar") {
+            let boxSet = CatalogBoxSet(id: "1", libraryId: "1", title: "T", movieCount: 3, playedCount: 0,
+                                       firstYear: 2001, lastYear: 2011)
+            XCTAssertEqual(boxSet.yearsText, "٢٠٠١ – ٢٠١١")
+        }
+    }
+
+    #if !os(tvOS)
+    /// A season numbered by its year, and the episode beside it, follow the
+    /// same digits in the auto-download status lines.
+    func testAutoDownloadSeasonAndEpisodeNumbersWriteTheFormatLocalesDigits() {
+        withDisplayedTag("ar") {
+            let premiere = UpcomingEpisode(contentId: "e", seriesId: "s", seasonNumber: 2021, episodeNumber: 1,
+                                           title: nil, airDate: Date().addingTimeInterval(5 * 86_400))
+            let next = AutoDownloadRules.statusLine(.next(premiere))
+            assertDigits(next, "٢٠٢١")
+            let waiting = AutoDownloadRules.statusLine(.waiting(episodeNumber: 12, phase: .waitingForWiFi))
+            assertDigits(waiting, "١٢")
+        }
+    }
+    #endif
+
     // MARK: Call sites follow the language on screen
 
     /// These read the app's language through the default argument, as the
@@ -132,6 +174,13 @@ final class LocaleFormatTests: XCTestCase {
             XCTAssertNil(TrackLabels.audioTitle("English 5.1", language: "eng"))
             XCTAssertNil(TrackLabels.subtitleTitle("English", language: "eng", codec: "subrip", showsHearingImpaired: false))
         }
+    }
+
+    /// Compares the digits in `text` by scalar. Foundation's `contains`
+    /// matches "١٩٩٠" against "1990", so it can't tell the systems apart.
+    private func assertDigits(_ text: String, _ expected: String, line: UInt = #line) {
+        let digits = text.unicodeScalars.filter { $0.properties.numericType == .decimal }
+        XCTAssertEqual(digits.map(\.value), expected.unicodeScalars.map(\.value), text, line: line)
     }
 
     private func withDisplayedTag(_ tag: String, _ body: () -> Void) {

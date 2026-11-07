@@ -80,7 +80,7 @@ struct TVAudiobookDetailSections: View {
             pieces.append(publisher)
         }
         if let year = detail.year {
-            pieces.append(String(year))
+            pieces.append(LocaleFormat.integer(year, locale: locale))
         }
         return pieces.isEmpty ? nil : pieces.joined(separator: " · ")
     }
@@ -164,6 +164,7 @@ private struct NarrationRowLabel: View {
     let narration: AudiobookNarration
 
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.locale) private var locale
 
     var body: some View {
         HStack(spacing: 20) {
@@ -180,7 +181,7 @@ private struct NarrationRowLabel: View {
             Spacer(minLength: 24)
 
             if let year = narration.year {
-                Text(String(year))
+                Text(LocaleFormat.integer(year, locale: locale))
                     .font(.system(size: 22))
                     .monospacedDigit()
                     .foregroundColor(isFocused ? .black.opacity(0.5) : .white.opacity(0.55))

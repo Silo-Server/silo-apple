@@ -105,6 +105,15 @@ final class DownloadGroupingTests: XCTestCase {
         XCTAssertEqual(entry.preparation, DownloadPreparation(state: "queued", queuePosition: 4, progress: nil, remainingSeconds: nil))
     }
 
+    /// A movie keeps its year stored in Latin digits (D44) and shows it in
+    /// the format locale's (D77).
+    func testMovieSubtitleShowsItsStoredYearInTheFormatLocalesDigits() {
+        let record = movie("m", bytes: 1, title: "Heat")
+        XCTAssertEqual(record.subtitle, "2024")
+        XCTAssertEqual(record.displaySubtitle(locale: Locale(identifier: "ar_EG")), "٢٠٢٤")
+        XCTAssertEqual(record.displaySubtitle(locale: Locale(identifier: "en_US")), "2024")
+    }
+
     private func movie(_ id: String, bytes: Int64, title: String) -> DownloadRecord {
         DownloadRecord(
             id: id,

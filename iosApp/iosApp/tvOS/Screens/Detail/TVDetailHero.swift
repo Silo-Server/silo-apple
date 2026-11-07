@@ -701,7 +701,7 @@ enum TVHeroMetadata {
            let airDate = DetailDateFormatting.abbreviatedDate(detail.airDate) {
             tokens.append(.text(airDate))
         } else if let year = detail.year, year > 0 {
-            tokens.append(.text(String(year)))
+            tokens.append(.text(LocaleFormat.integer(year)))
         }
         let runtime = SelectedMediaRuntime.minutes(detail: detail, selectedVersion: selectedVersion)
         if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) {
@@ -719,7 +719,7 @@ enum TVHeroMetadata {
     ) -> [TVHeroFactToken] {
         var tokens: [TVHeroFactToken] = []
         if let year = detail.year, year > 0 {
-            tokens.append(.text(String(year)))
+            tokens.append(.text(LocaleFormat.integer(year, locale: locale)))
         }
         let count = seasons.librarySeasonCount
         if count > 0 {

@@ -370,7 +370,7 @@ struct OfflineDownloadDetailView: View {
                 tokens.append(.text(series))
             }
         }
-        if let year = manifest?.year, year > 0 { tokens.append(.text(String(year))) }
+        if let year = manifest?.year, year > 0 { tokens.append(.text(LocaleFormat.integer(year, locale: locale))) }
         if let runtime = MediaTextFormatting.runtime(minutes: manifest?.runtime) {
             tokens.append(.text(runtime))
         }

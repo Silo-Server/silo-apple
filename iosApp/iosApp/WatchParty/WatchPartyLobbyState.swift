@@ -125,7 +125,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     /// "2024 · 2h 46m" style facts for the hero.
     var factsLine: [String] {
         var facts: [String] = []
-        if let year, year > 0 { facts.append(String(year)) }
+        if let year, year > 0 { facts.append(LocaleFormat.integer(year)) }
         if let runtime = MediaTextFormatting.runtime(minutes: runtimeMinutes) { facts.append(runtime) }
         return facts
     }

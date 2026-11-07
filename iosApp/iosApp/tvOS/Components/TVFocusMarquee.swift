@@ -185,7 +185,7 @@ extension TVMarqueeContent {
             }
             meta.append(item.title)
         } else {
-            if let year = item.year, year > 0 { meta.append(String(year)) }
+            if let year = item.year, year > 0 { meta.append(LocaleFormat.integer(year)) }
             if let genre = item.genres?.first(where: { !$0.isEmpty }) { meta.append(genre) }
         }
 

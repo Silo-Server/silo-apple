@@ -57,7 +57,7 @@ enum PhoneHeroMetadata {
            let airDate = DetailDateFormatting.abbreviatedDate(detail.airDate) {
             tokens.append(.text(airDate))
         } else if let year = detail.year, year > 0 {
-            tokens.append(.text(String(year)))
+            tokens.append(.text(LocaleFormat.integer(year)))
         }
         let runtime = SelectedMediaRuntime.minutes(detail: detail, selectedVersion: selectedVersion)
         if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) {
@@ -75,7 +75,7 @@ enum PhoneHeroMetadata {
         locale: Locale = AppLanguage.displayedLocale
     ) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
-        if let year = detail.year, year > 0 { tokens.append(.text(String(year))) }
+        if let year = detail.year, year > 0 { tokens.append(.text(LocaleFormat.integer(year, locale: locale))) }
         let count = seasons.librarySeasonCount
         if count > 0 {
             tokens.append(.text(AppLanguage.string(.catalogSeasons(count), locale: locale)))

@@ -528,7 +528,7 @@ struct RequestDetailView: View {
 
     private func factTokens(_ detail: RequestMediaDetail) -> [String] {
         var parts: [String] = []
-        if let year = detail.year, year > 0 { parts.append(String(year)) }
+        if let year = detail.year, year > 0 { parts.append(LocaleFormat.integer(year, locale: locale)) }
         if detail.mediaType == .series {
             if let seasons = detail.numberOfSeasons, seasons > 0 {
                 parts.append(AppLanguage.string(.requestsDetailSeasons(seasons)))

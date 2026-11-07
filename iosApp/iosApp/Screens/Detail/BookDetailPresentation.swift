@@ -111,7 +111,7 @@ struct BookDetailPresentation {
     /// runtime.
     var factsTokens: [String] {
         var tokens: [String] = []
-        if let year = detail.year, year > 0 { tokens.append(String(year)) }
+        if let year = detail.year, year > 0 { tokens.append(LocaleFormat.integer(year)) }
         let runtime = PlayerTimeFormatter.formatRuntime(totalDurationSeconds)
         if !runtime.isEmpty { tokens.append(runtime) }
         return tokens

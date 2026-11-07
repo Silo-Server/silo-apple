@@ -190,7 +190,7 @@ private extension BrowseItem {
     /// "2021 · 2h 35m · PG-13" for the picker hero.
     var watchPartyFacts: [String] {
         var facts: [String] = []
-        if let year, year > 0 { facts.append(String(year)) }
+        if let year, year > 0 { facts.append(LocaleFormat.integer(year)) }
         if let runtimeText = MediaTextFormatting.runtime(minutes: runtime) { facts.append(runtimeText) }
         if let contentRating, !contentRating.isEmpty { facts.append(contentRating) }
         if let genres, let first = genres.first { facts.append(first) }
@@ -868,7 +868,7 @@ private struct WatchPartyEpisodePicker: View {
                         .foregroundStyle(Color.siloOnSurface)
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
-                    Text(focusedEpisode.map(episodeLine) ?? (series.year.map(String.init) ?? ""))
+                    Text(focusedEpisode.map(episodeLine) ?? (series.year.map { LocaleFormat.integer($0, locale: locale) } ?? ""))
                         .font(.system(size: WatchPartyMetrics.body, weight: .medium))
                         .foregroundStyle(Color.siloSecondaryText)
                     Text(focusedOverview)
