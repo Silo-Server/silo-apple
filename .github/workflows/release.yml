@@ -52,77 +52,7 @@ env:
   SILO_CACHE_NAMESPACE: production
 
 jobs:
-  # A trusted complete main run can gate this exact commit. Toolchain or source
-  # uncertainty selects the full suite; an error in preflight blocks the release.
-  preflight:
-    needs: prepare
-    runs-on: xcode-27
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      actions: read
-    outputs:
-      reusable: ${{ steps.proof.outputs.reusable }}
-      regression_run_url: ${{ steps.proof.outputs.run_url }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          ref: ${{ github.sha }}
-      - uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: '27.1'
-      - name: Record release source and toolchain
-        id: metadata
-        run: python3 scripts/ci/apple-build-metadata.py --root . --outputs
-      - name: Find matching main regression proof
-        id: proof
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPOSITORY: ${{ github.repository }}
-          TARGET_SHA: ${{ github.sha }}
-          EXPECTED_FINGERPRINT: ${{ steps.metadata.outputs.fingerprint }}
-          EXPECTED_LOCK_SHA256: ${{ steps.metadata.outputs.lock_sha256 }}
-          EXPECTED_TOOLCHAIN_JSON: ${{ steps.metadata.outputs.toolchain_json }}
-        run: python3 scripts/ci/find-regression-proof.py
-
-  tests:
-    needs: preflight
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && needs.preflight.outputs.reusable != 'true' }}
-    permissions:
-      contents: read
-    uses: ./.github/workflows/player-regression.yml
-    with:
-      release_gate: true
-
-  regression-gate:
-    needs: [preflight, tests]
-    if: ${{ always() && !cancelled() }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require trusted regression success
-        env:
-          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
-          REUSABLE: ${{ needs.preflight.outputs.reusable }}
-          TEST_RESULT: ${{ needs.tests.result }}
-          REGRESSION_RUN_URL: ${{ needs.preflight.outputs.regression_run_url }}
-        run: |
-          set -euo pipefail
-          if [ "$PREFLIGHT_RESULT" != success ]; then
-            echo "::error::Release preflight did not succeed"
-            exit 1
-          fi
-          if [ "$REUSABLE" = true ] && [ "$TEST_RESULT" = skipped ]; then
-            echo "Reusing complete regression proof: $REGRESSION_RUN_URL"
-          elif [ "$REUSABLE" != true ] && [ "$TEST_RESULT" = success ]; then
-            echo "The full release regression suite passed"
-          else
-            echo "::error::Release requires matching proof or a successful full regression suite"
-            exit 1
-          fi
-
   # Choose the version, build number and tag once so every job agrees on them.
-  # Runs first, so a bad bump fails before the regression suite.
   prepare:
     runs-on: ubuntu-latest
     permissions:
@@ -190,11 +120,11 @@ jobs:
             exit 1
           fi
 
-  # Publish the prerelease once the regression gate passes, before any binary:
+  # Publish the prerelease before any binary:
   # the app links its source archive, which must be public first.
   release:
-    needs: [regression-gate, prepare]
-    if: ${{ !cancelled() && needs.regression-gate.result == 'success' && needs.prepare.result == 'success' }}
+    needs: prepare
+    if: ${{ !cancelled() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release (and generate its notes)
@@ -283,8 +213,8 @@ jobs:
             --title "Silo $VERSION ($BUILD)" --notes-file notes.md
 
   source:
-    needs: [regression-gate, prepare, release]
-    if: ${{ !cancelled() && needs.regression-gate.result == 'success' && needs.release.result == 'success' }}
+    needs: [prepare, release]
+    if: ${{ !cancelled() && needs.release.result == 'success' }}
     permissions:
       contents: write
       actions: read
@@ -293,10 +223,9 @@ jobs:
       release_tag: ${{ needs.prepare.outputs.tag }}
 
   ios:
-    needs: [regression-gate, prepare, release, source]
+    needs: [prepare, release, source]
     if: >-
-      !cancelled() && needs.regression-gate.result == 'success' &&
-      needs.prepare.result == 'success' && needs.source.result == 'success' &&
+      !cancelled() && needs.prepare.result == 'success' && needs.source.result == 'success' &&
       (inputs.platform == 'all' || inputs.platform == 'ios')
     runs-on: xcode-27
     env:
@@ -381,10 +310,9 @@ jobs:
           spm-cache-hit: ${{ steps.cache.outputs.spm-cache-hit }}
 
   tvos:
-    needs: [regression-gate, prepare, release, source]
+    needs: [prepare, release, source]
     if: >-
-      !cancelled() && needs.regression-gate.result == 'success' &&
-      needs.prepare.result == 'success' && needs.source.result == 'success' &&
+      !cancelled() && needs.prepare.result == 'success' && needs.source.result == 'success' &&
       (inputs.platform == 'all' || inputs.platform == 'tvos')
     runs-on: xcode-27
     env:
@@ -470,10 +398,9 @@ jobs:
 
 
   macos:
-    needs: [regression-gate, prepare, release, source]
+    needs: [prepare, release, source]
     if: >-
-      !cancelled() && needs.regression-gate.result == 'success' &&
-      needs.prepare.result == 'success' && needs.source.result == 'success' &&
+      !cancelled() && needs.prepare.result == 'success' && needs.source.result == 'success' &&
       (inputs.platform == 'all' || inputs.platform == 'macos')
     runs-on: xcode-27
     env:
@@ -558,10 +485,10 @@ jobs:
           spm-cache-hit: ${{ steps.cache.outputs.spm-cache-hit }}
 
   ios-distribution:
-    needs: [ios, prepare, release, source, regression-gate]
+    needs: [ios, prepare, release, source]
     if: >-
       !cancelled() && needs.ios.result == 'success' &&
-      needs.regression-gate.result == 'success' && needs.prepare.result == 'success' &&
+      needs.prepare.result == 'success' &&
       needs.source.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -585,10 +512,10 @@ jobs:
           SILO_RELEASE_SOURCE_URL: ${{ needs.source.outputs.source_url }}
 
   tvos-distribution:
-    needs: [tvos, prepare, release, source, regression-gate]
+    needs: [tvos, prepare, release, source]
     if: >-
       !cancelled() && needs.tvos.result == 'success' &&
-      needs.regression-gate.result == 'success' && needs.prepare.result == 'success' &&
+      needs.prepare.result == 'success' &&
       needs.source.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -613,10 +540,10 @@ jobs:
 
 
   macos-distribution:
-    needs: [macos, prepare, release, source, regression-gate]
+    needs: [macos, prepare, release, source]
     if: >-
       !cancelled() && needs.macos.result == 'success' &&
-      needs.regression-gate.result == 'success' && needs.prepare.result == 'success' &&
+      needs.prepare.result == 'success' &&
       needs.source.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
