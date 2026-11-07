@@ -6,7 +6,7 @@ import Foundation
 /// `POST /api/v2/catalog/items/{id}/translate-description` and then observe completion by
 /// re-reading whatever shows the text until it no longer reports a pending
 /// language (the localized overview lands within seconds). This coordinator
-/// owns that POST-then-poll loop, its bounded schedule, and the `idle /
+/// owns that POST-then-poll loop, its bounded schedules, and the `idle /
 /// translating / failed` UI state. The caller supplies the read (`fetch`) and
 /// publishes it (`apply`), so the same loop serves an item detail, a season's
 /// episode list, and a hero card.
@@ -14,6 +14,11 @@ import Foundation
 /// Automatic runs start once per item and language (``Key``); an explicit
 /// ``translate(_:fetch:apply:)`` may run again after a failure. One in-flight
 /// run at a time; ``cancel()`` on disappear.
+///
+/// A run that reaches its cap reports `.failed` but keeps re-reading slowly
+/// for a few more minutes, as web does: a season job also translates its
+/// episodes and can outlast the cap, and its text should still reach the
+/// open page. An explicit ``translate(_:fetch:apply:)`` replaces that tail.
 @MainActor
 @Observable
 final class DescriptionTranslationCoordinator {
@@ -36,14 +41,21 @@ final class DescriptionTranslationCoordinator {
 
     /// Re-read schedule. The overview typically lands within the first
     /// passes; the tail covers a slow translation. The sum (~45 s) is the cap
-    /// after which the run gives up and reports `.failed`, as web does.
+    /// after which the run stops showing its status and reports `.failed`,
+    /// as web does.
     nonisolated static let defaultSchedule: [Duration] = [1, 2, 2, 3, 3, 4, 5, 5, 5, 5, 5, 5].map { .seconds($0) }
+
+    /// Quiet re-reads after the cap: every 10 s for 5 min, matching web.
+    nonisolated static let defaultSettleSchedule: [Duration] = Array(repeating: .seconds(10), count: 30)
 
     private let api: SiloAI
     private let schedule: [Duration]
+    private let settleSchedule: [Duration]
     private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var activeRunID: UUID?
+    /// The run past its cap that only re-reads quietly.
+    @ObservationIgnored private var settlingRunID: UUID?
     /// Keys an automatic run already started for, so a re-appearing view or a
     /// re-read that still reports the language does not start another job.
     @ObservationIgnored private var automaticKeys: Set<Key> = []
@@ -51,14 +63,20 @@ final class DescriptionTranslationCoordinator {
     init(
         api: SiloAI = .shared,
         schedule: [Duration] = DescriptionTranslationCoordinator.defaultSchedule,
+        settleSchedule: [Duration] = DescriptionTranslationCoordinator.defaultSettleSchedule,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.api = api
         self.schedule = schedule
+        self.settleSchedule = settleSchedule
         self.sleep = sleep
     }
 
     var isRunning: Bool { task != nil }
+
+    /// Past its cap: `.failed` is reported, but reads continue in case the
+    /// job still finishes.
+    private var isSettling: Bool { activeRunID != nil && settlingRunID == activeRunID }
 
     func isTranslating(_ key: Key) -> Bool {
         phase == .translating && self.key == key
@@ -85,14 +103,19 @@ final class DescriptionTranslationCoordinator {
     /// Start a run for `key`. `fetch` re-reads the surface showing the text
     /// (nil for a transient failure); `apply` publishes the read and returns
     /// true once it no longer reports a pending language. No-op while a run
-    /// is in flight; returns whether a run started.
+    /// is in flight, except one past its cap, which this replaces; returns
+    /// whether a run started.
     @discardableResult
     func translate<Value>(
         _ key: Key,
         fetch: @escaping @MainActor () async -> Value?,
         apply: @escaping @MainActor (Value) -> Bool
     ) -> Bool {
-        guard task == nil, !key.contentId.isEmpty, !key.targetLanguage.isEmpty else { return false }
+        guard !key.contentId.isEmpty, !key.targetLanguage.isEmpty else { return false }
+        if task != nil {
+            guard isSettling else { return false }
+            stopTask()
+        }
         self.key = key
         phase = .translating
         let runID = UUID()
@@ -103,15 +126,21 @@ final class DescriptionTranslationCoordinator {
         return true
     }
 
-    /// Cancel any in-flight run and reset to idle. A cancelled automatic run
-    /// may start again the next time its surface appears. Safe to call from
-    /// `onDisappear`.
+    /// Cancel any in-flight run and reset to idle. A cancelled automatic run,
+    /// including one past its cap that was still re-reading, may start again
+    /// the next time its surface appears. Safe to call from `onDisappear`.
     func cancel() {
-        if phase == .translating, let key { automaticKeys.remove(key) }
+        let wasPolling = phase == .translating || isSettling
+        if wasPolling, let key { automaticKeys.remove(key) }
+        stopTask()
+        if wasPolling { phase = .idle }
+    }
+
+    /// End the current run's task without touching its phase or keys.
+    private func stopTask() {
         activeRunID = nil
         task?.cancel()
         task = nil
-        if phase == .translating { phase = .idle }
     }
 
     /// Forget every run and latch: the account, profile or metadata language
@@ -123,6 +152,9 @@ final class DescriptionTranslationCoordinator {
         phase = .idle
     }
 
+    /// The run behind ``translate(_:fetch:apply:)``: capture the owner, POST
+    /// the job, then re-read on `schedule` until the text arrives. At the cap
+    /// it reports `.failed` and keeps re-reading on `settleSchedule`.
     private func run<Value>(
         _ key: Key,
         runID: UUID,
@@ -180,8 +212,21 @@ final class DescriptionTranslationCoordinator {
             }
         }
 
-        // Cap hit without the pending language clearing.
+        // Cap hit without the pending language clearing: stop showing the
+        // status, but keep re-reading slowly so a job that finishes later
+        // still reaches the page.
         fail(runID)
+        guard isCurrentRun(runID) else { return }
+        settlingRunID = runID
+        for delay in settleSchedule {
+            guard isCurrentRun(runID) else { return }
+            try? await sleep(delay)
+            guard let done = await readOnce(runID: runID, auth: auth, fetch: fetch, apply: apply) else { return }
+            if done {
+                phase = .idle
+                return
+            }
+        }
     }
 
     /// One read and publish for the run's owner. Nil when the run ended
