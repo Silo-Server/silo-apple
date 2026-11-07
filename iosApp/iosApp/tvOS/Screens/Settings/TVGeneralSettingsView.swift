@@ -265,7 +265,7 @@ struct TVGeneralSettingsPane: View {
     private var posterSizeRow: some View {
         let row = TVSettingsPickerRow(
             title: .settingsCardsPosterSize,
-            value: .verbatim(preferences.cardPresentation.posterSize.title)
+            value: preferences.cardPresentation.posterSize.title
         ) { activePicker = .posterSize }
 
         if preferences.cardPresentationUsesDeviceOverride || !preferences.allowsEditing {
@@ -307,7 +307,7 @@ struct TVGeneralSettingsPane: View {
             TVSettingsPickerSheet(
                 title: .settingsCardsPosterSize,
                 options: CardPosterSize.allCases.map {
-                    TVSettingsOption(id: $0.rawValue, label: .verbatim($0.title))
+                    TVSettingsOption(id: $0.rawValue, label: $0.title)
                 },
                 selection: Binding(
                     get: { preferences.cardPresentation.posterSize.rawValue },

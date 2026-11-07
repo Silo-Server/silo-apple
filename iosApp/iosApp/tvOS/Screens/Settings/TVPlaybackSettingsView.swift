@@ -74,7 +74,7 @@ struct TVPlaybackSettingsPane: View {
 
         TVSettingsPickerRow(
             title: .settingsControlBitrate,
-            value: .verbatim(viewModel.maxBitrateLabel)
+            value: viewModel.maxBitrateLabel
         ) { showPicker(.maxBitrate) }
         .focused(detailFocus, equals: .playbackMaxBitrate)
 

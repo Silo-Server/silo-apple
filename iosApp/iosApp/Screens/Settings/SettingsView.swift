@@ -162,7 +162,7 @@ struct SettingsView: View {
                     title: .settingsInterfaceTitle,
                     systemImage: "rectangle.3.group.fill",
                     color: .indigo,
-                    value: .verbatim(uiCustomization.cardPresentation.posterSize.title)
+                    value: uiCustomization.cardPresentation.posterSize.title
                 )
             }
 

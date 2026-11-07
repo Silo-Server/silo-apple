@@ -69,7 +69,7 @@ struct PlaybackSettingsView: View {
         Section {
             choiceRow(.settingsControlResolution, .resolution, value: .verbatim(viewModel.qualityResolutionLabel), options: resolutionChoices)
 
-            choiceRow(.settingsControlBitrate, .maxBitrate, value: .verbatim(viewModel.maxBitrateLabel), options: maxBitrateChoices)
+            choiceRow(.settingsControlBitrate, .maxBitrate, value: viewModel.maxBitrateLabel, options: maxBitrateChoices)
 
             // Three-way (labels fixed by the contract).
             if viewModel.showsBufferingQualityMode {
@@ -363,9 +363,9 @@ struct PlaybackSettingsView: View {
     }
 
     private var maxBitrateChoices: [SettingsChoice] {
-        [SettingsChoice(id: SettingsViewModel.noBitrateLimitTag, label: .verbatim(SiloQualityPresets.noBitrateLimitLabel))]
+        [SettingsChoice(id: SettingsViewModel.noBitrateLimitTag, label: SiloQualityPresets.noBitrateLimitLabel)]
             + viewModel.maxBitrateChoicesKbps.map {
-                SettingsChoice(id: String($0), label: .verbatim(SiloQualityPresets.bitrateLabel($0)))
+                SettingsChoice(id: String($0), label: SiloQualityPresets.bitrateLabel($0))
             }
     }
 

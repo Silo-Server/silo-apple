@@ -115,7 +115,7 @@ struct IOSSettingsOverview: View {
                             title: .settingsInterfaceTitle,
                             subtitle: .settingsOverviewInterfaceSubtitle,
                             systemImage: "rectangle.3.group.fill",
-                            value: .verbatim(uiCustomization.cardPresentation.posterSize.title)
+                            value: uiCustomization.cardPresentation.posterSize.title
                         )
                     }
                 }

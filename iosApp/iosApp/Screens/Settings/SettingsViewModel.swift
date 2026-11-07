@@ -44,7 +44,7 @@ final class SettingsViewModel {
     }
 
     /// The Maximum Bitrate picker's value.
-    var maxBitrateLabel: String {
+    var maxBitrateLabel: LocalizedStringResource {
         SiloQualityPresets.bitrateLabel(PlayerSettings.shared.maxBitrateKbps)
     }
 
