@@ -40,6 +40,8 @@ final class TrackpadScrubCaptureView: NSView {
 
     private var monitor: Any?
     private var consumesMomentum = false
+    /// The current swipe has scrubbed, so its remaining events are consumed.
+    private var ownsSwipe = false
 
     /// Hosts the monitor only; never takes a click.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -72,7 +74,7 @@ final class TrackpadScrubCaptureView: NSView {
         monitor = nil
     }
 
-    /// Feeds one scroll event to the scrub. Returns whether the scrub owns it.
+    /// Feeds one scroll event to the scrub. Returns whether the swipe owns it.
     private func consumes(_ event: NSEvent) -> Bool {
         guard event.window === window, event.hasPreciseScrollingDeltas, let viewModel else { return false }
         if !event.momentumPhase.isEmpty { return consumesMomentum }
@@ -80,6 +82,7 @@ final class TrackpadScrubCaptureView: NSView {
         let delta = CGSize(width: event.scrollingDeltaX, height: event.scrollingDeltaY)
         if event.phase.contains(.began) {
             consumesMomentum = false
+            ownsSwipe = false
             guard isEnabled, bounds.contains(convert(event.locationInWindow, from: nil)) else {
                 viewModel.trackpadScrubEnded(committing: false)
                 return false
@@ -87,18 +90,22 @@ final class TrackpadScrubCaptureView: NSView {
             viewModel.trackpadScrubBegan()
             viewModel.trackpadScrubMoved(by: delta)
         } else if event.phase.contains(.changed) {
-            guard isEnabled else {
+            if isEnabled {
+                viewModel.trackpadScrubMoved(by: delta)
+            } else {
                 viewModel.trackpadScrubEnded(committing: false)
-                return false
             }
-            viewModel.trackpadScrubMoved(by: delta)
         } else if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-            let owned = viewModel.isTrackpadScrubbing
+            let owned = ownsSwipe || viewModel.isTrackpadScrubbing
             viewModel.trackpadScrubEnded(committing: isEnabled && event.phase.contains(.ended))
             consumesMomentum = owned
+            ownsSwipe = false
             return owned
         }
-        return viewModel.isTrackpadScrubbing
+        // A swipe that scrubbed keeps its events until the fingers lift, even
+        // after its scrub ends, so nothing else under the pointer scrolls.
+        ownsSwipe = ownsSwipe || viewModel.isTrackpadScrubbing
+        return ownsSwipe
     }
 }
 #endif
