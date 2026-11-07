@@ -45,6 +45,6 @@ extension Season {
         if isSpecials == true || seasonNumber == 0 {
             return title ?? AppLanguage.string(.detailSpecials, locale: locale)
         }
-        return AppLanguage.string(.detailSeason(String(seasonNumber)), locale: locale)
+        return AppLanguage.string(.detailSeason(LocaleFormat.integer(seasonNumber, locale: locale)), locale: locale)
     }
 }

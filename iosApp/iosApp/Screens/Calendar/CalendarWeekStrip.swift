@@ -276,15 +276,15 @@ private struct CalendarRichDayCell: View {
     }
 
     private var weekdayLabel: String {
-        date.formatted(.dateTime.weekday(.abbreviated))
+        date.formatted(.dateTime.weekday(.abbreviated).locale(locale))
     }
 
     private var dayNumber: String {
-        date.formatted(.dateTime.day())
+        date.formatted(.dateTime.day().locale(locale))
     }
 
     private var accessibilityDescription: String {
-        let base = date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        let base = date.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(locale))
         guard eventCount > 0 else { return base }
         return AppLanguage.string(.calendarDayEventCount(eventCount, base), locale: locale)
     }
@@ -342,15 +342,15 @@ private struct CalendarDayButton: View {
     }
 
     private var weekdayLabel: String {
-        date.formatted(.dateTime.weekday(.abbreviated))
+        date.formatted(.dateTime.weekday(.abbreviated).locale(locale))
     }
 
     private var dayNumber: String {
-        date.formatted(.dateTime.day())
+        date.formatted(.dateTime.day().locale(locale))
     }
 
     private var accessibilityDescription: String {
-        let day = date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        let day = date.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(locale))
         return hasEvents ? AppLanguage.string(.calendarDayHasEvents(day), locale: locale) : day
     }
 

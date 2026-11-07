@@ -9,7 +9,7 @@ func libraryCollectionAccessibilityLabel(
         ? AppLanguage.string(.collectionsUserCollection, locale: locale)
         : collection.collectionType?.capitalized ?? AppLanguage.string(.collectionsCollection, locale: locale)
     let count = if let itemCount = collection.itemCount {
-        AppLanguage.string(.collectionsItemCount(count: itemCount, String(itemCount)), locale: locale)
+        AppLanguage.string(.collectionsItemCount(count: itemCount, LocaleFormat.integer(itemCount, locale: locale)), locale: locale)
     } else {
         AppLanguage.string(.collectionsTypeSmart, locale: locale)
     }
@@ -241,7 +241,7 @@ struct CollectionsView: View {
         let kind = collection.collectionType?.capitalized
             ?? AppLanguage.string(.collectionsTypeCustom, locale: locale)
         if let count = collection.itemCount, count > 0 {
-            return AppLanguage.string(.collectionsRowKindCount(count: count, String(count), kind), locale: locale)
+            return AppLanguage.string(.collectionsRowKindCount(count: count, LocaleFormat.integer(count, locale: locale), kind), locale: locale)
         }
         return kind
     }
@@ -851,10 +851,10 @@ struct LibraryCollectionDetailView: View {
 
     private var countLabel: LocalizedStringResource {
         if viewModel.hasMore {
-            return .collectionsItemCountMore(count: viewModel.items.count, String(viewModel.items.count))
+            return .collectionsItemCountMore(count: viewModel.items.count, LocaleFormat.integer(viewModel.items.count))
         }
         let count = viewModel.totalItems ?? viewModel.items.count
-        return .collectionsItemCount(count: count, String(count))
+        return .collectionsItemCount(count: count, LocaleFormat.integer(count))
     }
 
     private func loadMoreIfNeeded() async {

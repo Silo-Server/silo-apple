@@ -74,7 +74,7 @@ final class CalendarViewModel {
         let calendar = Calendar.current
         if calendar.isDateInToday(date) { return AppLanguage.string(.calendarToday, locale: locale) }
         if calendar.isDateInTomorrow(date) { return AppLanguage.string(.calendarTomorrow, locale: locale) }
-        return date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        return date.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(locale))
     }
 
     // MARK: - Actions

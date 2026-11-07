@@ -696,7 +696,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
 
     private var episodeCountSubtitle: String? {
         guard let count = selectedSeason?.episodeCount, count > 0 else { return nil }
-        return AppLanguage.string(.detailEpisodeCount(count: count, String(count)), locale: locale)
+        return AppLanguage.string(.detailEpisodeCount(count: count, LocaleFormat.integer(count, locale: locale)), locale: locale)
     }
 
     // MARK: - Cast

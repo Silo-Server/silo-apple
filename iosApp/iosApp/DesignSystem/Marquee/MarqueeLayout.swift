@@ -149,7 +149,8 @@ struct MarqueeStage<TopBar: View, Content: View>: View {
 // MARK: - Swipe back
 
 extension View {
-    /// Swipe right from anywhere on the page to go back, alongside the back
+    /// Swipe right (left in a right-to-left language) from anywhere on the
+    /// page to go back, alongside the back
     /// button. The page follows the finger and either slides away or springs
     /// back. A horizontal drag is needed to start, so vertical scrolling,
     /// taps and text editing are unaffected. VoiceOver's escape gesture

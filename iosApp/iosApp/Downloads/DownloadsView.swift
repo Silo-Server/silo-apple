@@ -54,7 +54,7 @@ struct DownloadsView: View {
         #else
         .background(Color.siloBackground.ignoresSafeArea())
         #endif
-        .navigationTitle(isSelecting ? Text(.downloadsSelectCount(count: selectedCount, String(selectedCount))) : Text(.tabDownloads))
+        .navigationTitle(isSelecting ? Text(.downloadsSelectCount(count: selectedCount, LocaleFormat.integer(selectedCount))) : Text(.tabDownloads))
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
@@ -80,9 +80,9 @@ struct DownloadsView: View {
                 if pending.endsSelection { exitSelectMode() }
             } label: {
                 if pending.inProgressOnly {
-                    Text(.downloadsManagerCancelConfirm(count: pending.count, String(pending.count)))
+                    Text(.downloadsManagerCancelConfirm(count: pending.count, LocaleFormat.integer(pending.count)))
                 } else {
-                    Text(.downloadsBulkConfirm(count: pending.count, String(pending.count)))
+                    Text(.downloadsBulkConfirm(count: pending.count, LocaleFormat.integer(pending.count)))
                 }
             }
             Button(role: .cancel) {} label: { Text(.downloadsManagerKeep) }
@@ -439,11 +439,11 @@ struct DownloadsView: View {
 
     private var bottomBarTitle: LocalizedStringResource {
         if selection.isEmpty {
-            return .downloadsManagerCancelCount(count: selectedCount, String(selectedCount))
+            return .downloadsManagerCancelCount(count: selectedCount, LocaleFormat.integer(selectedCount))
         }
         let partialBytes = liveActiveSelection
             .reduce(Int64(0)) { $0 + (manager.record(id: $1)?.bytesDownloaded ?? 0) }
-        return .downloadsBulkDeleteButton(String(selectedCount), DownloadFormatting.bytes(selectedBytes + partialBytes))
+        return .downloadsBulkDeleteButton(LocaleFormat.integer(selectedCount), DownloadFormatting.bytes(selectedBytes + partialBytes))
     }
 
     private var selectedItems: [DownloadListItem] {
@@ -488,7 +488,7 @@ struct DownloadsView: View {
 enum DownloadFormatting {
     static func bytes(_ count: Int64) -> String {
         guard count > 0 else { return "—" }
-        return ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
+        return LocaleFormat.bytes(count)
     }
 }
 #endif

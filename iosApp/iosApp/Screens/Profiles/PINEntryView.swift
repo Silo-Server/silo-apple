@@ -176,7 +176,7 @@ struct PINEntryView: View {
             }
         }
         .modifier(MarqueeShake(trigger: errorCount))
-        .accessibilityLabel(.pinProgressDigits("\(pin.count)", maxDigits))
+        .accessibilityLabel(.pinProgressDigits(LocaleFormat.integer(pin.count), maxDigits))
     }
 
     private var dotColor: Color {

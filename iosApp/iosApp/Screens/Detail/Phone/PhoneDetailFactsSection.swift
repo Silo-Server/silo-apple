@@ -172,7 +172,7 @@ struct DetailFacts {
             tokens.append(container.uppercased())
         }
         if parts.count > 1 {
-            tokens.append(AppLanguage.string(.detailAudiobookPartCount(count: parts.count, String(parts.count)), locale: locale))
+            tokens.append(AppLanguage.string(.detailAudiobookPartCount(count: parts.count, LocaleFormat.integer(parts.count, locale: locale)), locale: locale))
         }
         return tokens.isEmpty ? nil : tokens.joined(separator: " · ")
     }

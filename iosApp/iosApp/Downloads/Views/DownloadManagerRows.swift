@@ -146,7 +146,7 @@ struct DownloadActiveRow: View {
     private var waitText: String? { wait?.label }
 
     private var percentText: String {
-        "\(Int((record.progressFraction * 100).rounded()))%"
+        LocaleFormat.percent(Int((record.progressFraction * 100).rounded()))
     }
 
     private var sizeText: String {
@@ -505,17 +505,17 @@ struct DownloadSeriesRow: View {
         if seasons > 1 {
             seasonPart = LocalizedStringResource.downloadsSeriesRowSeasons(seasons)
         } else if let first = group.seasons.first {
-            seasonPart = first.isSpecials ? LocalizedStringResource.detailSpecials : .downloadsEntrySeason(String(first.seasonNumber))
+            seasonPart = first.isSpecials ? LocalizedStringResource.detailSpecials : .downloadsEntrySeason(LocaleFormat.integer(first.seasonNumber))
         } else {
             seasonPart = nil
         }
-        var parts = [text(.downloadsSeriesRowEpisodes(count: group.episodeCount, String(group.episodeCount)))]
+        var parts = [text(.downloadsSeriesRowEpisodes(count: group.episodeCount, LocaleFormat.integer(group.episodeCount)))]
         if let seasonPart { parts.append(text(seasonPart)) }
         parts.append(DownloadFormatting.bytes(group.totalBytes))
         if group.allWatched {
             parts.append(text(.downloadsSeriesRowAllWatched))
         } else if group.watchedCount > 0 {
-            parts.append(text(.downloadsSeriesRowWatchedCount(count: group.watchedCount, String(group.watchedCount))))
+            parts.append(text(.downloadsSeriesRowWatchedCount(count: group.watchedCount, LocaleFormat.integer(group.watchedCount))))
         }
         return parts.joined(separator: " · ")
     }
@@ -526,11 +526,11 @@ struct DownloadSeriesRow: View {
 
     private func seasonHeader(_ season: DownloadSeasonGroup) -> some View {
         HStack {
-            Text(season.isSpecials ? .detailSpecials : LocalizedStringResource.downloadsEntrySeason(String(season.seasonNumber)))
+            Text(season.isSpecials ? .detailSpecials : LocalizedStringResource.downloadsEntrySeason(LocaleFormat.integer(season.seasonNumber)))
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundColor(.siloOnSurface)
             Spacer()
-            Text(.downloadsSeriesRowSeasonEpisodes(count: season.episodeCount, String(season.episodeCount), DownloadFormatting.bytes(season.totalBytes)))
+            Text(.downloadsSeriesRowSeasonEpisodes(count: season.episodeCount, LocaleFormat.integer(season.episodeCount), DownloadFormatting.bytes(season.totalBytes)))
                 .font(.system(size: 11.5))
                 .foregroundColor(.siloSecondaryText)
         }

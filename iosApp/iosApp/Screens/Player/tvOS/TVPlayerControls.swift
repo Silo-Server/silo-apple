@@ -680,7 +680,7 @@ private struct TVPlayerTimeRow: View {
     }
 
     private func formatClockTime(_ date: Date) -> String {
-        date.formatted(date: .omitted, time: .shortened)
+        date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: AppLanguage.formattingLocale))
     }
 }
 

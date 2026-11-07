@@ -439,7 +439,7 @@ struct DownloadActionButton: View {
                 .font(.system(size: 8, weight: .bold))
                 .foregroundColor(.white)
         } else {
-            Text(verbatim: "\(progressPercent(fraction))")
+            Text(verbatim: LocaleFormat.integer(progressPercent(fraction)))
                 .font(.system(size: 8, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .foregroundColor(.white)
@@ -447,7 +447,7 @@ struct DownloadActionButton: View {
     }
 
     private func progressAccessibilityValue(_ record: DownloadRecord?) -> Text {
-        Text(.downloadsActionProgressValue("\(progressPercent(record?.progressFraction ?? 0))"))
+        Text(.downloadsActionProgressValue(LocaleFormat.integer(progressPercent(record?.progressFraction ?? 0))))
     }
 
     private func progressPercent(_ fraction: Double) -> Int {

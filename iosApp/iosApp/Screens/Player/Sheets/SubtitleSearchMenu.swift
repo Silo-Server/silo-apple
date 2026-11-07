@@ -276,7 +276,7 @@ struct SubtitleSearchMenu: View {
         }
         if result.downloads > 0 {
             parts.append(AppLanguage.string(
-                .subtitleSearchDownloadCount(count: result.downloads, String(result.downloads)), locale: locale))
+                .subtitleSearchDownloadCount(count: result.downloads, LocaleFormat.integer(result.downloads, locale: locale)), locale: locale))
         }
         if result.hearingImpaired {
             parts.append(AppLanguage.string(.subtitleSearchHearingImpaired, locale: locale))
@@ -768,7 +768,7 @@ struct SubtitleSearchMenu: View {
     /// Rounded score chip, tier-colored (≥70 green / ≥40 amber / else red).
     @ViewBuilder
     private func scoreBadge(_ score: Double, fontSize: CGFloat) -> some View {
-        Text(verbatim: "\(Int(score.rounded()))")
+        Text(verbatim: LocaleFormat.integer(Int(score.rounded())))
             .font(.system(size: fontSize, weight: .bold, design: .rounded))
             .foregroundStyle(.white)
             .padding(.horizontal, 8)
@@ -828,30 +828,33 @@ struct SubtitleLanguageChoices {
 
     /// Blank codes and codes naming an already-listed language are skipped,
     /// and the full list leaves out any suggested language.
-    init(preferred: String?, original: String? = nil) {
+    init(preferred: String?, original: String? = nil, locale: Locale = AppLanguage.formattingLocale) {
         var seen = Set<String>()
         var suggested: [Choice] = []
         for (rawCode, hint) in [(preferred, Hint.preferred), (original, Hint.original)] {
             guard let code = rawCode?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !code.isEmpty,
                   seen.insert(PlaybackLanguageOption.languageIdentity(code)).inserted else { continue }
-            suggested.append(Choice(code: code, label: Self.displayName(code), hint: hint))
+            suggested.append(Choice(code: code, label: Self.displayName(code, locale: locale), hint: hint))
         }
         self.suggested = suggested
-        self.other = Self.sortedCatalog
+        self.other = Self.sortedCatalog(locale: locale)
             .filter { !seen.contains($0.identity) }
             .map { $0.choice }
     }
 
-    /// Display name for a language code, preferring the catalog label.
-    static func displayName(_ code: String) -> String {
-        catalogLabels[code.lowercased()]
-            ?? englishLocale.localizedString(forLanguageCode: code)?.capitalized
+    /// Display name for a language code in the app's language, preferring
+    /// the catalog label.
+    static func displayName(_ code: String, locale: Locale = AppLanguage.formattingLocale) -> String {
+        if catalogCodes.contains(code.lowercased()) {
+            return PlaybackLanguageOption.label(forCode: code, locale: locale)
+        }
+        return locale.localizedString(forLanguageCode: code).map { LocaleFormat.capitalizedName($0, locale: locale) }
             ?? code.uppercased()
     }
 
     /// The first catalog language in catalog (not display) order.
-    static var firstCatalogCode: String? { catalog.first?.choice.code }
+    static var firstCatalogCode: String? { catalog.first?.code }
 
     #if os(tvOS)
     /// Centers `target` in the list, animated unless the list is appearing.
@@ -869,33 +872,33 @@ struct SubtitleLanguageChoices {
 
     private typealias Entry = (identity: String, choice: Choice)
 
-    private static let englishLocale = Locale(identifier: "en")
-
-    private static let catalogLabels: [String: String] = Dictionary(
-        PlaybackLanguageOption.all.map { ($0.code.lowercased(), $0.label) },
-        uniquingKeysWith: { first, _ in first }
-    )
-
-    /// The catalog, deduped by language identity. Built once because
-    /// `PlaybackLanguageOption.all` is fixed for the process.
-    private static let catalog: [Entry] = {
+    /// The catalog's codes, deduped by language identity. Built once: the
+    /// codes don't depend on the language; their labels do.
+    private static let catalog: [(identity: String, code: String)] = {
         var seen = Set<String>()
-        var entries: [Entry] = []
+        var entries: [(identity: String, code: String)] = []
         for option in PlaybackLanguageOption.all {
             let code = option.code.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !code.isEmpty else { continue }
             let identity = PlaybackLanguageOption.languageIdentity(code)
             guard seen.insert(identity).inserted else { continue }
-            entries.append((
-                identity: identity,
-                choice: Choice(code: code, label: SubtitleLanguageChoices.displayName(code), hint: nil)
-            ))
+            entries.append((identity: identity, code: code))
         }
         return entries
     }()
 
-    private static let sortedCatalog: [Entry] = catalog.sorted {
-        $0.choice.label.localizedCaseInsensitiveCompare($1.choice.label) == .orderedAscending
+    private static let catalogCodes = Set(PlaybackLanguageOption.all.map { $0.code.lowercased() })
+
+    /// The catalog labelled in `locale`'s language, sorted by label. Kept
+    /// per language: menus rebuild their choices on every render.
+    private static func sortedCatalog(locale: Locale) -> [Entry] {
+        sortedCatalogs.value(for: locale.identifier) {
+            catalog
+                .map { (identity: $0.identity, choice: Choice(code: $0.code, label: displayName($0.code, locale: locale), hint: nil)) }
+                .sorted { $0.choice.label.compare($1.choice.label, options: .caseInsensitive, locale: locale) == .orderedAscending }
+        }
     }
+
+    private static let sortedCatalogs = LocaleKeyedCache<[Entry]>()
 }
 #endif

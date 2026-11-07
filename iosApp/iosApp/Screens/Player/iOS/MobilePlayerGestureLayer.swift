@@ -393,8 +393,8 @@ struct MobilePlayerGestureLayer: View {
             ))
                 .font(.system(size: 26, weight: .semibold))
             Text(flash.forward
-                 ? LocalizedStringResource.playerGesturesSkipFlashForward(String(flash.seconds))
-                 : .playerGesturesSkipFlashBack(String(flash.seconds)))
+                 ? LocalizedStringResource.playerGesturesSkipFlashForward(LocaleFormat.integer(flash.seconds))
+                 : .playerGesturesSkipFlashBack(LocaleFormat.integer(flash.seconds)))
                 .font(.system(size: 11, weight: .bold))
         }
         .foregroundStyle(.white)
@@ -444,7 +444,7 @@ struct MobilePlayerGestureLayer: View {
                 // The speaker's waves make it wider than the sun.
                 .frame(width: adjustment == .volume ? 30 : 24, height: 24)
                 .contentTransition(.symbolEffect(.replace))
-            Text(verbatim: "\(Int((fraction * 100).rounded()))%")
+            Text(verbatim: LocaleFormat.percent(Int((fraction * 100).rounded())))
                 .font(.system(size: 17, weight: .medium))
                 .monospacedDigit()
                 .frame(minWidth: 44, alignment: .leading)

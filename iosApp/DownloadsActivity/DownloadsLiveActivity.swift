@@ -148,8 +148,13 @@ private extension View {
 }
 
 private extension DownloadActivityAttributes.ContentState {
+    /// Numbers in the language the text below shows (``appLanguage(_:)``).
+    var numberLocale: Locale {
+        (formatLocale ?? language).map { Locale(identifier: $0) } ?? .current
+    }
+
     var percentText: String {
-        fraction.formatted(.percent.precision(.fractionLength(0)))
+        fraction.formatted(.percent.precision(.fractionLength(0)).locale(numberLocale))
     }
 
     /// Secondary line under the title: item context plus queue position,
@@ -158,8 +163,8 @@ private extension DownloadActivityAttributes.ContentState {
         guard totalCount > 1, phase != .completed else {
             return subtitle.map { Text(verbatim: $0) }
         }
-        let current = "\(min(completedCount + 1, totalCount))"
-        let total = "\(totalCount)"
+        let current = (min(completedCount + 1, totalCount)).formatted(.number.grouping(.never).locale(numberLocale))
+        let total = totalCount.formatted(.number.grouping(.never).locale(numberLocale))
         guard let subtitle else { return Text(.downloadsActivityPosition(current, total)) }
         return Text(.downloadsActivityContextPosition(subtitle, current, total))
     }
@@ -178,12 +183,12 @@ private extension DownloadActivityAttributes.ContentState {
             // live-looking counter.
             if isStale { return Text(.downloadsActivityContinuingInBackground) }
             guard bytesExpected > 0 else { return Text(.downloadsActivityDownloading) }
-            let downloaded = bytesDownloaded.formatted(.byteCount(style: .file))
-            let expected = bytesExpected.formatted(.byteCount(style: .file))
+            let downloaded = bytesDownloaded.formatted(.byteCount(style: .file).locale(numberLocale))
+            let expected = bytesExpected.formatted(.byteCount(style: .file).locale(numberLocale))
             guard let bytesPerSecond, bytesPerSecond > 0 else {
                 return Text(.downloadsActivityBytes(downloaded, expected))
             }
-            let rate = Int64(bytesPerSecond).formatted(.byteCount(style: .file)) + "/s"
+            let rate = Int64(bytesPerSecond).formatted(.byteCount(style: .file).locale(numberLocale)) + "/s"
             return Text(.downloadsActivityBytesRate(downloaded, expected, rate))
         }
     }

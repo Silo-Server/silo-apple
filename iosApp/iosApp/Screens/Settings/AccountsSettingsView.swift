@@ -156,7 +156,7 @@ private struct AccountRow: View {
         if account.needsSignIn { resources.append(.accountsBadgeSignInAgain) }
         if let profiles = ChangeAccountList.profileCount(account.cachedProfiles.count) { resources.append(profiles) }
         if let count = downloads?.count, count > 0 {
-            resources.append(.accountsDownloadCount(count: count, String(count)))
+            resources.append(.accountsDownloadCount(count: count, LocaleFormat.integer(count)))
         }
         let parts = resources.map { AppLanguage.string($0, locale: locale) }
         return parts.isEmpty ? " " : parts.joined(separator: " · ")
@@ -237,8 +237,8 @@ private struct AccountDetailView: View {
 
     private var downloadsText: LocalizedStringResource {
         guard let summary = downloads[localAccountId], summary.count > 0 else { return .accountDownloadsNone }
-        let size = ByteCountFormatter.string(fromByteCount: summary.bytes, countStyle: .file)
-        return .verbatim("\(summary.count) · \(size)")
+        let size = LocaleFormat.bytes(summary.bytes)
+        return .verbatim("\(LocaleFormat.integer(summary.count)) · \(size)")
     }
 }
 #endif

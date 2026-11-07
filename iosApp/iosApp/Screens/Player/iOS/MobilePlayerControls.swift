@@ -961,7 +961,7 @@ private struct MobilePlayerTimeline: View {
     private func chapterTitle(at time: Double) -> String? {
         guard let chapter = viewModel.chapters.last(where: { $0.time <= time }) else { return nil }
         return chapter.title
-            ?? AppLanguage.string(.optionsChapterNumbered(String(chapter.index + 1)), locale: locale)
+            ?? AppLanguage.string(.optionsChapterNumbered(LocaleFormat.integer(chapter.index + 1, locale: locale)), locale: locale)
     }
 
     @ViewBuilder

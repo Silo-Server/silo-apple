@@ -298,20 +298,15 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    private static let english = Locale(identifier: "en")
-
-    /// English display name for a language tag, matching web's
-    /// `formatLanguage` (English CLDR names, so "en" → "English" not
-    /// "EN"). A tag CLDR can't name falls back to the uppercased code
-    /// rather than web's "Unknown language (…)" sentence, which doesn't
-    /// fit a badge.
+    /// Display name for a language tag in the app's language, matching
+    /// web's `formatLanguage` (CLDR names, so "en" → "English" not "EN").
+    /// A tag CLDR can't name falls back to the uppercased code rather than
+    /// web's "Unknown language (…)" sentence, which doesn't fit a badge.
     static func formatLanguageName(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let name = english.localizedString(forIdentifier: trimmed)
-            ?? english.localizedString(forLanguageCode: trimmed)
-        return name?.capitalized ?? trimmed.uppercased()
+        return LocaleFormat.languageName(trimmed) ?? trimmed.uppercased()
     }
 
     static let metadata: [OverlayDef] = [

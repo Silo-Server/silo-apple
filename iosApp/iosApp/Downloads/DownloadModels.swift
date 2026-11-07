@@ -125,7 +125,7 @@ struct DownloadPreparation: Codable, Hashable, Sendable {
                 return AppLanguage.string(.downloadsPreparationWaiting)
             }
             if position == 1 { return AppLanguage.string(.downloadsPreparationNextInLine) }
-            let ordinal = Self.ordinalFormatter.string(from: NSNumber(value: position)) ?? "#\(position)"
+            let ordinal = LocaleFormat.ordinal(position)
             return AppLanguage.string(.downloadsPreparationInLine(ordinal))
         case "retrying":
             return AppLanguage.string(.downloadsPreparationRetrying)
@@ -133,27 +133,21 @@ struct DownloadPreparation: Codable, Hashable, Sendable {
             return AppLanguage.string(.downloadsPreparationPausedOnServer)
         default:
             guard let progress else { return AppLanguage.string(.downloadsStatusPreparingOnServer) }
-            let percent = "\(Int((progress * 100).rounded(.down)))"
+            let percent = LocaleFormat.integer(Int((progress * 100).rounded(.down)))
             guard let remainingSeconds else { return AppLanguage.string(.downloadsPreparationProgress(percent)) }
             return AppLanguage.string(.downloadsPreparationProgressTimeLeft(percent, Self.timeLeft(remainingSeconds)))
         }
     }
 
-    private static let ordinalFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .ordinal
-        return formatter
-    }()
-
     /// "under a minute left", "6 min left", "1 hr 5 min left".
     static func timeLeft(_ seconds: Int) -> String {
         if seconds < 60 { return AppLanguage.string(.downloadsPreparationUnderAMinuteLeft) }
         let minutes = (seconds + 59) / 60
-        if minutes < 60 { return AppLanguage.string(.downloadsPreparationMinutesLeft("\(minutes)")) }
+        if minutes < 60 { return AppLanguage.string(.downloadsPreparationMinutesLeft(LocaleFormat.integer(minutes))) }
         let rest = minutes % 60
         return rest == 0
-            ? AppLanguage.string(.downloadsPreparationHoursLeft("\(minutes / 60)"))
-            : AppLanguage.string(.downloadsPreparationHoursMinutesLeft("\(minutes / 60)", "\(rest)"))
+            ? AppLanguage.string(.downloadsPreparationHoursLeft(LocaleFormat.integer(minutes / 60)))
+            : AppLanguage.string(.downloadsPreparationHoursMinutesLeft(LocaleFormat.integer(minutes / 60), LocaleFormat.integer(rest)))
     }
 }
 

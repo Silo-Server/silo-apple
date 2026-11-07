@@ -142,7 +142,7 @@ enum AutoDownloadRules {
             return AppLanguage.string(.downloadsMonitorRuleFuture)
         case .latestSeason:
             guard let targetSeason else { return AppLanguage.string(.downloadsMonitorRuleLastSeason) }
-            return AppLanguage.string(.downloadsMonitorRuleLastSeasonFrom("\(targetSeason)"))
+            return AppLanguage.string(.downloadsMonitorRuleLastSeasonFrom(LocaleFormat.integer(targetSeason)))
         case .specificSeasons:
             return seasonList(seasonNumbers ?? [])
         }
@@ -166,9 +166,9 @@ enum AutoDownloadRules {
         let sorted = Array(Set(seasons)).sorted()
         switch sorted.count {
         case 0: return AppLanguage.string(.downloadsMonitorSeasonsNone)
-        case 1: return AppLanguage.string(.downloadsMonitorSeasonsSingle("\(sorted[0])"))
+        case 1: return AppLanguage.string(.downloadsMonitorSeasonsSingle(LocaleFormat.integer(sorted[0])))
         default:
-            let joined = ListFormatter.localizedString(byJoining: sorted.map(String.init))
+            let joined = sorted.map { LocaleFormat.integer($0) }.formatted(.list(type: .and).locale(AppLanguage.formattingLocale))
             return AppLanguage.string(.downloadsMonitorSeasonsList(joined))
         }
     }
@@ -185,11 +185,11 @@ enum AutoDownloadRules {
         case .storageLimit(let maxBytes):
             return AppLanguage.string(.downloadsMonitorStatusOutOfSpace(limitText(maxBytes)))
         case .downloading(let episode, let fraction):
-            let percent = "\(Int((fraction * 100).rounded()))"
+            let percent = LocaleFormat.integer(Int((fraction * 100).rounded()))
             guard let episode else {
                 return AppLanguage.string(.downloadsMonitorStatusDownloadingUnnamed(percent))
             }
-            return AppLanguage.string(.downloadsMonitorStatusDownloading("\(episode)", percent))
+            return AppLanguage.string(.downloadsMonitorStatusDownloading(LocaleFormat.integer(episode), percent))
         case .waiting(let episode, let phase):
             return waitingLine(episode: episode, phase: phase)
         case .next(let upcoming):
@@ -268,7 +268,7 @@ enum AutoDownloadRules {
         if days == 1 { return .tomorrow }
         // A format style, unlike a new DateFormatter per call, caches its
         // formatter; this runs in Downloads bodies.
-        let style = Date.FormatStyle(locale: calendar.locale ?? .current, calendar: calendar, timeZone: calendar.timeZone)
+        let style = Date.FormatStyle(locale: AppLanguage.formattingLocale, calendar: calendar, timeZone: calendar.timeZone)
         return .date(days < 7
             ? date.formatted(style.weekday(.wide))
             : date.formatted(style.month(.abbreviated).day()))
@@ -278,9 +278,9 @@ enum AutoDownloadRules {
     /// client set read as "1.5 GB" or "500 MB".
     static func limitText(_ maxBytes: Int64) -> String {
         if maxBytes > 0, maxBytes % DownloadSettings.bytesPerGB == 0 {
-            return "\(maxBytes / DownloadSettings.bytesPerGB) GB"
+            return "\(LocaleFormat.integer(maxBytes / DownloadSettings.bytesPerGB)) GB"
         }
-        return ByteCountFormatter.string(fromByteCount: maxBytes, countStyle: .binary)
+        return LocaleFormat.bytes(maxBytes, style: .binary)
     }
 
     private static func waitingLine(episode: Int?, phase: AutoDownloadActivity.Phase) -> String {

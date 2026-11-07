@@ -32,13 +32,10 @@ struct AudioFullPlayerView: View {
     }
 
     /// "1×", "1.25×", "0.75×": up to two decimals with trailing zeros dropped,
-    /// using "." in every locale. Shared by the rate menus on every platform.
-    static func rateLabel(_ rate: Double) -> String {
-        rate.formatted(
-            .number
-                .precision(.fractionLength(0...2))
-                .locale(Locale(identifier: "en_US_POSIX"))
-        ) + "×"
+    /// in the app's language ("1,25×" in German). Shared by the rate menus on
+    /// every platform.
+    static func rateLabel(_ rate: Double, locale: Locale = AppLanguage.formattingLocale) -> String {
+        LocaleFormat.rate(rate, locale: locale)
     }
 
     private func stop(player: AudioPlayerViewModel) {

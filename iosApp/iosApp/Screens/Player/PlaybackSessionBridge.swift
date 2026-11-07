@@ -31,11 +31,11 @@ struct PreparedPlayback {
             let episodeTag: String = {
                 switch (watchDetail.seasonNumber, watchDetail.episodeNumber) {
                 case let (season?, episode?):
-                    return AppLanguage.string(.catalogEpisodeTag(String(season), String(episode)))
+                    return AppLanguage.string(.catalogEpisodeTag(LocaleFormat.integer(season), LocaleFormat.integer(episode)))
                 case let (season?, nil):
-                    return AppLanguage.string(.calendarSeasonShort(String(season)))
+                    return AppLanguage.string(.calendarSeasonShort(LocaleFormat.integer(season)))
                 case let (nil, episode?):
-                    return AppLanguage.string(.calendarEpisodeShort(String(episode)))
+                    return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.integer(episode)))
                 case (nil, nil):
                     return ""
                 }
@@ -59,11 +59,11 @@ struct PreparedPlayback {
             guard isEpisode else { return nil }
             switch (watchDetail.seasonNumber, watchDetail.episodeNumber) {
             case let (season?, episode?):
-                return AppLanguage.string(.catalogEpisodeCaption(String(season), String(episode)))
+                return AppLanguage.string(.catalogEpisodeCaption(LocaleFormat.integer(season), LocaleFormat.integer(episode)))
             case let (season?, nil):
-                return AppLanguage.string(.calendarSeasonShort(String(season)))
+                return AppLanguage.string(.calendarSeasonShort(LocaleFormat.integer(season)))
             case let (nil, episode?):
-                return AppLanguage.string(.calendarEpisodeShort(String(episode)))
+                return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.integer(episode)))
             case (nil, nil):
                 return nil
             }

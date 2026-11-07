@@ -46,7 +46,7 @@ struct HoldSeekIndicator: View {
             Image(systemName: directionIcon)
                 .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(.white)
-            Text(verbatim: "\(abs(rate))×")
+            Text(verbatim: LocaleFormat.localized("\(abs(rate))") + "×")
                 .font(.system(size: 44, weight: .heavy, design: .rounded))
                 .foregroundStyle(.white)
                 .monospacedDigit()

@@ -663,7 +663,7 @@ enum TVHeroMetadata {
         let seasonPart: String?
         if let season = detail.seasonNumber {
             seasonPart = AppLanguage.string(
-                season == 0 ? .detailSpecials : .detailSeason(String(season)),
+                season == 0 ? .detailSpecials : .detailSeason(LocaleFormat.integer(season)),
                 locale: locale
             )
         } else {
@@ -672,9 +672,9 @@ enum TVHeroMetadata {
         let episode = detail.episodeNumber.flatMap { n in n > 0 ? n : nil }
 
         switch (seasonPart, episode) {
-        case let (.some(s), .some(e)): return AppLanguage.string(.detailEpisodeEyebrow(s, String(e)), locale: locale)
+        case let (.some(s), .some(e)): return AppLanguage.string(.detailEpisodeEyebrow(s, LocaleFormat.integer(e, locale: locale)), locale: locale)
         case let (.some(s), .none):    return s
-        case let (.none, .some(e)):    return AppLanguage.string(.detailEpisode(String(e)), locale: locale)
+        case let (.none, .some(e)):    return AppLanguage.string(.detailEpisode(LocaleFormat.integer(e, locale: locale)), locale: locale)
         case (.none, .none):           return nil
         }
     }

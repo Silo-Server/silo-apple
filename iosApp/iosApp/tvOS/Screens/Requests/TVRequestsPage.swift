@@ -407,7 +407,7 @@ struct TVRequestsPage: View {
         var rating: DisplayRating?
         switch item {
         case .record(let record):
-            meta.append(AppLanguage.string(.requestsRequestedOn(record.createdAt.formatted(.dateTime.month(.abbreviated).day()))))
+            meta.append(AppLanguage.string(.requestsRequestedOn(record.createdAt.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale)))))
             let recordProgress = RequestProgress(record: record)
             progress = recordProgress
             statusText = RequestRowCopy.status(record, progress: recordProgress)

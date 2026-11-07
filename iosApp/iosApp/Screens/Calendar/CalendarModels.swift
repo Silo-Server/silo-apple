@@ -89,10 +89,10 @@ struct CalendarEvent: Codable, Identifiable {
         switch type {
         case "episode":
             guard let season = seasonNumber, let episode = episodeNumber else { return nil }
-            return AppLanguage.string(.catalogEpisodeCaption(String(season), String(episode)), locale: locale)
+            return AppLanguage.string(.catalogEpisodeCaption(LocaleFormat.integer(season, locale: locale), LocaleFormat.integer(episode, locale: locale)), locale: locale)
         case "season_premiere":
             guard let season = seasonNumber else { return nil }
-            return AppLanguage.string(.calendarSeason(String(season)), locale: locale)
+            return AppLanguage.string(.calendarSeason(LocaleFormat.integer(season, locale: locale)), locale: locale)
         default:
             return nil
         }

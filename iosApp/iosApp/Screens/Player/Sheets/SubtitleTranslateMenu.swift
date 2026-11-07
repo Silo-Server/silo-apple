@@ -529,12 +529,12 @@ struct SubtitleTranslateMenu: View {
         if let limit = quota.limit {
             // The period is the server's own token, shown as sent.
             if let period = quota.period {
-                return .playerAiTranslateQuotaUsedPeriod(used, String(limit), period)
+                return .playerAiTranslateQuotaUsedPeriod(used, LocaleFormat.integer(limit), period)
             }
-            return .playerAiTranslateQuotaUsed(used, String(limit))
+            return .playerAiTranslateQuotaUsed(used, LocaleFormat.integer(limit))
         }
         if let remaining = quota.remaining {
-            return .playerAiTranslateQuotaRemaining(String(remaining))
+            return .playerAiTranslateQuotaRemaining(LocaleFormat.integer(remaining))
         }
         return nil
     }

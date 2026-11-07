@@ -342,7 +342,7 @@ struct RequestDetailView: View {
                 HStack(alignment: .top, spacing: 8) {
                     summaryField(.requestsStripStatus, value: progress.longLabel, tint: progress.tint)
                     if let record = viewModel.displayedRecord {
-                        summaryField(.requestsStripRequested, value: record.createdAt.formatted(.dateTime.month(.abbreviated).day()))
+                        summaryField(.requestsStripRequested, value: record.createdAt.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale)))
                         if let quality = RequestTargetSummary.text(for: record.targets)
                             ?? RequestTargetSummary.qualities(for: record.targets) {
                             summaryField(.requestsStripQuality, value: quality)
@@ -676,7 +676,7 @@ struct RequestStatusCard: View {
     }
 
     private static func timestamp(_ date: Date) -> String {
-        date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+        date.formatted(.dateTime.month(.abbreviated).day().hour().minute().locale(AppLanguage.formattingLocale))
     }
 }
 

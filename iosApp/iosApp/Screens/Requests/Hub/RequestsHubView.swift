@@ -113,7 +113,7 @@ private struct PhoneRequestsHubView: View {
             .padding(.top, 80)
         } else {
             VStack(alignment: .leading, spacing: SiloTheme.padding) {
-                Text(.requestsSearchResultCount(count: viewModel.searchTotal, "\(viewModel.searchTotal)"))
+                Text(.requestsSearchResultCount(count: viewModel.searchTotal, LocaleFormat.integer(viewModel.searchTotal)))
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
                 searchGrid(placeholderCount: 0)
@@ -141,20 +141,20 @@ private struct PhoneRequestsHubView: View {
     private var summaryTitle: String {
         let count = viewModel.statusCounts.inProgress
         if count == 0 { return AppLanguage.string(.requestsSummaryNeedYouTitle) }
-        return AppLanguage.string(.requestsSummaryInProgress(count: count, "\(count)"))
+        return AppLanguage.string(.requestsSummaryInProgress(count: count, LocaleFormat.integer(count)))
     }
 
     private var summaryParts: [(RequestStatusTint, String)] {
         let counts = viewModel.statusCounts
         var parts: [(RequestStatusTint, String)] = []
         if counts.onTheWay > 0 {
-            parts.append((.sky, AppLanguage.string(.requestsSummaryOnTheWay(count: counts.onTheWay, "\(counts.onTheWay)"))))
+            parts.append((.sky, AppLanguage.string(.requestsSummaryOnTheWay(count: counts.onTheWay, LocaleFormat.integer(counts.onTheWay)))))
         }
         if counts.pending > 0 {
-            parts.append((.amber, AppLanguage.string(.requestsSummaryPending(count: counts.pending, "\(counts.pending)"))))
+            parts.append((.amber, AppLanguage.string(.requestsSummaryPending(count: counts.pending, LocaleFormat.integer(counts.pending)))))
         }
         if counts.needsAttention > 0 {
-            parts.append((.rose, AppLanguage.string(.requestsSummaryNeedYou(count: counts.needsAttention, "\(counts.needsAttention)"))))
+            parts.append((.rose, AppLanguage.string(.requestsSummaryNeedYou(count: counts.needsAttention, LocaleFormat.integer(counts.needsAttention)))))
         }
         return parts
     }

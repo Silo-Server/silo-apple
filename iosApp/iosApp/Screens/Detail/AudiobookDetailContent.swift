@@ -282,7 +282,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                         HStack(spacing: 6) {
                             Text(showAllChapters
                                  ? LocalizedStringResource.detailAudiobookChaptersShowLess
-                                 : .detailAudiobookChaptersShowAll(count: chapters.count, String(chapters.count)))
+                                 : .detailAudiobookChaptersShowAll(count: chapters.count, LocaleFormat.integer(chapters.count)))
                             Image(systemName: showAllChapters ? "chevron.up" : "chevron.down")
                                 .font(.system(size: 12, weight: .semibold))
                         }
@@ -500,7 +500,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                 if let chapterTitle = chapter.title, !chapterTitle.isEmpty {
                     title = chapterTitle
                 } else {
-                    title = AppLanguage.string(.detailAudiobookChapter(String(chapter.index + 1)), locale: locale)
+                    title = AppLanguage.string(.detailAudiobookChapter(LocaleFormat.integer(chapter.index + 1, locale: locale)), locale: locale)
                 }
                 chapters.append(DisplayChapter(
                     id: "\(part.fileId)-\(chapter.index)-\(chapter.startSeconds)",
@@ -521,7 +521,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         }
         let rawIndex = part.presentationPartIndex ?? fallbackIndex
         let displayIndex = rawIndex <= 0 ? rawIndex + 1 : rawIndex
-        return AppLanguage.string(.detailAudiobookPart(String(displayIndex)), locale: locale)
+        return AppLanguage.string(.detailAudiobookPart(LocaleFormat.integer(displayIndex, locale: locale)), locale: locale)
     }
 
     private func partDuration(_ part: FileVersion) -> Double {
@@ -647,7 +647,7 @@ private struct AudiobookSpeedMenu: View {
         let value = rate.truncatingRemainder(dividingBy: 1) == 0
             ? String(Int(rate))
             : String(format: "%g", rate)
-        return "\(value)×"
+        return LocaleFormat.localized(value) + "×"
     }
 }
 

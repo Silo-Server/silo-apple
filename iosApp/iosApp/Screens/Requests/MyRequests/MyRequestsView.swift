@@ -95,7 +95,7 @@ private struct PhoneMyRequestsView: View {
                     .tag(MyRequestsBucket?.none)
                 ForEach(viewModel.buckets, id: \.bucket) { entry in
                     Label(
-                        .requestsFilterOption(AppLanguage.string(entry.bucket.title), "\(entry.requests.count)"),
+                        .requestsFilterOption(AppLanguage.string(entry.bucket.title), LocaleFormat.integer(entry.requests.count)),
                         systemImage: entry.bucket.systemImage
                     )
                         .tag(Optional(entry.bucket))
@@ -351,10 +351,10 @@ enum RequestRowCopy {
     static func meta(_ record: MediaRequest, progress: RequestProgress) -> String {
         let kind = record.mediaType.displayName
         if progress.display == .inLibrary, let completed = record.completedAt {
-            let added = AppLanguage.string(.requestsAddedOn(completed.formatted(.dateTime.month(.abbreviated).day())))
+            let added = AppLanguage.string(.requestsAddedOn(completed.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale))))
             return "\(kind) · \(added)"
         }
-        let requested = AppLanguage.string(.requestsRequestedOn(record.createdAt.formatted(.dateTime.month(.abbreviated).day())))
+        let requested = AppLanguage.string(.requestsRequestedOn(record.createdAt.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale))))
         return "\(kind) · \(requested)"
     }
 

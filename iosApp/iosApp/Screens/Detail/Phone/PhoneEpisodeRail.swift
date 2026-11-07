@@ -194,7 +194,7 @@ private struct PhoneEpisodeCard: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(
-                    Text(.detailPlaySeasonEpisode(String(episode.seasonNumber), String(episode.episodeNumber)))
+                    Text(.detailPlaySeasonEpisode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))
                 )
             }
         }

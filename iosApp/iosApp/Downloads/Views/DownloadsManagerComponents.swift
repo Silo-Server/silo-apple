@@ -96,7 +96,7 @@ struct DownloadSectionHeader: View {
             Text(title)
             Spacer()
             if let count {
-                Text(verbatim: "\(count)")
+                Text(verbatim: LocaleFormat.integer(count))
             }
         }
         .font(.subheadline.weight(.medium))
@@ -160,7 +160,7 @@ struct DownloadsStorageHeader: View {
     /// the session's staging area), so this line keeps the hero honest
     /// while something is downloading.
     private var inProgressLine: String {
-        var parts = [AppLanguage.string(.downloadsStorageInProgress(count: activeCount, String(activeCount)), locale: locale)]
+        var parts = [AppLanguage.string(.downloadsStorageInProgress(count: activeCount, LocaleFormat.integer(activeCount, locale: locale)), locale: locale)]
         if breakdown.inProgress > 0 {
             parts.append(AppLanguage.string(.downloadsStorageSoFar(DownloadFormatting.bytes(breakdown.inProgress)), locale: locale))
         }
@@ -236,7 +236,7 @@ struct DownloadReclaimBanner: View {
                 let amount = Text(.downloadsReclaimFreeUp(DownloadFormatting.bytes(bytes)))
                     .foregroundColor(.siloOnSurface)
                 let count = Text(verbatim: " · " + AppLanguage.string(
-                    .downloadsSeriesRowWatchedCount(count: episodeCount, String(episodeCount)), locale: locale))
+                    .downloadsSeriesRowWatchedCount(count: episodeCount, LocaleFormat.integer(episodeCount, locale: locale)), locale: locale))
                     .foregroundColor(.siloSecondaryText)
                 Text("\(amount)\(count)") // i18n-ignore: joins two Text values
                     .font(.subheadline)
@@ -256,7 +256,7 @@ struct DownloadReclaimBanner: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityHint(Text(.downloadsReclaimReviewHint(count: episodeCount, String(episodeCount))))
+        .accessibilityHint(Text(.downloadsReclaimReviewHint(count: episodeCount, LocaleFormat.integer(episodeCount))))
     }
 }
 
@@ -289,7 +289,7 @@ struct DownloadSortControl: View {
 
             Spacer()
 
-            Text(.downloadsSortItemCount(count: itemCount, String(itemCount)))
+            Text(.downloadsSortItemCount(count: itemCount, LocaleFormat.integer(itemCount)))
                 .font(.footnote)
                 .foregroundColor(.siloSecondaryText)
         }

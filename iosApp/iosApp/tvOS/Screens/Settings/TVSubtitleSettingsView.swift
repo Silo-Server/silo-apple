@@ -146,7 +146,7 @@ struct TVSubtitleSettingsPane: View {
             if viewModel.offersSubtitleTextOpacity {
                 TVSettingsPickerRow(
                     title: .settingsSubtitlesTextOpacity,
-                    value: .verbatim("\(viewModel.subtitleAppearance.textOpacity)%")
+                    value: .verbatim(LocaleFormat.percent(viewModel.subtitleAppearance.textOpacity))
                 ) {
                     guard appearanceEditable else { return }
                     showPicker(.textOpacity)
@@ -184,7 +184,7 @@ struct TVSubtitleSettingsPane: View {
             TVSettingsPickerRow(
                 title: .settingsSubtitlesBackgroundOpacity,
                 value: .verbatim(viewModel.subtitleAppearance.backgroundStyle == .box
-                    ? "\(viewModel.subtitleAppearance.backgroundOpacity)%"
+                    ? LocaleFormat.percent(viewModel.subtitleAppearance.backgroundOpacity)
                     : "—")
             ) {
                 guard appearanceEditable else { return }

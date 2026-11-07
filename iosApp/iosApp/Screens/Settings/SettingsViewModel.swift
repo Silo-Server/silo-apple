@@ -731,10 +731,17 @@ final class SettingsViewModel {
     /// 10, with no digit grouping.
     static func connectionRateText(kbps: Int) -> String {
         let kbps = max(kbps, 0)
-        if kbps < 1_000 { return "\(kbps) kbps" }
-        if kbps >= 10_000 { return "\(kbps / 1_000) Mbps" }
-        let tenths = kbps / 100
-        return tenths % 10 == 0 ? "\(tenths / 10) Mbps" : "\(tenths / 10).\(tenths % 10) Mbps"
+        let text: String
+        if kbps < 1_000 {
+            text = "\(kbps) kbps"
+        } else if kbps >= 10_000 {
+            text = "\(kbps / 1_000) Mbps"
+        } else {
+            let tenths = kbps / 100
+            text = tenths % 10 == 0 ? "\(tenths / 10) Mbps" : "\(tenths / 10).\(tenths % 10) Mbps"
+        }
+        // The locale's digits and decimal separator ("4,5 Mbps").
+        return LocaleFormat.localized(text)
     }
 
     static func connectionSpeedSkippedText(network: BandwidthProbeNetwork, cellularQualityApplies: Bool) -> String? {

@@ -1719,7 +1719,7 @@ struct PlayerNextUpScreen: View {
 
     private func formatAirDate(_ airDate: String) -> String {
         guard let date = try? Date(airDate, strategy: .iso8601) else { return airDate }
-        return date.formatted(date: .abbreviated, time: .omitted)
+        return date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, locale: AppLanguage.formattingLocale))
     }
 
     /// One centered column shared by the hero and On Deck, as wide as four
@@ -1800,7 +1800,7 @@ private struct CountdownRing: View {
                 .trim(from: 0, to: progress)
                 .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-            Text(verbatim: "\(seconds)")
+            Text(verbatim: LocaleFormat.integer(seconds))
                 .font(.system(size: textSize, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
         }

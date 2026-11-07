@@ -99,7 +99,7 @@ struct BoxSetDetailView: View {
         if let years = boxSet.yearsText { tokens.append(years) }
         if boxSet.playedCount > 0 {
             tokens.append(AppLanguage.string(
-                .boxSetsWatchedFact(String(boxSet.playedCount), boxSet.movieCount),
+                .boxSetsWatchedFact(LocaleFormat.integer(boxSet.playedCount), boxSet.movieCount),
                 locale: locale
             ))
         }

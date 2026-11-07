@@ -1510,7 +1510,7 @@ private struct ItemDetailPhoneContent: View {
             parts.append(DownloadFormat(rawValue: quality)?.displayName ?? quality.capitalized)
         }
         if record.fileSize > 0 {
-            parts.append(ByteCountFormatter.string(fromByteCount: record.fileSize, countStyle: .file))
+            parts.append(LocaleFormat.bytes(record.fileSize, locale: locale))
         }
         return AppLanguage.string(
             parts.isEmpty

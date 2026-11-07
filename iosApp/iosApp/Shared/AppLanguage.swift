@@ -36,8 +36,13 @@ enum AppLanguage {
             ?? shipped.first ?? "en"
     }
 
-    /// The device's locale with its language replaced, so region, calendar
-    /// and hour cycle stay the user's.
+    /// The locale the app shows `tag` in, which text and formatting share
+    /// (D26): the device's locale with its language replaced, so region,
+    /// calendar and hour cycle stay the user's. This is what the system
+    /// itself shows once the app's own `AppleLanguages` holds `tag` (from
+    /// the next launch), so a switch formats the same before and after a
+    /// relaunch. Arabic writes Arabic-Indic digits (D55) unless the user
+    /// chose other digits; Apple's plain `ar` would write Latin ones.
     static func locale(for tag: String, base: Locale = .autoupdatingCurrent) -> Locale {
         var components = Locale.Components(locale: base)
         // `en_GB` keeps its region inside the language components, so read it
@@ -45,6 +50,9 @@ enum AppLanguage {
         let region = base.region
         components.languageComponents = Locale.Language.Components(identifier: tag)
         components.region = region
+        if components.languageComponents.languageCode == .arabic, components.numberingSystem == nil {
+            components.numberingSystem = Locale.NumberingSystem("arab")
+        }
         return Locale(components: components)
     }
 
@@ -76,9 +84,22 @@ enum AppLanguage {
     /// Read on every request, so made once.
     private static let sharedDefaults = SharedStorage.suite
 
+    /// Read by every string and number built outside a view, so the
+    /// resolved locale is kept until the tag or the device locale changes.
     static var displayedLocale: Locale {
-        displayedTag.map { locale(for: $0) } ?? .autoupdatingCurrent
+        guard let tag = displayedTag else { return .autoupdatingCurrent }
+        let device = Locale.autoupdatingCurrent
+        let key = "\(tag)|\(device.identifier)|\(device.hourCycle)"
+        displayedLocaleLock.lock()
+        defer { displayedLocaleLock.unlock() }
+        if let cached = displayedLocaleCache, cached.key == key { return cached.locale }
+        let resolved = locale(for: tag, base: device)
+        displayedLocaleCache = (key, resolved)
+        return resolved
     }
+
+    private static let displayedLocaleLock = NSLock()
+    nonisolated(unsafe) private static var displayedLocaleCache: (key: String, locale: Locale)?
 
     /// Every Silo request names the language the app shows.
     static func applyHeader(to request: inout URLRequest) {
@@ -93,7 +114,14 @@ enum AppLanguage {
     /// the root's `\.locale`; a `String` built anywhere else must come through
     /// here, because `String(localized:)` alone uses the process language.
     static func string(_ resource: LocalizedStringResource) -> String {
-        string(resource, locale: dataLocale ?? displayedLocale)
+        string(resource, locale: formattingLocale)
+    }
+
+    /// The locale text and numbers built outside a view use: the app's, or
+    /// English while ``inEnglish(_:)`` runs. A view passes its `\.locale`
+    /// instead, so it re-renders on a language switch.
+    static var formattingLocale: Locale {
+        dataLocale ?? displayedLocale
     }
 
     /// Set while ``inEnglish(_:)`` runs.

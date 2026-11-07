@@ -159,10 +159,10 @@ struct TVAudiobookChaptersView: View {
         var pieces: [String] = []
         let hasChapters = !model.chapters.isEmpty
         if model.resumePosition != nil {
-            pieces.append("\(model.percentComplete)%")
+            pieces.append(LocaleFormat.percent(model.percentComplete, locale: locale))
             if let index = model.currentChapterIndex, hasChapters {
                 pieces.append(AppLanguage.string(
-                    .detailAudiobookChapterOf(String(index + 1), String(model.chapters.count)),
+                    .detailAudiobookChapterOf(LocaleFormat.integer(index + 1, locale: locale), LocaleFormat.integer(model.chapters.count, locale: locale)),
                     locale: locale
                 ))
             }
@@ -171,9 +171,9 @@ struct TVAudiobookChaptersView: View {
         } else {
             if hasChapters {
                 let count = model.chapters.count
-                pieces.append(AppLanguage.string(.detailAudiobookChapterCount(count: count, String(count)), locale: locale))
+                pieces.append(AppLanguage.string(.detailAudiobookChapterCount(count: count, LocaleFormat.integer(count, locale: locale)), locale: locale))
             } else if model.tracks.count > 1 {
-                pieces.append(AppLanguage.string(.detailAudiobookPartCount(count: model.tracks.count, String(model.tracks.count)), locale: locale))
+                pieces.append(AppLanguage.string(.detailAudiobookPartCount(count: model.tracks.count, LocaleFormat.integer(model.tracks.count, locale: locale)), locale: locale))
             }
             if !model.runtimeLabel.isEmpty { pieces.append(model.runtimeLabel) }
         }
@@ -209,7 +209,7 @@ struct TVAudiobookChaptersView: View {
 
     private static func partTitle(_ track: AudioPlaybackTrack) -> String {
         if let fileName = track.fileName, !fileName.isEmpty { return fileName }
-        return AppLanguage.string(.detailAudiobookPart(String(track.index + 1)))
+        return AppLanguage.string(.detailAudiobookPart(LocaleFormat.integer(track.index + 1)))
     }
 
     struct Row: Identifiable {

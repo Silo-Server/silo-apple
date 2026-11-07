@@ -26,7 +26,7 @@ struct AudioPlaybackChapter: Identifiable, Hashable {
     /// The chapter's own title, or "Chapter N" in the language `locale`
     /// shows. A view passes its `\.locale` so the label follows a switch.
     func displayTitle(locale: Locale) -> String {
-        title ?? AppLanguage.string(.optionsChapterNumbered(String(index + 1)), locale: locale)
+        title ?? AppLanguage.string(.optionsChapterNumbered(LocaleFormat.integer(index + 1, locale: locale)), locale: locale)
     }
 }
 

@@ -45,6 +45,10 @@ struct DownloadActivityAttributes: ActivityAttributes {
         /// extension, which can't read the app's storage, shows its text in
         /// the same language. Nil shows the system language.
         var language: String? = nil
+        /// The locale identifier the app formats numbers in
+        /// (`AppLanguage.displayedLocale`), so the widget's counts, sizes and
+        /// percent use the same digits as the app's text. Nil uses `language`.
+        var formatLocale: String? = nil
     }
 }
 #endif

@@ -243,7 +243,7 @@ struct TVAudiobookDetailView: View {
         switch model.state {
         case let .inProgress(fraction, percent, line1, line2):
             HStack(spacing: 22) {
-                progressRing(fraction: fraction, label: "\(percent)%")
+                progressRing(fraction: fraction, label: LocaleFormat.percent(percent))
                 stateLines(line1, line2)
             }
         case let .notStarted(line1, line2):

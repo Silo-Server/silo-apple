@@ -355,7 +355,7 @@ struct PlayerSettingsSheet: View {
                     set: { viewModel.setPlaybackSpeed($0) }
                 )) {
                     ForEach(Self.speedOptions, id: \.self) { speed in
-                        Text(verbatim: speed == 1.0 ? "1×" : String(format: "%g×", speed)).tag(speed)
+                        Text(verbatim: LocaleFormat.rate(speed)).tag(speed)
                     }
                 } label: {
                     Text(.playerSettingsSpeed)
@@ -530,9 +530,9 @@ struct PlayerSettingsSheet: View {
     // MARK: - Helpers
 
     private func formatMs(_ ms: Int) -> String {
-        if ms == 0 { return "0 ms" }
+        if ms == 0 { return LocaleFormat.integer(0) + " ms" }
         let sign = ms > 0 ? "+" : ""
-        return "\(sign)\(ms) ms"
+        return "\(sign)\(LocaleFormat.integer(ms)) ms"
     }
 
     /// Map the timer's remaining seconds back to the nearest whole-minute

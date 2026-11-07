@@ -550,7 +550,7 @@ private struct RemoteNowPlayingContent: View {
             )
             .tint(Color.siloOnSurface)
             .accessibilityLabel(Text(.remoteVolume))
-            .accessibilityValue(Text(.remoteVolumePercent(String(Int((state.isMuted ? 0 : state.volume) * 100)))))
+            .accessibilityValue(Text(.remoteVolumePercent(LocaleFormat.integer(Int((state.isMuted ? 0 : state.volume) * 100)))))
 
             Image(systemName: "speaker.wave.3.fill")
                 .font(.system(size: 18, weight: .medium))
@@ -685,7 +685,7 @@ private struct RemoteOptionMenus: View, Equatable {
     }
 
     private func speedLabel(_ speed: Double) -> String {
-        "\(speed)×"
+        LocaleFormat.localized("\(speed)") + "×"
     }
 }
 

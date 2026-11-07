@@ -135,7 +135,7 @@ final class DownloadLiveActivityController {
                     phase: .completed,
                     title: completedCount == 1
                         ? AppLanguage.string(.downloadsActivityCompletedOne)
-                        : AppLanguage.string(.downloadsActivityCompleted(count: completedCount, "\(completedCount)")),
+                        : AppLanguage.string(.downloadsActivityCompleted(count: completedCount, LocaleFormat.integer(completedCount))),
                     subtitle: nil,
                     fraction: 1,
                     bytesDownloaded: 0,
@@ -143,7 +143,8 @@ final class DownloadLiveActivityController {
                     completedCount: completedCount,
                     totalCount: completedCount,
                     bytesPerSecond: nil,
-                    language: AppLanguage.displayedTag
+                    language: AppLanguage.displayedTag,
+                    formatLocale: AppLanguage.displayedTag.map { _ in AppLanguage.displayedLocale.identifier }
                 )
                 await activity.end(
                     ActivityContent(state: state, staleDate: nil),
@@ -226,7 +227,7 @@ final class DownloadLiveActivityController {
             ?? headline?.seriesTitle
             ?? (activeRecords.count == 1
                 ? AppLanguage.string(.downloadsNotificationDefaultTitle)
-                : AppLanguage.string(.downloadsActivityCount(count: activeRecords.count, "\(activeRecords.count)")))
+                : AppLanguage.string(.downloadsActivityCount(count: activeRecords.count, LocaleFormat.integer(activeRecords.count))))
         var subtitleParts: [String] = []
         if let headline {
             if let series = headline.seriesTitle, series != title {
@@ -249,7 +250,8 @@ final class DownloadLiveActivityController {
             bytesPerSecond: phase == .downloading && totalBytesPerSecond > 0
                 ? totalBytesPerSecond
                 : nil,
-            language: AppLanguage.displayedTag
+            language: AppLanguage.displayedTag,
+            formatLocale: AppLanguage.displayedTag.map { _ in AppLanguage.displayedLocale.identifier }
         )
     }
 }

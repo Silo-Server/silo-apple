@@ -291,9 +291,9 @@ extension TVMarqueeContent {
 
     private static func episodeToken(season: Int?, episode: Int?) -> String? {
         switch (season, episode) {
-        case let (season?, episode?): return AppLanguage.string(.homeSeasonEpisode(String(season), String(episode)))
-        case let (season?, nil): return AppLanguage.string(.homeSeasonOnly(String(season)))
-        case let (nil, episode?): return AppLanguage.string(.homeEpisodeOnly(String(episode)))
+        case let (season?, episode?): return AppLanguage.string(.homeSeasonEpisode(LocaleFormat.integer(season), LocaleFormat.integer(episode)))
+        case let (season?, nil): return AppLanguage.string(.homeSeasonOnly(LocaleFormat.integer(season)))
+        case let (nil, episode?): return AppLanguage.string(.homeEpisodeOnly(LocaleFormat.integer(episode)))
         default: return nil
         }
     }
@@ -583,17 +583,20 @@ final class TVContinueWatchingPlaybackMetadataStore {
 /// fetch that never blocks or delays the marquee itself.
 struct TVMarqueeEnrichment: Equatable {
     /// `Aired Mar 12, 2026 · Pedro Pascal, Bella Ramsey, Anna Torv`
-    /// The episode's air date, formatted; joined into the detail line in
-    /// the language the marquee shows.
-    let airDateText: String?
+    /// The episode's air date as the server sent it (`yyyy-MM-dd`); formatted
+    /// into the detail line in the language the marquee shows.
+    let airDate: String?
     let castNames: [String]
     /// Recommendation payloads may omit the age/content rating even though
     /// item detail carries it. Keep that fallback with the other marquee
     /// enrichment so For You renders the same leading rating pill as Home.
     let contentRatingBadge: String?
     /// Item-detail runtime fills section payloads that omit it (notably some
-    /// recommendation and library rows).
-    let runtimeText: String?
+    /// recommendation and library rows). Kept raw and formatted when read,
+    /// so a cached enrichment follows a language change.
+    let runtimeMinutes: Int?
+
+    var runtimeText: String? { MediaTextFormatting.runtime(minutes: runtimeMinutes) }
     /// The detail-level backdrop may be an episode still or fallback series
     /// artwork. Its provenance follows it through hero resolution.
     let backdropUrl: String?
@@ -616,8 +619,8 @@ struct TVMarqueeEnrichment: Equatable {
         contentRatingBadge = trimmedRating?.isEmpty == false
             ? trimmedRating?.uppercased()
             : nil
-        runtimeText = MediaTextFormatting.runtime(minutes: detail.runtime)
-        airDateText = Self.formattedAirDate(detail.airDate)
+        runtimeMinutes = detail.runtime
+        airDate = detail.airDate.flatMap { $0.isEmpty ? nil : $0 }
         castNames = (detail.cast ?? [])
             .sorted { ($0.order ?? Int.max) < ($1.order ?? Int.max) }
             .prefix(3)
@@ -629,20 +632,15 @@ struct TVMarqueeEnrichment: Equatable {
     /// follows a language change.
     func detailLine(locale: Locale) -> String? {
         var parts: [String] = []
-        if let airDateText {
+        // Uses the detail screens' calendar-date formatting, so the server's
+        // `yyyy-MM-dd` air date shows the same day in every time zone.
+        if let airDateText = DetailDateFormatting.abbreviatedDate(airDate, locale: locale) {
             parts.append(AppLanguage.string(.homeAiredOn(airDateText), locale: locale))
         }
         if !castNames.isEmpty {
             parts.append(castNames.joined(separator: ", "))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    /// Uses the detail screens' calendar-date formatting, so the server's
-    /// `yyyy-MM-dd` air date shows the same day in every time zone.
-    private static func formattedAirDate(_ raw: String?) -> String? {
-        guard let raw, !raw.isEmpty else { return nil }
-        return DetailDateFormatting.abbreviatedDate(raw)
     }
 }
 

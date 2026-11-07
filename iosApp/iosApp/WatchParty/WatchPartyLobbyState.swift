@@ -36,7 +36,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         type = item.type
         title = item.title
         if let season = item.seasonNumber, let episode = item.episodeNumber {
-            let code = AppLanguage.string(.watchPartyFactsEpisodeCode(String(season), String(episode)))
+            let code = AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.integer(season), LocaleFormat.integer(episode)))
             subtitle = [item.seriesTitle.map { AppLanguage.isolated($0) }, code].compactMap { $0 }.joined(separator: " · ")
             suggestionSubtitle = [item.seriesTitle, "S\(season):E\(episode)"].compactMap { $0 }.joined(separator: " · ")
         } else {
@@ -148,9 +148,9 @@ extension WatchPartySelectedItem {
         let season = seasons.first { $0.seasonNumber == episode.seasonNumber }
         let seasonPoster = season?.posterUrl?.nilIfEmpty
         self.init(previewContentId: episode.contentId, type: "episode",
-                  title: episode.title ?? AppLanguage.string(.detailEpisode(String(episode.episodeNumber))),
+                  title: episode.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber))),
                   subtitle: "\(AppLanguage.isolated(series.title)) · "
-                      + AppLanguage.string(.watchPartyFactsEpisodeCode(String(episode.seasonNumber), String(episode.episodeNumber))),
+                      + AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber))),
                   suggestionSubtitle: "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)",
                   posterUrl: seasonPoster ?? series.posterUrl,
                   posterThumbhash: seasonPoster != nil ? season?.posterThumbhash : series.posterThumbhash,
@@ -272,10 +272,10 @@ enum WatchPartyLobbyPolicy {
         }
         if phase == .lobby {
             let ready = here.filter { seatState($0, phase: phase) == .ready }.count
-            return AppLanguage.string(.watchPartyPresenceReady(String(ready), here.count))
+            return AppLanguage.string(.watchPartyPresenceReady(LocaleFormat.integer(ready), here.count))
         }
         let watching = here.filter { seatState($0, phase: phase) == .watching }.count
-        return AppLanguage.string(.watchPartyPresenceWatching(String(watching), here.count))
+        return AppLanguage.string(.watchPartyPresenceWatching(LocaleFormat.integer(watching), here.count))
     }
 
     /// Connected guests who have not marked ready, for the host's advisory hint.

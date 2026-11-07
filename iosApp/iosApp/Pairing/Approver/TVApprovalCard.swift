@@ -169,7 +169,7 @@ struct TVApprovalCard: View {
     /// "Requested 2 min ago from 192.168.1.x", with whichever parts the
     /// server sent.
     private func requestedLine(_ request: TVApprovalRequest) -> String? {
-        let when = request.requestedAt.map { Self.relative.localizedString(for: $0, relativeTo: Date()) }
+        let when = request.requestedAt.map { Self.relative().localizedString(for: $0, relativeTo: Date()) }
         switch (when, request.networkHint) {
         case let (when?, hint?): return AppLanguage.string(.tvPairApprovalRequestedFrom(when, hint))
         case let (when?, nil): return AppLanguage.string(.signInTvRequested(when))
@@ -178,11 +178,13 @@ struct TVApprovalCard: View {
         }
     }
 
-    private static let relative: RelativeDateTimeFormatter = {
+    /// Made per use, in the app's language.
+    private static func relative() -> RelativeDateTimeFormatter {
         let formatter = RelativeDateTimeFormatter()
+        formatter.locale = AppLanguage.formattingLocale
         formatter.unitsStyle = .full
         return formatter
-    }()
+    }
 
     private func signInLine(_ request: TVApprovalRequest) -> String {
         Self.signInLine(serverName: request.serverName, serverHost: request.serverHost, accountName: request.accountName)

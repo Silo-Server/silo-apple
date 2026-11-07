@@ -737,7 +737,7 @@ private struct InfoCurrentChapterRow: View {
         guard !viewModel.chapters.isEmpty,
               let current = viewModel.chapters.last(where: { $0.time <= viewModel.currentTime })
         else { return nil }
-        return current.title ?? AppLanguage.string(.optionsChapterNumbered(String(current.index + 1)), locale: locale)
+        return current.title ?? AppLanguage.string(.optionsChapterNumbered(LocaleFormat.integer(current.index + 1, locale: locale)), locale: locale)
     }
 }
 
@@ -843,7 +843,7 @@ private struct VideoPane: View {
                         }
 
                         if !viewModel.isWatchPartyPlayback {
-                            HUDSettingRow(label: .playerSettingsSpeed, value: speedLabel(viewModel.settings.playbackSpeed)) {
+                            HUDSettingRow(label: .playerSettingsSpeed, value: Self.speedLabel(viewModel.settings.playbackSpeed)) {
                                 presentPicker(
                                     for: .speed,
                                     HUDPickerPresentation(
@@ -969,17 +969,18 @@ private struct VideoPane: View {
         String(format: "%.2f", value)
     }
 
-    private func speedLabel(_ value: Double) -> String {
-        value == 1.0 ? "1.0×" : String(format: "%.2f×", value)
+    /// "1.0×", "1.25×", in the app's language ("1,25×").
+    private static func speedLabel(_ value: Double) -> String {
+        LocaleFormat.decimal(value, fractionDigits: value == 1.0 ? 1 : 2) + "×"
     }
 
-    private static let speedOptions: [HUDDropdownOption] = [0.75, 1.0, 1.25, 1.5, 2.0]
-        .map { value in
-            HUDDropdownOption(
-                id: String(format: "%.2f", value),
-                label: value == 1.0 ? "1.0×" : String(format: "%.2f×", value)
-            )
+    /// Computed on each read, so the labels follow the app's language. The
+    /// ids stay "1.25" in every language.
+    private static var speedOptions: [HUDDropdownOption] {
+        [0.75, 1.0, 1.25, 1.5, 2.0].map { value in
+            HUDDropdownOption(id: String(format: "%.2f", value), label: speedLabel(value))
         }
+    }
 
     /// Computed on each read, so the labels follow the app's language.
     private static var aspectOptions: [HUDDropdownOption] {
@@ -1008,8 +1009,8 @@ private enum HUDPickerOptions {
     }
 
     static func delayLabel(_ milliseconds: Int) -> String {
-        if milliseconds == 0 { return "0 ms" }
-        return (milliseconds > 0 ? "+" : "") + "\(milliseconds) ms"
+        if milliseconds == 0 { return LocaleFormat.integer(0) + " ms" }
+        return (milliseconds > 0 ? "+" : "") + LocaleFormat.integer(milliseconds) + " ms"
     }
 
     static func delayOptions(
@@ -1494,11 +1495,11 @@ private struct SubtitleAppearanceDialog: View {
               viewModel.settings.subtitleAppearance.backgroundOpacity > 0 else {
             return AppLanguage.string(.optionsOff, locale: locale)
         }
-        return "\(viewModel.settings.subtitleAppearance.backgroundOpacity)%"
+        return LocaleFormat.percent(viewModel.settings.subtitleAppearance.backgroundOpacity)
     }
 
     private var textOpacityLabel: String {
-        "\(viewModel.settings.subtitleAppearance.textOpacity)%"
+        LocaleFormat.percent(viewModel.settings.subtitleAppearance.textOpacity)
     }
 
     private func label(for id: String, in options: [HUDDropdownOption]) -> String {
@@ -1520,7 +1521,7 @@ private struct SubtitleAppearanceDialog: View {
     /// floor is 1, which is invisible); background opacity starts at Off.
     private static func opacityOptions(current: Int, lowest: Int) -> [HUDDropdownOption] {
         SubtitleAppearance.opacityPickerValues(current: current, lowest: lowest, step: 25)
-            .map { .init(id: String($0), label: $0 == 0 ? AppLanguage.string(.optionsOff) : "\($0)%") }
+            .map { .init(id: String($0), label: $0 == 0 ? AppLanguage.string(.optionsOff) : LocaleFormat.percent($0)) }
     }
 
     private static var fontColorOptions: [HUDDropdownOption] {
@@ -2097,7 +2098,7 @@ private struct ChaptersPane: View {
                     ForEach(Array(viewModel.chapters.enumerated()), id: \.offset) { index, chapter in
                         HUDChapterRow(
                             number: index + 1,
-                            title: chapter.title ?? AppLanguage.string(.optionsChapterNumbered(String(index + 1)), locale: locale),
+                            title: chapter.title ?? AppLanguage.string(.optionsChapterNumbered(LocaleFormat.integer(index + 1, locale: locale)), locale: locale),
                             time: PlayerTimeFormatter.formatHMS(chapter.time),
                             isCurrent: currentIndex == index
                         ) {
@@ -2158,7 +2159,7 @@ private struct HUDChapterRowLabel: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            Text(String(format: "%02d", number))
+            Text(verbatim: LocaleFormat.localized(String(format: "%02d", number)))
                 .font(.system(size: 20, weight: .semibold, design: .rounded))
                 .foregroundStyle(isFocused ? .black.opacity(0.55) : .white.opacity(0.55))
                 .monospacedDigit()

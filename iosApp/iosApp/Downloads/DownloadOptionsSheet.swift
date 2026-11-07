@@ -189,7 +189,7 @@ struct DownloadOptionsSheet: View {
                 optionButton(
                     title: edition.label,
                     detail: AppLanguage.string(
-                        .downloadsOptionsVersionCount(count: edition.versions.count, "\(edition.versions.count)"),
+                        .downloadsOptionsVersionCount(count: edition.versions.count, LocaleFormat.integer(edition.versions.count)),
                         locale: locale
                     ),
                     isSelected: currentEdition?.id == edition.id
@@ -381,12 +381,12 @@ struct DownloadOptionsSheet: View {
             .compactMap { languageDisplayName($0.language) }
             .uniqued()
         if languages.isEmpty {
-            return AppLanguage.string(.downloadsOptionsTrackCount(count: tracks.count, "\(tracks.count)"), locale: locale)
+            return AppLanguage.string(.downloadsOptionsTrackCount(count: tracks.count, LocaleFormat.integer(tracks.count, locale: locale)), locale: locale)
         }
         let shown = languages.prefix(Self.subtitleLanguageDisplayCap).joined(separator: ", ")
         let remainder = languages.count - Self.subtitleLanguageDisplayCap
         guard remainder > 0 else { return shown }
-        return AppLanguage.string(.downloadsOptionsLanguagesMore(count: remainder, shown, "\(remainder)"), locale: locale)
+        return AppLanguage.string(.downloadsOptionsLanguagesMore(count: remainder, shown, LocaleFormat.integer(remainder, locale: locale)), locale: locale)
     }
 
     private func languageDisplayName(_ value: String?) -> String? {
@@ -395,7 +395,6 @@ struct DownloadOptionsSheet: View {
             return nil
         }
         if value.count <= 3 {
-            let locale = Locale.current
             return locale.localizedString(forLanguageCode: value.lowercased()) ?? value.uppercased()
         }
         return value

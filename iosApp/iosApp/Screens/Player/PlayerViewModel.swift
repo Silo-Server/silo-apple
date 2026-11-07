@@ -110,10 +110,10 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
     var id: String { contentId }
     /// `title` as the Remote Control state sends it: English (D44).
     var remoteTitle: String {
-        titleIsFallback ? AppLanguage.inEnglish { AppLanguage.string(.detailEpisode(String(episodeNumber))) } : title
+        titleIsFallback ? AppLanguage.inEnglish { AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber))) } : title
     }
     var episodeLabel: String? {
-        isEpisode ? AppLanguage.string(.playerEyebrowEpisode(String(seasonNumber), String(episodeNumber))) : nil
+        isEpisode ? AppLanguage.string(.playerEyebrowEpisode(LocaleFormat.integer(seasonNumber), LocaleFormat.integer(episodeNumber))) : nil
     }
 
     init(episode: EpisodeListItem, seriesId: String?, seriesTitle: String?) {
@@ -127,7 +127,7 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         if let trimmedTitle, !trimmedTitle.isEmpty {
             title = trimmedTitle
         } else {
-            title = AppLanguage.string(.detailEpisode(String(episode.episodeNumber)))
+            title = AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber)))
             titleIsFallback = true
         }
         overview = episode.overview
@@ -147,7 +147,7 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         episodeNumber = item.episodeNumber ?? 0
         let trimmedTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
         titleIsFallback = trimmedTitle.isEmpty && item.isEpisode
-        title = titleIsFallback ? AppLanguage.string(.detailEpisode(String(episodeNumber))) : trimmedTitle
+        title = titleIsFallback ? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber))) : trimmedTitle
         overview = item.overview
         runtime = item.runtime
         // An episode card's poster is its 16:9 still; a movie's poster is
@@ -170,7 +170,7 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         episodeNumber = section.episodeNumber ?? 0
         let trimmedTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
         titleIsFallback = trimmedTitle.isEmpty && isEpisode
-        title = titleIsFallback ? AppLanguage.string(.detailEpisode(String(episodeNumber))) : trimmedTitle
+        title = titleIsFallback ? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber))) : trimmedTitle
         overview = section.overview
         runtime = section.runtime
         stillUrl = item.artworkUrl

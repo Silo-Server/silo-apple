@@ -330,8 +330,8 @@ struct TVLibraryGridView: View {
         guard !viewModel.items.isEmpty else { return nil }
         let count = viewModel.items.count
         return viewModel.hasMore
-            ? .libraryTitleCountMore(count: count, String(count))
-            : .libraryTitleCount(count: count, String(count))
+            ? .libraryTitleCountMore(count: count, LocaleFormat.integer(count))
+            : .libraryTitleCount(count: count, LocaleFormat.integer(count))
     }
 }
 #endif
