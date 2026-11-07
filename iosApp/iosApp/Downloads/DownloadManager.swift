@@ -151,6 +151,9 @@ final class DownloadManager {
     /// Serializes disk saves so a rapid burst of `persist()` calls can't land
     /// out of order and overwrite a newer snapshot with an older one.
     private var saveChain: Task<Void, Never>?
+    /// Whether the latest save of `file` reached disk. Once the saves are
+    /// idle, true means the store on disk matches `file`.
+    @ObservationIgnored private var lastSaveSucceeded = true
     /// Offline progress entries a running flush has sent and is still
     /// waiting on. Dispatched entries outside this set are held.
     private var progressUploadsInFlight: Set<UUID> = []
@@ -173,6 +176,8 @@ final class DownloadManager {
     /// Cached scope storage usage; refreshed off the MainActor (a filesystem
     /// walk) so SwiftUI bodies reading it don't block.
     private(set) var totalBytesUsed: Int64 = 0
+    /// The part of `totalBytesUsed` on external folders.
+    private(set) var externalBytesUsed: Int64 = 0
     /// Smoothed transfer rate (bytes/sec) per downloading record, derived
     /// from progress deltas so the UI never needs its own timer competing
     /// with the `@Observable` update path.
@@ -423,8 +428,26 @@ final class DownloadManager {
         file.subscriptions.first { $0.seriesId == seriesId }
     }
 
+    /// The record's media file, on whichever volume holds it. Nil while
+    /// that volume is out of reach (see `isMediaReachable`).
     func absoluteMediaURL(for record: DownloadRecord) -> URL? {
-        record.mediaFilename.flatMap { fileURL(recordId: record.id, filename: $0) }
+        record.mediaFilename.flatMap { mediaURL(recordId: record.id, filename: $0, on: record.resolvedMediaVolume) }
+    }
+
+    /// Whether the volume holding the record's media can be reached, as of
+    /// the last `ExternalDownloadStorage.refreshAvailability()`.
+    func isMediaReachable(_ record: DownloadRecord) -> Bool {
+        ExternalDownloadStorage.shared.isAvailable(record.resolvedMediaVolume)
+    }
+
+    private func mediaURL(recordId: String, filename: String, on volume: DownloadMediaVolume) -> URL? {
+        guard case .external = volume else { return fileURL(recordId: recordId, filename: filename) }
+        guard !fileServerId.isEmpty, let root = ExternalDownloadStorage.shared.downloadsRoot(for: volume) else {
+            return nil
+        }
+        return DownloadFilePaths.fileURL(serverId: fileServerId, localAccountId: fileAccountId,
+                                         profileId: fileProfileId, downloadId: recordId, filename: filename,
+                                         root: root)
     }
 
     func absoluteFileURL(for record: DownloadRecord, filename: String) -> URL? {
@@ -900,6 +923,7 @@ final class DownloadManager {
             guard let self, self.loadedScope == scope else { return }
             await self.settleParkedTransfers(scope)
             if reclaimingUntracked { await self.reclaimUntrackedDirectories(in: scope) }
+            self.requestMediaTransfers()
         })
     }
 
@@ -1042,13 +1066,18 @@ final class DownloadManager {
             return
         }
         let root = DownloadFilePaths.rootDirectory()
+        let targets = DownloadStorageReclaim.removalTargets(folderName: group.folderName, root: root,
+            activeServerFolder: active.server, activeAccountFolder: active.account,
+            activeProfileFolder: active.profile)
+        // Their media on external folders goes too, now or once each is back:
+        // with the stores gone, no record would reach it.
+        for target in targets {
+            if let path = DownloadFilePaths.relativePath(of: target, under: root) {
+                ExternalDownloadStorage.removeFromExternalFolders(path)
+            }
+        }
         // Set aside synchronously, against the scope active right now.
-        DownloadStorageReclaim.setAside(
-            DownloadStorageReclaim.removalTargets(folderName: group.folderName, root: root,
-                activeServerFolder: active.server, activeAccountFolder: active.account,
-                activeProfileFolder: active.profile),
-            root: root
-        )
+        DownloadStorageReclaim.setAside(targets, root: root)
         let freed = await deleteSetAsideStorage(root: root)
         Self.logger.notice("Removed \(freed, privacy: .public) bytes of download data outside the active scope")
         await refreshOtherDownloadStorage()
@@ -1098,6 +1127,8 @@ final class DownloadManager {
     func onAppActive(onCapabilityRefreshed: (() -> Void)? = nil) async {
         guard await activateScopeIfNeeded() else { return }
         sessionDelegate.refreshProgressDelivery()
+        // Also notices a drive connected while Silo was away.
+        requestMediaTransfers()
         await refreshCapability()
         onCapabilityRefreshed?()
         guard downloadsEnabled else { return }
@@ -1193,6 +1224,7 @@ final class DownloadManager {
         rateSamples.removeAll()
         transferRates.removeAll()
         totalBytesUsed = 0
+        externalBytesUsed = 0
     }
 
     private func cancelActiveTasks() {
@@ -2541,6 +2573,9 @@ final class DownloadManager {
         }
         progressHighWater[record.id] = nil
         record.mediaFilename = filename
+        record.mediaVolume = nil
+        let target = ExternalDownloadStorage.shared.newDownloadVolume
+        record.pendingMediaVolume = target == .device ? nil : target
         record.localStatus = .completed
         record.downloadedAt = Date()
         record.taskIdentifier = nil
@@ -2558,6 +2593,7 @@ final class DownloadManager {
         reportPendingStatusEvents()
         processQueue()
         refreshStorageUsage()
+        if record.pendingMediaVolume != nil { requestMediaTransfers() }
         // `delete_watched` waits for the next monitoring run, which removes a
         // watched episode right after it reads the watch state in full.
     }
@@ -4374,6 +4410,8 @@ final class DownloadManager {
         record.lastError = nil
         record.retryCount = 0
         record.taskIdentifier = nil
+        record.mediaVolume = nil
+        record.pendingMediaVolume = nil
         // An unsent event describes the replaced bytes.
         record.pendingStatusEvent = nil
     }
@@ -4577,7 +4615,10 @@ final class DownloadManager {
         let previous = saveChain
         saveChain = Task { @MainActor in
             await previous?.value
-            await DownloadStore.shared.save(snapshot, serverId: serverId, localAccountId: accountId, profileId: profileId)
+            let saved = await DownloadStore.shared.save(
+                snapshot, serverId: serverId, localAccountId: accountId, profileId: profileId
+            )
+            DownloadManager.shared.lastSaveSucceeded = saved
         }
     }
 
@@ -4590,6 +4631,184 @@ final class DownloadManager {
         }
     }
 
+    // MARK: - Media on external folders
+
+    /// The running pass that moves media between volumes, one file at a time.
+    @ObservationIgnored private var mediaTransferTask: Task<Void, Never>?
+    @ObservationIgnored private var mediaTransferRequested = false
+    /// The download whose media is moving now.
+    private(set) var movingMediaRecordId: String?
+    /// Why the last failed move failed, for Settings; cleared by the next
+    /// choice of location.
+    private(set) var mediaTransferFailure: String?
+
+    /// Finished downloads waiting to move to another volume.
+    var pendingMediaTransferCount: Int {
+        file.records.values.filter { $0.pendingMediaVolume != nil && $0.isPlayableOffline }.count
+    }
+
+    /// Finished downloads, and their bytes, whose media is not on `volume`.
+    func mediaOutside(_ volume: DownloadMediaVolume) -> (count: Int, bytes: Int64) {
+        let records = file.records.values.filter { $0.isPlayableOffline && $0.resolvedMediaVolume != volume }
+        return (records.count, records.reduce(0) { $0 + $1.fileSize })
+    }
+
+    /// Applies the user's choice of where downloads go. New downloads follow
+    /// it; with `moveExisting`, so do the loaded profile's finished ones.
+    /// Other profiles' downloads stay where they are and keep playing from
+    /// there.
+    func applyDownloadLocation(moveExisting: Bool) {
+        mediaTransferFailure = nil
+        let target = ExternalDownloadStorage.shared.newDownloadVolume
+        var records = file.records
+        var changed = false
+        for (id, record) in records {
+            let pending = DownloadMediaTransfer.retargeted(record, to: target, moveExisting: moveExisting)
+            guard pending != record.pendingMediaVolume else { continue }
+            records[id]?.pendingMediaVolume = pending
+            changed = true
+        }
+        guard changed else { return }
+        file.records = records
+        persist()
+        requestMediaTransfers()
+    }
+
+    /// Moves every waiting media file whose volumes can be reached. Safe to
+    /// call often: one pass runs at a time, and a call during it runs
+    /// another pass after.
+    func requestMediaTransfers() {
+        mediaTransferRequested = true
+        guard mediaTransferTask == nil else { return }
+        mediaTransferTask = Task { [weak self] in await self?.runMediaTransfers() }
+    }
+
+    private func runMediaTransfers() async {
+        defer { mediaTransferTask = nil }
+        let storage = ExternalDownloadStorage.shared
+        while mediaTransferRequested {
+            mediaTransferRequested = false
+            await storage.refreshAvailability()
+            var skipped: Set<String> = []
+            while let scope = loadedScope,
+                  let job = DownloadMediaTransfer.nextJob(
+                      records: file.records.values, isAvailable: storage.isAvailable, skipping: skipped
+                  ) {
+                if await !moveMedia(job, in: scope) { skipped.insert(job.record.id) }
+            }
+        }
+    }
+
+    /// Moves one record's media. Returns false when it did not move and the
+    /// pass should leave it for now.
+    private func moveMedia(_ job: DownloadMediaTransfer.Job, in scope: ScopeKey) async -> Bool {
+        let record = job.record
+        let origin = record.resolvedMediaVolume
+        let storage = ExternalDownloadStorage.shared
+        guard let filename = record.mediaFilename,
+              let source = mediaURL(recordId: record.id, filename: filename, on: origin),
+              let destination = mediaURL(recordId: record.id, filename: filename, on: job.target),
+              let originRoot = storage.downloadsRoot(for: origin),
+              let targetRoot = storage.downloadsRoot(for: job.target)
+        else { return false }
+        // The same file, still waiting for this move. A deletion, a newer
+        // revision, or another choice of location during the copy cancels it.
+        let stillWanted: (DownloadRecord?) -> Bool = { current in
+            guard let current else { return false }
+            return current.mediaFilename == filename && current.resolvedMediaVolume == origin
+                && current.revision == record.revision && current.isPlayableOffline
+                && current.pendingMediaVolume == job.target
+        }
+        // Two registrations of one folder: the file is already there, and
+        // deleting the "source" would delete it.
+        if source.standardizedFileURL.path == destination.standardizedFileURL.path {
+            guard var current = file.records[record.id], stillWanted(current) else { return true }
+            current.mediaVolume = job.target == .device ? nil : job.target
+            current.pendingMediaVolume = nil
+            file.records[record.id] = current
+            persist()
+            return true
+        }
+        movingMediaRecordId = record.id
+        defer { movingMediaRecordId = nil }
+        #if os(iOS) || os(tvOS)
+        let background = BackgroundWork(name: "SiloMoveDownload")
+        defer { background.end() }
+        #endif
+        let copied = await Task.detached(priority: .utility) {
+            Result { try DownloadMediaTransfer.copyToPartial(source, for: destination) }
+        }.value
+
+        switch copied {
+        case .success(let partial):
+            guard loadedScope == scope, stillWanted(file.records[record.id]), var current = file.records[record.id]
+            else {
+                try? FileManager.default.removeItem(at: partial)
+                return true
+            }
+            do {
+                try DownloadMediaTransfer.finish(partial, at: destination)
+            } catch {
+                Self.logger.error("Failed to place moved media: \(String(describing: error), privacy: .private)")
+                try? FileManager.default.removeItem(at: partial)
+                return false
+            }
+            current.mediaVolume = job.target == .device ? nil : job.target
+            current.pendingMediaVolume = nil
+            file.records[record.id] = current
+            persist()
+            // The source goes only once the store on disk names the copy. When
+            // the latest save failed, the store may name either file, so both
+            // stay: an extra copy, never a missing one.
+            await waitForQueuedSaves()
+            guard lastSaveSucceeded else {
+                Self.logger.error("Kept a moved download's source: its new location could not be saved")
+                return true
+            }
+            // A newer revision may have saved its own file at the source path
+            // during the save; that file isn't this move's to delete. Checked
+            // and deleted in one main-actor step, so no download can finish
+            // in between.
+            guard loadedScope == scope, let saved = file.records[record.id], saved.mediaFilename == filename,
+                  saved.revision == record.revision, saved.resolvedMediaVolume == job.target
+            else { return true }
+            DownloadMediaTransfer.removeMedia(at: source)
+            refreshStorageUsage()
+            return true
+        case .failure(let error):
+            let reachable = await Task.detached(priority: .utility) {
+                DownloadMediaTransfer.isReachable(originRoot) && DownloadMediaTransfer.isReachable(targetRoot)
+            }.value
+            // A drive unplugged mid-copy: try again once it is back.
+            guard reachable else { return false }
+            guard loadedScope == scope, stillWanted(file.records[record.id]), var current = file.records[record.id]
+            else { return false }
+            Self.logger.error("Failed to move downloaded media: \(String(describing: error), privacy: .private)")
+            current.pendingMediaVolume = nil
+            file.records[record.id] = current
+            persist()
+            let title = record.title.map { "\u{201C}\($0)\u{201D}" } ?? "a download"
+            let reason: String
+            if DownloadSessionDelegate.isOutOfSpace(error) {
+                reason = " There isn't enough space."
+            } else if Self.isFileTooLarge(error) {
+                reason = " The drive can't hold files over 4 GB."
+            } else {
+                reason = ""
+            }
+            mediaTransferFailure = "Couldn't move \(title) to \(storage.displayName(for: job.target)).\(reason)"
+            return false
+        }
+    }
+
+    /// FAT32 drives refuse files over 4 GB.
+    nonisolated private static func isFileTooLarge(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(EFBIG) { return true }
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error { return isFileTooLarge(underlying) }
+        return false
+    }
+
     /// Recompute scope storage usage off the MainActor and publish it.
     private func refreshStorageUsage() {
         let serverId = scopeServerId
@@ -4597,6 +4816,7 @@ final class DownloadManager {
         let profileId = scopeProfileId
         guard !serverId.isEmpty, !accountId.isEmpty, !profileId.isEmpty else {
             totalBytesUsed = 0
+            externalBytesUsed = 0
             return
         }
         Task {
@@ -4606,7 +4826,13 @@ final class DownloadManager {
             // A slower walk of a scope switched away from must not overwrite
             // the new scope's number.
             guard serverId == scopeServerId, accountId == scopeAccountId, profileId == scopeProfileId else { return }
-            totalBytesUsed = bytes
+            // Media on external folders, by their recorded size: a drive out
+            // of reach can't be walked.
+            let external = file.records.values
+                .filter { $0.isPlayableOffline && $0.mediaVolume != nil }
+                .reduce(Int64(0)) { $0 + $1.fileSize }
+            totalBytesUsed = bytes + external
+            externalBytesUsed = external
         }
     }
 

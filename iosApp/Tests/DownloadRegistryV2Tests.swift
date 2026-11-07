@@ -443,9 +443,15 @@ final class DownloadRegistryV2Tests: XCTestCase {
         let recordJSON = #"{"id":"d1","contentId":"movie-1","mediaFileId":"abc","format":"original","serverStatus":"ready","localStatus":"downloading","fileSize":1,"bytesDownloaded":0,"subtitleFilenames":{},"registeredAt":0,"retryCount":0}"#
         var record = try JSONDecoder().decode(DownloadRecord.self, from: Data(recordJSON.utf8))
         XCTAssertNil(record.pendingStatusEvent)
+        XCTAssertEqual(record.resolvedMediaVolume, .device, "media saved before external folders is on the device")
+        XCTAssertNil(record.pendingMediaVolume)
         record.pendingStatusEvent = event
+        record.mediaVolume = .external(id: "drive-1")
+        record.pendingMediaVolume = .device
         let roundTripped = try JSONDecoder().decode(DownloadRecord.self, from: JSONEncoder().encode(record))
         XCTAssertEqual(roundTripped.pendingStatusEvent, event)
         XCTAssertEqual(roundTripped.mediaFileId, "abc")
+        XCTAssertEqual(roundTripped.mediaVolume, .external(id: "drive-1"))
+        XCTAssertEqual(roundTripped.pendingMediaVolume, .device)
     }
 }

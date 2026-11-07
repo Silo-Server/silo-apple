@@ -114,6 +114,8 @@ struct DownloadSectionHeader: View {
 /// (series / movies / in progress / other).
 struct DownloadsStorageHeader: View {
     let used: Int64
+    /// The part of `used` on external drives.
+    var externalUsed: Int64 = 0
     let breakdown: DownloadStorageBreakdown
     var activeCount: Int = 0
 
@@ -132,6 +134,12 @@ struct DownloadsStorageHeader: View {
                 .foregroundColor(.siloSecondaryText)
             Text("\(amount)\(context)")
 
+            if externalUsed > 0 {
+                Text("\(DownloadFormatting.bytes(externalUsed)) on external drives")
+                    .font(.footnote)
+                    .foregroundColor(.siloSecondaryText)
+            }
+
             if activeCount > 0 {
                 Text(inProgressLine)
                     .font(.footnote)
@@ -149,7 +157,8 @@ struct DownloadsStorageHeader: View {
 
     private var contextSuffix: String {
         let deviceTotal = DownloadFilePaths.totalCapacity
-        return deviceTotal > 0
+        // The device's capacity says nothing about bytes on a drive.
+        return deviceTotal > 0 && externalUsed == 0
             ? "  of \(DownloadFormatting.bytes(deviceTotal)) on this device"
             : "  downloaded"
     }
