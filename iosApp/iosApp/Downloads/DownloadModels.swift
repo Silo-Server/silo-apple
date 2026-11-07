@@ -712,10 +712,14 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// Cached parent-series title for episode downloads (from the manifest),
     /// so the grouped Downloads UI can label a series card offline.
     var seriesTitle: String? = nil
-    /// Structured season/episode numbers, from the episode download request
-    /// or the offline manifest.
+    /// Structured season/episode numbers, populated from the offline
+    /// manifest.
     var seasonNumber: Int? = nil
     var episodeNumber: Int? = nil
+    /// The numbers an episode download request named. Display text uses
+    /// them until the manifest's `seasonNumber` and `episodeNumber` arrive.
+    var requestSeasonNumber: Int? = nil
+    var requestEpisodeNumber: Int? = nil
     var posterThumbhash: String?
     /// ThumbHash of the parent series poster, for an episode download.
     var seriesPosterThumbhash: String? = nil
@@ -788,8 +792,8 @@ extension DownloadRecord {
         locale: Locale = AppLanguage.formattingLocale,
         both: (String, String) -> LocalizedStringResource = { .catalogEpisodeCaption($0, $1) }
     ) -> String? {
-        let season = seasonNumber.map { LocaleFormat.integer($0, locale: locale) }
-        let episode = episodeNumber.map { LocaleFormat.integer($0, locale: locale) }
+        let season = shownNumbers.season.map { LocaleFormat.integer($0, locale: locale) }
+        let episode = shownNumbers.episode.map { LocaleFormat.integer($0, locale: locale) }
         let resource: LocalizedStringResource
         switch (season, episode) {
         case let (season?, episode?): resource = both(season, episode)
@@ -812,8 +816,15 @@ extension DownloadRecord {
     /// untitled episode is "Episode 2".
     func shownTitle(locale: Locale = AppLanguage.formattingLocale) -> String? {
         if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return title }
-        guard type == "episode", let episodeNumber else { return nil }
+        guard type == "episode", let episodeNumber = shownNumbers.episode else { return nil }
         return AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber, locale: locale)), locale: locale)
+    }
+
+    /// The manifest's numbers once it has given any, else the request's.
+    private var shownNumbers: (season: Int?, episode: Int?) {
+        seasonNumber != nil || episodeNumber != nil
+            ? (seasonNumber, episodeNumber)
+            : (requestSeasonNumber, requestEpisodeNumber)
     }
 
     /// `shownTitle(locale:)`, else the content id.
