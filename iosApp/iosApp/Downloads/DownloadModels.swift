@@ -704,14 +704,16 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     // Display fields cached so the Downloads list renders before the
     // manifest is fetched and offline.
     var title: String?
-    var subtitle: String?                // e.g. "2024" or "S1 · E2"
+    /// e.g. "2024" or "S1 · E2", stored in English (D44). Rows show
+    /// `displaySubtitle(locale:)`.
+    var subtitle: String?
     var type: String?                    // "movie" | "episode" | "series"
     var seriesId: String?
     /// Cached parent-series title for episode downloads (from the manifest),
     /// so the grouped Downloads UI can label a series card offline.
     var seriesTitle: String? = nil
-    /// Structured season/episode numbers, populated from the offline
-    /// manifest.
+    /// Structured season/episode numbers, from the episode download request
+    /// or the offline manifest.
     var seasonNumber: Int? = nil
     var episodeNumber: Int? = nil
     var posterThumbhash: String?
@@ -773,6 +775,50 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
             return AppLanguage.string(.downloadsFailureServerError)
         default: return AppLanguage.string(.downloadsFailureGeneric)
         }
+    }
+}
+
+// MARK: - Display text
+
+extension DownloadRecord {
+    /// The season and episode in `locale`, as `both` writes them ("S1 · E2"
+    /// by default), or the one number that is known ("S1", "E2"). Nil when
+    /// the record knows neither.
+    func episodeTag(
+        locale: Locale = AppLanguage.formattingLocale,
+        both: (String, String) -> LocalizedStringResource = { .catalogEpisodeCaption($0, $1) }
+    ) -> String? {
+        let season = seasonNumber.map { LocaleFormat.integer($0, locale: locale) }
+        let episode = episodeNumber.map { LocaleFormat.integer($0, locale: locale) }
+        let resource: LocalizedStringResource
+        switch (season, episode) {
+        case let (season?, episode?): resource = both(season, episode)
+        case let (season?, nil): resource = .calendarSeasonShort(season)
+        case let (nil, episode?): resource = .calendarEpisodeShort(episode)
+        case (nil, nil): return nil
+        }
+        return AppLanguage.string(resource, locale: locale)
+    }
+
+    /// `subtitle` as a row shows it: an episode's season and episode in
+    /// `locale` when the record knows them, otherwise what was stored (a
+    /// movie's year).
+    func displaySubtitle(locale: Locale = AppLanguage.formattingLocale) -> String? {
+        (type == "episode" ? episodeTag(locale: locale) : nil) ?? subtitle
+    }
+
+    /// `title` as the app shows it, or nil when there is none to show. A
+    /// blank title counts as missing (a manifest can carry ""), and an
+    /// untitled episode is "Episode 2".
+    func shownTitle(locale: Locale = AppLanguage.formattingLocale) -> String? {
+        if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return title }
+        guard type == "episode", let episodeNumber else { return nil }
+        return AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber, locale: locale)), locale: locale)
+    }
+
+    /// `shownTitle(locale:)`, else the content id.
+    func displayTitle(locale: Locale = AppLanguage.formattingLocale) -> String {
+        shownTitle(locale: locale) ?? contentId
     }
 }
 

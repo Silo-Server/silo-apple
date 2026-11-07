@@ -371,11 +371,11 @@ final class DownloadContinuedProcessing {
     }
 
     nonisolated static func title(for record: DownloadRecord) -> String {
-        if record.type == "episode", let episode = record.subtitle, !episode.isEmpty {
-            let series = record.seriesTitle ?? record.title ?? AppLanguage.string(.downloadsProgressEpisodeFallback)
+        if record.type == "episode", let episode = record.displaySubtitle(), !episode.isEmpty {
+            let series = record.seriesTitle ?? record.shownTitle() ?? AppLanguage.string(.downloadsProgressEpisodeFallback)
             return "\(series) · \(episode)"
         }
-        return record.title ?? record.seriesTitle ?? AppLanguage.string(.downloadsNotificationDefaultTitle)
+        return record.shownTitle() ?? record.seriesTitle ?? AppLanguage.string(.downloadsNotificationDefaultTitle)
     }
 
     /// The headline file's "427.29 MB / 1.42 GB", led by "2 of 5 done" when

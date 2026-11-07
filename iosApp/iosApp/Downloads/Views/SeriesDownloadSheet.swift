@@ -388,9 +388,13 @@ struct SeriesDownloadSheet: View {
         switch row {
         case .episode:
             guard let episode else { return text(.downloadsSeriesSheetThisEpisode) }
-            let name = episode.title ?? text(.detailEpisode(LocaleFormat.integer(episode.episodeNumber)))
-            return "S\(LocaleFormat.integer(episode.seasonNumber, locale: locale)) · E\(LocaleFormat.integer(episode.episodeNumber, locale: locale)) · \(name)"
-        case .season: return oneTimeSeason?.downloadDisplayName ?? text(.downloadsSeriesSheetSeason)
+            let name = episode.title ?? text(.detailEpisode(LocaleFormat.integer(episode.episodeNumber, locale: locale)))
+            let code = text(.catalogEpisodeCaption(
+                LocaleFormat.integer(episode.seasonNumber, locale: locale),
+                LocaleFormat.integer(episode.episodeNumber, locale: locale)
+            ))
+            return EpisodeCardCaption.titled(code: code, title: name, locale: locale)
+        case .season: return oneTimeSeason?.displayName(locale: locale) ?? text(.downloadsSeriesSheetSeason)
         case .all: return text(.downloadsSeriesSheetAllEpisodes)
         }
     }
@@ -429,8 +433,11 @@ struct SeriesDownloadSheet: View {
                     try await manager.downloadEpisode(
                         seriesId: seriesId,
                         episodeId: episode.contentId,
-                        displayTitle: episode.title ?? "Episode \(episode.episodeNumber)",
-                        displaySubtitle: "S\(episode.seasonNumber) · E\(episode.episodeNumber)",
+                        // Rows name an untitled episode in the app language.
+                        displayTitle: episode.title,
+                        displaySubtitle: "S\(episode.seasonNumber) · E\(episode.episodeNumber)", // i18n-ignore: stored English (D44)
+                        seasonNumber: episode.seasonNumber,
+                        episodeNumber: episode.episodeNumber,
                         posterThumbhash: posterThumbhash,
                         fileId: episodeFileId,
                         quality: oneTimeQuality

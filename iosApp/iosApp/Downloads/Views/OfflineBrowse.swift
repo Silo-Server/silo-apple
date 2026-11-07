@@ -198,9 +198,11 @@ struct OfflineSeriesBrowseView: View {
     }
 
     private func episodeTag(_ record: DownloadRecord) -> String? {
-        guard let episode = record.episodeNumber else { return nil }
-        if let season = record.seasonNumber, season > 0 { return "S\(season)·E\(episode)" }
-        return "E\(episode)"
+        guard let episode = record.episodeNumber.map({ LocaleFormat.integer($0, locale: locale) }) else { return nil }
+        if let season = record.seasonNumber, season > 0 {
+            return AppLanguage.string(.detailEpisodeCode(LocaleFormat.integer(season, locale: locale), episode), locale: locale)
+        }
+        return AppLanguage.string(.calendarEpisodeShort(episode), locale: locale)
     }
 }
 
@@ -281,7 +283,7 @@ struct OfflineDownloadDetailView: View {
 
     private func hero(_ record: DownloadRecord, backdrop: String?, poster: String?) -> some View {
         PhoneDetailHero(
-            title: record.title ?? record.contentId,
+            title: record.displayTitle(locale: locale),
             // A series logo would misname an episode, so only movies use one.
             logoUrl: record.type == "episode" ? nil : manager.logoImageURL(for: record)?.absoluteString,
             posterUrl: poster,
@@ -361,10 +363,9 @@ struct OfflineDownloadDetailView: View {
     private func factsLine(_ record: DownloadRecord) -> [PhoneHeroFactToken] {
         var tokens: [PhoneHeroFactToken] = []
         if record.type == "episode" {
-            let tag = [record.seasonNumber.map { "S\($0)" }, record.episodeNumber.map { "E\($0)" }]
-                .compactMap { $0 }
-                .joined(separator: " ")
-            if !tag.isEmpty { tokens.append(.text(tag)) }
+            if let tag = record.episodeTag(locale: locale, both: { .homeSeasonEpisode($0, $1) }) {
+                tokens.append(.text(tag))
+            }
             if let series = record.seriesTitle ?? manifest?.seriesTitle, !series.isEmpty {
                 tokens.append(.text(series))
             }

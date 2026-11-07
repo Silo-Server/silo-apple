@@ -156,12 +156,12 @@ struct DownloadReclaimSheet: View {
     }
 
     private func label(_ record: DownloadRecord) -> String {
-        guard record.seriesId != nil else { return record.title ?? record.contentId }
-        let tag = [record.seasonNumber.map { "S\($0)" }, record.episodeNumber.map { "E\($0)" }]
-            .compactMap { $0 }
-            .joined()
-        let series = record.seriesTitle ?? record.title ?? ""
-        return tag.isEmpty ? (record.title ?? series) : "\(series) · \(tag)"
+        guard record.seriesId != nil else { return record.displayTitle(locale: locale) }
+        let series = record.seriesTitle ?? record.shownTitle(locale: locale) ?? ""
+        guard let tag = record.episodeTag(locale: locale, both: { .catalogEpisodeTag($0, $1) }) else {
+            return record.shownTitle(locale: locale) ?? series
+        }
+        return "\(AppLanguage.isolated(series, language: AppLanguage.language(of: locale))) · \(tag)"
     }
 
     private func toggle(_ id: String) {

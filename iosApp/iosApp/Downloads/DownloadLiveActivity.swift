@@ -223,7 +223,7 @@ final class DownloadLiveActivityController {
             phase = .preparing
         }
 
-        let title = headline?.title
+        let title = headline?.shownTitle()
             ?? headline?.seriesTitle
             ?? (activeRecords.count == 1
                 ? AppLanguage.string(.downloadsNotificationDefaultTitle)
@@ -233,7 +233,7 @@ final class DownloadLiveActivityController {
             if let series = headline.seriesTitle, series != title {
                 subtitleParts.append(series)
             }
-            if let sub = headline.subtitle {
+            if let sub = headline.displaySubtitle() {
                 subtitleParts.append(sub)
             }
         }

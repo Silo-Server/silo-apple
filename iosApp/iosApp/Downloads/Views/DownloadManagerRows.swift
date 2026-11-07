@@ -110,10 +110,10 @@ struct DownloadActiveRow: View {
     }
 
     private var displayTitle: String {
-        if record.type == "episode", let sub = record.subtitle, !sub.isEmpty {
-            return "\(record.title ?? record.contentId) · \(sub)"
+        if record.type == "episode", let sub = record.displaySubtitle(locale: locale), !sub.isEmpty {
+            return "\(AppLanguage.isolated(record.displayTitle(locale: locale), language: AppLanguage.language(of: locale))) · \(sub)"
         }
-        return record.title ?? record.contentId
+        return record.displayTitle(locale: locale)
     }
 
     private var statusLine: String {
@@ -294,6 +294,7 @@ struct DownloadSwipeRevealContainer<Content: View>: View {
 
 /// A failed download surfaced for retry or removal so it isn't silently lost.
 struct DownloadAttentionRow: View {
+    @Environment(\.locale) private var locale
     let record: DownloadRecord
     var onRetry: () -> Void = {}
     var onDelete: () -> Void = {}
@@ -306,7 +307,7 @@ struct DownloadAttentionRow: View {
                 width: 40
             )
             VStack(alignment: .leading, spacing: 4) {
-                Text(record.title ?? record.contentId)
+                Text(record.displayTitle(locale: locale))
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(.siloOnSurface)
                     .lineLimit(1)
@@ -356,7 +357,7 @@ struct DownloadMovieRow: View {
                     width: 40
                 )
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(record.title ?? record.contentId)
+                    Text(record.displayTitle(locale: locale))
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
@@ -376,7 +377,7 @@ struct DownloadMovieRow: View {
 
     private var meta: String {
         var parts: [String] = []
-        if let sub = record.subtitle, !sub.isEmpty { parts.append(sub) }
+        if let sub = record.displaySubtitle(locale: locale), !sub.isEmpty { parts.append(sub) }
         parts.append(DownloadFormatting.bytes(record.fileSize))
         if watched { parts.append(AppLanguage.string(.downloadsRowWatchedLower, locale: locale)) }
         return parts.joined(separator: " · ")
@@ -600,9 +601,10 @@ struct DownloadEpisodeRow: View {
 
     private var title: String {
         if let episode = record.episodeNumber {
-            return "E\(episode) · \(record.title ?? record.contentId)"
+            let code = AppLanguage.string(.calendarEpisodeShort(LocaleFormat.integer(episode, locale: locale)), locale: locale)
+            return EpisodeCardCaption.titled(code: code, title: record.displayTitle(locale: locale), locale: locale)
         }
-        return record.title ?? record.contentId
+        return record.displayTitle(locale: locale)
     }
 
     private var meta: String {

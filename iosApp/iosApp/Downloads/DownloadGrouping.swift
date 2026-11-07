@@ -147,7 +147,7 @@ enum DownloadGroupBuilder {
 
         let title = records.compactMap(\.seriesTitle).first
             ?? seriesTitle
-            ?? records.first?.title
+            ?? records.first?.shownTitle()
             ?? seriesId
 
         return DownloadSeriesGroup(
