@@ -20,6 +20,7 @@ import SwiftUI
 private enum TVPersonalRootDestination: Hashable {
     case watchlist
     case favorites
+    case requests
 }
 
 /// Root tvOS shell. Owns a custom Skyline top bar instead of relying on
@@ -32,8 +33,9 @@ private enum TVPersonalRootDestination: Hashable {
 struct TVMainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedRoot: TVRootDestination = .home
-    /// Watchlist and Favorites are root-shell pages rather than pushed
-    /// destinations, so the Skyline bar and profile controls remain present.
+    /// Watchlist, Favorites, and Requests are root-shell pages rather than
+    /// pushed destinations, so the Skyline bar and profile controls remain
+    /// present.
     /// The previously selected content root stays underneath and is restored
     /// when the user backs out of the personal page.
     @State private var personalRoot: TVPersonalRootDestination?
@@ -499,6 +501,13 @@ struct TVMainTabView: View {
                 isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
             )
+        case .requests:
+            TVRequestsPage(
+                mode: .hub,
+                focusRequest: contentFocusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
+            )
         }
     }
 
@@ -714,7 +723,7 @@ struct TVMainTabView: View {
             showsWatchParty: WatchPartyEntry.isAvailable,
             onSwitchProfile: { closePanel(then: switchProfile) },
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
-            onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
+            onRequests: { closePanel(then: { showPersonalRoot(.requests) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
             onChangeAccount: { closePanel(then: showChangeAccount) },
@@ -1364,8 +1373,8 @@ struct TVMainTabView: View {
             EmptyView()
             #endif
         case .requestsHub:
-            // A Skyline page that was a root tab: it lays out its own insets,
-            // as the root content does, now that the profile menu pushes it.
+            // The profile menu shows Requests as a root page under the bar;
+            // a pushed copy lays out its own insets as the root content does.
             RequestsHubView()
                 .ignoresSafeArea(edges: [.top, .horizontal])
         case .requestDetail(let mediaType, let tmdbId):
