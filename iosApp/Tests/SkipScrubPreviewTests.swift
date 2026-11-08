@@ -32,6 +32,7 @@ final class SkipScrubPreviewTests: XCTestCase {
         XCTAssertEqual(player.scrubPreviewTime, player.duration * 0.5)
     }
 
+    #if os(iOS) || os(macOS)
     func testATrackpadSwipeAfterASkipShowsThePreview() {
         let player = makePlayer(at: 100)
         player.skipForward(10)
@@ -40,6 +41,7 @@ final class SkipScrubPreviewTests: XCTestCase {
         XCTAssertTrue(player.isTrackpadScrubbing)
         XCTAssertTrue(player.showsScrubPreview)
     }
+    #endif
 
     private func makePlayer(at time: Double) -> PlayerViewModel {
         let player = PlayerViewModel()
