@@ -390,8 +390,8 @@ struct SeriesDownloadSheet: View {
             guard let episode else { return text(.downloadsSeriesSheetThisEpisode) }
             let name = episode.title ?? text(.detailEpisode(LocaleFormat.integer(episode.episodeNumber, locale: locale)))
             let code = text(.catalogEpisodeCaption(
-                LocaleFormat.integer(episode.seasonNumber, locale: locale),
-                LocaleFormat.integer(episode.episodeNumber, locale: locale)
+                LocaleFormat.codeNumber(episode.seasonNumber),
+                LocaleFormat.codeNumber(episode.episodeNumber)
             ))
             return EpisodeCardCaption.titled(code: code, title: name, locale: locale)
         case .season: return oneTimeSeason?.displayName(locale: locale) ?? text(.downloadsSeriesSheetSeason)

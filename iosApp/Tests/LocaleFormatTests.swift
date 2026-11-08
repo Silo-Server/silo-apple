@@ -121,6 +121,16 @@ final class LocaleFormatTests: XCTestCase {
         }
     }
 
+    /// Season and episode codes are technical and keep ASCII digits in every
+    /// language (D78), "S2021E01" included; the spoken "Season, Episode"
+    /// phrase follows the locale's digits like any other number.
+    func testEpisodeCodesStayLatin() {
+        assertDigits(EpisodeCardCaption.code(season: 2021, episode: 1, locale: arabic), "202101")
+        assertDigits(EpisodeCardCaption.code(season: 1, episode: 5, locale: arabic), "0105")
+        XCTAssertEqual(EpisodeCardCaption.code(season: 1, episode: 5, locale: english), "S01E05")
+        assertDigits(EpisodeCardCaption.spokenCode(season: 2021, episode: 1, locale: arabic), "٢٠٢١١")
+    }
+
     #if !os(tvOS)
     /// A season numbered by its year, and the episode beside it, follow the
     /// same digits in the auto-download status lines.

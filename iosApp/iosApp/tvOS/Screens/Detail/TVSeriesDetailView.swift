@@ -561,8 +561,8 @@ struct TVSeriesDetailView: View {
     }
 
     private func showPlayTitle(for episode: EpisodeListItem) -> String {
-        let season = LocaleFormat.integer(episode.seasonNumber, locale: locale)
-        let number = LocaleFormat.integer(episode.episodeNumber, locale: locale)
+        let season = LocaleFormat.codeNumber(episode.seasonNumber)
+        let number = LocaleFormat.codeNumber(episode.episodeNumber)
         return AppLanguage.string(
             episode.userData?.isInProgress == true
                 ? .detailResumeEpisode(season, number)

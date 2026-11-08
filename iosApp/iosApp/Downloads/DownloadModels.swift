@@ -785,15 +785,15 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
 // MARK: - Display text
 
 extension DownloadRecord {
-    /// The season and episode in `locale`, as `both` writes them ("S1 · E2"
-    /// by default), or the one number that is known ("S1", "E2"). Nil when
-    /// the record knows neither.
+    /// The season and episode code as `both` writes it in `locale` ("S1 · E2"
+    /// by default; ASCII digits, D78), or the one number that is known ("S1",
+    /// "E2"). Nil when the record knows neither.
     func episodeTag(
         locale: Locale = AppLanguage.formattingLocale,
         both: (String, String) -> LocalizedStringResource = { .catalogEpisodeCaption($0, $1) }
     ) -> String? {
-        let season = shownNumbers.season.map { LocaleFormat.integer($0, locale: locale) }
-        let episode = shownNumbers.episode.map { LocaleFormat.integer($0, locale: locale) }
+        let season = shownNumbers.season.map { LocaleFormat.codeNumber($0) }
+        let episode = shownNumbers.episode.map { LocaleFormat.codeNumber($0) }
         let resource: LocalizedStringResource
         switch (season, episode) {
         case let (season?, episode?): resource = both(season, episode)

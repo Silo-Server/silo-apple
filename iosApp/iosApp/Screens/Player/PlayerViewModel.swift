@@ -113,7 +113,7 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         titleIsFallback ? AppLanguage.inEnglish { AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber))) } : title
     }
     var episodeLabel: String? {
-        isEpisode ? AppLanguage.string(.playerEyebrowEpisode(LocaleFormat.integer(seasonNumber), LocaleFormat.integer(episodeNumber))) : nil
+        isEpisode ? AppLanguage.string(.playerEyebrowEpisode(LocaleFormat.codeNumber(seasonNumber), LocaleFormat.codeNumber(episodeNumber))) : nil
     }
 
     init(episode: EpisodeListItem, seriesId: String?, seriesTitle: String?) {

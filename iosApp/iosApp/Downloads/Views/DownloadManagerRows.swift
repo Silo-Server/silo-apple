@@ -601,7 +601,7 @@ struct DownloadEpisodeRow: View {
 
     private var title: String {
         if let episode = record.episodeNumber {
-            let code = AppLanguage.string(.calendarEpisodeShort(LocaleFormat.integer(episode, locale: locale)), locale: locale)
+            let code = AppLanguage.string(.calendarEpisodeShort(LocaleFormat.codeNumber(episode)), locale: locale)
             return EpisodeCardCaption.titled(code: code, title: record.displayTitle(locale: locale), locale: locale)
         }
         return record.displayTitle(locale: locale)

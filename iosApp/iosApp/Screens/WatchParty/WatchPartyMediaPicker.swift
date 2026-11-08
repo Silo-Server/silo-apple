@@ -149,12 +149,12 @@ private struct WatchPartyMediaChoice: Hashable {
 
     /// "S1 · E2 · Title" on this page.
     private static func episodeLine(season: Int, episode: Int, title: String?) -> String {
-        AppLanguage.string(.watchPartyEpisodesLine(LocaleFormat.integer(season), LocaleFormat.integer(episode))) + (title.map { " · \(AppLanguage.isolated($0))" } ?? "")
+        AppLanguage.string(.watchPartyEpisodesLine(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode))) + (title.map { " · \(AppLanguage.isolated($0))" } ?? "")
     }
 
     /// "Series · S1:E2" under the episode's title in the lobby.
     private static func lobbyLine(series: String, season: Int, episode: Int) -> String {
-        "\(AppLanguage.isolated(series)) · " + AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.integer(season), LocaleFormat.integer(episode)))
+        "\(AppLanguage.isolated(series)) · " + AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
     }
 }
 
@@ -526,7 +526,7 @@ struct WatchPartyMediaPicker: View {
         guard section.id == Self.togetherSectionID || section.id == Self.watchlistSectionID,
               let entry = entry(for: item.contentId), !entry.members.isEmpty else { return nil }
         if section.id == Self.togetherSectionID, let nextUp = entry.nextUp {
-            return AppLanguage.string(.watchPartyPickerNextEpisode(LocaleFormat.integer(nextUp.seasonNumber), LocaleFormat.integer(nextUp.episodeNumber)))
+            return AppLanguage.string(.watchPartyPickerNextEpisode(LocaleFormat.codeNumber(nextUp.seasonNumber), LocaleFormat.codeNumber(nextUp.episodeNumber)))
         }
         return memberNames(entry.members)
     }
@@ -945,7 +945,7 @@ private struct WatchPartyEpisodePicker: View {
     }
 
     private func episodeLine(_ episode: EpisodeListItem) -> String {
-        var parts = [AppLanguage.string(.watchPartyEpisodesLine(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))]
+        var parts = [AppLanguage.string(.watchPartyEpisodesLine(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber)))]
         if let title = episode.title, !title.isEmpty { parts.append(title) }
         if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { parts.append(runtime) }
         return parts.joined(separator: " · ")
