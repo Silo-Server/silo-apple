@@ -506,6 +506,11 @@ private struct ItemDetailPhoneContent: View {
                 || (isSeriesPage && viewModel.seasons.isEmpty
                     && viewModel.isLoadingSeriesHierarchy)
         )
+        #if !os(tvOS)
+        // A launch that couldn't read the download capability shows Download
+        // here instead of after a relaunch. Android reads it the same way.
+        .task(id: contentId) { await DownloadManager.shared.refreshCapabilityIfStale() }
+        #endif
         .task(id: contentId) {
             // Returning from the player restarts this task. Keep the episode
             // and season the page was showing instead of the entry context.

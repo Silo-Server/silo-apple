@@ -291,6 +291,12 @@ final class DownloadManager {
     /// or replaced. Network responses captured under an older generation are
     /// discarded before they can mutate the newly active scope.
     private var registrationScopeGeneration: UInt64 = 0
+    /// The capability read in flight and the scope it reads for.
+    @ObservationIgnored private var capabilityRead: (scope: ScopeKey?, task: Task<Void, Never>)?
+    /// The next read after a failed one, while Download is hidden.
+    @ObservationIgnored private var capabilityRetry: Task<Void, Never>?
+    /// Failed reads in a row since the last success or app-active pass.
+    @ObservationIgnored private var capabilityFailures = 0
     var canDownloadSeason: Bool { downloadsEnabled && capability?.seasonDownload == true }
     var canMonitorSeries: Bool { downloadsEnabled && capability?.seriesMonitoring == true }
 
@@ -693,18 +699,20 @@ final class DownloadManager {
     /// scope, loading that scope's persisted blob. Returns false when no
     /// account and profile are selected on the active server.
     ///
-    /// The scope comes from the selection mirrors (`AccountScope.current`),
-    /// not from a signed-in session, and needs no network: the selected
-    /// account's downloads stay playable offline, and while the account
-    /// waits to sign in again. Requests check the session itself
-    /// (`captureScopeOwner`).
+    /// The scope is the account requests use (`TokenStore`), the same
+    /// identity `captureScopeOwner` checks, so a loaded store can always
+    /// reach the server. Without a signed-in session it comes from the
+    /// selection mirrors (`AccountScope.current`) and needs no network: the
+    /// selected account's downloads stay playable offline, and while the
+    /// account waits to sign in again.
     @discardableResult
     func activateScopeIfNeeded() async -> Bool {
-        await removeLegacyDownloadsIfNeeded()
-        await drainLegacySessionIfNeeded()
-        let serverId = ServerRegistry.shared.activeServerId ?? ""
+        await Self.timed("legacy storage removal") { await removeLegacyDownloadsIfNeeded() }
+        await Self.timed("legacy session drain") { await drainLegacySessionIfNeeded() }
+        let activeServerId = ServerRegistry.shared.activeServerId ?? ""
+        let auth = await TokenStore.shared.captureOrdinaryRequestAuth()
         var selected = AccountScope.current
-        if !serverId.isEmpty, selected?.serverId != serverId {
+        if auth?.account.localAccountId == nil, !activeServerId.isEmpty, selected?.serverId != activeServerId {
             // Nothing has selected an account on this server yet in this
             // install (the first launch after accounts arrived, or a cold
             // background wake): loading the token store's account selects
@@ -712,13 +720,33 @@ final class DownloadManager {
             _ = await TokenStore.shared.refreshAccountIdentity()
             selected = AccountScope.current
         }
-        let onServer = selected?.serverId == serverId ? selected : nil
-        let accountId = onServer?.localAccountId ?? ""
-        let profileId = onServer?.profileId ?? ""
+        let choice = Self.downloadScope(
+            activeServerId: activeServerId,
+            signedIn: auth.map {
+                SignedInIdentity(serverId: $0.account.serverId, localAccountId: $0.account.localAccountId,
+                                 profileId: $0.profileId)
+            },
+            selection: selected
+        )
+        if choice.selectionDisagreed {
+            // A store loaded for the mirror's account could never read its
+            // capability under the session's identity; worth knowing when
+            // the two drift apart.
+            Self.logger.notice("Download scope follows the signed-in account; the account selection mirror named another")
+        }
+        let serverId = choice.serverId
+        let accountId = choice.localAccountId
+        let profileId = choice.profileId
         // An account whose downloads were deleted stays unloaded while its
         // sign-out finishes; `deleteAllDownloads` resets a load in flight.
         guard !serverId.isEmpty, !accountId.isEmpty, !profileId.isEmpty,
               !removedAccounts.contains(Self.accountKey(serverId, accountId)) else {
+            Self.logger.notice("""
+                Downloads scope not activated: server \(serverId.isEmpty ? "missing" : "set", privacy: .public), \
+                account \(accountId.isEmpty ? "missing" : "set", privacy: .public), \
+                profile \(profileId.isEmpty ? "missing" : "set", privacy: .public), \
+                removed \(self.removedAccounts.contains(Self.accountKey(serverId, accountId)), privacy: .public)
+                """)
             deactivate()
             releaseHeldSessionEvents()
             return false
@@ -772,8 +800,11 @@ final class DownloadManager {
             loadToken = token
         }
 
-        let loaded = await loadTask.value
-        guard scopeServerId == serverId, scopeAccountId == accountId, scopeProfileId == profileId else { return false }
+        let loaded = await Self.timed("store load") { await loadTask.value }
+        guard scopeServerId == serverId, scopeAccountId == accountId, scopeProfileId == profileId else {
+            Self.logger.notice("Downloads scope changed while its store loaded; this activation stops")
+            return false
+        }
         if scopeLoadToken == loadToken {
             // Exactly one waiter installs this snapshot. Later waiters observe
             // the already-hydrated `file` instead of assigning it a second time.
@@ -801,10 +832,22 @@ final class DownloadManager {
         // still tracks its task is parked for, and that record isn't queued.
         processQueue()
         removeStaleStagingFilesOnce()
-        await awaitParkedSettle()
+        await Self.timed("parked settle") { await awaitParkedSettle() }
         refreshStorageUsage()
-        await backfillEpisodeMetadataIfNeeded()
+        await Self.timed("episode metadata backfill") { await backfillEpisodeMetadataIfNeeded() }
         return true
+    }
+
+    /// Runs one activation step, warning when it holds activation (and so
+    /// the capability check behind it) for more than a few seconds.
+    private static func timed<T>(_ step: StaticString, _ body: () async -> T) async -> T {
+        let start = ContinuousClock.now
+        let result = await body()
+        let elapsed = ContinuousClock.now - start
+        if elapsed > .seconds(3) {
+            logger.warning("Downloads activation step '\(step, privacy: .public)' took \(elapsed.description, privacy: .public)")
+        }
+        return result
     }
 
     /// Once per process, after held events have claimed their staged files.
@@ -1096,9 +1139,16 @@ final class DownloadManager {
     /// server reconciliation and sync work. Callers that only need to know
     /// whether the Downloads tab exists should not wait for the rest.
     func onAppActive(onCapabilityRefreshed: (() -> Void)? = nil) async {
-        guard await activateScopeIfNeeded() else { return }
+        // Each pass gets a fresh set of retries.
+        capabilityFailures = 0
+        guard await activateScopeIfNeeded() else {
+            Self.logger.notice("Downloads app-active pass stopped: no downloads scope")
+            scheduleCapabilityRetry()
+            return
+        }
         sessionDelegate.refreshProgressDelivery()
         await refreshCapability()
+        Self.logger.notice("Downloads app-active pass: capability \(self.downloadsEnabled ? "usable" : "unusable", privacy: .public)")
         onCapabilityRefreshed?()
         guard downloadsEnabled else { return }
         await reconcileWithServer(triggerPipeline: true)
@@ -1110,6 +1160,8 @@ final class DownloadManager {
     /// files are intentionally preserved (the user may sign back in).
     func clearForSignOut() {
         cancelActiveTasks()
+        capabilityRetry?.cancel()
+        capabilityRetry = nil
         deactivate()
     }
 
@@ -1215,18 +1267,77 @@ final class DownloadManager {
 
     // MARK: - Capability
 
-    /// On failure the cached capability stays, so an unreachable or
-    /// update-required server keeps completed downloads visible and playable.
+    /// Reads the capability unless a usable one is fresh. Detail pages call
+    /// this as they open, as Android's do, so a launch pass that could not
+    /// read it shows Download on the next title instead of after a relaunch.
+    func refreshCapabilityIfStale() async {
+        guard Self.capabilityReadIsDue(usable: downloadsEnabled, fetchedAt: file.capabilityFetchedAt, now: Date()) else {
+            return
+        }
+        guard await activateScopeIfNeeded() else {
+            scheduleCapabilityRetry()
+            return
+        }
+        await refreshCapability()
+    }
+
+    /// Reads the capability for the loaded scope. Callers that ask while a
+    /// read for the same scope runs share it. On failure the cached
+    /// capability stays, so an unreachable or update-required server keeps
+    /// completed downloads visible and playable; with none usable, the read
+    /// is retried with back-off.
     func refreshCapability() async {
-        guard let owner = await captureScopeOwner() else { return }
+        let scope = loadedScope
+        if let running = capabilityRead, running.scope == scope {
+            await running.task.value
+            return
+        }
+        let task = Task { await self.readCapability() }
+        capabilityRead = (scope, task)
+        await task.value
+        if capabilityRead?.scope == scope { capabilityRead = nil }
+    }
+
+    private func readCapability() async {
+        guard let owner = await captureScopeOwner() else {
+            let reason = await scopeOwnerMismatch()
+            Self.logger.notice("Download capability not read: \(reason, privacy: .public)")
+            scheduleCapabilityRetry()
+            return
+        }
         do {
             let capability = try await SiloAPI.shared.apiV2Client.downloadCapability(auth: owner.auth)
-            guard isCurrent(owner) else { return }
+            guard isCurrent(owner) else {
+                Self.logger.notice("Download capability discarded: the scope changed during the request")
+                return
+            }
             file.capability = capability
             file.capabilityFetchedAt = Date()
             persist()
+            capabilityFailures = 0
+            capabilityRetry?.cancel()
+            capabilityRetry = nil
         } catch {
-            Self.logger.warning("capability refresh failed: \(String(describing: error), privacy: .public)")
+            Self.logger.warning("Download capability read failed: \(String(describing: error), privacy: .public)")
+            scheduleCapabilityRetry()
+        }
+    }
+
+    /// While Download is hidden, a failed read tries again after a growing
+    /// wait. A usable cached capability is left alone (offline, server
+    /// down): it already shows Download.
+    private func scheduleCapabilityRetry() {
+        guard !downloadsEnabled, capabilityRetry == nil else { return }
+        capabilityFailures += 1
+        guard let delay = Self.capabilityRetryDelay(afterFailures: capabilityFailures) else {
+            Self.logger.warning("Download capability retries spent; the next foreground or detail page reads it again")
+            return
+        }
+        capabilityRetry = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, !Task.isCancelled else { return }
+            self.capabilityRetry = nil
+            await self.refreshCapabilityIfStale()
         }
     }
 
@@ -3140,6 +3251,19 @@ final class DownloadManager {
               auth.profileId == scope.profileId else { return nil }
         let owner = ScopeOwner(scope: scope, auth: auth)
         return isCurrent(owner) ? owner : nil
+    }
+
+    /// Why `captureScopeOwner` found no owner, for the log. Names which part
+    /// of the identity disagreed, never the identifiers themselves.
+    private func scopeOwnerMismatch() async -> String {
+        guard let scope = loadedScope else { return "no store is loaded" }
+        guard let auth = await TokenStore.shared.captureOrdinaryRequestAuth() else { return "no signed-in account" }
+        if auth.account.serverId != scope.serverId { return "the signed-in server differs from the loaded store" }
+        if auth.account.localAccountId != scope.localAccountId { return "the signed-in account differs from the loaded store" }
+        if auth.profileId != scope.profileId {
+            return auth.profileId == nil ? "the session has no profile" : "the session's profile differs from the loaded store"
+        }
+        return "the loaded store changed"
     }
 
     /// Whether the scope `owner` was captured for is still active and its

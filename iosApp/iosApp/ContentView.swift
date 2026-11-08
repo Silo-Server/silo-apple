@@ -397,24 +397,28 @@ struct ContentView: View {
         // screen for bandwidth, waits until the splash has lifted.
         .task(id: isAuthenticatedAppVisible) {
             guard isAuthenticatedAppVisible else { return }
-            #if os(iOS) || os(tvOS)
-            await diagnosticsModel.handleForeground()
-            #endif
-            #if os(iOS)
-            // Doesn't wait for the permission alert, so it can't delay onAppActive.
-            await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
-            #endif
             #if !os(tvOS)
-            // Drain a queued Downloads link as soon as the capability is
-            // known. The reconciliation and sync that follow inside
-            // onAppActive() can take several network round-trips on a slow
-            // server and must not hold a notification tap hostage.
-            await DownloadManager.shared.onAppActive {
+            // Starts alongside the work below rather than after it, so a slow
+            // diagnostics upload can't keep Download hidden. Drain a queued
+            // Downloads link as soon as the capability is known. The
+            // reconciliation and sync that follow inside onAppActive() can
+            // take several network round-trips on a slow server and must not
+            // hold a notification tap hostage.
+            async let downloads: Void = DownloadManager.shared.onAppActive { @MainActor in
                 guard !Task.isCancelled,
                       router.authState == .authenticated else { return }
                 isDownloadCapabilityHydrated = true
                 drainPendingDeepLinkIfReady()
             }
+            #endif
+            #if os(iOS) || os(tvOS)
+            await diagnosticsModel.handleForeground()
+            #endif
+            #if os(iOS)
+            await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
+            #endif
+            #if !os(tvOS)
+            await downloads
             #endif
         }
         #if DEBUG
