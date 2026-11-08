@@ -131,6 +131,20 @@ final class LocaleFormatTests: XCTestCase {
         assertDigits(EpisodeCardCaption.spokenCode(season: 2021, episode: 1, locale: arabic), "٢٠٢١١")
     }
 
+    /// The buffer-ahead choices take their durations as counts (D79), so
+    /// Arabic writes them in the format locale's digits and English keeps
+    /// its old text.
+    func testBufferAheadChoicesWriteTheFormatLocalesDigits() {
+        withDisplayedTag("ar") {
+            assertDigits(BufferAheadMode.standard.label, "٤٠")
+            assertDigits(BufferAheadMode.extended.label, "٥")
+        }
+        withDisplayedTag("en") {
+            XCTAssertEqual(BufferAheadMode.standard.label, "Standard (40 seconds)")
+            XCTAssertEqual(BufferAheadMode.extended.label, "Extended (5 minutes)")
+        }
+    }
+
     #if !os(tvOS)
     /// A season numbered by its year, and the episode beside it, follow the
     /// same digits in the auto-download status lines.
