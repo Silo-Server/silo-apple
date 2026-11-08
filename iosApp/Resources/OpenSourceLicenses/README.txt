@@ -6,7 +6,7 @@ texts are bundled beside this file and are available from Settings > About >
 Acknowledgements.
 
 AetherEngine
-  Revision: 10631a5136371a0f83d67a1e85f26163588d6094 (upstream release
+  Revision: af67a2e0b1773560ea43e630e95d949e603adbf0 (upstream release
   7.56.0 and upstream main through commit a6fbf0a1, plus Silo patches for
   subtitle renditions, source timing, primary ASS routing with normalized
   secondary/PiP text, refreshable authorization for native HLS, sidecar
@@ -14,7 +14,7 @@ AetherEngine
   audio-switch tracking, playback recovery, and resuming forward-only
   sources)
   License: GNU LGPL version 3 with the upstream Apple Store / DRM exception
-  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/10631a5136371a0f83d67a1e85f26163588d6094
+  Source (modified, as built): https://github.com/Silo-Server/AetherEngine/tree/af67a2e0b1773560ea43e630e95d949e603adbf0
   Upstream base: https://github.com/superuser404notfound/AetherEngine/tree/a6fbf0a1c469df98df66d886482b9f062cdab7f8
   Rebuild: the Package.swift and source tree at that revision, with its
   default package traits, which leave every optional component out: TrueHD

@@ -17,7 +17,7 @@ The authoritative dependency lock is
 
 | Component | Exact revision | Shipped form | License |
 | --- | --- | --- | --- |
-| AetherEngine 7.56.0 and upstream `main` through `a6fbf0a1` + Silo subtitle, HLS authorization and playback recovery patches, every optional component off | `10631a5136371a0f83d67a1e85f26163588d6094` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
+| AetherEngine 7.56.0 and upstream `main` through `a6fbf0a1` + Silo subtitle, HLS authorization and playback recovery patches, every optional component off | `af67a2e0b1773560ea43e630e95d949e603adbf0` | Swift package target linked into each host app | LGPL-3.0-only with AetherEngine's Apple Store / DRM exception |
 | FFmpegBuild 3.12.1 | `9c87af0231fd1403654c14a0e867fe8aa43c5bea` | Nine separately embedded dynamic frameworks | See the component table below |
 | LibDovi 2.1.0 | `0d7cce1d6836a30d13a3a2326e50a153af53f014` | Static `Dovi.xcframework` linked through AetherEngine | MIT packaging; embedded libdovi is MIT |
 | Nuke and NukeUI 13.2.0 | `30f7a7e72e0607d304fbf69c799474bd5fb6d1ce` | Swift package targets linked into each host app | MIT |
@@ -52,7 +52,7 @@ published under the LGPL at the exact source revision below. The bundled
 acknowledgements include AetherEngine's complete license and exception plus
 the GNU GPL version 3 text incorporated by LGPLv3.
 
-- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/10631a5136371a0f83d67a1e85f26163588d6094>
+- Exact source: <https://github.com/Silo-Server/AetherEngine/tree/af67a2e0b1773560ea43e630e95d949e603adbf0>
   (engine pull requests: <https://github.com/Silo-Server/AetherEngine/pull/2>,
   <https://github.com/Silo-Server/AetherEngine/pull/6>,
   <https://github.com/Silo-Server/AetherEngine/pull/15>,
