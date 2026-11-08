@@ -20,6 +20,7 @@ import SwiftUI
 private enum TVPersonalRootDestination: Hashable {
     case watchlist
     case favorites
+    case requests
 }
 
 /// Root tvOS shell. Owns a custom Skyline top bar instead of relying on
@@ -32,8 +33,9 @@ private enum TVPersonalRootDestination: Hashable {
 struct TVMainTabView: View {
     @Bindable var router: AppRouter
     @State private var selectedRoot: TVRootDestination = .home
-    /// Watchlist and Favorites are root-shell pages rather than pushed
-    /// destinations, so the Skyline bar and profile controls remain present.
+    /// Watchlist, Favorites, and Requests are root-shell pages rather than
+    /// pushed destinations, so the Skyline bar and profile controls remain
+    /// present.
     /// The previously selected content root stays underneath and is restored
     /// when the user backs out of the personal page.
     @State private var personalRoot: TVPersonalRootDestination?
@@ -260,6 +262,13 @@ struct TVMainTabView: View {
         .task(id: currentLibraryAuthority) {
             await loadLibraries(for: currentLibraryAuthority)
         }
+        .onChange(of: closesRequestsRoot, initial: true) { _, close in
+            guard close else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.normalDuration)) {
+                personalRoot = nil
+            }
+            contentFocusRequest += 1
+        }
         .onChange(of: router.path.isEmpty) { _, isEmpty in
             // Returning from a pushed route (Search, detail, settings)
             // re-mounts the bar with whatever suppression it had when it
@@ -435,6 +444,16 @@ struct TVMainTabView: View {
         }
     }
 
+    /// The server answered that requests are unavailable while the Requests
+    /// page is the root page. `AppRouter.closeRequestsScreens` closes pushed
+    /// Requests pages; this closes the root one once nothing covers it, the
+    /// way a pushed Requests page closes when it is back in view.
+    private var closesRequestsRoot: Bool {
+        personalRoot == .requests
+            && router.path.isEmpty
+            && RequestsFeatureStore.shared.isKnownUnavailable
+    }
+
     /// The bar and an entered panel both own chrome focus. Native bar-focus
     /// telemetry can be false during those handoffs, so use shell ownership.
     private var menuOwnsFocus: Bool {
@@ -495,6 +514,13 @@ struct TVMainTabView: View {
             FavoritesView(
                 showsNavigationTitle: false,
                 usesTVTopMenu: true,
+                focusRequest: contentFocusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
+            )
+        case .requests:
+            TVRequestsPage(
+                mode: .hub,
                 focusRequest: contentFocusRequest,
                 isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
@@ -1219,6 +1245,9 @@ struct TVMainTabView: View {
         case .favorites:
             showPersonalRoot(.favorites)
             return
+        case .requestsHub:
+            showPersonalRoot(.requests)
+            return
         default:
             break
         }
@@ -1364,8 +1393,9 @@ struct TVMainTabView: View {
             EmptyView()
             #endif
         case .requestsHub:
-            // A Skyline page that was a root tab: it lays out its own insets,
-            // as the root content does, now that the profile menu pushes it.
+            // The profile menu shows Requests as a root page under the bar
+            // (`navigateFromBar`); nothing on tvOS pushes this route. A pushed
+            // copy would lay out its own insets as the root content does.
             RequestsHubView()
                 .ignoresSafeArea(edges: [.top, .horizontal])
         case .requestDetail(let mediaType, let tmdbId):

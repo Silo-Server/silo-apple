@@ -3,8 +3,8 @@ import SwiftUI
 
 /// Which rows a `TVRequestsPage` shows.
 enum TVRequestsPageMode {
-    /// The top-bar Requests tab: the user's requests, then the discover
-    /// carousels.
+    /// The Requests page the profile menu opens under the top bar: the
+    /// user's requests, then the discover carousels.
     case hub
     /// The user's requests grouped In progress / Needs you / Available.
     case mine
