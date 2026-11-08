@@ -4,7 +4,8 @@ import SwiftUI
 /// interaction), a status summary and the user's own requests one glance
 /// down, then the discover carousels — with the same large-title chrome,
 /// section headers, and card grammar as the library pages. On tvOS the hub
-/// is a Skyline page (`TVRequestsPage`) in the top bar. Entry points are
+/// is a Skyline page (`TVRequestsPage`) that the profile menu opens under the
+/// top bar (`TVMainTabView`). Entry points are
 /// hidden unless the server reports `requests_enabled`.
 struct RequestsHubView: View {
     var body: some View {

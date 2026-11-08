@@ -262,6 +262,13 @@ struct TVMainTabView: View {
         .task(id: currentLibraryAuthority) {
             await loadLibraries(for: currentLibraryAuthority)
         }
+        .onChange(of: closesRequestsRoot, initial: true) { _, close in
+            guard close else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.normalDuration)) {
+                personalRoot = nil
+            }
+            contentFocusRequest += 1
+        }
         .onChange(of: router.path.isEmpty) { _, isEmpty in
             // Returning from a pushed route (Search, detail, settings)
             // re-mounts the bar with whatever suppression it had when it
@@ -435,6 +442,16 @@ struct TVMainTabView: View {
                 router.goBack()
             }
         }
+    }
+
+    /// The server answered that requests are unavailable while the Requests
+    /// page is the root page. `AppRouter.closeRequestsScreens` closes pushed
+    /// Requests pages; this closes the root one once nothing covers it, the
+    /// way a pushed Requests page closes when it is back in view.
+    private var closesRequestsRoot: Bool {
+        personalRoot == .requests
+            && router.path.isEmpty
+            && RequestsFeatureStore.shared.isKnownUnavailable
     }
 
     /// The bar and an entered panel both own chrome focus. Native bar-focus
@@ -723,7 +740,7 @@ struct TVMainTabView: View {
             showsWatchParty: WatchPartyEntry.isAvailable,
             onSwitchProfile: { closePanel(then: switchProfile) },
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
-            onRequests: { closePanel(then: { showPersonalRoot(.requests) }) },
+            onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
             onSettings: { closePanel(then: { navigateFromBar(.settings) }) },
             onChangeAccount: { closePanel(then: showChangeAccount) },
@@ -1228,6 +1245,9 @@ struct TVMainTabView: View {
         case .favorites:
             showPersonalRoot(.favorites)
             return
+        case .requestsHub:
+            showPersonalRoot(.requests)
+            return
         default:
             break
         }
@@ -1373,8 +1393,9 @@ struct TVMainTabView: View {
             EmptyView()
             #endif
         case .requestsHub:
-            // The profile menu shows Requests as a root page under the bar;
-            // a pushed copy lays out its own insets as the root content does.
+            // The profile menu shows Requests as a root page under the bar
+            // (`navigateFromBar`); nothing on tvOS pushes this route. A pushed
+            // copy would lay out its own insets as the root content does.
             RequestsHubView()
                 .ignoresSafeArea(edges: [.top, .horizontal])
         case .requestDetail(let mediaType, let tmdbId):
