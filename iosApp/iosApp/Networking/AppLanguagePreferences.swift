@@ -178,7 +178,7 @@ final class AppLanguagePreferences {
     private(set) var isSaving = false
     /// A system choice is being written back; the picker waits for it.
     private(set) var isWritingBack = false
-    private(set) var errorMessage: String?
+    private(set) var errorMessage: LocalizedStringResource?
     /// The answer for ``loadedIdentity``; nil before one arrives or on a
     /// server without the setting.
     private var choice: Choice?
@@ -343,11 +343,11 @@ final class AppLanguagePreferences {
     struct Option: Identifiable, Equatable, Sendable {
         /// Nil: Match Device.
         let tag: String?
-        let label: String
+        let label: LocalizedStringResource
         var id: String { tag ?? "" }
     }
 
-    static let matchDeviceLabel = "Match Device"
+    static let matchDeviceLabel: LocalizedStringResource = .settingsAppLanguageOptionMatchDevice
 
     /// Match Device, each shipped language by its own name, and a stored tag
     /// the build doesn't ship as itself, so re-saving never clears it (D5).
@@ -357,19 +357,19 @@ final class AppLanguagePreferences {
         }
         if let stored = currentChoice?.tag, !tags.contains(stored) { tags.append(stored) }
         return [Option(tag: nil, label: Self.matchDeviceLabel)]
-            + tags.map { Option(tag: $0, label: AppLanguage.endonym($0)) }
+            + tags.map { Option(tag: $0, label: .verbatim(AppLanguage.endonym($0))) }
     }
 
-    var selectedLabel: String {
-        currentChoice?.tag.map(AppLanguage.endonym) ?? Self.matchDeviceLabel
+    var selectedLabel: LocalizedStringResource {
+        currentChoice?.tag.map { .verbatim(AppLanguage.endonym($0)) } ?? Self.matchDeviceLabel
     }
 
     /// Footer text for the picker.
-    var footer: String {
+    var footer: LocalizedStringResource {
         if let stored = currentChoice?.tag, AppLanguage.match(stored, shipped: shipped) == nil {
-            return "Silo isn’t available in \(AppLanguage.endonym(stored)) yet, so it uses the device language."
+            return .settingsAppLanguageUnshippedFooter(AppLanguage.endonym(stored))
         }
-        return "The language of Silo’s menus and buttons on this profile. Audio and subtitle languages are set in Playback."
+        return .settingsAppLanguageFooter
     }
 
     /// Saves the profile's language (nil: Match Device) and clears this
@@ -421,14 +421,14 @@ final class AppLanguagePreferences {
         await read(identity: identity, sequence: refreshSequence)
     }
 
-    static func writeFailureMessage(for error: Error) -> String {
+    static func writeFailureMessage(for error: Error) -> LocalizedStringResource {
         switch SettingsAPIError.from(error) {
         case .transport:
-            return "Couldn't save the app language. Check the connection and try again."
+            return .settingsAppLanguageSaveFailedConnection
         case .serverUpgradeRequired, .unknownSetting, .scopeNotAllowed:
-            return "This server can't save the app language."
+            return .settingsAppLanguageSaveUnsupported
         default:
-            return "The server didn't save the app language. Try again."
+            return .settingsAppLanguageSaveFailed
         }
     }
 }

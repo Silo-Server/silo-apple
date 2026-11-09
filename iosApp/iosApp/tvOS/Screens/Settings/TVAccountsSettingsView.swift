@@ -23,6 +23,7 @@ struct TVAccountsSettingsView: View {
     /// The account waiting to sign in again whose choices are open.
     @State private var expiredTarget: SavedAccountSummary?
     @FocusState private var focusedRow: Row?
+    @Environment(\.locale) private var locale
 
     private enum Row: Hashable {
         case account(String)
@@ -41,13 +42,13 @@ struct TVAccountsSettingsView: View {
                     serverSection(server)
                 }
 
-                row("Add a server", id: .addServer) {
+                row(.settingsAccountsAddServer, id: .addServer) {
                     // Pushed, so Menu returns here (TVMainTabView `.serverSetup`).
                     router.navigate(to: .serverSetup)
                 }
                 .padding(.top, 18)
 
-                Text("Signing out of an account removes it and its settings from this Apple TV. Signing out of a server's only account removes the server too.")
+                Text(.settingsAccountsFooterAppleTv)
                     .font(.system(size: 20))
                     .foregroundStyle(Color.siloSecondaryText)
                     .padding(.horizontal, 24)
@@ -65,18 +66,20 @@ struct TVAccountsSettingsView: View {
         .defaultFocus($focusedRow, defaultRow)
         .onAppear { directory.reload() }
         .confirmationDialog(
-            expiredTarget.map { "\($0.username ?? "Account") needs to sign in again" } ?? "",
+            expiredTarget.map { account in
+                Text(.settingsAccountsExpiredTitleAppleTv(account.username ?? AppLanguage.string(.settingsAccountsAccount, locale: locale)))
+            } ?? Text(verbatim: ""),
             isPresented: Binding(get: { expiredTarget != nil }, set: { if !$0 { expiredTarget = nil } }),
             titleVisibility: .visible,
             presenting: expiredTarget
         ) { account in
-            Button("Sign in again") {
+            Button(.accountSignInAgain) {
                 router.beginSignIn(onServer: account.serverId, renewing: account.localAccountId)
             }
-            Button("Sign Out", role: .destructive) {
+            Button(.settingsAccountsSignOut, role: .destructive) {
                 Task { await router.confirmSignOut(account: account.localAccountId, onServer: account.serverId) }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(.commonCancel, role: .cancel) {}
         }
     }
 
@@ -90,10 +93,10 @@ struct TVAccountsSettingsView: View {
                 .background(Color.siloIconTile, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 5) {
-                Text("Accounts")
+                Text(.accountsTitle)
                     .font(.system(size: 42, weight: .bold))
                     .foregroundStyle(Color.siloOnSurface)
-                Text("Servers and the accounts signed in to them on this Apple TV.")
+                Text(.serversAccountsBlurbAppleTv)
                     .font(.system(size: 20))
                     .foregroundStyle(Color.siloSecondaryText)
             }
@@ -113,11 +116,15 @@ struct TVAccountsSettingsView: View {
 
     @ViewBuilder
     private func serverSection(_ server: ServerEntry) -> some View {
-        TVSettingsSectionHeader(server.displayName.uppercased())
+        TVSettingsSectionHeader(.verbatim(server.displayName.uppercased()))
             .accessibilityAddTraits(.isHeader)
 
         ForEach(directory.accounts(onServer: server.id)) { account in
-            row(account.username ?? "Account", value: value(for: account), id: .account(account.localAccountId)) {
+            row(
+                account.username.map { .verbatim($0) } ?? .settingsAccountsAccount,
+                value: value(for: account),
+                id: .account(account.localAccountId)
+            ) {
                 if account.needsSignIn {
                     expiredTarget = account
                 } else {
@@ -126,10 +133,10 @@ struct TVAccountsSettingsView: View {
             }
         }
 
-        row("Add an account on \(server.displayName)", id: .addAccount(server.id)) {
+        row(.accountsAddAccountOnServer(server.displayName), id: .addAccount(server.id)) {
             router.beginAddAccount(onServer: server.id)
         }
-        row("Remove Server", id: .removeServer(server.id), isDestructive: true) {
+        row(.settingsAccountsRemove, id: .removeServer(server.id), isDestructive: true) {
             Task { await router.confirmRemoveServer(server.id) }
         }
     }
@@ -137,8 +144,8 @@ struct TVAccountsSettingsView: View {
     /// A pane row: its title, an optional value, and a chevron unless it
     /// removes something.
     private func row(
-        _ title: String,
-        value: String? = nil,
+        _ title: LocalizedStringResource,
+        value: LocalizedStringResource? = nil,
         id: Row,
         isDestructive: Bool = false,
         action: @escaping () -> Void
@@ -167,8 +174,8 @@ struct TVAccountsSettingsView: View {
     }
 
     /// "3 profiles", or "Sign in again" while the account can't be used.
-    private func value(for account: SavedAccountSummary) -> String? {
-        if account.needsSignIn { return "Sign in again" }
+    private func value(for account: SavedAccountSummary) -> LocalizedStringResource? {
+        if account.needsSignIn { return .accountsBadgeSignInAgain }
         return ChangeAccountList.profileCount(account.cachedProfiles.count)
     }
 }

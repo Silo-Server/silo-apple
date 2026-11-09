@@ -21,9 +21,10 @@ struct AccountRemovalConfirmationModifier: ViewModifier {
             .overlay {
                 if let request = router.pendingRemoval {
                     TVSettingsConfirmationOverlay(
-                        title: request.title,
-                        message: request.message ?? "",
-                        confirmTitle: request.confirmTitle,
+                        // AppRouter writes this text in English for now.
+                        title: .verbatim(request.title),
+                        message: request.message.flatMap { $0.isEmpty ? nil : .verbatim($0) },
+                        confirmTitle: .verbatim(request.confirmTitle),
                         cancel: cancel,
                         confirm: { router.perform(request) }
                     )

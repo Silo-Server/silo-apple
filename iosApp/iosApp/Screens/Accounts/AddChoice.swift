@@ -19,18 +19,25 @@ enum AddChoice {
     case account
     case server
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .account: "Add an account"
-        case .server: "Add a server"
+        case .account: .changeAccountAddAccount
+        case .server: .accountsAddAServer
         }
     }
 
-    /// The line under the title.
-    var detail: String {
+    /// The line under the title. One whole sentence per device, so a
+    /// translation can agree with the device's name.
+    var detail: LocalizedStringResource {
         switch self {
-        case .account: "Sign in to another account on a saved server"
-        case .server: "Connect this \(DeviceNoun.current) to another Silo server"
+        case .account: .pickerAddAccountDetail
+        case .server:
+            switch AppleDeviceIdentity.current.clientFamily {
+            case "tablet": .accountsAddServerDetailIpad
+            case "desktop": .accountsAddServerDetailMac
+            case "tv": .accountsAddServerDetailAppleTv
+            default: .accountsAddServerDetailIphone
+            }
         }
     }
 }

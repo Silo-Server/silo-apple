@@ -9,6 +9,7 @@ struct ChangeAccountView: View {
     @Environment(AppRouter.self) private var router
     @State private var model = ChangeAccountModel.shared
     @State private var directory = AccountDirectory.shared
+    @Environment(\.locale) private var locale
 
     var body: some View {
         List {
@@ -20,10 +21,10 @@ struct ChangeAccountView: View {
                 Button {
                     model.addServer(router: router)
                 } label: {
-                    ChangeAccountActionLabel(title: "Add Server")
+                    ChangeAccountActionLabel(title: .serversAddServer)
                 }
             } footer: {
-                Text("\(AddChoice.server.detail).")
+                Text(.accountsChangeAccountAddServerFooter(AppLanguage.string(AddChoice.server.detail, locale: locale)))
             }
             .listRowBackground(Color.siloGroupedCell)
         }
@@ -31,7 +32,7 @@ struct ChangeAccountView: View {
         // The app's tint, whichever screen opened this one.
         .tint(.siloOnSurface)
         .disabled(model.isBusy)
-        .navigationTitle("Change Account")
+        .navigationTitle(Text(.accountsChangeAccountNavigationTitle))
         .siloNavigationTitleDisplayMode(.inline)
         .task { model.reload() }
         .onChange(of: directory.accounts) { _, _ in
@@ -51,16 +52,16 @@ struct ChangeAccountView: View {
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     // Not `.destructive`: that removes the row at once, and it
                     // would stay gone after Cancel in the confirmation.
-                    Button("Sign Out") { signOut(row) }
+                    Button(.settingsAccountsSignOut) { signOut(row) }
                         .tint(.red)
                 }
                 .contextMenu {
                     if row.needsSignIn {
-                        Button("Sign In Again", systemImage: "person.crop.circle.badge.exclamationmark") {
+                        Button(.settingsAccountsSignInAgain, systemImage: "person.crop.circle.badge.exclamationmark") {
                             model.choose(row, router: router)
                         }
                     }
-                    Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                    Button(.settingsAccountsSignOut, systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
                         signOut(row)
                     }
                 }
@@ -69,7 +70,7 @@ struct ChangeAccountView: View {
             Button {
                 model.addAccount(on: server, router: router)
             } label: {
-                ChangeAccountActionLabel(title: "Add Account")
+                ChangeAccountActionLabel(title: .accountsChangeAccountAddAccountShort)
             }
         } header: {
             ChangeAccountServerHeader(server: server.server)
@@ -144,10 +145,10 @@ private struct ChangeAccountRowLabel: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(row.isCurrent ? .isSelected : [])
-        .accessibilityHint(row.accessibilityHint)
+        .accessibilityHint(Text(row.accessibilityHint))
     }
 
-    private var detail: String? {
+    private var detail: LocalizedStringResource? {
         row.needsSignIn ? ChangeAccountBadge.signInAgain.title : row.profileCount
     }
 }
@@ -155,7 +156,7 @@ private struct ChangeAccountRowLabel: View {
 /// Add Account or Add Server: a plus in the avatar's column, so the
 /// title lines up with the usernames above it.
 private struct ChangeAccountActionLabel: View {
-    let title: String
+    let title: LocalizedStringResource
     @ScaledMetric(relativeTo: .body) private var leadingWidth: CGFloat = ChangeAccountMetrics.leadingWidth
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 

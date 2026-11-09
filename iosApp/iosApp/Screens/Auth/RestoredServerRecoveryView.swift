@@ -133,7 +133,7 @@ struct RestoredServerRecoveryView: View {
             if showForgetConfirmation {
                 TVSettingsConfirmationOverlay(
                     title: "Forget this server?",
-                    message: forgetMessage,
+                    message: .verbatim(forgetMessage),
                     confirmTitle: "Forget Server",
                     cancel: cancelForget,
                     confirm: confirmForget

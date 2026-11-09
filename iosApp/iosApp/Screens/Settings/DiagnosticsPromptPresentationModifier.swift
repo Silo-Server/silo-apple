@@ -7,6 +7,7 @@ import SwiftUI
 struct DiagnosticsPromptPresentationModifier: ViewModifier {
     @Bindable var model: DiagnosticsViewModel
     let isEnabled: Bool
+    @Environment(\.locale) private var locale
 
     func body(content: Content) -> some View {
         #if os(tvOS)
@@ -15,7 +16,7 @@ struct DiagnosticsPromptPresentationModifier: ViewModifier {
                 TVDiagnosticsPromptScreen(prompt: prompt, model: model)
             }
             .alert(item: gated($model.notice)) { notice in
-                Alert(title: Text("Diagnostics"), message: Text(notice.message))
+                Alert(title: Text(.settingsDiagnostics), message: Text(verbatim: notice.text(in: locale)))
             }
         #else
         content
@@ -24,7 +25,7 @@ struct DiagnosticsPromptPresentationModifier: ViewModifier {
                     .interactiveDismissDisabled()
             }
             .alert(item: gated($model.notice)) { notice in
-                Alert(title: Text("Diagnostics"), message: Text(notice.message))
+                Alert(title: Text(.settingsDiagnostics), message: Text(verbatim: notice.text(in: locale)))
             }
         #endif
     }

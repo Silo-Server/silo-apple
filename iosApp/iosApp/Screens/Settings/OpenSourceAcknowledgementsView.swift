@@ -34,33 +34,33 @@ enum OpenSourceAcknowledgements {
     /// The first two resources are the repository's own LICENSE and
     /// APPSTORE-EXCEPTION.md, copied into the bundle by project.yml.
     static let resources: [Resource] = [
-        Resource(title: "GNU Affero General Public License version 3", name: "LICENSE", fileExtension: nil),
-        Resource(title: "Silo Apple App Store / DRM Exception", name: "APPSTORE-EXCEPTION", fileExtension: "md"),
-        Resource(title: "Overview and provenance", name: "README"),
+        Resource(title: "GNU Affero General Public License version 3", name: "LICENSE", fileExtension: nil), // i18n-ignore: license title, legal text
+        Resource(title: "Silo Apple App Store / DRM Exception", name: "APPSTORE-EXCEPTION", fileExtension: "md"), // i18n-ignore: license title, legal text
+        Resource(title: "Overview and provenance", name: "README"), // i18n-ignore: heading inside the English-only license text
         Resource(
-            title: "AetherEngine — LGPL 3 and Apple Store / DRM Exception",
+            title: "AetherEngine — LGPL 3 and Apple Store / DRM Exception", // i18n-ignore: license title, legal text
             name: "AetherEngine-LGPL-3.0-App-Store-Exception"
         ),
-        Resource(title: "GNU General Public License version 3", name: "GPL-3.0"),
-        Resource(title: "FFmpegBuild and FFmpeg — LGPL 2.1", name: "FFmpegBuild-LGPL-2.1"),
-        Resource(title: "dav1d — BSD 2-Clause", name: "dav1d-BSD-2-Clause"),
-        Resource(title: "zimg — WTFPL version 2", name: "zimg-WTFPL"),
-        Resource(title: "libzvbi ure.c — MIT", name: "libzvbi-ure-MIT"),
-        Resource(title: "LibDovi packaging — MIT", name: "LibDovi-Packaging-MIT"),
-        Resource(title: "libdovi — MIT", name: "libdovi-MIT"),
-        Resource(title: "Nuke and NukeUI — MIT", name: "Nuke-MIT"),
-        Resource(title: "SwiftAssRenderer — MIT", name: "SwiftAssRenderer-MIT"),
-        Resource(title: "SwiftLibass — MIT", name: "SwiftLibass-MIT"),
-        Resource(title: "Combine Schedulers — MIT", name: "combine-schedulers-MIT"),
-        Resource(title: "Concurrency Extras — MIT", name: "swift-concurrency-extras-MIT"),
-        Resource(title: "Issue Reporting — MIT", name: "swift-issue-reporting-MIT"),
-        Resource(title: "libass — ISC", name: "libass-ISC"),
-        Resource(title: "Fontconfig", name: "Fontconfig"),
-        Resource(title: "FreeType — FreeType License", name: "FreeType"),
-        Resource(title: "FriBidi — LGPL 2.1", name: "FriBidi-LGPL-2.1"),
-        Resource(title: "HarfBuzz", name: "HarfBuzz"),
-        Resource(title: "libpng", name: "libpng"),
-        Resource(title: "ThumbHash decoder — MIT", name: "ThumbHash-MIT"),
+        Resource(title: "GNU General Public License version 3", name: "GPL-3.0"), // i18n-ignore: license title, legal text
+        Resource(title: "FFmpegBuild and FFmpeg — LGPL 2.1", name: "FFmpegBuild-LGPL-2.1"), // i18n-ignore: license title, legal text
+        Resource(title: "dav1d — BSD 2-Clause", name: "dav1d-BSD-2-Clause"), // i18n-ignore: license title, legal text
+        Resource(title: "zimg — WTFPL version 2", name: "zimg-WTFPL"), // i18n-ignore: license title, legal text
+        Resource(title: "libzvbi ure.c — MIT", name: "libzvbi-ure-MIT"), // i18n-ignore: license title, legal text
+        Resource(title: "LibDovi packaging — MIT", name: "LibDovi-Packaging-MIT"), // i18n-ignore: license title, legal text
+        Resource(title: "libdovi — MIT", name: "libdovi-MIT"), // i18n-ignore: license title, legal text
+        Resource(title: "Nuke and NukeUI — MIT", name: "Nuke-MIT"), // i18n-ignore: license title, legal text
+        Resource(title: "SwiftAssRenderer — MIT", name: "SwiftAssRenderer-MIT"), // i18n-ignore: license title, legal text
+        Resource(title: "SwiftLibass — MIT", name: "SwiftLibass-MIT"), // i18n-ignore: license title, legal text
+        Resource(title: "Combine Schedulers — MIT", name: "combine-schedulers-MIT"), // i18n-ignore: license title, legal text
+        Resource(title: "Concurrency Extras — MIT", name: "swift-concurrency-extras-MIT"), // i18n-ignore: license title, legal text
+        Resource(title: "Issue Reporting — MIT", name: "swift-issue-reporting-MIT"), // i18n-ignore: license title, legal text
+        Resource(title: "libass — ISC", name: "libass-ISC"), // i18n-ignore: license title, legal text
+        Resource(title: "Fontconfig", name: "Fontconfig"), // i18n-ignore: license title, legal text
+        Resource(title: "FreeType — FreeType License", name: "FreeType"), // i18n-ignore: license title, legal text
+        Resource(title: "FriBidi — LGPL 2.1", name: "FriBidi-LGPL-2.1"), // i18n-ignore: license title, legal text
+        Resource(title: "HarfBuzz", name: "HarfBuzz"), // i18n-ignore: license title, legal text
+        Resource(title: "libpng", name: "libpng"), // i18n-ignore: license title, legal text
+        Resource(title: "ThumbHash decoder — MIT", name: "ThumbHash-MIT"), // i18n-ignore: license title, legal text
     ]
 
     /// One titled license text per resource.
@@ -124,7 +124,7 @@ struct OpenSourceAcknowledgementsView: View {
         #else
         .background(Color.siloBackground)
         #endif
-        .navigationTitle("Open Source Licenses")
+        .navigationTitle(Text(.settingsAboutOpenSourceLicenses))
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
     }
@@ -144,19 +144,19 @@ struct TVOpenSourceAcknowledgementsOverlay: View {
             VStack(alignment: .leading, spacing: 24) {
                 HStack(spacing: 24) {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("CREDITS")
+                        Text(.settingsAboutCreditsHeaderTv)
                             .font(.system(size: 15, weight: .semibold, design: .monospaced))
                             .tracking(2)
                             .foregroundStyle(Color.siloSecondaryText)
 
-                        Text("Acknowledgements")
+                        Text(.settingsAboutAcknowledgements)
                             .font(.system(size: 38, weight: .semibold))
                             .foregroundStyle(Color.siloOnSurface)
                     }
 
                     Spacer(minLength: 40)
 
-                    Button("Done", action: dismiss)
+                    Button(.commonDone, action: dismiss)
                         .font(.system(size: 24, weight: .semibold))
                         .frame(width: 210)
                         .buttonStyle(TVSettingsPaneRowStyle())
@@ -190,7 +190,7 @@ struct TVOpenSourceAcknowledgementsOverlay: View {
                 }
                 .focusable()
                 .focused($focusedElement, equals: .document)
-                .accessibilityLabel("Acknowledgements and open-source licenses")
+                .accessibilityLabel(Text(.settingsAboutAcknowledgementsLabel))
             }
             .padding(40)
             .frame(maxWidth: 1500, maxHeight: 900, alignment: .topLeading)

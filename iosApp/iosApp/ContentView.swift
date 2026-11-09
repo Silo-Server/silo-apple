@@ -1416,7 +1416,7 @@ struct ContentView: View {
         }
         await diagnosticsModel.handleForeground()
         await diagnosticsModel.createAndSendManualReport()
-        print("[DebugDiagnostics] \(diagnosticsModel.notice?.message ?? "No upload result.")")
+        print("[DebugDiagnostics] \(diagnosticsModel.notice?.text(in: Locale(identifier: "en")) ?? "No upload result.")")
     }
     #endif
 

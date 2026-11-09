@@ -401,8 +401,8 @@ final class SettingsConformanceTests: XCTestCase {
         let values = try XCTUnwrap(schema["values"] as? [[String: Any]])
         XCTAssertEqual(values.compactMap { $0["value"] as? String }, BufferingQualityMode.allCases.map(\.wireValue))
         XCTAssertEqual(values.compactMap { $0["label"] as? String }, BufferingQualityMode.allCases.map(\.label))
-        XCTAssertEqual(definition["label"] as? String, SettingsViewModel.bufferingQualityTitle)
-        XCTAssertEqual(definition["description"] as? String, SettingsViewModel.bufferingQualityDescription)
+        XCTAssertEqual(definition["label"] as? String, AppLanguage.string(SettingsViewModel.bufferingQualityTitle))
+        XCTAssertEqual(definition["description"] as? String, AppLanguage.string(SettingsViewModel.bufferingQualityDescription))
         XCTAssertEqual(definition["allowed_scopes"] as? [String], ["profile", "profile_device"])
     }
 
