@@ -15,6 +15,27 @@ struct OnboardingTourView: View {
     @State private var viewModel = OnboardingTourViewModel()
 
     var body: some View {
+        content
+            .navigationBarBackButtonHidden()
+            .task { await viewModel.load(resumeStepId: resumeStepId) }
+            .onChange(of: viewModel.finished) { _, finished in
+                guard finished else { return }
+                if let onDismiss {
+                    onDismiss()
+                } else {
+                    router.resetToHome()
+                }
+                apply(route: viewModel.completionRoute)
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        #if os(macOS)
+        OnboardingTourMacLayout(viewModel: viewModel) { route in
+            Task { await viewModel.finish(route: route) }
+        }
+        #else
         AuroraScreen(variant: .signIn, scrim: .soft) {
             if viewModel.isLoading || viewModel.steps.isEmpty {
                 ProgressView()
@@ -24,19 +45,12 @@ struct OnboardingTourView: View {
                 tourBody
             }
         }
-        .navigationBarBackButtonHidden()
-        .task { await viewModel.load(resumeStepId: resumeStepId) }
-        .onChange(of: viewModel.finished) { _, finished in
-            guard finished else { return }
-            if let onDismiss {
-                onDismiss()
-            } else {
-                router.resetToHome()
-            }
-            apply(route: viewModel.completionRoute)
-        }
+        #endif
     }
 
+    // MARK: Phone and iPad layout (the Mac's is OnboardingTourMacLayout)
+
+    #if !os(macOS)
     @ViewBuilder
     private var tourBody: some View {
         let step = viewModel.steps[viewModel.currentIndex]
@@ -110,7 +124,7 @@ struct OnboardingTourView: View {
         VStack(alignment: .leading, spacing: 0) {
             Spacer()
 
-            Image(systemName: illustrationSymbol(step.illustration))
+            Image(systemName: Self.illustrationSymbol(step.illustration))
                 .font(.system(size: 30, weight: .medium))
                 .foregroundStyle(Color.auroraInk)
                 .frame(width: 56, height: 56)
@@ -218,9 +232,10 @@ struct OnboardingTourView: View {
         .padding(10)
         .auroraGlass(cornerRadius: 20)
     }
+    #endif
 
     /// Client-side illustration keys — the server only ever names them.
-    private func illustrationSymbol(_ key: String?) -> String {
+    static func illustrationSymbol(_ key: String?) -> String {
         switch key {
         case "watchlist": return "heart.fill"
         case "watch-together": return "person.2.fill"
@@ -232,7 +247,7 @@ struct OnboardingTourView: View {
         }
     }
 
-    private static let supportedRoutes: Set<String> = [
+    static let supportedRoutes: Set<String> = [
         "/calendar",
         "/requests",
         "/taste-seed",
