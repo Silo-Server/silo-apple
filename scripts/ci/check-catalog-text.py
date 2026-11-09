@@ -166,8 +166,10 @@ def argument_literals(src: str, start: int) -> list[tuple[int, str]]:
             j = end
             continue
         if c in "([{":
-            # A bare `(` groups an expression; one after a name, `)` or `]` calls.
-            grouping = c == "(" and not re.search(r"[\w)\]?!>]\s*$", src[start:j])
+            # A bare `(` groups an expression; one after a name, `)`, `]` or `>`
+            # calls, as does one after a postfix `?` / `!` (`f?(`, `f!(`). An
+            # operator `?` / `!` (`??`, a ternary, `!x`) still groups.
+            grouping = c == "(" and not re.search(r"(?:[\w)\]>]|[\w)\]][?!])$", src[start:j].rstrip())
             groups.append(grouping)
             depth += 0 if grouping else 1
         elif c in ")]}":
