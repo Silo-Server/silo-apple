@@ -500,6 +500,25 @@ struct APIv2DiscoverRow: Decodable {
     let type: String
     let title: String
     let items: [SectionItem]
+    /// The catalog key and arguments for a title the server wrote, as on
+    /// home sections; absent from older servers.
+    let titleKey: String?
+    let titleArgs: [String: String]?
+
+    private enum CodingKeys: String, CodingKey {
+        case type, title, items, titleKey, titleArgs
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        type = try c.decode(String.self, forKey: .type)
+        title = try c.decode(String.self, forKey: .title)
+        items = try c.decode([SectionItem].self, forKey: .items)
+        // Optional extras: a malformed key or argument map shows `title`
+        // rather than failing the row.
+        titleKey = (try? c.decodeIfPresent(String.self, forKey: .titleKey)) ?? nil
+        titleArgs = (try? c.decodeIfPresent([String: String].self, forKey: .titleArgs)) ?? nil
+    }
 }
 
 /// In-memory provenance for the existing library section consumers.

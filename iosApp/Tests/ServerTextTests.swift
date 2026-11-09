@@ -64,6 +64,17 @@ final class ServerTextTests: XCTestCase {
         XCTAssertEqual(badArgs.displayTitle(language: "es"), "Recently Added in Films")
     }
 
+    func testDiscoverRowKeepsItsTitleKey() throws {
+        let decoder = HTTPClient.makeJSONDecoder()
+        let row = try decoder.decode(APIv2DiscoverRow.self, from: Data(#"{"type":"recently_added","title":"Recently Added in Films","title_key":"home.section.recentlyAddedIn","title_args":{"library":"Films"},"items":[]}"#.utf8))
+        XCTAssertEqual(row.titleKey, "home.section.recentlyAddedIn")
+        XCTAssertEqual(row.titleArgs, ["library": "Films"])
+        // A malformed key shows the title rather than failing the row.
+        let malformed = try decoder.decode(APIv2DiscoverRow.self, from: Data(#"{"type":"t","title":"T","title_key":7,"items":[]}"#.utf8))
+        XCTAssertNil(malformed.titleKey)
+        XCTAssertEqual(malformed.title, "T")
+    }
+
     func testSectionTitleArgumentIsIsolatedOnlyRightToLeft() {
         AppLanguage.catalogLookup = { key, _ in key == "home.section.recentlyAddedIn" ? "%1$@ ←" : nil }
         XCTAssertEqual(
