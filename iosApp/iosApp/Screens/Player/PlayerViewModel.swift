@@ -1295,6 +1295,9 @@ class PlayerViewModel {
     var canRequestPlayPause: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canPlayPause == true }
     var canRequestSeek: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canSeek == true }
     var effectivePlaybackSpeed: Double { isWatchPartyPlayback ? watchPartyCorrectionRate : settings.playbackSpeed }
+    /// The speed to quote to the viewer. A party plays at 1x, so its momentary
+    /// drift corrections never move a displayed finish time.
+    var nominalPlaybackSpeed: Double { isWatchPartyPlayback ? 1 : settings.playbackSpeed }
     /// Credits occurrences already skipped in this session, by marker key.
     private var autoSkippedCreditsKeys: Set<String> = []
     /// Recaps already skipped for the current content, by marker key.

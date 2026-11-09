@@ -762,10 +762,14 @@ private struct MobilePlayerTimeline: View {
             Button {
                 showsRemainingTime.toggle()
             } label: {
-                Text(trailingTimeText)
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .monospacedDigit()
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    // Date(), not the schedule date: the position redraws this
+                    // between ticks, and a stale clock would flicker the minute.
+                    Text(trailingTimeText(now: Date()))
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .monospacedDigit()
+                }
             }
             .buttonStyle(.plain)
             .accessibilityLabel(showsRemainingTime ? "Time Remaining" : "Duration")
@@ -773,11 +777,17 @@ private struct MobilePlayerTimeline: View {
         }
     }
 
-    private var trailingTimeText: String {
-        if showsRemainingTime {
-            return "−" + PlayerTimeFormatter.formatHMS(max(viewModel.duration - displayTime, 0))
-        }
-        return PlayerTimeFormatter.formatHMS(viewModel.duration)
+    private func trailingTimeText(now: Date) -> String {
+        let remaining = max(viewModel.duration - displayTime, 0)
+        let time = showsRemainingTime
+            ? "−" + PlayerTimeFormatter.formatHMS(remaining)
+            : PlayerTimeFormatter.formatHMS(viewModel.duration)
+        return PlayerEndTime.appending(
+            to: time,
+            now: now,
+            remaining: remaining,
+            speed: viewModel.nominalPlaybackSpeed
+        )
     }
 
     private func statusChip(systemImage: String, text: String) -> some View {
