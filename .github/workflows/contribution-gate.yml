@@ -1,0 +1,21 @@
+name: Contribution gate
+
+# Closes pull requests that fall outside the policy in CONTRIBUTING.md. The rules
+# live in silo-server's reusable-contribution-gate.yml, shared by every Silo
+# client repository.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions: {}
+
+concurrency:
+  group: contribution-gate-${{ github.event.pull_request.number }}
+
+jobs:
+  gate:
+    permissions:
+      issues: read
+      pull-requests: write
+    uses: Silo-Server/silo-server/.github/workflows/reusable-contribution-gate.yml@main
