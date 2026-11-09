@@ -96,6 +96,30 @@ final class SettingsViewModel {
         set { PlayerSettings.shared.setAutoPlayNextEpisode(newValue) }
     }
 
+    /// (id, label) for every allowed threshold, shared by the iOS/macOS and tvOS rows.
+    static let stillWatchingChoices: [(id: String, label: String)] =
+        PlayerSettings.stillWatchingThresholdRange.map { (String($0), stillWatchingLabel($0)) }
+
+    /// The threshold as a picker tag.
+    var stillWatchingSelection: String {
+        get { String(stillWatchingThreshold) }
+        set { if let threshold = Int(newValue) { stillWatchingThreshold = threshold } }
+    }
+
+    static func stillWatchingLabel(_ count: Int) -> String {
+        switch count {
+        case 0: return "Never Ask"
+        case 1: return "1 Episode"
+        default: return "\(count) Episodes"
+        }
+    }
+
+    /// Local: the streak it limits exists only on this device.
+    var stillWatchingThreshold: Int {
+        get { PlayerSettings.shared.stillWatchingThreshold }
+        set { PlayerSettings.shared.setStillWatchingThreshold(newValue) }
+    }
+
     var nextUpPromptSeconds: Int {
         get { PlayerSettings.shared.nextUpPromptSeconds }
         set { PlayerSettings.shared.setNextUpPromptSeconds(newValue) }

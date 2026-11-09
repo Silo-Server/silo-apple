@@ -759,6 +759,7 @@ class PlayerViewModel {
     var segmentSkipLabel: String { showRecapSkip ? "Skip Recap" : "Skip Credits" }
 
     func skipCurrentSegment() {
+        stillWatchingGuard.recordViewerAction()
         if showRecapSkip, let recapRange {
             seekTo(seconds: recapRange.end)
         } else if showCreditsSkip {
@@ -1506,6 +1507,7 @@ class PlayerViewModel {
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
     private var nextUpAutoplayCancelled = false
+    private var stillWatchingGuard = PlayerStillWatchingGuard()
     /// Set when the user taps Keep Watching; suppresses re-presenting the
     /// pre-end Next Up prompt while the playhead stays inside the prompt
     /// window. Cleared when the playhead leaves the window (seek back) or a
@@ -3977,7 +3979,7 @@ class PlayerViewModel {
            nextUpPickAutoPlays,
            !isPickingAnotherShufflePick,
            !nextUpAutoplayCancelled {
-            playNextEpisodeNow()
+            playNextEpisodeNow(unattended: true)
             return
         }
         startNextUpCountdownIfNeeded()
@@ -3988,6 +3990,7 @@ class PlayerViewModel {
     /// into, so it waits for Play Now.
     private var nextUpPickAutoPlays: Bool {
         guard settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
+        guard !stillWatchingGuard.shouldGate(threshold: settings.stillWatchingThreshold) else { return false }
         return !pick.isFromOnDeck
     }
 
@@ -4018,7 +4021,7 @@ class PlayerViewModel {
                 self.nextUpCountdownSeconds = remaining
             }
             guard !Task.isCancelled, !self.isDisposed else { return }
-            self.playNextEpisodeNow()
+            self.playNextEpisodeNow(unattended: true)
         }
     }
 
@@ -4050,7 +4053,7 @@ class PlayerViewModel {
             : max(1, settings.nextUpPromptSeconds)
         nextUpCountdownSeconds = max(0, Int(ceil(remaining)))
         if remaining <= 0.35 {
-            playNextEpisodeNow()
+            playNextEpisodeNow(unattended: true)
         }
     }
 
@@ -4123,9 +4126,20 @@ class PlayerViewModel {
         }
     }
 
-    func playNextEpisodeNow() {
+    private func recordNextUpStart(unattended: Bool) {
+        if unattended {
+            stillWatchingGuard.recordAutoAdvance()
+        } else {
+            stillWatchingGuard.recordViewerAction()
+        }
+    }
+
+    func playNextEpisodeNow(unattended: Bool = false) {
         guard !isWatchPartyPlayback else { return }
         if shuffleState != nil {
+            // A repeat call while the advance is in flight is dropped below
+            // and must not count again.
+            if !isStartingNextUp { recordNextUpStart(unattended: unattended) }
             playNextShufflePick()
             return
         }
@@ -4140,6 +4154,7 @@ class PlayerViewModel {
         case .expand:
             // Presentation only: no prepare, load, seek, or play command.
             // Preserve a preview that is already playing, paused or buffering.
+            if !unattended { stillWatchingGuard.recordViewerAction() }
             cancelNextUpCountdown()
             nextUpAutoplayCancelled = true
             nextUpPromptDismissed = true
@@ -4149,6 +4164,7 @@ class PlayerViewModel {
         case .load(let id):
             contentId = id
         }
+        recordNextUpStart(unattended: unattended)
         var request = LoadRequest(
             contentId: contentId,
             preferredFileId: nil,
@@ -5993,6 +6009,11 @@ class PlayerViewModel {
         viewerQualityChange: Bool = false
     ) {
         guard !isDisposed else { return }
+        // Picking another title is a deliberate start. Reloads of the same
+        // title (quality, track, recovery) say nothing about the viewer.
+        if origin == .userInitiated, request.contentId != lastLoadRequest?.contentId {
+            stillWatchingGuard.recordViewerAction()
+        }
         // A renewal still waiting on its progress sync belongs to the load
         // this one replaces. Left pending, it would reload its own captured
         // request over the item that is starting now.
@@ -7091,6 +7112,7 @@ class PlayerViewModel {
     func togglePlayPause() {
         // Nothing can play until the reconnect hands over a new transport.
         guard !isReconnecting else { return }
+        stillWatchingGuard.recordViewerAction()
         if watchPartyAdapter?.request(isPlaying ? .pause : .play) == true { return }
         // While a replan replaces the transport, the outgoing engine's state
         // can disagree with the viewer's: it sits paused under a recorded Play
@@ -7380,6 +7402,7 @@ class PlayerViewModel {
     @discardableResult
     func skipForward(_ seconds: Double? = nil, revealingControls: Bool = true) -> Bool {
         guard !refusesSeekAtEndOfFile else { return false }
+        stillWatchingGuard.recordViewerAction()
         let seconds = seconds ?? Double(skipIntervals.forward)
         Self.logger.info(
             "[CMP-SEEK] skip forward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -7396,6 +7419,7 @@ class PlayerViewModel {
     @discardableResult
     func skipBackward(_ seconds: Double? = nil, revealingControls: Bool = true) -> Bool {
         guard !refusesSeekAtEndOfFile else { return false }
+        stillWatchingGuard.recordViewerAction()
         let seconds = seconds ?? Double(skipIntervals.backward)
         Self.logger.info(
             "[CMP-SEEK] skip backward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -7525,6 +7549,7 @@ class PlayerViewModel {
     /// the scrubber before it fades.
     func commitHoldSeek() {
         guard isHoldSeeking else { return }
+        stillWatchingGuard.recordViewerAction()
         Self.logger.info(
             "[CMP-SEEK] hold seek commit target=\(self.scrubPreviewTime, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
@@ -8107,6 +8132,7 @@ class PlayerViewModel {
     func endScrub(resumePlayback: Bool = false, shouldSeek: Bool = true) {
         guard !refusesSeekAtEndOfFile else { return }
         guard isScrubbing else { return }
+        stillWatchingGuard.recordViewerAction()
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
         let reloadsPlaybackPipeline: Bool

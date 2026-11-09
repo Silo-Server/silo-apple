@@ -666,6 +666,15 @@ final class PlayerSettings {
         }
     }
 
+    /// Episodes that may auto-play in a row before Next Up waits for the
+    /// viewer. Client-local in the settings contract; 0 never waits.
+    private(set) var stillWatchingThreshold: Int {
+        didSet {
+            guard !isLoadingCache else { return }
+            defaults.set(stillWatchingThreshold, forKey: Self.cacheKey(Keys.stillWatchingThreshold))
+        }
+    }
+
     /// Synced keys this device holds its own `profile_device` value for.
     ///
     /// Read from each resolved row's scope, and kept current by the setters
@@ -790,6 +799,9 @@ final class PlayerSettings {
         )
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
+        )
+        stillWatchingThreshold = Self.clampStillWatchingThreshold(
+            Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: 3)
         )
         deviceOverriddenKeys = Self.cachedOverriddenKeys(defaults)
 
@@ -1081,6 +1093,10 @@ final class PlayerSettings {
     func setAutoPlayNextEpisode(_ enabled: Bool) {
         autoPlayNextEpisode = enabled
         enqueueDeviceValue(.autoPlayNext, value: .bool(enabled))
+    }
+
+    func setStillWatchingThreshold(_ threshold: Int) {
+        stillWatchingThreshold = Self.clampStillWatchingThreshold(threshold)
     }
 
     func setNextUpPromptSeconds(_ seconds: Int) {
@@ -1879,6 +1895,9 @@ final class PlayerSettings {
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
         )
+        stillWatchingThreshold = Self.clampStillWatchingThreshold(
+            Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: 3)
+        )
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
         dolbyVisionEnabled = Self.cachedBool(defaults, key: Keys.dolbyVisionEnabled, defaultValue: true)
         seekCacheEnabled = Self.cachedBool(
@@ -2305,6 +2324,7 @@ final class PlayerSettings {
         defaults.set(false, forKey: key(Keys.autoSkipRecap))
         defaults.set(true, forKey: key(Keys.autoPlayNextEpisode))
         defaults.set(30, forKey: key(Keys.nextUpPromptSeconds))
+        defaults.set(3, forKey: key(Keys.stillWatchingThreshold))
         defaults.set(true, forKey: key(Keys.hdrEnabled))
         defaults.set(true, forKey: key(Keys.dolbyVisionEnabled))
         defaults.set(true, forKey: key(Keys.seekCacheEnabled))
@@ -2463,6 +2483,12 @@ final class PlayerSettings {
         return defaults.integer(forKey: scopedKey)
     }
 
+    static let stillWatchingThresholdRange = 0...20
+
+    private static func clampStillWatchingThreshold(_ threshold: Int) -> Int {
+        min(max(threshold, stillWatchingThresholdRange.lowerBound), stillWatchingThresholdRange.upperBound)
+    }
+
     private static func clampNextUpPromptSeconds(_ seconds: Int) -> Int {
         max(0, min(seconds, 120))
     }
@@ -2516,6 +2542,7 @@ final class PlayerSettings {
         static let autoPlayNextEpisode = "autoPlayNext"
         static let legacyAutoPlayNextEpisode = "player.autoPlayNextEpisode"
         static let nextUpPromptSeconds = "player.nextUpPromptSeconds"
+        static let stillWatchingThreshold = "player.passoutThreshold"
         static let deviceOverriddenKeys = "player.deviceOverriddenKeys"
     }
 }

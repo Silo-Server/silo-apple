@@ -271,6 +271,12 @@ struct TVPlaybackSettingsPane: View {
         .focused(detailFocus, equals: .playbackAutoPlayNext)
 
         TVSettingsPickerRow(
+            title: "Still Watching Prompt",
+            value: SettingsViewModel.stillWatchingLabel(viewModel.stillWatchingThreshold)
+        ) { showPicker(.stillWatching) }
+        .focused(detailFocus, equals: .playbackStillWatching)
+
+        TVSettingsPickerRow(
             title: "Show Next Up",
             value: TVSettingsOptions.label(for: String(viewModel.nextUpPromptSeconds), in: TVSettingsOptions.nextUpPrompt)
         ) { showPicker(.nextUpPrompt) }
@@ -499,6 +505,13 @@ struct TVPlaybackSettingsPane: View {
                 ),
                 returnFocus: .playbackDeinterlaceFieldRate
             )
+        case .stillWatching:
+            TVSettingsPickerRequest(
+                title: "Still Watching Prompt",
+                options: SettingsViewModel.stillWatchingChoices.map { TVSettingsOption(id: $0.id, label: $0.label) },
+                selection: $viewModel.stillWatchingSelection,
+                returnFocus: .playbackStillWatching
+            )
         case .nextUpPrompt:
             TVSettingsPickerRequest(
                 title: "Show Next Up",
@@ -562,6 +575,7 @@ struct TVPlaybackSettingsPane: View {
         case bufferAhead
         case deinterlaceMode
         case deinterlaceFieldRate
+        case stillWatching
         case nextUpPrompt
         case introSkipMode
         case skipInterval(SeekMedia, SeekDirection)
