@@ -1,9 +1,13 @@
 # Apple paths whose interface text all comes from the string catalog. Checked by
 # scripts/ci/check-catalog-text.py. Add a path once all of its text is converted;
 # `mappings` also checks sentences returned or mapped outside a call (docs/i18n.md).
+iosApp/DownloadsActivity
 iosApp/iosApp/Components/AccountRemovalConfirmation.swift
+iosApp/iosApp/Control
 # Navigation/UICustomizationPreferences.swift still returns English status messages (follow-up).
+iosApp/iosApp/Overlays
 iosApp/iosApp/Screens/Accounts
+iosApp/iosApp/Screens/Audio
 iosApp/iosApp/Screens/Servers
 iosApp/iosApp/Screens/Settings
 iosApp/iosApp/Shared/Diagnostics

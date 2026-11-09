@@ -209,7 +209,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .languages,
             iconCapable: true,
-            getValue: { ($0.multiAudio == true) ? "Multi-Audio" : nil }
+            getValue: { ($0.multiAudio == true) ? AppLanguage.string(.overlaysMultiAudio) : nil }
         ),
         OverlayDef(
             id: .multiSub,
@@ -217,7 +217,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .subtitles,
             iconCapable: true,
-            getValue: { ($0.multiSub == true) ? "CC" : nil }
+            getValue: { ($0.multiSub == true) ? AppLanguage.string(.overlaysSubtitles) : nil }
         ),
     ]
 }
@@ -371,13 +371,13 @@ private extension OverlayRegistry {
         guard let value, !value.isEmpty else { return nil }
         switch value.lowercased() {
         case "returning", "returning series", "continuing", "in_production", "in production":
-            return "Returning"
+            return AppLanguage.string(.overlaysReturning)
         case "ended":
-            return "Ended"
+            return AppLanguage.string(.overlaysEnded)
         case "cancelled", "canceled":
-            return "Cancelled"
+            return AppLanguage.string(.overlaysCancelled)
         case "upcoming", "planned":
-            return "Upcoming"
+            return AppLanguage.string(.overlaysUpcoming)
         default:
             return value
         }

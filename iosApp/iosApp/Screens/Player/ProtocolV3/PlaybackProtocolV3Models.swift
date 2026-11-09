@@ -844,7 +844,7 @@ extension PlaybackV3DecisionResponse {
         if outcome == "adaptation_unavailable" {
             return .terminal(terminal ?? PlaybackV3Terminal(
                 reason: "invalid_terminal_response",
-                message: "The server could not produce a playable Apple route.",
+                message: "The server could not produce a playable Apple route.", // i18n-ignore: English data: logged or sent to the server (D44)
                 retryable: false
             ))
         }

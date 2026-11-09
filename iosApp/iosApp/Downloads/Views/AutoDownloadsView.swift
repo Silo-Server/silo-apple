@@ -5,6 +5,7 @@ import SwiftUI
 /// what it does next. Tapping a series opens its options.
 struct AutoDownloadsView: View {
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
     private var manager: DownloadManager { DownloadManager.shared }
     private var schedule: AutoDownloadSchedule { AutoDownloadSchedule.shared }
 
@@ -23,15 +24,15 @@ struct AutoDownloadsView: View {
             if manager.subscriptions.isEmpty {
                 EmptyStateView(
                     icon: "antenna.radiowaves.left.and.right",
-                    title: "No Monitored Series",
-                    subtitle: "Open a series, tap Download, and choose Monitor to get new episodes on this \(SeriesDownloadSheet.deviceName) automatically."
+                    title: AppLanguage.string(.downloadsMonitorListEmptyTitle, locale: locale),
+                    subtitle: AppLanguage.string(.downloadsMonitorListEmptyBody(SeriesDownloadSheet.deviceName), locale: locale)
                 )
             } else {
                 list
             }
         }
         .background(Color.siloBackground.ignoresSafeArea())
-        .navigationTitle("Monitored")
+        .navigationTitle(Text(.downloadsMonitoredTitle))
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
@@ -64,18 +65,18 @@ struct AutoDownloadsView: View {
                         Button {
                             router.navigate(to: .itemDetail(contentId: subscription.seriesId))
                         } label: {
-                            Label("Go to Series", systemImage: "tv")
+                            Label(.downloadsMonitorListGoToSeries, systemImage: "tv")
                         }
                         Button {
                             editing = subscription
                         } label: {
-                            Label("Options", systemImage: "slider.horizontal.3")
+                            Label(.downloadsMonitorListOptions, systemImage: "slider.horizontal.3")
                         }
                     }
                     .downloadGroupInset()
                 }
 
-                Text("New episodes download after they air\(DownloadSettings.shared.wifiOnly ? ", over Wi-Fi" : ""). To add a series, tap Download on it and choose Monitor.")
+                Text(DownloadSettings.shared.wifiOnly ? .downloadsMonitorListFooterWifi : LocalizedStringResource.downloadsMonitorListFooter)
                     .font(.footnote)
                     .foregroundColor(.siloSecondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -92,7 +93,8 @@ struct AutoDownloadsView: View {
     }
 
     private func title(for subscription: DownloadSubscription) -> String {
-        schedule.info(forSeriesId: subscription.seriesId)?.title ?? subscription.seriesTitle ?? "Series"
+        schedule.info(forSeriesId: subscription.seriesId)?.title ?? subscription.seriesTitle
+            ?? AppLanguage.string(.downloadsEntrySeriesFallback, locale: locale)
     }
 }
 
@@ -161,14 +163,18 @@ struct AutoDownloadRow: View {
 /// The Downloads tab's way into the Auto-Downloads list.
 struct AutoDownloadsEntryRow: View {
     let count: Int
-    let nextEpisodeDay: String?
+    let nextEpisodeDay: AutoDownloadRules.RelativeDay?
     let action: () -> Void
 
-    private var subtitle: String {
-        guard count > 0 else { return "Keep new episodes coming automatically" }
-        let series = "\(count) series"
-        guard let nextEpisodeDay else { return series }
-        return "\(series) · next episode \(nextEpisodeDay)"
+    private var subtitle: LocalizedStringResource {
+        guard count > 0 else { return .downloadsMonitorListEntryEmpty }
+        let countText = String(count)
+        switch nextEpisodeDay {
+        case nil: return .downloadsMonitorListEntryCount(count: count, countText)
+        case .today: return .downloadsMonitorListEntryCountNextToday(count: count, countText)
+        case .tomorrow: return .downloadsMonitorListEntryCountNextTomorrow(count: count, countText)
+        case .date(let day): return .downloadsMonitorListEntryCountNext(count: count, countText, day)
+        }
     }
 
     var body: some View {
@@ -180,7 +186,7 @@ struct AutoDownloadsEntryRow: View {
                     .frame(width: 38, height: 38)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.siloIconTile))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Monitored")
+                    Text(.downloadsMonitoredTitle)
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundColor(.siloOnSurface)
                     Text(subtitle)

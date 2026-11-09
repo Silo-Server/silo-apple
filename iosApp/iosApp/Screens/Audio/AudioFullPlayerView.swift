@@ -7,6 +7,7 @@ import SwiftUI
 struct AudioFullPlayerView: View {
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     @State private var showChapters = false
 
     var body: some View {
@@ -96,7 +97,7 @@ struct AudioFullPlayerView: View {
         VStack(spacing: 16) {
             ProgressView()
                 .controlSize(.large)
-            Text("Starting audiobook")
+            Text(.audiobookPlayerStarting)
                 .font(.headline)
                 .foregroundStyle(.secondary)
         }
@@ -106,7 +107,7 @@ struct AudioFullPlayerView: View {
     private var noSessionState: some View {
         EmptyStateView(
             icon: "headphones",
-            title: "No audiobook playing",
+            title: AppLanguage.string(.audiobookPlayerNoSession, locale: locale),
             subtitle: nil
         )
     }
@@ -125,6 +126,7 @@ private struct PortraitPlayerLayout: View {
     let onStop: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(spacing: 0) {
@@ -170,7 +172,7 @@ private struct PortraitPlayerLayout: View {
             if isPreparing {
                 ProgressView()
                     .controlSize(.large)
-                    .accessibilityLabel("Starting audiobook")
+                    .accessibilityLabel(Text(.audiobookPlayerStarting))
             }
         }
         .animation(.easeOut(duration: 0.2), value: isPreparing)
@@ -184,7 +186,7 @@ private struct PortraitPlayerLayout: View {
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
-            .accessibilityLabel("Minimize Player")
+            .accessibilityLabel(Text(.audiobookPlayerMinimize))
 
             Spacer()
 
@@ -194,7 +196,7 @@ private struct PortraitPlayerLayout: View {
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
-            .accessibilityLabel("Stop Listening")
+            .accessibilityLabel(Text(.audiobookPlayerStopListening))
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
@@ -232,7 +234,7 @@ private struct PortraitPlayerLayout: View {
             }
 
             if let chapter = player.currentChapter {
-                Text(chapterLabel(chapter))
+                Text(chapter.displayTitle(locale: locale))
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(player.palette.accent.opacity(0.9))
                     .lineLimit(1)
@@ -240,10 +242,6 @@ private struct PortraitPlayerLayout: View {
             }
         }
         .padding(.horizontal, 8)
-    }
-
-    private func chapterLabel(_ chapter: AudioPlaybackChapter) -> String {
-        chapter.title ?? "Chapter \(chapter.index + 1)"
     }
 
     private var optionsRow: some View {
@@ -256,47 +254,47 @@ private struct PortraitPlayerLayout: View {
                 }
             } label: {
                 AudioOptionChip(
-                    text: AudioFullPlayerView.rateLabel(player.playbackRate),
+                    title: Text(verbatim: AudioFullPlayerView.rateLabel(player.playbackRate)),
                     systemImage: "speedometer",
                     isActive: player.playbackRate != 1.0,
                     accent: player.palette.accent
                 )
             }
-            .accessibilityLabel("Playback Speed")
+            .accessibilityLabel(Text(.audiobookSpeedTitle))
             .accessibilityValue(AudioFullPlayerView.rateLabel(player.playbackRate))
 
             Menu {
-                Button("Off") { player.sleepTimer.cancel() }
-                Button("15 min") { player.sleepTimer.start(minutes: 15) }
-                Button("30 min") { player.sleepTimer.start(minutes: 30) }
-                Button("60 min") { player.sleepTimer.start(minutes: 60) }
+                Button(.audiobookSleepTimerOff) { player.sleepTimer.cancel() }
+                Button(.audiobookSleepTimerMinutesShort(15)) { player.sleepTimer.start(minutes: 15) }
+                Button(.audiobookSleepTimerMinutesShort(30)) { player.sleepTimer.start(minutes: 30) }
+                Button(.audiobookSleepTimerMinutesShort(60)) { player.sleepTimer.start(minutes: 60) }
             } label: {
                 AudioOptionChip(
-                    text: player.sleepTimer.isActive
-                        ? PlayerTimeFormatter.formatCountdown(player.sleepTimer.remainingSeconds)
-                        : "Sleep",
+                    title: player.sleepTimer.isActive
+                        ? Text(verbatim: PlayerTimeFormatter.formatCountdown(player.sleepTimer.remainingSeconds))
+                        : Text(.audiobookSleepTimerButton),
                     systemImage: player.sleepTimer.isActive ? "moon.fill" : "moon",
                     isActive: player.sleepTimer.isActive,
                     accent: player.palette.accent
                 )
             }
-            .accessibilityLabel("Sleep Timer")
+            .accessibilityLabel(Text(.audiobookSleepTimerTitle))
             .accessibilityValue(
                 player.sleepTimer.isActive
-                    ? PlayerTimeFormatter.formatCountdown(player.sleepTimer.remainingSeconds)
-                    : "Off"
+                    ? Text(verbatim: PlayerTimeFormatter.formatCountdown(player.sleepTimer.remainingSeconds))
+                    : Text(.audiobookSleepTimerOff)
             )
 
             if !player.chapters.isEmpty {
                 Button(action: onShowChapters) {
                     AudioOptionChip(
-                        text: "Chapters",
+                        title: Text(.audiobookChaptersOpen),
                         systemImage: "list.bullet",
                         isActive: false,
                         accent: player.palette.accent
                     )
                 }
-                .accessibilityLabel("Chapters")
+                .accessibilityLabel(Text(.audiobookChaptersOpen))
             }
         }
         .buttonStyle(.plain)
@@ -306,13 +304,13 @@ private struct PortraitPlayerLayout: View {
 
 /// Small translucent capsule used for the secondary controls row.
 private struct AudioOptionChip: View {
-    let text: String
+    let title: Text
     let systemImage: String
     let isActive: Bool
     let accent: Color
 
     var body: some View {
-        Label(text, systemImage: systemImage)
+        Label { title } icon: { Image(systemName: systemImage) }
             .font(.footnote.weight(.semibold))
             .monospacedDigit()
             .lineLimit(1)
@@ -339,6 +337,8 @@ private struct TVPlayerLayout: View {
     let onShowChapters: () -> Void
     let onStop: () -> Void
 
+    @Environment(\.locale) private var locale
+
     var body: some View {
         HStack(alignment: .center, spacing: 90) {
             AudioCoverArtView(urlString: player.posterUrl, cornerRadius: 24)
@@ -347,7 +347,7 @@ private struct TVPlayerLayout: View {
 
             VStack(alignment: .leading, spacing: 28) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Audiobook")
+                    Text(.audiobookPlayerLabel)
                         .font(.siloSmall.weight(.semibold))
                         .textCase(.uppercase)
                         .kerning(2)
@@ -365,7 +365,7 @@ private struct TVPlayerLayout: View {
                     }
 
                     if let chapter = player.currentChapter {
-                        Text(chapter.title ?? "Chapter \(chapter.index + 1)")
+                        Text(chapter.displayTitle(locale: locale))
                             .font(.siloCaption)
                             .foregroundStyle(player.palette.accent.opacity(0.9))
                             .lineLimit(1)
@@ -381,7 +381,7 @@ private struct TVPlayerLayout: View {
                     } label: {
                         Image(systemName: "backward.end.fill")
                     }
-                    .accessibilityLabel("Previous Chapter")
+                    .accessibilityLabel(Text(.audiobookTransportPreviousChapter))
 
                     Button {
                         player.skipBackward()
@@ -396,7 +396,7 @@ private struct TVPlayerLayout: View {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                             .frame(minWidth: 80)
                     }
-                    .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                    .accessibilityLabel(player.isPlaying ? Text(.playerAudioPause) : Text(.playerAudioPlay))
 
                     Button {
                         player.skipForward()
@@ -410,7 +410,7 @@ private struct TVPlayerLayout: View {
                     } label: {
                         Image(systemName: "forward.end.fill")
                     }
-                    .accessibilityLabel("Next Chapter")
+                    .accessibilityLabel(Text(.audiobookTransportNextChapter))
                 }
                 .buttonStyle(.bordered)
 
@@ -424,34 +424,37 @@ private struct TVPlayerLayout: View {
                     } label: {
                         Label(AudioFullPlayerView.rateLabel(player.playbackRate), systemImage: "speedometer")
                     }
-                    .accessibilityLabel("Playback Speed")
+                    .accessibilityLabel(Text(.audiobookSpeedTitle))
 
                     Menu {
-                        Button("Off") { player.sleepTimer.cancel() }
-                        Button("15 min") { player.sleepTimer.start(minutes: 15) }
-                        Button("30 min") { player.sleepTimer.start(minutes: 30) }
-                        Button("60 min") { player.sleepTimer.start(minutes: 60) }
+                        Button(.audiobookSleepTimerOff) { player.sleepTimer.cancel() }
+                        Button(.audiobookSleepTimerMinutesShort(15)) { player.sleepTimer.start(minutes: 15) }
+                        Button(.audiobookSleepTimerMinutesShort(30)) { player.sleepTimer.start(minutes: 30) }
+                        Button(.audiobookSleepTimerMinutesShort(60)) { player.sleepTimer.start(minutes: 60) }
                     } label: {
-                        Label(
-                            player.sleepTimer.isActive
-                                ? PlayerTimeFormatter.formatCountdown(player.sleepTimer.remainingSeconds)
-                                : "Sleep",
-                            systemImage: player.sleepTimer.isActive ? "moon.fill" : "moon"
-                        )
+                        Label {
+                            if player.sleepTimer.isActive {
+                                Text(verbatim: PlayerTimeFormatter.formatCountdown(player.sleepTimer.remainingSeconds))
+                            } else {
+                                Text(.audiobookSleepTimerButton)
+                            }
+                        } icon: {
+                            Image(systemName: player.sleepTimer.isActive ? "moon.fill" : "moon")
+                        }
                         .monospacedDigit()
                     }
-                    .accessibilityLabel("Sleep Timer")
+                    .accessibilityLabel(Text(.audiobookSleepTimerTitle))
 
                     if !player.chapters.isEmpty {
                         Button(action: onShowChapters) {
-                            Label("Chapters", systemImage: "list.bullet")
+                            Label(.audiobookChaptersOpen, systemImage: "list.bullet")
                         }
                     }
 
                     Button(action: onStop) {
-                        Label("Stop", systemImage: "xmark")
+                        Label(.audiobookPlayerStop, systemImage: "xmark")
                     }
-                    .accessibilityLabel("Stop Listening")
+                    .accessibilityLabel(Text(.audiobookPlayerStopListening))
                 }
                 .buttonStyle(.bordered)
                 .font(.siloCaption)
@@ -506,10 +509,11 @@ private struct AudioScrubberSection: View {
             .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Playback Position")
-        .accessibilityValue(
-            "\(PlayerTimeFormatter.formatHMS(displayedTime)) of \(PlayerTimeFormatter.formatHMS(player.duration))"
-        )
+        .accessibilityLabel(Text(.audiobookPlayerPlaybackPosition))
+        .accessibilityValue(Text(.playerProgressPositionState(
+            PlayerTimeFormatter.formatHMS(displayedTime),
+            PlayerTimeFormatter.formatHMS(player.duration)
+        )))
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment: player.skipForward()
@@ -611,7 +615,7 @@ private struct AudioTransportControls: View {
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
-            .accessibilityLabel("Previous Chapter")
+            .accessibilityLabel(Text(.audiobookTransportPreviousChapter))
 
             Button {
                 player.skipBackward()
@@ -637,7 +641,7 @@ private struct AudioTransportControls: View {
                 .frame(width: 82, height: 82)
                 .shadow(color: player.palette.accent.opacity(0.35), radius: 16, y: 6)
             }
-            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(player.isPlaying ? Text(.playerAudioPause) : Text(.playerAudioPlay))
 
             Button {
                 player.skipForward()
@@ -657,7 +661,7 @@ private struct AudioTransportControls: View {
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
-            .accessibilityLabel("Next Chapter")
+            .accessibilityLabel(Text(.audiobookTransportNextChapter))
         }
         .buttonStyle(.plain)
         .foregroundStyle(Color.siloOnSurface)

@@ -26,9 +26,9 @@ enum IntroSkipMode: String, CaseIterable, Identifiable, Sendable {
     /// The contract's option labels, shared with web and Android.
     var label: String {
         switch self {
-        case .never: return "Never"
-        case .ask: return "Ask to skip"
-        case .always: return "Skip automatically"
+        case .never: return AppLanguage.string(.settingsIntroSkipNever)
+        case .ask: return AppLanguage.string(.settingsIntroSkipAsk)
+        case .always: return AppLanguage.string(.settingsIntroSkipAlways)
         }
     }
 

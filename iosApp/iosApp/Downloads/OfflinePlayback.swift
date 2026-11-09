@@ -11,11 +11,11 @@ enum OfflinePlaybackError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .downloadNotFound:
-            return "This download is no longer on this device."
+            return AppLanguage.string(.downloadsOfflineErrorNotFound)
         case .manifestUnavailable:
-            return "The offline playback data for this download is missing. Delete and re-download it."
+            return AppLanguage.string(.downloadsOfflineErrorManifestMissing)
         case .mediaFileMissing:
-            return "The downloaded video file is missing. Delete and re-download it."
+            return AppLanguage.string(.downloadsOfflineErrorMediaMissing)
         }
     }
 }

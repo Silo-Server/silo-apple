@@ -4,8 +4,8 @@ extension IntroSkipPrompt.Kind {
     /// The pill's action, fixed by the cross-platform spec.
     var actionTitle: String {
         switch self {
-        case .skip: return "Skip Intro"
-        case .undo: return "Watch Intro"
+        case .skip: return AppLanguage.string(.introSkipPillSkip)
+        case .undo: return AppLanguage.string(.introSkipPillUndo)
         }
     }
 
@@ -14,14 +14,14 @@ extension IntroSkipPrompt.Kind {
     var caption: String? {
         switch self {
         case .skip: return nil
-        case .undo: return "Intro skipped"
+        case .undo: return AppLanguage.string(.introSkipPillUndoCaption)
         }
     }
 
     var accessibilityLabel: String {
         switch self {
-        case .skip: return "Skip Intro"
-        case .undo: return "Intro skipped. Watch Intro"
+        case .skip: return AppLanguage.string(.introSkipPillSkip)
+        case .undo: return AppLanguage.string(.playerIntroSkipUndoAccessibility)
         }
     }
 }

@@ -69,7 +69,7 @@ final class PlaybackNetworkMonitor: @unchecked Sendable {
             monitor.pathUpdateHandler = { [weak self] path in
                 self?.update(path)
             }
-            monitor.start(queue: DispatchQueue(label: "org.siloserver.silo.playback-network-path"))
+            monitor.start(queue: DispatchQueue(label: "org.siloserver.silo.playback-network-path")) // i18n-ignore: queue label
             self.monitor = monitor
         }
     }

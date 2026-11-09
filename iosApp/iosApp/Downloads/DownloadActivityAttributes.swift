@@ -41,6 +41,10 @@ struct DownloadActivityAttributes: ActivityAttributes {
         var totalCount: Int
         /// Smoothed aggregate rate; nil when nothing is transferring.
         var bytesPerSecond: Double?
+        /// The app language tag (`AppLanguage.displayedTag`), so the widget
+        /// extension, which can't read the app's storage, shows its text in
+        /// the same language. Nil shows the system language.
+        var language: String? = nil
     }
 }
 #endif

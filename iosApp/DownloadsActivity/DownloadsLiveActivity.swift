@@ -20,6 +20,7 @@ struct DownloadsLiveActivity: Widget {
         ActivityConfiguration(for: DownloadActivityAttributes.self) { context in
             DownloadsLockScreenView(state: context.state, isStale: context.isStale)
                 .padding(16)
+                .appLanguage(context.state.language)
                 // The extension has no accent asset, so `.tint` would fall
                 // back to system blue; follow the lock screen's text color.
                 .tint(.primary)
@@ -44,24 +45,26 @@ struct DownloadsLiveActivity: Widget {
                             .font(.headline)
                             .lineLimit(1)
                         if let line = context.state.contextLine {
-                            Text(line)
+                            line
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
                     }
+                    .appLanguage(context.state.language)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(alignment: .leading, spacing: 4) {
                         ProgressView(value: context.state.fraction)
                             .progressViewStyle(.linear)
                             .tint(.white)
-                        Text(context.state.statusText(isStale: context.isStale))
+                        context.state.statusText(isStale: context.isStale)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
                     .padding(.horizontal, 4)
+                    .appLanguage(context.state.language)
                 }
             } compactLeading: {
                 Image(systemName: context.state.phase.symbolName)
@@ -95,7 +98,7 @@ private struct DownloadsLockScreenView: View {
                         .font(.headline)
                         .lineLimit(1)
                     if let line = state.contextLine {
-                        Text(line)
+                        line
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -111,7 +114,7 @@ private struct DownloadsLockScreenView: View {
             if state.phase != .completed {
                 ProgressView(value: state.fraction)
                     .progressViewStyle(.linear)
-                Text(state.statusText(isStale: isStale))
+                state.statusText(isStale: isStale)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -131,6 +134,19 @@ private extension DownloadActivityAttributes.ContentState.Phase {
     }
 }
 
+private extension View {
+    /// Shows the catalog text below in the app's language, which the app
+    /// passes in the content state; the system language when it hasn't.
+    @ViewBuilder
+    func appLanguage(_ tag: String?) -> some View {
+        if let tag {
+            environment(\.locale, Locale(identifier: tag))
+        } else {
+            self
+        }
+    }
+}
+
 private extension DownloadActivityAttributes.ContentState {
     var percentText: String {
         fraction.formatted(.percent.precision(.fractionLength(0)))
@@ -138,36 +154,37 @@ private extension DownloadActivityAttributes.ContentState {
 
     /// Secondary line under the title: item context plus queue position,
     /// e.g. "Severance · S1 · E4 · 2 of 5".
-    var contextLine: String? {
-        var parts: [String] = []
-        if let subtitle { parts.append(subtitle) }
-        if totalCount > 1, phase != .completed {
-            parts.append("\(min(completedCount + 1, totalCount)) of \(totalCount)")
+    var contextLine: Text? {
+        guard totalCount > 1, phase != .completed else {
+            return subtitle.map { Text(verbatim: $0) }
         }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        let current = "\(min(completedCount + 1, totalCount))"
+        let total = "\(totalCount)"
+        guard let subtitle else { return Text(.downloadsActivityPosition(current, total)) }
+        return Text(.downloadsActivityContextPosition(subtitle, current, total))
     }
 
-    func statusText(isStale: Bool) -> String {
+    func statusText(isStale: Bool) -> Text {
         switch phase {
         case .completed:
-            return "Complete"
+            return Text(.downloadsActivityComplete)
         case .paused:
-            return "Paused"
+            return Text(.downloadsStatusPaused)
         case .preparing:
-            return "Preparing…"
+            return Text(.downloadsStatusPreparing)
         case .downloading:
             // Past the stale date the app was suspended mid-transfer and
             // these numbers stopped ticking; say so instead of freezing a
             // live-looking counter.
-            if isStale { return "Continuing in background…" }
-            guard bytesExpected > 0 else { return "Downloading…" }
-            var text = bytesDownloaded.formatted(.byteCount(style: .file))
-                + " of "
-                + bytesExpected.formatted(.byteCount(style: .file))
-            if let bytesPerSecond, bytesPerSecond > 0 {
-                text += " · " + Int64(bytesPerSecond).formatted(.byteCount(style: .file)) + "/s"
+            if isStale { return Text(.downloadsActivityContinuingInBackground) }
+            guard bytesExpected > 0 else { return Text(.downloadsActivityDownloading) }
+            let downloaded = bytesDownloaded.formatted(.byteCount(style: .file))
+            let expected = bytesExpected.formatted(.byteCount(style: .file))
+            guard let bytesPerSecond, bytesPerSecond > 0 else {
+                return Text(.downloadsActivityBytes(downloaded, expected))
             }
-            return text
+            let rate = Int64(bytesPerSecond).formatted(.byteCount(style: .file)) + "/s"
+            return Text(.downloadsActivityBytesRate(downloaded, expected, rate))
         }
     }
 }

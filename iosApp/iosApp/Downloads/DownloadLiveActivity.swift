@@ -134,15 +134,16 @@ final class DownloadLiveActivityController {
                 let state = DownloadActivityAttributes.ContentState(
                     phase: .completed,
                     title: completedCount == 1
-                        ? "Download complete"
-                        : "\(completedCount) downloads complete",
+                        ? AppLanguage.string(.downloadsActivityCompletedOne)
+                        : AppLanguage.string(.downloadsActivityCompleted(count: completedCount, "\(completedCount)")),
                     subtitle: nil,
                     fraction: 1,
                     bytesDownloaded: 0,
                     bytesExpected: 0,
                     completedCount: completedCount,
                     totalCount: completedCount,
-                    bytesPerSecond: nil
+                    bytesPerSecond: nil,
+                    language: AppLanguage.displayedTag
                 )
                 await activity.end(
                     ActivityContent(state: state, staleDate: nil),
@@ -223,7 +224,9 @@ final class DownloadLiveActivityController {
 
         let title = headline?.title
             ?? headline?.seriesTitle
-            ?? (activeRecords.count == 1 ? "Download" : "\(activeRecords.count) downloads")
+            ?? (activeRecords.count == 1
+                ? AppLanguage.string(.downloadsNotificationDefaultTitle)
+                : AppLanguage.string(.downloadsActivityCount(count: activeRecords.count, "\(activeRecords.count)")))
         var subtitleParts: [String] = []
         if let headline {
             if let series = headline.seriesTitle, series != title {
@@ -245,7 +248,8 @@ final class DownloadLiveActivityController {
             totalCount: totalCount,
             bytesPerSecond: phase == .downloading && totalBytesPerSecond > 0
                 ? totalBytesPerSecond
-                : nil
+                : nil,
+            language: AppLanguage.displayedTag
         )
     }
 }

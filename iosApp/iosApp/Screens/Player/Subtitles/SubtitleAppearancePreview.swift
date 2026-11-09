@@ -14,7 +14,7 @@ struct SubtitleAppearancePreview: View {
     let appearance: SubtitleAppearance
     var height: CGFloat = Self.defaultHeight
 
-    static let sampleLine = "Subtitles will look like this"
+    static let sampleLine: LocalizedStringResource = .playerSubtitlesPreviewSample
 
     #if os(tvOS)
     static let defaultHeight: CGFloat = 150
@@ -42,7 +42,7 @@ struct SubtitleAppearancePreview: View {
         .frame(height: height)
         .clipped()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Subtitle preview")
+        .accessibilityLabel(Text(.playerSubtitlesPreviewLabel))
         .accessibilityValue(Text(Self.sampleLine))
     }
 

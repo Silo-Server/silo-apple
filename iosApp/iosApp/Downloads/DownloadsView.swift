@@ -9,6 +9,7 @@ import SwiftUI
 struct DownloadsView: View {
     @Environment(AppRouter.self) private var router
     @Bindable private var settings = DownloadSettings.shared
+    @Environment(\.locale) private var locale
     private var manager: DownloadManager { DownloadManager.shared }
 
     @State private var isSelecting = false
@@ -39,8 +40,8 @@ struct DownloadsView: View {
             if !manager.downloadsEnabled {
                 EmptyStateView(
                     icon: "arrow.down.circle",
-                    title: "Downloads Unavailable",
-                    subtitle: "Downloads aren't enabled for this profile."
+                    title: AppLanguage.string(.downloadsManagerUnavailableTitle, locale: locale),
+                    subtitle: AppLanguage.string(.downloadsManagerUnavailableBody, locale: locale)
                 )
             } else if !manager.hasRecords && manager.subscriptions.isEmpty {
                 noDownloadsState
@@ -53,7 +54,7 @@ struct DownloadsView: View {
         #else
         .background(Color.siloBackground.ignoresSafeArea())
         #endif
-        .navigationTitle(isSelecting ? "\(selectedCount) Selected" : "Downloads")
+        .navigationTitle(isSelecting ? Text(.downloadsSelectCount(count: selectedCount, String(selectedCount))) : Text(.tabDownloads))
         #if os(iOS)
         .navigationBarTitleDisplayMode(.large)
         #endif
@@ -65,24 +66,26 @@ struct DownloadsView: View {
         // to this whole page and appears at its top, far from the row or
         // bottom bar that asked for it.
         .alert(
-            pendingDeletion?.inProgressOnly == true ? "Cancel downloads?" : "Delete downloaded files?",
+            pendingDeletion?.inProgressOnly == true ? Text(.downloadsManagerCancelTitle) : Text(.downloadsBulkTitle),
             isPresented: Binding(
                 get: { pendingDeletion != nil },
                 set: { if !$0 { pendingDeletion = nil } }
             ),
             presenting: pendingDeletion
         ) { pending in
-            let verb = pending.inProgressOnly ? "Cancel" : "Delete"
-            Button(
-                pending.count == 1 ? "\(verb) Download" : "\(verb) \(pending.count) Downloads",
-                role: .destructive
-            ) {
+            Button(role: .destructive) {
                 // One that finished while the dialog was open keeps its file.
                 let stillActive = manager.activeRecordIds
                 manager.deleteDownloads(ids: pending.ids + pending.activeIds.filter(stillActive.contains))
                 if pending.endsSelection { exitSelectMode() }
+            } label: {
+                if pending.inProgressOnly {
+                    Text(.downloadsManagerCancelConfirm(count: pending.count, String(pending.count)))
+                } else {
+                    Text(.downloadsBulkConfirm(count: pending.count, String(pending.count)))
+                }
             }
-            Button("Keep", role: .cancel) {}
+            Button(role: .cancel) {} label: { Text(.downloadsManagerKeep) }
         }
         .siloToolbarColorSchemeDark()
     }
@@ -99,12 +102,12 @@ struct DownloadsView: View {
     /// Points to monitoring too, since its list is reached from here only
     /// once something is downloaded or monitored.
     private var noDownloadsHint: String {
-        let base = "Downloaded movies and episodes appear here for offline viewing."
+        let base = AppLanguage.string(.downloadsManagerEmptyHint, locale: locale)
         guard manager.canMonitorSeries else { return base }
         #if os(macOS)
-        return base + " To get new episodes automatically, open a series, click Download, and choose Monitor."
+        return base + " " + AppLanguage.string(.downloadsManagerEmptyMonitorHintClick, locale: locale)
         #else
-        return base + " To get new episodes automatically, open a series, tap Download, and choose Monitor."
+        return base + " " + AppLanguage.string(.downloadsManagerEmptyMonitorHintTap, locale: locale)
         #endif
     }
 
@@ -113,7 +116,7 @@ struct DownloadsView: View {
             Image(systemName: "arrow.down.circle")
                 .font(.system(size: 44))
                 .foregroundColor(.siloOnSurface.opacity(0.3))
-            Text("No Downloads")
+            Text(.downloadsManagerEmptyTitle)
                 .font(.siloSubheadline)
                 .foregroundColor(.siloOnSurface)
             Text(noDownloadsHint)
@@ -124,7 +127,7 @@ struct DownloadsView: View {
             Button {
                 router.switchTab(to: .libraries)
             } label: {
-                Text("Browse Libraries")
+                Text(.downloadsManagerBrowseLibraries)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(.siloOnSurface)
                     .padding(.horizontal, 18)
@@ -176,11 +179,13 @@ struct DownloadsView: View {
                 }
 
                 if !inProgress.isEmpty {
-                    DownloadSectionHeader(title: "Downloading", count: inProgress.count)
+                    DownloadSectionHeader(title: .downloadsManagerSectionDownloading, count: inProgress.count)
                     if isSelecting {
-                        Button(allActiveSelected ? "Clear In Progress" : "Select All In Progress") {
+                        Button {
                             if allActiveSelected { activeSelection.removeAll() }
                             else { activeSelection = Set(inProgress.map(\.id)) }
+                        } label: {
+                            allActiveSelected ? Text(.downloadsManagerClearInProgress) : Text(.downloadsManagerSelectAllInProgress)
                         }
                         .font(.subheadline.weight(.semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -192,7 +197,7 @@ struct DownloadsView: View {
                         Button {
                             manager.showProgressOnLockScreen()
                         } label: {
-                            Label("Show Progress on Lock Screen", systemImage: "lock.iphone")
+                            Label(.downloadsManagerLockScreenProgress, systemImage: "lock.iphone")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundColor(.siloOnSurface)
                                 .padding(.horizontal, 12)
@@ -231,7 +236,7 @@ struct DownloadsView: View {
                     }
                     #if os(iOS)
                     if !isSelecting {
-                        Text("Downloads keep going when you leave Silo or lock your phone. Closing Silo from the app switcher pauses them until you open it again.")
+                        Text(.downloadsManagerBackgroundFootnote)
                             .font(.footnote)
                             .foregroundColor(.siloSecondaryText)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -242,7 +247,7 @@ struct DownloadsView: View {
                 }
 
                 if !failed.isEmpty {
-                    DownloadSectionHeader(title: "Needs attention", count: failed.count)
+                    DownloadSectionHeader(title: .downloadsManagerSectionNeedsAttention, count: failed.count)
                     ForEach(Array(failed.enumerated()), id: \.element.id) { index, record in
                         DownloadAttentionRow(
                             record: record,
@@ -294,7 +299,7 @@ struct DownloadsView: View {
                             endsSelection: false
                         )
                     } label: {
-                        Label("Delete All Episodes", systemImage: "trash")
+                        Label(.downloadsManagerDeleteAllEpisodes, systemImage: "trash")
                     }
                 }
             }
@@ -315,7 +320,7 @@ struct DownloadsView: View {
                     Button(role: .destructive) {
                         pendingDeletion = PendingDeletion(ids: [record.id], endsSelection: false)
                     } label: {
-                        Label("Delete Download", systemImage: "trash")
+                        Label(.downloadsManagerDeleteDownload, systemImage: "trash")
                     }
                 }
             }
@@ -329,7 +334,7 @@ struct DownloadsView: View {
     }
 
     /// When the soonest episode an active monitor covers airs, e.g. "Thursday".
-    private var nextAutoDownloadDay: String? {
+    private var nextAutoDownloadDay: AutoDownloadRules.RelativeDay? {
         let schedule = AutoDownloadSchedule.shared
         let next = manager.subscriptions
             .filter(\.active)
@@ -345,7 +350,7 @@ struct DownloadsView: View {
             }
             .min { $0.airDate < $1.airDate }
         return next.map {
-            AutoDownloadRules.relativeDay($0.airDate, now: Date(), calendar: .current, preposition: false)
+            AutoDownloadRules.day($0.airDate, now: Date(), calendar: .current)
         }
     }
 
@@ -361,14 +366,16 @@ struct DownloadsView: View {
 
         if isSelecting {
             ToolbarItem(placement: .navigation) {
-                Button(allSelected ? "Clear" : "Select All") { toggleSelectAll() }
+                Button { toggleSelectAll() } label: {
+                    allSelected ? Text(.downloadsSelectClear) : Text(.downloadsSelectAll)
+                }
             }
             ToolbarItem(placement: .primaryAction) {
-                Button("Done") { exitSelectMode() }
+                Button(.commonDone) { exitSelectMode() }
             }
         } else if manager.hasRecord(where: { $0.isOnDevice || $0.localStatus.isActive }) {
             ToolbarItem(placement: .primaryAction) {
-                Button("Select") { isSelecting = true }
+                Button(.downloadsSelectStart) { isSelecting = true }
             }
         }
     }
@@ -430,13 +437,13 @@ struct DownloadsView: View {
         manager.activeRecordIds.isSubset(of: activeSelection)
     }
 
-    private var bottomBarTitle: String {
+    private var bottomBarTitle: LocalizedStringResource {
         if selection.isEmpty {
-            return selectedCount == 1 ? "Cancel 1 Download" : "Cancel \(selectedCount) Downloads"
+            return .downloadsManagerCancelCount(count: selectedCount, String(selectedCount))
         }
         let partialBytes = liveActiveSelection
             .reduce(Int64(0)) { $0 + (manager.record(id: $1)?.bytesDownloaded ?? 0) }
-        return "Delete \(selectedCount) · Free \(DownloadFormatting.bytes(selectedBytes + partialBytes))"
+        return .downloadsBulkDeleteButton(String(selectedCount), DownloadFormatting.bytes(selectedBytes + partialBytes))
     }
 
     private var selectedItems: [DownloadListItem] {
