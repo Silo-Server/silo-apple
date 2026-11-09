@@ -5,6 +5,7 @@ import SwiftUI
 
 struct MacPlayerControls: View {
     let viewModel: PlayerViewModel
+    let isFullScreen: Bool
     @Binding var isOptionsPresented: Bool
     @Binding var selectedOptionsTab: MacPlayerOptionsPanel.Tab
 
@@ -53,7 +54,10 @@ struct MacPlayerControls: View {
                         .foregroundStyle(.white.opacity(0.70))
                         .monospacedDigit()
 
-                    iconButton("arrow.up.left.and.arrow.down.right", help: "Fullscreen") {
+                    iconButton(
+                        isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                        help: isFullScreen ? "Exit Full Screen" : "Full Screen"
+                    ) {
                         NSApp.keyWindow?.toggleFullScreen(nil)
                     }
                 }
