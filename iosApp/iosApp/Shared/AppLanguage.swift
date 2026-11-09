@@ -93,8 +93,26 @@ enum AppLanguage {
     /// the root's `\.locale`; a `String` built anywhere else must come through
     /// here, because `String(localized:)` alone uses the process language.
     static func string(_ resource: LocalizedStringResource) -> String {
+        string(resource, locale: dataLocale ?? displayedLocale)
+    }
+
+    /// Set while ``inEnglish(_:)`` runs.
+    @TaskLocal private static var dataLocale: Locale?
+
+    /// Runs `body` with ``string(_:)`` resolving in English. Text that is
+    /// sent to another device, stored or matched stays English in every
+    /// language; wrap code that builds it from shared label helpers.
+    static func inEnglish<T>(_ body: () throws -> T) rethrows -> T {
+        try $dataLocale.withValue(Locale(identifier: "en")) { try body() }
+    }
+
+    /// Resolves a catalog string in the language a view shows, for a view
+    /// that needs a `String` (a component's `String` parameter, an
+    /// accessibility label built from parts). Pass the view's `\.locale`, so
+    /// the view re-renders when the language changes.
+    static func string(_ resource: LocalizedStringResource, locale: Locale) -> String {
         var resource = resource
-        resource.locale = displayedLocale
+        resource.locale = locale
         return String(localized: resource)
     }
 
@@ -161,5 +179,15 @@ enum AppLanguage {
         let missing = "\u{0}"
         let value = bundle.localizedString(forKey: key, value: missing, table: nil)
         return value == missing ? nil : value
+    }
+}
+
+extension LocalizedStringResource {
+    /// Text shown as is where an API takes catalog text: a name, a number, a
+    /// server value, or text a model outside the catalog still writes in
+    /// English. It resolves through the `%@` format, which the catalog never
+    /// defines, so every language shows `text` unchanged.
+    static func verbatim(_ text: String) -> LocalizedStringResource {
+        "\(text)"
     }
 }
