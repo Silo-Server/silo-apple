@@ -4,6 +4,7 @@ import SwiftUI
 /// four dots, and a keypad laid out like the system passcode screen. A wrong
 /// PIN keeps the prompt open, turns the dots red, and clears for another try.
 struct PINEntryView: View {
+    @Environment(\.locale) private var locale
     let profile: UserProfile
     let onComplete: (String) -> Void
     let onCancel: (() -> Void)?
@@ -62,7 +63,7 @@ struct PINEntryView: View {
     private func phoneBody(compact: Bool) -> some View {
         VStack(spacing: 0) {
             HStack {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back", action: cancel)
+                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: AppLanguage.string(.commonBack), action: cancel)
                     .disabled(isVerifying)
                 Spacer()
             }
@@ -84,7 +85,7 @@ struct PINEntryView: View {
             Spacer(minLength: compact ? 8 : 12)
 
             if !compact {
-                Text("Forgot your PIN? The account admin can reset it.")
+                Text(.pinForgot)
                     .font(.system(size: 13))
                     .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                     .multilineTextAlignment(.center)
@@ -110,7 +111,7 @@ struct PINEntryView: View {
                 .focusSection()
             // Not disabled while the PIN is checked: on TV a disabled control
             // loses focus. `cancel` waits for the answer by itself.
-            Button("Cancel", action: cancel)
+            Button(.commonCancel, action: cancel)
                 .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
                 .padding(.top, 30)
         }
@@ -141,7 +142,7 @@ struct PINEntryView: View {
                 .lineLimit(1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Enter PIN for \(profile.name)")
+        .accessibilityLabel(.pinAudio(profile.name))
     }
 
     @ViewBuilder
@@ -158,7 +159,7 @@ struct PINEntryView: View {
         } else if isVerifying {
             ProgressView()
         } else {
-            Text("Enter your PIN")
+            Text(.pinPrompt)
                 .font(.system(size: statusFont))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.62))
         }
@@ -175,7 +176,7 @@ struct PINEntryView: View {
             }
         }
         .modifier(MarqueeShake(trigger: errorCount))
-        .accessibilityLabel("\(pin.count) of \(maxDigits) digits entered")
+        .accessibilityLabel(.pinProgressDigits("\(pin.count)", maxDigits))
     }
 
     private var dotColor: Color {

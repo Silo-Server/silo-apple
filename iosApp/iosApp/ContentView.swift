@@ -125,11 +125,11 @@ struct ContentView: View {
         #endif
         .environmentObject(overlayPrefs)
         .preferredColorScheme(.dark)
-        .alert("Account Update", isPresented: Binding(
+        .alert(.accountAlertTitle, isPresented: Binding(
             get: { router.accountActionError != nil },
             set: { if !$0 { router.accountActionError = nil } }
         )) {
-            Button("OK", role: .cancel) { router.accountActionError = nil }
+            Button(.shellNoticeOk, role: .cancel) { router.accountActionError = nil }
         } message: {
             Text(router.accountActionError ?? "")
         }
@@ -141,7 +141,7 @@ struct ContentView: View {
             },
             set: { if !$0 { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() } }
         )) {
-            Button("OK", role: .cancel) { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() }
+            Button(.shellNoticeOk, role: .cancel) { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() }
         }
         #endif
         #if os(tvOS) && DEBUG
@@ -1521,7 +1521,7 @@ struct ContentView: View {
             // auth-state change clears `router.path` first, so reaching this
             // is a bug.
             let _ = assertionFailure("No signed-out destination for \(route)")
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloPageBackground()
         }
     }
@@ -1562,7 +1562,7 @@ struct ContentView: View {
             ServerNeedsSetupView(router: router)
             #endif
         default:
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloPageBackground()
         }
     }
@@ -2156,12 +2156,13 @@ private struct RemotePlaybackRoutingModifier: ViewModifier {
                     return (
                         title: state.title,
                         contentId: contentId,
-                        targetName: siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "the TV"
+                        targetName: siloControl.activeTarget?.name ?? siloControl.lastTarget?.name
+                            ?? AppLanguage.string(.shellRemotePlaybackFallbackTarget)
                     )
                 }
             }
             .confirmationDialog(
-                "Replace what's playing?",
+                Text(.remoteReplaceTitle),
                 isPresented: Binding(
                     get: { router.pendingReplaceRemotePlayback != nil },
                     set: { if !$0 { router.pendingReplaceRemotePlayback = nil } }
@@ -2169,28 +2170,29 @@ private struct RemotePlaybackRoutingModifier: ViewModifier {
                 titleVisibility: .visible,
                 presenting: router.pendingReplaceRemotePlayback
             ) { choice in
-                Button("Play on \(choice.targetName)") { router.confirmReplaceRemotePlayback() }
-                Button("Cancel", role: .cancel) { router.pendingReplaceRemotePlayback = nil }
+                Button(.shellRemotePlaybackPlayOn(choice.targetName)) { router.confirmReplaceRemotePlayback() }
+                Button(.commonCancel, role: .cancel) { router.pendingReplaceRemotePlayback = nil }
             } message: { choice in
-                Text("\(choice.targetName) is playing \(choice.currentTitle). Playing this will stop it.")
+                Text(.shellRemotePlaybackReplaceMessage(choice.targetName, choice.currentTitle))
             }
             .confirmationDialog(
-                "A TV is connected",
+                Text(.shellRemotePlaybackTvConnected),
                 isPresented: Binding(
                     get: { router.pendingOfflinePlayChoice != nil },
                     set: { if !$0 { router.pendingOfflinePlayChoice = nil } }
                 ),
                 titleVisibility: .visible
             ) {
-                Button("Play on \(siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "TV")") {
+                Button((siloControl.activeTarget?.name ?? siloControl.lastTarget?.name)
+                    .map { LocalizedStringResource.shellRemotePlaybackPlayOn($0) } ?? .shellRemotePlaybackPlayOnTv) {
                     router.sendPendingOfflinePlayToTV()
                 }
-                Button("Play on this \(UIDevice.current.model)") {
+                Button(.shellRemotePlaybackPlayOnThisDevice(UIDevice.current.model)) {
                     router.confirmOfflinePlayHere()
                 }
-                Button("Cancel", role: .cancel) { router.pendingOfflinePlayChoice = nil }
+                Button(.commonCancel, role: .cancel) { router.pendingOfflinePlayChoice = nil }
             } message: {
-                Text("Downloads only play on this device. The TV can stream the same title from your server.")
+                Text(.shellRemotePlaybackDownloadsPlayHere)
             }
 
     }
@@ -2274,7 +2276,7 @@ struct MainTabDestination: Identifiable, Equatable {
     let selectedIcon: String
 
     static func app(_ tab: AppTab) -> MainTabDestination {
-        .init(id: .app(tab), title: tab.rawValue, icon: tab.icon, selectedIcon: tab.selectedIcon)
+        .init(id: .app(tab), title: tab.title, icon: tab.icon, selectedIcon: tab.selectedIcon)
     }
 
     static func library(
@@ -2384,6 +2386,9 @@ struct MainTabView: View {
     @State private var iPadColumnVisibility: NavigationSplitViewVisibility = .detailOnly
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.scenePhase) private var scenePhase
+    /// Tab and sidebar labels resolve through `AppLanguage.string`; reading
+    /// the locale redraws them when the app language changes.
+    @Environment(\.locale) private var locale
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
     /// For You is normally constructed lazily by TabView. Own its model at the
@@ -2901,7 +2906,7 @@ struct MainTabView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Close sidebar")
+            .accessibilityLabel(.shellSidebarClose)
         }
         .padding(.horizontal, 20)
         .padding(.top, 24)
@@ -3276,7 +3281,7 @@ struct MainTabView: View {
         case .autoDownloads:
             AutoDownloadsView()
         default:
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloPageBackground()
         }
     }

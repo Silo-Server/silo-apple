@@ -313,7 +313,7 @@ struct MarqueeErrorText: View {
         .foregroundStyle(Color.siloErrorInk)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Error: \(text)")
+        .accessibilityLabel(.shellMarqueeErrorSpoken(text))
         .transition(.opacity)
     }
 
@@ -471,7 +471,7 @@ struct MarqueeServerCard: View {
                 .siloGlass(in: RoundedRectangle(cornerRadius: corner, style: .continuous))
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(name), \(address)\(badge.map { ", \($0.text)" } ?? "")\(status.map { ", \($0.text)" } ?? "")")
+        .accessibilityLabel("\(name), \(address)\(badge.map { ", \($0.text)" } ?? "")\(status.map { ", \($0.text)" } ?? "")") // i18n-ignore: joins shown values with commas
     }
 
     #if os(tvOS)

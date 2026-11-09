@@ -20,6 +20,9 @@
 //
 
 import Foundation
+#if os(tvOS)
+import TVServices
+#endif
 
 /// What Silo last wrote to the app's `AppleLanguages`, and what the key held
 /// before Silo first wrote it (`nil`: absent).
@@ -154,7 +157,12 @@ final class StandardAppLanguageSystem: AppLanguageSystem {
     }
 
     func storeDisplayed(_ tag: String) {
+        let changed = AppLanguage.displayedTag != tag
         AppLanguage.storeDisplayedTag(tag)
+        #if os(tvOS)
+        // Top Shelf resolves its row titles from this tag when it loads.
+        if changed { TVTopShelfContentProvider.topShelfContentDidChange() }
+        #endif
     }
 }
 

@@ -198,7 +198,7 @@ final class TVApprovalModel {
         do {
             let lookup = try await api.lookup(serverURL: server.url, bearer: bearer, code: code)
             guard lookup.temporary != true, lookup.clientPurpose.map({ $0 == "device_login" }) ?? true else {
-                phase = .failed("This code isn't for signing in a TV.")
+                phase = .failed(AppLanguage.string(.tvPairApprovalNotForTv))
                 return
             }
             switch lookup.status ?? "pending" {
@@ -347,7 +347,7 @@ final class TVApprovalModel {
         return nil
     }
 
-    private var unreachableMessage: String { "Couldn't reach \(serverName). Check this device's connection." }
+    private var unreachableMessage: String { AppLanguage.string(.tvPairApprovalUnreachable(serverName)) }
 
     private func failure(for error: Error, notFound: Phase) -> Phase {
         if let requirement = UpdateRequirement(error) { return .failed(requirement.message) }
@@ -362,12 +362,12 @@ final class TVApprovalModel {
         case 410?: return .expired
         case 409?: return .alreadyUsed
         case 401?: return .needsSignIn(serverName: serverName)
-        case 429?: return .failed("Too many attempts. Wait a moment, then try again.")
+        case 429?: return .failed(AppLanguage.string(.tvSignInErrorRateLimited))
         case 503? where Self.isProviderUnavailable(error):
             return .failed(ExternalSignInError.reasonText("provider_unavailable"))
         default:
             if error is URLError { return .failed(unreachableMessage) }
-            return .failed("\(serverName) couldn't finish this. Try again.")
+            return .failed(AppLanguage.string(.tvPairApprovalServerFailed(serverName)))
         }
     }
 

@@ -9,7 +9,10 @@ private struct WatchPartyMediaChoice: Hashable {
     let contentId: String
     let type: String
     let title: String
+    /// D44: sent to the server as the suggestion's subtitle, so it stays English.
     var subtitle: String?
+    /// `subtitle` as this page shows it.
+    var shownSubtitle: String?
     var posterURL: String?
     var posterThumbhash: String?
     var backdropURL: String?
@@ -49,6 +52,7 @@ private struct WatchPartyMediaChoice: Hashable {
         type = item.type
         title = item.title
         subtitle = nil
+        shownSubtitle = nil
         posterURL = item.posterUrl
         posterIsEpisodeStill = item.posterIsEpisodeStill
         posterThumbhash = item.posterThumbhash
@@ -67,6 +71,7 @@ private struct WatchPartyMediaChoice: Hashable {
         type = "episode"
         title = series.title
         subtitle = "S\(episode.seasonNumber) · E\(episode.episodeNumber)" + (episode.title.map { " · \($0)" } ?? "")
+        shownSubtitle = Self.episodeLine(season: episode.seasonNumber, episode: episode.episodeNumber, title: episode.title)
         posterURL = series.posterUrl
         posterIsEpisodeStill = false
         posterThumbhash = series.posterThumbhash
@@ -76,8 +81,8 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropIsEpisodeStill = episode.stillUrl != nil ? episode.stillIsEpisodeStill : false
         episodeWatchState = EpisodeWatchState(episode.userData)
         if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { facts = [runtime] }
-        lobbyTitle = episode.title ?? "Episode \(episode.episodeNumber)"
-        lobbySubtitle = "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)"
+        lobbyTitle = episode.title ?? AppLanguage.string(.detailEpisode(String(episode.episodeNumber)))
+        lobbySubtitle = Self.lobbyLine(series: series.title, season: episode.seasonNumber, episode: episode.episodeNumber)
         runtimeMinutes = episode.runtime
     }
 
@@ -89,8 +94,10 @@ private struct WatchPartyMediaChoice: Hashable {
         title = item.seriesTitle ?? item.title
         if let season = item.seasonNumber, let episode = item.episodeNumber {
             subtitle = "S\(season) · E\(episode)" + (item.seriesTitle != nil ? " · \(item.title)" : "")
+            shownSubtitle = Self.episodeLine(season: season, episode: episode, title: item.seriesTitle != nil ? item.title : nil)
         } else {
             subtitle = item.seriesTitle != nil ? item.title : nil
+            shownSubtitle = subtitle
         }
         posterURL = item.posterUrl
         posterIsEpisodeStill = item.posterIsEpisodeStill
@@ -115,7 +122,7 @@ private struct WatchPartyMediaChoice: Hashable {
                                     backdropThumbhash: backdropIsStill ? nil : item.backdropThumbhash)
         }
         if let seriesTitle = item.seriesTitle, let season = item.seasonNumber, let episode = item.episodeNumber {
-            lobbySubtitle = "\(seriesTitle) · S\(season):E\(episode)"
+            lobbySubtitle = Self.lobbyLine(series: seriesTitle, season: season, episode: episode)
         } else {
             lobbySubtitle = item.seriesTitle
         }
@@ -127,16 +134,27 @@ private struct WatchPartyMediaChoice: Hashable {
         type = "episode"
         title = series.title
         subtitle = "S\(nextUp.seasonNumber) · E\(nextUp.episodeNumber)" + (nextUp.title.map { " · \($0)" } ?? "")
+        shownSubtitle = Self.episodeLine(season: nextUp.seasonNumber, episode: nextUp.episodeNumber, title: nextUp.title)
         posterURL = series.posterUrl
         posterIsEpisodeStill = false
         posterThumbhash = series.posterThumbhash
         backdropURL = series.backdropUrl
         backdropThumbhash = series.backdropThumbhash
         backdropIsEpisodeStill = false
-        lobbyTitle = nextUp.title ?? "Episode \(nextUp.episodeNumber)"
-        lobbySubtitle = "\(series.title) · S\(nextUp.seasonNumber):E\(nextUp.episodeNumber)"
+        lobbyTitle = nextUp.title ?? AppLanguage.string(.detailEpisode(String(nextUp.episodeNumber)))
+        lobbySubtitle = Self.lobbyLine(series: series.title, season: nextUp.seasonNumber, episode: nextUp.episodeNumber)
         seriesLink = series
         seasonNumber = nextUp.seasonNumber
+    }
+
+    /// "S1 · E2 · Title" on this page.
+    private static func episodeLine(season: Int, episode: Int, title: String?) -> String {
+        AppLanguage.string(.watchPartyEpisodesLine(String(season), String(episode))) + (title.map { " · \(AppLanguage.isolated($0))" } ?? "")
+    }
+
+    /// "Series · S1:E2" under the episode's title in the lobby.
+    private static func lobbyLine(series: String, season: Int, episode: Int) -> String {
+        "\(AppLanguage.isolated(series)) · " + AppLanguage.string(.watchPartyFactsEpisodeCode(String(season), String(episode)))
     }
 }
 
@@ -216,7 +234,7 @@ struct WatchPartyMediaPicker: View {
     #endif
 
     private var loading: Bool { isLoading || session.isLoadingPicker }
-    private var title: String { purpose == .suggest ? "Suggest a title" : "Choose a title" }
+    private var title: LocalizedStringResource { purpose == .suggest ? .watchPartyPickerSuggest : .watchPartyPickerSelect }
 
     var body: some View {
         content
@@ -278,31 +296,32 @@ struct WatchPartyMediaPicker: View {
                             durationSeconds: entry.members.compactMap(\.durationSeconds).max())
             }
             if !together.isEmpty {
-                sections.append(section(Self.togetherSectionID, type: "watch_party_together", title: "Continue Together", items: together))
+                sections.append(section(Self.togetherSectionID, type: "watch_party_together", title: AppLanguage.string(.watchPartyPickerContinueTogether), items: together))
             }
         }
         #if !os(tvOS)
         if !resumeItems.isEmpty {
-            sections.append(section(Self.resumeSectionID, type: "continue_watching", title: "Continue Watching", items: resumeItems))
+            sections.append(section(Self.resumeSectionID, type: "continue_watching", title: AppLanguage.string(.homeSectionContinueWatching), items: resumeItems))
         }
         #endif
         if session.capabilities?.picker == true, let picker = session.picker {
             let watchlist = picker.watchlistUnion.filter { isPlayable($0.item) }.map { SectionItem(browseItem: $0.item) }
             if !watchlist.isEmpty {
-                sections.append(section(Self.watchlistSectionID, type: "watch_party_watchlist", title: "On Your Watchlists", items: watchlist))
+                sections.append(section(Self.watchlistSectionID, type: "watch_party_watchlist",
+                                        title: AppLanguage.string(.watchPartyPickerWatchlists), items: watchlist))
             }
         } else if !watchlistItems.isEmpty {
-            sections.append(section(Self.watchlistSectionID, type: "watch_party_watchlist", title: "On Your Watchlists",
+            sections.append(section(Self.watchlistSectionID, type: "watch_party_watchlist", title: AppLanguage.string(.watchPartyPickerWatchlists),
                                     items: watchlistItems.filter(isPlayable).map { SectionItem(browseItem: $0) }))
         }
         sections.append(contentsOf: homeSections)
         let movies = items.filter(isPlayable).map { SectionItem(browseItem: $0) }
         if !movies.isEmpty {
-            sections.append(section(Self.recentMoviesSectionID, type: "watch_party_recent_movies", title: "Recently Added Movies", items: movies))
+            sections.append(section(Self.recentMoviesSectionID, type: "watch_party_recent_movies", title: AppLanguage.string(.watchPartyPickerRecentMovies), items: movies))
         }
         let series = recentSeries.filter(isPlayable).map { SectionItem(browseItem: $0) }
         if !series.isEmpty {
-            sections.append(section(Self.recentSeriesSectionID, type: "watch_party_recent_series", title: "Recently Added Series", items: series))
+            sections.append(section(Self.recentSeriesSectionID, type: "watch_party_recent_series", title: AppLanguage.string(.watchPartyPickerRecentSeries), items: series))
         }
         return sections
     }
@@ -390,8 +409,8 @@ struct WatchPartyMediaPicker: View {
                 .font(.system(size: SiloTheme.Skyline.tabLabelSize, weight: .semibold))
                 .foregroundStyle(Color.white)
             Spacer()
-            chromeIcon("magnifyingglass", label: "Search", id: .search) { destination = .search }
-            chromeIcon("xmark", label: "Close", id: .close) { dismiss() }
+            chromeIcon("magnifyingglass", label: .watchPartyPickerSearch, id: .search) { destination = .search }
+            chromeIcon("xmark", label: .watchPartyPickerClose, id: .close) { dismiss() }
         }
         .frame(height: SiloTheme.Skyline.barHeight)
         .padding(.horizontal, SiloTheme.Skyline.safeAreaX)
@@ -399,7 +418,7 @@ struct WatchPartyMediaPicker: View {
         .focusSection()
     }
 
-    private func chromeIcon(_ systemName: String, label: String, id: ChromeFocus, action: @escaping () -> Void) -> some View {
+    private func chromeIcon(_ systemName: String, label: LocalizedStringResource, id: ChromeFocus, action: @escaping () -> Void) -> some View {
         let isFocused = chromeFocus == id
         return Button(action: action) {
             Image(systemName: systemName)
@@ -420,8 +439,8 @@ struct WatchPartyMediaPicker: View {
             if loading {
                 ProgressView().tint(Color.siloSecondaryText)
             } else {
-                EmptyStateView(icon: "film.stack", title: "Nothing to pick from yet",
-                               subtitle: "Search for a title, or add something to a watchlist.")
+                EmptyStateView(icon: "film.stack", title: AppLanguage.string(.watchPartyPickerEmptyTitle),
+                               subtitle: AppLanguage.string(.watchPartyPickerEmptyBody))
                 if let message = errorMessage ?? session.errorMessage {
                     WatchPartyBanner(message: message, tone: .warning)
                 }
@@ -463,13 +482,13 @@ struct WatchPartyMediaPicker: View {
         .siloPageBackground()
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.large)
-        .siloSearchable(text: $search.query, prompt: "Search movies and series")
+        .siloSearchable(text: $search.query, prompt: AppLanguage.string(.watchPartyPickerSearchHint))
         .onChange(of: search.query) { _, _ in search.onQueryChanged() }
         .onAppear { search.audiobooksEnabled = false }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button { dismiss() } label: { Image(systemName: "xmark") }
-                    .accessibilityLabel("Close")
+                    .accessibilityLabel(.watchPartyPickerClose)
             }
         }
     }
@@ -507,7 +526,7 @@ struct WatchPartyMediaPicker: View {
         guard section.id == Self.togetherSectionID || section.id == Self.watchlistSectionID,
               let entry = entry(for: item.contentId), !entry.members.isEmpty else { return nil }
         if section.id == Self.togetherSectionID, let nextUp = entry.nextUp {
-            return "Next: S\(nextUp.seasonNumber) · E\(nextUp.episodeNumber)"
+            return AppLanguage.string(.watchPartyPickerNextEpisode(String(nextUp.seasonNumber), String(nextUp.episodeNumber)))
         }
         return memberNames(entry.members)
     }
@@ -520,11 +539,11 @@ struct WatchPartyMediaPicker: View {
                 .padding(.top, 120)
         } else {
             VStack(spacing: 16) {
-                EmptyStateView(icon: "film.stack", title: "Nothing to pick from yet",
-                               subtitle: "Search for a title, or add something to a watchlist.")
+                EmptyStateView(icon: "film.stack", title: AppLanguage.string(.watchPartyPickerEmptyTitle),
+                               subtitle: AppLanguage.string(.watchPartyPickerEmptyBody))
                 if let message = errorMessage ?? session.errorMessage {
                     WatchPartyBanner(message: message, tone: .warning)
-                    Button { Task { await loadShelves(reset: true) } } label: { Text("Try Again") }
+                    Button { Task { await loadShelves(reset: true) } } label: { Text(.shellErrorViewTryAgain) }
                         .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                 }
             }
@@ -557,7 +576,8 @@ struct WatchPartyMediaPicker: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 120)
             } else {
-                EmptyStateView(icon: "magnifyingglass", title: "No results", subtitle: "Try a different search term.")
+                EmptyStateView(icon: "magnifyingglass", title: AppLanguage.string(.watchPartyPickerNoResults),
+                               subtitle: AppLanguage.string(.watchPartyPickerNoResultsHint))
                     .frame(maxWidth: .infinity)
                     .padding(.top, 80)
             }
@@ -720,6 +740,8 @@ private struct WatchPartySearchPage: View {
     let purpose: WatchPartyPickerPurpose
     let onPick: (BrowseItem) -> Void
     @State private var viewModel = SearchViewModel()
+    /// The app language, so a switch re-renders the resolved labels.
+    @Environment(\.locale) private var locale
 
     var body: some View {
         ScrollView {
@@ -729,15 +751,16 @@ private struct WatchPartySearchPage: View {
                 } else if let error = viewModel.error {
                     ErrorView(state: error, onRetry: { Task { await viewModel.performSearch() } })
                 } else if viewModel.hasSearched && viewModel.results.isEmpty {
-                    EmptyStateView(icon: "magnifyingglass", title: "No results", subtitle: "Try a different search term")
+                    EmptyStateView(icon: "magnifyingglass", title: AppLanguage.string(.watchPartyPickerNoResults),
+                                   subtitle: AppLanguage.string(.watchPartyPickerNoResultsBody))
                         .padding(.top, 80)
                 } else if viewModel.results.isEmpty {
                     EmptyStateView(icon: "magnifyingglass",
-                                   title: purpose == .suggest ? "Suggest a title" : "Choose a title",
-                                   subtitle: "Find movies and series")
+                                   title: AppLanguage.string(purpose == .suggest ? .watchPartyPickerSuggest : .watchPartyPickerSelect),
+                                   subtitle: AppLanguage.string(.searchInitialBody))
                         .padding(.top, 80)
                 } else {
-                    Text("\(viewModel.total) result\(viewModel.total == 1 ? "" : "s")")
+                    Text(.requestsSearchResultCount(count: viewModel.total, "\(viewModel.total)"))
                         .font(.siloCaption)
                         .foregroundColor(.siloSecondaryText)
                     TVCatalogGrid(
@@ -758,9 +781,9 @@ private struct WatchPartySearchPage: View {
         }
         .siloPageBackground()
         .safeAreaPadding(.horizontal, 110)
-        .navigationTitle("Search")
+        .navigationTitle(.watchPartyPickerSearchPage)
         .siloNavigationTitleDisplayMode(.inline)
-        .siloSearchable(text: $viewModel.query, prompt: "Search movies and series...")
+        .siloSearchable(text: $viewModel.query, prompt: AppLanguage.string(.watchPartyPickerSearchPromptTv))
         .onAppear { viewModel.audiobooksEnabled = false }
         .onChange(of: viewModel.query) { _, _ in viewModel.onQueryChanged() }
     }
@@ -781,6 +804,8 @@ private struct WatchPartyEpisodePicker: View {
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var chosen: WatchPartyMediaChoice?
+    /// The app language, so a switch re-renders the resolved labels.
+    @Environment(\.locale) private var locale
     #if os(tvOS)
     @State private var focusedEpisodeId: String?
     @FocusState private var focusedSeasonNumber: Int?
@@ -834,7 +859,7 @@ private struct WatchPartyEpisodePicker: View {
                                isPoster: series.backdropUrl == nil)
             Color.black.opacity(0.28).ignoresSafeArea()
             VStack(alignment: .leading, spacing: 0) {
-                WatchPartyEyebrow(text: "Watch Party · \(purpose == .suggest ? "Suggest an episode" : "Choose an episode")")
+                WatchPartyEyebrow(text: purpose == .suggest ? .watchPartyEyebrowSuggestEpisode : .watchPartyEyebrowChooseEpisode)
                 Spacer(minLength: 0)
                 VStack(alignment: .leading, spacing: 10) {
                     Text(series.title)
@@ -883,14 +908,14 @@ private struct WatchPartyEpisodePicker: View {
                         // seasons arrive; without an owner Menu cannot leave.
                         ProgressView().tint(Color.siloSecondaryText).frame(maxWidth: .infinity)
                             .tvPageFocusOwner(focusRequest: 0, isTopMenuFocused: false,
-                                              accessibilityLabel: "Loading episodes", onMoveUp: nil)
+                                              accessibilityLabel: AppLanguage.string(.watchPartyEpisodesLoading), onMoveUp: nil)
                     } else if isLoading && episodes.isEmpty {
                         ProgressView().tint(Color.siloSecondaryText).frame(maxWidth: .infinity)
                     } else if episodes.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("No episodes in this season").font(.system(size: 28, weight: .semibold)).foregroundStyle(Color.siloOnSurface)
+                            Text(.watchPartyEpisodesEmpty).font(.system(size: 28, weight: .semibold)).foregroundStyle(Color.siloOnSurface)
                             if let errorMessage { WatchPartyBanner(message: errorMessage, tone: .warning) }
-                            Button { Task { await loadSeasons() } } label: { Text("Reload episodes") }
+                            Button { Task { await loadSeasons() } } label: { Text(.watchPartyEpisodesReload) }
                                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                         }
                     } else {
@@ -920,7 +945,7 @@ private struct WatchPartyEpisodePicker: View {
     }
 
     private func episodeLine(_ episode: EpisodeListItem) -> String {
-        var parts = ["S\(episode.seasonNumber) · E\(episode.episodeNumber)"]
+        var parts = [AppLanguage.string(.watchPartyEpisodesLine(String(episode.seasonNumber), String(episode.episodeNumber)))]
         if let title = episode.title, !title.isEmpty { parts.append(title) }
         if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { parts.append(runtime) }
         return parts.joined(separator: " · ")
@@ -956,9 +981,9 @@ private struct WatchPartyEpisodePicker: View {
                             .padding(.top, 80)
                     } else if episodes.isEmpty {
                         VStack(spacing: 16) {
-                            EmptyStateView(icon: "tv", title: "No episodes",
-                                           subtitle: errorMessage ?? "Nothing in this season is available to play.")
-                            Button { Task { await loadSeasons() } } label: { Text("Try Again") }
+                            EmptyStateView(icon: "tv", title: AppLanguage.string(.watchPartyEpisodesNoneTitle),
+                                           subtitle: errorMessage ?? AppLanguage.string(.watchPartyEpisodesNoneBody))
+                            Button { Task { await loadSeasons() } } label: { Text(.shellErrorViewTryAgain) }
                                 .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                         }
                         .frame(maxWidth: .infinity)
@@ -1004,7 +1029,8 @@ private struct WatchPartyEpisodePicker: View {
             .frame(width: Self.stillWidth, height: Self.stillWidth * 9 / 16)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(episode.episodeNumber). \(episode.title ?? "Episode \(episode.episodeNumber)")")
+                Text(.watchPartyEpisodesNumbered(String(episode.episodeNumber),
+                                                 episode.title ?? AppLanguage.string(.detailEpisode(String(episode.episodeNumber)))))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(2)
@@ -1083,6 +1109,8 @@ private struct WatchPartyMediaChoiceView: View {
     let choice: WatchPartyMediaChoice
     let onComplete: () -> Void
     @State private var browsedSeries: BrowseItem?
+    /// The app language, so a switch re-renders the resolved labels.
+    @Environment(\.locale) private var locale
     #if os(tvOS)
     @FocusState private var confirmFocused: Bool
     #endif
@@ -1121,14 +1149,14 @@ private struct WatchPartyMediaChoiceView: View {
                                          hidesStill: choice.episodeWatchState.map { spoilers.hidesImage(for: $0, isEpisodeStill: choice.posterIsEpisodeStill) } ?? false)
                             .shadow(color: .black.opacity(0.6), radius: 16, y: 10)
                         VStack(alignment: .leading, spacing: 8) {
-                            WatchPartyEyebrow(text: purpose == .suggest ? "Suggest to the party" : "Watch together")
+                            WatchPartyEyebrow(text: purpose == .suggest ? .watchPartyPickerSuggestToParty : .watchPartyPickerWatchTogether)
                             Text(choice.title)
                                 .font(.system(size: WatchPartyMetrics.heroTitle * 0.9, weight: .bold))
                                 .tracking(-1)
                                 .foregroundStyle(Color.siloOnSurface)
                                 .lineLimit(3)
                                 .minimumScaleFactor(0.7)
-                            let facts = (choice.subtitle.map { [$0] } ?? []) + choice.facts
+                            let facts = (choice.shownSubtitle.map { [$0] } ?? []) + choice.facts
                             if !facts.isEmpty {
                                 Text(facts.joined(separator: " · "))
                                     .font(.system(size: WatchPartyMetrics.body))
@@ -1153,16 +1181,16 @@ private struct WatchPartyMediaChoiceView: View {
                     #endif
                     if let series = choice.seriesLink {
                         Button { browsedSeries = series } label: {
-                            Label("See all episodes", systemImage: "list.bullet")
+                            Label(.watchPartyConfirmAllEpisodes, systemImage: "list.bullet")
                         }
                         .buttonStyle(WatchPartyButtonStyle(kind: .secondary))
                         .accessibilityIdentifier("watchParty.browseSeries")
                     }
                     if session.capabilities?.memberState == true {
                         VStack(alignment: .leading, spacing: 10) {
-                            WatchPartyEyebrow(text: "Who's seen it")
+                            WatchPartyEyebrow(text: .watchPartyWhoSeenTitle)
                             if session.isLoadingMemberState {
-                                Text("Checking viewing history…")
+                                Text(.watchPartyWhoSeenChecking)
                                     .font(.system(size: WatchPartyMetrics.caption))
                                     .foregroundStyle(Color.siloSecondaryText)
                             } else if let item = session.memberState?.items.first(where: { $0.contentId == choice.contentId }) {
@@ -1210,9 +1238,10 @@ private struct WatchPartyMediaChoiceView: View {
         }
     }
 
-    private var actionTitle: String {
-        if purpose == .suggest { return "Add suggestion" }
-        return session.room?.phase == .lobby && session.capabilities?.stagedSelection == true ? "Choose for the party" : "Play for everyone"
+    private var actionTitle: LocalizedStringResource {
+        if purpose == .suggest { return .watchPartyConfirmAddSuggestion }
+        return session.room?.phase == .lobby && session.capabilities?.stagedSelection == true
+            ? .watchPartyConfirmChoose : .watchPartyConfirmPlayForEveryone
     }
 
     private func submit() async {
@@ -1227,15 +1256,15 @@ private struct WatchPartyMediaChoiceView: View {
         if succeeded { onComplete() }
     }
 
-    private func historyLabel(_ state: WatchPartyMemberWatchState?) -> String {
-        guard let state else { return "No viewing history" }
-        let label: String
+    private func historyLabel(_ state: WatchPartyMemberWatchState?) -> LocalizedStringResource {
+        guard let state else { return .watchPartyWhoSeenNoHistory }
+        let label: LocalizedStringResource
         switch state.state {
-        case "watched", "completed", "played": label = "Watched"
-        case "in_progress", "inprogress": label = "In progress"
-        default: label = "Not watched"
+        case "watched", "completed", "played": label = .watchPartyWhoSeenWatched
+        case "in_progress", "inprogress": label = .watchPartyWhoSeenInProgress
+        default: label = .watchPartyWhoSeenNotWatched
         }
-        return state.onWatchlist ? label + " · Watchlist" : label
+        return state.onWatchlist ? .watchPartyWhoSeenWatchlist(AppLanguage.string(label)) : label
     }
 }
 #endif

@@ -4,7 +4,7 @@ import Foundation
 /// reached the URL session. Nothing was sent.
 struct APIv2OwnerChangedBeforeDispatch: LocalizedError, Sendable {
     var errorDescription: String? {
-        "The active server or profile changed before the request could start."
+        AppLanguage.string(.errorsAppleRequestOwnerChangedBeforeStart)
     }
 }
 
@@ -38,36 +38,36 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidSubtitleResponse: return "The subtitle response cannot be used by this player."
-        case .invalidNotificationContinuation: return "The notification sync could not be continued. Try again."
-        case .incompleteAuthResponse: return "The server returned an incomplete sign-in response. Start sign-in again."
+        case .invalidSubtitleResponse: return AppLanguage.string(.errorsAppleV2InvalidSubtitleResponse)
+        case .invalidNotificationContinuation: return AppLanguage.string(.errorsAppleV2InvalidNotificationContinuation)
+        case .incompleteAuthResponse: return AppLanguage.string(.errorsAppleV2IncompleteAuthResponse)
         case .invalidPersonalListContinuation:
-            return "The personal list could not be continued. Reload to start again."
+            return AppLanguage.string(.errorsAppleV2InvalidPersonalListContinuation)
         case .incompletePersonalList:
-            return "The list could not be loaded completely. Reload to try again."
+            return AppLanguage.string(.errorsAppleV2IncompletePersonalList)
         case .unsupportedCatalogReadValue:
-            return "This item uses a value this client cannot support. Please update the client."
+            return AppLanguage.string(.errorsAppleV2UnsupportedCatalogReadValue)
         case .incompleteCatalogRead:
-            return "The server returned an incomplete catalog list. Reload to try again."
+            return AppLanguage.string(.errorsAppleV2IncompleteCatalogRead)
         case .unexpectedSettingReceipt:
-            return "The server's reply to a settings change did not match the change."
+            return AppLanguage.string(.errorsAppleV2UnexpectedSettingReceipt)
         case .invalidCatalogQuery:
-            return "The catalog query is not valid."
+            return AppLanguage.string(.errorsAppleV2InvalidCatalogQuery)
         case .invalidCatalogContinuation:
-            return "The catalog page could not be continued. Reload to start again."
+            return AppLanguage.string(.errorsAppleV2InvalidCatalogContinuation)
         case .incompleteCollection:
-            return "The collection could not be loaded completely. Reload to try again."
+            return AppLanguage.string(.errorsAppleV2IncompleteCollection)
         case .missingEntityTag:
-            return "The server did not provide a version tag. Reload before saving."
+            return AppLanguage.string(.errorsAppleV2MissingEntityTag)
         case .incompleteRequestList:
-            return "The request list could not be loaded completely. Please reload."
+            return AppLanguage.string(.errorsAppleV2IncompleteRequestList)
         case .serverUpdateRequired:
             return UpdateRequirement.serverMessage
         case .problem(let problem):
             if UpdateRequirement.isClientUpgradeRequired(problem) { return UpdateRequirement.appMessage }
             return problem.localized(problem.detail.isEmpty ? problem.title : problem.detail)
         case .httpStatus(let status):
-            return "The server returned HTTP \(status)."
+            return AppLanguage.string(.errorsAppleV2HttpStatus("\(status)"))
         }
     }
 }

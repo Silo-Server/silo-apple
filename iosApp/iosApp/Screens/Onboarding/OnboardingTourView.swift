@@ -7,6 +7,7 @@ import SwiftUI
 /// forward-compatibility contract. Progress and completion post per profile,
 /// so finishing here silences the web and Android too.
 struct OnboardingTourView: View {
+    @Environment(\.locale) private var locale
     var router: AppRouter
     var resumeStepId: String? = nil
     /// Set when presented as a cover (the tour gate); falls back to a router
@@ -68,7 +69,7 @@ struct OnboardingTourView: View {
                     }
                 }
                 Spacer()
-                Button("Skip") { Task { await viewModel.skip() } }
+                Button(.firstRunTourSkip) { Task { await viewModel.skip() } }
                     .buttonStyle(AuroraGhostButtonStyle())
                     .disabled(viewModel.isSaving)
             }
@@ -84,7 +85,7 @@ struct OnboardingTourView: View {
             if let error = viewModel.error {
                 VStack(alignment: .leading, spacing: 8) {
                     AuroraErrorLabel(error)
-                    Button("Continue without saving") {
+                    Button(.firstRunTourContinueWithoutSaving) {
                         Task { await viewModel.continueWithoutSaving() }
                     }
                     .buttonStyle(AuroraGhostButtonStyle())
@@ -95,7 +96,7 @@ struct OnboardingTourView: View {
 
             HStack(spacing: 10) {
                 if viewModel.currentIndex > 0 {
-                    Button("Back") { viewModel.back() }
+                    Button(.commonBack) { viewModel.back() }
                         .buttonStyle(AuroraGhostButtonStyle())
                         .disabled(viewModel.isSaving)
                 }
@@ -109,9 +110,9 @@ struct OnboardingTourView: View {
                     }
                 } label: {
                     Text(viewModel.isSaving
-                        ? "Saving…"
-                        : step.kind == "handoff" || isLast ? "Done"
-                        : viewModel.currentIndex == 0 ? "Show me" : "Next")
+                        ? LocalizedStringResource.firstRunTourSaving
+                        : step.kind == "handoff" || isLast ? .commonDone
+                        : viewModel.currentIndex == 0 ? .firstRunTourShowMe : .firstRunTourNext)
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(AuroraPrimaryButtonStyle(isLoading: viewModel.isSaving))
@@ -172,7 +173,7 @@ struct OnboardingTourView: View {
     private func settingChoice(step: OnboardingStep, spec: OnboardingSettingSpec) -> some View {
         if spec.control == "toggle" {
             Toggle(
-                spec.label ?? step.title ?? "Enabled",
+                spec.label ?? step.title ?? AppLanguage.string(.firstRunTourEnabled),
                 isOn: Binding(
                     get: { viewModel.isToggleEnabled(for: step) },
                     set: { enabled in

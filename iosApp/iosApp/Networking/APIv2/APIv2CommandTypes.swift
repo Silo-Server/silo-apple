@@ -54,11 +54,11 @@ enum PlaybackSequencedError: LocalizedError {
     case invalidSample, invalidResponse, invalidSession, authorityChanged, controlUnavailable
     var errorDescription: String? {
         switch self {
-        case .controlUnavailable: return "Remote playback control is not available on this server."
-        case .invalidSample: return "Playback progress could not be recorded."
-        case .invalidResponse: return "The server returned an invalid playback response."
-        case .invalidSession: return "This playback session is no longer available."
-        case .authorityChanged: return "The account or profile changed. Playback was not retried."
+        case .controlUnavailable: return AppLanguage.string(.errorsApplePlaybackControlUnavailable)
+        case .invalidSample: return AppLanguage.string(.errorsApplePlaybackInvalidSample)
+        case .invalidResponse: return AppLanguage.string(.errorsApplePlaybackInvalidResponse)
+        case .invalidSession: return AppLanguage.string(.errorsApplePlaybackInvalidSession)
+        case .authorityChanged: return AppLanguage.string(.errorsApplePlaybackAuthorityChanged)
         }
     }
 }

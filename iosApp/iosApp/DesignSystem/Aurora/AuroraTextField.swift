@@ -17,7 +17,7 @@ struct AuroraErrorLabel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .transition(.opacity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Error: \(text)")
+        .accessibilityLabel(.shellMarqueeErrorSpoken(text))
     }
 }
 

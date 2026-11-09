@@ -8,6 +8,7 @@ struct ForgotPasswordView: View {
     @State private var model: ForgotPasswordModel
     @FocusState private var focusedField: Field?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
 
     private enum Field: Hashable { case login }
 
@@ -18,7 +19,7 @@ struct ForgotPasswordView: View {
     var body: some View {
         MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: model.isSending ? nil : { dismiss() }) {
             MarqueeTopBar {
-                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back to sign in") { dismiss() }
+                MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: AppLanguage.string(.accountBackToSignIn)) { dismiss() }
                     .disabled(model.isSending)
             } trailing: { EmptyView() }
         } content: {
@@ -43,13 +44,13 @@ struct ForgotPasswordView: View {
     @ViewBuilder
     private var form: some View {
         MarqueeHeadline(
-            title: "Reset password",
-            lead: "Enter your username or email. If it matches an account, we'll email that account a link to choose a new password."
+            title: AppLanguage.string(.signInForgotTitle),
+            lead: AppLanguage.string(.signInForgotLead)
         )
         VStack(spacing: 0) {
             MarqueeTextField(
                 systemImage: "person",
-                placeholder: "Username or email",
+                placeholder: AppLanguage.string(.signInForgotLoginPlaceholder),
                 text: $model.login,
                 focus: $focusedField,
                 equals: .login,
@@ -69,7 +70,7 @@ struct ForgotPasswordView: View {
             }
 
             Button(action: send) {
-                Text(model.isSending ? "Sending…" : "Send reset link")
+                Text(model.isSending ? LocalizedStringResource.signInForgotSending : .signInForgotSend)
             }
             .buttonStyle(.marquee(.primary, isLoading: model.isSending))
             .keyboardShortcut(.defaultAction)
@@ -88,11 +89,11 @@ struct ForgotPasswordView: View {
     @ViewBuilder
     private func sent(login: String) -> some View {
         MarqueeHeadline(
-            title: "Check your email",
-            lead: "If \(login) matches an account with an email address, we sent that address a link to choose a new password. Once you've chosen it, sign in here."
+            title: AppLanguage.string(.signInForgotSentTitle),
+            lead: AppLanguage.string(.signInForgotSentLead(login))
         )
         VStack(spacing: 0) {
-            Text("Nothing after a few minutes? Check your spam folder, then try again.")
+            Text(.signInForgotSentNote)
                 .font(.system(size: 13))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -108,15 +109,15 @@ struct ForgotPasswordView: View {
     @ViewBuilder
     private var unavailable: some View {
         MarqueeHeadline(
-            title: "Reset password",
-            lead: "This server doesn't offer password resets from the sign-in screen. Ask your server admin to reset your password."
+            title: AppLanguage.string(.signInForgotTitle),
+            lead: AppLanguage.string(.signInForgotUnavailableLead)
         )
         backToSignIn
             .padding(.top, 24)
     }
 
     private var backToSignIn: some View {
-        Button("Back to sign in") { dismiss() }
+        Button(.accountBackToSignIn) { dismiss() }
             .buttonStyle(.marquee(.primary))
             .accessibilityIdentifier("forgotPassword.done")
     }

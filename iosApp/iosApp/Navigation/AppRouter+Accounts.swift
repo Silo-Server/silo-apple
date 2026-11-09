@@ -41,13 +41,15 @@ struct AccountRemovalRequest: Identifiable, Equatable {
         }
     }
 
-    /// "This deletes 12 downloads (8.4 GB) from this iPhone." Nil without
-    /// downloads.
-    static func downloadsSentence(count: Int, bytes: Int64, lead: String = "This deletes") -> String? {
+    /// "This deletes 12 downloads (8.4 GB) from this iPhone.", or "It also
+    /// deletes …" after another sentence. Nil without downloads.
+    static func downloadsSentence(count: Int, bytes: Int64, also: Bool = false) -> String? {
         guard count > 0 else { return nil }
         let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-        let noun = count == 1 ? "download" : "downloads"
-        return "\(lead) \(count) \(noun) (\(size)) from this \(DeviceNoun.current)."
+        let device = DeviceNoun.current
+        return AppLanguage.string(also
+            ? LocalizedStringResource.accountRemovalDownloadsAlso(count: count, "\(count)", size, device)
+            : .accountRemovalDownloads(count: count, "\(count)", size, device))
     }
 }
 
@@ -312,22 +314,23 @@ extension AppRouter {
               old.username?.lowercased() != signedIn.username?.lowercased() || old.username == nil
         else { return }
         skipsSingleProfilePicker = false
-        let serverName = ServerRegistry.shared.entry(with: request.serverId)?.displayName ?? "this server"
-        let oldName = old.username ?? "the old account"
-        let newName = signedIn.username ?? "this account"
+        let serverName = ServerRegistry.shared.entry(with: request.serverId)?.displayName
+            ?? AppLanguage.string(.accountFallbackThisServer)
+        let oldName = old.username ?? AppLanguage.string(.accountFallbackOldAccount)
+        let newName = signedIn.username ?? AppLanguage.string(.accountFallbackThisAccount)
         Task {
             let summary = await AccountSessions.downloadSummary(account: renewing, onServer: request.serverId)
             let downloads = summary.flatMap {
-                AccountRemovalRequest.downloadsSentence(count: $0.count, bytes: $0.bytes, lead: "It also deletes")
+                AccountRemovalRequest.downloadsSentence(count: $0.count, bytes: $0.bytes, also: true)
             }
             pendingRemoval = AccountRemovalRequest(
                 serverId: request.serverId,
                 action: .replace(localAccountId: renewing),
-                title: "Replace \(oldName) with \(newName)?",
-                message: ["You're now signed in to \(serverName) as \(newName). Replacing signs out of \(oldName).",
+                title: AppLanguage.string(.accountReplaceTitle(oldName, newName)),
+                message: [AppLanguage.string(.accountReplaceMessage(serverName, newName, oldName)),
                           downloads].compactMap { $0 }.joined(separator: " "),
-                confirmTitle: "Replace",
-                cancelTitle: "Keep Both"
+                confirmTitle: AppLanguage.string(.loginReplaceConfirm),
+                cancelTitle: AppLanguage.string(.accountReplaceKeepBoth)
             )
         }
     }
@@ -356,21 +359,24 @@ extension AppRouter {
         let directory = AccountDirectory.shared
         directory.reload()
         let account = directory.account(localAccountId)
-        let serverName = ServerRegistry.shared.entry(with: serverId)?.displayName ?? "this server"
+        let serverName = ServerRegistry.shared.entry(with: serverId)?.displayName
+            ?? AppLanguage.string(.accountFallbackThisServer)
         let summary = await AccountSessions.downloadSummary(account: localAccountId, onServer: serverId)
         let isOnlyAccount = Self.isLastAccount(localAccountId, onServer: serverId, in: directory)
         pendingRemoval = AccountRemovalRequest(
             serverId: serverId,
             action: .signOut(localAccountId: localAccountId),
-            title: "Sign out of \(account?.username ?? "this account") on \(serverName)?",
+            title: AppLanguage.string(.shellSignOutTitleNamed(
+                account?.username ?? AppLanguage.string(.accountFallbackThisAccount), serverName
+            )),
             message: Self.signOutMessage(
                 removingServer: isOnlyAccount ? serverName : nil,
                 downloads: summary.flatMap {
                     AccountRemovalRequest.downloadsSentence(count: $0.count, bytes: $0.bytes)
                 }
             ),
-            confirmTitle: "Sign Out",
-            cancelTitle: "Cancel"
+            confirmTitle: AppLanguage.string(.shellSignOutConfirm),
+            cancelTitle: AppLanguage.string(.commonCancel)
         )
     }
 
@@ -380,11 +386,11 @@ extension AppRouter {
     private static func signOutMessage(removingServer serverName: String?, downloads: String?) -> String? {
         let device = DeviceNoun.current
         #if os(tvOS)
-        let leaves = serverName.map {
-            "This account's profiles and settings leave this \(device), and \($0) will be removed from it."
-        } ?? "This account's profiles and settings leave this \(device). The server stays saved, so you can sign in again."
+        let leaves = AppLanguage.string(serverName.map {
+            LocalizedStringResource.accountSignOutLeavesRemovingServer(device, $0)
+        } ?? .accountSignOutLeaves(device))
         #else
-        let leaves = serverName.map { "\($0) will be removed from this \(device)." }
+        let leaves = serverName.map { AppLanguage.string(.accountSignOutRemovesServer($0, device)) }
         #endif
         let message = [leaves, downloads].compactMap { $0 }.joined(separator: " ")
         return message.isEmpty ? nil : message
@@ -393,7 +399,8 @@ extension AppRouter {
     /// Asks before removing a server, which signs out of every account on it.
     func confirmRemoveServer(_ serverId: String) async {
         let accounts = AccountDirectory.shared.accounts(onServer: serverId)
-        let serverName = ServerRegistry.shared.entry(with: serverId)?.displayName ?? "this server"
+        let serverName = ServerRegistry.shared.entry(with: serverId)?.displayName
+            ?? AppLanguage.string(.accountFallbackThisServer)
         var count = 0
         var bytes: Int64 = 0
         for account in accounts {
@@ -404,17 +411,19 @@ extension AppRouter {
         }
         let signsOut: String? = switch accounts.count {
         case 0: nil
-        case 1: "This signs out of \(accounts[0].username ?? "its account")."
-        default: "This signs out of its \(accounts.count) accounts."
+        case 1: AppLanguage.string(.accountRemoveServerSignsOutOne(
+            accounts[0].username ?? AppLanguage.string(.accountFallbackItsAccount)
+        ))
+        default: AppLanguage.string(.accountRemoveServerSignsOutMany(accounts.count))
         }
         pendingRemoval = AccountRemovalRequest(
             serverId: serverId,
             action: .removeServer,
-            title: "Remove \(serverName)?",
+            title: AppLanguage.string(.serversRemoveTitle(serverName)),
             message: [signsOut, AccountRemovalRequest.downloadsSentence(count: count, bytes: bytes)]
                 .compactMap { $0 }.joined(separator: " "),
-            confirmTitle: "Remove",
-            cancelTitle: "Cancel"
+            confirmTitle: AppLanguage.string(.serversRemoveConfirm),
+            cancelTitle: AppLanguage.string(.commonCancel)
         )
     }
 
@@ -462,12 +471,12 @@ extension AppRouter {
             let outcome = await AccountSessions.signOut(account: localAccountId, onServer: serverId)
             switch outcome {
             case .refused:
-                accountActionError = "Silo couldn't sign out of that account. Try again."
+                accountActionError = AppLanguage.string(.accountErrorSignOutRefused)
                 return
             case .localOnly:
-                accountActionError = "Silo couldn't clear the saved sign-in on this device. Please try signing out again."
+                accountActionError = AppLanguage.string(.tvSignInSignOutLocalFailed)
             case .diagnosticsCleanupFailed:
-                accountActionError = "You're signed out, but Silo couldn't erase local diagnostics. Remove this server in Settings > Accounts to retry cleanup."
+                accountActionError = AppLanguage.string(.accountErrorDiagnosticsCleanupFailed)
             case .completed:
                 break
             }
@@ -487,7 +496,7 @@ extension AppRouter {
         #if os(tvOS)
         if await TokenStore.shared.hasTemporaryScope() {
             guard await RemotePlaybackIdentityManager.shared.end() else {
-                accountActionError = "Couldn't end remote playback. Try signing out again."
+                accountActionError = AppLanguage.string(.tvSignInSignOutRemotePlaybackNotEnded)
                 return false
             }
         }
@@ -512,7 +521,7 @@ extension AppRouter {
                 signsOutAccountInUse = false
             }
             guard await AccountSessions.removeServer(serverId) else {
-                accountActionError = "Silo couldn't remove the saved server. Please try again."
+                accountActionError = AppLanguage.string(.accountErrorRemoveServerFailed)
                 return
             }
             #if !os(tvOS)

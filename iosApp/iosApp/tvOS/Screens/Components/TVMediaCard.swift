@@ -5,6 +5,7 @@ import SwiftUI
 /// card lift and outline; `.ring` uses a smaller scale to match the episode
 /// and cast rails. The caption below highlights on focus.
 struct TVMediaCard: View {
+    @Environment(\.locale) private var locale
     let title: String
     let posterUrl: String
     var posterThumbhash: String? = nil
@@ -287,10 +288,10 @@ struct TVMediaCard: View {
             components.append(secondLine)
         }
         if isPlayed {
-            components.append("Watched")
+            components.append(AppLanguage.string(.shellCardWatched))
         }
         if marksCurrentFilm {
-            components.append("This film")
+            components.append(AppLanguage.string(.shellCardThisFilm))
         }
         return components.joined(separator: ", ")
     }
