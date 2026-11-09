@@ -243,6 +243,32 @@ final class PlaybackSessionTransportTests: XCTestCase {
         XCTAssertEqual(sent["is_paused"] as? Bool, true)
     }
 
+    /// A server without `progress_buffer_v1` refuses the unknown field, and
+    /// with it the whole sample, so the field goes only where it is advertised.
+    func testProgressCarriesBufferedThroughOnlyWhenTheServerAdvertisesIt() async throws {
+        let advertised = [PlaybackSequencedContract.feature, PlaybackProtocolV3.progressBufferFeature]
+        XCTAssertEqual(PlaybackSessionBridge.progressBufferedThrough(150, serverFeatures: advertised), 150)
+        XCTAssertNil(PlaybackSessionBridge.progressBufferedThrough(150, serverFeatures: [PlaybackSequencedContract.feature]))
+        for unusable in [nil, -1, .infinity, .nan] as [Double?] {
+            XCTAssertNil(PlaybackSessionBridge.progressBufferedThrough(unusable, serverFeatures: advertised))
+        }
+
+        let h = try await makeHarness()
+        h.stub.sequence([.json(200, try fixture("playback_progress_applied")),
+                         .json(200, try fixture("playback_progress_applied"))])
+        let sample = try PlaybackSequencedSample(sequence: 7, position: 120.5, isPaused: false)
+        _ = try await h.api.updatePlaybackProgress(sessionID: session, sample: sample, bufferedThrough: 150,
+            installationID: installation, auth: h.auth)
+        _ = try await h.api.updatePlaybackProgress(sessionID: session, sample: sample, bufferedThrough: nil,
+            installationID: installation, auth: h.auth)
+
+        XCTAssertEqual(h.stub.requests.count, 2)
+        let carrying = try body(h.stub.requests[0])
+        XCTAssertEqual(carrying["buffered_through"] as? Double, 150)
+        XCTAssertEqual(carrying["sequence"] as? Int, 7)
+        XCTAssertEqual(Set(try body(h.stub.requests[1]).keys), ["installation_id", "sequence", "position", "is_paused"])
+    }
+
     func testProgressRefusesAnUnknownOutcomeAndSurfacesAMissingSession() async throws {
         let h = try await makeHarness()
         let sample = try PlaybackSequencedSample(sequence: 1, position: 0, isPaused: false)
@@ -291,6 +317,8 @@ final class PlaybackSessionTransportTests: XCTestCase {
         XCTAssertEqual(sent["stop_id"] as? String, stopID)
         XCTAssertEqual(sent["sequence"] as? Int, 9)
         XCTAssertEqual(sent["position"] as? Double, 61)
+        XCTAssertEqual(Set(sent.keys), ["installation_id", "stop_id", "sequence", "position", "is_paused"],
+                       "the stop body takes no buffered_through")
     }
 
     func testStopWithoutASampleSendsNeitherSequenceNorPosition() async throws {

@@ -54,11 +54,14 @@ extension APIv2Client {
     /// `POST /api/v2/playback/{session_id}/progress`, answered with 200:
     /// `applied`, `replayed` (the same sample again) or `stale_sample` (the
     /// server already holds a higher sequence). A stopped or unknown session
-    /// is a 404 problem.
-    func updatePlaybackProgress(sessionID: String, sample: PlaybackSequencedSample, installationID: String,
+    /// is a 404 problem. Send `bufferedThrough` only to a server that
+    /// advertises `progress_buffer_v1`.
+    func updatePlaybackProgress(sessionID: String, sample: PlaybackSequencedSample, bufferedThrough: Double? = nil,
+                                installationID: String,
                                 auth: CapturedOrdinaryRequestAuth) async throws -> APIv2PlaybackMutation {
         let suffix = try Self.playbackSessionSuffix(sessionID) + "/progress"
-        let body = try Self.playbackBody(APIv2PlaybackProgressBody(installationID: installationID, sample: sample))
+        let body = try Self.playbackBody(APIv2PlaybackProgressBody(installationID: installationID, sample: sample,
+            bufferedThrough: bufferedThrough))
         let raw = try await playbackRequest(method: "POST", suffix: suffix, body: body, auth: auth)
         guard raw.statusCode == 200 else { throw PlaybackSequencedError.invalidResponse }
         let mutation = try HTTPClient.makeJSONDecoder().decode(APIv2PlaybackMutation.self, from: raw.data)

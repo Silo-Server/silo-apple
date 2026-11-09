@@ -2144,10 +2144,28 @@ actor PlaybackSessionBridge {
     private var emittedOrphanedSessionWarning = false
     private static let orphanedSessionLogThreshold = 3
 
+    /// The `buffered_through` a progress sample carries: only to a server
+    /// whose latest decision advertises `progress_buffer_v1`, since one
+    /// without it refuses the whole sample, and only as a usable media time.
+    static func progressBufferedThrough(_ value: Double?, serverFeatures: [String]) -> Double? {
+        guard let value, value.isFinite, value >= 0,
+              serverFeatures.contains(PlaybackProtocolV3.progressBufferFeature) else { return nil }
+        return value
+    }
+
+    /// `bufferedThrough` is the media time, on `position`'s timeline, the
+    /// player holds buffered through; nil when it cannot tell.
     @discardableResult
-    func reportProgress(position: Double, isPaused: Bool) async -> PlaybackProgressReportResult {
+    func reportProgress(
+        position: Double,
+        isPaused: Bool,
+        bufferedThrough: Double? = nil
+    ) async -> PlaybackProgressReportResult {
         guard let sid = sessionId, let authority else { return .transientFailure }
         guard position.isFinite, position >= 0 else { return .transientFailure }
+        let bufferedThrough = Self.progressBufferedThrough(
+            bufferedThrough, serverFeatures: activeProtocolV3?.serverFeatures ?? []
+        )
 
         do {
             // The sequence is drawn before the await, so samples of one
@@ -2159,6 +2177,7 @@ actor PlaybackSessionBridge {
             _ = try await SiloAPI.shared.apiV2Client.updatePlaybackProgress(
                 sessionID: sid,
                 sample: sample,
+                bufferedThrough: bufferedThrough,
                 installationID: authority.installationID,
                 auth: authority.owner
             )

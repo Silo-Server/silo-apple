@@ -425,14 +425,20 @@ struct APIv2PlaybackRouteEventReceipt: Decodable {
 }
 
 /// `POST /api/v2/playback/{session_id}/progress`: one sequenced sample.
+/// `bufferedThrough` rides beside the sample rather than in it: it is display
+/// data that takes no part in sequencing, and the stop body does not take it.
 struct APIv2PlaybackProgressBody: Encodable {
     let installationID: String
     let sample: PlaybackSequencedSample
-    private enum CodingKeys: String, CodingKey { case installationID = "installation_id" }
+    let bufferedThrough: Double?
+    private enum CodingKeys: String, CodingKey {
+        case installationID = "installation_id", bufferedThrough = "buffered_through"
+    }
     func encode(to encoder: Encoder) throws {
         try sample.encode(to: encoder)
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(installationID, forKey: .installationID)
+        try values.encodeIfPresent(bufferedThrough, forKey: .bufferedThrough)
     }
 }
 

@@ -1172,6 +1172,16 @@ class PlayerViewModel {
     var progressReportPosition: Double {
         watchPartyHeldSeek == nil ? currentTime : watchPartyPlaybackSnapshot.sourceTime
     }
+    /// The media time progress reports say the player holds buffered
+    /// through: the end the scrubbers draw, on `progressReportPosition`'s
+    /// timeline. Nil when the route reports no forward buffer (an audio-only
+    /// load, or no load) and while a held room seek keeps the reported
+    /// position off the engine's playhead.
+    var progressReportBufferedThrough: Double? {
+        guard watchPartyHeldSeek == nil, bufferedAheadSeconds > 0 else { return nil }
+        let end = currentTime + bufferedAheadSeconds
+        return duration > 0 ? min(end, duration) : end
+    }
     private var seekFilterTimeoutTask: Task<Void, Never>?
     /// The in-flight `commitSeek` await. Held so a new load can cancel a seek
     /// whose `.requiresReplan` answer would otherwise arrive after the item
@@ -1818,9 +1828,12 @@ class PlayerViewModel {
         let position = progressReportPosition
         guard position.isFinite, position >= 0 else { return }
         let isPaused = !isPlaying
+        let bufferedThrough = progressReportBufferedThrough
         Self.logger.debug("Flushing playback progress (\(reason, privacy: .public))")
         Task { [sessionBridge] in
-            _ = await sessionBridge.reportProgress(position: position, isPaused: isPaused)
+            _ = await sessionBridge.reportProgress(
+                position: position, isPaused: isPaused, bufferedThrough: bufferedThrough
+            )
         }
     }
 
@@ -10861,7 +10874,8 @@ class PlayerViewModel {
                 }
                 let result = await self.sessionBridge.reportProgress(
                     position: self.progressReportPosition,
-                    isPaused: !self.isPlaying
+                    isPaused: !self.isPlaying,
+                    bufferedThrough: self.progressReportBufferedThrough
                 )
                 if result == .sessionEnded {
                     // A new load or renewal cancels this loop when it moves

@@ -69,6 +69,10 @@ enum PlaybackProtocolV3 {
     /// probe results, and adds `probe` and `auto_budget_kbps` to the
     /// connection endpoint. See ``BandwidthProbeScheduler``.
     static let connectionSpeedFeature = "connection_speed_v1"
+    /// Native v2 only. A progress sample may carry `buffered_through`, which
+    /// the server shows administrators. A server without it refuses the
+    /// unknown field and with it the whole sample.
+    static let progressBufferFeature = "progress_buffer_v1"
 
     /// Where a request's `bandwidth_estimate_kbps` came from.
     enum BandwidthEstimateSource {
