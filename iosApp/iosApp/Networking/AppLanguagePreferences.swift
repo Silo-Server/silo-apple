@@ -257,9 +257,12 @@ final class AppLanguagePreferences {
         }
         guard isCurrent(identity, sequence), !isWritingBack else { return }
         if let pending = pendingSystemChoice {
-            guard await writeBack(pending, identity: identity) else { return }
-            // A refresh started meanwhile (a profile switch) skipped its read.
+            // A refresh started meanwhile (a profile switch) skipped its read
+            // while this write ran, so it runs again whether the write went
+            // through or failed.
+            let sent = await writeBack(pending, identity: identity)
             guard isCurrent(identity, sequence) else { return await refresh() }
+            guard sent else { return }
         }
         await read(identity: identity, sequence: sequence)
     }

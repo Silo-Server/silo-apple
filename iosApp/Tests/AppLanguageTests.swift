@@ -328,6 +328,31 @@ final class AppLanguagePreferencesTests: XCTestCase {
         XCTAssertEqual(store.displayed, "es")
     }
 
+    /// A profile switch during a write-back that fails still loads the new
+    /// profile: its own refresh skipped the read while the write ran.
+    func testFailedWriteBackStillLoadsTheProfileSwitchedTo() async {
+        let transport = FakeAppLanguageTransport()
+        transport.profileValues["B"] = "es"
+        transport.putError = SettingsAPIError.transport(description: "offline")
+        let system = FakeAppLanguageSystem()
+        system.appValue = ["fr"]
+        system.ledger = AppLanguageLedger(applied: "es", baseline: nil)
+        var active = profileA
+        let store = makeStore(transport: transport, system: system) { active }
+        transport.onPut = {
+            active = self.profileB
+            Task {
+                transport.putError = nil
+                await store.refresh()
+            }
+        }
+
+        await store.refresh()
+        XCTAssertEqual(transport.calls.first, .put(.profileDevice, "A", .string("fr")))
+        XCTAssertEqual(store.currentChoice?.tag, "fr")
+        XCTAssertEqual(store.displayed, "fr")
+    }
+
     /// macOS keeps the app open when its language changes in System Settings:
     /// the next refresh writes it back instead of overwriting it.
     func testSystemChangeWhileRunningIsWrittenBack() async {
