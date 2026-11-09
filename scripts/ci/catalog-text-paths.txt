@@ -28,6 +28,7 @@ iosApp/iosApp/Shared/Diagnostics
 iosApp/iosApp/Shared/ProfileLaunchBehavior.swift
 iosApp/iosApp/tvOS/Components  mappings
 iosApp/iosApp/tvOS/Profiles
+iosApp/iosApp/tvOS/Screens/Components/TVCollectionPosterCard.swift  mappings
 iosApp/iosApp/tvOS/Screens/Detail  mappings
 iosApp/iosApp/tvOS/Screens/Libraries  mappings
 iosApp/iosApp/tvOS/Screens/Settings
