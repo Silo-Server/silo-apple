@@ -32,6 +32,9 @@ struct MacPlayerFullScreenBridge: NSViewRepresentable {
         }
         private var observers: [NSObjectProtocol] = []
         private var isFullScreen = false
+        /// This bridge hid the toolbar, so it's ours to show again. A toolbar
+        /// the user hid before the player opened stays hidden.
+        private var didHideToolbar = false
 
         init(onFullScreenChange: @escaping @MainActor (Bool) -> Void) {
             self.onFullScreenChange = onFullScreenChange
@@ -75,6 +78,8 @@ struct MacPlayerFullScreenBridge: NSViewRepresentable {
 
         /// Puts the toolbar back for the pages behind the player.
         func restoreToolbar() {
+            guard didHideToolbar else { return }
+            didHideToolbar = false
             if let toolbar = window?.toolbar, !toolbar.isVisible {
                 toolbar.isVisible = true
             }
@@ -88,9 +93,13 @@ struct MacPlayerFullScreenBridge: NSViewRepresentable {
 
         private func applyToolbarVisibility() {
             guard let toolbar = window?.toolbar else { return }
-            let visible = !(isFullScreen && hidesToolbar)
-            if toolbar.isVisible != visible {
-                toolbar.isVisible = visible
+            if isFullScreen && hidesToolbar {
+                if toolbar.isVisible {
+                    toolbar.isVisible = false
+                    didHideToolbar = true
+                }
+            } else {
+                restoreToolbar()
             }
         }
     }
