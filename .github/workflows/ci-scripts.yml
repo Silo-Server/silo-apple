@@ -55,14 +55,19 @@ jobs:
       - name: Check the generated string catalog
         env:
           # Read access to Silo-Server/silo-translations releases (private
-          # repository). Not configured yet.
+          # repository). GitHub withholds it from pull requests from forks.
           GH_TOKEN: ${{ secrets.SILO_TRANSLATIONS_READ_TOKEN }}
+          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           version=$(sed -n 's/^version=//p' .silo-translations)
           case $version in
             local-*)
               echo "::notice::.silo-translations pins a local build ($version); check it with scripts/sync-translations --local <checkout> (docs/i18n.md)." ;;
             *)
+              if [ -z "$GH_TOKEN" ] && [ "$FORK_PR" = true ]; then
+                echo "::notice::A pull request from a fork can't read the private silo-translations releases; the push to main checks the catalog after merge."
+                exit 0
+              fi
               scripts/sync-translations
-              git diff --exit-code -- iosApp/iosApp/Localizable.xcstrings .silo-translations .silo-translations-files ;;
+              git diff --exit-code -- iosApp/iosApp/Localizable.xcstrings iosApp/InfoPlist .silo-translations .silo-translations-files ;;
           esac
