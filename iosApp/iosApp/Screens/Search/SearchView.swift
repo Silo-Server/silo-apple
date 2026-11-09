@@ -61,6 +61,11 @@ struct SearchView: View {
         .siloPageBackground()
         #if os(tvOS)
         .safeAreaPadding(.horizontal, tvSearchSafeHorizontalPadding)
+        // Search opens with no navigation bar, but popping a title or box
+        // set off the stack brings the bar back with a "Search" title that
+        // sits over the field and stays put while the results scroll.
+        // Hiding the bar keeps the page as it first opened.
+        .toolbar(.hidden, for: .navigationBar)
         #endif
         .navigationTitle("Search")
         .siloNavigationTitleDisplayMode(.inline)
