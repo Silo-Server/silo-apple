@@ -66,9 +66,14 @@ struct SiloApp: App {
                 // Deliver URLs to this window instead of opening a new one.
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .background(MacWindowPlacement())
+                // Tall enough for the sign-in screens without scrolling.
+                .frame(minWidth: 900, minHeight: 640)
                 #endif
         }
         #if os(macOS)
+        // First launch only; after that MacWindowPlacement restores the
+        // last frame.
+        .defaultSize(width: 1280, height: 800)
         .commands { MacSettingsCommands() }
         #endif
     }
