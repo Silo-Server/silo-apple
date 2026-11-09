@@ -759,22 +759,23 @@ private struct MobilePlayerTimeline: View {
 
             Spacer()
 
-            Button {
-                showsRemainingTime.toggle()
-            } label: {
-                TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    // Date(), not the schedule date: the position redraws this
-                    // between ticks, and a stale clock would flicker the minute.
-                    Text(trailingTimeText(now: Date()))
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                // Date(), not the schedule date: the position redraws this
+                // between ticks, and a stale clock would flicker the minute.
+                let text = trailingTimeText(now: Date())
+                Button {
+                    showsRemainingTime.toggle()
+                } label: {
+                    Text(text)
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.6))
                         .monospacedDigit()
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showsRemainingTime ? "Time Remaining" : "Duration")
+                .accessibilityValue(text)
+                .accessibilityHint("Switches between time remaining and total duration")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(showsRemainingTime ? "Time Remaining" : "Duration")
-            .accessibilityValue(trailingTimeText(now: Date()))
-            .accessibilityHint("Switches between time remaining and total duration")
         }
     }
 
