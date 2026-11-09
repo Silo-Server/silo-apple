@@ -53,6 +53,18 @@ final class LocaleFormatTests: XCTestCase {
         XCTAssertEqual(LocaleFormat.languageName("pt-BR", locale: english), "Portuguese (Brazil)")
     }
 
+    /// After a live switch from Arabic, the process locale stays Arabic until
+    /// relaunch; English sizes still write Latin digits.
+    func testEnglishSizesIgnoreAnotherProcessLocale() {
+        let processArabic = Locale(identifier: "ar_EG")
+        XCTAssertEqual(LocaleFormat.bytes(1_500_000, locale: english, processLocale: processArabic), "1.5 MB")
+        XCTAssertEqual(LocaleFormat.bytes(2_048, locale: english, processLocale: processArabic), "2 KB")
+        XCTAssertEqual(
+            LocaleFormat.bytes(54_800_000_000, megabytesAndUp: true, locale: english, processLocale: processArabic),
+            "54.8 GB"
+        )
+    }
+
     // MARK: Other languages
 
     func testGerman() {

@@ -81,13 +81,21 @@ enum LocaleFormat {
     /// `ByteCountFormatter`, whose output ("2 KB", "Zero KB", "999 bytes")
     /// differs from the format style's ("2 kB", "Zero kB", "1 kB").
     /// `megabytesAndUp` limits the units to MB and GB.
+    ///
+    /// `ByteCountFormatter` takes no locale: it follows the process's, which
+    /// keeps the previous language after a live switch until the app
+    /// relaunches. English uses it only while that locale is English too;
+    /// otherwise it takes the format style below, with "KB" as English writes
+    /// it, so no other language's digits show.
     static func bytes(
         _ count: Int64,
         style: ByteCountFormatter.CountStyle = .file,
         megabytesAndUp: Bool = false,
-        locale: Locale = AppLanguage.formattingLocale
+        locale: Locale = AppLanguage.formattingLocale,
+        processLocale: Locale = .current
     ) -> String {
-        if locale.language.languageCode == .english {
+        let english = locale.language.languageCode == .english
+        if english, processLocale.language.languageCode == .english {
             guard megabytesAndUp else { return ByteCountFormatter.string(fromByteCount: count, countStyle: style) }
             let formatter = megabyteFormatters.value(for: "\(style.rawValue)") {
                 let formatter = ByteCountFormatter()
@@ -103,7 +111,8 @@ enum LocaleFormat {
         case .decimal: .decimal
         default: .file
         }
-        return count.formatted(.byteCount(style: formatStyle, allowedUnits: megabytesAndUp ? ByteCountFormatStyle.Units([.mb, .gb]) : .all).locale(locale))
+        let text = count.formatted(.byteCount(style: formatStyle, allowedUnits: megabytesAndUp ? ByteCountFormatStyle.Units([.mb, .gb]) : .all).locale(locale))
+        return english ? text.replacingOccurrences(of: "kB", with: "KB") : text
     }
 
     private static let megabyteFormatters = LocaleKeyedCache<ByteCountFormatter>()
