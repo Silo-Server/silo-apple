@@ -1,1 +1,4 @@
+iosApp/InfoPlist/iOS/InfoPlist.xcstrings
+iosApp/InfoPlist/macOS/InfoPlist.xcstrings
+iosApp/InfoPlist/tvOS/InfoPlist.xcstrings
 iosApp/iosApp/Localizable.xcstrings

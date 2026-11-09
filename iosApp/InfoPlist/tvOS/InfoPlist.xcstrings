@@ -5,10 +5,52 @@
       "comment" : "tvOS permission prompt text the system shows when Silo first asks for this access. Keep it in step with iosApp/iosApp/tvOS-Info.plist.",
       "extractionState" : "manual",
       "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "يستخدم Silo شبكتك المحلية للعثور على خوادم Silo، ولإعداد Silo على Apple TV والتحكم فيه."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo verwendet dein lokales Netzwerk, um Silo-Server zu finden und um Silo auf deinem Apple TV einzurichten und zu steuern."
+          }
+        },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Silo uses your local network to find Silo servers, and to set up and control Silo on your Apple TV."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo usa tu red local para encontrar servidores de Silo y para configurar y controlar Silo en tu Apple TV."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo utilise votre réseau local pour trouver des serveurs Silo, et pour configurer et contrôler Silo sur votre Apple TV."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Siloはローカルネットワークを使用して、Siloサーバーを検出したり、Apple TV のSiloを設定・操作したりします。"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Silo usa sua rede local para encontrar servidores Silo e para configurar e controlar o Silo na sua Apple TV."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo使用你的本地网络查找Silo服务器，以及在你的Apple TV上设置和控制Silo。"
           }
         }
       }
