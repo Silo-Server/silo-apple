@@ -1173,13 +1173,20 @@ class PlayerViewModel {
         watchPartyHeldSeek == nil ? currentTime : watchPartyPlaybackSnapshot.sourceTime
     }
     /// The media time progress reports say the player holds buffered
-    /// through: the end the scrubbers draw, on `progressReportPosition`'s
-    /// timeline. Nil when the route reports no forward buffer (an audio-only
-    /// load, or no load) and while a held room seek keeps the reported
-    /// position off the engine's playhead.
+    /// through, on `progressReportPosition`'s timeline: the end of the buffer
+    /// that holds the engine's playhead, read when the report is taken. Not
+    /// the scrubbers' `bufferedAheadSeconds`, which a seek leaves measured
+    /// from the old playhead after it moves `currentTime`, and not
+    /// telemetry's last loaded range, which can lie past a hole. Nil when
+    /// the route reports no forward buffer (an audio-only load, or no load),
+    /// and while a seek, a held room or load seek, or a reconnect keeps the
+    /// reported position off the engine's playhead.
     var progressReportBufferedThrough: Double? {
-        guard watchPartyHeldSeek == nil, bufferedAheadSeconds > 0 else { return nil }
-        let end = currentTime + bufferedAheadSeconds
+        guard watchPartyHeldSeek == nil,
+              aetherPlaybackController.activeSpec != nil,
+              engineBufferMatchesPlayhead,
+              let ahead = engineBufferedAheadSeconds, ahead > 0 else { return nil }
+        let end = currentTime + ahead
         return duration > 0 ? min(end, duration) : end
     }
     private var seekFilterTimeoutTask: Task<Void, Never>?

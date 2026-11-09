@@ -2535,6 +2535,20 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         XCTAssertFalse(player.isScrubbing)
     }
 
+    /// A seek moves `currentTime` before the engine gets there, while the
+    /// scrubbers' forward buffer was still measured from the old playhead.
+    /// A progress sample flushed then must not put that buffer after the new
+    /// position.
+    func testProgressBufferedThroughIsOmittedRightAfterASeek() {
+        let player = PlayerViewModel()
+        player.duration = 600
+        player.currentTime = 100
+        player.bufferedAheadSeconds = 60
+        player.seekTo(seconds: 500)
+        XCTAssertEqual(player.progressReportPosition, 500)
+        XCTAssertNil(player.progressReportBufferedThrough)
+    }
+
     func testWatchPartySeekRequestHoldsItsTargetAndSkipsBuildOnIt() async throws {
         let player = PlayerViewModel()
         let adapter = WatchPartyPlaybackAdapter(player: player)
