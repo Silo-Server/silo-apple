@@ -773,6 +773,7 @@ private struct MobilePlayerTimeline: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(showsRemainingTime ? "Time Remaining" : "Duration")
+            .accessibilityValue(trailingTimeText(now: Date()))
             .accessibilityHint("Switches between time remaining and total duration")
         }
     }
