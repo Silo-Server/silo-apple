@@ -72,8 +72,13 @@ private struct MacPlayerScreen: View {
     let viewModel: PlayerViewModel
 
     @Environment(\.dismiss) private var dismiss
-    @State private var isOptionsPresented = false
-    @State private var selectedOptionsTab: MacPlayerOptionsPanel.Tab = .audio
+    /// The Playback Info popover is open.
+    @State private var isInfoPresented = false
+    /// The control-bar menu that is open, if any.
+    @State private var openMenu: MacPlayerMenu?
+    @State private var menuAnchors = MacPlayerMenuAnchors()
+    /// How far up from the bottom edge the control bar reaches.
+    @State private var controlBarHeight: CGFloat = 0
     /// The loading spinner is up, on its show delay and minimum time.
     @State private var showsLoadingSpinner = false
     /// The window is in, or entering, full screen.
@@ -108,22 +113,13 @@ private struct MacPlayerScreen: View {
                     MacPlayerControls(
                         viewModel: viewModel,
                         isFullScreen: isFullScreen,
-                        isOptionsPresented: $isOptionsPresented,
-                        selectedOptionsTab: $selectedOptionsTab
+                        menuAnchors: menuAnchors,
+                        isInfoPresented: $isInfoPresented,
+                        onOpenMenu: presentMenu,
+                        onToggleFullScreen: toggleFullScreen,
+                        onHeightChange: { controlBarHeight = $0 }
                     )
                     .transition(.opacity)
-                }
-
-                if isOptionsPresented {
-                    MacPlayerOptionsPanel(
-                        viewModel: viewModel,
-                        selectedTab: $selectedOptionsTab,
-                        onDismiss: { isOptionsPresented = false }
-                    )
-                    .padding(.trailing, 24)
-                    .padding(.bottom, 116)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
 
                 if let pill = viewModel.introSkipPrompt.pill {
@@ -174,7 +170,7 @@ private struct MacPlayerScreen: View {
                     .transition(.opacity)
                 }
 
-                MacPlayerCommandCapture { command in
+                MacPlayerKeyMonitor(isEnabled: openMenu == nil) { command in
                     handleCommand(command)
                 }
                 .frame(width: 0, height: 0)
@@ -184,7 +180,7 @@ private struct MacPlayerScreen: View {
             // The picture runs under the title bar, so swipes there count too.
             MacPlayerTrackpadScrubCapture(
                 viewModel: viewModel,
-                isEnabled: viewModel.error == nil && !viewModel.isStartingPlayback && !isOptionsPresented
+                isEnabled: viewModel.error == nil && !viewModel.isStartingPlayback && !isInfoPresented && openMenu == nil
             )
             .ignoresSafeArea()
         }
@@ -211,10 +207,14 @@ private struct MacPlayerScreen: View {
                 NSCursor.setHiddenUntilMouseMoves(true)
             }
         }
-        .onChange(of: viewModel.hasTrackSelectionOptions) { _, hasOptions in
-            if !hasOptions {
-                isOptionsPresented = false
-            }
+        .onChange(of: viewModel.isStartingPlayback) { _, isStarting in
+            // Read the subtitles' sync state once playback is up, so the
+            // first look at the subtitles menu already shows it.
+            if !isStarting { viewModel.refreshSubtitleSync() }
+        }
+        .onChange(of: isInfoPresented) { _, isPresented in
+            // The bar stays for the usual time after the popover closes.
+            if !isPresented { viewModel.revealControls() }
         }
         .onChange(of: viewModel.remoteDismissToken) { _, newValue in
             guard newValue != nil else { return }
@@ -247,7 +247,6 @@ private struct MacPlayerScreen: View {
         .navigationTitle(viewModel.title.isEmpty ? "Silo" : viewModel.title)
         .navigationSubtitle(viewModel.metadata.badges.joined(separator: " · "))
         .animation(.easeOut(duration: 0.16), value: shouldShowControls)
-        .animation(.easeOut(duration: 0.16), value: isOptionsPresented)
         .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
         .animation(.easeOut(duration: 0.2), value: viewModel.showBufferingPill)
     }
@@ -256,13 +255,14 @@ private struct MacPlayerScreen: View {
     /// they are.
     private var shouldShowControls: Bool {
         guard !viewModel.isStartingPlayback else { return false }
-        return viewModel.showControls || !viewModel.isPlaying || isOptionsPresented
+        return viewModel.showControls || !viewModel.isPlaying || isInfoPresented || openMenu != nil
     }
 
     private var playerSurface: some View {
         ZStack {
             AetherPlayerSurface(engine: viewModel.aetherEngine)
-            MacSubtitleLayer(viewModel: viewModel)
+            // Subtitles rise above the control bar while it shows.
+            MacSubtitleLayer(viewModel: viewModel, bottomObstruction: shouldShowControls ? controlBarHeight : 0)
         }
         // Keep the leading inset: ignoring it centred the picture on the
         // whole window, so part of it sat behind the sidebar and the
@@ -288,13 +288,16 @@ private struct MacPlayerScreen: View {
             viewModel.cycleSubtitleTrack()
         case .toggleSubtitle:
             viewModel.toggleSubtitles()
-        case .options:
-            selectedOptionsTab = .audio
-            isOptionsPresented.toggle()
-            viewModel.revealControls()
+        case .trackMenu:
+            guard viewModel.hasTrackSelectionOptions else { return }
+            presentMenu(.tracks)
+        case .playbackInfo:
+            isInfoPresented.toggle()
+        case .toggleFullScreen:
+            toggleFullScreen()
         case .escape:
-            if isOptionsPresented {
-                isOptionsPresented = false
+            if isInfoPresented {
+                isInfoPresented = false
             } else if viewModel.dismissBufferingPill() {
                 // Back on the buffering pill, before the window takes Escape;
                 // the next Escape closes the player as usual.
@@ -317,9 +320,9 @@ private struct MacPlayerScreen: View {
                 viewModel.selectIntroSkipPrompt()
             }
         case .speedDown:
-            viewModel.setPlaybackSpeed(nextSpeed(offset: -1))
+            viewModel.setPlaybackSpeed(MacPlayerMenuContent.adjacentSpeed(to: viewModel.settings.playbackSpeed, offset: -1))
         case .speedUp:
-            viewModel.setPlaybackSpeed(nextSpeed(offset: 1))
+            viewModel.setPlaybackSpeed(MacPlayerMenuContent.adjacentSpeed(to: viewModel.settings.playbackSpeed, offset: 1))
         case .normalSpeed:
             viewModel.setPlaybackSpeed(1.0)
         }
@@ -329,13 +332,36 @@ private struct MacPlayerScreen: View {
         NSApp.keyWindow?.toggleFullScreen(nil)
     }
 
-    private func nextSpeed(offset: Int) -> Double {
-        let speeds = MacPlayerOptionsPanel.playbackSpeeds
-        let current = viewModel.settings.playbackSpeed
-        let index = speeds.enumerated().min { lhs, rhs in
-            abs(lhs.element - current) < abs(rhs.element - current)
-        }?.offset ?? 2
-        return speeds[max(0, min(speeds.count - 1, index + offset))]
+    /// Opens a control-bar menu, from its button or the keyboard. The bar
+    /// stays up while the menu is open and for the usual time after. A menu
+    /// asked for from the keyboard while the bar is hidden opens once the
+    /// bar is back.
+    private func presentMenu(_ menu: MacPlayerMenu) {
+        guard openMenu == nil else { return }
+        openMenu = menu
+        if menu == .tracks {
+            viewModel.refreshSubtitleSync()
+        }
+        // After this event, so the button finishes its click and a bar that
+        // was hidden is in the window to anchor the menu.
+        DispatchQueue.main.async {
+            let anchor = menuAnchors[menu]
+            let entries = { MacPlayerMenuContent.entries(for: menu, viewModel: viewModel) }
+            if !anchor.popUp(entries()) {
+                // The bar is still coming in; one more pass places it.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    anchor.popUp(entries())
+                    menuDidClose()
+                }
+                return
+            }
+            menuDidClose()
+        }
+    }
+
+    private func menuDidClose() {
+        openMenu = nil
+        viewModel.revealControls()
     }
 
     @ViewBuilder
@@ -376,6 +402,7 @@ private struct MacPlayerScreen: View {
 /// ticks then re-render only this layer, not the whole player.
 private struct MacSubtitleLayer: View {
     let viewModel: PlayerViewModel
+    let bottomObstruction: CGFloat
 
     var body: some View {
         AetherSubtitleOverlay(
@@ -392,7 +419,8 @@ private struct MacSubtitleLayer: View {
                 ? viewModel.liveSecondarySubtitleCues
                 : [],
             appearance: viewModel.settings.effectiveSubtitleAppearance,
-            subtitleSyncMs: viewModel.settings.subtitleSyncMs
+            subtitleSyncMs: viewModel.settings.subtitleSyncMs,
+            bottomObstruction: bottomObstruction
         )
     }
 }

@@ -3,45 +3,51 @@ import AppKit
 import Foundation
 import SwiftUI
 
+/// The player's control bar: the timeline, then transport in the middle,
+/// track, chapter and quality menus on the leading side, and speed, Playback
+/// Info and full screen on the trailing side. The menus are native pop-up
+/// menus; Playback Info is a popover.
 struct MacPlayerControls: View {
     let viewModel: PlayerViewModel
     let isFullScreen: Bool
-    @Binding var isOptionsPresented: Bool
-    @Binding var selectedOptionsTab: MacPlayerOptionsPanel.Tab
+    let menuAnchors: MacPlayerMenuAnchors
+    @Binding var isInfoPresented: Bool
+    let onOpenMenu: (MacPlayerMenu) -> Void
+    let onToggleFullScreen: () -> Void
+    /// Reports how far up from the window's bottom edge the bar reaches.
+    let onHeightChange: (CGFloat) -> Void
+
+    private static let edgeInset: CGFloat = 20
 
     // The title and format line live in the window's title bar, beside the
     // back button, so the picture carries only the transport controls.
     var body: some View {
         VStack(spacing: 0) {
             Spacer(minLength: 0)
-            bottomControls
+            bar
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                    onHeightChange(height + Self.edgeInset)
+                }
         }
-        .padding(20)
+        .padding(Self.edgeInset)
     }
 
-    private var bottomControls: some View {
-        VStack(spacing: 12) {
+    private var bar: some View {
+        VStack(spacing: 10) {
             MacPlayerTimeline(viewModel: viewModel)
                 .mediaLayoutDirection()
 
-            // Transport sits in the middle of the bar; options stay on the
-            // leading side and speed and full screen on the trailing side.
             ZStack {
-                HStack(spacing: 10) {
-                    iconButton("captions.bubble", help: "Audio and subtitle options") {
-                        showOptions(.subtitles)
+                HStack(spacing: 2) {
+                    menuButton(.tracks, help: "Audio and Subtitles (⌘S)") {
+                        glyph("captions.bubble")
                     }
                     .disabled(!viewModel.hasTrackSelectionOptions)
-                    .opacity(viewModel.hasTrackSelectionOptions ? 1 : 0.45)
 
-                    iconButton("list.bullet", help: "Chapters") {
-                        showOptions(.chapters)
-                    }
-                    .disabled(viewModel.chapters.isEmpty)
-                    .opacity(viewModel.chapters.isEmpty ? 0.45 : 1)
-
-                    iconButton("speedometer", help: "Playback speed and stats") {
-                        showOptions(.playback)
+                    if !viewModel.chapters.isEmpty {
+                        menuButton(.chapters, help: "Chapters") {
+                            glyph("list.bullet")
+                        }
                     }
 
                     if viewModel.hasQualityChoice {
@@ -50,99 +56,100 @@ struct MacPlayerControls: View {
 
                     Spacer(minLength: 8)
 
-                    Text(speedLabel)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.70))
-                        .monospacedDigit()
-
-                    iconButton(
-                        isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
-                        help: isFullScreen ? "Exit Full Screen" : "Full Screen"
-                    ) {
-                        NSApp.keyWindow?.toggleFullScreen(nil)
+                    menuButton(.speed, help: "Playback Speed") {
+                        Text(MacPlayerMenuContent.speedLabel(viewModel.settings.playbackSpeed))
+                            .font(.system(size: 13, weight: .semibold))
+                            .monospacedDigit()
+                            .frame(minWidth: 40, minHeight: 30)
                     }
+
+                    Button {
+                        isInfoPresented.toggle()
+                    } label: {
+                        glyph("info.circle")
+                    }
+                    .help("Playback Info (⌘I)")
+                    .popover(isPresented: $isInfoPresented, arrowEdge: .top) {
+                        MacPlaybackInfoView(viewModel: viewModel)
+                    }
+
+                    Button(action: onToggleFullScreen) {
+                        glyph(isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    }
+                    .help(isFullScreen ? "Exit Full Screen (F)" : "Full Screen (F)")
                 }
 
-                HStack(spacing: 10) {
-                    iconButton(
-                        SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward),
-                        help: SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward)
-                    ) {
+                HStack(spacing: 14) {
+                    Button {
                         viewModel.skipBackward()
+                    } label: {
+                        glyph(SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward), size: 17)
                     }
+                    .help("\(SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward)) (←)")
 
                     Button {
                         viewModel.togglePlayPause()
                     } label: {
                         Image(systemName: viewModel.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 18, weight: .semibold))
-                            .frame(width: 38, height: 32)
+                            .font(.system(size: 22, weight: .semibold))
+                            .contentTransition(.symbolEffect(.replace))
+                            .frame(width: 44, height: 36)
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.black)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(Color.white)
-                    )
-                    .help(viewModel.isPlaying ? "Pause" : "Play")
+                    .help(viewModel.isPlaying ? "Pause (Space)" : "Play (Space)")
 
-                    iconButton(
-                        SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward),
-                        help: SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward)
-                    ) {
+                    Button {
                         viewModel.skipForward()
+                    } label: {
+                        glyph(SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward), size: 17)
                     }
+                    .help("\(SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward)) (→)")
                 }
                 .mediaLayoutDirection()
             }
+            .buttonStyle(MacPlayerGlyphButtonStyle())
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(Color.black.opacity(0.42))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.regularMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.black.opacity(0.3))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.3), radius: 16, y: 6)
+        }
     }
 
-    private func iconButton(
-        _ systemName: String,
+    private func glyph(_ systemName: String, size: CGFloat = 15) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: size, weight: .medium))
+            .frame(width: 32, height: 30)
+    }
+
+    private func menuButton<Label: View>(
+        _ menu: MacPlayerMenu,
         help: String,
-        action: @escaping () -> Void
+        @ViewBuilder label: () -> Label
     ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 31, height: 30)
+        Button {
+            onOpenMenu(menu)
+        } label: {
+            label()
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.white)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.white.opacity(0.08))
-        )
+        .macMenuAnchor(menuAnchors[menu])
         .help(help)
     }
 
-    /// Opens the options panel on `tab`. With the panel already open on
-    /// another tab it switches tabs; on the same tab it closes the panel.
-    private func showOptions(_ tab: MacPlayerOptionsPanel.Tab) {
-        let switchesTab = isOptionsPresented && selectedOptionsTab != tab
-        selectedOptionsTab = tab
-        if !switchesTab {
-            isOptionsPresented.toggle()
-        }
-    }
-
-    /// Opens the Quality tab and names the active choice, like the quality
+    /// Opens the quality menu and names the active choice, like the quality
     /// pill on iOS.
     private var qualityButton: some View {
-        Button {
-            showOptions(.quality)
-        } label: {
+        menuButton(.quality, help: "Quality") {
             HStack(spacing: 6) {
                 if viewModel.isQualitySwitching {
                     ProgressView()
@@ -154,16 +161,9 @@ struct MacPlayerControls: View {
                     .lineLimit(1)
             }
             .font(.system(size: 13, weight: .semibold))
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 8)
             .frame(height: 30)
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.white)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.white.opacity(0.08))
-        )
-        .help("Quality")
         .accessibilityLabel("Playback Quality")
         .accessibilityValue(activeQualityLabel)
     }
@@ -172,11 +172,36 @@ struct MacPlayerControls: View {
         viewModel.activeQualityOption?.label
             ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
     }
+}
 
-    private var speedLabel: String {
-        let speed = viewModel.settings.playbackSpeed
-        if abs(speed - 1.0) < 0.01 { return LocaleFormat.localized("1x") }
-        return LocaleFormat.localized(String(format: "%.2gx", speed))
+/// A bare glyph that takes a soft highlight under the pointer and dims
+/// while pressed or disabled, like the controls in QuickTime Player.
+private struct MacPlayerGlyphButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        GlyphButton(configuration: configuration)
+    }
+
+    private struct GlyphButton: View {
+        let configuration: Configuration
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(Color.white.opacity(foregroundOpacity))
+                .background {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(isHovering && isEnabled ? 0.12 : 0))
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .onHover { isHovering = $0 }
+                .animation(.easeOut(duration: SiloTheme.fastDuration), value: isHovering)
+        }
+
+        private var foregroundOpacity: Double {
+            guard isEnabled else { return 0.3 }
+            return configuration.isPressed ? 0.6 : 0.95
+        }
     }
 }
 #endif

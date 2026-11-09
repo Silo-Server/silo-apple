@@ -78,7 +78,7 @@ struct SiloApp: App {
         // First launch only; after that MacWindowPlacement restores the
         // last frame.
         .defaultSize(width: 1280, height: 800)
-        .commands { MacSettingsCommands() }
+        .commands { MacAppCommands() }
         #endif
     }
 }

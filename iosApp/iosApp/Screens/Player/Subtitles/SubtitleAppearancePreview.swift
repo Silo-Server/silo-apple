@@ -21,7 +21,7 @@ struct SubtitleAppearancePreview: View {
     private static let fontScale: CGFloat = 0.5
     #elseif os(macOS)
     static let defaultHeight: CGFloat = 130
-    private static let fontScale: CGFloat = 0.3
+    private static let fontScale: CGFloat = 0.6
     #else
     static let defaultHeight: CGFloat = 118
     private static let fontScale: CGFloat = 0.45

@@ -2967,17 +2967,12 @@ struct MainTabView: View {
         // strip sits beside the sidebar.
         .containerBackground(Color.siloPageCanvas, for: .window)
         .toolbarBackground(.hidden, for: .windowToolbar)
-        .onReceive(NotificationCenter.default.publisher(for: .siloOpenSettings)) { _ in
-            // Never push over the player: leaving it tears playback down.
-            // Settings already on the stack stays where it is.
-            guard !isPlayerOnScreen,
-                  !router.visiblePushedRoutes.contains(.settings) else { return }
-            router.navigate(to: .settings)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .siloOpenSearch)) { _ in
-            guard !isPlayerOnScreen else { return }
-            selectSidebarDestination(.app(.search))
-        }
+        .focusedSceneValue(\.macShellActions, macShellActions)
+        .background(MacBackNavigationMonitor(
+            isPlayerOnScreen: isPlayerOnScreen,
+            canGoBack: !router.path.isEmpty,
+            goBack: { router.goBack() }
+        ))
         .onChange(of: isPlayerOnScreen) { _, isPlaying in
             // The player gets the whole window; the sidebar comes back as it
             // was when playback ends.
@@ -2998,6 +2993,24 @@ struct MainTabView: View {
         case .player, .playerWithFile, .offlinePlayer: return true
         default: return false
         }
+    }
+
+    /// The menu bar's commands for this window.
+    private var macShellActions: MacShellActions {
+        MacShellActions(
+            canGoBack: !router.path.isEmpty,
+            isPlayerOnScreen: isPlayerOnScreen,
+            destinationGroups: macSidebarSectionList.map { section in
+                section.items.map { MacShellActions.Destination(id: $0.id, title: $0.title) }
+            },
+            goBack: { router.goBack() },
+            select: { selectSidebarDestination($0) },
+            openSettings: {
+                // Settings already on the stack stays where it is.
+                guard !router.visiblePushedRoutes.contains(.settings) else { return }
+                router.navigate(to: .settings)
+            }
+        )
     }
     #endif
 

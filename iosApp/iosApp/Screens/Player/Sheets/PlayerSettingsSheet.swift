@@ -30,8 +30,8 @@ private struct RangeSpinner<Value: Strideable>: View {
 /// Changes apply immediately: each row writes one setting through the view
 /// model. Quality and subtitle appearance open sub-pages; the playback stats
 /// have one section, with the overlay switch and a page of every stat. tvOS
-/// uses `TVPlayerInfoHUD` and macOS uses
-/// `MacPlayerOptionsPanel` instead.
+/// uses `TVPlayerInfoHUD`; macOS uses the control bar's menus
+/// (`MacPlayerMenus`) and `MacPlaybackInfoView`.
 struct PlayerSettingsSheet: View {
     let viewModel: PlayerViewModel
     let sleepTimer: SleepTimer
