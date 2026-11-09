@@ -52,8 +52,8 @@ class ItemDetailViewModel {
     }
 
     var seriesLoadErrorMessage: String? {
-        if seasonsLoadState == .failed { return "Couldn't load seasons." }
-        if episodesLoadFailed { return "Couldn't load episodes." }
+        if seasonsLoadState == .failed { return AppLanguage.string(.detailErrorLoadSeasons) }
+        if episodesLoadFailed { return AppLanguage.string(.detailErrorLoadEpisodes) }
         return nil
     }
 
@@ -1833,7 +1833,7 @@ enum ItemDetailViewModelError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noItemLoaded:
-            return "No item is loaded."
+            return AppLanguage.string(.detailErrorNoItemLoaded)
         }
     }
 }

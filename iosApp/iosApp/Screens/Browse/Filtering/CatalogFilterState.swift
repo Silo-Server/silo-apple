@@ -9,13 +9,15 @@ enum WatchStatusFilter: String, Codable, CaseIterable, Hashable {
     case favorited
     case watchlist
 
-    var label: String {
+    /// Shown label. The raw value is persisted and lowered to a server
+    /// rule (data, D44).
+    var label: LocalizedStringResource {
         switch self {
-        case .unwatched: return "Unwatched"
-        case .inProgress: return "In Progress"
-        case .watched: return "Watched"
-        case .favorited: return "Favorited"
-        case .watchlist: return "Watchlist"
+        case .unwatched: return .filtersValueUnwatched
+        case .inProgress: return .filtersValueInProgress
+        case .watched: return .filtersValueWatched
+        case .favorited: return .filtersValueFavorited
+        case .watchlist: return .filtersValueWatchlist
         }
     }
 }
@@ -45,24 +47,25 @@ enum CatalogFacet: String, CaseIterable, Codable, Hashable {
     case narrator
     case seriesName
 
-    var title: String {
+    /// Shown category name. The raw value is the server rule field (data).
+    var title: LocalizedStringResource {
         switch self {
-        case .itemType: return "Type"
-        case .genre: return "Genre"
-        case .decade: return "Decade"
-        case .watchStatus: return "Watch Status"
-        case .contentRating: return "Content Rating"
-        case .resolution: return "Resolution"
-        case .dynamicRange: return "Dynamic Range"
-        case .studio: return "Studio"
-        case .network: return "Network"
-        case .country: return "Country"
-        case .audioLanguage: return "Audio Language"
-        case .subtitleLanguage: return "Subtitle Language"
-        case .originalLanguage: return "Original Language"
-        case .author: return "Author"
-        case .narrator: return "Narrator"
-        case .seriesName: return "Series"
+        case .itemType: return .filtersFacetItemType
+        case .genre: return .filtersFacetGenre
+        case .decade: return .filtersFacetDecade
+        case .watchStatus: return .filtersFacetWatchStatus
+        case .contentRating: return .filtersFacetContentRating
+        case .resolution: return .filtersFacetResolution
+        case .dynamicRange: return .filtersFacetDynamicRange
+        case .studio: return .filtersFacetStudio
+        case .network: return .filtersFacetNetwork
+        case .country: return .filtersFacetCountry
+        case .audioLanguage: return .filtersFacetAudioLanguage
+        case .subtitleLanguage: return .filtersFacetSubtitleLanguage
+        case .originalLanguage: return .filtersFacetOriginalLanguage
+        case .author: return .filtersFacetAuthor
+        case .narrator: return .filtersFacetNarrator
+        case .seriesName: return .filtersFacetSeries
         }
     }
 
@@ -268,7 +271,8 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
     // MARK: - Chips
 
     /// Active selections as removable chips, in facet display order.
-    func activeChips() -> [CatalogFilterChip] {
+    /// `locale` is the language the chips show in.
+    func activeChips(locale: Locale) -> [CatalogFilterChip] {
         var chips: [CatalogFilterChip] = []
         let ordered: [CatalogFacet] = [.itemType, .genre, .decade, .watchStatus, .contentRating,
                                        .resolution, .dynamicRange, .studio, .network,
@@ -277,22 +281,24 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
         for facet in ordered {
             for value in selectedValues(facet).sorted() {
                 chips.append(CatalogFilterChip(facet: facet, value: value,
-                                               label: Self.chipLabel(facet: facet, value: value)))
+                                               label: Self.chipLabel(facet: facet, value: value, locale: locale)))
             }
         }
         return chips
     }
 
-    static func chipLabel(facet: CatalogFacet, value: String) -> String {
+    /// The shown label for a selected value: our own text for the fixed
+    /// vocabularies, the server's value otherwise. `value` stays data.
+    static func chipLabel(facet: CatalogFacet, value: String, locale: Locale) -> String {
         switch facet {
         case .itemType:
-            return value == "series" ? "Series" : "Movies"
+            return AppLanguage.string(value == "series" ? .filtersValueSeries : .filtersValueMovie, locale: locale)
         case .decade:
-            return Int(value).map { "\($0)s" } ?? value
+            return Int(value).map { AppLanguage.string(.filtersDecade(String($0)), locale: locale) } ?? value
         case .dynamicRange:
-            return value == "dolby_vision" ? "Dolby Vision" : "HDR"
+            return AppLanguage.string(value == "dolby_vision" ? .filtersValueDolbyVision : .filtersValueHdr, locale: locale)
         case .watchStatus:
-            return WatchStatusFilter(rawValue: value)?.label ?? value
+            return WatchStatusFilter(rawValue: value).map { AppLanguage.string($0.label, locale: locale) } ?? value
         default:
             return value
         }

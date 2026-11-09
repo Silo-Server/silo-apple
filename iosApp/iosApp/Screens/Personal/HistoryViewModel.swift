@@ -22,12 +22,10 @@ class HistoryViewModel {
 
     /// "523 items" when the exact total is known, otherwise a lower bound such
     /// as "60+ items" while more pages remain.
-    var countLabel: String {
+    var countLabel: LocalizedStringResource {
         let count = totalItems ?? items.count
         let isLowerBound = totalItems == nil && hasMore
-        let suffix = isLowerBound ? "+" : ""
-        let unit = (count == 1 && !isLowerBound) ? "item" : "items"
-        return "\(count)\(suffix) \(unit)"
+        return isLowerBound ? .collectionsItemCountMore(count: count, String(count)) : .collectionsItemCount(count: count, String(count))
     }
 
     func load(reset: Bool) async {

@@ -36,3 +36,15 @@ final class SeriesSeasonSelection {
         latestSeasonId = nil
     }
 }
+
+extension Season {
+    /// The season's name in the app language: a specials season's own title
+    /// (or "Specials"), otherwise "Season N". `downloadDisplayName` keeps the
+    /// English form for Downloads.
+    func displayName(locale: Locale) -> String {
+        if isSpecials == true || seasonNumber == 0 {
+            return title ?? AppLanguage.string(.detailSpecials, locale: locale)
+        }
+        return AppLanguage.string(.detailSeason(String(seasonNumber)), locale: locale)
+    }
+}

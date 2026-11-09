@@ -62,6 +62,7 @@ struct TVMovieDetailView: View {
     private let boxSetSectionScrollId = "detail-box-set-section"
     private let similarSectionScrollId = "detail-similar-section"
     @ObservedObject private var profilePrefsStore = ProfilePrefsStore.shared
+    @Environment(\.locale) private var locale
 
     var body: some View {
         TVDetailPageSurface(backdropURL: detail.backdropUrl) {
@@ -74,14 +75,14 @@ struct TVMovieDetailView: View {
                             backdropUrl: detail.backdropUrl,
                             backdropThumbhash: detail.backdropThumbhash,
                             eyebrow: nil,
-                            sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail),
+                            sourceTokens: TVHeroMetadata.movieSourceTokens(from: detail, locale: locale),
                             ratingChip: TVHeroMetadata.contentRatingChip(from: detail),
                             overlayData: OverlayData.from(detail),
                             overview: detail.overview,
                             synopsisStatus: synopsisStatus,
                             factsLine: TVHeroMetadata.movieFactsLine(from: detail, version: currentVersion),
                             ratings: detail.displayRatings,
-                            starringText: TVHeroMetadata.starringText(from: detail),
+                            starringText: TVHeroMetadata.starringText(from: detail, locale: locale),
                             playbackSummary: TVPlaybackSelectionSummary.make(
                                 currentVersion: currentVersion,
                                 selectedVersionFileId: selectedVersionFileId,
@@ -94,7 +95,8 @@ struct TVMovieDetailView: View {
                                     ? nil
                                     : detail.effectiveSubtitleTrackSignature,
                                 preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
-                                showForcedSubtitles: detail.showsForcedSubtitles
+                                showForcedSubtitles: detail.showsForcedSubtitles,
+                                locale: locale
                             ),
                             actions: { actionColumn },
                             belowSynopsis: { EmptyView() }
@@ -210,33 +212,39 @@ struct TVMovieDetailView: View {
 
     private var moreMenu: some View {
         TVCircleMenuButton(
-            title: "More",
-            accessibilityLabel: "More options",
+            title: AppLanguage.string(.detailMore, locale: locale),
+            accessibilityLabel: AppLanguage.string(.detailMoreOptions, locale: locale),
             stabilizesFocusMotion: true,
             items: {
                 var items: [TVActionPopoverItem] = [
                     TVActionPopoverItem(
                         id: MoreAction.favorite.rawValue,
-                        title: isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                        title: AppLanguage.string(
+                            isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
+                            locale: locale
+                        ),
                         systemImage: isFavorite ? "heart.fill" : "heart"
                     ),
                     TVActionPopoverItem(
                         id: MoreAction.watched.rawValue,
-                        title: isWatched ? "Mark as Unwatched" : "Mark as Watched",
+                        title: AppLanguage.string(
+                            isWatched ? .detailMoreMarkUnwatched : .detailMoreMarkWatched,
+                            locale: locale
+                        ),
                         systemImage: isWatched ? "checkmark.circle.fill" : "checkmark.circle"
                     ),
                 ]
                 if supportsTrailerFetch {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.trailers.rawValue,
-                        title: "Find Trailers",
+                        title: AppLanguage.string(.detailMoreFindTrailers, locale: locale),
                         systemImage: "film.stack"
                     ))
                 }
                 if onTranslateDescription != nil {
                     items.append(TVActionPopoverItem(
                         id: MoreAction.translate.rawValue,
-                        title: "Translate Description",
+                        title: AppLanguage.string(.detailMoreTranslate, locale: locale),
                         systemImage: MachineTranslation.symbol
                     ))
                 }
@@ -278,8 +286,8 @@ struct TVMovieDetailView: View {
     private var hasResumeProgress: Bool { resumePositionSeconds != nil }
 
     private var primaryPlayLabel: String {
-        guard let pos = resumePositionSeconds else { return "Play" }
-        return "Resume \(PlayerTimeFormatter.formatHMS(pos))"
+        guard let pos = resumePositionSeconds else { return AppLanguage.string(.commonPlay, locale: locale) }
+        return AppLanguage.string(.detailResumeAt(PlayerTimeFormatter.formatHMS(pos)), locale: locale)
     }
 
     private var similarSection: some View {
@@ -287,7 +295,7 @@ struct TVMovieDetailView: View {
         // recommendations are disabled or empty.
         TVSimilarRail(
             contentId: detail.contentId,
-            title: "Related Movies",
+            title: AppLanguage.string(.detailRelatedMovies, locale: locale),
             onSelect: onNavigateToItem
         )
     }
@@ -309,7 +317,7 @@ struct TVMovieDetailView: View {
     @ViewBuilder
     private func castSection(cast: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
-            TVSectionHeader(title: "Cast & Crew")
+            TVSectionHeader(title: AppLanguage.string(.detailCast, locale: locale))
             TVDetailCastRail(cast: cast, onTap: onPersonTap)
         }
     }
@@ -318,7 +326,7 @@ struct TVMovieDetailView: View {
 
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
-            TVSectionHeader(title: "Details")
+            TVSectionHeader(title: AppLanguage.string(.detailDetails, locale: locale))
             TVDetailFactsSection(detail: detail)
         }
     }

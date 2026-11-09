@@ -13,6 +13,8 @@ struct TVAudiobookDetailSections: View {
     let detail: ItemDetail
     let onNavigateToItem: (String) -> Void
 
+    @Environment(\.locale) private var locale
+
     /// Whether the detail has anything to show below the fold. The parent
     /// skips the section block entirely when empty so a bare audiobook page
     /// stays a fixed single screen instead of scrolling into blank space.
@@ -42,7 +44,7 @@ struct TVAudiobookDetailSections: View {
     private var aboutSection: some View {
         if let overview = detail.overview, !overview.isEmpty {
             VStack(alignment: .leading, spacing: 20) {
-                sectionHeader("About")
+                sectionHeader(.detailAudiobookAbout)
                 Text(overview)
                     .font(.system(size: 25))
                     .foregroundColor(.white.opacity(0.72))
@@ -67,12 +69,12 @@ struct TVAudiobookDetailSections: View {
         if let authors = AudiobookDetailFormatting.peopleSummary(
             detail.audiobook?.authors.map(\.name) ?? [], visible: 3
         ) {
-            pieces.append("Written by \(authors)")
+            pieces.append(AppLanguage.string(.detailWrittenByNames(authors), locale: locale))
         }
         if let narrators = AudiobookDetailFormatting.peopleSummary(
             detail.audiobook?.narrators.map(\.name) ?? [], visible: 3
         ) {
-            pieces.append("Narrated by \(narrators)")
+            pieces.append(AppLanguage.string(.detailNarratedBy(narrators), locale: locale))
         }
         if let publisher = detail.audiobook?.publisher, !publisher.isEmpty {
             pieces.append(publisher)
@@ -90,7 +92,7 @@ struct TVAudiobookDetailSections: View {
         let narrations = detail.audiobook?.otherNarrations ?? []
         if !narrations.isEmpty {
             VStack(alignment: .leading, spacing: 20) {
-                sectionHeader("Narrations")
+                sectionHeader(.detailAudiobookNarrations)
                 VStack(spacing: 10) {
                     ForEach(narrations) { narration in
                         narrationRow(narration)
@@ -117,7 +119,7 @@ struct TVAudiobookDetailSections: View {
     private var seriesRail: some View {
         if let series = detail.audiobook?.series, !series.entries.isEmpty {
             AudiobookCoverRail(
-                title: series.name ?? "Series",
+                title: series.name ?? AppLanguage.string(.detailAudiobookSeries, locale: locale),
                 items: series.entries,
                 onSelect: onNavigateToItem
             )
@@ -127,20 +129,28 @@ struct TVAudiobookDetailSections: View {
     @ViewBuilder
     private var moreByAuthorRail: some View {
         if let items = detail.audiobook?.related?.alsoByAuthor, !items.isEmpty {
-            AudiobookCoverRail(title: "More by Author", items: items, onSelect: onNavigateToItem)
+            AudiobookCoverRail(
+                title: AppLanguage.string(.detailAudiobookMoreByAuthor, locale: locale),
+                items: items,
+                onSelect: onNavigateToItem
+            )
         }
     }
 
     @ViewBuilder
     private var relatedRail: some View {
         if let items = detail.audiobook?.related?.similar, !items.isEmpty {
-            AudiobookCoverRail(title: "Related", items: items, onSelect: onNavigateToItem)
+            AudiobookCoverRail(
+                title: AppLanguage.string(.detailAudiobookRelated, locale: locale),
+                items: items,
+                onSelect: onNavigateToItem
+            )
         }
     }
 
     // MARK: - Shared
 
-    private func sectionHeader(_ title: String) -> some View {
+    private func sectionHeader(_ title: LocalizedStringResource) -> some View {
         Text(title)
             .font(.title2)
             .fontWeight(.semibold)
@@ -194,6 +204,7 @@ private struct AudiobookCoverRail: View {
     let items: [AudiobookRelatedItem]
     let onSelect: (String) -> Void
 
+    @Environment(\.locale) private var locale
     @FocusState private var focusedItemId: String?
 
     var body: some View {
@@ -209,7 +220,9 @@ private struct AudiobookCoverRail: View {
                             title: item.title,
                             posterUrl: item.posterUrl ?? "",
                             year: item.year,
-                            subtitle: item.seriesIndex.map { "Book \($0)" },
+                            subtitle: item.seriesIndex.map {
+                                AppLanguage.string(.detailAudiobookBookNumber($0), locale: locale)
+                            },
                             action: { onSelect(item.contentId) },
                             cardWidth: 220,
                             aspect: .square,

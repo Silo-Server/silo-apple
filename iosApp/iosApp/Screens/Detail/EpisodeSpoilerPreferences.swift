@@ -75,12 +75,12 @@ enum EpisodeSpoilerSyncState: Equatable, Sendable {
     var userMessage: String? {
         switch self {
         case .checking:
-            return "Checking whether this server supports spoiler settings…"
+            return AppLanguage.string(.detailSpoilersChecking)
         case .supported, .serverUpgradeRequired:
             // An older server hides the rows entirely.
             return nil
         case .unavailable:
-            return "Spoiler settings can be changed once this server is reachable."
+            return AppLanguage.string(.detailSpoilersUnavailable)
         }
     }
 }
@@ -226,9 +226,9 @@ final class EpisodeSpoilerPreferences {
                 syncState = .serverUpgradeRequired
                 clearServerValues(cacheKey: context.cacheKey)
             } else {
-                readErrorMessage = values == nil
-                    ? "Couldn't load spoiler settings from the server."
-                    : "Couldn't refresh spoiler settings. Showing the last saved values."
+                readErrorMessage = AppLanguage.string(values == nil
+                    ? .detailSpoilersLoadFailed
+                    : .detailSpoilersRefreshFailed)
             }
         }
     }
@@ -385,15 +385,17 @@ final class EpisodeSpoilerPreferences {
     }
 
     static func writeFailureMessage(setting: EpisodeSpoilerSetting, error: Error) -> String {
-        let name = setting == .images ? "image setting" : "description setting"
+        let images = setting == .images
+        let message: LocalizedStringResource
         switch SettingsAPIError.from(error) {
         case .transport:
-            return "Couldn't save the \(name). Check the connection and try again."
+            message = images ? .detailSpoilersImagesSaveTransport : .detailSpoilersOverviewsSaveTransport
         case .serverUpgradeRequired, .unknownSetting:
-            return "This server can't save the \(name)."
+            message = images ? .detailSpoilersImagesSaveUnsupported : .detailSpoilersOverviewsSaveUnsupported
         default:
-            return "The server didn't save the \(name). Try again."
+            message = images ? .detailSpoilersImagesSaveFailed : .detailSpoilersOverviewsSaveFailed
         }
+        return AppLanguage.string(message)
     }
 
     /// `silo.episodeSpoilers.v2.<server>.<account>.<profile>`. Top Shelf

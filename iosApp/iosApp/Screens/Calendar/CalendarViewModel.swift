@@ -70,10 +70,10 @@ final class CalendarViewModel {
     }
 
     /// Day-shelf heading: "Today" / "Tomorrow" / "Monday, June 9".
-    func sectionHeading(for date: Date) -> String {
+    func sectionHeading(for date: Date, locale: Locale) -> String {
         let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "Today" }
-        if calendar.isDateInTomorrow(date) { return "Tomorrow" }
+        if calendar.isDateInToday(date) { return AppLanguage.string(.calendarToday, locale: locale) }
+        if calendar.isDateInTomorrow(date) { return AppLanguage.string(.calendarTomorrow, locale: locale) }
         return date.formatted(.dateTime.weekday(.wide).month(.wide).day())
     }
 

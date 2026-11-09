@@ -74,11 +74,13 @@ enum HomeFeed {
 // MARK: - Metadata formatting
 
 enum HomeFeedMeta {
-    static func remaining(position: Double?, duration: Double?) -> String? {
+    static func remaining(position: Double?, duration: Double?, locale: Locale) -> String? {
         guard let position, let duration, duration > 0, position > 0 else { return nil }
         let minutesLeft = Int((duration - position) / 60)
         guard minutesLeft > 0 else { return nil }
-        return MediaTextFormatting.runtime(minutes: minutesLeft).map { "\($0) left" }
+        return MediaTextFormatting.runtime(minutes: minutesLeft).map {
+            AppLanguage.string(.homeTimeLeft($0), locale: locale)
+        }
     }
 
     static func progress(for item: SectionItem) -> Double? {
@@ -102,12 +104,16 @@ enum HomeFeedMeta {
     /// one — ragged, and it read like missing data. Percentage is a weaker
     /// answer than time remaining but it is still true, and it keeps every
     /// resume card the same height.
-    static func resumeCaption(for item: SectionItem) -> String? {
+    static func resumeCaption(for item: SectionItem, locale: Locale) -> String? {
         let progressText: String?
-        if let remainingText = remaining(position: item.positionSeconds, duration: item.durationSeconds) {
+        if let remainingText = remaining(
+            position: item.positionSeconds, duration: item.durationSeconds, locale: locale
+        ) {
             progressText = remainingText
         } else if let fraction = progress(for: item) {
-            progressText = "\(Int((fraction * 100).rounded()))% watched"
+            progressText = AppLanguage.string(
+                .homePercentWatched(Int((fraction * 100).rounded())), locale: locale
+            )
         } else {
             progressText = nil
         }
@@ -133,7 +139,7 @@ private struct HomeCardTap<Label: View>: View {
     /// Secondary action surfaced to VoiceOver. The card collapses its
     /// children into one element, so a nested play button would otherwise
     /// vanish from the accessibility tree.
-    var accessibilityPlayAction: (name: String, perform: () -> Void)? = nil
+    var accessibilityPlayAction: (name: LocalizedStringResource, perform: () -> Void)? = nil
     /// Replaces opening detail, for hosts that pick rather than browse.
     var onTap: (() -> Void)? = nil
     @ViewBuilder var label: () -> Label
@@ -160,7 +166,7 @@ private struct HomeCardTap<Label: View>: View {
 }
 
 private struct OptionalAccessibilityAction: ViewModifier {
-    let action: (name: String, perform: () -> Void)?
+    let action: (name: LocalizedStringResource, perform: () -> Void)?
 
     func body(content: Content) -> some View {
         if let action {
@@ -292,6 +298,7 @@ struct HomePosterCard: View {
     var secondLineOverride: String? = nil
 
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
+    @Environment(\.locale) private var locale
     /// Optimistic personal state, shared with the menu so the badge flips the
     /// moment "Mark as Watched" is tapped rather than after the Home refresh.
     @State private var personalState = MediaCardPersonalState()
@@ -420,7 +427,7 @@ struct HomePosterCard: View {
             components.append(String(year))
         }
         if isPlayed {
-            components.append("Watched")
+            components.append(AppLanguage.string(.homeWatched, locale: locale))
         }
         return components.joined(separator: ", ")
     }
@@ -445,6 +452,7 @@ struct HomeStillCard: View {
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     @Environment(\.browseLibraryId) private var playbackLibraryId
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     private var isPlayed: Bool { personalState.isPlayed(item.userState) }
 
@@ -587,7 +595,7 @@ struct HomeStillCard: View {
         if isDirectlyPlayable {
             Button(action: playItem) { badge }
                 .buttonStyle(.plain)
-                .accessibilityLabel(playActionName)
+                .accessibilityLabel(Text(playActionName))
         } else {
             badge.allowsHitTesting(false)
         }
@@ -595,7 +603,9 @@ struct HomeStillCard: View {
 
     private var isDirectlyPlayable: Bool { SiloMediaType.isDirectlyPlayable(item.type) }
 
-    private var playActionName: String { (item.positionSeconds ?? 0) > 0 ? "Resume" : "Play" }
+    private var playActionName: LocalizedStringResource {
+        (item.positionSeconds ?? 0) > 0 ? .cardMenuResume : .cardMenuPlay
+    }
 
     private func playItem() {
         router.presentPlayer(
@@ -637,13 +647,15 @@ struct HomeStillCard: View {
                 .lineLimit(1, reservesSpace: true)
                 .truncationMode(.tail)
 
-            if reservesResumeCaption || HomeFeedMeta.resumeCaption(for: item) != nil {
-                Text(HomeFeedMeta.resumeCaption(for: item) ?? "0m left")
+            let resumeCaption = HomeFeedMeta.resumeCaption(for: item, locale: locale)
+            if reservesResumeCaption || resumeCaption != nil {
+                // The hidden placeholder only reserves the line's height.
+                Text(resumeCaption ?? AppLanguage.string(.homeTimeLeft("0m"), locale: locale))
                     .font(HomeFeedMetrics.captionMetadataFont)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.55))
                     .lineLimit(1)
-                    .opacity(HomeFeedMeta.resumeCaption(for: item) == nil ? 0 : 1)
-                    .accessibilityHidden(HomeFeedMeta.resumeCaption(for: item) == nil)
+                    .opacity(resumeCaption == nil ? 0 : 1)
+                    .accessibilityHidden(resumeCaption == nil)
             }
         }
         .frame(width: width, alignment: .leading)
@@ -656,11 +668,11 @@ struct HomeStillCard: View {
         } else if let year = item.year {
             components.append(String(year))
         }
-        if let resumeCaption = HomeFeedMeta.resumeCaption(for: item) {
+        if let resumeCaption = HomeFeedMeta.resumeCaption(for: item, locale: locale) {
             components.append(resumeCaption)
         }
         if isPlayed {
-            components.append("Watched")
+            components.append(AppLanguage.string(.homeWatched, locale: locale))
         }
         return components.joined(separator: ", ")
     }

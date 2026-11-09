@@ -25,6 +25,7 @@ struct TVAudiobookDetailView: View {
     let onNavigateToItem: (String) -> Void
 
     @Environment(AudioPlaybackStore.self) private var audioStore
+    @Environment(\.locale) private var locale
 
     @FocusState private var focusedAction: Action?
     @State private var showChapters = false
@@ -206,24 +207,33 @@ struct TVAudiobookDetailView: View {
     }
 
     /// "by **Author** · read by **Narrator**" — names semibold white,
-    /// connectives quiet. Built as a concatenated `Text` so it wraps as one
-    /// paragraph rather than a stack.
+    /// connectives quiet. One catalog message, with the names restyled in
+    /// place, so it wraps as one paragraph and translations can reorder it.
     private func creditsText(_ credits: TVAudiobookViewModel.Credits) -> Text {
-        let label = Color.white.opacity(0.72)
-        var segments: [Text] = []
-        if let author = credits.author {
-            segments.append(Text("by ").foregroundColor(label))
-            segments.append(Text(author).fontWeight(.semibold).foregroundColor(.white))
+        let message: LocalizedStringResource
+        switch (credits.author, credits.narrator) {
+        case let (.some(author), .some(narrator)):
+            message = .detailAudiobookByAuthorReadBy(author, narrator)
+        case let (.some(author), .none):
+            message = .detailAudiobookByAuthor(author)
+        case let (.none, .some(narrator)):
+            message = .detailAudiobookReadBy(narrator)
+        case (.none, .none):
+            return Text(verbatim: "")
         }
-        if let narrator = credits.narrator {
-            if credits.author != nil {
-                segments.append(Text("  ·  ").foregroundColor(label))
+        var line = AttributedString(AppLanguage.string(message, locale: locale))
+        line.font = .system(size: 29)
+        line.foregroundColor = Color.white.opacity(0.72)
+        // Every occurrence: an author who narrates appears twice.
+        for name in Set([credits.author, credits.narrator].compactMap({ $0 })) where !name.isEmpty {
+            var start = line.startIndex
+            while let range = line[start...].range(of: name) {
+                line[range].font = .system(size: 29, weight: .semibold)
+                line[range].foregroundColor = .white
+                start = range.upperBound
             }
-            segments.append(Text("read by ").foregroundColor(label))
-            segments.append(Text(narrator).fontWeight(.semibold).foregroundColor(.white))
         }
-        return segments.reduce(Text(verbatim: "")) { Text("\($0)\($1)") }
-            .font(.system(size: 29))
+        return Text(line)
     }
 
     // MARK: - State cluster
@@ -282,7 +292,7 @@ struct TVAudiobookDetailView: View {
         HStack(spacing: 24) {
             TVPrimaryPillButton(
                 icon: model.primaryIcon,
-                title: model.primaryLabel
+                title: AppLanguage.string(model.primaryLabel, locale: locale)
             ) {
                 model.performPrimary(audioStore, libraryId: libraryId)
             }
@@ -290,13 +300,13 @@ struct TVAudiobookDetailView: View {
             .onAppear(perform: claimInitialActionFocus)
 
             if model.showsChapters {
-                TVSecondaryPillButton(icon: "list.bullet", title: "Chapters") {
+                TVSecondaryPillButton(icon: "list.bullet", title: AppLanguage.string(.detailAudiobookChapters, locale: locale)) {
                     showChapters = true
                 }
                 .focused($focusedAction, equals: .chapters)
             }
 
-            TVSecondaryPillButton(icon: "arrow.counterclockwise", title: "Start Over") {
+            TVSecondaryPillButton(icon: "arrow.counterclockwise", title: AppLanguage.string(.detailStartOver, locale: locale)) {
                 audioStore.play(contentId: detail.contentId, restart: true, libraryId: libraryId)
             }
             .focused($focusedAction, equals: .startOver)
@@ -309,8 +319,11 @@ struct TVAudiobookDetailView: View {
                 icon: "heart",
                 iconActive: "heart.fill",
                 isActive: isFavorite,
-                title: "Favorite",
-                accessibilityLabel: isFavorite ? "Remove from Favorites" : "Add to Favorites",
+                title: AppLanguage.string(.detailFavorite, locale: locale),
+                accessibilityLabel: AppLanguage.string(
+                    isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
+                    locale: locale
+                ),
                 stabilizesFocusMotion: true,
                 action: onToggleFavorite
             )
@@ -320,8 +333,11 @@ struct TVAudiobookDetailView: View {
                 icon: "checkmark.circle",
                 iconActive: "checkmark.circle.fill",
                 isActive: isFinished,
-                title: "Finished",
-                accessibilityLabel: isFinished ? "Mark as Not Finished" : "Mark as Finished",
+                title: AppLanguage.string(.detailAudiobookFinished, locale: locale),
+                accessibilityLabel: AppLanguage.string(
+                    isFinished ? .detailAudiobookMarkNotFinished : .detailAudiobookMarkFinished,
+                    locale: locale
+                ),
                 stabilizesFocusMotion: true,
                 action: onToggleFinished
             )

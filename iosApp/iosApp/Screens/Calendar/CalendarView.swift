@@ -13,6 +13,7 @@ struct CalendarView: View {
 
     @State private var viewModel = CalendarViewModel()
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
     #if os(tvOS)
     @State private var entryFocusRequest = 0
     /// Focus hand-off for day selection: picking a day in the week strip
@@ -110,14 +111,14 @@ struct CalendarView: View {
                     .foregroundColor(.siloOnSurface)
 
                 if !viewModel.isCurrentWeek {
-                    Button("Today") { returnToToday(proxy: proxy) }
+                    Button(.calendarToday) { returnToToday(proxy: proxy) }
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.siloOnSurface)
                         .buttonStyle(.plain)
                         .padding(.horizontal, 12)
                         .frame(height: 30)
                         .siloGlass(in: .capsule)
-                        .accessibilityLabel("Jump to today")
+                        .accessibilityLabel(Text(.calendarJumpToToday))
                 }
 
                 Spacer(minLength: 8)
@@ -237,7 +238,7 @@ struct CalendarView: View {
         } else {
             ForEach(viewModel.week.days, id: \.self) { day in
                 CalendarDayShelf(
-                    heading: viewModel.sectionHeading(for: day),
+                    heading: viewModel.sectionHeading(for: day, locale: locale),
                     events: viewModel.events(on: day),
                     onEventTap: { event in
                         router.navigate(to: event.detailRoute)
@@ -296,7 +297,7 @@ struct CalendarView: View {
                     }
                     .siloPrimaryButton()
                     .frame(width: emptyButtonWidth)
-                    .accessibilityLabel("Show \(filter.displayLabel)")
+                    .accessibilityLabel(Text(.calendarShowFilter(AppLanguage.string(filter.displayLabel, locale: locale))))
                 }
             }
             .padding(.top, SiloTheme.smallPadding)
@@ -309,22 +310,22 @@ struct CalendarView: View {
         #endif
     }
 
-    private var emptyTitle: String {
+    private var emptyTitle: LocalizedStringResource {
         switch viewModel.filter {
-        case .following: return "Nothing from shows you follow"
-        case .trending: return "Nothing trending this week"
-        case .everything: return "Nothing scheduled this week"
+        case .following: return .calendarEmptyFollowing
+        case .trending: return .calendarEmptyTrending
+        case .everything: return .calendarEmptyEverything
         }
     }
 
-    private var emptySubtitle: String {
+    private var emptySubtitle: LocalizedStringResource {
         switch viewModel.filter {
         case .following:
-            return "No upcoming releases this week from shows you watch, favorite, or watchlist."
+            return .calendarEmptyFollowingBody
         case .trending:
-            return "No trending movie releases or episode airings in this week."
+            return .calendarEmptyTrendingBody
         case .everything:
-            return "No movie releases or episode airings in this week."
+            return .calendarEmptyEverythingBody
         }
     }
 

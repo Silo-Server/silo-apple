@@ -23,7 +23,7 @@ struct TVItemDetailLoadingView: View {
         }
         .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
+        .accessibilityLabel(Text(accessibilityLabel))
     }
 
     // MARK: - Movie / series / episode
@@ -174,14 +174,14 @@ struct TVItemDetailLoadingView: View {
 
     private var loadingPlaybackSummary: some View {
         HStack(alignment: .top, spacing: 8) {
-            playbackPlaceholder(label: "VERSION", width: 245, barWidth: 100)
-            playbackPlaceholder(label: "AUDIO", width: 285, barWidth: 130)
-            playbackPlaceholder(label: "SUBTITLES", width: 264, barWidth: 60)
+            playbackPlaceholder(label: .detailReadoutVersion, width: 245, barWidth: 100)
+            playbackPlaceholder(label: .detailReadoutAudio, width: 285, barWidth: 130)
+            playbackPlaceholder(label: .detailReadoutSubtitles, width: 264, barWidth: 60)
         }
     }
 
     private func playbackPlaceholder(
-        label: String,
+        label: LocalizedStringResource,
         width: CGFloat,
         barWidth: CGFloat
     ) -> some View {
@@ -373,11 +373,11 @@ struct TVItemDetailLoadingView: View {
     private var railCardCount: Int { usesLandscapeRail ? 4 : 6 }
     private var railSpacing: CGFloat { usesLandscapeRail ? 34 : 44 }
 
-    private var accessibilityLabel: String {
+    private var accessibilityLabel: LocalizedStringResource {
         if let title = nonEmpty(seed?.title) {
-            return "Loading details for \(title)"
+            return .detailLoadingDetailsFor(title)
         }
-        return "Loading details"
+        return .detailLoadingDetails
     }
 
     private func nonEmpty(_ value: String?) -> String? {

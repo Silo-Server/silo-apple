@@ -21,6 +21,8 @@ struct TVPlaybackActionSelectors: View {
     /// the viewer left.
     let focusedAction: FocusState<TVDetailAction?>.Binding
 
+    @Environment(\.locale) private var locale
+
     var body: some View {
         HStack(spacing: 18) {
             versionMenu
@@ -50,16 +52,16 @@ struct TVPlaybackActionSelectors: View {
     private var versionMenu: some View {
         TVCircleMenuButton(
             icon: "square.stack",
-            title: "Versions",
-            accessibilityLabel: "Version, \(versionValue)",
+            title: AppLanguage.string(.detailVersionsButton, locale: locale),
+            accessibilityLabel: AppLanguage.string(.detailVersionSpoken(versionValue), locale: locale),
             stabilizesFocusMotion: true,
-            menuTitle: "Version",
+            menuTitle: AppLanguage.string(.detailVersion, locale: locale),
             items: {
                 [
                     TVActionPopoverItem(
                         id: "auto",
-                        title: "Auto",
-                        detail: "Best match for this device",
+                        title: AppLanguage.string(.detailAuto, locale: locale),
+                        detail: AppLanguage.string(.detailAutoVersion, locale: locale),
                         isSelected: selectedVersionFileId == nil
                     )
                 ] + versions.map { version in
@@ -85,16 +87,16 @@ struct TVPlaybackActionSelectors: View {
     private var audioMenu: some View {
         TVCircleMenuButton(
             icon: "speaker.wave.2",
-            title: "Audio Tracks",
-            accessibilityLabel: "Audio, \(audioValue)",
+            title: AppLanguage.string(.detailAudioButton, locale: locale),
+            accessibilityLabel: AppLanguage.string(.detailAudioSpoken(audioValue), locale: locale),
             stabilizesFocusMotion: true,
-            menuTitle: "Audio",
+            menuTitle: AppLanguage.string(.detailAudio, locale: locale),
             items: {
                 [
                     TVActionPopoverItem(
                         id: "auto",
-                        title: "Auto",
-                        detail: "Use your Playback audio preference",
+                        title: AppLanguage.string(.detailAuto, locale: locale),
+                        detail: AppLanguage.string(.detailAutoAudio, locale: locale),
                         isSelected: selectedAudioTrackIndex == nil
                     )
                 ] + audioOptions.map { option in
@@ -120,22 +122,22 @@ struct TVPlaybackActionSelectors: View {
     private var subtitleMenu: some View {
         TVCircleMenuButton(
             icon: "captions.bubble",
-            title: "Subtitles",
-            accessibilityLabel: "Subtitles, \(subtitleValue)",
+            title: AppLanguage.string(.detailSubtitles, locale: locale),
+            accessibilityLabel: AppLanguage.string(.detailSubtitlesSpoken(subtitleValue), locale: locale),
             stabilizesFocusMotion: true,
-            menuTitle: "Subtitles",
+            menuTitle: AppLanguage.string(.detailSubtitles, locale: locale),
             items: {
                 [
                     TVActionPopoverItem(
                         id: "auto",
-                        title: "Auto",
-                        detail: "Use your subtitle preferences",
+                        title: AppLanguage.string(.detailAuto, locale: locale),
+                        detail: AppLanguage.string(.detailAutoSubtitles, locale: locale),
                         isSelected: selectedSubtitleTrackIndex == nil
                     ),
                     TVActionPopoverItem(
                         id: "off",
-                        title: "Off",
-                        detail: "Start without subtitles",
+                        title: AppLanguage.string(.detailOff, locale: locale),
+                        detail: AppLanguage.string(.detailOffDetail, locale: locale),
                         isSelected: selectedSubtitleTrackIndex == -1
                     ),
                 ] + subtitleOptions.map { option in
@@ -168,7 +170,9 @@ struct TVPlaybackActionSelectors: View {
 
     private var versionValue: String {
         let value = DetailPlaybackFormatting.versionCompactLabel(currentVersion)
-        return selectedVersionFileId == nil ? "Auto, \(value)" : value
+        return selectedVersionFileId == nil
+            ? AppLanguage.string(.detailAutoSpoken(value), locale: locale)
+            : value
     }
 
     private var audioValue: String {
@@ -221,6 +225,8 @@ struct TVPlaybackSelectionSummary: Equatable {
     let audio: String?
     let subtitles: String?
 
+    /// Built in the parent view's body; pass the view's `\.locale` so the
+    /// readout follows the app language.
     static func make(
         currentVersion: FileVersion?,
         selectedVersionFileId: Int?,
@@ -229,7 +235,8 @@ struct TVPlaybackSelectionSummary: Equatable {
         subtitleMode: String?,
         subtitleSignature: SubtitleTrackSignature?,
         preferredSubtitleLanguage: String?,
-        showForcedSubtitles: Bool
+        showForcedSubtitles: Bool,
+        locale: Locale = AppLanguage.displayedLocale
     ) -> TVPlaybackSelectionSummary {
         guard let currentVersion else {
             return TVPlaybackSelectionSummary(
@@ -238,11 +245,14 @@ struct TVPlaybackSelectionSummary: Equatable {
                 subtitles: nil
             )
         }
+        func autoValue(_ value: String) -> String {
+            AppLanguage.string(.detailAutoValue(value), locale: locale)
+        }
 
         let versionDetail = DetailPlaybackFormatting.versionCompactLabel(currentVersion)
         let version = selectedVersionFileId == nil
-            && versionDetail != "Auto"
-            ? "Auto · \(versionDetail)"
+            && !DetailPlaybackFormatting.versionCompactTokens(currentVersion).isEmpty
+            ? autoValue(versionDetail)
             : versionDetail
 
         let resolvedAudio = DetailPlaybackFormatting.audioValueLabel(
@@ -251,7 +261,7 @@ struct TVPlaybackSelectionSummary: Equatable {
             annotateAuto: false
         )
         let audio = selectedAudioTrackIndex == nil
-            ? "Auto · \(resolvedAudio)"
+            ? autoValue(resolvedAudio)
             : resolvedAudio
 
         let autoContext = DetailPlaybackFormatting.SubtitleAutoContext(
@@ -262,32 +272,26 @@ struct TVPlaybackSelectionSummary: Equatable {
             signature: subtitleSignature,
             showForced: showForcedSubtitles
         )
-        let resolvedSubtitle = DetailPlaybackFormatting.subtitleValueLabel(
-            version: currentVersion,
-            selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
-            autoContext: autoContext
-        )
-        let subtitle = summarySubtitleValue(
-            resolvedSubtitle,
-            selectedSubtitleTrackIndex: selectedSubtitleTrackIndex
-        )
+        let subtitle: String
+        if selectedSubtitleTrackIndex == nil {
+            // Auto shows what it resolves to, or None when that is Off.
+            subtitle = autoValue(
+                DetailPlaybackFormatting.autoSubtitlePreview(version: currentVersion, context: autoContext)
+                    ?? AppLanguage.string(.detailNone, locale: locale)
+            )
+        } else {
+            subtitle = DetailPlaybackFormatting.subtitleValueLabel(
+                version: currentVersion,
+                selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
+                autoContext: autoContext
+            )
+        }
 
         return TVPlaybackSelectionSummary(
             version: version,
             audio: audio,
             subtitles: subtitle
         )
-    }
-
-    private static func summarySubtitleValue(
-        _ value: String,
-        selectedSubtitleTrackIndex: Int?
-    ) -> String {
-        guard selectedSubtitleTrackIndex == nil else { return value }
-        let resolved = value.hasPrefix("Auto: ")
-            ? String(value.dropFirst("Auto: ".count))
-            : value
-        return "Auto · \(resolved == "Off" ? "None" : resolved)"
     }
 }
 

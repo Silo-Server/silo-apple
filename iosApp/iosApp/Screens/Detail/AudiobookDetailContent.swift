@@ -30,6 +30,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.locale) private var locale
     @State private var showAllChapters = false
 
     private let kind = BookDetailKind.audiobook
@@ -77,7 +78,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             posterThumbhash: detail.posterThumbhash,
             backdropUrl: detail.backdropUrl,
             backdropThumbhash: detail.backdropThumbhash,
-            eyebrow: kind.eyebrow,
+            eyebrow: AppLanguage.string(kind.eyebrow, locale: locale),
             sourceTokens: presentation.sourceTokens,
             ratingChip: PhoneHeroMetadata.contentRatingChip(from: detail),
             overview: detail.overview,
@@ -111,31 +112,37 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                     icon: "heart",
                     iconActive: "heart.fill",
                     isActive: isFavorite,
-                    label: "Favorite",
-                    accessibilityLabelOverride: isFavorite
-                        ? "Remove from Favorites" : "Add to Favorites",
+                    label: AppLanguage.string(.detailFavorite, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
+                        locale: locale
+                    ),
                     action: onToggleFavorite
                 )
                 PhoneLabeledAction(
                     icon: "bookmark",
                     iconActive: "bookmark.fill",
                     isActive: inWatchlist,
-                    label: kind.queueLabel,
-                    accessibilityLabelOverride: inWatchlist
-                        ? "Remove from \(kind.queueLabel)" : "Add to \(kind.queueLabel)",
+                    label: AppLanguage.string(kind.queueLabel, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        inWatchlist ? kind.queueRemoveLabel : kind.queueAddLabel,
+                        locale: locale
+                    ),
                     action: onToggleWatchlist
                 )
                 PhoneLabeledAction(
                     icon: "checkmark.circle",
                     iconActive: "checkmark.circle.fill",
                     isActive: isWatched,
-                    label: kind.finishedLabel,
-                    accessibilityLabelOverride: isWatched
-                        ? "Mark as Not Finished" : "Mark as Finished",
+                    label: AppLanguage.string(kind.finishedLabel, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        isWatched ? .detailAudiobookMarkNotFinished : .detailAudiobookMarkFinished,
+                        locale: locale
+                    ),
                     action: onToggleWatched
                 )
                 AudiobookSpeedMenu()
-                PhoneLabeledMenu(label: "More") {
+                PhoneLabeledMenu(label: AppLanguage.string(.detailMore, locale: locale)) {
                     moreMenuItems
                 }
             }
@@ -148,7 +155,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         Button {
             startPlayback(restart: true)
         } label: {
-            Label("Start Over", systemImage: "arrow.counterclockwise")
+            Label(.detailStartOver, systemImage: "arrow.counterclockwise")
         }
         if !otherNarrations.isEmpty {
             Menu {
@@ -158,7 +165,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                     }
                 }
             } label: {
-                Label("Other Narrations", systemImage: "person.wave.2")
+                Label(.detailAudiobookOtherNarrations, systemImage: "person.wave.2")
             }
         }
     }
@@ -203,7 +210,10 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
             }
 
             if let series = detail.audiobook?.series, !series.entries.isEmpty {
-                coverRail(title: series.name ?? "Series", items: series.entries)
+                coverRail(
+                    title: series.name ?? AppLanguage.string(.detailAudiobookSeries, locale: locale),
+                    items: series.entries
+                )
             }
 
             if !otherNarrations.isEmpty {
@@ -219,7 +229,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                 .padding(.horizontal, SiloTheme.safePadding)
 
             if let similar = detail.audiobook?.related?.similar, !similar.isEmpty {
-                coverRail(title: "More Like This", items: similar)
+                coverRail(title: AppLanguage.string(.detailMoreLikeThis, locale: locale), items: similar)
             }
         }
     }
@@ -237,9 +247,9 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     private var moreByAuthorTitle: String {
         let authors = detail.audiobook?.authors ?? []
         if authors.count == 1, let name = authors.first?.name, !name.contains(",") {
-            return "More by \(name)"
+            return AppLanguage.string(.detailAudiobookMoreByNamedAuthor(name), locale: locale)
         }
-        return "More by These Authors"
+        return AppLanguage.string(.detailAudiobookMoreByTheseAuthors, locale: locale)
     }
 
     // MARK: - Chapters
@@ -247,7 +257,10 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     private func chaptersSection(_ chapters: [DisplayChapter]) -> some View {
         let visibleChapters = showAllChapters ? chapters : Array(chapters.prefix(chapterCollapseLimit))
         return VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Chapters", trailingText: "\(chapters.count)")
+            PhoneSectionHeader(
+                title: AppLanguage.string(.detailAudiobookChapters, locale: locale),
+                trailingText: "\(chapters.count)"
+            )
             VStack(spacing: 0) {
                 ForEach(Array(visibleChapters.enumerated()), id: \.element.id) { index, chapter in
                     timelineRow(
@@ -268,8 +281,8 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                     } label: {
                         HStack(spacing: 6) {
                             Text(showAllChapters
-                                 ? "Show less"
-                                 : "Show all \(chapters.count) chapters")
+                                 ? LocalizedStringResource.detailAudiobookChaptersShowLess
+                                 : .detailAudiobookChaptersShowAll(count: chapters.count, String(chapters.count)))
                             Image(systemName: showAllChapters ? "chevron.up" : "chevron.down")
                                 .font(.system(size: 12, weight: .semibold))
                         }
@@ -288,7 +301,10 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     private func partsSection(_ parts: [FileVersion]) -> some View {
         let startOffsets = Self.partStartOffsets(parts)
         return VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Parts", trailingText: "\(parts.count)")
+            PhoneSectionHeader(
+                title: AppLanguage.string(.detailAudiobookParts, locale: locale),
+                trailingText: "\(parts.count)"
+            )
             VStack(spacing: 0) {
                 ForEach(parts.indices, id: \.self) { index in
                     timelineRow(
@@ -356,35 +372,47 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
     private var creditsTitle: String {
         let hasAuthors = !(detail.audiobook?.authors.isEmpty ?? true)
         let hasNarrators = !(detail.audiobook?.narrators.isEmpty ?? true)
+        let title: LocalizedStringResource
         switch (hasAuthors, hasNarrators) {
-        case (true, false): return "Authors"
-        case (false, true): return "Narrators"
-        default: return "Authors & Narrators"
+        case (true, false): title = .detailAudiobookAuthors
+        case (false, true): title = .detailAudiobookNarrators
+        default: title = .detailAudiobookAuthorsAndNarrators
         }
+        return AppLanguage.string(title, locale: locale)
     }
 
     /// Authors then narrators as cast-rail entries, with each person's role
     /// in the caption. Someone who both wrote and reads the book appears
     /// once, as "Author & Narrator".
     private var creditMembers: [CastMember] {
-        var people: [(person: AudiobookPerson, roles: [String])] = []
+        var people: [(person: AudiobookPerson, isAuthor: Bool, isNarrator: Bool)] = []
         var indexById: [String: Int] = [:]
-        let credited = (detail.audiobook?.authors ?? []).map { ($0, "Author") }
-            + (detail.audiobook?.narrators ?? []).map { ($0, "Narrator") }
-        for (person, role) in credited {
-            if let index = indexById[person.id] {
-                if !people[index].roles.contains(role) {
-                    people[index].roles.append(role)
-                }
+        let credited = (detail.audiobook?.authors ?? []).map { ($0, true) }
+            + (detail.audiobook?.narrators ?? []).map { ($0, false) }
+        for (person, isAuthor) in credited {
+            let index: Int
+            if let existing = indexById[person.id] {
+                index = existing
             } else {
-                indexById[person.id] = people.count
-                people.append((person, [role]))
+                index = people.count
+                indexById[person.id] = index
+                people.append((person, false, false))
+            }
+            if isAuthor {
+                people[index].isAuthor = true
+            } else {
+                people[index].isNarrator = true
             }
         }
         return people.enumerated().map { order, entry in
-            CastMember(
+            let role: LocalizedStringResource = switch (entry.isAuthor, entry.isNarrator) {
+            case (true, true): .detailAudiobookRoleAuthorAndNarrator
+            case (true, false): .detailAudiobookRoleAuthor
+            default: .detailAudiobookRoleNarrator
+            }
+            return CastMember(
                 name: entry.person.name,
-                character: entry.roles.joined(separator: " & "),
+                character: AppLanguage.string(role, locale: locale),
                 order: order,
                 personId: entry.person.personId,
                 tmdbId: nil,
@@ -400,7 +428,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     private var narrationsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Other Narrations")
+            PhoneSectionHeader(title: AppLanguage.string(.detailAudiobookOtherNarrations, locale: locale))
             VStack(spacing: 0) {
                 ForEach(Array(otherNarrations.enumerated()), id: \.element.id) { index, narration in
                     Button {
@@ -452,7 +480,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
 
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Details")
+            PhoneSectionHeader(title: AppLanguage.string(.detailDetails, locale: locale))
             PhoneDetailFactsSection(detail: detail)
         }
     }
@@ -472,7 +500,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                 if let chapterTitle = chapter.title, !chapterTitle.isEmpty {
                     title = chapterTitle
                 } else {
-                    title = "Chapter \(chapter.index + 1)"
+                    title = AppLanguage.string(.detailAudiobookChapter(String(chapter.index + 1)), locale: locale)
                 }
                 chapters.append(DisplayChapter(
                     id: "\(part.fileId)-\(chapter.index)-\(chapter.startSeconds)",
@@ -493,7 +521,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
         }
         let rawIndex = part.presentationPartIndex ?? fallbackIndex
         let displayIndex = rawIndex <= 0 ? rawIndex + 1 : rawIndex
-        return "Part \(displayIndex)"
+        return AppLanguage.string(.detailAudiobookPart(String(displayIndex)), locale: locale)
     }
 
     private func partDuration(_ part: FileVersion) -> Double {
@@ -523,6 +551,7 @@ private struct AudiobookPrimaryButton: View {
     let startPlayback: (_ restart: Bool, _ startPosition: Double?) -> Void
 
     @Environment(AudioPlaybackStore.self) private var audioStore
+    @Environment(\.locale) private var locale
 
     var body: some View {
         let player = audioStore.player
@@ -531,7 +560,7 @@ private struct AudiobookPrimaryButton: View {
             if player.isPlaying {
                 PhonePrimaryPillButton(
                     icon: "waveform",
-                    title: "Now Playing",
+                    title: AppLanguage.string(.detailNowPlaying, locale: locale),
                     action: { audioStore.showFullPlayer() },
                     fullWidth: true,
                     progress: fraction
@@ -545,7 +574,7 @@ private struct AudiobookPrimaryButton: View {
                 // at once, so restart the book like the finished state does.
                 PhonePrimaryPillButton(
                     icon: "arrow.counterclockwise",
-                    title: "Play Again",
+                    title: AppLanguage.string(.detailPlayAgain, locale: locale),
                     action: { startPlayback(true, nil) },
                     fullWidth: true
                 )
@@ -553,7 +582,7 @@ private struct AudiobookPrimaryButton: View {
                 let left = PlayerTimeFormatter.formatRuntime(max(0, player.duration - player.currentTime))
                 PhonePrimaryPillButton(
                     icon: "play.fill",
-                    title: left.isEmpty ? "Resume" : "Resume · \(left) left",
+                    title: AppLanguage.string(left.isEmpty ? .detailResume : .detailResumeTimeLeft(left), locale: locale),
                     action: {
                         player.play()
                         audioStore.showFullPlayer()
@@ -591,13 +620,14 @@ private struct AudiobookPrimaryButton: View {
 /// `AudiobookPrimaryButton`.
 private struct AudiobookSpeedMenu: View {
     @Environment(AudioPlaybackStore.self) private var audioStore
+    @Environment(\.locale) private var locale
 
     private let speedOptions: [Double] = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
 
     var body: some View {
         PhoneLabeledMenu(
             icon: "speedometer",
-            label: "Speed \(speedLabel(audioStore.player.playbackRate))"
+            label: AppLanguage.string(.detailAudiobookSpeed(speedLabel(audioStore.player.playbackRate)), locale: locale)
         ) {
             ForEach(speedOptions, id: \.self) { rate in
                 Button {

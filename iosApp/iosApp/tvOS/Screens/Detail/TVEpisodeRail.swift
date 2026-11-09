@@ -607,14 +607,14 @@ struct TVEpisodeCard: View {
 
     @ViewBuilder
     private var contextActions: some View {
-        WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode")
+        WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode") // i18n-ignore: watch-party payload (D44)
         if let onPlay {
             Button {
                 onPlay(episode.contentId)
             } label: {
-                // Verbatim so year-numbered seasons don't render as "S2,021".
+                // String arguments so year-numbered seasons don't render as "S2,021".
                 Label {
-                    Text(verbatim: "Play S\(episode.seasonNumber):E\(episode.episodeNumber)")
+                    Text(.detailPlayEpisode(String(episode.seasonNumber), String(episode.episodeNumber)))
                 } icon: {
                     Image(systemName: "play.fill")
                 }
@@ -625,7 +625,7 @@ struct TVEpisodeCard: View {
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: inWatchlist,
-            watchedSubject: "Episode",
+            watchedSubject: "Episode", // i18n-ignore: fragment for MediaStateMenuItems (shared component, not in this group)
             isUpdating: actionFeedback.isUpdating,
             onToggleWatched: onSetWatched.map { update in
                 {

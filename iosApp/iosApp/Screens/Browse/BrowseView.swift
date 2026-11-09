@@ -3,7 +3,7 @@ import SwiftUI
 /// Browse/catalog screen with grid display and filters — Plezy style.
 struct BrowseView: View {
     let libraryId: Int?
-    var title: String? = "Browse"
+    var title: LocalizedStringResource? = .libraryBrowse
     var showsSearchShortcut = true
     var libraryType: String? = nil
     var mediaScope: LibraryVideoScope? = nil
@@ -12,12 +12,13 @@ struct BrowseView: View {
     @State private var showFilters = false
     @State private var shuffleLauncher = ShuffleLauncher()
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     @ViewBuilder
     var body: some View {
         if let title {
             rootContent
-                .navigationTitle(title)
+                .navigationTitle(Text(title))
                 .siloNavigationTitleDisplayMode(.large)
         } else {
             rootContent
@@ -91,16 +92,16 @@ struct BrowseView: View {
         case .libraryEmpty:
             EmptyStateView(
                 icon: emptyLibraryIcon,
-                title: "This library is empty",
-                subtitle: "There is nothing in this library yet."
+                title: AppLanguage.string(.libraryEmpty, locale: locale),
+                subtitle: AppLanguage.string(.libraryEmptyBody, locale: locale)
             )
         case .noFilterMatches:
             VStack(spacing: SiloTheme.padding) {
                 EmptyStateView(
                     icon: "line.3.horizontal.decrease.circle",
-                    title: "No items match your current filters"
+                    title: AppLanguage.string(.libraryNoItemsMatchFilters, locale: locale)
                 )
-                Button("Clear filters") {
+                Button(.libraryClearFilters) {
                     Task { await viewModel.clearFilters() }
                 }
                 .siloPrimaryButton()
@@ -156,7 +157,7 @@ struct BrowseView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.siloSecondaryText)
-                Text("Search...")
+                Text(.librarySearchShortcut)
                     .foregroundColor(.siloSecondaryText)
                 Spacer()
             }
@@ -212,7 +213,7 @@ struct BrowseView: View {
         Button { showFilters = true } label: {
             controlChip(
                 icon: "line.3.horizontal.decrease",
-                text: "Filter",
+                text: .libraryFilterPill,
                 badge: viewModel.filterState.activeFacetCount
             )
         }
@@ -225,7 +226,7 @@ struct BrowseView: View {
             Button {
                 shuffleLauncher.start(ShuffleScopeRequest(kind: .library, id: String(shuffleLibraryId)), router: router)
             } label: {
-                controlChip(icon: "shuffle", text: "Shuffle")
+                controlChip(icon: "shuffle", text: .libraryShufflePill)
             }
             .buttonStyle(.plain)
             .disabled(shuffleLauncher.isStarting)
@@ -240,10 +241,11 @@ struct BrowseView: View {
                     Task { await viewModel.setSort(key) }
                 } label: {
                     if viewModel.filterState.sort == key {
-                        Label(
-                            key.label,
-                            systemImage: viewModel.filterState.effectiveOrder == .asc ? "arrow.up" : "arrow.down"
-                        )
+                        Label {
+                            Text(key.label)
+                        } icon: {
+                            Image(systemName: viewModel.filterState.effectiveOrder == .asc ? "arrow.up" : "arrow.down")
+                        }
                     } else {
                         Text(key.label)
                     }
@@ -258,7 +260,7 @@ struct BrowseView: View {
         }
     }
 
-    private func controlChip(icon: String, text: String, trailing: String? = nil, badge: Int? = nil) -> some View {
+    private func controlChip(icon: String, text: LocalizedStringResource, trailing: LocalizedStringResource? = nil, badge: Int? = nil) -> some View {
         HStack(spacing: 6) {
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .semibold))
@@ -291,7 +293,7 @@ struct BrowseView: View {
     private var activeFilterChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(viewModel.filterState.activeChips()) { chip in
+                ForEach(viewModel.filterState.activeChips(locale: locale)) { chip in
                     filterChip(label: chip.label) {
                         Task { await viewModel.removeChip(chip) }
                     }
@@ -332,14 +334,14 @@ enum LibraryPageTab: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .recommended:
-            return "Recommended"
+            return .libraryRecommended
         case .library:
-            return "Library"
+            return .libraryLibraryTab
         case .collections:
-            return "Collections"
+            return .libraryCollections
         }
     }
 }
@@ -482,6 +484,7 @@ struct LibraryRecommendedView: View {
 
     @State private var viewModel = LibraryRecommendedViewModel()
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -498,8 +501,8 @@ struct LibraryRecommendedView: View {
                 } else {
                     EmptyStateView(
                         icon: "rectangle.stack.fill",
-                        title: "No recommendations yet",
-                        subtitle: "This library does not have any recommended rows right now."
+                        title: AppLanguage.string(.libraryNoRecommendations, locale: locale),
+                        subtitle: AppLanguage.string(.libraryNoRecommendedRowsBody, locale: locale)
                     )
                 }
             }
@@ -554,10 +557,10 @@ struct LibraryRecommendedView: View {
 
     private var scopeNotice: some View {
         VStack(spacing: SiloTheme.smallPadding) {
-            Text("Some shelves could not be fully loaded. Retry or open Library to browse all titles.")
+            Text(.libraryErrorSomeShelves)
                 .font(.siloCaption)
                 .foregroundStyle(Color.siloSecondaryText)
-            Button("Retry") { Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) } }
+            Button(.commonRetry) { Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) } }
         }
         .padding(SiloTheme.padding)
     }

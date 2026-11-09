@@ -474,6 +474,7 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
     @ViewBuilder let moreMenu: () -> MoreMenu
 
     @Environment(\.resetFocus) private var resetFocus
+    @Environment(\.locale) private var locale
     @State private var didResetInitialPlayFocus = false
     @State private var initialFocusSeasonKey: String?
     @State private var initialPlayFocusTask: Task<Void, Never>?
@@ -486,7 +487,10 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
             if playTitle != nil || stabilizesFocusMotion {
                 TVPrimaryPillButton(
                     icon: "play.fill",
-                    title: playTitle ?? (isPlaybackLoading ? "Loading episodes…" : "Play"),
+                    title: playTitle ?? AppLanguage.string(
+                        isPlaybackLoading ? .detailEpisodesLoading : .commonPlay,
+                        locale: locale
+                    ),
                     subtitle: playSubtitle,
                     stabilizesFocusMotion: stabilizesFocusMotion,
                     fixedWidth: primaryButtonWidth,
@@ -508,8 +512,8 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                 if let onStartOver {
                     TVCircleActionButton(
                         icon: "backward.end.fill",
-                        title: "Start Over",
-                        accessibilityLabel: "Start Over",
+                        title: AppLanguage.string(.detailStartOver, locale: locale),
+                        accessibilityLabel: AppLanguage.string(.detailStartOver, locale: locale),
                         stabilizesFocusMotion: stabilizesFocusMotion,
                         action: onStartOver
                     )
@@ -523,10 +527,14 @@ struct TVDetailActionRow<PlaybackSelectors: View, MoreMenu: View>: View {
                 icon: "bookmark",
                 iconActive: "bookmark.fill",
                 isActive: inWatchlist,
-                title: stabilizesFocusMotion
-                    ? "Watchlist"
-                    : (inWatchlist ? "Remove from Watchlist" : "Watchlist"),
-                accessibilityLabel: inWatchlist ? "Remove from watchlist" : "Add to watchlist",
+                title: AppLanguage.string(
+                    !stabilizesFocusMotion && inWatchlist ? .personalWatchlistRemove : .detailWatchlist,
+                    locale: locale
+                ),
+                accessibilityLabel: AppLanguage.string(
+                    inWatchlist ? .detailWatchlistRemove : .detailWatchlistAdd,
+                    locale: locale
+                ),
                 stabilizesFocusMotion: stabilizesFocusMotion,
                 action: onToggleWatchlist
             )

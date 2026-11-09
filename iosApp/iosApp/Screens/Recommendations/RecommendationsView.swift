@@ -20,6 +20,7 @@ struct RecommendationsView: View {
     @State private var chromeScrollState = PageChromeScrollState()
     #endif
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     init(
         focusRequest: Int = 0,
@@ -76,7 +77,7 @@ struct RecommendationsView: View {
         HStack(spacing: 12) {
             SidebarToggleButton()
 
-            Text("Recommendations")
+            Text(.forYouRecommendations)
                 .font(.siloTitle)
                 .foregroundColor(.siloOnSurface)
                 .pageChromeBacking(
@@ -138,19 +139,19 @@ struct RecommendationsView: View {
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Loading recommendations",
+                    accessibilityLabel: AppLanguage.string(.homeForYouLoading, locale: locale),
                     onMoveUp: onTopMenuFocusRequest
                 )
         } else {
             EmptyStateView(
                 icon: "sparkles.tv",
-                title: "No recommendations yet",
-                subtitle: "Watch or rate a few titles to build your personalised recommendations."
+                title: AppLanguage.string(.forYouEmpty, locale: locale),
+                subtitle: AppLanguage.string(.forYouEmptyBody, locale: locale)
             )
             .tvPageFocusOwner(
                 focusRequest: focusRequest,
                 isTopMenuFocused: isTopMenuFocused,
-                accessibilityLabel: "No recommendations yet",
+                accessibilityLabel: AppLanguage.string(.forYouEmpty, locale: locale),
                 onMoveUp: onTopMenuFocusRequest
             )
         }
@@ -288,7 +289,7 @@ struct RecommendationsView: View {
     @ViewBuilder
     private var savedListsFallback: some View {
         VStack(spacing: SiloTheme.smallPadding) {
-            Text("No recommendations yet — showing your saved titles.")
+            Text(.homeForYouSavedFallback)
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -321,7 +322,7 @@ private struct SavedShortcutsRow: View {
                     onSelect(shortcut)
                 } label: {
                     Label {
-                        Text(shortcut.rawValue)
+                        Text(shortcut.label)
                             .font(.system(size: 14, weight: .semibold))
                             .lineLimit(1)
                     } icon: {
@@ -331,18 +332,25 @@ private struct SavedShortcutsRow: View {
                     .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(SavedShortcutButtonStyle(isSelected: selection == shortcut))
-                .accessibilityLabel(shortcut.rawValue)
+                .accessibilityLabel(Text(shortcut.label))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-private enum SavedShortcut: String, CaseIterable, Identifiable {
-    case watchlist = "Watchlist"
-    case favorites = "Favorites"
+private enum SavedShortcut: CaseIterable, Identifiable {
+    case watchlist
+    case favorites
 
     var id: Self { self }
+
+    var label: LocalizedStringResource {
+        switch self {
+        case .watchlist: .personalWatchlistTitle
+        case .favorites: .personalFavoritesTitle
+        }
+    }
 
     var systemImage: String {
         switch self {

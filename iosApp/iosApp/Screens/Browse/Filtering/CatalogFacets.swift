@@ -59,21 +59,29 @@ struct CatalogFacets {
     /// The decade chips offered in the UI (newest first).
     static let decadeLadder: [Int] = [2020, 2010, 2000, 1990, 1980, 1970, 1960]
 
-    /// (value, label) options for a facet — fixed vocab for derived facets,
-    /// server vocab otherwise. `watchStatus` is hidden without a profile.
-    func optionPairs(for facet: CatalogFacet, hasProfile: Bool) -> [(value: String, label: String)] {
+    /// The option values for a facet — fixed vocab for derived facets,
+    /// server vocab otherwise. Values are data: they are stored and sent to
+    /// the server. `watchStatus` is hidden without a profile.
+    func optionValues(for facet: CatalogFacet, hasProfile: Bool) -> [String] {
         switch facet {
         case .itemType:
-            return [("movie", "Movies"), ("series", "Series")]
+            return ["movie", "series"]
         case .decade:
-            return Self.decadeLadder.map { (String($0), "\($0)s") }
+            return Self.decadeLadder.map(String.init)
         case .dynamicRange:
-            return [("hdr", "HDR"), ("dolby_vision", "Dolby Vision")]
+            return ["hdr", "dolby_vision"]
         case .watchStatus:
             guard hasProfile else { return [] }
-            return WatchStatusFilter.allCases.map { ($0.rawValue, $0.label) }
+            return WatchStatusFilter.allCases.map(\.rawValue)
         default:
-            return options(for: facet).map { ($0, $0) }
+            return options(for: facet)
+        }
+    }
+
+    /// (value, label) options for a facet, labelled in `locale`.
+    func optionPairs(for facet: CatalogFacet, hasProfile: Bool, locale: Locale) -> [(value: String, label: String)] {
+        optionValues(for: facet, hasProfile: hasProfile).map {
+            ($0, CatalogFilterState.chipLabel(facet: facet, value: $0, locale: locale))
         }
     }
 }

@@ -28,6 +28,7 @@ struct TVCollectionPosterCard: View {
 
     @FocusState private var isFocused: Bool
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @Environment(\.locale) private var locale
 
     private static let captionSpacing: CGFloat = 16
 
@@ -128,31 +129,30 @@ struct TVCollectionPosterCard: View {
     /// the type is known, else the neutral `ITEMS`.
     private var countText: String? {
         guard let count = collection.itemCount, count > 0 else { return nil }
-        return "\(count) \(countNoun(for: count))".uppercased()
+        return AppLanguage.string(countMessage(for: count), locale: locale).uppercased(with: locale)
     }
 
-    private func countNoun(for count: Int) -> String {
-        let plural = count != 1
+    /// `collectionType` is the server's collection kind (data, D44).
+    private func countMessage(for count: Int) -> LocalizedStringResource {
         switch collection.collectionType?.lowercased() {
         case "movie", "movies":
-            return plural ? "movies" : "movie"
+            return .libraryCollectionCardMovies(count: count, String(count))
         case "series", "show", "shows", "tvshows":
-            return plural ? "shows" : "show"
+            return .libraryCollectionCardShows(count: count, String(count))
         case "album", "albums":
-            return plural ? "albums" : "album"
+            return .libraryCollectionCardAlbums(count: count, String(count))
         case "audiobook", "audiobooks", "book", "books":
-            return plural ? "books" : "book"
+            return .libraryCollectionCardBooks(count: count, String(count))
         default:
-            return plural ? "items" : "item"
+            return .collectionsItemCount(count: count, String(count))
         }
     }
 
     private var accessibilityLabel: String {
-        var label = "\(collection.name), collection"
         if let count = collection.itemCount, count > 0 {
-            label += ", \(count) \(count == 1 ? "item" : "items")"
+            return AppLanguage.string(.libraryCollectionCardSpokenCount(count: count, String(count), collection.name), locale: locale)
         }
-        return label
+        return AppLanguage.string(.libraryCollectionCardSpoken(collection.name), locale: locale)
     }
 
     /// Stable hue for the art-less placeholder, derived from the id so a

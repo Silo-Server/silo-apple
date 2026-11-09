@@ -50,6 +50,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @ViewBuilder let belowOverview: () -> BelowOverview
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.locale) private var locale
     /// The position the resume prompt offers; non-nil while it is shown.
     @State private var pendingResumePosition: Double?
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
@@ -165,27 +166,33 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     icon: "heart",
                     iconActive: "heart.fill",
                     isActive: isFavorite,
-                    label: "Favorite",
-                    accessibilityLabelOverride: isFavorite
-                        ? "Remove from Favorites" : "Add to Favorites",
+                    label: AppLanguage.string(.detailFavorite, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        isFavorite ? .detailMoreRemoveFavorite : .detailMoreAddFavorite,
+                        locale: locale
+                    ),
                     action: onToggleFavorite
                 )
                 PhoneLabeledAction(
                     icon: "bookmark",
                     iconActive: "bookmark.fill",
                     isActive: inWatchlist,
-                    label: "Watchlist",
-                    accessibilityLabelOverride: inWatchlist
-                        ? "Remove from Watchlist" : "Add to Watchlist",
+                    label: AppLanguage.string(.detailWatchlist, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        inWatchlist ? .personalWatchlistRemove : .cardMenuAddWatchlist,
+                        locale: locale
+                    ),
                     action: onToggleWatchlist
                 )
                 PhoneLabeledAction(
                     icon: "checkmark.circle",
                     iconActive: "checkmark.circle.fill",
                     isActive: isWatched,
-                    label: "Watched",
-                    accessibilityLabelOverride: isWatched
-                        ? "Mark as Unwatched" : "Mark as Watched",
+                    label: AppLanguage.string(.detailWatched, locale: locale),
+                    accessibilityLabelOverride: AppLanguage.string(
+                        isWatched ? .detailMoreMarkUnwatched : .detailMoreMarkWatched,
+                        locale: locale
+                    ),
                     action: onToggleWatched
                 )
                 if showsDownloadButton {
@@ -197,7 +204,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
                     )
                 }
                 if hasOverflowMenu {
-                    PhoneLabeledMenu(label: "More") {
+                    PhoneLabeledMenu(label: AppLanguage.string(.detailMore, locale: locale)) {
                         overflowMenuItems
                     }
                 }
@@ -271,12 +278,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
             Button {
                 showDownloadOptions = true
             } label: {
-                Label("Download Options…", systemImage: "slider.horizontal.3")
+                Label(.detailMoreDownloadOptions, systemImage: "slider.horizontal.3")
             }
         }
         if detail.type == "movie" {
             Button(action: onFindTrailers) {
-                Label("Find Trailers", systemImage: "film")
+                Label(.detailMoreFindTrailers, systemImage: "film")
             }
             .disabled(isFindingTrailers)
         }
@@ -329,7 +336,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @ViewBuilder
     private func castSection(cast: [CastMember]) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Cast & Crew")
+            PhoneSectionHeader(title: AppLanguage.string(.detailCast, locale: locale))
                 .padding(.horizontal, SiloTheme.safePadding)
             PhoneCastRail(cast: cast, onTap: onPersonTap)
         }
@@ -350,7 +357,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
     private var detailsSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Details")
+            PhoneSectionHeader(title: AppLanguage.string(.detailDetails, locale: locale))
             PhoneDetailFactsSection(detail: detail)
         }
     }
