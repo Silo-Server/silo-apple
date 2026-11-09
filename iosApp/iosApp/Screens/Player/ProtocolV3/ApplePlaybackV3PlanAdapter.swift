@@ -359,6 +359,44 @@ enum ApplePlaybackV3PlanAdapter {
         return !renditions.isEmpty && renditions == renditionRows(prior)
     }
 
+    /// Whether `next`, the answer to an output-change replan of `prior`, is
+    /// the plan already playing, on the stream already playing.
+    ///
+    /// An output change can hand back the plan unchanged: `plan_id` is the
+    /// same for the same decision (protocol §9), while `plan_attempt_key`
+    /// names the output route and changes with it. `plan_id` does not cover
+    /// where the engine reads from, so the session, the stream and the
+    /// timeline axis must match too. The rest of what a load reads from the
+    /// plan is compared as well, so a load is skipped only when it would load
+    /// the same thing again. Where the player starts (`player_start_seconds`)
+    /// is the request's position, not part of what plays.
+    ///
+    /// Only the original file qualifies. A server remux or transcode answers
+    /// with a stream it prepared for this replan, which can sit at the same
+    /// address as the one playing; the player loads it.
+    static func keepsPlanAndTransport(
+        prior: PlaybackV3Plan,
+        priorSessionId: String?,
+        next: PlaybackV3Plan,
+        nextSessionId: String
+    ) -> Bool {
+        priorSessionId == nextSessionId
+            && prior.delivery == PlaybackProtocolV3.PlanDelivery.originalHTTP
+            && next.planId == prior.planId
+            && next.stream == prior.stream
+            && next.delivery == prior.delivery
+            && next.effectiveMediaFileId == prior.effectiveMediaFileId
+            && next.timeline.streamOriginSeconds == prior.timeline.streamOriginSeconds
+            && next.timeline.timelineOffsetSeconds == prior.timeline.timelineOffsetSeconds
+            && next.effectiveRecipe == prior.effectiveRecipe
+            && next.selectedTracks == prior.selectedTracks
+            && next.subtitle == prior.subtitle
+            && next.claims == prior.claims
+            && next.transformations == prior.transformations
+            && next.appliedQuirks == prior.appliedQuirks
+            && next.runtimeCorrections == prior.runtimeCorrections
+    }
+
     /// The subtitle choice a plan that keeps its transport makes, when the
     /// player can apply it there: one of the stream's renditions, or Off. Nil
     /// for anything else (a sidecar, burn-in), which needs a load.

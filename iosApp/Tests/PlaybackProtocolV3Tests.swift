@@ -1776,6 +1776,48 @@ final class PlaybackProtocolV3Tests: XCTestCase {
         )
     }
 
+    /// An output change can hand back the plan already playing: the same
+    /// `plan_id` with a new `plan_attempt_key` for the new route (§9). The
+    /// player keeps that stream rather than loading it again (#1075), and
+    /// loads when the answer differs in anything a load reads.
+    func testOutputChangeKeepsTheStreamOnlyForTheSamePlanOnTheSameTransport() throws {
+        let session = "session-v3"
+        let playing = makePlan(planAttemptKey: "v3:speaker", playerStart: 12)
+        func keeps(_ next: PlaybackV3Plan, session nextSession: String = "session-v3") -> Bool {
+            ApplePlaybackV3PlanAdapter.keepsPlanAndTransport(
+                prior: playing, priorSessionId: session, next: next, nextSessionId: nextSession)
+        }
+        XCTAssertTrue(keeps(makePlan(planAttemptKey: "v3:airplay", playerStart: 914.2)),
+                      "the attempt key names the new route and the start is the request's position")
+        XCTAssertFalse(keeps(makePlan(planAttemptKey: "v3:airplay"), session: "session-replaced"))
+        let changed: [(String, PlaybackV3Plan)] = [
+            ("another decision", makePlan(planId: "plan:other")),
+            ("another delivery", makePlan(delivery: "server_remux_hls", streamProtocol: "hls", container: "hls")),
+            ("another audio track", makePlan(selectedAudioIndex: 1)),
+            ("a subtitle the plan now renders", makePlan(selectedSubtitleIndex: 2, subtitleMode: "sidecar")),
+            ("another recipe", makePlan(videoCodec: "hevc", dynamicRange: "hdr10")),
+            ("a client transformation", makePlan(transformations: ApplePlaybackV3Capabilities.clientTransformations)),
+            ("a runtime correction", makePlan(runtimeCorrections: ["seek_preroll"])),
+            ("another timeline axis", makePlan(timelineOffset: 30)),
+        ]
+        for (reason, next) in changed {
+            XCTAssertFalse(keeps(next), reason)
+        }
+
+        // A server remux or transcode answers with a stream prepared for the
+        // replan, even at the address already playing: it is loaded.
+        let hlsSession = "11111111-1111-4111-8111-111111111111"
+        let hls = try renditionsAllPlan()
+        XCTAssertFalse(ApplePlaybackV3PlanAdapter.keepsPlanAndTransport(
+            prior: hls, priorSessionId: hlsSession,
+            next: try renditionsAllPlan { $0["plan_attempt_key"] = "v3:airplay" }, nextSessionId: hlsSession))
+        let remux = makePlan(planAttemptKey: "v3:speaker", delivery: "server_remux_progressive")
+        XCTAssertFalse(ApplePlaybackV3PlanAdapter.keepsPlanAndTransport(
+            prior: remux, priorSessionId: session,
+            next: makePlan(planAttemptKey: "v3:airplay", delivery: "server_remux_progressive"),
+            nextSessionId: session))
+    }
+
     func testDeclaredDolbyVisionClientTransformsAreAcceptedOnOriginalHTTP() throws {
         for name in ["client_dv7_to_dv81", "client_dv7_to_hdr10"] {
             XCTAssertNoThrow(

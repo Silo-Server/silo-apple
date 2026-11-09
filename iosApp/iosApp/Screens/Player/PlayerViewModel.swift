@@ -1074,11 +1074,12 @@ class PlayerViewModel {
     /// reload whose only change is a refreshed bearer. Reusing this gate keeps
     /// credential recovery from racing route replans, seeks, or track changes.
     private var protocolV3ReplanTask: Task<Void, Never>?
-    /// The replan in flight only reports a subtitle switch the player
-    /// already made on the running stream (`keepsPlaying`).
+    /// The replan in flight only reports a change the player already made on
+    /// the running stream (`keepsPlaying`): a subtitle switch among its
+    /// renditions, or an output route the engine follows on that stream.
     private var protocolV3ReplanIsReport = false
-    /// A replan in flight that may replace the running transport. A subtitle
-    /// report keeps it, unless its answer turns the report into a load.
+    /// A replan in flight that may replace the running transport. A report
+    /// keeps it, unless its answer turns the report into a load.
     private var isPreparingProtocolV3Replacement: Bool {
         protocolV3ReplanTask != nil && !protocolV3ReplanIsReport
     }
@@ -1703,11 +1704,15 @@ class PlayerViewModel {
                     )
                     return
                 }
+                // A report: AetherEngine already follows the route on the
+                // running stream, so the item keeps playing unless the answer
+                // needs a new transport (#1075).
                 self.attemptProtocolV3Replan(
                     position: self.currentTime,
                     classification: "output_route_changed",
                     message: "The Apple audio output route changed.",
-                    outputRouteSnapshot: observedSnapshot
+                    outputRouteSnapshot: observedSnapshot,
+                    keepsPlaying: true
                 )
             }
         }
@@ -1831,7 +1836,7 @@ class PlayerViewModel {
             playheadMovedAt: playheadSample?.movedAt,
             bufferEmptySince: stalledBufferEmptySince,
             // Both set `isLoading` before awaiting the server, while the
-            // outgoing load still reports its phase. A subtitle report
+            // outgoing load still reports its phase. A report
             // doesn't, since it keeps the running stream.
             preparingReplacement: isPreparingProtocolV3Replacement || freshLoadTask != nil,
             now: .now
@@ -2342,9 +2347,10 @@ class PlayerViewModel {
         recoverFailedProtocolV3Item(classification: protocolV3FailureClassification(message), message: message)
     }
 
-    /// A subtitle report in flight would refuse this recovery as busy, and
+    /// A report in flight would refuse this recovery as busy, and
     /// its answer would keep the failed item in place. The recovery runs once
-    /// the report settles, and the answer is dropped.
+    /// the report settles: from its answer if the report was already
+    /// committing it, and otherwise the answer is dropped.
     private func recoverFailedProtocolV3Item(classification: String, message: String) {
         guard protocolV3ReplanIsReport else {
             attemptProtocolV3Replan(position: sourcePlayhead, classification: classification, message: message)
@@ -2845,7 +2851,8 @@ class PlayerViewModel {
         viewerQualityChange: Bool = false,
         // The player already applied the change on the running stream and
         // only reports it: playback is not shown loading unless the answer
-        // needs a new transport, and a failed report leaves it playing.
+        // needs a new transport, and a failed report leaves it playing
+        // (except a route change's, which fails as before).
         keepsPlaying: Bool = false,
         // The viewer's subtitle pick this replan switches to. A refusal of
         // that track leaves the current plan playing.
@@ -2965,6 +2972,9 @@ class PlayerViewModel {
             )
         }
         let requestedEstimateKbps = bandwidthEstimateKbps ?? keptEstimateKbps
+        // A failed report leaves the item playing, except a route change's:
+        // that one still fails as it did before it was a report (#1075).
+        let keepsPlayingOnFailure = keepsPlaying && classification != "output_route_changed"
         let joinsReconnectWhenUnanswered = classification != "output_route_changed"
             && (resolvedOperation == PlaybackProtocolV3.ReplanOperation.failureRecovery
                 || resolvedOperation == PlaybackProtocolV3.ReplanOperation.seekReanchor)
@@ -3153,7 +3163,7 @@ class PlayerViewModel {
                         self.scheduleReconnectSessionStart()
                         return
                     }
-                    if issuedByBufferingQuality || keepsPlaying {
+                    if issuedByBufferingQuality || keepsPlayingOnFailure {
                         keepsCurrentPlan = true
                         return
                     }
@@ -3253,6 +3263,45 @@ class PlayerViewModel {
                     keepsCurrentPlan = true
                     adoptedPlan = true
                     self.adoptSameTransportProtocolV3Plan(next, selection: selection)
+                    self.adoptBufferingPlan(
+                        prepared,
+                        requestedEstimateKbps: requestedEstimateKbps,
+                        controllerInitiated: issuedByBufferingQuality
+                    )
+                    adoptedBufferingPlan = true
+                    return
+                }
+                // The output route changed and the server kept the plan on
+                // the stream already playing. AetherEngine follows the route
+                // on that stream by itself (on iPhone it moves an AirPlay
+                // receiver onto the phone's LAN address), so loading the same
+                // plan again only races that move (#1075). A reconnect still
+                // loads: its old transport is gone.
+                if classification == "output_route_changed",
+                   reconnectResume == nil,
+                   let next = prepared.protocolV3, let prior = priorPreparedProtocolV3,
+                   ApplePlaybackV3PlanAdapter.keepsPlanAndTransport(
+                       prior: prior.plan, priorSessionId: previousSessionId,
+                       next: next.plan, nextSessionId: prepared.session.sessionId),
+                   self.isAetherLoadEstablished,
+                   self.activeAetherLoadEpoch == priorAetherLoadEpoch {
+                    try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
+                    guard await self.sessionBridge.commitPendingProtocolV3Transition(prepared) else {
+                        throw CancellationError()
+                    }
+                    uncommittedPrepared = nil
+                    try self.requireCurrentStreamLoad(currentStreamLoadGeneration)
+                    guard self.activeAetherLoadEpoch == priorAetherLoadEpoch else { throw CancellationError() }
+                    keepsCurrentPlan = true
+                    adoptedPlan = true
+                    // Armed above for a load; the running one applied its own.
+                    self.pendingAudioFfIndex = priorPendingAudioFfIndex
+                    self.pendingSubtitleFfIndex = priorPendingSubtitleFfIndex
+                    self.pendingSidecarSubtitleTrackId = priorPendingSidecarSubtitleTrackId
+                    self.pendingServerRenderedSubtitleTrackId = priorPendingServerRenderedSubtitleTrackId
+                    Self.logger.info(
+                        "Protocol V3 output change kept plan id=\(next.plan.planId, privacy: .public) without reloading"
+                    )
                     self.adoptBufferingPlan(
                         prepared,
                         requestedEstimateKbps: requestedEstimateKbps,
@@ -3449,7 +3498,7 @@ class PlayerViewModel {
                    ) {
                     return
                 }
-                if issuedByBufferingQuality || keepsPlaying, self.activeAetherLoadEpoch == priorAetherLoadEpoch {
+                if issuedByBufferingQuality || keepsPlayingOnFailure, self.activeAetherLoadEpoch == priorAetherLoadEpoch {
                     keepsCurrentPlan = true
                     return
                 }
