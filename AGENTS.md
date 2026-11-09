@@ -80,6 +80,12 @@ follow-up work.
 
 - Keep one concern per pull request. Split changes that solve independent
   problems or can be reviewed and shipped separately.
+- A feature (`feat`) pull request from someone without triage or write access
+  must link an issue in the same repository labeled `accepted`; the
+  contribution-gate workflow closes it otherwise. Pull requests from people who
+  have never had one merged in a Silo repository are closed the same way, even
+  when a maintainer asked for them; the maintainer then reopens them.
+  Feature ideas go in Discussions → Ideas, not issues.
 - Every pull request that changes what a user sees must include evidence, as
   [Show visible changes](CONTRIBUTING.md#show-visible-changes) defines. That
   covers UI and UX changes and changes to which items appear or what they show,
