@@ -98,6 +98,23 @@ struct AudioTrackSignature: Codable, Hashable, Sendable {
 
 // MARK: - Settings UI constants
 
+extension SettingPresentationMetadata {
+    /// A setting's "not set" label from the manifest, in the language on
+    /// screen (`settingsManifest.<key>.unsetLabel`), else the manifest's
+    /// English, else `fallback` for a manifest without one.
+    static func unsetLabel(
+        for key: SettingKey,
+        fallback: String,
+        language: String = AppLanguage.displayedLanguage
+    ) -> String {
+        AppLanguage.serverText(
+            definitions[key]?.unsetLabel ?? fallback,
+            key: "settingsManifest.\(key.rawValue).unsetLabel",
+            language: language
+        )
+    }
+}
+
 /// Sentinel used by the library-prefs editor to mean "no override —
 /// fall through to the profile / global default". Mirrors the web
 /// frontend's `INHERIT_VALUE` so the same vocabulary works everywhere.

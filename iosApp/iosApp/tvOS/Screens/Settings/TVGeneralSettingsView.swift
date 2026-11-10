@@ -8,6 +8,7 @@ struct TVGeneralSettingsPane: View {
     @State private var preferences = UICustomizationPreferences.shared
     @State private var titleArt = TitleArtPreferences.shared
     @State private var themeMusic = ThemeMusicPreferences.shared
+    @State private var appLanguage = AppLanguagePreferences.shared
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var navPrefs = AppNavPreferences.shared
     @State private var activePicker: PickerKind?
@@ -42,6 +43,10 @@ struct TVGeneralSettingsPane: View {
             .accessibilityHint(launchPreferences.behavior.tvDescription)
 
             TVSettingsFooter(launchPreferences.behavior.tvDescription)
+
+            if appLanguage.currentChoice != nil {
+                languageGroup
+            }
 
             if titleArt.isOffered {
                 titleArtGroup
@@ -133,7 +138,8 @@ struct TVGeneralSettingsPane: View {
             async let titleArtRefresh: Void = titleArt.refresh()
             async let advisoryRefresh: Void = advisoryAgePreference.refresh()
             async let themeMusicRefresh: Void = themeMusic.refresh()
-            _ = await (preferencesRefresh, titleArtRefresh, advisoryRefresh, themeMusicRefresh)
+            async let languageRefresh: Void = appLanguage.refresh()
+            _ = await (preferencesRefresh, titleArtRefresh, advisoryRefresh, themeMusicRefresh, languageRefresh)
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -141,7 +147,8 @@ struct TVGeneralSettingsPane: View {
                 async let preferencesRefresh: Void = preferences.refresh()
                 async let titleArtRefresh: Void = titleArt.refresh()
                 async let themeMusicRefresh: Void = themeMusic.refresh()
-                _ = await (preferencesRefresh, titleArtRefresh, themeMusicRefresh)
+                async let languageRefresh: Void = appLanguage.refresh()
+                _ = await (preferencesRefresh, titleArtRefresh, themeMusicRefresh, languageRefresh)
             }
         }
     }
@@ -176,6 +183,22 @@ struct TVGeneralSettingsPane: View {
             TVSettingsFooter("Use logo artwork as the title when available. Only affects this Apple TV. Your other devices keep their own setting.")
         }
         if let message = titleArt.errorMessage ?? titleArt.readErrorMessage {
+            TVSettingsFooter(message)
+        }
+    }
+
+    /// The profile's app language. See `AppLanguagePreferences`.
+    @ViewBuilder
+    private var languageGroup: some View {
+        TVSettingsSectionHeader("LANGUAGE")
+
+        TVSettingsPickerRow(
+            title: "App Language",
+            value: appLanguage.selectedLabel
+        ) { activePicker = .appLanguage }
+
+        TVSettingsFooter(appLanguage.footer)
+        if let message = appLanguage.errorMessage {
             TVSettingsFooter(message)
         }
     }
@@ -261,6 +284,17 @@ struct TVGeneralSettingsPane: View {
                 options: TVSettingsOptions.profileLaunch,
                 selection: $launchPreferences.behaviorID
             )
+        case .appLanguage:
+            TVSettingsPickerSheet(
+                title: "App Language",
+                options: appLanguage.options.map { TVSettingsOption(id: $0.id, label: $0.label) },
+                selection: Binding(
+                    get: { appLanguage.currentChoice?.tag ?? "" },
+                    set: { id in Task { await appLanguage.select(id.isEmpty ? nil : id) } }
+                ),
+                allowsSelection: !appLanguage.isBusy,
+                disabledMessage: appLanguage.isBusy ? "Saving the app language…" : nil
+            )
         case .posterSize:
             TVSettingsPickerSheet(
                 title: "Poster Size",
@@ -282,6 +316,7 @@ struct TVGeneralSettingsPane: View {
 
     private enum PickerKind: String, Identifiable {
         case profileLaunch
+        case appLanguage
         case posterSize
         var id: String { rawValue }
     }

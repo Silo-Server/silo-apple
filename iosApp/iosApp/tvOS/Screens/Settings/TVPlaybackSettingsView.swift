@@ -8,6 +8,8 @@ struct TVPlaybackSettingsPane: View {
     @Bindable var viewModel: SettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let presentPicker: (TVSettingsPickerRequest) -> Void
+    /// The app language, so a switch re-renders the labels.
+    @Environment(\.locale) private var locale
     @State private var seekIntervals = SeekIntervalPreferences.shared
     @State private var spoilers = EpisodeSpoilerPreferences.shared
     @State private var showUseProfileSettingsConfirmation = false
@@ -177,7 +179,7 @@ struct TVPlaybackSettingsPane: View {
             title: "Audio Language",
             value: TVSettingsOptions.label(
                 for: viewModel.preferredAudioLanguage,
-                in: TVSettingsOptions.audioLanguage(viewModel.audioLanguageOptions)
+                in: TVSettingsOptions.audioLanguage(viewModel.audioLanguageOptions, language: AppLanguage.language(of: locale))
             )
         ) { showPicker(.audioLanguage) }
         .focused(detailFocus, equals: .playbackAudioLanguage)
@@ -453,7 +455,8 @@ struct TVPlaybackSettingsPane: View {
                 title: "Audio Language",
                 options: TVSettingsOptions.deviceAudioLanguage(
                     viewModel.audioLanguageOptions,
-                    includingNoPreference: viewModel.hasStoredNoAudioLanguagePreference
+                    includingNoPreference: viewModel.hasStoredNoAudioLanguagePreference,
+                    language: AppLanguage.language(of: locale)
                 ),
                 selection: selection(.audioLanguage),
                 returnFocus: .playbackAudioLanguage

@@ -6,10 +6,14 @@ import SwiftUI
 struct GeneralSettingsView: View {
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @StateObject private var advisoryAgePreference = AdvisoryAgePreferenceStore.shared
+    @State private var appLanguage = AppLanguagePreferences.shared
 
     var body: some View {
         List {
             profileSection
+            if appLanguage.currentChoice != nil {
+                languageSection
+            }
             if advisoryAgePreference.isSupported {
                 advisoryAgeSection
             }
@@ -18,7 +22,11 @@ struct GeneralSettingsView: View {
         .navigationTitle("General")
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
-        .task { await advisoryAgePreference.refresh() }
+        .task {
+            async let advisory: Void = advisoryAgePreference.refresh()
+            async let language: Void = appLanguage.refresh()
+            _ = await (advisory, language)
+        }
     }
 
     private var profileSection: some View {
@@ -40,6 +48,38 @@ struct GeneralSettingsView: View {
         } footer: {
             Text(launchPreferences.behavior.standardDescription)
                 .foregroundStyle(Color.siloSecondaryText)
+        }
+        .listRowBackground(Color.siloGroupedCell)
+    }
+
+    private var languageSection: some View {
+        Section {
+            Picker(
+                "App Language",
+                selection: Binding(
+                    get: { appLanguage.currentChoice?.tag ?? "" },
+                    set: { id in Task { await appLanguage.select(id.isEmpty ? nil : id) } }
+                )
+            ) {
+                ForEach(appLanguage.options) { option in
+                    Text(option.label).tag(option.id)
+                }
+            }
+            .foregroundStyle(Color.siloOnSurface)
+            .settingsPickerStyle()
+            .disabled(appLanguage.isBusy)
+            .accessibilityValue(appLanguage.selectedLabel)
+        } header: {
+            Text("Language")
+                .foregroundStyle(Color.siloSecondaryText)
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(appLanguage.footer)
+                if let message = appLanguage.errorMessage {
+                    Text(message)
+                }
+            }
+            .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
     }

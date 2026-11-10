@@ -184,6 +184,8 @@ struct WatchPartyMediaPicker: View {
     let session: WatchPartySession
     var purpose: WatchPartyPickerPurpose = .select
     @Environment(\.dismiss) private var dismiss
+    /// The app language, so a switch re-renders the title.
+    @Environment(\.locale) private var locale
     /// Recently added movies.
     @State private var items: [BrowseItem] = []
     @State private var continuation: APIv2CatalogContinuation?
@@ -476,7 +478,7 @@ struct WatchPartyMediaPicker: View {
         let isResume = section.id == Self.resumeSectionID
         let scale = uiCustomization.cardPresentation.posterSize.scale
         return VStack(alignment: .leading, spacing: HomeFeedMetrics.headerGap) {
-            HomeSectionHeader(title: section.title, icon: isResume ? "play.circle.fill" : nil)
+            HomeSectionHeader(title: section.displayTitle(in: locale), icon: isResume ? "play.circle.fill" : nil)
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: HomeFeedMetrics.cardSpacing) {
                     ForEach(section.items) { item in
@@ -686,7 +688,8 @@ struct WatchPartyMediaPicker: View {
                 guard !items.isEmpty else { return nil }
                 return ResolvedSection(id: "watchParty.home." + section.id, sectionType: section.sectionType, title: section.title,
                                        featured: false, itemLimit: nil, totalCount: items.count, isCustom: section.isCustom,
-                                       customized: section.customized, items: items)
+                                       customized: section.customized, items: items,
+                                       titleKey: section.titleKey, titleArgs: section.titleArgs)
             }
             .prefix(Self.maxHomeSections)
             .map { $0 }

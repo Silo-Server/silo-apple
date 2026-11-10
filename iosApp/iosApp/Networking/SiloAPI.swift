@@ -207,7 +207,9 @@ actor SiloAPI {
                 totalCount: row.items.count,
                 isCustom: false,
                 customized: false,
-                items: row.items
+                items: row.items,
+                titleKey: row.titleKey,
+                titleArgs: row.titleArgs
             )
         }
         let response = SectionsResponse(sections: resolved)

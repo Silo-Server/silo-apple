@@ -9,6 +9,8 @@ struct SectionCatalogView: View {
 
     @State private var viewModel = SectionCatalogViewModel()
     @Environment(AppRouter.self) private var router
+    /// The app language, so a switch re-renders the title.
+    @Environment(\.locale) private var locale
 
     private var libraryId: Int? {
         if case .library(let id) = target.scope { return id }
@@ -32,7 +34,7 @@ struct SectionCatalogView: View {
                 #if os(tvOS)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .tvPageFocusOwner(focusRequest: 1, isTopMenuFocused: false,
-                                      accessibilityLabel: "Loading \(target.title)", onMoveUp: nil)
+                                      accessibilityLabel: "Loading \(target.displayTitle(in: locale))", onMoveUp: nil)
                 #endif
             } else {
                 placeholder(
@@ -44,7 +46,7 @@ struct SectionCatalogView: View {
         }
         .siloPageBackground()
         .environment(\.browseLibraryId, libraryId)
-        .navigationTitle(target.title)
+        .navigationTitle(target.displayTitle(in: locale))
         .siloNavigationTitleDisplayMode(.large)
         #if os(iOS)
         .toolbar {

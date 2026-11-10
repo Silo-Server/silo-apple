@@ -45,3 +45,29 @@ jobs:
         run: bash scripts/ci/check-no-api-v1.test.sh
       - name: Block new /api/v1 paths in app sources
         run: bash scripts/ci/check-no-api-v1.sh
+      - name: Test the app-language lookup guard
+        run: bash scripts/ci/check-string-localized.test.sh
+      - name: Block text resolved in the process language
+        run: bash scripts/ci/check-string-localized.sh
+      # The committed catalog must be exactly what the pinned silo-translations
+      # release generates. A local pin (no release exists yet) can only be
+      # checked against a checkout; see docs/i18n.md.
+      - name: Check the generated string catalog
+        env:
+          # Read access to Silo-Server/silo-translations releases (private
+          # repository). GitHub withholds it from pull requests from forks.
+          GH_TOKEN: ${{ secrets.SILO_TRANSLATIONS_READ_TOKEN }}
+          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          version=$(sed -n 's/^version=//p' .silo-translations)
+          case $version in
+            local-*)
+              echo "::notice::.silo-translations pins a local build ($version); check it with scripts/sync-translations --local <checkout> (docs/i18n.md)." ;;
+            *)
+              if [ -z "$GH_TOKEN" ] && [ "$FORK_PR" = true ]; then
+                echo "::notice::A pull request from a fork can't read the private silo-translations releases; the push to main checks the catalog after merge."
+                exit 0
+              fi
+              scripts/sync-translations
+              git diff --exit-code -- iosApp/iosApp/Localizable.xcstrings iosApp/InfoPlist .silo-translations .silo-translations-files ;;
+          esac

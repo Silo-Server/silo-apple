@@ -454,6 +454,7 @@ struct ContentView: View {
                 // answer meanwhile, so it need not hold up overlay hydration.
                 Task { await TitleArtPreferences.shared.refresh() }
                 Task { await ThemeMusicPreferences.shared.refresh() }
+                Task { await AppLanguagePreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 await EpisodeSpoilerPreferences.shared.refresh()
@@ -484,6 +485,7 @@ struct ContentView: View {
             if router.authState == .authenticated {
                 Task { await TitleArtPreferences.shared.refresh() }
                 Task { await ThemeMusicPreferences.shared.refresh() }
+                Task { await AppLanguagePreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 await EpisodeSpoilerPreferences.shared.refresh()
@@ -651,8 +653,9 @@ struct ContentView: View {
         async let titleArt: Void = TitleArtPreferences.shared.refresh()
         async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
         async let themeMusic: Void = ThemeMusicPreferences.shared.refresh()
+        async let appLanguage: Void = AppLanguagePreferences.shared.refresh()
         _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, sectionItemLimit, profile, customization, seek,
-                   titleArt, spoilers, themeMusic)
+                   titleArt, spoilers, themeMusic, appLanguage)
     }
 
     @MainActor

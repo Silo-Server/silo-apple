@@ -162,7 +162,8 @@ struct AppleDeviceIdentity: Sendable {
 }
 
 extension AppleDeviceIdentity {
-    /// The device + client identity headers every Silo request carries.
+    /// The device + client identity headers every Silo request carries, and
+    /// the language the app shows.
     /// Kept here so no call site drifts from the others; empty values are
     /// omitted rather than sent as blank headers.
     func applyHeaders(to request: inout URLRequest) {
@@ -179,5 +180,6 @@ extension AppleDeviceIdentity {
         for (field, value) in headers where !value.isEmpty {
             request.setValue(value, forHTTPHeaderField: field)
         }
+        AppLanguage.applyHeader(to: &request)
     }
 }

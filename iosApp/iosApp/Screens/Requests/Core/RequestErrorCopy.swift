@@ -46,7 +46,7 @@ enum RequestErrorCopy {
             case "capability_disabled", "capability_not_configured", "capability_unsupported":
                 return copy(forToken: "requests_disabled")
             default:
-                if !problem.detail.isEmpty { return problem.detail }
+                if !problem.detail.isEmpty { return problem.localized(problem.detail) }
             }
         }
         return ErrorState(error).message

@@ -10,6 +10,8 @@ struct TVSubtitleSettingsPane: View {
     @Bindable var viewModel: SettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let presentPicker: (TVSettingsPickerRequest) -> Void
+    /// The app language, so a switch re-renders the labels.
+    @Environment(\.locale) private var locale
     @State private var showResetConfirmation = false
 
     var body: some View {
@@ -42,7 +44,7 @@ struct TVSubtitleSettingsPane: View {
             title: "Language",
             value: TVSettingsOptions.label(
                 for: viewModel.prefs.subtitleLanguage,
-                in: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions)
+                in: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions, language: AppLanguage.language(of: locale))
             )
         ) { showPicker(.language) }
         .focused(detailFocus, equals: .top)
@@ -90,7 +92,7 @@ struct TVSubtitleSettingsPane: View {
             title: "Metadata Language",
             value: TVSettingsOptions.label(
                 for: viewModel.prefs.preferredMetadataLanguage,
-                in: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions)
+                in: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions, language: AppLanguage.language(of: locale))
             )
         ) { showPicker(.metadataLanguage) }
         .focused(detailFocus, equals: .subtitleMetadataLanguage)
@@ -287,7 +289,7 @@ struct TVSubtitleSettingsPane: View {
         case .language:
             TVSettingsPickerRequest(
                 title: "Language",
-                options: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions),
+                options: TVSettingsOptions.subtitleLanguage(viewModel.subtitleLanguageOptions, language: AppLanguage.language(of: locale)),
                 selection: Binding(
                     get: { viewModel.prefs.subtitleLanguage },
                     set: { value in Task { await viewModel.prefs.setSubtitleLanguage(value) } }
@@ -307,7 +309,7 @@ struct TVSubtitleSettingsPane: View {
         case .metadataLanguage:
             TVSettingsPickerRequest(
                 title: "Metadata Language",
-                options: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions),
+                options: TVSettingsOptions.metadataLanguage(viewModel.metadataLanguageOptions, language: AppLanguage.language(of: locale)),
                 selection: Binding(
                     get: { viewModel.prefs.preferredMetadataLanguage },
                     set: { value in Task { await viewModel.prefs.setPreferredMetadataLanguage(value) } }

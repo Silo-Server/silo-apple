@@ -97,7 +97,9 @@ enum HomeSectionsMutation {
                 totalCount: section.totalCount.map { max(0, $0 - removedCount) },
                 isCustom: section.isCustom,
                 customized: section.customized,
-                items: items
+                items: items,
+                titleKey: section.titleKey,
+                titleArgs: section.titleArgs
             )
         }
     }

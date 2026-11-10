@@ -419,7 +419,9 @@ class CollectionsViewModel {
         guard let problem = Self.problem(err), problem.status == 501 else { return false }
         groupSupport = .unavailable
         if sheet == sheetGeneration {
-            groupError = problem.detail.isEmpty ? "Collection groups aren't available on this server." : problem.detail
+            groupError = problem.detail.isEmpty
+                ? "Collection groups aren't available on this server."
+                : problem.localized(problem.detail)
         }
         return true
     }
