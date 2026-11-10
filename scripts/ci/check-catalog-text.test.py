@@ -110,6 +110,8 @@ class ScanSourceTests(unittest.TestCase):
             'let label = on ? "Enabled" : ( "Disabled" )',
             'let title = name??("Unknown name")',
             'return flag ? "chevron.up" : "Off"',
+            'return flag ? "movie":"Off"',
+            'return a ? (b ? .x : .y) : "Fallback text"',
         ]:
             self.assertIn(1, guard.scan_source(source, mappings=True), source)
             self.assertEqual(guard.scan_source(source), [], source)
@@ -125,11 +127,23 @@ class ScanSourceTests(unittest.TestCase):
             'return ("episode") == kind',
             'handler?("Done")',
             'return flag ? "chevron.up" : "chevron.down"',
+            'logger?.log(message: "Finished loading")',
+            'DiagLog.i(category: .ui, message: ok ? .x : "Finished loading")',
+            'let d = ["key" : "value"]',
+            'return flag ? .commonDone : Self.label(for: "movie")',
             'if detail.type == "episode" { return nil }',
             'return "HDR"  // i18n-ignore: technical token',
             'DiagTrace.breadcrumb(message: done ? "Finished loading" : "Started loading")',
         ]:
             self.assertEqual(guard.scan_source(source, mappings=True), [], source)
+
+    def test_mapped_ternary_else_across_lines(self) -> None:
+        for source, line in [
+            ('let title = flag ?\n    .commonDone : "Hardcoded fallback"', 2),
+            ('let title = flag\n    ? .commonDone\n    : "Hardcoded fallback"', 3),
+        ]:
+            self.assertEqual(guard.scan_source(source, mappings=True), [line], source)
+            self.assertEqual(guard.scan_source(source), [], source)
 
     def test_reads_literals_across_lines(self) -> None:
         self.assertFlags('let x = 1\nText(\n    "Split across lines"\n)\n', line=3)

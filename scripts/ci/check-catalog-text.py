@@ -62,9 +62,9 @@ LOGGING_CALL = re.compile(
 MAPPING = re.compile(
     r"(?:\breturn|\bcase\b[^:\n]*:|\?\??|\.append\()\s*(?=(?:\(\s*)*\")"
 )
-# A ternary's else branch, on its own: finditer doesn't overlap matches, so the
-# `?` above would hide it when the first branch is a literal too.
-TERNARY_ELSE = re.compile(r"\?[^:\n]*[^\s:?]\s+:\s*(?=(?:\(\s*)*\")")
+# A ternary's `?`, spaced on both sides as Swift requires; its else branch is
+# found by ternary_else_starts, whatever the formatting.
+TERNARY = re.compile(r"(?<=\s)\?(?=\s)")
 
 LETTER = re.compile(r"[A-Za-z]")
 WORDS = re.compile(r"[A-Za-z]{2,}")
@@ -198,6 +198,33 @@ def interpolations(src: str, begin: int, end: int) -> list[int]:
     return starts
 
 
+def ternary_else_starts(code: str) -> list[tuple[int, int]]:
+    """(offset of the `?`, offset after its `:`) for each ternary in code (strings
+    masked), across line breaks and with or without spaces around the `:`."""
+    found = []
+    for m in TERNARY.finditer(code):
+        depth, nested, j = 0, 0, m.end()
+        while j < len(code):
+            c = code[j]
+            if c in "([{":
+                depth += 1
+            elif c in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and c == ",":
+                break
+            elif depth == 0 and TERNARY.match(code, j):
+                nested += 1
+            elif depth == 0 and c == ":":
+                if not nested:
+                    found.append((m.start(), j + 1))
+                    break
+                nested -= 1
+            j += 1
+    return found
+
+
 def enclosing_call(code: str, offset: int) -> str | None:
     """Name of the call whose argument list holds code[offset], if any (code has
     its strings masked)."""
@@ -256,23 +283,29 @@ def scan_source(raw: str, mappings: bool = False) -> list[int]:
         for offset, text in argument_literals(src, m.end()):
             if prose(text):
                 report(offset, m.start())
-    for m in (*MAPPING.finditer(code), *TERNARY_ELSE.finditer(code)) if mappings else ():
+    anchors = []
+    for m in MAPPING.finditer(code) if mappings else ():
         if m.group() == "?" and code[m.end()] == "(" and re.search(r"[\w)\]]$", code[:m.start()]):
             continue  # an optional call, `handler?("…")`
-        call = enclosing_call(code, m.start())
+        anchors.append((m.start(), m.end()))
+    for anchor, after in ternary_else_starts(code) if mappings else ():
+        if re.match(r"\s*(?:\(\s*)*\"", code[after:]):
+            anchors.append((anchor, after))
+    for anchor, after in anchors:
+        call = enclosing_call(code, anchor)
         if call is not None and LOGGING_CALL.search(call):
             continue
-        quote = src.index('"', m.end())
+        quote = src.index('"', after)
         end, text = string_end(src, quote)
         if re.match(r"[\s)]*[=!]=", src[end:]):
             continue
         if prose(text):
-            report(quote, m.start())
+            report(quote, anchor)
         # The literals an interpolation shows: `return "\\(name ?? "Unknown")"`.
         for inner in interpolations(src, quote, end):
             for offset, shown in argument_literals(src, inner):
                 if prose(shown):
-                    report(offset, m.start())
+                    report(offset, anchor)
     return sorted(hits)
 
 
