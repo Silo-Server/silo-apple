@@ -33,6 +33,7 @@ struct TVChangeAccountView: View {
     @State private var paneEntry: PaneItem?
     @FocusState private var railFocus: RailItem?
     @FocusState private var paneFocus: PaneItem?
+    @Environment(\.locale) private var locale
 
     private enum RailItem: Hashable {
         case server(String)
@@ -105,12 +106,12 @@ struct TVChangeAccountView: View {
             SiloWordmarkView(width: 150)
                 .frame(height: 64)
                 .padding(.bottom, 30)
-            Text("Change account")
+            Text(.accountsHeadline)
                 .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))
                 .foregroundStyle(Color.siloOnSurface)
                 .accessibilityAddTraits(.isHeader)
                 .padding(.bottom, 22)
-            MarqueeTVBody("Choose a server, then the account to use on it.")
+            MarqueeTVBody(AppLanguage.string(.accountsBody))
         }
     }
 
@@ -132,7 +133,7 @@ struct TVChangeAccountView: View {
         Button {
             model.addServer(router: router)
         } label: {
-            railRowLabel("Add server") {
+            railRowLabel(AppLanguage.string(.accountsAddServer)) {
                 Image(systemName: "plus")
                     .font(.system(size: 28, weight: .regular))
                     .frame(width: Layout.railMark, height: Layout.railMark)

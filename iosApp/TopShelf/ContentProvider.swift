@@ -72,13 +72,13 @@ final class ContentProvider: TVTopShelfContentProvider {
         }
 
         let continueWatching = collection(
-            title: "Continue Watching",
+            title: AppLanguage.string(.homeSectionContinueWatching),
             items: cwItems,
             seriesPosters: seriesPosters,
             hidesEpisodeStills: hidesEpisodeStills
         )
         let nextUp = collection(
-            title: "Next Up",
+            title: AppLanguage.string(.homeSectionNextUp),
             items: nuItems,
             seriesPosters: seriesPosters,
             hidesEpisodeStills: hidesEpisodeStills

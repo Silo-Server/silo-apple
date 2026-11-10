@@ -344,7 +344,8 @@ actor PlaybackV3CapabilityGate {
         switch error {
         case APIv2Error.serverUpdateRequired:
             return PlaybackV3TerminalFailure(reason: "server_upgrade_required",
-                message: UpdateRequirement.serverMessage, retryable: false)
+                message: AppLanguage.inEnglish { UpdateRequirement.serverMessage }, retryable: false,
+                displayMessage: UpdateRequirement.serverMessage)
         case APIv2Error.problem(let problem) where problem.status == 409 && problem.identifier == "capability_not_configured":
             return APIv2PlaybackCapabilities.notConfigured
         default:

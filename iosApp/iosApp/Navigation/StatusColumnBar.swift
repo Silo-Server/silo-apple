@@ -132,7 +132,7 @@ struct StatusColumnBar: View {
     private func moreMenu(_ overflow: [MainTabDestination]) -> some View {
         let selectedOverflow = overflow.first { $0.id == selection }
         return Menu {
-            Picker("More", selection: $selection) {
+            Picker(.shellStatusColumnMore, selection: $selection) {
                 ForEach(overflow) { destination in
                     Label(destination.title, systemImage: destination.icon)
                         .tag(destination.id)
@@ -150,7 +150,7 @@ struct StatusColumnBar: View {
         .menuStyle(.borderlessButton)
         // Keep the bar's order instead of flipping it toward the button.
         .menuOrder(.fixed)
-        .accessibilityLabel("More")
+        .accessibilityLabel(.shellStatusColumnMore)
         .accessibilityValue(selectedOverflow?.title ?? "")
     }
 

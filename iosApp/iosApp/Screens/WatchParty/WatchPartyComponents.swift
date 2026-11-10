@@ -42,9 +42,10 @@ enum WatchPartyMetrics {
 // MARK: - Eyebrow
 
 struct WatchPartyEyebrow: View {
-    let text: String
+    let text: LocalizedStringResource
     var body: some View {
-        Text(text.uppercased())
+        Text(text)
+            .textCase(.uppercase)
             .font(.system(size: WatchPartyMetrics.eyebrow, weight: .semibold))
             .tracking(WatchPartyMetrics.eyebrow * 0.12)
             .foregroundStyle(Color.siloSecondaryText)
@@ -121,7 +122,7 @@ struct WatchPartyCodePill: View {
     var body: some View {
         HStack(spacing: WatchPartyMetrics.code * 0.5) {
             #if os(tvOS)
-            Text("JOIN WITH")
+            Text(.watchPartyCodePillLabel)
                 .font(.system(size: 15, weight: .semibold))
                 .tracking(2)
                 .foregroundStyle(isFocused ? Color.black.opacity(0.5) : Color.siloSecondaryText)
@@ -142,7 +143,7 @@ struct WatchPartyCodePill: View {
         .scaleEffect(isFocused ? 1.04 : 1)
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
         #endif
-        .accessibilityLabel("Party code \(code.map(String.init).joined(separator: " ")). Invite friends")
+        .accessibilityLabel(.watchPartyCodePillDescription(code.map(String.init).joined(separator: " ")))
     }
 }
 
@@ -155,6 +156,8 @@ struct WatchPartySeat: View {
     let member: WatchPartyMember
     let state: WatchPartySeatState
     var size: CGFloat = WatchPartyMetrics.seat
+    /// The app language, so a switch re-renders the resolved labels.
+    @Environment(\.locale) private var locale
 
     private var ringDiameter: CGFloat { size * 1.14 }
 
@@ -212,33 +215,36 @@ struct WatchPartySeat: View {
 
     /// Role and state under the name: "Host · You", "not ready".
     private var detailText: String? {
-        let parts = [member.isHost ? "Host" : nil, member.isSelf ? "You" : nil, statusText].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        var parts: [LocalizedStringResource] = []
+        if member.isHost { parts.append(.watchPartySeatHost) }
+        if member.isSelf { parts.append(.watchPartySeatYou) }
+        if let statusText { parts.append(statusText) }
+        return parts.isEmpty ? nil : parts.map(AppLanguage.string).joined(separator: " · ")
     }
 
     private var initial: String {
         String(member.displayName.trimmingCharacters(in: .whitespaces).prefix(1)).uppercased()
     }
 
-    private var statusText: String? {
+    private var statusText: LocalizedStringResource? {
         switch state {
         case .ready, .watching: return nil
-        case .notReady: return "not ready"
-        case .away: return "reconnecting"
-        case .syncing: return "syncing"
-        case .buffering: return "buffering"
-        case .joining: return "joining"
+        case .notReady: return .watchPartySeatNotReady
+        case .away: return .watchPartySeatReconnecting
+        case .syncing: return .watchPartySeatSyncing
+        case .buffering: return .watchPartySeatBuffering
+        case .joining: return .watchPartySeatJoining
         }
     }
 
     private var accessibilityText: String {
         var parts = [member.displayName]
-        if member.isSelf { parts.append("you") }
-        if member.isHost { parts.append("host") }
+        if member.isSelf { parts.append(AppLanguage.string(.watchPartySeatYouLower)) }
+        if member.isHost { parts.append(AppLanguage.string(.watchPartySeatA11YHost)) }
         switch state {
-        case .ready: parts.append("ready")
-        case .watching: parts.append("watching")
-        default: parts.append(statusText ?? "")
+        case .ready: parts.append(AppLanguage.string(.watchPartySeatA11YReady))
+        case .watching: parts.append(AppLanguage.string(.watchPartySeatA11YWatching))
+        default: parts.append(statusText.map(AppLanguage.string) ?? "")
         }
         return parts.joined(separator: ", ")
     }
@@ -297,7 +303,7 @@ struct WatchPartyInviteSeatLabel: View {
             .frame(width: size * 1.14, height: size * 1.14)
             .padding(.top, size * 0.1)
             .scaleEffect(isFocused ? 1.06 : 1)
-            Text("Invite")
+            Text(.watchPartySeatInvite)
                 .font(.system(size: size * 0.19, weight: .medium))
                 .foregroundStyle(Color.siloSecondaryText)
         }
@@ -326,7 +332,7 @@ struct WatchPartySeatsRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: seatSize * 0.25) {
             HStack(alignment: .firstTextBaseline, spacing: seatSize * 0.2) {
-                WatchPartyEyebrow(text: "Here now")
+                WatchPartyEyebrow(text: .watchPartySeatsHereNow)
                 Text(WatchPartyLobbyPolicy.presenceSummary(members: members, phase: phase))
                     .font(.system(size: WatchPartyMetrics.caption))
                     .foregroundStyle(Color.siloSecondaryText.opacity(0.7))
@@ -335,7 +341,7 @@ struct WatchPartySeatsRow: View {
             seats
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Members")
+        .accessibilityLabel(.watchPartySeatsMembers)
     }
 
     @ViewBuilder
@@ -363,7 +369,7 @@ struct WatchPartySeatsRow: View {
             }
             Button(action: onInvite) { WatchPartyInviteSeatLabel(size: seatSize) }
                 .buttonStyle(.siloFlat)
-                .accessibilityLabel("Invite friends")
+                .accessibilityLabel(.watchPartyInviteFriends)
                 .accessibilityIdentifier("watchParty.invite")
         }
     }
@@ -456,8 +462,19 @@ private struct WatchPartyButtonBody: View {
 /// request, or an unsupported server.
 struct WatchPartyBanner: View {
     enum Tone { case warning, neutral }
-    let message: String
-    var tone: Tone = .neutral
+    private let text: Text
+    let tone: Tone
+
+    /// Text already resolved, such as a session error that may carry the server's words.
+    init(message: String, tone: Tone = .neutral) {
+        text = Text(message)
+        self.tone = tone
+    }
+
+    init(_ message: LocalizedStringResource, tone: Tone = .neutral) {
+        text = Text(message)
+        self.tone = tone
+    }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -465,7 +482,7 @@ struct WatchPartyBanner: View {
                 .fill(tone == .warning ? Color.requestAmber : Color.siloSecondaryText)
                 .frame(width: WatchPartyMetrics.caption * 0.6, height: WatchPartyMetrics.caption * 0.6)
                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
-            Text(message)
+            text
                 .font(.system(size: WatchPartyMetrics.caption + 1))
                 .foregroundStyle(tone == .warning ? Color(hex: "#F5C563") : Color.siloOnSurface)
                 .fixedSize(horizontal: false, vertical: true)

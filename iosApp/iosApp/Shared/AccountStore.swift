@@ -826,11 +826,11 @@ extension AccountStoreError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .writeFailed:
-            return "Sign-in could not be saved on this device. Try again."
+            return AppLanguage.string(.errorsAppleAccountStoreWriteFailed)
         case .unsupportedVersion, .corrupt, .keyMismatch:
-            return "The sign-in saved on this device is unreadable. Sign in again."
+            return AppLanguage.string(.errorsAppleAccountStoreUnreadable)
         case .invalidIdentity, .notFound, .credentialsChanged:
-            return "The active server changed before sign-in could be saved."
+            return AppLanguage.string(.errorsAppleAccountStoreOwnerChanged)
         }
     }
 }

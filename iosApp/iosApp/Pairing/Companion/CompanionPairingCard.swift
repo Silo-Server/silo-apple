@@ -30,6 +30,7 @@ struct CompanionPairingCard: View {
     @State private var signInChoice: CompanionAccountChoice?
     @State private var started = false
     @State private var appeared = false
+    @Environment(\.locale) private var locale
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -38,7 +39,7 @@ struct CompanionPairingCard: View {
                 .contentShape(Rectangle())
                 .onTapGesture { if !started { dismiss() } }
                 .accessibilityAddTraits(.isButton)
-                .accessibilityLabel("Dismiss")
+                .accessibilityLabel(.companionDismiss)
                 .accessibilityHidden(started)
 
             card
@@ -111,7 +112,7 @@ struct CompanionPairingCard: View {
         } else {
             switch coordinator?.state ?? .connecting {
             case .connecting:
-                progressStep(title: "Connecting…", subtitle: tv.name)
+                progressStep(title: .companionConnecting, subtitle: tv.name)
             case let .pickAccounts(_, sections):
                 accountPicker(sections, listScrolls: !scrollsWhole)
                     .onAppear { preselect() }
@@ -119,7 +120,7 @@ struct CompanionPairingCard: View {
                 confirm(serverName: serverName, serverHost: serverHost, accountName: accountName,
                         code: code, matchWords: matchWords, step: step)
             case let .working(progress):
-                progressStep(title: server == nil ? "Setting up…" : "Signing in…", subtitle: progress)
+                progressStep(title: server == nil ? LocalizedStringResource.companionSetupProgressTitle : .companionSigninProgressTitle, subtitle: progress)
             case let .finished(signedIn, failed):
                 finished(signedIn: signedIn, failed: failed)
             case let .error(message):
@@ -134,12 +135,12 @@ struct CompanionPairingCard: View {
         VStack(spacing: 0) {
             heroGlyph.padding(.bottom, 16)
             if let server {
-                Text("Sign in \(tv.name) to \(server.displayName)?")
+                Text(.companionOfferSigninTitle(tv.name, server.displayName))
                     .font(.siloTitle)
                     .multilineTextAlignment(.center)
                 // Unauthenticated Bonjour: the name and state are the TV's
                 // claim, checked against its code on the next step.
-                Text(Self.signInOfferBody(tvName: tv.name))
+                Text(.companionOfferSigninBody(tv.name))
                     .font(.siloCaption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -147,21 +148,21 @@ struct CompanionPairingCard: View {
                 if signInAccounts.count > 1 {
                     signInAccountChoice(server)
                 }
-                primaryButton("Sign In") { setUp() }.padding(.top, 22)
+                primaryButton(.commonSignIn) { setUp() }.padding(.top, 22)
             } else {
-                Text("Set Up \(tv.name)")
+                Text(.companionSetUpTitle(tv.name))
                     .font(.siloTitle)
                     .multilineTextAlignment(.center)
                 Text(tv.isRoku
-                     ? "Sign \(tv.name) in to a server from this \(UIDevice.current.model)."
-                     : "Sign \(tv.name) in to your servers from this \(UIDevice.current.model).")
+                     ? LocalizedStringResource.companionSetUpBodyRoku(tv.name, UIDevice.current.model)
+                     : .companionSetUpBody(tv.name, UIDevice.current.model))
                     .font(.siloCaption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.top, 6)
-                primaryButton("Set Up") { setUp() }.padding(.top, 22)
+                primaryButton(.setupStepSetUp) { setUp() }.padding(.top, 22)
             }
-            tertiaryButton("Not Now") { dismiss() }.padding(.top, 4)
+            tertiaryButton(.companionNotNow) { dismiss() }.padding(.top, 4)
         }
         .task(id: server?.id) { await loadSignInAccounts() }
     }
@@ -170,7 +171,7 @@ struct CompanionPairingCard: View {
     /// the one in use first and chosen.
     private func signInAccountChoice(_ server: ServerEntry) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Sign in \(tv.name) to \(server.displayName) as")
+            Text(.companionSignInAsLead(tv.name, server.displayName))
                 .font(.siloCaption)
                 .foregroundStyle(.secondary)
                 // Long TV and server names wrap instead of truncating.
@@ -197,8 +198,8 @@ struct CompanionPairingCard: View {
             }
         }
         return VStack(spacing: 0) {
-            compactHeader(title: chooser.mode == .several ? "Choose accounts" : "Choose an account",
-                          subtitle: "Sign \(tv.name) in to…")
+            compactHeader(title: chooser.mode == .several ? LocalizedStringResource.companionChooseAccountsTitle : .companionChooseAccountTitle,
+                          subtitle: .companionChooseServersBody(tv.name))
             let list = VStack(alignment: .leading, spacing: 14) {
                 ForEach(sections) { section in
                     serverSection(section, chooser: chooser, activeServerId: activeServerId)
@@ -218,7 +219,7 @@ struct CompanionPairingCard: View {
                     .multilineTextAlignment(.center)
                     .padding(.top, 10)
             }
-            primaryButton(Self.continueTitle(count: count)) {
+            primaryButton(Self.continueTitleResource(count: count)) {
                 let chosen = selection
                 Task { await coordinator?.pushSelected(chosen) }
             }
@@ -268,7 +269,7 @@ struct CompanionPairingCard: View {
         unavailable: CompanionAccountChooser.Unavailable?,
         action: @escaping () -> Void
     ) -> some View {
-        let name = option.username ?? "Your account"
+        let name = option.username ?? AppLanguage.string(.companionAccountUnnamed)
         return Button(action: action) {
             HStack(spacing: 12) {
                 Text(String(name.prefix(1)).uppercased())
@@ -277,12 +278,12 @@ struct CompanionPairingCard: View {
                     .background(Color.siloIconTile, in: Circle())
                     .foregroundStyle(.white)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(isActiveAccount ? "\(name) · this \(UIDevice.current.model)" : name)
+                    Text(isActiveAccount ? AppLanguage.string(.companionAccountThisDevice(name, UIDevice.current.model)) : name)
                         .font(.siloBody)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     if unavailable == .needsSignIn {
-                        Text("Sign in again on \(UIDevice.current.model)")
+                        Text(.companionAccountSignInAgainOn(UIDevice.current.model))
                             .font(.siloCaption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -308,30 +309,23 @@ struct CompanionPairingCard: View {
 
     /// "Continue — 3 accounts".
     static func continueTitle(count: Int) -> String {
-        switch count {
-        case 0: return "Continue"
-        case 1: return "Continue — 1 account"
-        default: return "Continue — \(count) accounts"
-        }
+        AppLanguage.string(continueTitleResource(count: count))
+    }
+
+    static func continueTitleResource(count: Int) -> LocalizedStringResource {
+        count == 0 ? LocalizedStringResource.companionContinue : .companionContinueCount(count)
     }
 
     /// What the chooser can't do on this TV, under the list.
     static func chooserNote(_ chooser: CompanionAccountChooser, tvName: String, limitReached: Bool) -> String? {
         if limitReached, let limit = chooser.limit {
-            return limit == 1
-                ? "\(tvName) can keep 1 account from this setup."
-                : "\(tvName) can keep \(limit) accounts from this setup."
+            return AppLanguage.string(.companionChooseLimitAccounts(tvName, limit))
         }
         switch chooser.mode {
         case .several: return nil
-        case .onePerServer: return "\(tvName) keeps one account per server."
-        case .one: return "\(tvName) keeps one account."
+        case .onePerServer: return AppLanguage.string(.companionChooseOnePerServer(tvName))
+        case .one: return AppLanguage.string(.companionChooseOne(tvName))
         }
-    }
-
-    /// The sign-in offer's body. It reports what the TV says, not a fact.
-    private static func signInOfferBody(tvName: String) -> String {
-        "A TV nearby named “\(tvName)” says it's on its sign-in screen. You'll check its code before approving."
     }
 
     /// The same content model as `TVApprovalCard`, the web `/activate` card
@@ -346,7 +340,7 @@ struct CompanionPairingCard: View {
                     .foregroundStyle(.tertiary)
                     .padding(.bottom, 4)
             }
-            Text("Check that \(tv.name) shows")
+            Text(.companionConfirmCheck(tv.name))
                 .font(.siloCaption)
                 .foregroundStyle(.secondary)
             Text(DeviceUserCode.display(code))
@@ -384,9 +378,9 @@ struct CompanionPairingCard: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 4)
-            primaryButton("Yes, this matches") { Task { await coordinator?.confirmMatch() } }
+            primaryButton(.companionConfirmYes) { Task { await coordinator?.confirmMatch() } }
                 .padding(.top, 22)
-            tertiaryButton("Doesn’t match") { Task { await coordinator?.declineMatch() } }
+            tertiaryButton(.companionConfirmDoesntMatch) { Task { await coordinator?.declineMatch() } }
                 .padding(.top, 4)
         }
     }
@@ -395,7 +389,7 @@ struct CompanionPairingCard: View {
     /// show instead; the same wording as Android and the web `/activate` card.
     static func olderTVLine(matchWords: String?) -> String? {
         guard let words = matchWords?.trimmingCharacters(in: .whitespacesAndNewlines), !words.isEmpty else { return nil }
-        return "Older TV apps show \(words.uppercased()) instead."
+        return AppLanguage.string(.companionConfirmOlderTv(words.uppercased()))
     }
 
     private func finished(signedIn: [String], failed: [CompanionPairingCoordinator.FailedServer]) -> some View {
@@ -406,10 +400,10 @@ struct CompanionPairingCard: View {
                 .foregroundStyle(complete ? Color.green : Color.yellow)
                 .padding(.bottom, 12)
             Text(signedIn.isEmpty
-                ? (server == nil ? "Setup didn’t finish" : "Sign-in didn’t finish")
+                ? (server == nil ? LocalizedStringResource.companionFailedHeadlineSetup : .companionFailedHeadline)
                 : (server == nil
-                    ? (failed.isEmpty ? "\(tv.name) is set up" : "\(tv.name) is set up, with problems")
-                    : "\(tv.name) is signed in"))
+                    ? (failed.isEmpty ? .companionSetUpDone(tv.name) : .companionSetUpDonePartial(tv.name))
+                    : .companionSigninDoneTitle(tv.name)))
                 .font(.siloHeadline)
                 .multilineTextAlignment(.center)
             // One line per server: "Home — alex, sam".
@@ -428,10 +422,10 @@ struct CompanionPairingCard: View {
                     .padding(.top, 4)
             }
             if signedIn.isEmpty {
-                primaryButton("Try Again") { retry() }.padding(.top, 22)
-                tertiaryButton("Close") { dismiss() }.padding(.top, 4)
+                primaryButton(.companionTryAgain) { retry() }.padding(.top, 22)
+                tertiaryButton(.companionClose) { dismiss() }.padding(.top, 4)
             } else {
-                primaryButton("Done") { dismiss() }.padding(.top, 22)
+                primaryButton(.commonDone) { dismiss() }.padding(.top, 22)
             }
         }
     }
@@ -445,8 +439,8 @@ struct CompanionPairingCard: View {
             Text(message)
                 .font(.siloBody)
                 .multilineTextAlignment(.center)
-            primaryButton("Try Again") { retry() }.padding(.top, 22)
-            tertiaryButton("Close") { dismiss() }.padding(.top, 4)
+            primaryButton(.companionTryAgain) { retry() }.padding(.top, 22)
+            tertiaryButton(.companionClose) { dismiss() }.padding(.top, 4)
         }
     }
 
@@ -459,7 +453,7 @@ struct CompanionPairingCard: View {
             .frame(width: 104, height: 104)
     }
 
-    private func compactHeader(title: String, subtitle: String) -> some View {
+    private func compactHeader(title: LocalizedStringResource, subtitle: LocalizedStringResource) -> some View {
         HStack(spacing: 12) {
             Image(systemName: "tv").font(.system(size: 22)).frame(width: 40, height: 40)
             VStack(alignment: .leading, spacing: 2) {
@@ -471,7 +465,7 @@ struct CompanionPairingCard: View {
         .padding(.bottom, 14)
     }
 
-    private func progressStep(title: String, subtitle: String) -> some View {
+    private func progressStep(title: LocalizedStringResource, subtitle: String) -> some View {
         VStack(spacing: 10) {
             Text(title).font(.siloHeadline)
             Text(subtitle)
@@ -487,14 +481,14 @@ struct CompanionPairingCard: View {
         .padding(.vertical, 8)
     }
 
-    private func primaryButton(_ title: String, action: @escaping () -> Void) -> some View {
+    private func primaryButton(_ title: LocalizedStringResource, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title).font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
         }
         .pairingPrimaryButton()
     }
 
-    private func tertiaryButton(_ title: String, action: @escaping () -> Void) -> some View {
+    private func tertiaryButton(_ title: LocalizedStringResource, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title).font(.siloBody).frame(maxWidth: .infinity).padding(.vertical, 8)
         }
@@ -504,7 +498,7 @@ struct CompanionPairingCard: View {
 
     private func cancelButton() -> some View {
         // `dismiss()` cancels the coordinator.
-        tertiaryButton("Cancel") { dismiss() }
+        tertiaryButton(.commonCancel) { dismiss() }
     }
 
     // MARK: - Actions

@@ -2150,7 +2150,8 @@ final class DownloadManager {
             return false
         } else {
             record.localStatus = .failed
-            record.lastError = error.localizedDescription
+            // Stored, so English (D44); failureReason shows it in the app's language.
+            record.lastError = AppLanguage.inEnglish { error.localizedDescription }
         }
         file.records[recordId] = record
         persist()

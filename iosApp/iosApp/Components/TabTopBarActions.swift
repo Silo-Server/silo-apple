@@ -65,7 +65,7 @@ struct TabTopBarActions: View {
         return layout {
             TopBarIconButton(
                 systemImage: "magnifyingglass",
-                accessibilityLabel: "Search",
+                accessibilityLabel: .topBarSearch,
                 action: onSearch
             )
             #if os(iOS)
@@ -98,7 +98,7 @@ struct TabTopBarActions: View {
 /// stays small and chrome-free.
 private struct TopBarIconButton: View {
     let systemImage: String
-    let accessibilityLabel: String
+    let accessibilityLabel: LocalizedStringResource
     let action: () -> Void
 
     var body: some View {
@@ -162,12 +162,12 @@ struct ProfileAvatarMenu: View {
             Button {
                 onOpenRequests()
             } label: {
-                Label("Requests", systemImage: "sparkles")
+                Label(.menuRequests, systemImage: "sparkles")
             }
         }
         #if os(tvOS)
         if showsWatchParty {
-            Button(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3") { router.navigate(to: .watchParty) }
+            Button(WatchPartySession.shared.isEngaged ? LocalizedStringResource.watchPartyMenuReturn : .watchPartyMenuOpen, systemImage: "person.3") { router.navigate(to: .watchParty) }
         }
         #endif
     }
@@ -177,17 +177,17 @@ struct ProfileAvatarMenu: View {
         Button {
             onOpenSettings()
         } label: {
-            Label("Settings", systemImage: "gearshape")
+            Label(.menuSettings, systemImage: "gearshape")
         }
         Button {
             onSwitchProfile()
         } label: {
-            Label("Switch Profile", systemImage: "person.2")
+            Label(.menuSwitchProfile, systemImage: "person.2")
         }
         Button {
             router.showChangeAccount()
         } label: {
-            Label("Change Account", systemImage: "person.crop.circle.badge.checkmark")
+            Label(.menuChangeAccount, systemImage: "person.crop.circle.badge.checkmark")
         }
     }
     #endif
@@ -270,7 +270,7 @@ struct ProfileAvatarMenu: View {
                 action()
             }
         }
-        .accessibilityLabel("Profile menu")
+        .accessibilityLabel(.menuProfileMenuLabel)
         #else
         // Same order as Android's phone menu: Requests and Watch Party, then
         // the account actions, then Sign Out on its own. The header titles
@@ -286,7 +286,7 @@ struct ProfileAvatarMenu: View {
                 Button(role: .destructive) {
                     onSignOut()
                 } label: {
-                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                    Label(.menuSignOut, systemImage: "rectangle.portrait.and.arrow.right")
                 }
             }
         } label: {
@@ -300,7 +300,7 @@ struct ProfileAvatarMenu: View {
         #else
         .menuStyle(.borderlessButton)
         #endif
-        .accessibilityLabel("Profile menu")
+        .accessibilityLabel(.menuProfileMenuLabel)
         #endif
     }
 
@@ -334,7 +334,7 @@ struct ProfileAvatarMenu: View {
         var features: [ProfileMenuPanel.Row] = []
         if requestsEnabled {
             features.append(.init(
-                title: "Requests",
+                title: .menuRequests,
                 systemImage: "sparkles",
                 pushesScreen: true,
                 action: onOpenRequests
@@ -342,7 +342,7 @@ struct ProfileAvatarMenu: View {
         }
         if showsWatchParty {
             features.append(.init(
-                title: WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party",
+                title: WatchPartySession.shared.isEngaged ? LocalizedStringResource.watchPartyMenuReturn : .watchPartyMenuOpen,
                 systemImage: "person.3",
                 pushesScreen: true
             ) { router.navigate(to: .watchParty) })
@@ -350,17 +350,17 @@ struct ProfileAvatarMenu: View {
         return [
             features,
             [
-                .init(title: "Settings", systemImage: "gearshape", pushesScreen: true, action: onOpenSettings),
-                .init(title: "Switch Profile", systemImage: "person.2", action: onSwitchProfile),
+                .init(title: .menuSettings, systemImage: "gearshape", pushesScreen: true, action: onOpenSettings),
+                .init(title: .menuSwitchProfile, systemImage: "person.2", action: onSwitchProfile),
                 .init(
-                    title: "Change Account",
+                    title: .menuChangeAccount,
                     systemImage: "person.crop.circle.badge.checkmark",
                     action: { router.showChangeAccount() }
                 ),
             ],
             [
                 .init(
-                    title: "Sign Out",
+                    title: .menuSignOut,
                     systemImage: "rectangle.portrait.and.arrow.right",
                     isDestructive: true,
                     action: onSignOut
@@ -375,8 +375,9 @@ struct ProfileAvatarMenu: View {
 /// The account menu on iPhone and iPad: the profile picture beside a bold
 /// profile name with the server underneath, as on Apple TV, then the actions.
 struct ProfileMenuPanel: View {
+    @Environment(\.locale) private var locale
     struct Row: Identifiable {
-        let title: String
+        let title: LocalizedStringResource
         let systemImage: String
         var isDestructive = false
         /// The action pushes a screen, so it runs as the panel starts to
@@ -384,7 +385,7 @@ struct ProfileMenuPanel: View {
         var pushesScreen = false
         let action: () -> Void
 
-        var id: String { title }
+        var id: String { systemImage }
     }
 
     let profile: UserProfile?
@@ -445,7 +446,7 @@ struct ProfileMenuPanel: View {
             )
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(profile?.name ?? "Profile")
+                Text(profile?.name ?? AppLanguage.string(.topBarProfileFallback))
                     .font(.headline)
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)

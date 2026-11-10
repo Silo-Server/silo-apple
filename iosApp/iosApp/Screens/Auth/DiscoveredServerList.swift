@@ -54,8 +54,8 @@ struct DiscoveredServerList: View {
                     }
                 }
                 .buttonStyle(.marquee(.glass, fullWidth: false))
-                .accessibilityLabel("\(server.name), \(server.detail)")
-                .accessibilityValue(connectingID == server.id ? "Connecting" : "")
+                .accessibilityLabel(.connectDiscoveryServerRow(server.name, server.detail))
+                .accessibilityValue(connectingID == server.id ? Text(.setupConnectingState) : Text(verbatim: ""))
             }
         }
     }
@@ -71,7 +71,7 @@ struct DiscoveredServerList: View {
     #else
     private var list: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Found nearby")
+            Text(.setupFoundNearby)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.62))
                 .padding(.leading, 2)
@@ -159,8 +159,8 @@ struct ServerPickerRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.marqueePressable)
-        .accessibilityLabel("\(name), \(detail)")
-        .accessibilityValue(isConnecting ? "Connecting" : "")
+        .accessibilityLabel(.connectDiscoveryServerRow(name, detail))
+        .accessibilityValue(isConnecting ? Text(.setupConnectingState) : Text(verbatim: ""))
     }
 }
 #endif

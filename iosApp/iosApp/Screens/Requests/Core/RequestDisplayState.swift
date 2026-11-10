@@ -33,19 +33,19 @@ enum RequestDisplayState: Equatable {
 
         var title: String {
             switch self {
-            case .declined: "Declined"
-            case .failed: "Request failed"
+            case .declined: AppLanguage.string(.requestsDetailTitleDeclined)
+            case .failed: AppLanguage.string(.requestsDetailTitleFailed)
             }
         }
     }
 
     var label: String {
         switch self {
-        case .pending: "Pending"
-        case .onTheWay: "On the way"
-        case .inLibrary: "In library"
-        case .needsAttention: "Needs attention"
-        case .unavailable: "Unavailable"
+        case .pending: AppLanguage.string(.requestsShortPending)
+        case .onTheWay: AppLanguage.string(.requestsShortOnTheWay)
+        case .inLibrary: AppLanguage.string(.requestsShortInLibrary)
+        case .needsAttention: AppLanguage.string(.requestsShortNeedsAttention)
+        case .unavailable: AppLanguage.string(.requestsShortUnavailable)
         }
     }
 
@@ -71,13 +71,13 @@ enum RequestDisplayState: Equatable {
     /// than the chip.
     var detailTitle: String {
         switch self {
-        case .pending: "Requested · Pending"
-        case .onTheWay: "On the way"
-        case .inLibrary: "In your library"
+        case .pending: AppLanguage.string(.requestsDetailTitlePending)
+        case .onTheWay: AppLanguage.string(.requestsDetailTitleOnTheWay)
+        case .inLibrary: AppLanguage.string(.requestsDetailTitleInLibrary)
         case .needsAttention(let attention, let reason):
             RequestErrorCopy.message(forToken: reason).map { "\(attention.title) · \($0)" } ?? attention.title
         case .unavailable(let reason):
-            RequestErrorCopy.message(forToken: reason) ?? "Unavailable"
+            RequestErrorCopy.message(forToken: reason) ?? AppLanguage.string(.requestsDetailTitleUnavailable)
         }
     }
 

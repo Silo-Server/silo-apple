@@ -40,7 +40,7 @@ struct SidebarToggleButton: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Open sidebar")
+            .accessibilityLabel(.shellSidebarOpen)
         } else if reservesSpace {
             Color.clear
                 .frame(

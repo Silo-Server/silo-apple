@@ -2,6 +2,7 @@ import SwiftUI
 
 /// "Who's watching?" profile picker over the shared backdrop.
 struct ProfileSelectionView: View {
+    @Environment(\.locale) private var locale
     var router: AppRouter
     @State private var viewModel = ProfileSelectionViewModel()
     @State private var launchPreferences = ProfileLaunchPreferences.shared
@@ -112,28 +113,29 @@ struct ProfileSelectionView: View {
             if accepts { restoreFocus() }
         }
         .alert(
-            rememberOfferTitle,
+            Text(rememberOfferTitle),
             isPresented: Binding(
                 get: { viewModel.rememberOffer != nil },
                 // Only the buttons answer: Menu runs the cancel button's action.
                 set: { _ in }
             )
         ) {
-            Button("Remember") {
+            Button(.launchOfferRemember) {
                 viewModel.answerRememberOffer(remember: true, router: router)
             }
-            Button("Ask Every Time", role: .cancel) {
+            Button(.launchOfferAsk, role: .cancel) {
                 viewModel.answerRememberOffer(remember: false, router: router)
             }
         } message: {
-            Text("Silo can skip Who's Watching and open this profile when it starts on this Apple TV. You can change this later in Settings > General > Profile Selection.")
+            Text(.profilesRememberOfferBodyAppleTv)
         }
         #endif
     }
 
     #if os(tvOS)
-    private var rememberOfferTitle: String {
-        "Open \(viewModel.rememberOffer?.name ?? "this profile") automatically?"
+    private var rememberOfferTitle: LocalizedStringResource {
+        guard let name = viewModel.rememberOffer?.name else { return .profilesRememberOfferTitleUnnamed }
+        return .launchOfferTitle(name)
     }
 
     /// The picker's controls are on screen and nothing covers them: not the
@@ -230,7 +232,7 @@ struct ProfileSelectionView: View {
     @ViewBuilder
     private var pickerContent: some View {
         if showsLoading {
-            LoadingView(message: "Loading profiles...")
+            LoadingView(message: AppLanguage.string(.profilesLoading))
         } else if let error = viewModel.error, viewModel.profiles.isEmpty {
             #if os(tvOS)
             // Apple TV shows refusals it can't fix here, such as a temporary
@@ -320,7 +322,7 @@ struct ProfileSelectionView: View {
 
     private var header: some View {
         #if os(tvOS)
-        Text("Who's watching?")
+        Text(.profilesHeadline)
             .font(.system(size: titleSize, weight: .heavy))
             .kerning(-titleSize * 0.025)
             .foregroundStyle(Color.siloOnSurface)
@@ -329,14 +331,14 @@ struct ProfileSelectionView: View {
             .frame(maxWidth: .infinity)
             .accessibilityAddTraits(.isHeader)
         #else
-        MarqueeHeadline(title: "Who's watching?", alignment: .center)
+        MarqueeHeadline(title: AppLanguage.string(.profilesHeadline), alignment: .center)
         #endif
     }
 
     /// Which account these profiles belong to. The line keeps its height
     /// while the account loads so the picker doesn't shift when it appears.
     private var accountLine: some View {
-        Text(viewModel.accountName.map { "Signed in as \($0)" } ?? " ")
+        (viewModel.accountName.map { Text(.profilesSignedInAs($0)) } ?? Text(verbatim: " "))
             .font(.system(size: MarqueeMetrics.leadFont))
             .foregroundStyle(Color.siloOnSurface.opacity(0.62))
             .lineLimit(1)
@@ -353,9 +355,9 @@ struct ProfileSelectionView: View {
                 router.showChangeAccount()
             } label: {
                 #if os(tvOS)
-                Label("Change account", systemImage: "person.2")
+                Label(.profilesChangeAccount, systemImage: "person.2")
                 #else
-                Label("Change Account", systemImage: "person.2")
+                Label(.profilesFooterChangeAccount, systemImage: "person.2")
                 #endif
             }
             .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
@@ -369,7 +371,7 @@ struct ProfileSelectionView: View {
                 #endif
                 router.signOutAndReset()
             } label: {
-                Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+                Label(.commonSignOut, systemImage: "rectangle.portrait.and.arrow.right")
             }
             .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
             #if os(tvOS)
@@ -402,7 +404,7 @@ struct ProfileSelectionView: View {
                 }
                 .focused($pickerFocus, equals: .profile(profile.id))
             }
-            AddProfileTile(title: "Add") {
+            AddProfileTile(title: .profilesAdd) {
                 returnFocus = .add
                 handleAddProfileTap()
             }
@@ -476,7 +478,7 @@ struct ProfileSelectionView: View {
                                     handleProfileTap(profile)
                                 }
                             case .add:
-                                AddProfileTile(size: layout?.addSize ?? 0, title: "Add") { handleAddProfileTap() }
+                                AddProfileTile(size: layout?.addSize ?? 0, title: .profilesAdd) { handleAddProfileTap() }
                             }
                         }
                         .frame(width: layout?.columnWidth ?? 0)
@@ -516,7 +518,7 @@ struct ProfileSelectionView: View {
         guard let primaryProfile = viewModel.primaryProfile else {
             viewModel.error = ErrorState(
                 statusCode: nil,
-                message: "Couldn't find the primary profile needed to create another profile."
+                message: AppLanguage.string(.profilesErrorNoPrimaryCreate)
             )
             return
         }
@@ -604,7 +606,7 @@ struct ProfileSelectionView: View {
                 isVerifyingPIN = false
                 if case ProfileTransitionError.incorrectPIN = error {
                     wrongPINCount += 1
-                    pinError = "Wrong PIN. Try again."
+                    pinError = AppLanguage.string(.pinWrong)
                 } else if case ProfileTransitionError.pinLockedOut = error {
                     // Clears the entry; the lockout is not another wrong PIN.
                     wrongPINCount += 1

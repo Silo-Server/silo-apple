@@ -45,7 +45,7 @@ enum PersonalStateMutationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .held: return PersonalStateNotice.heldMessage
-        case .inFlight: return "Another change to this item is still being saved."
+        case .inFlight: return AppLanguage.string(.errorsApplePersonalStateInFlight)
         }
     }
 }

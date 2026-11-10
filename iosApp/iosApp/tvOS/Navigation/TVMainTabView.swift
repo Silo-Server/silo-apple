@@ -31,6 +31,7 @@ private enum TVPersonalRootDestination: Hashable {
 /// Music · Audiobooks · For You · Calendar`, where each library-type tab
 /// appears only if the profile can see at least one library of that type.
 struct TVMainTabView: View {
+    @Environment(\.locale) private var locale
     @Bindable var router: AppRouter
     @State private var selectedRoot: TVRootDestination = .home
     /// Watchlist, Favorites, and Requests are root-shell pages rather than
@@ -729,7 +730,7 @@ struct TVMainTabView: View {
 
     private func profilePanel(isActive: Bool) -> some View {
         TVProfileDropdown(
-            profileName: currentProfile?.name ?? "Profile",
+            profileName: currentProfile?.name ?? AppLanguage.string(.topBarProfileFallback),
             avatar: currentProfile?.avatarEmoji,
             avatarImageUrl: currentProfile?.avatarImageUrl,
             serverHost: profileMenuServerLine,
@@ -1424,7 +1425,7 @@ struct TVMainTabView: View {
             // `.needsLogin` and replaces this view tree.
             TVServerSetupView(router: router)
         default:
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloBackground()
         }
     }

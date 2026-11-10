@@ -7,8 +7,8 @@ enum AccountSwitchError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .serverSwitchFailed: "Couldn't switch to that server. Try again."
-        case .accountUnavailable: "That account needs to sign in again."
+        case .serverSwitchFailed: AppLanguage.string(.accountErrorSwitchServerFailed)
+        case .accountUnavailable: AppLanguage.string(.accountErrorNeedsSignIn)
         }
     }
 }

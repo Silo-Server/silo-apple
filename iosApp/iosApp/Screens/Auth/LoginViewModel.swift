@@ -117,11 +117,11 @@ final class LoginViewModel {
     @MainActor
     func login(router: AppRouter) async -> Bool {
         guard !username.trimmingCharacters(in: .whitespaces).isEmpty else {
-            error = FormError("Please enter your username.", field: .username)
+            error = FormError(AppLanguage.string(.signInErrorUsernameMissing), field: .username)
             return false
         }
         guard !password.isEmpty else {
-            error = FormError("Please enter your password.")
+            error = FormError(AppLanguage.string(.signInErrorPasswordMissing))
             return false
         }
 
@@ -258,12 +258,12 @@ final class LoginViewModel {
         }
         switch status {
         case 401:
-            let wrong = "Incorrect username or password."
-            return phoneHint.map { "\(wrong) \($0)" } ?? wrong
+            return phoneHint.map { AppLanguage.string(.signInErrorInvalidWithHint($0)) }
+                ?? AppLanguage.string(.tvSignInErrorInvalidCredentials)
         case 403:
-            return "This account can't sign in. Contact your server administrator."
+            return AppLanguage.string(.signInErrorCantSignIn)
         case 400, 422:
-            return "Check your username and password, then try again."
+            return AppLanguage.string(.signInErrorCheckCredentials)
         case 429:
             return rateLimitedMessage
         default:
@@ -290,17 +290,17 @@ final class LoginViewModel {
     /// offers exactly one.
     nonisolated static func localLoginDisabledText(browserProviders: [APIv2AuthProvider],
                                                    offersPhoneRoute: Bool = true) -> String {
-        let off = "Password sign-in is turned off on this server."
         #if os(tvOS)
-        return offersPhoneRoute ? "\(off) Use your phone instead." : off
+        return AppLanguage.string(offersPhoneRoute ? LocalizedStringResource.tvSignInErrorLocalLoginDisabled : .signInErrorPasswordOff)
         #else
         switch browserProviders.count {
-        case 0: return off
-        case 1: return "\(off) Sign in with \(SignInOptions.providerName(for: browserProviders[0])) instead."
-        default: return "\(off) Use a sign-in provider above instead."
+        case 0: return AppLanguage.string(.signInErrorPasswordOff)
+        case 1:
+            return AppLanguage.string(.signInErrorPasswordOffUseProvider(SignInOptions.providerName(for: browserProviders[0])))
+        default: return AppLanguage.string(.signInErrorPasswordOffUseProviderAbove)
         }
         #endif
     }
 
-    nonisolated static let rateLimitedMessage = "Too many sign-in attempts. Wait a moment, then try again."
+    nonisolated static var rateLimitedMessage: String { AppLanguage.string(.signInErrorTooManyAttempts) }
 }

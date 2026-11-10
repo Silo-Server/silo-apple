@@ -60,16 +60,19 @@ struct MarqueeWaitingDots: View {
 /// each, with a small picture of exactly that action. Short titles only, so
 /// they read from across the room.
 struct MarqueeTVSetupSteps: View {
+    /// Re-renders the spoken step labels, which resolve in code, on a language switch.
+    @Environment(\.locale) private var locale
+
     var body: some View {
         VStack(alignment: .leading, spacing: 30) {
-            step(1, "Open Silo on your phone") { SetupAppIcon() }
-            step(2, "Tap Set Up") { SetupCardPicture() }
-            step(3, "Finish on your phone") { SetupDonePicture() }
+            step(1, .setupStepOpen) { SetupAppIcon() }
+            step(2, .setupStepTap) { SetupCardPicture() }
+            step(3, .setupStepFinish) { SetupDonePicture() }
         }
         .frame(width: 700, alignment: .leading)
     }
 
-    private func step(_ number: Int, _ title: String, @ViewBuilder picture: () -> some View) -> some View {
+    private func step(_ number: Int, _ title: LocalizedStringResource, @ViewBuilder picture: () -> some View) -> some View {
         HStack(spacing: 34) {
             RoundedRectangle(cornerRadius: 34, style: .continuous)
                 .fill(Color.white.opacity(0.06))
@@ -95,7 +98,7 @@ struct MarqueeTVSetupSteps: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Step \(number): \(title)")
+        .accessibilityLabel(.setupStepAudio("\(number)", AppLanguage.string(title)))
     }
 }
 
@@ -122,7 +125,7 @@ private struct SetupCardPicture: View {
         VStack(spacing: 8) {
             Capsule().fill(Color.white.opacity(0.3)).frame(width: 80, height: 8)
             Capsule().fill(Color.white.opacity(0.16)).frame(width: 56, height: 8)
-            Text("Set Up")
+            Text(.setupStepSetUp)
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(.black)
                 .frame(maxWidth: .infinity)

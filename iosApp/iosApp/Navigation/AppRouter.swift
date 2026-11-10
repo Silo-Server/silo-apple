@@ -1020,7 +1020,7 @@ final class AppRouter {
         /// The line the sign-in screen shows for this notice.
         func message(serverName: String) -> String {
             switch self {
-            case .sessionExpired: "You were signed out of \(serverName). Sign in again."
+            case .sessionExpired: AppLanguage.string(.signInExpired(serverName))
             }
         }
     }
@@ -1189,7 +1189,7 @@ final class AppRouter {
             if ServerRegistry.shared.activeServerId != server.id {
                 guard await ServerRegistry.shared.switchTo(serverId: server.id, resolveDestinationProfile: true) else {
                     pendingDeviceApproval = nil
-                    accountActionError = "Couldn't switch to that server. Try again."
+                    accountActionError = AppLanguage.string(.accountErrorSwitchServerFailed)
                     return
                 }
             }

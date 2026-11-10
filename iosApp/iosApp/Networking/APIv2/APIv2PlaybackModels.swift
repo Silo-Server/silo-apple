@@ -236,7 +236,8 @@ struct APIv2PlaybackCapabilities: Decodable {
                         PlaybackProtocolV3.headerAuthenticatedMediaFeature, PlaybackSequencedContract.feature]
         guard protocolVersions.contains(PlaybackProtocolV3.version), required.allSatisfy(features.contains) else {
             throw PlaybackV3TerminalFailure(reason: "server_upgrade_required",
-                message: UpdateRequirement.serverMessage, retryable: false)
+                message: AppLanguage.inEnglish { UpdateRequirement.serverMessage }, retryable: false,
+                displayMessage: UpdateRequirement.serverMessage)
         }
         guard let installationId, !installationId.isEmpty else { throw Self.notConfigured }
         return installationId

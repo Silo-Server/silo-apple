@@ -24,9 +24,9 @@ enum APIv2SubtitleRequestError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidMediaFile: return "Subtitle search needs a media file."
-        case .tooManyLanguages: return "Search at most 100 subtitle languages at a time."
-        case .outcomeUnknownOwnerChanged: return "The account changed before the subtitle download finished."
+        case .invalidMediaFile: return AppLanguage.string(.errorsAppleSubtitlesInvalidMediaFile)
+        case .tooManyLanguages: return AppLanguage.string(.errorsAppleSubtitlesTooManyLanguages)
+        case .outcomeUnknownOwnerChanged: return AppLanguage.string(.errorsAppleSubtitlesOutcomeUnknownOwnerChanged)
         }
     }
 }

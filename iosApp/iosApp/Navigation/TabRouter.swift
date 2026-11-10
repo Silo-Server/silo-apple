@@ -21,6 +21,23 @@ enum AppTab: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// The tab's label on the iPhone tab bar and the iPad and Mac sidebars,
+    /// in the app language. The raw value stays an English identifier.
+    var title: String {
+        switch self {
+        case .home: return AppLanguage.string(.tabHome)
+        case .search: return AppLanguage.string(.tabSearch)
+        case .libraries: return AppLanguage.string(.shellTabLibraries)
+        case .recommendations: return AppLanguage.string(.topBarForYou)
+        case .calendar: return AppLanguage.string(.topBarCalendar)
+        case .downloads: return AppLanguage.string(.tabDownloads)
+        case .requests: return AppLanguage.string(.menuRequests)
+        case .settings: return AppLanguage.string(.menuSettings)
+        // Apple TV-only shortcuts that never become a labelled destination.
+        case .switchProfile, .switchServer: return rawValue
+        }
+    }
+
     /// Tabs that should actually be displayed for the current platform.
     /// iOS/iPadOS excludes Search — the phone/tablet shell surfaces search
     /// inline on Home/Libraries/Browse via a magnifying-glass affordance, so
