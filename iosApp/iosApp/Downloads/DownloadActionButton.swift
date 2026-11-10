@@ -31,7 +31,7 @@ struct DownloadActionButton: View {
     /// Guard text for the pre-download confirmation; non-nil presents it.
     @State private var largeDownloadWarning: String?
     /// Short-lived caption above the button; non-nil shows it.
-    @State private var startNotice: String?
+    @State private var startNotice: LocalizedStringResource?
     @State private var startFeedbackCount = 0
     @State private var failFeedbackCount = 0
 
@@ -77,28 +77,32 @@ struct DownloadActionButton: View {
                 )
             }
             .confirmationDialog(
-                cancelPrompt(for: record),
+                Text(cancelPrompt(for: record)),
                 isPresented: $confirmingCancel,
                 titleVisibility: .visible
             ) {
-                Button("Discard Download", role: .destructive, action: delete)
-                Button("Keep Download", role: .cancel) {}
+                Button(.downloadsActionDiscard, role: .destructive, action: delete)
+                Button(.downloadsActionKeep, role: .cancel) {}
             }
             // Keep the large-file gate separate from the cancel menu. Two
             // confirmation dialogs on one control compete for the same SwiftUI
             // presentation host and can consume the tap without showing either.
             .alert(
-                "Large Download",
+                Text(.downloadsLargeTitle),
                 isPresented: Binding(
                     get: { largeDownloadWarning != nil },
                     set: { if !$0 { largeDownloadWarning = nil } }
                 )
             ) {
-                Button("Download Anyway", action: startWithDefaults)
-                Button("Choose Options…") { showOptions = true }
-                Button("Cancel", role: .cancel) {}
+                Button(.downloadsLargeDownloadAnyway, action: startWithDefaults)
+                Button(.downloadsLargeChooseOptions) { showOptions = true }
+                Button(.commonCancel, role: .cancel) {}
             } message: {
-                Text("\(largeDownloadWarning ?? "This download is large.") Download anyway?")
+                if let largeDownloadWarning {
+                    Text(.downloadsLargeMessage(largeDownloadWarning))
+                } else {
+                    Text(.downloadsLargeMessageDefault)
+                }
             }
     }
 
@@ -106,7 +110,7 @@ struct DownloadActionButton: View {
     private func content(record: DownloadRecord?) -> some View {
         if isRegistrationPending, record == nil {
             circleLabel(icon: "arrow.down.circle", record: record, active: true, showSpinner: true)
-                .accessibilityLabel("Registering download")
+                .accessibilityLabel(Text(.downloadsActionRegistering))
                 .allowsHitTesting(false)
         } else {
             switch record?.localStatus {
@@ -115,83 +119,83 @@ struct DownloadActionButton: View {
                     circleLabel(icon: "arrow.down.to.line", record: record, active: false)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Download")
+                .accessibilityLabel(Text(.audiobookDetailDownload))
                 .contextMenu {
                     Button { showOptions = true } label: {
-                        Label("Download Options…", systemImage: "slider.horizontal.3")
+                        Label(.downloadsActionOptions, systemImage: "slider.horizontal.3")
                     }
                 }
 
             case .downloading:
                 Menu {
                     Button(action: pause) {
-                        Label("Pause", systemImage: "pause")
+                        Label(.downloadsActionPause, systemImage: "pause")
                     }
                     Button(role: .destructive) { confirmingCancel = true } label: {
-                        Label("Cancel Download", systemImage: "xmark.circle")
+                        Label(.audiobookDetailCancelDownload, systemImage: "xmark.circle")
                     }
                 } label: {
                     progressLabel(record: record, paused: false)
                 }
-                .accessibilityLabel("Downloading")
+                .accessibilityLabel(Text(.downloadsStatusDownloading))
                 .accessibilityValue(progressAccessibilityValue(record))
 
             case .paused:
                 Menu {
                     Button(action: resume) {
-                        Label("Resume", systemImage: "play")
+                        Label(.downloadsActionResume, systemImage: "play")
                     }
                     Button(role: .destructive) { confirmingCancel = true } label: {
-                        Label("Cancel Download", systemImage: "xmark.circle")
+                        Label(.audiobookDetailCancelDownload, systemImage: "xmark.circle")
                     }
                 } label: {
                     progressLabel(record: record, paused: true)
                 }
-                .accessibilityLabel("Download paused")
+                .accessibilityLabel(Text(.downloadsActionPausedLabel))
                 .accessibilityValue(progressAccessibilityValue(record))
 
             case .registering, .preparing, .queued, .fetchingAssets:
                 Menu {
                     Button(role: .destructive) { confirmingCancel = true } label: {
-                        Label("Cancel Download", systemImage: "xmark.circle")
+                        Label(.audiobookDetailCancelDownload, systemImage: "xmark.circle")
                     }
                 } label: {
                     circleLabel(icon: "arrow.down.circle", record: record, active: true, showSpinner: true)
                 }
-                .accessibilityLabel("Preparing download")
+                .accessibilityLabel(Text(.downloadsActionPreparingLabel))
 
             case .completed:
                 Menu {
                     Button(role: .destructive, action: delete) {
-                        Label("Delete Download", systemImage: "trash")
+                        Label(.downloadsActionDelete, systemImage: "trash")
                     }
                 } label: {
                     circleLabel(icon: "checkmark.circle.fill", record: record, active: true, tint: .green)
                 }
-                .accessibilityLabel("Downloaded")
+                .accessibilityLabel(Text(.audiobookDetailDownloaded))
 
             case .revoked:
                 Menu {
                     Button(role: .destructive, action: delete) {
-                        Label("Delete Download", systemImage: "trash")
+                        Label(.downloadsActionDelete, systemImage: "trash")
                     }
                 } label: {
                     circleLabel(icon: "checkmark.circle", record: record, active: true, tint: .yellow)
                 }
-                .accessibilityLabel("Downloaded (re-download no longer allowed)")
+                .accessibilityLabel(Text(.downloadsActionRevokedLabel))
 
             case .failed:
                 Menu {
                     Button { showOptions = true } label: {
-                        Label("Retry With Options", systemImage: "arrow.clockwise")
+                        Label(.downloadsActionRetryWithOptions, systemImage: "arrow.clockwise")
                     }
                     Button(role: .destructive, action: delete) {
-                        Label("Remove", systemImage: "trash")
+                        Label(.downloadsActionRemove, systemImage: "trash")
                     }
                 } label: {
                     circleLabel(icon: "exclamationmark.triangle", record: record, active: true, tint: .orange)
                 }
-                .accessibilityLabel("Download failed")
+                .accessibilityLabel(Text(.downloadsActionFailedLabel))
             }
         }
     }
@@ -229,7 +233,7 @@ struct DownloadActionButton: View {
     /// success haptic with a short-lived caption above the button.
     private func announceStart() {
         startFeedbackCount += 1
-        showNotice("Download started")
+        showNotice(.downloadsActionStarted)
     }
 
     /// A registration that fails before a record exists (offline, 4xx)
@@ -237,10 +241,10 @@ struct DownloadActionButton: View {
     /// or the tap silently evaporates.
     private func announceStartFailure() {
         failFeedbackCount += 1
-        showNotice("Couldn't start download")
+        showNotice(.downloadsActionStartFailed)
     }
 
-    private func showNotice(_ text: String) {
+    private func showNotice(_ text: LocalizedStringResource) {
         withAnimation(.easeOut(duration: 0.2)) { startNotice = text }
         Task {
             try? await Task.sleep(for: .seconds(2))
@@ -309,11 +313,11 @@ struct DownloadActionButton: View {
 
     /// States what a destructive cancel throws away; bytes are omitted when
     /// nothing has transferred yet.
-    private func cancelPrompt(for record: DownloadRecord?) -> String {
+    private func cancelPrompt(for record: DownloadRecord?) -> LocalizedStringResource {
         if let bytes = record?.bytesDownloaded, bytes > 0 {
-            return "Discard \(DownloadFormatting.bytes(bytes)) of downloaded data?"
+            return .downloadsCancelPromptDiscard(DownloadFormatting.bytes(bytes))
         }
-        return "Cancel this download?"
+        return .downloadsCancelPrompt
     }
 
     private static func episodeSubtitle(
@@ -369,15 +373,15 @@ struct DownloadActionButton: View {
 
     /// A static "Download" caption under a green tick would misreport the
     /// state, so the caption tracks the record like the glyph does.
-    private func captionText(for record: DownloadRecord?) -> String {
-        if isRegistrationPending, record == nil { return "Preparing" }
+    private func captionText(for record: DownloadRecord?) -> LocalizedStringResource {
+        if isRegistrationPending, record == nil { return .downloadsCaptionPreparing }
         switch record?.localStatus {
-        case .none: return "Download"
-        case .downloading: return "Downloading"
-        case .paused: return "Paused"
-        case .registering, .preparing, .queued, .fetchingAssets: return "Preparing"
-        case .completed, .revoked: return "Downloaded"
-        case .failed: return "Failed"
+        case .none: return .audiobookDetailDownload
+        case .downloading: return .downloadsStatusDownloading
+        case .paused: return .downloadsStatusPaused
+        case .registering, .preparing, .queued, .fetchingAssets: return .downloadsCaptionPreparing
+        case .completed, .revoked: return .audiobookDetailDownloaded
+        case .failed: return .downloadsStatusFailed
         }
     }
 
@@ -435,15 +439,15 @@ struct DownloadActionButton: View {
                 .font(.system(size: 8, weight: .bold))
                 .foregroundColor(.white)
         } else {
-            Text("\(progressPercent(fraction))")
+            Text(verbatim: "\(progressPercent(fraction))")
                 .font(.system(size: 8, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .foregroundColor(.white)
         }
     }
 
-    private func progressAccessibilityValue(_ record: DownloadRecord?) -> String {
-        "\(progressPercent(record?.progressFraction ?? 0)) percent"
+    private func progressAccessibilityValue(_ record: DownloadRecord?) -> Text {
+        Text(.downloadsActionProgressValue("\(progressPercent(record?.progressFraction ?? 0))"))
     }
 
     private func progressPercent(_ fraction: Double) -> Int {

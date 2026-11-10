@@ -9,6 +9,8 @@ struct SubtitleSyncIndicator: View {
     let notice: SubtitleSyncNotice
     var onDismiss: (() -> Void)?
 
+    @Environment(\.locale) private var locale
+
     var body: some View {
         HStack(alignment: .top, spacing: Metrics.spacing) {
             icon
@@ -40,7 +42,7 @@ struct SubtitleSyncIndicator: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Dismiss")
+                .accessibilityLabel(Text(.playerSubtitleSyncDismiss))
             }
             #endif
         }
@@ -100,7 +102,9 @@ struct SubtitleSyncIndicator: View {
     private var accessibilityText: String {
         var parts = [notice.title]
         if let detail = notice.detail { parts.append(detail) }
-        if notice.tone == .progress, let percent = notice.percent { parts.append("\(percent) percent") }
+        if notice.tone == .progress, let percent = notice.percent {
+            parts.append(AppLanguage.string(.playerSubtitleSyncPercentSpoken(String(percent)), locale: locale))
+        }
         return parts.joined(separator: ". ")
     }
 
@@ -136,14 +140,14 @@ struct SubtitleSyncProgressBar: View {
             ProgressView(value: Double(min(100, max(0, percent))), total: 100)
                 .progressViewStyle(.linear)
                 .tint(.white.opacity(0.85))
-            Text("\(percent)%")
+            Text(verbatim: "\(percent)%")
                 .font(Metrics.font.monospacedDigit())
                 .foregroundStyle(Color.siloSecondaryText)
                 .frame(minWidth: Metrics.labelWidth, alignment: .trailing)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Subtitle sync progress")
-        .accessibilityValue("\(percent) percent")
+        .accessibilityLabel(Text(.playerSubtitleSyncProgressLabel))
+        .accessibilityValue(Text(.playerSubtitleSyncPercentSpoken(String(percent))))
     }
 
     private enum Metrics {

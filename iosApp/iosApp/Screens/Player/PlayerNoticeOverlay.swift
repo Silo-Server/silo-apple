@@ -182,7 +182,7 @@ extension BufferingQualityController.PillKind {
     /// The prompt's second line, under its title.
     var detail: String? {
         switch self {
-        case .prompt: return "Try a lower quality to keep watching"
+        case .prompt: return AppLanguage.string(.bufferingPromptMessage)
         case .undo: return nil
         }
     }
@@ -350,8 +350,8 @@ extension BufferingQualityController.Pill {
 
 extension PlayerNotice {
     static let preview = PlayerNotice(
-        title: "Subtitles ready",
-        message: "English subtitles are now available.",
+        title: "Subtitles ready", // i18n-ignore: debug preview data
+        message: "English subtitles are now available.", // i18n-ignore: debug preview data
         tone: .info
     )
 }

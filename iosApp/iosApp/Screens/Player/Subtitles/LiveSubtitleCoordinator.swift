@@ -427,7 +427,7 @@ final class LiveSubtitleCoordinator {
 
     private func onFailed(_ failed: PlaybackRealtimeSubtitleEvent.Failed) {
         guard isOwnedAndActive(failed.trackKey) else { return }
-        failOut(message: failed.message ?? "Subtitle translation failed.")
+        failOut(message: failed.message ?? AppLanguage.string(.playerAiTranslateFailed))
     }
 
     // MARK: - Failure / timeout (shared terminal path)
@@ -444,7 +444,7 @@ final class LiveSubtitleCoordinator {
                 return
             }
             Self.logger.warning("[AI-LIVE] safety timeout — no cues within \(Self.safetyResumeSeconds, privacy: .public)s, resuming")
-            self.failOut(message: "Couldn't start live subtitles. Try again.")
+            self.failOut(message: AppLanguage.string(.playerLiveSubtitlesStartFailed))
             self.onSafetyTimeout?()
         }
     }
@@ -484,7 +484,7 @@ final class LiveSubtitleCoordinator {
 
     /// Called by the controller when the live driver gives up (socket lost and
     /// the poller never reached completion). Same terminal path as `failed`.
-    func liveDriverDidGiveUp(message: String = "Live subtitles were interrupted.") {
+    func liveDriverDidGiveUp(message: String = AppLanguage.string(.playerLiveSubtitlesInterrupted)) {
         guard isActive else { return }
         failOut(message: message)
     }

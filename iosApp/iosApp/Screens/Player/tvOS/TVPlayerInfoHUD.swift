@@ -37,14 +37,14 @@ struct TVPlayerInfoHUD: View {
     enum Tab: Hashable, CaseIterable {
         case info, stats, video, audio, subtitles, chapters
 
-        var title: String {
+        var title: LocalizedStringResource {
             switch self {
-            case .info:      return "Info"
-            case .stats:     return "Stats"
-            case .video:     return "Video"
-            case .audio:     return "Audio"
-            case .subtitles: return "Subtitles"
-            case .chapters:  return "Chapters"
+            case .info:      return .optionsTabInfo
+            case .stats:     return .optionsTabStats
+            case .video:     return .optionsTabVideo
+            case .audio:     return .optionsTabAudio
+            case .subtitles: return .optionsTabSubtitles
+            case .chapters:  return .optionsTabChapters
             }
         }
     }
@@ -240,7 +240,7 @@ struct TVPlayerInfoHUD: View {
 // MARK: - Tab pill
 
 private struct TabPill: View {
-    let title: String
+    let title: LocalizedStringResource
     let isSelected: Bool
     @FocusState.Binding var focusedTab: TVPlayerInfoHUD.Tab?
     let tab: TVPlayerInfoHUD.Tab
@@ -260,7 +260,7 @@ private struct TabPill: View {
         .onChange(of: isFocused) { _, focused in
             if focused { onSelect() }
         }
-        .accessibilityLabel(title)
+        .accessibilityLabel(Text(title))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
@@ -312,20 +312,21 @@ private struct HUDTabPillBody: View {
 // MARK: - Shared column header
 
 private struct PaneColumn<Content: View>: View {
-    let header: String
+    let header: LocalizedStringResource
     let content: () -> Content
 
-    init(_ header: String, @ViewBuilder content: @escaping () -> Content) {
+    init(_ header: LocalizedStringResource, @ViewBuilder content: @escaping () -> Content) {
         self.header = header
         self.content = content
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(header.uppercased())
+            Text(header)
                 .font(.system(size: 14, weight: .semibold))
                 .tracking(1.6)
                 .foregroundStyle(.white.opacity(0.5))
+                .textCase(.uppercase)
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -333,7 +334,7 @@ private struct PaneColumn<Content: View>: View {
 }
 
 private struct HUDScrollablePane<Content: View>: View {
-    let accessibilityLabel: String
+    let accessibilityLabel: LocalizedStringResource
     let scrollTargetIDs: [String]
     @Binding var isAtTop: Bool
     let onMoveToTabs: () -> Void
@@ -343,7 +344,7 @@ private struct HUDScrollablePane<Content: View>: View {
     @FocusState private var isFocused: Bool
 
     init(
-        accessibilityLabel: String,
+        accessibilityLabel: LocalizedStringResource,
         scrollTargetIDs: [String] = [],
         isAtTop: Binding<Bool>,
         onMoveToTabs: @escaping () -> Void,
@@ -373,7 +374,7 @@ private struct HUDScrollablePane<Content: View>: View {
             )
             .scaleEffect(isFocused ? 1.01 : 1)
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
-            .accessibilityLabel(accessibilityLabel)
+            .accessibilityLabel(Text(accessibilityLabel))
             .onMoveCommand { direction in
                 handleMove(direction, proxy: proxy)
             }
@@ -421,7 +422,7 @@ private struct HUDScrollablePane<Content: View>: View {
 
 /// Right-aligned "label — value" row used in the Info and options columns.
 private struct LabelValueRow: View {
-    let label: String
+    let label: LocalizedStringResource
     let value: String
 
     var body: some View {
@@ -491,7 +492,7 @@ private struct HUDRowButtonBody: View {
 /// Chevron row that opens a picker dialog. Label/value colors invert when
 /// the row is focused; movement and Select handling are native.
 private struct HUDSettingRow: View {
-    let label: String
+    let label: LocalizedStringResource
     let value: String
     /// Optional secondary line under the label. Used to explain a disabled
     /// row — the trailing `value` slot is only ~165pt wide at 22pt semibold,
@@ -515,7 +516,7 @@ private struct HUDSettingRow: View {
             )
         }
         .buttonStyle(HUDRowButtonStyle())
-        .accessibilityLabel(label)
+        .accessibilityLabel(Text(label))
         .accessibilityValue(value)
     }
 }
@@ -523,27 +524,29 @@ private struct HUDSettingRow: View {
 /// Boolean row that flips on Select — one press instead of the previous
 /// open-dialog → pick → close round-trip.
 private struct HUDToggleRow: View {
-    let label: String
+    let label: LocalizedStringResource
     let isOn: Bool
     let onToggle: (Bool) -> Void
+
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Button { onToggle(!isOn) } label: {
             HUDSettingRowLabel(
                 label: label,
-                value: HUDPickerOptions.boolLabel(isOn),
+                value: AppLanguage.string(HUDPickerOptions.boolLabel(isOn), locale: locale),
                 showsChevron: false
             )
         }
         .buttonStyle(HUDRowButtonStyle())
-        .accessibilityLabel(label)
-        .accessibilityValue(HUDPickerOptions.boolLabel(isOn))
+        .accessibilityLabel(Text(label))
+        .accessibilityValue(Text(HUDPickerOptions.boolLabel(isOn)))
         .accessibilityAddTraits(.isToggle)
     }
 }
 
 private struct HUDSettingRowLabel: View {
-    let label: String
+    let label: LocalizedStringResource
     let value: String
     var detail: String? = nil
     var colorHex: String? = nil
@@ -599,12 +602,14 @@ private struct InfoPane: View {
     @Binding var isAtTop: Bool
     let onMoveToTabs: () -> Void
 
+    @Environment(\.locale) private var locale
+
     private static let topAnchor = "info.top"
     private static let bottomAnchor = "info.bottom"
 
     var body: some View {
         HUDScrollablePane(
-            accessibilityLabel: "Info details",
+            accessibilityLabel: .playerHudInfoDetails,
             // Top/bottom anchors so Down can page a long overview to its end
             // and Up returns to the top, then to the tabs. Without any targets
             // the pane was a dead focus stop that couldn't scroll at all.
@@ -615,7 +620,7 @@ private struct InfoPane: View {
             VStack(alignment: .leading, spacing: 0) {
                 Color.clear.frame(height: 0).id(Self.topAnchor)
                 HStack(alignment: .top, spacing: 48) {
-                PaneColumn("Title") {
+                PaneColumn(.playerHudTitle) {
                     if let series = viewModel.metadata.seriesTitle, !series.isEmpty {
                         Text(series.uppercased())
                             .font(.system(size: 16, weight: .semibold))
@@ -646,7 +651,7 @@ private struct InfoPane: View {
                     }
                 }
 
-                PaneColumn("Stream") {
+                PaneColumn(.playerHudStream) {
                     if !viewModel.metadata.badges.isEmpty {
                         HStack(spacing: 8) {
                             ForEach(viewModel.metadata.badges, id: \.self) { badge in
@@ -663,8 +668,8 @@ private struct InfoPane: View {
                         }
                         .padding(.bottom, 4)
                     }
-                    ForEach(streamRows, id: \.0) { row in
-                        LabelValueRow(label: row.0, value: row.1)
+                    ForEach(streamRows, id: \.id) { row in
+                        LabelValueRow(label: row.label, value: row.value)
                     }
                     InfoCurrentChapterRow(viewModel: viewModel)
                 }
@@ -689,21 +694,27 @@ private struct InfoPane: View {
         return bits
     }
 
-    private var streamRows: [(String, String)] {
+    private var streamRows: [(id: String, label: LocalizedStringResource, value: String)] {
         // One concise route line (engine · delivery). The decision trace
         // and full route diagnostics stay in the Stats pane / settings —
         // this pane is the casual "what am I watching" surface.
-        var rows: [(String, String)] = [("Route", viewModel.playbackRouteDisplay)]
+        var rows: [(id: String, label: LocalizedStringResource, value: String)] = [
+            (id: "route", label: .playerHudRoute, value: viewModel.playbackRouteDisplay),
+        ]
         if let audio = viewModel.audioTracks.first(where: { $0.trackId == viewModel.selectedAudioId }) {
             var bits: [String] = []
             if let codec = TrackLabels.audioCodec(audio.codec) { bits.append(codec) }
             if let channels = audio.channelCountLabel { bits.append(channels) }
-            if !bits.isEmpty { rows.append(("Audio", bits.joined(separator: " · "))) }
+            if !bits.isEmpty { rows.append((id: "audio", label: .playerHudAudio, value: bits.joined(separator: " · "))) }
         }
         if let sub = viewModel.subtitleTracks.first(where: { $0.trackId == viewModel.selectedSubtitleId }) {
-            rows.append(("Subtitles", sub.singleLineLabel))
+            rows.append((id: "subtitles", label: .playerHudSubtitles, value: sub.singleLineLabel))
         } else {
-            rows.append(("Subtitles", "Off"))
+            rows.append((
+                id: "subtitles",
+                label: .playerHudSubtitles,
+                value: AppLanguage.string(.playerTracksSubtitlesOff, locale: locale)
+            ))
         }
         return rows
     }
@@ -714,9 +725,11 @@ private struct InfoPane: View {
 private struct InfoCurrentChapterRow: View {
     let viewModel: PlayerViewModel
 
+    @Environment(\.locale) private var locale
+
     var body: some View {
         if let chapter = currentChapterTitle {
-            LabelValueRow(label: "Chapter", value: chapter)
+            LabelValueRow(label: .playerHudChapter, value: chapter)
         }
     }
 
@@ -724,7 +737,7 @@ private struct InfoCurrentChapterRow: View {
         guard !viewModel.chapters.isEmpty,
               let current = viewModel.chapters.last(where: { $0.time <= viewModel.currentTime })
         else { return nil }
-        return current.title ?? "Chapter \(current.index + 1)"
+        return current.title ?? AppLanguage.string(.optionsChapterNumbered(String(current.index + 1)), locale: locale)
     }
 }
 
@@ -740,7 +753,7 @@ private struct StatsPane: View {
 
     var body: some View {
         HUDScrollablePane(
-            accessibilityLabel: "Playback stats",
+            accessibilityLabel: .playerStatsTitle,
             scrollTargetIDs: scrollTargetIDs,
             isAtTop: $isAtTop,
             onMoveToTabs: onMoveToTabs
@@ -788,6 +801,8 @@ private struct StatsPane: View {
 private struct VideoPane: View {
     let viewModel: PlayerViewModel
 
+    @Environment(\.locale) private var locale
+
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: Field?
     @FocusState private var focusedField: Field?
@@ -804,10 +819,10 @@ private struct VideoPane: View {
     var body: some View {
         ZStack {
             HStack(alignment: .top, spacing: 48) {
-                PaneColumn("Playback") {
+                PaneColumn(.playerHudPlayback) {
                     VStack(spacing: 2) {
                         if viewModel.hasQualityChoice {
-                            HUDSettingRow(label: "Quality", value: qualityValue) {
+                            HUDSettingRow(label: .optionsQuality, value: qualityValue) {
                                 // The row stays focusable (disabling a focused
                                 // row would move focus); it reads "Switching..."
                                 // and opens nothing until the switch lands.
@@ -815,7 +830,7 @@ private struct VideoPane: View {
                                 presentPicker(
                                     for: .quality,
                                     HUDPickerPresentation(
-                                        title: "Quality",
+                                        title: .optionsQuality,
                                         options: qualityOptions,
                                         // No row is checked while a fixed saved
                                         // resolution sets the quality.
@@ -828,11 +843,11 @@ private struct VideoPane: View {
                         }
 
                         if !viewModel.isWatchPartyPlayback {
-                            HUDSettingRow(label: "Speed", value: speedLabel(viewModel.settings.playbackSpeed)) {
+                            HUDSettingRow(label: .playerSettingsSpeed, value: speedLabel(viewModel.settings.playbackSpeed)) {
                                 presentPicker(
                                     for: .speed,
                                     HUDPickerPresentation(
-                                        title: "Playback Speed",
+                                        title: .playerHudPickerPlaybackSpeed,
                                         options: Self.speedOptions,
                                         selection: speedID(viewModel.settings.playbackSpeed),
                                         onSelect: { value in
@@ -846,11 +861,11 @@ private struct VideoPane: View {
                             .focused($focusedField, equals: .speed)
                         }
 
-                        HUDSettingRow(label: "Aspect", value: viewModel.settings.videoGravity.label) {
+                        HUDSettingRow(label: .playerHudAspect, value: viewModel.settings.videoGravity.label) {
                             presentPicker(
                                 for: .aspect,
                                 HUDPickerPresentation(
-                                    title: "Aspect",
+                                    title: .playerHudAspect,
                                     options: Self.aspectOptions,
                                     selection: viewModel.settings.videoGravity.rawValue,
                                     onSelect: { value in
@@ -866,17 +881,17 @@ private struct VideoPane: View {
                 }
                 .focusSection()
 
-                PaneColumn("Sync") {
+                PaneColumn(.playerHudSync) {
                     VStack(spacing: 2) {
                         if viewModel.backendCapabilities.supportsSubtitleDelay {
                             HUDSettingRow(
-                                label: "Subtitle delay",
+                                label: .playerSettingsSubtitleDelay,
                                 value: HUDPickerOptions.delayLabel(viewModel.settings.subtitleSyncMs)
                             ) {
                                 presentPicker(
                                     for: .subtitleDelay,
                                     HUDPickerPresentation(
-                                        title: "Subtitle Delay",
+                                        title: .playerSettingsSubtitleDelayTitle,
                                         options: HUDPickerOptions.delayOptions(
                                             from: -2_000,
                                             through: 2_000,
@@ -896,7 +911,7 @@ private struct VideoPane: View {
                         }
 
                         if !viewModel.isWatchPartyPlayback {
-                            HUDToggleRow(label: "Auto-play next", isOn: viewModel.settings.autoPlayNextEpisode) {
+                            HUDToggleRow(label: .optionsAutoplayNext, isOn: viewModel.settings.autoPlayNextEpisode) {
                                 viewModel.settings.setAutoPlayNextEpisode($0)
                             }
                         }
@@ -922,7 +937,7 @@ private struct VideoPane: View {
 
     private var qualityValue: String {
         if viewModel.isQualitySwitching {
-            return "Switching..."
+            return AppLanguage.string(.playerHudQualitySwitching, locale: locale)
         }
         if let error = viewModel.qualitySwitchError, !error.isEmpty {
             return error
@@ -966,8 +981,10 @@ private struct VideoPane: View {
             )
         }
 
-    private static let aspectOptions: [HUDDropdownOption] =
+    /// Computed on each read, so the labels follow the app's language.
+    private static var aspectOptions: [HUDDropdownOption] {
         VideoGravity.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+    }
 }
 
 private struct HUDDropdownOption: Identifiable, Hashable {
@@ -977,14 +994,17 @@ private struct HUDDropdownOption: Identifiable, Hashable {
 }
 
 private enum HUDPickerOptions {
-    static let subtitleSizes: [HUDDropdownOption] =
+    // Computed on each read, so the labels follow the app's language.
+    static var subtitleSizes: [HUDDropdownOption] {
         SubtitleFontSizePreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+    }
 
-    static let subtitlePositions: [HUDDropdownOption] =
+    static var subtitlePositions: [HUDDropdownOption] {
         SubtitlePositionPreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+    }
 
-    static func boolLabel(_ value: Bool) -> String {
-        value ? "On" : "Off"
+    static func boolLabel(_ value: Bool) -> LocalizedStringResource {
+        value ? .optionsOn : .optionsOff
     }
 
     static func delayLabel(_ milliseconds: Int) -> String {
@@ -1008,7 +1028,7 @@ private enum HUDPickerOptions {
 
 private struct HUDPickerPresentation: Identifiable {
     let id = UUID()
-    let title: String
+    let title: LocalizedStringResource
     let options: [HUDDropdownOption]
     let selection: String
     let onSelect: (String) -> Void
@@ -1019,7 +1039,7 @@ private struct HUDPickerPresentation: Identifiable {
 /// keep-visible scrolling are native; focus is seeded onto the current
 /// selection when the dialog appears.
 private struct HUDPickerDialog: View {
-    let title: String
+    let title: LocalizedStringResource
     let options: [HUDDropdownOption]
     let selection: String
     let onSelect: (String) -> Void
@@ -1094,7 +1114,7 @@ private struct HUDPickerOptionRow: View {
         }
         .buttonStyle(HUDRowButtonStyle(isSelected: isSelected))
         .accessibilityLabel(option.label)
-        .accessibilityValue(isSelected ? "Selected" : "")
+        .accessibilityValue(isSelected ? Text(.playerMenuSelected) : Text(verbatim: ""))
     }
 }
 
@@ -1137,6 +1157,8 @@ private struct SubtitleAppearanceDialog: View {
     let viewModel: PlayerViewModel
     let onClose: () -> Void
 
+    @Environment(\.locale) private var locale
+
     @State private var activePicker: HUDPickerPresentation?
     @State private var pickerReturnField: Field?
     @FocusState private var focusedField: Field?
@@ -1161,11 +1183,11 @@ private struct SubtitleAppearanceDialog: View {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 20) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("SUBTITLE APPEARANCE")
+                        Text(.playerHudAppearanceEyebrow)
                             .font(.system(size: 14, weight: .semibold))
                             .tracking(1.6)
                             .foregroundStyle(.white.opacity(0.55))
-                        Text("Style and colors")
+                        Text(.playerHudStyleAndColors)
                             .font(.system(size: 30, weight: .semibold))
                             .foregroundStyle(.white)
                     }
@@ -1176,7 +1198,7 @@ private struct SubtitleAppearanceDialog: View {
                 ScrollView(showsIndicators: true) {
                     VStack(spacing: 2) {
                         HUDToggleRow(
-                            label: "Use device settings",
+                            label: .playerSubtitlesUseDeviceSettings,
                             isOn: viewModel.settings.subtitleMatchesSystemAppearance
                         ) { enabled in
                             viewModel.setSubtitleMatchesSystemAppearance(enabled)
@@ -1185,13 +1207,13 @@ private struct SubtitleAppearanceDialog: View {
                         .id(Field.matchSystem)
 
                         HUDSettingRow(
-                            label: "Style",
+                            label: .playerSubtitlesStyleBackgroundStyle,
                             value: viewModel.settings.subtitleAppearance.backgroundStyle.label
                         ) {
                             presentPicker(
                                 for: .style,
                                 HUDPickerPresentation(
-                                    title: "Subtitle Style",
+                                    title: .playerHudPickerSubtitleStyle,
                                     options: Self.backgroundStyleOptions,
                                     selection: viewModel.settings.subtitleAppearance.backgroundStyle.rawValue,
                                     onSelect: { value in
@@ -1211,13 +1233,13 @@ private struct SubtitleAppearanceDialog: View {
                         .id(Field.style)
 
                         HUDSettingRow(
-                            label: "Font",
+                            label: .playerSubtitlesStyleFont,
                             value: viewModel.settings.subtitleAppearance.fontFamily.label
                         ) {
                             presentPicker(
                                 for: .font,
                                 HUDPickerPresentation(
-                                    title: "Subtitle Font",
+                                    title: .playerHudPickerSubtitleFont,
                                     options: Self.fontFamilyOptions,
                                     selection: viewModel.settings.subtitleAppearance.fontFamily.rawValue,
                                     onSelect: { value in
@@ -1232,13 +1254,13 @@ private struct SubtitleAppearanceDialog: View {
                         .id(Field.font)
 
                         HUDSettingRow(
-                            label: "Size",
+                            label: .playerSubtitlesStyleSize,
                             value: viewModel.settings.subtitleAppearance.fontSize.label
                         ) {
                             presentPicker(
                                 for: .size,
                                 HUDPickerPresentation(
-                                    title: "Subtitle Size",
+                                    title: .playerHudPickerSubtitleSize,
                                     options: HUDPickerOptions.subtitleSizes,
                                     selection: viewModel.settings.subtitleAppearance.fontSize.rawValue,
                                     onSelect: { value in
@@ -1253,14 +1275,14 @@ private struct SubtitleAppearanceDialog: View {
                         .id(Field.size)
 
                         HUDSettingRow(
-                            label: "Text",
+                            label: .playerHudAppearanceText,
                             value: label(for: viewModel.settings.subtitleAppearance.fontColor, in: Self.fontColorOptions),
                             colorHex: viewModel.settings.subtitleAppearance.fontColor
                         ) {
                             presentPicker(
                                 for: .textColor,
                                 HUDPickerPresentation(
-                                    title: "Text Color",
+                                    title: .playerHudPickerTextColor,
                                     options: Self.fontColorOptions,
                                     selection: viewModel.settings.subtitleAppearance.fontColor,
                                     onSelect: { value in
@@ -1273,11 +1295,11 @@ private struct SubtitleAppearanceDialog: View {
                         .id(Field.textColor)
 
                         if viewModel.settings.offersSubtitleTextOpacity {
-                            HUDSettingRow(label: "Text Opacity", value: textOpacityLabel) {
+                            HUDSettingRow(label: .playerSubtitlesStyleTextOpacityLabel, value: textOpacityLabel) {
                                 presentPicker(
                                     for: .textOpacity,
                                     HUDPickerPresentation(
-                                        title: "Text Opacity",
+                                        title: .playerSubtitlesStyleTextOpacityLabel,
                                         options: Self.opacityOptions(
                                             current: viewModel.settings.subtitleAppearance.textOpacity,
                                             lowest: 25
@@ -1296,7 +1318,7 @@ private struct SubtitleAppearanceDialog: View {
                         }
 
                         HUDToggleRow(
-                            label: "Text outline",
+                            label: .playerSubtitlesStyleTextOutline,
                             isOn: viewModel.settings.subtitleAppearance.textOutline
                         ) { enabled in
                             viewModel.updateSubtitleAppearance { $0.textOutline = enabled }
@@ -1305,7 +1327,7 @@ private struct SubtitleAppearanceDialog: View {
                         .id(Field.outlineToggle)
 
                         HUDSettingRow(
-                            label: "Outline",
+                            label: .playerHudSubtitleOutline,
                             value: viewModel.settings.subtitleAppearance.textOutline
                                 ? label(for: viewModel.settings.subtitleAppearance.textOutlineColor, in: Self.outlineColorOptions)
                                 : "—",
@@ -1316,7 +1338,7 @@ private struct SubtitleAppearanceDialog: View {
                             presentPicker(
                                 for: .outlineColor,
                                 HUDPickerPresentation(
-                                    title: "Outline Color",
+                                    title: .playerHudPickerOutlineColor,
                                     options: Self.outlineColorOptions,
                                     selection: viewModel.settings.subtitleAppearance.textOutlineColor,
                                     onSelect: { value in
@@ -1333,7 +1355,7 @@ private struct SubtitleAppearanceDialog: View {
                         .id(Field.outlineColor)
 
                         HUDSettingRow(
-                            label: "Background",
+                            label: .playerSubtitlesStyleBackground,
                             value: viewModel.settings.subtitleAppearance.backgroundStyle == .box
                                 ? label(for: viewModel.settings.subtitleAppearance.backgroundColor, in: Self.backgroundColorOptions)
                                 : "—",
@@ -1344,7 +1366,7 @@ private struct SubtitleAppearanceDialog: View {
                             presentPicker(
                                 for: .backgroundColor,
                                 HUDPickerPresentation(
-                                    title: "Background Color",
+                                    title: .playerHudPickerBackgroundColor,
                                     options: Self.backgroundColorOptions,
                                     selection: viewModel.settings.subtitleAppearance.backgroundColor,
                                     onSelect: { value in
@@ -1363,11 +1385,11 @@ private struct SubtitleAppearanceDialog: View {
                         .focused($focusedField, equals: .backgroundColor)
                         .id(Field.backgroundColor)
 
-                        HUDSettingRow(label: "Opacity", value: opacityLabel) {
+                        HUDSettingRow(label: .playerSubtitlesStyleOpacity, value: opacityLabel) {
                             presentPicker(
                                 for: .opacity,
                                 HUDPickerPresentation(
-                                    title: "Background Opacity",
+                                    title: .playerSubtitlesStyleBackgroundOpacityLabel,
                                     options: Self.opacityOptions(
                                         current: viewModel.settings.subtitleAppearance.backgroundOpacity,
                                         lowest: 0
@@ -1390,13 +1412,13 @@ private struct SubtitleAppearanceDialog: View {
                         .id(Field.opacity)
 
                         HUDSettingRow(
-                            label: "Position",
+                            label: .playerSubtitlesStylePosition,
                             value: viewModel.settings.subtitleAppearance.position.label
                         ) {
                             presentPicker(
                                 for: .position,
                                 HUDPickerPresentation(
-                                    title: "Subtitle Position",
+                                    title: .playerHudPickerSubtitlePosition,
                                     options: HUDPickerOptions.subtitlePositions,
                                     selection: viewModel.settings.subtitleAppearance.position.rawValue,
                                     onSelect: { value in
@@ -1451,7 +1473,7 @@ private struct SubtitleAppearanceDialog: View {
         }
         .buttonStyle(HUDCircleButtonStyle())
         .focused($focusedField, equals: .close)
-        .accessibilityLabel("Close subtitle appearance")
+        .accessibilityLabel(Text(.playerHudCloseAppearance))
     }
 
     private func presentPicker(for field: Field, _ presentation: HUDPickerPresentation) {
@@ -1470,7 +1492,7 @@ private struct SubtitleAppearanceDialog: View {
     private var opacityLabel: String {
         guard viewModel.settings.subtitleAppearance.backgroundStyle == .box,
               viewModel.settings.subtitleAppearance.backgroundOpacity > 0 else {
-            return "Off"
+            return AppLanguage.string(.optionsOff, locale: locale)
         }
         return "\(viewModel.settings.subtitleAppearance.backgroundOpacity)%"
     }
@@ -1483,28 +1505,35 @@ private struct SubtitleAppearanceDialog: View {
         options.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }?.label ?? id
     }
 
-    private static let backgroundStyleOptions: [HUDDropdownOption] =
+    // The option lists are computed on each read, so their labels follow
+    // the app's language.
+    private static var backgroundStyleOptions: [HUDDropdownOption] {
         SubtitleBackgroundStylePreset.selectableCases.map { .init(id: $0.rawValue, label: $0.label) }
+    }
 
-    private static let fontFamilyOptions: [HUDDropdownOption] =
+    private static var fontFamilyOptions: [HUDDropdownOption] {
         SubtitleFontFamilyPreset.allCases.map { .init(id: $0.rawValue, label: $0.label) }
+    }
 
     /// 25-point steps from `lowest`, plus the current value when another
     /// client stored one between them. Text opacity starts at 25 (the schema's
     /// floor is 1, which is invisible); background opacity starts at Off.
     private static func opacityOptions(current: Int, lowest: Int) -> [HUDDropdownOption] {
         SubtitleAppearance.opacityPickerValues(current: current, lowest: lowest, step: 25)
-            .map { .init(id: String($0), label: $0 == 0 ? "Off" : "\($0)%") }
+            .map { .init(id: String($0), label: $0 == 0 ? AppLanguage.string(.optionsOff) : "\($0)%") }
     }
 
-    private static let fontColorOptions: [HUDDropdownOption] =
+    private static var fontColorOptions: [HUDDropdownOption] {
         SubtitleAppearance.fontColors.map { .init(id: $0.hex, label: $0.label, colorHex: $0.hex) }
+    }
 
-    private static let outlineColorOptions: [HUDDropdownOption] =
+    private static var outlineColorOptions: [HUDDropdownOption] {
         SubtitleAppearance.outlineColors.map { .init(id: $0.hex, label: $0.label, colorHex: $0.hex) }
+    }
 
-    private static let backgroundColorOptions: [HUDDropdownOption] =
+    private static var backgroundColorOptions: [HUDDropdownOption] {
         SubtitleAppearance.backgroundColors.map { .init(id: $0.hex, label: $0.label, colorHex: $0.hex) }
+    }
 }
 
 private struct HUDCircleButtonStyle: ButtonStyle {
@@ -1546,7 +1575,7 @@ private struct AudioPane: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 48) {
-            PaneColumn("Tracks") {
+            PaneColumn(.playerHudTracks) {
                 ScrollView(showsIndicators: false) {
                     // Keep the complete focus graph mounted so native tvOS
                     // movement and keep-visible scrolling share one owner.
@@ -1565,9 +1594,9 @@ private struct AudioPane: View {
             }
             .focusSection()
 
-            PaneColumn("Options") {
-                LabelValueRow(label: "Channels", value: selectedChannels ?? "—")
-                LabelValueRow(label: "Codec",  value: selectedCodec ?? "—")
+            PaneColumn(.playerHudOptions) {
+                LabelValueRow(label: .playerHudChannels, value: selectedChannels ?? "—")
+                LabelValueRow(label: .playerHudCodec,  value: selectedCodec ?? "—")
             }
         }
     }
@@ -1597,6 +1626,7 @@ private struct SubtitlesPane: View {
     @State private var pickerReturnField: Option?
     @FocusState private var focusedOption: Option?
     @FocusState private var entryTrackFocused: Bool
+    @Environment(\.locale) private var locale
 
     /// Identity for the options-column rows, used only to restore focus when
     /// a picker dialog, the appearance dialog, or the AI/search menu closes.
@@ -1620,10 +1650,10 @@ private struct SubtitlesPane: View {
     var body: some View {
         ZStack {
             HStack(alignment: .top, spacing: 58) {
-                PaneColumn("Tracks") { trackRows }
+                PaneColumn(.playerHudTracks) { trackRows }
                     .frame(width: 470, alignment: .topLeading)
                     .focusSection()
-                PaneColumn("Options") { optionRows }
+                PaneColumn(.playerHudOptions) { optionRows }
                     .frame(width: 440, alignment: .topLeading)
                     .focusSection()
             }
@@ -1752,7 +1782,7 @@ private struct SubtitlesPane: View {
             // graph, and the ScrollView performs its own keep-visible motion.
             VStack(alignment: .leading, spacing: 2) {
                 HUDTrackRow(
-                    name: "Off",
+                    name: AppLanguage.string(.playerTracksSubtitlesOff, locale: locale),
                     attributes: nil,
                     isSelected: viewModel.selectedSubtitleId == nil
                 ) {
@@ -1773,7 +1803,7 @@ private struct SubtitlesPane: View {
                 if viewModel.supportsSecondarySubtitles,
                    viewModel.selectedSubtitleId != nil,
                    !viewModel.availableSecondarySubtitleTracks.isEmpty {
-                    Text("SECONDARY")
+                    Text(.playerHudSecondaryHeading)
                         .font(.system(size: 14, weight: .semibold))
                         .tracking(1.6)
                         .foregroundStyle(.white.opacity(0.45))
@@ -1781,7 +1811,7 @@ private struct SubtitlesPane: View {
                         .padding(.bottom, 4)
                         .padding(.leading, 14)
                     HUDTrackRow(
-                        name: "Off",
+                        name: AppLanguage.string(.playerTracksSubtitlesOff, locale: locale),
                         attributes: nil,
                         isSelected: viewModel.selectedSecondarySubtitleId == nil
                     ) {
@@ -1841,7 +1871,7 @@ private struct SubtitlesPane: View {
             let sync = viewModel.subtitleSync
             if entry.isForbidden {
                 HUDSettingRow(
-                    label: "Sync to Audio",
+                    label: .playerTracksSyncToAudioButton,
                     value: "",
                     detail: sync.forbiddenMessage,
                     systemImage: "waveform",
@@ -1856,7 +1886,7 @@ private struct SubtitlesPane: View {
                 // below, but no action that could never run.
                 if timing.canSync {
                     HUDSettingRow(
-                        label: entry.isInProgress ? "Syncing…" : "Sync to Audio",
+                        label: entry.isInProgress ? .playerTracksSyncing : .playerTracksSyncToAudioButton,
                         value: "",
                         systemImage: "waveform",
                         showsChevron: false
@@ -1882,7 +1912,7 @@ private struct SubtitlesPane: View {
                 }
                 if entry.canReset {
                     HUDSettingRow(
-                        label: "Reset Timing",
+                        label: .playerTracksResetTimingButton,
                         value: "",
                         systemImage: "arrow.uturn.backward",
                         showsChevron: false
@@ -1934,7 +1964,7 @@ private struct SubtitlesPane: View {
         VStack(spacing: 2) {
             if aiSubtitlesAvailable {
                 HUDSettingRow(
-                    label: "AI Subtitles…",
+                    label: .playerAiTranslateOpenMenu,
                     value: "",
                     systemImage: "sparkles"
                 ) {
@@ -1945,7 +1975,7 @@ private struct SubtitlesPane: View {
             }
             if viewModel.subtitleSearchEnabled {
                 HUDSettingRow(
-                    label: "Search Subtitles…",
+                    label: .optionsSearchSubtitles,
                     value: "",
                     systemImage: "magnifyingglass"
                 ) {
@@ -1956,11 +1986,11 @@ private struct SubtitlesPane: View {
             }
             timingRows
             if viewModel.backendCapabilities.supportsSubtitleDelay {
-                HUDSettingRow(label: "Delay", value: delayText) {
+                HUDSettingRow(label: .playerHudDelay, value: delayText) {
                     presentPicker(
                         for: .delay,
                         HUDPickerPresentation(
-                            title: "Subtitle Delay",
+                            title: .playerSettingsSubtitleDelayTitle,
                             options: HUDPickerOptions.delayOptions(
                                 from: -2_000,
                                 through: 2_000,
@@ -1981,7 +2011,7 @@ private struct SubtitlesPane: View {
             }
             if viewModel.backendCapabilities.supportsSubtitleStyling {
                 HUDToggleRow(
-                    label: "Only on this Apple TV",
+                    label: .playerHudOnlyOnThisAppleTv,
                     isOn: viewModel.settings.subtitleUsesDeviceAppearanceOverride
                 ) { enabled in
                     Task {
@@ -1991,13 +2021,13 @@ private struct SubtitlesPane: View {
                 .focused($focusedOption, equals: .save)
                 .id(Option.save)
                 HUDSettingRow(
-                    label: "Size",
+                    label: .playerSubtitlesStyleSize,
                     value: viewModel.settings.subtitleAppearance.fontSize.label
                 ) {
                     presentPicker(
                         for: .size,
                         HUDPickerPresentation(
-                            title: "Subtitle Size",
+                            title: .playerHudPickerSubtitleSize,
                             options: HUDPickerOptions.subtitleSizes,
                             selection: viewModel.settings.subtitleAppearance.fontSize.rawValue,
                             onSelect: { value in
@@ -2011,13 +2041,13 @@ private struct SubtitlesPane: View {
                 .focused($focusedOption, equals: .size)
                 .id(Option.size)
                 HUDSettingRow(
-                    label: "Position",
+                    label: .playerSubtitlesStylePosition,
                     value: viewModel.settings.subtitleAppearance.position.label
                 ) {
                     presentPicker(
                         for: .position,
                         HUDPickerPresentation(
-                            title: "Subtitle Position",
+                            title: .playerHudPickerSubtitlePosition,
                             options: HUDPickerOptions.subtitlePositions,
                             selection: viewModel.settings.subtitleAppearance.position.rawValue,
                             onSelect: { value in
@@ -2031,7 +2061,7 @@ private struct SubtitlesPane: View {
                 .focused($focusedOption, equals: .position)
                 .id(Option.position)
                 HUDSettingRow(
-                    label: "Appearance",
+                    label: .playerHudSubtitleAppearance,
                     value: appearanceSummary,
                     systemImage: "textformat"
                 ) {
@@ -2054,18 +2084,20 @@ private struct ChaptersPane: View {
     let viewModel: PlayerViewModel
     let onSelect: () -> Void
 
+    @Environment(\.locale) private var locale
+
     /// Updated by `CurrentChapterIndexReader` only when the chapter changes,
     /// so the list doesn't re-render on every playback clock tick.
     @State private var currentIndex: Int?
 
     var body: some View {
-        PaneColumn("Chapters") {
+        PaneColumn(.optionsChapters) {
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 2) {
                     ForEach(Array(viewModel.chapters.enumerated()), id: \.offset) { index, chapter in
                         HUDChapterRow(
                             number: index + 1,
-                            title: chapter.title ?? "Chapter \(index + 1)",
+                            title: chapter.title ?? AppLanguage.string(.optionsChapterNumbered(String(index + 1)), locale: locale),
                             time: PlayerTimeFormatter.formatHMS(chapter.time),
                             isCurrent: currentIndex == index
                         ) {
@@ -2112,7 +2144,7 @@ private struct HUDChapterRow: View {
         }
         .buttonStyle(HUDRowButtonStyle(cornerRadius: 8))
         .accessibilityLabel(title)
-        .accessibilityValue(isCurrent ? "Currently playing" : "")
+        .accessibilityValue(isCurrent ? Text(.playerHudCurrentlyPlaying) : Text(verbatim: ""))
     }
 }
 
@@ -2170,7 +2202,7 @@ private struct HUDTrackRow: View {
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.35 : 1.0)
         .accessibilityLabel(accessibilityName)
-        .accessibilityValue(isSelected ? "Selected" : "")
+        .accessibilityValue(isSelected ? Text(.playerMenuSelected) : Text(verbatim: ""))
     }
 
     /// Rows lead with the language, so the name alone reads "English" for

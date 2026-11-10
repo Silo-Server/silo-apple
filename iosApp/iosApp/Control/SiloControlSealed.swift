@@ -163,9 +163,9 @@ enum SiloControlSealedError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .pairingRefused:
-            return "The TV didn't accept this iPhone's pairing. On the TV, open Connect a Phone in Silo and scan its code again."
+            return AppLanguage.string(.remoteErrorPairingRefused)
         case .badFrame:
-            return "Lost the secure connection to the TV."
+            return AppLanguage.string(.remoteErrorSecureConnectionLost)
         }
     }
 }

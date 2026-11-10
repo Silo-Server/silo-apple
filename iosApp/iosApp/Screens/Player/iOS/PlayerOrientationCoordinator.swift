@@ -24,7 +24,11 @@ enum PlayerScreenOrientation: Equatable {
     }
 
     var toggled: Self { self == .portrait ? .landscape : .portrait }
-    var title: String { self == .portrait ? "Portrait" : "Landscape" }
+    /// Accessibility label of the rotate button that turns the screen to
+    /// this orientation.
+    var rotateToLabel: LocalizedStringResource {
+        self == .portrait ? .playerOrientationRotateToPortrait : .playerOrientationRotateToLandscape
+    }
     var mask: UIInterfaceOrientationMask { self == .portrait ? .portrait : .landscape }
 }
 

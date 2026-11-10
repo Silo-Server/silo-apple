@@ -118,7 +118,7 @@ final class DownloadContinuedProcessing {
             state = .idle
             return
         }
-        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: title, subtitle: "Starting…")
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: title, subtitle: AppLanguage.string(.downloadsNotificationStarting))
         // Run now or not at all; Silo's own Live Activity covers the rest.
         request.strategy = .fail
         state = .submitted(identifier: identifier)
@@ -190,7 +190,7 @@ final class DownloadContinuedProcessing {
                 case .completed:
                     task.progress.completedUnitCount = task.progress.totalUnitCount
                 case .paused:
-                    task.updateTitle(task.title, subtitle: "Paused")
+                    task.updateTitle(task.title, subtitle: AppLanguage.string(.downloadsStatusPaused))
                 case .emptied:
                     break
                 }
@@ -256,8 +256,9 @@ final class DownloadContinuedProcessing {
               Date().timeIntervalSince(lastMovedAt) >= Self.stallLimit else { return }
         // Read now: a lost network changes no download, so nothing pushed a
         // newer reason.
-        let reason = DownloadManager.shared.currentWaitingReason() ?? "Waiting to continue"
-        task.updateTitle(task.title, subtitle: "\(reason) · Downloads resume on their own")
+        let reason = DownloadManager.shared.currentWaitingReason()
+            ?? AppLanguage.string(.downloadsProgressWaitingToContinue)
+        task.updateTitle(task.title, subtitle: AppLanguage.string(.downloadsProgressResumeOnTheirOwn(reason)))
         completion?(success: true)
         endRun()
         // Silo's own Live Activity takes over while the app is in front.
@@ -371,9 +372,10 @@ final class DownloadContinuedProcessing {
 
     nonisolated static func title(for record: DownloadRecord) -> String {
         if record.type == "episode", let episode = record.subtitle, !episode.isEmpty {
-            return "\(record.seriesTitle ?? record.title ?? "Episode") · \(episode)"
+            let series = record.seriesTitle ?? record.title ?? AppLanguage.string(.downloadsProgressEpisodeFallback)
+            return "\(series) · \(episode)"
         }
-        return record.title ?? record.seriesTitle ?? "Download"
+        return record.title ?? record.seriesTitle ?? AppLanguage.string(.downloadsNotificationDefaultTitle)
     }
 
     /// The headline file's "427.29 MB / 1.42 GB", led by "2 of 5 done" when
@@ -383,19 +385,21 @@ final class DownloadContinuedProcessing {
     ) -> String {
         var parts: [String] = []
         if content.totalCount > 1 {
-            parts.append("\(content.completedCount) of \(content.totalCount) done")
+            parts.append(AppLanguage.string(
+                .downloadsProgressDone("\(content.completedCount)", "\(content.totalCount)")
+            ))
         }
         switch content.phase {
         case .preparing:
-            parts.append("Preparing on server…")
+            parts.append(AppLanguage.string(.downloadsStatusPreparingOnServer))
         case .paused:
-            parts.append("Paused")
+            parts.append(AppLanguage.string(.downloadsStatusPaused))
         case .downloading, .completed:
             if let headline, headline.fileSize > 0 {
                 parts.append(headline.bytesDownloaded.formatted(.byteCount(style: .file))
                     + " / " + headline.fileSize.formatted(.byteCount(style: .file)))
             } else {
-                parts.append("Starting…")
+                parts.append(AppLanguage.string(.downloadsNotificationStarting))
             }
         }
         return parts.joined(separator: " · ")

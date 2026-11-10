@@ -408,7 +408,7 @@ struct PlayerView: View {
         // key events from the touch gesture layer. Space toggles playback,
         // matching the macOS player.
         .background {
-            Button("Play/Pause") { viewModel.togglePlayPause() }
+            Button(.playerControlsPlayPause) { viewModel.togglePlayPause() }
                 .keyboardShortcut(.space, modifiers: [])
                 .opacity(0)
                 .accessibilityHidden(true)
@@ -770,18 +770,18 @@ struct PlayerView: View {
         !showsBufferingPill && watchPartySyncMessage != nil
     }
 
-    private var watchPartySyncMessage: LocalizedStringKey? {
+    private var watchPartySyncMessage: LocalizedStringResource? {
         guard let context = watchPartyContext, viewModel.error == nil,
               let room = WatchPartySession.shared.room,
               room.roomId == context.roomId, room.selectionRevision == context.selectionRevision,
               room.phase == .playing else { return nil }
         if WatchPartySession.shared.connection == .reconnecting {
-            return "Reconnecting to the party…"
+            return .watchPartyPlayerReconnecting
         }
         let playback = viewModel.watchPartyPlaybackSnapshot
         if room.playbackState == .waiting || playback.isBuffering || playback.isSeeking
             || room.members.contains(where: { $0.isSelf && $0.isSyncing }) {
-            return "Syncing with the party…"
+            return .watchPartyPlayerSyncing
         }
         return nil
     }
@@ -998,7 +998,7 @@ struct PlayerView: View {
                     .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle())
-            .accessibilityLabel("Close Player")
+            .accessibilityLabel(Text(.playerClosePlayer))
             .accessibilityIdentifier("player.close")
 
             Spacer()
@@ -1036,7 +1036,7 @@ struct PlayerView: View {
                     .frame(minWidth: 140)
                 }
 
-                Button("Go Back") { dismissPlayer() }
+                Button(.playerGoBack) { dismissPlayer() }
                     .siloPrimaryButton()
                     .frame(minWidth: 140)
             }
@@ -1100,6 +1100,7 @@ struct PlayerNextUpScreen: View {
     @FocusState private var focusedTarget: PlayerNextUpFocusTarget?
     @State private var didRequestInitialActionFocus = false
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @Environment(\.locale) private var locale
 
     #if os(tvOS)
     @Namespace private var defaultFocusNamespace
@@ -1226,7 +1227,7 @@ struct PlayerNextUpScreen: View {
                     .font(.callout)
                     .foregroundStyle(.white)
             } else {
-                Text(viewModel.nextUpScreenVideoEnded ? "End of playback" : "Almost finished")
+                Text(viewModel.nextUpScreenVideoEnded ? LocalizedStringResource.upNextEndOfPlayback : .upNextAlmostFinished)
                     .font(.headline)
                     .foregroundStyle(.white)
             }
@@ -1289,7 +1290,7 @@ struct PlayerNextUpScreen: View {
 
     /// "Shuffling Movies", "Shuffling Breaking Bad · Season 2".
     private func shuffleBadge(_ scopeLabel: String) -> some View {
-        Label("Shuffling \(scopeLabel)", systemImage: "shuffle")
+        Label(.upNextShuffling(scopeLabel), systemImage: "shuffle")
             .font(.system(size: captionSize, weight: .semibold))
             .foregroundStyle(.white.opacity(0.78))
             .lineLimit(1)
@@ -1319,7 +1320,7 @@ struct PlayerNextUpScreen: View {
 
     private var stopShufflingButton: some View {
         Button(action: onStopShuffling) {
-            Text("Stop shuffling")
+            Text(.upNextStopShuffling)
                 .font(.system(size: captionSize, weight: .semibold))
         }
         .buttonStyle(AutoPlayToggleButtonStyle())
@@ -1352,7 +1353,7 @@ struct PlayerNextUpScreen: View {
 
     private var finishedContent: some View {
         VStack(alignment: isTV ? .leading : .center, spacing: panelSpacing) {
-            Text(viewModel.nextUpScreenVideoEnded ? "End of playback" : "Almost finished")
+            Text(viewModel.nextUpScreenVideoEnded ? LocalizedStringResource.upNextEndOfPlayback : .upNextAlmostFinished)
                 .font(.system(size: titleSize, weight: .bold))
                 .foregroundStyle(.white)
             Text(finishedMessage)
@@ -1423,7 +1424,7 @@ struct PlayerNextUpScreen: View {
                         HStack(spacing: 18) {
                             Image(systemName: "play.fill")
                                 .font(.system(size: 32, weight: .bold))
-                            Text("Play Now")
+                            Text(.upNextPlayNow)
                                 .font(.system(size: 30, weight: .semibold))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
@@ -1441,7 +1442,7 @@ struct PlayerNextUpScreen: View {
                         HStack(spacing: 16) {
                             Image(systemName: "shuffle")
                                 .font(.system(size: 26, weight: .semibold))
-                            Text("Pick Another")
+                            Text(.upNextPickAnother)
                                 .font(.system(size: 26, weight: .semibold))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
@@ -1466,7 +1467,7 @@ struct PlayerNextUpScreen: View {
                         HStack(spacing: 16) {
                             Image(systemName: "rectangle.inset.filled")
                                 .font(.system(size: 25, weight: .semibold))
-                            Text("Keep Watching")
+                            Text(.upNextKeepWatching)
                                 .font(.system(size: 26, weight: .semibold))
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
@@ -1483,7 +1484,7 @@ struct PlayerNextUpScreen: View {
                     HStack(spacing: 16) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 26, weight: .semibold))
-                        Text("Back")
+                        Text(.commonBack)
                             .font(.system(size: 26, weight: .semibold))
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
@@ -1505,7 +1506,7 @@ struct PlayerNextUpScreen: View {
             HStack(spacing: 12) {
                 if hasNextEpisode {
                     Button(action: { viewModel.playNextEpisodeNow() }) {
-                        Label("Play Now", systemImage: "play.fill")
+                        Label(.upNextPlayNow, systemImage: "play.fill")
                             .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
                     }
                     .siloPrimaryButton(isLoading: viewModel.isStartingNextUp)
@@ -1514,7 +1515,7 @@ struct PlayerNextUpScreen: View {
                 }
                 if hasNextEpisode && viewModel.shuffleState != nil {
                     Button(action: { viewModel.pickAnotherShufflePick() }) {
-                        Label("Pick Another", systemImage: "shuffle")
+                        Label(.upNextPickAnother, systemImage: "shuffle")
                             .frame(minHeight: compact ? 24 : 44)
                     }
                     .siloSecondaryButton()
@@ -1530,7 +1531,7 @@ struct PlayerNextUpScreen: View {
             HStack(spacing: 10) {
                 if !viewModel.nextUpScreenVideoEnded {
                     Button(action: { viewModel.keepWatchingCurrentEpisode() }) {
-                        Text("Keep Watching")
+                        Text(.upNextKeepWatching)
                             .frame(maxWidth: .infinity, minHeight: compact ? 24 : 44)
                     }
                     .siloSecondaryButton()
@@ -1538,7 +1539,7 @@ struct PlayerNextUpScreen: View {
                     .disabled(viewModel.isStartingNextUp)
                 }
                 Button(action: onBack) {
-                    Label("Back", systemImage: "chevron.left")
+                    Label(.commonBack, systemImage: "chevron.left")
                         .frame(minHeight: compact ? 24 : 44)
                 }
                 .siloSecondaryButton()
@@ -1558,7 +1559,7 @@ struct PlayerNextUpScreen: View {
         Button {
             viewModel.setNextUpAutoPlayEnabled(!viewModel.settings.autoPlayNextEpisode)
         } label: {
-            Text("Auto-play is \(viewModel.settings.autoPlayNextEpisode ? "On" : "Off")")
+            Text(viewModel.settings.autoPlayNextEpisode ? LocalizedStringResource.upNextAutoPlayOn : .upNextAutoPlayOff)
                 .font(.system(size: captionSize, weight: .semibold))
         }
         .buttonStyle(AutoPlayToggleButtonStyle())
@@ -1574,7 +1575,7 @@ struct PlayerNextUpScreen: View {
 
     private var onDeckSection: some View {
         MediaRow(
-            title: "On Deck",
+            title: AppLanguage.string(.upNextOnDeck, locale: locale),
             items: viewModel.nextUpCarouselItems.map(\.sectionItem),
             onItemTap: playOnDeckItem(contentId:),
             showProgress: true,
@@ -1599,53 +1600,52 @@ struct PlayerNextUpScreen: View {
         #endif
     }
 
-    private var statusLabel: String {
+    private var statusLabel: LocalizedStringResource {
         if viewModel.nextUpEpisode == nil && !viewModel.isLoadingNextUpEpisode {
-            return viewModel.nextUpScreenVideoEnded ? "Finished" : "More To Watch"
+            return viewModel.nextUpScreenVideoEnded ? .upNextHeadingFinished : .upNextHeadingNothing
         }
-        if viewModel.shuffleState != nil { return "Up Next at Random" }
+        if viewModel.shuffleState != nil { return .upNextHeadingShuffle }
         // An On Deck pick waits for Play Now, so it never reads as playing.
-        if viewModel.nextUpEpisode?.isFromOnDeck == true { return "Up Next" }
-        return viewModel.nextUpScreenVideoEnded ? "Playing Next" : "Up Next"
+        if viewModel.nextUpEpisode?.isFromOnDeck == true { return .upNextHeading }
+        return viewModel.nextUpScreenVideoEnded ? .upNextHeadingEnded : .upNextHeading
     }
 
-    private var loadingLabel: String {
-        viewModel.shuffleState != nil ? "Picking at random" : "Finding the next episode"
+    private var loadingLabel: LocalizedStringResource {
+        viewModel.shuffleState != nil ? .upNextPicking : .upNextFinding
     }
 
-    private var finishedMessage: String {
+    private var finishedMessage: LocalizedStringResource {
         if viewModel.shuffleState != nil {
             if viewModel.nextUpStartError != nil {
-                return "Couldn't start the next pick. Try again or go back."
+                return .upNextStartPickFailed
             }
-            return "Nothing else in this shuffle can play."
+            return .upNextShuffleDone
         }
         return episodeFinishedMessage
     }
 
-    private var episodeFinishedMessage: String {
+    private var episodeFinishedMessage: LocalizedStringResource {
         #if os(iOS)
         if viewModel.nextUpStartError != nil {
-            return "Couldn't start the next episode. Try again or go back."
+            return .upNextStartFailed
         }
         if viewModel.nextUpLookupError != nil {
-            return "Couldn't load the next episode. Go back to choose something else."
+            return .upNextLookupFailedAlone
         }
-        return "No next episode is available."
+        return .upNextNoNext
         #else
         if let startError = viewModel.nextUpStartError {
-            let suffix = viewModel.nextUpCarouselItems.isEmpty
-                ? "Try again or go back."
-                : "Try again, pick something from On Deck, or go back."
-            return "Couldn't start the next episode: \(startError) \(suffix)"
+            return viewModel.nextUpCarouselItems.isEmpty
+                ? .upNextStartFailedWithError(startError)
+                : .upNextStartFailedWithErrorOnDeck(startError)
         }
         if viewModel.nextUpLookupError != nil {
-            return "Couldn't load the next episode. Pick something from On Deck, or go back."
+            return .upNextLookupFailed
         }
         if viewModel.nextUpCarouselItems.isEmpty {
-            return "No next episode is available."
+            return .upNextNoNext
         }
-        return "No next episode is available. Pick something from On Deck instead."
+        return .upNextNoNextOnDeck
         #endif
     }
 
@@ -1800,12 +1800,12 @@ private struct CountdownRing: View {
                 .trim(from: 0, to: progress)
                 .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-            Text("\(seconds)")
+            Text(verbatim: "\(seconds)")
                 .font(.system(size: textSize, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
         }
         .frame(width: ringSize, height: ringSize)
-        .accessibilityLabel("Playing next in \(seconds) seconds")
+        .accessibilityLabel(Text(.upNextPlayingNextIn(seconds)))
     }
 
     private var progress: Double {

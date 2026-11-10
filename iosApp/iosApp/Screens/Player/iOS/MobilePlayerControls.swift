@@ -38,6 +38,7 @@ struct MobilePlayerControls: View {
     @Environment(\.playerTabletopLayout) private var tabletopLayout
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.locale) private var locale
 
     var body: some View {
         // NOTE: the .sheet modifier MUST live outside the `showControls` gate.
@@ -188,7 +189,7 @@ struct MobilePlayerControls: View {
                 .frame(width: SiloTheme.topBarIconHitSize, height: SiloTheme.topBarIconHitSize)
         }
         .buttonStyle(MobilePlayerGlassButtonStyle())
-        .accessibilityLabel("Close Player")
+        .accessibilityLabel(Text(.playerControlsClosePlayer))
         .accessibilityIdentifier("player.close")
     }
 
@@ -203,11 +204,11 @@ struct MobilePlayerControls: View {
             // AVKit can report `possible == false` during the final active
             // transition; the user must still be able to stop PiP.
             .disabled(!pictureInPicture.isPossible && !pictureInPicture.isActive)
-            .accessibilityLabel(
+            .accessibilityLabel(Text(
                 pictureInPicture.isActive
-                    ? "Stop Picture in Picture"
-                    : "Start Picture in Picture"
-            )
+                    ? LocalizedStringResource.playerControlsStopPictureInPicture
+                    : .playerControlsStartPictureInPicture
+            ))
         }
 
         if !viewModel.isWatchPartyPlayback, viewModel.supportsExternalPlayback {
@@ -248,8 +249,8 @@ struct MobilePlayerControls: View {
                 orientationCoordinator.togglePlayerOrientation()
                 viewModel.resumeAutoHide()
             }
-            .accessibilityLabel("Rotate to \(orientationCoordinator.nextPlayerOrientation.title)")
-            .accessibilityHint("Rotates the screen without interrupting playback")
+            .accessibilityLabel(Text(orientationCoordinator.nextPlayerOrientation.rotateToLabel))
+            .accessibilityHint(Text(.playerOrientationRotateHint))
             .accessibilityIdentifier("player.rotate")
 
             // The open and closed glyphs differ only in the padlock's shackle,
@@ -261,11 +262,15 @@ struct MobilePlayerControls: View {
                 orientationCoordinator.toggleRotationLock()
                 viewModel.resumeAutoHide()
             }
-            .accessibilityLabel(orientationCoordinator.isRotationLocked ? "Unlock screen rotation" : "Lock screen rotation")
-            .accessibilityValue(orientationCoordinator.isRotationLocked ? "Locked" : "Unlocked")
-            .accessibilityHint(orientationCoordinator.isRotationLocked
-                ? "Allows video to follow phone orientation"
-                : "Stops phone movement rotating video. The rotate button still works")
+            .accessibilityLabel(Text(orientationCoordinator.isRotationLocked
+                ? LocalizedStringResource.playerOrientationUnlock
+                : .playerOrientationLock))
+            .accessibilityValue(Text(orientationCoordinator.isRotationLocked
+                ? LocalizedStringResource.playerOrientationLocked
+                : .playerOrientationUnlocked))
+            .accessibilityHint(Text(orientationCoordinator.isRotationLocked
+                ? LocalizedStringResource.playerOrientationUnlockHint
+                : .playerOrientationLockHint))
             .accessibilityIdentifier("player.rotation-lock")
         }
     }
@@ -353,8 +358,10 @@ struct MobilePlayerControls: View {
                 .frame(width: Self.playButtonSize, height: Self.playButtonSize)
             }
             .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9), size: Self.playButtonSize))
-            .accessibilityLabel(viewModel.isPlaying ? "Pause" : "Play")
-            .accessibilityValue(showsLoadingSpinner ? "Loading" : "")
+            .accessibilityLabel(Text(viewModel.isPlaying
+                ? LocalizedStringResource.playerControlsPause
+                : .playerControlsPlay))
+            .accessibilityValue(showsLoadingSpinner ? Text(.commonLoading) : Text(verbatim: ""))
             .disabled(!viewModel.canRequestPlayPause)
 
             Button {
@@ -443,17 +450,17 @@ struct MobilePlayerControls: View {
             trackSelectionButton(style: style)
                 .disabled(noTracks)
                 .opacity(noTracks ? 0.4 : 1)
-                .accessibilityLabel("Audio & Subtitles")
+                .accessibilityLabel(Text(.playerTracksTitle))
 
             if !viewModel.chapters.isEmpty {
                 chaptersMenu(style: style)
-                    .accessibilityLabel("Chapters")
+                    .accessibilityLabel(Text(.optionsChapters))
             }
 
             controlButton(systemName: "ellipsis") {
                 activeSheet = .settings
             }
-            .accessibilityLabel("Playback Settings")
+            .accessibilityLabel(Text(.playerSettingsSheetTitle))
         }
     }
 
@@ -493,7 +500,7 @@ struct MobilePlayerControls: View {
                     Text(qualityValueText)
                         .font(.system(size: 12, weight: .semibold))
                 } else {
-                    Text("Quality")
+                    Text(.optionsQuality)
                         .font(.system(size: 12, weight: .semibold))
                     Text(qualityValueText)
                         .font(.system(size: 11, weight: .medium))
@@ -512,7 +519,7 @@ struct MobilePlayerControls: View {
         .buttonStyle(MobilePlayerGlassButtonStyle(
             tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : Color.white.opacity(0.22)
         ))
-        .accessibilityLabel("Playback Quality")
+        .accessibilityLabel(Text(.playerControlsPlaybackQuality))
         .accessibilityValue(qualityValueText)
     }
 
@@ -521,7 +528,9 @@ struct MobilePlayerControls: View {
     /// resolution the menu has no row for still reads as that resolution.
     private var qualityValueText: String {
         if let active = viewModel.activeQualityOption {
-            return active.isAuto || active.resolution.isEmpty ? "Auto" : active.resolution
+            return active.isAuto || active.resolution.isEmpty
+                ? AppLanguage.string(.optionsAuto, locale: locale)
+                : active.resolution
         }
         return SiloQualityPresets.resolutionLabel(AppleQualityAxes.split(viewModel.activeQualityId).resolution)
     }
@@ -546,7 +555,7 @@ struct MobilePlayerControls: View {
             } else {
                 actionPill(
                     systemImage: "captions.bubble",
-                    title: style == .compact ? "Audio & Subs" : "Audio & Subtitles"
+                    title: style == .compact ? .playerTracksTitleShort : .playerTracksTitle
                 ) {
                     activeSheet = .tracks
                 }
@@ -564,7 +573,7 @@ struct MobilePlayerControls: View {
         } label: {
             menuPillLabel(
                 systemImage: "list.bullet",
-                title: style == .icons ? nil : "Chapters"
+                title: style == .icons ? nil : LocalizedStringResource.optionsChapters
             )
         }
         .menuStyle(.button)
@@ -576,7 +585,7 @@ struct MobilePlayerControls: View {
     /// Menu label matching the `actionPill` (titled) / `controlButton`
     /// (icon circle) appearance so menus and buttons read as one family.
     @ViewBuilder
-    private func menuPillLabel(systemImage: String, title: String?) -> some View {
+    private func menuPillLabel(systemImage: String, title: LocalizedStringResource?) -> some View {
         if let title {
             HStack(spacing: 5) {
                 Image(systemName: systemImage)
@@ -597,7 +606,7 @@ struct MobilePlayerControls: View {
 
     private func actionPill(
         systemImage: String,
-        title: String,
+        title: LocalizedStringResource,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -726,6 +735,7 @@ private struct MobilePlayerTimeline: View {
     /// hold-seek also set `isScrubbing`, but they shouldn't play chapter ticks
     /// or change scrub speed.
     @GestureState private var scrubDrag: MobileScrubDrag?
+    @Environment(\.locale) private var locale
 
     /// Space between the scrub bubble's bottom edge and the top of the bar's
     /// 20pt touch strip, 4pt above the visible bar while scrubbing. The
@@ -768,8 +778,10 @@ private struct MobilePlayerTimeline: View {
                     .monospacedDigit()
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(showsRemainingTime ? "Time Remaining" : "Duration")
-            .accessibilityHint("Switches between time remaining and total duration")
+            .accessibilityLabel(Text(showsRemainingTime
+                ? LocalizedStringResource.playerProgressTimeRemaining
+                : .playerProgressDuration))
+            .accessibilityHint(Text(.playerProgressToggleTimeHint))
         }
     }
 
@@ -892,10 +904,11 @@ private struct MobilePlayerTimeline: View {
             // The custom scrubber is drag-only; expose it to VoiceOver as an
             // adjustable element that seeks through the same skip path.
             .accessibilityElement()
-            .accessibilityLabel("Playback Position")
-            .accessibilityValue(
-                "\(PlayerTimeFormatter.formatHMS(displayTime)) of \(PlayerTimeFormatter.formatHMS(viewModel.duration))"
-            )
+            .accessibilityLabel(Text(.playerProgressPlaybackPosition))
+            .accessibilityValue(Text(.playerProgressPositionState(
+                PlayerTimeFormatter.formatHMS(displayTime),
+                PlayerTimeFormatter.formatHMS(viewModel.duration)
+            )))
             .accessibilityAdjustableAction { direction in
                 switch direction {
                 case .increment: viewModel.skipForward()
@@ -947,7 +960,8 @@ private struct MobilePlayerTimeline: View {
 
     private func chapterTitle(at time: Double) -> String? {
         guard let chapter = viewModel.chapters.last(where: { $0.time <= time }) else { return nil }
-        return chapter.title ?? "Chapter \(chapter.index + 1)"
+        return chapter.title
+            ?? AppLanguage.string(.optionsChapterNumbered(String(chapter.index + 1)), locale: locale)
     }
 
     @ViewBuilder
@@ -969,6 +983,7 @@ private struct MobilePlayerTimeline: View {
 /// the controls' own body.
 private struct MobileChapterMenuItems: View {
     let viewModel: PlayerViewModel
+    @Environment(\.locale) private var locale
 
     var body: some View {
         let currentChapterIndex = viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
@@ -992,7 +1007,10 @@ private struct MobileChapterMenuItems: View {
     }
 
     private func chapterMenuTitle(_ chapter: PlayerChapterInfo) -> String {
-        "\(chapter.index + 1).  \(chapter.title ?? "Chapter \(chapter.index + 1)")"
+        let number = String(chapter.index + 1)
+        let title = chapter.title
+            ?? AppLanguage.string(.optionsChapterNumbered(number), locale: locale)
+        return "\(number).  \(title)"
     }
 }
 

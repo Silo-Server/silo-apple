@@ -20,17 +20,17 @@ enum DownloadError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unavailable: return "Downloads aren't available for this profile."
-        case .fileURLUnavailable: return "Could not resolve the download URL."
-        case .emptyRegistrationResponse: return "The server didn't create a download."
-        case .registrationAlreadyInFlight: return "This download is already being prepared."
-        case .scopeChangedDuringRegistration: return "The active profile changed before the download could start."
-        case .registryChanged: return "This download changed on the server. Try again."
-        case .registrationUncertain: return "Silo couldn't confirm the download started. It will appear in Downloads if the server created it."
-        case .monitoringScopeChanged: return "The active profile changed before monitoring could be saved."
-        case .monitorChanged: return "Monitoring for this series changed on the server. Try again."
-        case .monitorRemoved: return "This series is no longer monitored."
-        case .monitoringUncertain: return "Silo couldn't confirm the monitoring change. Check this series again once you're back online."
+        case .unavailable: return AppLanguage.string(.downloadsErrorUnavailable)
+        case .fileURLUnavailable: return AppLanguage.string(.downloadsErrorFileUrlUnavailable)
+        case .emptyRegistrationResponse: return AppLanguage.string(.downloadsErrorNotCreated)
+        case .registrationAlreadyInFlight: return AppLanguage.string(.downloadsErrorAlreadyPreparing)
+        case .scopeChangedDuringRegistration: return AppLanguage.string(.downloadsErrorProfileChangedDownload)
+        case .registryChanged: return AppLanguage.string(.downloadsErrorChangedOnServer)
+        case .registrationUncertain: return AppLanguage.string(.downloadsErrorRegistrationUncertain)
+        case .monitoringScopeChanged: return AppLanguage.string(.downloadsErrorProfileChangedMonitoring)
+        case .monitorChanged: return AppLanguage.string(.downloadsErrorMonitorChanged)
+        case .monitorRemoved: return AppLanguage.string(.downloadsErrorMonitorRemoved)
+        case .monitoringUncertain: return AppLanguage.string(.downloadsErrorMonitoringUncertain)
         }
     }
 }
@@ -2230,7 +2230,7 @@ final class DownloadManager {
     func currentWaitingReason() -> String? {
         if let wait = networkWait() { return wait.label }
         if activeRecords.contains(where: { $0.localStatus == .preparing || $0.localStatus == .registering }) {
-            return "Preparing on server"
+            return AppLanguage.string(.downloadsProgressPreparingOnServer)
         }
         return nil
     }
@@ -2248,7 +2248,7 @@ final class DownloadManager {
     /// only from the user's tap.
     func showProgressOnLockScreen() {
         let headline = DownloadLiveActivityController.headline(of: activeRecords)
-        DownloadContinuedProcessing.shared.begin(title: headline?.title ?? "Downloads")
+        DownloadContinuedProcessing.shared.begin(title: headline?.title ?? AppLanguage.string(.downloadsProgressTitle))
         syncLiveActivity()
     }
     #endif
@@ -2274,9 +2274,9 @@ final class DownloadManager {
 
         var label: String {
             switch self {
-            case .connection: return "Waiting for a connection"
-            case .wifi: return "Waiting for Wi-Fi"
-            case .storageLimit: return "Series storage limit reached"
+            case .connection: return AppLanguage.string(.downloadsWaitConnection)
+            case .wifi: return AppLanguage.string(.downloadsWaitWifi)
+            case .storageLimit: return AppLanguage.string(.downloadsWaitStorageLimit)
             }
         }
     }
@@ -2304,7 +2304,7 @@ final class DownloadManager {
     /// just started (iOS 26 and later). Call only from the user's action.
     private func beginContinuedProcessing(title: String?) {
         #if os(iOS)
-        DownloadContinuedProcessing.shared.begin(title: title ?? "Downloads")
+        DownloadContinuedProcessing.shared.begin(title: title ?? AppLanguage.string(.downloadsProgressTitle))
         #endif
     }
 

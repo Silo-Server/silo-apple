@@ -179,7 +179,7 @@ struct AetherSubtitleOverlay: View {
             case .richText(let runs):
                 positionedText(
                     runs.reduce(Text("")) { accumulated, run in
-                        Text("\(accumulated)\(styledText(run, style: style, videoRect: videoRect))")
+                        Text("\(accumulated)\(styledText(run, style: style, videoRect: videoRect))") // i18n-ignore: joins two Text values
                     },
                     placement: cue.placement,
                     style: style,

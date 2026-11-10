@@ -7,6 +7,7 @@ struct AudioMiniPlayerView: View {
     @Environment(AudioPlaybackStore.self) private var audioStore
     var style: NowPlayingBarStyle = .card
     @Environment(\.nowPlayingAccessoryIsInline) private var isInline
+    @Environment(\.locale) private var locale
 
     /// `.inline` is the minimized-tab-bar slot — collapse to a single line so the
     /// bar fits the compact pill without truncating.
@@ -36,8 +37,8 @@ struct AudioMiniPlayerView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Now Playing: \(player.title)")
-                .accessibilityHint("Opens the full player")
+                .accessibilityLabel(Text(.audiobookMiniPlayerNowPlaying(player.title)))
+                .accessibilityHint(Text(.audiobookMiniPlayerOpenHint))
 
                 Button {
                     player.togglePlayPause()
@@ -48,7 +49,7 @@ struct AudioMiniPlayerView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+                .accessibilityLabel(player.isPlaying ? Text(.playerAudioPause) : Text(.playerAudioPlay))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, isInline ? 4 : 8)
@@ -66,7 +67,7 @@ struct AudioMiniPlayerView: View {
 
     private func subtitleLine(player: AudioPlayerViewModel) -> String {
         if let chapter = player.currentChapter {
-            return chapter.title ?? "Chapter \(chapter.index + 1)"
+            return chapter.displayTitle(locale: locale)
         }
         return player.subtitle ?? PlayerTimeFormatter.formatHMS(player.currentTime)
     }

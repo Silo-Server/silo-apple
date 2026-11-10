@@ -22,6 +22,12 @@ struct AudioPlaybackChapter: Identifiable, Hashable {
     let endSeconds: Double?
     let trackIndex: Int?
     var id: String { "\(trackIndex ?? -1)-\(index)-\(startSeconds)" }
+
+    /// The chapter's own title, or "Chapter N" in the language `locale`
+    /// shows. A view passes its `\.locale` so the label follows a switch.
+    func displayTitle(locale: Locale) -> String {
+        title ?? AppLanguage.string(.optionsChapterNumbered(String(index + 1)), locale: locale)
+    }
 }
 
 /// Everything the audio player needs to drive a whole book through the

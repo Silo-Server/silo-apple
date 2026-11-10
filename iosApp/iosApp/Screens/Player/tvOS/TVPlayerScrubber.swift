@@ -175,7 +175,7 @@ struct TVPlayerScrubber: View {
                     onExitWhenIdle()
                 }
             }
-            .accessibilityLabel("Scrubber")
+            .accessibilityLabel(Text(.playerControlsScrubber))
             .accessibilityValue(Text(PlayerTimeFormatter.formatHMS(displayTime)))
     }
 
@@ -291,7 +291,7 @@ struct TVPlayerScrubber: View {
         HStack(spacing: 7) {
             Image(systemName: timelineAutoSeekRate < 0 ? "backward.fill" : "forward.fill")
                 .font(.system(size: 13, weight: .bold))
-            Text("\(abs(timelineAutoSeekRate))x")
+            Text(verbatim: "\(abs(timelineAutoSeekRate))x")
                 .font(.system(size: 18, weight: .bold, design: .rounded))
                 .monospacedDigit()
         }

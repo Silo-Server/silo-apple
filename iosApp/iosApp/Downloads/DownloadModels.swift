@@ -121,19 +121,21 @@ struct DownloadPreparation: Codable, Hashable, Sendable {
     var statusLine: String {
         switch state {
         case "queued":
-            guard let position = queuePosition, position > 0 else { return "Waiting to prepare" }
-            if position == 1 { return "Waiting to prepare · next in line" }
+            guard let position = queuePosition, position > 0 else {
+                return AppLanguage.string(.downloadsPreparationWaiting)
+            }
+            if position == 1 { return AppLanguage.string(.downloadsPreparationNextInLine) }
             let ordinal = Self.ordinalFormatter.string(from: NSNumber(value: position)) ?? "#\(position)"
-            return "Waiting to prepare · \(ordinal) in line"
+            return AppLanguage.string(.downloadsPreparationInLine(ordinal))
         case "retrying":
-            return "Preparing · trying again soon"
+            return AppLanguage.string(.downloadsPreparationRetrying)
         case "paused":
-            return "Preparation paused on the server"
+            return AppLanguage.string(.downloadsPreparationPausedOnServer)
         default:
-            guard let progress else { return "Preparing on server…" }
-            var parts = ["Preparing", "\(Int((progress * 100).rounded(.down)))%"]
-            if let remainingSeconds { parts.append(Self.timeLeft(remainingSeconds)) }
-            return parts.joined(separator: " · ")
+            guard let progress else { return AppLanguage.string(.downloadsStatusPreparingOnServer) }
+            let percent = "\(Int((progress * 100).rounded(.down)))"
+            guard let remainingSeconds else { return AppLanguage.string(.downloadsPreparationProgress(percent)) }
+            return AppLanguage.string(.downloadsPreparationProgressTimeLeft(percent, Self.timeLeft(remainingSeconds)))
         }
     }
 
@@ -145,11 +147,13 @@ struct DownloadPreparation: Codable, Hashable, Sendable {
 
     /// "under a minute left", "6 min left", "1 hr 5 min left".
     static func timeLeft(_ seconds: Int) -> String {
-        if seconds < 60 { return "under a minute left" }
+        if seconds < 60 { return AppLanguage.string(.downloadsPreparationUnderAMinuteLeft) }
         let minutes = (seconds + 59) / 60
-        if minutes < 60 { return "\(minutes) min left" }
+        if minutes < 60 { return AppLanguage.string(.downloadsPreparationMinutesLeft("\(minutes)")) }
         let rest = minutes % 60
-        return rest == 0 ? "\(minutes / 60) hr left" : "\(minutes / 60) hr \(rest) min left"
+        return rest == 0
+            ? AppLanguage.string(.downloadsPreparationHoursLeft("\(minutes / 60)"))
+            : AppLanguage.string(.downloadsPreparationHoursMinutesLeft("\(minutes / 60)", "\(rest)"))
     }
 }
 
@@ -173,7 +177,7 @@ enum DownloadFormat: String, Codable, CaseIterable, Sendable {
 
     var displayName: String {
         switch self {
-        case .original: return "Original"
+        case .original: return AppLanguage.string(.downloadsQualityOriginal)
         case .twentyMbps: return "20 Mbps"
         case .tenMbps: return "10 Mbps"
         case .fiveMbps: return "5 Mbps"
@@ -188,7 +192,7 @@ enum DownloadFormat: String, Codable, CaseIterable, Sendable {
     func label(maxHeight: Int?) -> String {
         guard let maxHeight, maxHeight > 0 else { return displayName }
         let resolution = maxHeight >= 2160 ? "4K" : "\(maxHeight)p"
-        return "\(displayName) · up to \(resolution)"
+        return AppLanguage.string(.downloadsQualityUpTo(displayName, resolution))
     }
 }
 
@@ -572,10 +576,10 @@ enum SubscriptionMode: String, Codable, CaseIterable, Sendable {
 
     var displayName: String {
         switch self {
-        case .all: return "All Episodes"
-        case .future: return "Future Episodes"
-        case .latestSeason: return "Last Season"
-        case .specificSeasons: return "Custom"
+        case .all: return AppLanguage.string(.downloadsMonitorModeAll)
+        case .future: return AppLanguage.string(.downloadsMonitorModeFuture)
+        case .latestSeason: return AppLanguage.string(.downloadsMonitorModeLastSeason)
+        case .specificSeasons: return AppLanguage.string(.downloadsMonitorModeCustom)
         }
     }
 }
@@ -760,18 +764,20 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
         return min(1, max(0, Double(bytesDownloaded) / Double(fileSize)))
     }
 
-    /// Why a failed download failed, in words the user can act on.
+    /// Why a failed download failed, in words the user can act on, in the
+    /// app's language. Resolved when shown; `lastError` keeps the code.
     var failureReason: String {
         switch lastError {
-        case "storage_full": return "Not enough storage on this device"
-        case "size_mismatch": return "The file arrived incomplete"
-        case "move_failed": return "Couldn't save the file"
-        case "not_found", "removed_on_server": return "No longer available on the server"
-        case "forbidden": return "Not available to this profile"
-        case "unauthorized": return "Sign-in expired"
-        case "server_failed": return "The server couldn't prepare this download"
-        case let code? where code.hasPrefix("http_5") || code == "http_429": return "The server had a problem"
-        default: return "Download failed"
+        case "storage_full": return AppLanguage.string(.downloadsFailureStorageFull)
+        case "size_mismatch": return AppLanguage.string(.downloadsFailureSizeMismatch)
+        case "move_failed": return AppLanguage.string(.downloadsFailureMoveFailed)
+        case "not_found", "removed_on_server": return AppLanguage.string(.downloadsFailureNotFound)
+        case "forbidden": return AppLanguage.string(.downloadsFailureForbidden)
+        case "unauthorized": return AppLanguage.string(.downloadsFailureUnauthorized)
+        case "server_failed": return AppLanguage.string(.downloadsFailureServerFailed)
+        case let code? where code.hasPrefix("http_5") || code == "http_429":
+            return AppLanguage.string(.downloadsFailureServerError)
+        default: return AppLanguage.string(.downloadsFailureGeneric)
         }
     }
 }

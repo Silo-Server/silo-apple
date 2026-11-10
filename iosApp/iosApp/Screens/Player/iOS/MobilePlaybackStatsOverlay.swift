@@ -56,7 +56,7 @@ struct MobilePlaybackStatsOverlay: View {
         if !stats.compactRows.isEmpty {
             PlaybackStatsPanel(stats: stats, layout: .plain)
         } else {
-            Text("Stats appear once playback starts.")
+            Text(.playerStatsAppearOnceStarted)
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.6))
         }

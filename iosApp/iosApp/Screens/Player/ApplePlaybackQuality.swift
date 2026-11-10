@@ -6,13 +6,16 @@ struct ApplePlaybackQualityOption: Identifiable, Hashable {
     let resolution: String
     let bitrateKbps: Int
     let isAuto: Bool
+    /// The label in English, for the Remote Control state sent to a phone
+    /// (D44); nil where `label` is already the same in every language.
+    var englishLabel: String? = nil
 
     var subtitle: String? {
         if isAuto {
-            return "Original file when possible"
+            return AppLanguage.string(.playerQualityAutoDetail)
         }
         guard bitrateKbps > 0 else { return nil }
-        return "Maximum bitrate: \(bitrateLabel)"
+        return AppLanguage.string(.playerQualityMaximumBitrate(bitrateLabel))
     }
 
     var bitrateLabel: String {
@@ -28,6 +31,12 @@ struct ApplePlaybackQualityOption: Identifiable, Hashable {
 
     var labelWithBitrate: String {
         bitrateText.map { "\(label) (\($0))" } ?? label
+    }
+
+    /// `labelWithBitrate` in English.
+    var englishLabelWithBitrate: String {
+        let label = englishLabel ?? label
+        return bitrateText.map { "\(label) (\($0))" } ?? label
     }
 }
 
@@ -47,47 +56,90 @@ enum ApplePlaybackQuality {
     /// servers still store them and list an "original" plan entry.
     static let legacySourceIds: Set<String> = ["original", "source", "max"]
 
-    static let auto = ApplePlaybackQualityOption(
-        id: autoId,
-        label: "Auto",
-        resolution: "",
-        bitrateKbps: 0,
-        isAuto: true
-    )
+    // Computed, so the labels follow the app language.
+    static var auto: ApplePlaybackQualityOption {
+        ApplePlaybackQualityOption(
+            id: autoId,
+            label: AppLanguage.string(.optionsAuto),
+            resolution: "",
+            bitrateKbps: 0,
+            isAuto: true,
+            englishLabel: AppLanguage.inEnglish { AppLanguage.string(.optionsAuto) }
+        )
+    }
 
     /// Auto while the plan carries `bandwidth_limit`: the server planned it
     /// under the limit this device learned from repeated rebuffering.
-    static let autoLimitedAfterBuffering = ApplePlaybackQualityOption(
-        id: autoId,
-        label: "Auto · limited after buffering",
-        resolution: "",
-        bitrateKbps: 0,
-        isAuto: true
-    )
+    static var autoLimitedAfterBuffering: ApplePlaybackQualityOption {
+        ApplePlaybackQualityOption(
+            id: autoId,
+            label: AppLanguage.string(.bufferingQualityAutoLimited),
+            resolution: "",
+            bitrateKbps: 0,
+            isAuto: true,
+            englishLabel: AppLanguage.inEnglish { AppLanguage.string(.bufferingQualityAutoLimited) }
+        )
+    }
 
     /// A contract resolution cap without an invented bandwidth rung. A zero
     /// bitrate is a local sentinel for "uncapped" and is never sent as a cap.
     static let ultraHD = ApplePlaybackQualityOption(
         id: ultraHDId,
-        label: "4K",
+        label: "4K", // i18n-ignore: resolution name
         resolution: ultraHDId,
         bitrateKbps: 0,
         isAuto: false
     )
 
-    static let tiers: [ApplePlaybackQualityOption] = [
-        .init(id: "1080p-high", label: "Up to 1080p HD (High)", resolution: "1080p", bitrateKbps: 20_000, isAuto: false),
-        .init(id: "1080p-medium", label: "Up to 1080p HD (Medium)", resolution: "1080p", bitrateKbps: 12_000, isAuto: false),
-        .init(id: "1080p", label: "Up to 1080p HD", resolution: "1080p", bitrateKbps: 10_000, isAuto: false),
-        .init(id: "1080p-8", label: "Up to 1080p HD", resolution: "1080p", bitrateKbps: 8_000, isAuto: false),
-        .init(id: "720p-high", label: "Up to 720p HD (High)", resolution: "720p", bitrateKbps: 4_000, isAuto: false),
-        .init(id: "720p-medium", label: "Up to 720p HD (Medium)", resolution: "720p", bitrateKbps: 3_000, isAuto: false),
-        .init(id: "720p", label: "Up to 720p HD", resolution: "720p", bitrateKbps: 2_000, isAuto: false),
-        .init(id: "480p", label: "Up to 480p", resolution: "480p", bitrateKbps: 1_500, isAuto: false),
-        .init(id: "328p", label: "Up to 328p", resolution: "328p", bitrateKbps: 700, isAuto: false),
+    /// One rung of the Settings ladder, without its label: the id and
+    /// bitrate lookups below run often and need no text.
+    struct Rung {
+        enum Label { case upTo, upToHD, upToHDHigh, upToHDMedium }
+
+        let id: String
+        let resolution: String
+        let bitrateKbps: Int
+        let label: Label
+
+        var displayLabel: String {
+            switch label {
+            case .upTo: return AppLanguage.string(.optionsQualityUpTo(resolution))
+            case .upToHD: return AppLanguage.string(.optionsQualityUpToHd(resolution))
+            case .upToHDHigh: return AppLanguage.string(.playerQualityUpToHdHigh(resolution))
+            case .upToHDMedium: return AppLanguage.string(.playerQualityUpToHdMedium(resolution))
+            }
+        }
+    }
+
+    static let rungs: [Rung] = [
+        Rung(id: "1080p-high", resolution: "1080p", bitrateKbps: 20_000, label: .upToHDHigh),
+        Rung(id: "1080p-medium", resolution: "1080p", bitrateKbps: 12_000, label: .upToHDMedium),
+        Rung(id: "1080p", resolution: "1080p", bitrateKbps: 10_000, label: .upToHD),
+        Rung(id: "1080p-8", resolution: "1080p", bitrateKbps: 8_000, label: .upToHD),
+        Rung(id: "720p-high", resolution: "720p", bitrateKbps: 4_000, label: .upToHDHigh),
+        Rung(id: "720p-medium", resolution: "720p", bitrateKbps: 3_000, label: .upToHDMedium),
+        Rung(id: "720p", resolution: "720p", bitrateKbps: 2_000, label: .upToHD),
+        Rung(id: "480p", resolution: "480p", bitrateKbps: 1_500, label: .upTo),
+        Rung(id: "328p", resolution: "328p", bitrateKbps: 700, label: .upTo),
     ]
 
-    static let settingsOptions: [ApplePlaybackQualityOption] = [auto, ultraHD] + tiers
+    /// The ladder with labels in the app's language.
+    static var tiers: [ApplePlaybackQualityOption] {
+        rungs.map {
+            ApplePlaybackQualityOption(
+                id: $0.id,
+                label: $0.displayLabel,
+                resolution: $0.resolution,
+                bitrateKbps: $0.bitrateKbps,
+                isAuto: false
+            )
+        }
+    }
+
+    /// Every Settings option id: Auto, 4K and the ladder.
+    static let settingsOptionIds: Set<String> = Set([autoId, ultraHDId] + rungs.map(\.id))
+
+    static var settingsOptions: [ApplePlaybackQualityOption] { [auto, ultraHD] + tiers }
 
     static func normalizeStoredId(_ raw: String?) -> String {
         let value = raw?
@@ -104,7 +156,7 @@ enum ApplePlaybackQuality {
         case "420p":
             return "328p"
         default:
-            if settingsOptions.contains(where: { $0.id == value }) {
+            if settingsOptionIds.contains(value) {
                 return value
             }
             return autoId
@@ -142,16 +194,14 @@ enum ApplePlaybackQuality {
             let id = protocolV3QualityId(quality.label)
             guard id != autoId, seen.insert(id).inserted else { return nil }
             let height = quality.height ?? 0
+            let label = { playbackLabel(serverDisplayName: quality.displayName, id: id, height: height) }
             return ApplePlaybackQualityOption(
                 id: id,
-                label: playbackLabel(
-                    serverDisplayName: quality.displayName,
-                    id: id,
-                    height: height
-                ),
+                label: label(),
                 resolution: height <= 0 ? "" : "\(height)p",
                 bitrateKbps: max(0, quality.bitrateKbps),
-                isAuto: false
+                isAuto: false,
+                englishLabel: AppLanguage.inEnglish(label)
             )
         }
         return [auto] + planned
@@ -245,7 +295,7 @@ enum ApplePlaybackQuality {
         }
 
         let axes = AppleQualityAxes.split(clientQualityId)
-        let serverPreference = settingsOptions.contains(where: { $0.id == clientQualityId })
+        let serverPreference = settingsOptionIds.contains(clientQualityId)
             ? axes.resolution
             : clientQualityId
         return ApplePlaybackV3QualitySelection(
@@ -284,13 +334,13 @@ enum ApplePlaybackQuality {
             if !normalized.isEmpty { return normalized }
         }
         switch height {
-        case 2_160: return "Up to 4K"
-        case 1_080: return "Up to 1080p HD"
-        case 720: return "Up to 720p HD"
-        case 480: return "Up to 480p"
+        case 2_160: return AppLanguage.string(.optionsQualityUpTo("4K"))
+        case 1_080: return AppLanguage.string(.optionsQualityUpToHd("1080p"))
+        case 720: return AppLanguage.string(.optionsQualityUpToHd("720p"))
+        case 480: return AppLanguage.string(.optionsQualityUpTo("480p"))
         default:
             return settingsOptions.first(where: { $0.id == id })?.label
-                ?? (height > 0 ? "Up to \(height)p" : id)
+                ?? (height > 0 ? AppLanguage.string(.optionsQualityUpTo("\(height)p")) : id)
         }
     }
 

@@ -10,15 +10,18 @@ enum SubtitleFontSizePreset: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var label: String {
+    /// The name a picker shows; `rawValue` is what is stored and synced.
+    var labelResource: LocalizedStringResource {
         switch self {
-        case .small: return "Small"
-        case .medium: return "Medium"
-        case .large: return "Large"
-        case .xlarge: return "X-Large"
-        case .xxlarge: return "XX-Large"
+        case .small: return .playerSubtitlesSizeSmall
+        case .medium: return .playerSubtitlesSizeMedium
+        case .large: return .playerSubtitlesSizeLarge
+        case .xlarge: return .playerSubtitlesSizeXLarge
+        case .xxlarge: return .playerSubtitlesSizeXxLarge
         }
     }
+
+    var label: String { AppLanguage.string(labelResource) }
 
     /// Point sizes at the overlay's 1080-line reference, scaled with the
     /// displayed video rect. Each platform's ladder is tuned for its viewing
@@ -96,14 +99,18 @@ struct SubtitleFontFamilyPreset: RawRepresentable, Codable, CaseIterable, Hashab
 
     var id: String { rawValue }
 
-    var label: String {
+    /// The catalog name of a generic family; nil for an installed family,
+    /// whose own name is shown as is.
+    var labelResource: LocalizedStringResource? {
         switch rawValue {
-        case Self.sansSerif.rawValue: return "Sans-serif"
-        case Self.serif.rawValue: return "Serif"
-        case Self.monospace.rawValue: return "Monospace"
-        default: return rawValue
+        case Self.sansSerif.rawValue: return .playerSubtitlesFontSansSerif
+        case Self.serif.rawValue: return .playerSubtitlesFontSerif
+        case Self.monospace.rawValue: return .playerSubtitlesFontMonospace
+        default: return nil
         }
     }
+
+    var label: String { labelResource.map { AppLanguage.string($0) } ?? rawValue }
 
     var assFontName: String {
         switch rawValue {
@@ -133,14 +140,16 @@ enum SubtitleBackgroundStylePreset: String, Codable, CaseIterable, Identifiable 
         [.box, .shadow, .none]
     }
 
-    var label: String {
+    var labelResource: LocalizedStringResource {
         switch self {
-        case .box: return "Box"
-        case .shadow: return "Drop Shadow"
-        case .outline: return "Outline"
-        case .none: return "None"
+        case .box: return .playerSubtitlesBackgroundBox
+        case .shadow: return .playerSubtitlesBackgroundDropShadow
+        case .outline: return .playerSubtitlesBackgroundOutline
+        case .none: return .playerSubtitlesBackgroundNone
         }
     }
+
+    var label: String { AppLanguage.string(labelResource) }
 }
 
 enum SubtitlePositionPreset: String, Codable, CaseIterable, Identifiable {
@@ -150,13 +159,15 @@ enum SubtitlePositionPreset: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var label: String {
+    var labelResource: LocalizedStringResource {
         switch self {
-        case .bottom: return "Bottom"
-        case .lowerThird: return "Lower Third"
-        case .top: return "Top"
+        case .bottom: return .playerSubtitlesPositionBottom
+        case .lowerThird: return .playerSubtitlesPositionLowerThirdTitleCase
+        case .top: return .playerSubtitlesPositionTop
         }
     }
+
+    var label: String { AppLanguage.string(labelResource) }
 }
 
 /// Apple exposes five distinct caption edge treatments. This value is
@@ -273,27 +284,37 @@ struct SubtitleAppearance: Codable, Equatable {
         position: .bottom
     )
 
-    static let fontColors: [(hex: String, label: String)] = [
-        ("#ffffff", "White"),
-        ("#facc15", "Yellow"),
-        ("#22c55e", "Green"),
-        ("#06b6d4", "Cyan"),
-        ("#d946ef", "Magenta"),
-        ("#ef4444", "Red"),
-        ("#3b82f6", "Blue"),
-        ("#9ca3af", "Gray"),
-        ("#000000", "Black"),
+    /// The swatches a picker offers. The hex is stored and synced; the label
+    /// is resolved in the app's language each time the list is read.
+    static let fontColorChoices: [(hex: String, label: LocalizedStringResource)] = [
+        ("#ffffff", .playerSubtitlesColorWhite),
+        ("#facc15", .playerSubtitlesColorYellow),
+        ("#22c55e", .playerSubtitlesColorGreen),
+        ("#06b6d4", .playerSubtitlesColorCyan),
+        ("#d946ef", .playerSubtitlesColorMagenta),
+        ("#ef4444", .playerSubtitlesColorRed),
+        ("#3b82f6", .playerSubtitlesColorBlue),
+        ("#9ca3af", .playerSubtitlesColorGray),
+        ("#000000", .playerSubtitlesColorBlack),
     ]
 
-    static let backgroundColors: [(hex: String, label: String)] = [
-        ("#000000", "Black"),
-        ("#374151", "Dark Gray"),
-        ("#1e3a5f", "Navy"),
-        ("#7f1d1d", "Dark Red"),
-        ("#14532d", "Dark Green"),
+    static let backgroundColorChoices: [(hex: String, label: LocalizedStringResource)] = [
+        ("#000000", .playerSubtitlesColorBlack),
+        ("#374151", .playerSubtitlesColorDarkGrayTitleCase),
+        ("#1e3a5f", .playerSubtitlesColorNavy),
+        ("#7f1d1d", .playerSubtitlesColorDarkRedTitleCase),
+        ("#14532d", .playerSubtitlesColorDarkGreenTitleCase),
     ]
 
-    static let outlineColors: [(hex: String, label: String)] = backgroundColors
+    static var fontColors: [(hex: String, label: String)] {
+        fontColorChoices.map { ($0.hex, AppLanguage.string($0.label)) }
+    }
+
+    static var backgroundColors: [(hex: String, label: String)] {
+        backgroundColorChoices.map { ($0.hex, AppLanguage.string($0.label)) }
+    }
+
+    static var outlineColors: [(hex: String, label: String)] { backgroundColors }
 
     private enum CodingKeys: String, CodingKey {
         case fontSize
@@ -391,10 +412,17 @@ struct SubtitleAppearance: Codable, Equatable {
 
     /// One-word style descriptor for summary rows ("Large · Box · Bottom").
     var styleDescription: String {
-        if backgroundStyle == .box { return "Box" }
-        if textOutline || backgroundStyle == .outline { return "Outline" }
-        if backgroundStyle == .shadow { return "Drop Shadow" }
-        return "Plain"
+        let resource: LocalizedStringResource
+        if backgroundStyle == .box {
+            resource = .playerSubtitlesBackgroundBox
+        } else if textOutline || backgroundStyle == .outline {
+            resource = .playerSubtitlesBackgroundOutline
+        } else if backgroundStyle == .shadow {
+            resource = .playerSubtitlesBackgroundDropShadow
+        } else {
+            resource = .playerSubtitlesBackgroundPlain
+        }
+        return AppLanguage.string(resource)
     }
 
     /// True when the configuration risks unreadable text: a dark font color

@@ -137,12 +137,12 @@ enum AutoDownloadRules {
     ) -> String {
         switch mode {
         case .all:
-            return "All episodes"
+            return AppLanguage.string(.downloadsMonitorRuleAll)
         case .future:
-            return "Future episodes"
+            return AppLanguage.string(.downloadsMonitorRuleFuture)
         case .latestSeason:
-            guard let targetSeason else { return "Last season" }
-            return "Last season · Season \(targetSeason) on"
+            guard let targetSeason else { return AppLanguage.string(.downloadsMonitorRuleLastSeason) }
+            return AppLanguage.string(.downloadsMonitorRuleLastSeasonFrom("\(targetSeason)"))
         case .specificSeasons:
             return seasonList(seasonNumbers ?? [])
         }
@@ -151,7 +151,9 @@ enum AutoDownloadRules {
     /// The rule, plus the quality when it isn't original:
     /// "Future episodes · 10 Mbps".
     static func ruleSummary(for subscription: DownloadSubscription) -> String {
-        guard let mode = SubscriptionMode(rawValue: subscription.mode) else { return "Monitored" }
+        guard let mode = SubscriptionMode(rawValue: subscription.mode) else {
+            return AppLanguage.string(.downloadsMonitorRuleUnknown)
+        }
         let rule = ruleSummary(mode: mode, targetSeason: subscription.targetSeason, seasonNumbers: subscription.seasonNumbers)
         guard let quality = subscription.quality.flatMap(DownloadFormat.init(rawValue:)), quality != .original else {
             return rule
@@ -163,11 +165,11 @@ enum AutoDownloadRules {
     static func seasonList(_ seasons: [Int]) -> String {
         let sorted = Array(Set(seasons)).sorted()
         switch sorted.count {
-        case 0: return "No seasons"
-        case 1: return "Season \(sorted[0])"
+        case 0: return AppLanguage.string(.downloadsMonitorSeasonsNone)
+        case 1: return AppLanguage.string(.downloadsMonitorSeasonsSingle("\(sorted[0])"))
         default:
             let joined = ListFormatter.localizedString(byJoining: sorted.map(String.init))
-            return "Seasons \(joined)"
+            return AppLanguage.string(.downloadsMonitorSeasonsList(joined))
         }
     }
 
@@ -179,23 +181,39 @@ enum AutoDownloadRules {
     ) -> String {
         switch status {
         case .paused:
-            return "Paused"
+            return AppLanguage.string(.downloadsMonitorStatusPaused)
         case .storageLimit(let maxBytes):
-            return "Out of space · \(limitText(maxBytes)) limit"
+            return AppLanguage.string(.downloadsMonitorStatusOutOfSpace(limitText(maxBytes)))
         case .downloading(let episode, let fraction):
-            return "Downloading \(episodeName(episode)) · \(Int((fraction * 100).rounded()))%"
+            let percent = "\(Int((fraction * 100).rounded()))"
+            guard let episode else {
+                return AppLanguage.string(.downloadsMonitorStatusDownloadingUnnamed(percent))
+            }
+            return AppLanguage.string(.downloadsMonitorStatusDownloading("\(episode)", percent))
         case .waiting(let episode, let phase):
             return waitingLine(episode: episode, phase: phase)
         case .next(let upcoming):
-            let when = relativeDay(upcoming.airDate, now: now, calendar: calendar, preposition: true)
-            if upcoming.episodeNumber == 1 {
-                return "Season \(upcoming.seasonNumber) starts \(when)"
+            let season = "\(upcoming.seasonNumber)"
+            let episode = "\(upcoming.episodeNumber)"
+            let premiere = upcoming.episodeNumber == 1
+            switch day(upcoming.airDate, now: now, calendar: calendar) {
+            case .today:
+                return AppLanguage.string(premiere
+                    ? .downloadsMonitorNextSeasonStartsToday(season)
+                    : .downloadsMonitorNextEpisodeToday(episode))
+            case .tomorrow:
+                return AppLanguage.string(premiere
+                    ? .downloadsMonitorNextSeasonStartsTomorrow(season)
+                    : .downloadsMonitorNextEpisodeTomorrow(episode))
+            case .date(let date):
+                return AppLanguage.string(premiere
+                    ? .downloadsMonitorNextSeasonStartsOn(season, date)
+                    : .downloadsMonitorNextEpisodeOn(episode, date))
             }
-            return "Episode \(upcoming.episodeNumber) \(when)"
         case .upToDate:
-            return "Up to date"
+            return AppLanguage.string(.downloadsMonitorStatusUpToDate)
         case .monitoring:
-            return "Monitoring"
+            return AppLanguage.string(.downloadsMonitorStatusMonitoring)
         }
     }
 
@@ -207,40 +225,53 @@ enum AutoDownloadRules {
     ) -> String {
         switch status {
         case .paused:
-            return "Monitoring is paused"
+            return AppLanguage.string(.downloadsMonitorHeadlinePaused)
         case .next(let upcoming):
-            let when = relativeDay(upcoming.airDate, now: now, calendar: calendar, preposition: false)
-            if upcoming.episodeNumber == 1 {
-                return "Season \(upcoming.seasonNumber) downloads \(when)"
+            let season = "\(upcoming.seasonNumber)"
+            let episode = "\(upcoming.episodeNumber)"
+            let premiere = upcoming.episodeNumber == 1
+            switch day(upcoming.airDate, now: now, calendar: calendar) {
+            case .today:
+                return AppLanguage.string(premiere
+                    ? .downloadsMonitorHeadlineSeasonToday(season)
+                    : .downloadsMonitorHeadlineEpisodeToday(episode))
+            case .tomorrow:
+                return AppLanguage.string(premiere
+                    ? .downloadsMonitorHeadlineSeasonTomorrow(season)
+                    : .downloadsMonitorHeadlineEpisodeTomorrow(episode))
+            case .date(let date):
+                return AppLanguage.string(premiere
+                    ? .downloadsMonitorHeadlineSeasonOn(season, date)
+                    : .downloadsMonitorHeadlineEpisodeOn(episode, date))
             }
-            return "Episode \(upcoming.episodeNumber) downloads \(when)"
         case .upToDate:
-            return "Up to date"
+            return AppLanguage.string(.downloadsMonitorStatusUpToDate)
         default:
             return statusLine(status, now: now, calendar: calendar)
         }
     }
 
-    /// "today", "tomorrow", "Thursday", or "Oct 15", with "on" before a
-    /// weekday or date when `preposition` is set.
-    static func relativeDay(
-        _ date: Date,
-        now: Date,
-        calendar: Calendar,
-        preposition: Bool
-    ) -> String {
+    /// When an air date falls, for callers that build whole messages per
+    /// case rather than joining "today" into a sentence.
+    enum RelativeDay: Hashable, Sendable {
+        case today
+        case tomorrow
+        /// A weekday within the week ("Thursday"), otherwise "Oct 15".
+        case date(String)
+    }
+
+    static func day(_ date: Date, now: Date, calendar: Calendar) -> RelativeDay {
         let today = calendar.startOfDay(for: now)
         let day = calendar.startOfDay(for: date)
         let days = calendar.dateComponents([.day], from: today, to: day).day ?? 0
-        if days <= 0 { return "today" }
-        if days == 1 { return "tomorrow" }
+        if days <= 0 { return .today }
+        if days == 1 { return .tomorrow }
         // A format style, unlike a new DateFormatter per call, caches its
         // formatter; this runs in Downloads bodies.
         let style = Date.FormatStyle(locale: calendar.locale ?? .current, calendar: calendar, timeZone: calendar.timeZone)
-        let text = days < 7
+        return .date(days < 7
             ? date.formatted(style.weekday(.wide))
-            : date.formatted(style.month(.abbreviated).day())
-        return preposition ? "on \(text)" : text
+            : date.formatted(style.month(.abbreviated).day()))
     }
 
     /// "10 GB" for the limit picker's whole GiB values; other limits another
@@ -252,22 +283,22 @@ enum AutoDownloadRules {
         return ByteCountFormatter.string(fromByteCount: maxBytes, countStyle: .binary)
     }
 
-    private static func episodeName(_ episode: Int?) -> String {
-        episode.map { "Episode \($0)" } ?? "an episode"
-    }
-
     private static func waitingLine(episode: Int?, phase: AutoDownloadActivity.Phase) -> String {
-        let name = episodeName(episode)
+        guard let episode else {
+            switch phase {
+            case .waitingForWiFi: return AppLanguage.string(.downloadsMonitorWaitingUnnamedWifi)
+            case .waitingForConnection: return AppLanguage.string(.downloadsMonitorWaitingUnnamedConnection)
+            case .preparing: return AppLanguage.string(.downloadsMonitorWaitingUnnamedPreparing)
+            default: return AppLanguage.string(.downloadsMonitorWaitingUnnamedNext)
+            }
+        }
+        let number = "\(episode)"
         switch phase {
-        case .waitingForWiFi: return "\(name.capitalizedFirst) waits for Wi-Fi"
-        case .waitingForConnection: return "\(name.capitalizedFirst) waits for a connection"
-        case .preparing: return "Preparing \(name)"
-        default: return "\(name.capitalizedFirst) is next"
+        case .waitingForWiFi: return AppLanguage.string(.downloadsMonitorWaitingWifi(number))
+        case .waitingForConnection: return AppLanguage.string(.downloadsMonitorWaitingConnection(number))
+        case .preparing: return AppLanguage.string(.downloadsMonitorWaitingPreparing(number))
+        default: return AppLanguage.string(.downloadsMonitorWaitingNext(number))
         }
     }
-}
-
-private extension String {
-    var capitalizedFirst: String { prefix(1).uppercased() + dropFirst() }
 }
 #endif

@@ -78,16 +78,16 @@ enum TrackLabels {
             if lowered.contains("atmos") { return "Atmos" }
             if lowered.contains("7.1") { return "7.1" }
             if lowered.contains("5.1") { return "5.1" }
-            if lowered.contains("stereo") { return "Stereo" }
-            if lowered.contains("mono") { return "Mono" }
+            if lowered.contains("stereo") { return AppLanguage.string(.detailStereo) }
+            if lowered.contains("mono") { return AppLanguage.string(.detailMono) }
             return layout
         }
         switch channels {
-        case 1: return "Mono"
-        case 2: return "Stereo"
+        case 1: return AppLanguage.string(.detailMono)
+        case 2: return AppLanguage.string(.detailStereo)
         case 6: return "5.1"
         case 8: return "7.1"
-        case let channels? where channels > 0: return "\(channels)ch"
+        case let channels? where channels > 0: return AppLanguage.string(.detailChannels(String(channels)))
         default: return nil
         }
     }
