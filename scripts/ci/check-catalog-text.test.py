@@ -109,6 +109,7 @@ class ScanSourceTests(unittest.TestCase):
             'let label = on ? ("Enabled") : ("Disabled")',
             'let label = on ? "Enabled" : ( "Disabled" )',
             'let title = name??("Unknown name")',
+            'return flag ? "chevron.up" : "Off"',
         ]:
             self.assertIn(1, guard.scan_source(source, mappings=True), source)
             self.assertEqual(guard.scan_source(source), [], source)
@@ -123,6 +124,7 @@ class ScanSourceTests(unittest.TestCase):
             'return ("movie")',
             'return ("episode") == kind',
             'handler?("Done")',
+            'return flag ? "chevron.up" : "chevron.down"',
             'if detail.type == "episode" { return nil }',
             'return "HDR"  // i18n-ignore: technical token',
             'DiagTrace.breadcrumb(message: done ? "Finished loading" : "Started loading")',

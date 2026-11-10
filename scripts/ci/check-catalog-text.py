@@ -60,8 +60,11 @@ LOGGING_CALL = re.compile(
 # either branch of a ternary, a `??` fallback, or `.append("…")`, also inside
 # grouping parentheses (`return ("…")`).
 MAPPING = re.compile(
-    r"(?:\breturn|\bcase\b[^:\n]*:|\?\??|\?[^:\n]*[^\s:?]\s+:|\.append\()\s*(?=(?:\(\s*)*\")"
+    r"(?:\breturn|\bcase\b[^:\n]*:|\?\??|\.append\()\s*(?=(?:\(\s*)*\")"
 )
+# A ternary's else branch, on its own: finditer doesn't overlap matches, so the
+# `?` above would hide it when the first branch is a literal too.
+TERNARY_ELSE = re.compile(r"\?[^:\n]*[^\s:?]\s+:\s*(?=(?:\(\s*)*\")")
 
 LETTER = re.compile(r"[A-Za-z]")
 WORDS = re.compile(r"[A-Za-z]{2,}")
@@ -253,7 +256,7 @@ def scan_source(raw: str, mappings: bool = False) -> list[int]:
         for offset, text in argument_literals(src, m.end()):
             if prose(text):
                 report(offset, m.start())
-    for m in MAPPING.finditer(code) if mappings else ():
+    for m in (*MAPPING.finditer(code), *TERNARY_ELSE.finditer(code)) if mappings else ():
         if m.group() == "?" and code[m.end()] == "(" and re.search(r"[\w)\]]$", code[:m.start()]):
             continue  # an optional call, `handler?("…")`
         call = enclosing_call(code, m.start())
