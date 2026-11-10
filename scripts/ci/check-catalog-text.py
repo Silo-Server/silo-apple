@@ -70,7 +70,7 @@ TERNARY = re.compile(r"(?<=\s)\?(?=\s)")
 LETTER = re.compile(r"[A-Za-z]")
 WORDS = re.compile(r"[A-Za-z]{2,}")
 # "chevron.left", "movie", "video_with_episodes", "org.siloserver.silo",
-# "shell.siri.searchTerm", "librariesTabSelectedLibraryId", "rename:".
+# "shell.searchIntent.term", "librariesTabSelectedLibraryId", "rename:".
 IDENTIFIER = re.compile(r"^[_a-z0-9][\w.:/-]*$")
 
 

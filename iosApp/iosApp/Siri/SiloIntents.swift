@@ -8,11 +8,11 @@ import AppIntents
 /// `ShowInAppSearchResultsIntent` directly. The protocol already runs the
 /// intent in the app's foreground process.
 struct SearchInSiloIntent: ShowInAppSearchResultsIntent {
-    static let title: LocalizedStringResource = "shell.siri.searchTitle"
-    static let description = IntentDescription("shell.siri.searchDescription")
+    static let title: LocalizedStringResource = "shell.searchIntent.title"
+    static let description = IntentDescription("shell.searchIntent.description")
     static let searchScopes: [StringSearchScope] = [.general, .movies, .tv]
 
-    @Parameter(title: "shell.siri.searchTerm", requestValueDialog: "shell.siri.searchPrompt")
+    @Parameter(title: "shell.searchIntent.term", requestValueDialog: "shell.searchIntent.prompt")
     var criteria: StringSearchCriteria
 
     @MainActor
@@ -33,7 +33,7 @@ struct SiloAppShortcuts: AppShortcutsProvider {
                 "Search in \(.applicationName)",
                 "Find something on \(.applicationName)",
             ],
-            shortTitle: "shell.siri.searchShortTitle",
+            shortTitle: "shell.searchIntent.shortTitle",
             systemImageName: "magnifyingglass"
         )
     }
