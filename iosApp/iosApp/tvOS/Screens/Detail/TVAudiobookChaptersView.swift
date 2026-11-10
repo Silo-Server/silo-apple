@@ -17,6 +17,7 @@ struct TVAudiobookChaptersView: View {
 
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     @FocusState private var focusedRow: String?
 
     private let model: TVAudiobookViewModel
@@ -114,7 +115,7 @@ struct TVAudiobookChaptersView: View {
         HStack(spacing: 42) {
             cover
             VStack(alignment: .leading, spacing: 8) {
-                Text("Chapters")
+                Text(.detailAudiobookChapters)
                     .font(.system(size: 46, weight: .bold))
                     .foregroundColor(.white)
                 Text(subline)
@@ -160,15 +161,19 @@ struct TVAudiobookChaptersView: View {
         if model.resumePosition != nil {
             pieces.append("\(model.percentComplete)%")
             if let index = model.currentChapterIndex, hasChapters {
-                pieces.append("Chapter \(index + 1) of \(model.chapters.count)")
+                pieces.append(AppLanguage.string(
+                    .detailAudiobookChapterOf(String(index + 1), String(model.chapters.count)),
+                    locale: locale
+                ))
             }
             let left = PlayerTimeFormatter.formatRuntime(max(0, model.totalDuration - model.position))
-            if !left.isEmpty { pieces.append("\(left) left") }
+            if !left.isEmpty { pieces.append(AppLanguage.string(.detailAudiobookTimeLeft(left), locale: locale)) }
         } else {
             if hasChapters {
-                pieces.append("\(model.chapters.count) chapters")
+                let count = model.chapters.count
+                pieces.append(AppLanguage.string(.detailAudiobookChapterCount(count: count, String(count)), locale: locale))
             } else if model.tracks.count > 1 {
-                pieces.append("\(model.tracks.count) parts")
+                pieces.append(AppLanguage.string(.detailAudiobookPartCount(count: model.tracks.count, String(model.tracks.count)), locale: locale))
             }
             if !model.runtimeLabel.isEmpty { pieces.append(model.runtimeLabel) }
         }
@@ -204,7 +209,7 @@ struct TVAudiobookChaptersView: View {
 
     private static func partTitle(_ track: AudioPlaybackTrack) -> String {
         if let fileName = track.fileName, !fileName.isEmpty { return fileName }
-        return "Part \(track.index + 1)"
+        return AppLanguage.string(.detailAudiobookPart(String(track.index + 1)))
     }
 
     struct Row: Identifiable {
@@ -248,7 +253,7 @@ private struct TVAudiobookRowLabel: View {
             }
 
             if row.isCurrent {
-                Text("NOW")
+                Text(.detailAudiobookNowBadge)
                     .font(.system(size: 15, weight: .bold))
                     .tracking(1)
                     .foregroundColor(isFocused ? .white : .black)

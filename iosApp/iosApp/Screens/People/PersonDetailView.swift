@@ -8,11 +8,11 @@ enum PersonMediaFilter: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .all: "All"
-        case .movies: "Movies"
-        case .series: "Series"
+        case .all: .personFilterAll
+        case .movies: .personFilterMovies
+        case .series: .personFilterSeries
         }
     }
 
@@ -327,6 +327,7 @@ struct PersonDetailView: View {
     @Environment(\.detailPullBackAction) private var goBack
     @Environment(\.dismiss) private var dismiss
     #endif
+    @Environment(\.locale) private var locale
 
     init(personId: String) {
         _viewModel = State(initialValue: PersonDetailViewModel(personId: personId))
@@ -359,7 +360,7 @@ struct PersonDetailView: View {
         } else if viewModel.isInitialLoading {
             Color.clear
         } else {
-            EmptyStateView(icon: "person", title: "Person not found")
+            EmptyStateView(icon: "person", title: AppLanguage.string(.personNotFound, locale: locale))
                 .siloPageBackground()
         }
     }
@@ -395,6 +396,7 @@ private struct TVPersonDetailContent: View {
     var viewModel: PersonDetailViewModel
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     var body: some View {
         ScrollView {
@@ -415,8 +417,8 @@ private struct TVPersonDetailContent: View {
                     } else if viewModel.items.isEmpty {
                         EmptyStateView(
                             icon: "film.stack",
-                            title: "No titles found",
-                            subtitle: "There are no movies or series linked to this person yet."
+                            title: AppLanguage.string(.personEmpty, locale: locale),
+                            subtitle: AppLanguage.string(.personEmptyBody, locale: locale)
                         )
                         .frame(maxWidth: .infinity, minHeight: 420)
                     } else {
@@ -469,7 +471,7 @@ private struct TVPersonDetailContent: View {
 
     private var metadataRow: some View {
         HStack(spacing: 12) {
-            ForEach(person.personMetadataBadges, id: \.self) { badge in
+            ForEach(Array(person.personMetadataBadges(locale: locale).enumerated()), id: \.offset) { _, badge in
                 Text(badge)
                     .font(.siloSmall)
                     .foregroundColor(.siloOnSurface)
@@ -490,7 +492,7 @@ private struct TVPersonDetailContent: View {
     private var filmographyHeader: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Filmography")
+                Text(.personFilmography)
                     .font(.siloHeadline)
                     .foregroundColor(.siloOnSurface)
 
@@ -509,7 +511,7 @@ private struct TVPersonDetailContent: View {
         }
     }
 
-    private var totalLabel: String? {
+    private var totalLabel: LocalizedStringResource? {
         personFilmographyCountLabel(total: viewModel.totalItems, loaded: viewModel.items.count, hasMore: viewModel.hasMore)
     }
 }
@@ -519,6 +521,7 @@ private struct PhonePersonDetailContent: View {
     var viewModel: PersonDetailViewModel
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     var body: some View {
         ScrollView {
@@ -540,8 +543,8 @@ private struct PhonePersonDetailContent: View {
                     } else if viewModel.items.isEmpty {
                         EmptyStateView(
                             icon: "film",
-                            title: "No titles found",
-                            subtitle: "There are no movies or series linked to this person yet."
+                            title: AppLanguage.string(.personEmpty, locale: locale),
+                            subtitle: AppLanguage.string(.personEmptyBody, locale: locale)
                         )
                         .frame(maxWidth: .infinity, minHeight: 260)
                     } else {
@@ -587,7 +590,7 @@ private struct PhonePersonDetailContent: View {
 
     private var metadataWrap: some View {
         FlowLayout(spacing: 6) {
-            ForEach(person.personMetadataBadges, id: \.self) { badge in
+            ForEach(Array(person.personMetadataBadges(locale: locale).enumerated()), id: \.offset) { _, badge in
                 Text(badge)
                     .font(.siloSmall)
                     .foregroundColor(.siloOnSurface)
@@ -608,7 +611,7 @@ private struct PhonePersonDetailContent: View {
     private var filmographyHeader: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Filmography")
+                Text(.personFilmography)
                     .font(.siloHeadline)
                     .foregroundColor(.siloOnSurface)
 
@@ -671,7 +674,7 @@ private struct PersonBiography: View {
                 .onTapGesture { if isClipped { toggle() } }
 
             if isClipped {
-                Button(isExpanded ? "Less" : "More", action: toggle)
+                Button(action: toggle) { Text(isExpanded ? .personBioLess : .personBioMore) }
                     .buttonStyle(.plain)
                     .font(.siloBody.weight(.semibold))
                     .foregroundColor(.siloOnSurface)
@@ -724,7 +727,7 @@ private struct PersonMetadataRefreshIndicator: View {
                 .controlSize(controlSize)
                 .tint(.siloOnSurface)
 
-            Text("Loading metadata")
+            Text(.personLoadingMetadata)
                 .font(.siloSmall)
                 .foregroundColor(.siloSecondaryText)
         }
@@ -788,7 +791,7 @@ private struct PersonFilterBar: View {
 }
 
 private struct PersonFilterButton: View {
-    let title: String
+    let title: LocalizedStringResource
     let isSelected: Bool
     let action: () -> Void
 
@@ -862,15 +865,16 @@ private extension Person {
         return value.isEmpty ? "?" : value
     }
 
-    var personMetadataBadges: [String] {
+    /// Birth, death or age, and birthplace, in the language `locale` shows.
+    func personMetadataBadges(locale: Locale) -> [String] {
         var badges: [String] = []
         if let birthDate = formattedPersonDate(birthDate) {
-            badges.append("Born \(birthDate)")
+            badges.append(AppLanguage.string(.personBorn(birthDate), locale: locale))
         }
         if let deathDate = formattedPersonDate(deathDate) {
-            badges.append("Died \(deathDate)")
+            badges.append(AppLanguage.string(.personDied(deathDate), locale: locale))
         } else if let age = personAge(from: birthDate) {
-            badges.append("\(age) years old")
+            badges.append(AppLanguage.string(.personYearsOld(age), locale: locale))
         }
         if let birthplace = clean(birthplace) {
             badges.append(birthplace)
@@ -879,12 +883,14 @@ private extension Person {
     }
 }
 
-private func personFilmographyCountLabel(total: Int?, loaded: Int, hasMore: Bool) -> String? {
+private func personFilmographyCountLabel(total: Int?, loaded: Int, hasMore: Bool) -> LocalizedStringResource? {
     if let total {
-        return total == 1 ? "1 title" : "\(total) titles"
+        return .libraryTitleCount(count: total, String(total))
     }
     guard loaded > 0 else { return nil }
-    return hasMore ? "\(loaded)+ titles" : (loaded == 1 ? "1 title" : "\(loaded) titles")
+    return hasMore
+        ? .libraryTitleCountMore(count: loaded, String(loaded))
+        : .libraryTitleCount(count: loaded, String(loaded))
 }
 
 private func clean(_ value: String?) -> String? {

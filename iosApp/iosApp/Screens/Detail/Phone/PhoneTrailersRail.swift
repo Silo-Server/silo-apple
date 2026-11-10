@@ -20,10 +20,12 @@ struct PhoneTrailersRail: View {
     private let cardSpacing: CGFloat = 14
     private let thumbnailCornerRadius: CGFloat = 8
 
+    @Environment(\.locale) private var locale
+
     var body: some View {
         if !entries.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
-                PhoneSectionHeader(title: "Trailers & More")
+                PhoneSectionHeader(title: AppLanguage.string(.detailTrailers, locale: locale))
                     .padding(.horizontal, SiloTheme.safePadding)
                 rail
             }
@@ -106,6 +108,7 @@ private struct PhoneTrailerCard: View {
     let onSelect: () -> Void
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Button(action: onSelect) {
@@ -138,7 +141,7 @@ private struct PhoneTrailerCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(entry.title), \(ExtraKindLabels.label(for: entry.kind))")
+        .accessibilityLabel(Text(.detailTrailerCardDescription(entry.title, ExtraKindLabels.label(for: entry.kind))))
     }
 
     // MARK: - Thumbnail
@@ -188,7 +191,7 @@ private struct PhoneTrailerCard: View {
     // MARK: - Derived data
 
     private var kindLabel: String {
-        ExtraKindLabels.label(for: entry.kind).uppercased()
+        ExtraKindLabels.label(for: entry.kind).uppercased(with: locale)
     }
 
     /// Local extras are real files, so the scanner knows their runtime.

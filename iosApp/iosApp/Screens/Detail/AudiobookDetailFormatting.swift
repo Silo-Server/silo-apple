@@ -51,9 +51,9 @@ enum AudiobookDetailFormatting {
         }
         guard let index, index > 0 else { return name }
         if let total, total >= index, total > 1 {
-            return "\(name) · Book \(index) of \(total)"
+            return AppLanguage.string(.detailAudiobookSeriesLineOf(name, index, total))
         }
-        return "\(name) · Book \(index)"
+        return AppLanguage.string(.detailAudiobookSeriesLine(name, index))
     }
 
     /// Summarises a credit list: keeps the first `visible` names and rolls
@@ -77,7 +77,7 @@ enum AudiobookDetailFormatting {
         }
         let shown = cleaned.prefix(visible).joined(separator: ", ")
         let remaining = cleaned.count - visible
-        return "\(shown) & \(remaining) more"
+        return AppLanguage.string(.detailAudiobookPeopleMore(remaining, shown))
     }
 
     // MARK: - Internals
@@ -149,7 +149,7 @@ enum AudiobookDetailFormatting {
 func audiobookRelatedItemAccessibilityLabel(_ item: AudiobookRelatedItem) -> String {
     var components = [item.title]
     if let seriesIndex = item.seriesIndex {
-        components.append("Book \(seriesIndex)")
+        components.append(AppLanguage.string(.detailAudiobookBookNumber(seriesIndex)))
     }
     if let year = item.year {
         components.append(String(year))

@@ -20,21 +20,34 @@ enum BookDetailKind {
     }
 
     /// Short label above the title in the wide (iPad/Mac) hero.
-    var eyebrow: String {
+    var eyebrow: LocalizedStringResource {
         switch self {
-        case .audiobook: "Audiobook"
+        case .audiobook: .detailTypeAudiobook
         }
     }
 
     /// The watchlist action, in the format's own verb.
-    var queueLabel: String {
+    var queueLabel: LocalizedStringResource {
         switch self {
-        case .audiobook: "Want to Listen"
+        case .audiobook: .detailAudiobookWantToListen
+        }
+    }
+
+    /// Spoken labels for adding to and removing from the format's queue.
+    var queueAddLabel: LocalizedStringResource {
+        switch self {
+        case .audiobook: .detailAudiobookWantToListenAdd
+        }
+    }
+
+    var queueRemoveLabel: LocalizedStringResource {
+        switch self {
+        case .audiobook: .detailAudiobookWantToListenRemove
         }
     }
 
     /// The watched action. Books are finished, not watched.
-    var finishedLabel: String { "Finished" }
+    var finishedLabel: LocalizedStringResource { .detailAudiobookFinished }
 }
 
 /// Pure, SwiftUI-free projection of an audiobook `ItemDetail` into the
@@ -74,12 +87,12 @@ struct BookDetailPresentation {
         if let authors = AudiobookDetailFormatting.peopleSummary(
             detail.audiobook?.authors.map(\.name) ?? [], visible: 3
         ) {
-            pieces.append("By \(authors)")
+            pieces.append(AppLanguage.string(.detailAudiobookByAuthors(authors)))
         }
         if let narrators = AudiobookDetailFormatting.peopleSummary(
             detail.audiobook?.narrators.map(\.name) ?? [], visible: 2
         ) {
-            pieces.append("Narrated by \(narrators)")
+            pieces.append(AppLanguage.string(.detailNarratedBy(narrators)))
         }
         return pieces.isEmpty ? nil : pieces.joined(separator: " · ")
     }
@@ -191,11 +204,11 @@ struct BookDetailPresentation {
             let left = PlayerTimeFormatter.formatRuntime(
                 max(0, totalDurationSeconds - positionSeconds)
             )
-            return left.isEmpty ? "Resume" : "Resume · \(left) left"
+            return AppLanguage.string(left.isEmpty ? .detailResume : .detailResumeTimeLeft(left))
         case .playAgain:
-            return "Play Again"
+            return AppLanguage.string(.detailPlayAgain)
         case .play:
-            return "Play"
+            return AppLanguage.string(.commonPlay)
         }
     }
 

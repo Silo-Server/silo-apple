@@ -112,9 +112,9 @@ struct TVAudiobookViewModel {
 
     var eyebrow: String {
         if let genre = detail.genres?.first, !genre.isEmpty {
-            return "AUDIOBOOK · \(genre.uppercased())"
+            return AppLanguage.string(.detailAudiobookLabelWithGenre(genre.uppercased()))
         }
-        return "AUDIOBOOK"
+        return AppLanguage.string(.detailAudiobookLabel)
     }
 
     var seriesLine: String? {
@@ -160,9 +160,9 @@ struct TVAudiobookViewModel {
             )
         }
         if isFinished {
-            return .finished(line1: "Finished", line2: runtimeLabel.nonEmptyOrNil)
+            return .finished(line1: AppLanguage.string(.detailAudiobookFinished), line2: runtimeLabel.nonEmptyOrNil)
         }
-        return .notStarted(line1: "Not started", line2: notStartedLine2)
+        return .notStarted(line1: AppLanguage.string(.detailAudiobookNotStarted), line2: notStartedLine2)
     }
 
     /// "Chapter 24 · What the Tide Owes", or a listened-time line when the
@@ -170,9 +170,11 @@ struct TVAudiobookViewModel {
     private var inProgressLine1: String {
         guard let index = currentChapterIndex, chapters.indices.contains(index) else {
             let listened = PlayerTimeFormatter.formatRuntime(position)
-            return listened.isEmpty ? "In progress" : "\(listened) listened"
+            return AppLanguage.string(
+                listened.isEmpty ? .detailAudiobookInProgress : .detailAudiobookListened(listened)
+            )
         }
-        return "Chapter \(index + 1) · \(chapterTitle(index))"
+        return AppLanguage.string(.detailAudiobookCurrentChapter(String(index + 1), chapterTitle(index)))
     }
 
     /// "8:12 into the chapter · 5h 28m left in the book".
@@ -180,12 +182,12 @@ struct TVAudiobookViewModel {
         var pieces: [String] = []
         if let index = currentChapterIndex, chapters.indices.contains(index) {
             let intoChapter = max(0, position - chapters[index].startSeconds)
-            pieces.append("\(PlayerTimeFormatter.formatHMS(intoChapter)) into the chapter")
+            pieces.append(AppLanguage.string(.detailAudiobookIntoChapter(PlayerTimeFormatter.formatHMS(intoChapter))))
         }
         let left = max(0, totalDuration - position)
         let leftLabel = PlayerTimeFormatter.formatRuntime(left)
         if !leftLabel.isEmpty {
-            pieces.append("\(leftLabel) left in the book")
+            pieces.append(AppLanguage.string(.detailAudiobookLeftInBook(leftLabel)))
         }
         return pieces.isEmpty ? nil : pieces.joined(separator: " · ")
     }
@@ -195,16 +197,18 @@ struct TVAudiobookViewModel {
         var pieces: [String] = []
         let runtime = runtimeLabel
         if !runtime.isEmpty { pieces.append(runtime) }
-        if !chapters.isEmpty { pieces.append("\(chapters.count) chapters") }
+        if !chapters.isEmpty {
+            pieces.append(AppLanguage.string(.detailAudiobookChapterCount(count: chapters.count, String(chapters.count))))
+        }
         return pieces.isEmpty ? nil : pieces.joined(separator: " · ")
     }
 
     var runtimeLabel: String { PlayerTimeFormatter.formatRuntime(totalDuration) }
 
     func chapterTitle(_ index: Int) -> String {
-        guard chapters.indices.contains(index) else { return "Chapter \(index + 1)" }
+        guard chapters.indices.contains(index) else { return AppLanguage.string(.detailAudiobookChapter(String(index + 1))) }
         if let title = chapters[index].title, !title.isEmpty { return title }
-        return "Chapter \(index + 1)"
+        return AppLanguage.string(.detailAudiobookChapter(String(index + 1)))
     }
 
     // MARK: - Actions
@@ -217,10 +221,10 @@ struct TVAudiobookViewModel {
         resumePosition == nil && isFinished ? "arrow.counterclockwise" : "play.fill"
     }
 
-    var primaryLabel: String {
-        if resumePosition != nil { return "Resume" }
-        if isFinished { return "Play Again" }
-        return "Play"
+    var primaryLabel: LocalizedStringResource {
+        if resumePosition != nil { return .detailResume }
+        if isFinished { return .detailPlayAgain }
+        return .commonPlay
     }
 
     @MainActor

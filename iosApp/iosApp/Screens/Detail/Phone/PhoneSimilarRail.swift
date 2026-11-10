@@ -18,6 +18,7 @@ struct PhoneSimilarRail: View {
     @State private var items: [SimilarPosterItem] = []
     @State private var isLoading = true
     @State private var loadedFor: String? = nil
+    @Environment(\.locale) private var locale
     private var uiCustomization: UICustomizationPreferences { .shared }
 
     var body: some View {
@@ -33,7 +34,7 @@ struct PhoneSimilarRail: View {
 
     private func section(@ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "More Like This")
+            PhoneSectionHeader(title: AppLanguage.string(.detailMoreLikeThis, locale: locale))
                 .padding(.horizontal, SiloTheme.safePadding)
             content()
         }
@@ -194,7 +195,7 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.posterUrl = item.posterUrl
         self.posterThumbhash = nil
         self.year = item.year
-        self.subtitle = item.seriesIndex.map { "Book \($0)" }
+        self.subtitle = item.seriesIndex.map { AppLanguage.string(.detailAudiobookBookNumber($0)) }
         self.placeholderSymbol = nil
         self.accessibilityDescription = audiobookRelatedItemAccessibilityLabel(item)
     }

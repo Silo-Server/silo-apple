@@ -3,14 +3,32 @@
 # `mappings` also checks sentences returned or mapped outside a call (docs/i18n.md).
 iosApp/DownloadsActivity
 iosApp/iosApp/Components/AccountRemovalConfirmation.swift
+iosApp/iosApp/Components/BoxSetCardBadges.swift  mappings
+iosApp/iosApp/Components/PosterSkeletons.swift  mappings
 iosApp/iosApp/Control
 # Navigation/UICustomizationPreferences.swift still returns English status messages (follow-up).
 iosApp/iosApp/Overlays
 iosApp/iosApp/Screens/Accounts
 iosApp/iosApp/Screens/Audio
+iosApp/iosApp/Screens/BoxSets  mappings
+iosApp/iosApp/Screens/Browse  mappings
+iosApp/iosApp/Screens/Calendar  mappings
+iosApp/iosApp/Screens/Collections  mappings
+iosApp/iosApp/Screens/Detail  mappings
+iosApp/iosApp/Screens/Home  mappings
+iosApp/iosApp/Screens/People  mappings
+iosApp/iosApp/Screens/Personal  mappings
+iosApp/iosApp/Screens/Recommendations  mappings
+iosApp/iosApp/Screens/Search  mappings
+iosApp/iosApp/Screens/Sections  mappings
 iosApp/iosApp/Screens/Servers
 iosApp/iosApp/Screens/Settings
+iosApp/iosApp/Screens/Shuffle  mappings
 iosApp/iosApp/Shared/Diagnostics
 iosApp/iosApp/Shared/ProfileLaunchBehavior.swift
+iosApp/iosApp/tvOS/Components  mappings
 iosApp/iosApp/tvOS/Profiles
+iosApp/iosApp/tvOS/Screens/Components/TVCollectionPosterCard.swift  mappings
+iosApp/iosApp/tvOS/Screens/Detail  mappings
+iosApp/iosApp/tvOS/Screens/Libraries  mappings
 iosApp/iosApp/tvOS/Screens/Settings

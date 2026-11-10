@@ -280,20 +280,20 @@ extension TVMarqueeContent {
         }
         if let hdr = nonEmpty(summary.hdr) {
             badges.append(hdr.localizedCaseInsensitiveContains("dv") || hdr.localizedCaseInsensitiveContains("dolby")
-                ? "DOLBY VISION"
+                ? "DOLBY VISION"  // i18n-ignore: technical badge token
                 : hdr.uppercased())
         }
         if let audio = nonEmpty(summary.audio) {
-            badges.append(audio.localizedCaseInsensitiveContains("atmos") ? "ATMOS" : audio.uppercased())
+            badges.append(audio.localizedCaseInsensitiveContains("atmos") ? "ATMOS" : audio.uppercased())  // i18n-ignore: technical badge token
         }
         return badges
     }
 
     private static func episodeToken(season: Int?, episode: Int?) -> String? {
         switch (season, episode) {
-        case let (season?, episode?): return "S\(season) E\(episode)"
-        case let (season?, nil): return "Season \(season)"
-        case let (nil, episode?): return "Episode \(episode)"
+        case let (season?, episode?): return AppLanguage.string(.homeSeasonEpisode(String(season), String(episode)))
+        case let (season?, nil): return AppLanguage.string(.homeSeasonOnly(String(season)))
+        case let (nil, episode?): return AppLanguage.string(.homeEpisodeOnly(String(episode)))
         default: return nil
         }
     }
@@ -307,7 +307,7 @@ extension TVMarqueeContent {
             return nil
         }
         let remaining = max(Int(((duration - position) / 60).rounded(.up)), 1)
-        return MediaTextFormatting.runtime(minutes: remaining).map { "\($0) left" }
+        return MediaTextFormatting.runtime(minutes: remaining).map { AppLanguage.string(.homeTimeLeft($0)) }
     }
 
     /// Episode/movie length: the metadata runtime when present, else
@@ -491,7 +491,7 @@ final class TVContinueWatchingPlaybackMetadataStore {
         var overlayData = baseOverlayData
         overlayData.resolution = version.resolution
         overlayData.hdr = hdr
-        overlayData.audio = isAtmos ? "Atmos" : (audioCodec ?? audioLayout)
+        overlayData.audio = isAtmos ? "Atmos" : (audioCodec ?? audioLayout)  // i18n-ignore: overlay data in the server's audio format
         overlayData.audioChannels = audioLayout
         overlayData.videoCodec = DetailPlaybackFormatting.normalizedVideoCodec(version.codecVideo)
         overlayData.container = version.container
@@ -503,10 +503,10 @@ final class TVContinueWatchingPlaybackMetadataStore {
             badges.append(resolution)
         }
         if let hdr {
-            badges.append(hdr.localizedCaseInsensitiveContains("dv") ? "DOLBY VISION" : hdr.uppercased())
+            badges.append(hdr.localizedCaseInsensitiveContains("dv") ? "DOLBY VISION" : hdr.uppercased())  // i18n-ignore: technical badge token
         }
         if isAtmos {
-            badges.append("ATMOS")
+            badges.append("ATMOS")  // i18n-ignore: technical badge token
         } else {
             let audioBadge = [audioCodec, audioLayout]
                 .compactMap { $0 }
@@ -543,15 +543,15 @@ final class TVContinueWatchingPlaybackMetadataStore {
         if let layout = track.channelLayout?.trimmingCharacters(in: .whitespacesAndNewlines),
            !layout.isEmpty {
             let lowered = layout.lowercased()
-            if lowered.contains("atmos") { return "Atmos" }
+            if lowered.contains("atmos") { return "Atmos" }  // i18n-ignore: overlay data in the server's audio format
             if lowered.contains("7.1") { return "7.1" }
             if lowered.contains("5.1") { return "5.1" }
-            if lowered.contains("stereo") || lowered == "2.0" { return "Stereo" }
+            if lowered.contains("stereo") || lowered == "2.0" { return "Stereo" }  // i18n-ignore: overlay data in the server's audio format
             return layout
         }
         switch track.channels {
-        case 1: return "Mono"
-        case 2: return "Stereo"
+        case 1: return "Mono"  // i18n-ignore: overlay data in the server's audio format
+        case 2: return "Stereo"  // i18n-ignore: overlay data in the server's audio format
         case 6: return "5.1"
         case 8: return "7.1"
         case let channels?: return "\(channels)ch"
@@ -564,7 +564,7 @@ final class TVContinueWatchingPlaybackMetadataStore {
         if tracks.contains(where: {
             !($0.dolbyVision?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         }) {
-            return "DV"
+            return "DV"  // i18n-ignore: technical token
         }
         guard version.hdr == true else { return nil }
         if let range = tracks.compactMap(\.videoRange).first(where: {
@@ -572,7 +572,7 @@ final class TVContinueWatchingPlaybackMetadataStore {
         }) {
             return range
         }
-        return "HDR"
+        return "HDR"  // i18n-ignore: technical token
     }
 }
 
@@ -583,7 +583,10 @@ final class TVContinueWatchingPlaybackMetadataStore {
 /// fetch that never blocks or delays the marquee itself.
 struct TVMarqueeEnrichment: Equatable {
     /// `Aired Mar 12, 2026 · Pedro Pascal, Bella Ramsey, Anna Torv`
-    let detailLine: String?
+    /// The episode's air date, formatted; joined into the detail line in
+    /// the language the marquee shows.
+    let airDateText: String?
+    let castNames: [String]
     /// Recommendation payloads may omit the age/content rating even though
     /// item detail carries it. Keep that fallback with the other marquee
     /// enrichment so For You renders the same leading rating pill as Home.
@@ -614,24 +617,30 @@ struct TVMarqueeEnrichment: Equatable {
             ? trimmedRating?.uppercased()
             : nil
         runtimeText = MediaTextFormatting.runtime(minutes: detail.runtime)
-        var parts: [String] = []
-        if let airDate = Self.airDateText(detail.airDate) {
-            parts.append("Aired \(airDate)")
-        }
-        let cast = (detail.cast ?? [])
+        airDateText = Self.formattedAirDate(detail.airDate)
+        castNames = (detail.cast ?? [])
             .sorted { ($0.order ?? Int.max) < ($1.order ?? Int.max) }
             .prefix(3)
             .map(\.name)
             .filter { !$0.isEmpty }
-        if !cast.isEmpty {
-            parts.append(cast.joined(separator: ", "))
+    }
+
+    /// "Aired <date> · <cast>", resolved when shown so a cached enrichment
+    /// follows a language change.
+    func detailLine(locale: Locale) -> String? {
+        var parts: [String] = []
+        if let airDateText {
+            parts.append(AppLanguage.string(.homeAiredOn(airDateText), locale: locale))
         }
-        detailLine = parts.isEmpty ? nil : parts.joined(separator: " · ")
+        if !castNames.isEmpty {
+            parts.append(castNames.joined(separator: ", "))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     /// Uses the detail screens' calendar-date formatting, so the server's
     /// `yyyy-MM-dd` air date shows the same day in every time zone.
-    private static func airDateText(_ raw: String?) -> String? {
+    private static func formattedAirDate(_ raw: String?) -> String? {
         guard let raw, !raw.isEmpty else { return nil }
         return DetailDateFormatting.abbreviatedDate(raw)
     }
@@ -1184,6 +1193,7 @@ final class TVFocusMarqueeModel {
 /// the backdrop animates separately. VoiceOver exposes a polite, non-interrupting
 /// description of the focused item.
 struct TVFocusMarquee: View {
+    @Environment(\.locale) private var locale
     @Environment(\.browseLibraryId) private var browseLibraryId
     enum Scale {
         /// Home — full-bleed scale (title 84), anchored bottom-left above
@@ -1281,7 +1291,7 @@ struct TVFocusMarquee: View {
         parts += content.trailingMetaParts
         parts.append(content.synopsis ?? "")
         parts.append(content.translationStatus?.text ?? "")
-        parts.append(enrichment?.detailLine ?? "")
+        parts.append(enrichment?.detailLine(locale: locale) ?? "")
         parts.append(requestStatus)
         return parts
             .filter { !$0.isEmpty }
@@ -1316,6 +1326,7 @@ struct TVFocusMarquee: View {
 /// badges. The parent keys identity on the content id, so each selection
 /// owns its logo task.
 private struct TVMarqueeBlock: View {
+    @Environment(\.locale) private var locale
     let content: TVMarqueeContent
     var enrichment: TVMarqueeEnrichment? = nil
     var badgeOverride: [String]? = nil
@@ -1423,7 +1434,7 @@ private struct TVMarqueeBlock: View {
     @ViewBuilder
     private var detailLine: some View {
         if content.contentId != nil {
-            Text(verbatim: "Ag")
+            Text(verbatim: "Ag") // i18n-ignore: invisible line-height probe
                 .font(.system(size: scale.metaSize, weight: .medium))
                 .lineLimit(1)
                 .opacity(0)
@@ -1436,7 +1447,7 @@ private struct TVMarqueeBlock: View {
                             DescriptionTranslationStatusLabel(status: status, fontSize: scale.metaSize * 0.85)
                                 .fixedSize()
                         }
-                        if let line = enrichment?.detailLine, !line.isEmpty {
+                        if let line = enrichment?.detailLine(locale: locale), !line.isEmpty {
                             Text(line)
                                 .font(.system(size: scale.metaSize, weight: .medium))
                                 .foregroundStyle(Color.siloOnSurface.opacity(0.5))

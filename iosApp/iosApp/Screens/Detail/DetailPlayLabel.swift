@@ -12,11 +12,14 @@ enum DetailPlayLabel {
 
     /// "Resume" or "Play" for a movie or a single episode's own page.
     static func item(_ userData: LeafItemUserData?) -> String {
-        resumePosition(userData) == nil ? "Play" : "Resume"
+        AppLanguage.string(resumePosition(userData) == nil ? .commonPlay : .detailResume)
     }
 
     /// "Resume S1·E2" or "Play S1·E2" for the series page's next-up episode.
     static func episode(_ episode: EpisodeListItem) -> String {
-        "\(item(episode.userData)) S\(episode.seasonNumber)·E\(episode.episodeNumber)"
+        let code = AppLanguage.string(.detailEpisodeCode(String(episode.seasonNumber), String(episode.episodeNumber)))
+        return AppLanguage.string(resumePosition(episode.userData) == nil
+            ? .detailPlayEpisodeCode(code)
+            : .detailResumeEpisodeCode(code))
     }
 }

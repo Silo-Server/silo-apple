@@ -22,6 +22,7 @@ struct TVLibraryTypeTabView: View {
     let onTopMenuFocusRequest: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Group {
@@ -43,14 +44,14 @@ struct TVLibraryTypeTabView: View {
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up",
-                    title: "No \(type.title.lowercased()) libraries",
-                    subtitle: "Libraries visible to this profile will appear here."
+                    title: AppLanguage.string(noLibrariesTitle, locale: locale),
+                    subtitle: AppLanguage.string(.libraryNoLibrariesVisibleBody, locale: locale)
                 )
                 .padding(.top, TVTopMenuLayout.contentTopInset)
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "No \(type.title.lowercased()) libraries",
+                    accessibilityLabel: AppLanguage.string(noLibrariesTitle, locale: locale),
                     onMoveUp: onTopMenuFocusRequest
                 )
             }
@@ -60,6 +61,15 @@ struct TVLibraryTypeTabView: View {
 
     private var mediaScope: LibraryVideoScope? {
         Self.mediaScope(for: type, library: activeLibrary)
+    }
+
+    private var noLibrariesTitle: LocalizedStringResource {
+        switch type {
+        case .movies: return .libraryNoLibrariesOfTypeMovies
+        case .series: return .libraryNoLibrariesOfTypeSeries
+        case .music: return .libraryNoLibrariesOfTypeMusic
+        case .audiobooks: return .libraryNoLibrariesOfTypeAudiobooks
+        }
     }
 
     /// The media type a mixed library is narrowed to: the Movies or Series

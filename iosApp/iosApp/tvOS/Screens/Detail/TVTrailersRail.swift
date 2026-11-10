@@ -19,6 +19,7 @@ struct TVTrailersRail: View {
     var onFocusChange: ((Bool) -> Void)? = nil
 
     @FocusState private var focusedEntryId: String?
+    @Environment(\.locale) private var locale
 
     private let cardSpacing: CGFloat = 48
     private let railVerticalPadding: CGFloat = 12
@@ -27,7 +28,7 @@ struct TVTrailersRail: View {
     var body: some View {
         if !entries.isEmpty {
             VStack(alignment: .leading, spacing: headerSpacing) {
-                TVSectionHeader(title: "Trailers & More")
+                TVSectionHeader(title: AppLanguage.string(.detailTrailers, locale: locale))
                 rail
             }
         }
@@ -127,7 +128,7 @@ private struct TrailerCardLabel: View {
     private var secondaryLine: String? {
         switch entry {
         case .remote:
-            return "YouTube"
+            return "YouTube" // i18n-ignore: brand name
         case .local(let extra):
             guard let seconds = extra.durationSeconds, seconds > 0 else { return nil }
             return PlayerTimeFormatter.formatHMS(Double(seconds))

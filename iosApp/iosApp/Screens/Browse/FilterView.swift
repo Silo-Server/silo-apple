@@ -11,6 +11,7 @@ struct FilterView: View {
 
     @State private var draft: CatalogFilterState
     @State private var preserve: Bool
+    @Environment(\.locale) private var locale
 
     init(viewModel: BrowseViewModel) {
         self.viewModel = viewModel
@@ -32,11 +33,11 @@ struct FilterView: View {
             .filterScrollContentBackgroundHidden()
             .environment(\.defaultMinListRowHeight, 50)
             .siloSheetBackground()
-            .navigationTitle("Filter")
+            .navigationTitle(Text(.filtersSheetTitle))
             .siloNavigationTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Reset") { draft.resetFilters() }
+                    Button(.filtersResetShort) { draft.resetFilters() }
                         .foregroundColor(.siloSecondaryText)
                         .disabled(!draft.canResetFilters)
                 }
@@ -142,9 +143,9 @@ struct FilterView: View {
     private func selectionSummary(_ facet: CatalogFacet) -> String? {
         let selected = draft.selectedValues(facet)
         guard !selected.isEmpty else { return nil }
-        let labels = selected.sorted().map { CatalogFilterState.chipLabel(facet: facet, value: $0) }
+        let labels = selected.sorted().map { CatalogFilterState.chipLabel(facet: facet, value: $0, locale: locale) }
         guard let first = labels.first else { return nil }
-        return labels.count == 1 ? first : "\(first) +\(labels.count - 1)"
+        return labels.count == 1 ? first : AppLanguage.string(.filtersSummaryMore(first, labels.count - 1), locale: locale)
     }
 
     // MARK: - Match all/any
@@ -152,13 +153,13 @@ struct FilterView: View {
     private var matchSection: some View {
         Section {
             HStack {
-                Text("Match")
+                Text(.filtersMatch)
                     .font(.siloBody)
                     .foregroundColor(.siloOnSurface)
                 Spacer(minLength: 12)
                 HStack(spacing: 2) {
-                    matchOption("All", isOn: draft.matchAll) { draft.matchAll = true }
-                    matchOption("Any", isOn: !draft.matchAll) { draft.matchAll = false }
+                    matchOption(.filtersMatchAllShort, isOn: draft.matchAll) { draft.matchAll = true }
+                    matchOption(.filtersMatchAnyShort, isOn: !draft.matchAll) { draft.matchAll = false }
                 }
                 .padding(2)
                 .background(Capsule().fill(Color.siloSurfaceElevated))
@@ -167,14 +168,14 @@ struct FilterView: View {
             .filterListRowSeparatorHidden()
         } footer: {
             Text(draft.matchAll
-                 ? "Results match every selected filter."
-                 : "Results match any selected filter.")
+                 ? LocalizedStringResource.filtersMatchAllHint
+                 : .filtersMatchAnyHint)
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
         }
     }
 
-    private func matchOption(_ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+    private func matchOption(_ label: LocalizedStringResource, isOn: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(label)
                 .font(.siloCaption)
@@ -191,7 +192,7 @@ struct FilterView: View {
     private var preserveSection: some View {
         Section {
             Toggle(isOn: $preserve) {
-                Text("Preserve sort & filters")
+                Text(.filtersPreserve)
                     .font(.siloBody)
                     .foregroundColor(.siloOnSurface)
             }
@@ -202,7 +203,7 @@ struct FilterView: View {
                 viewModel.setPreserveEnabled(newValue)
             }
         } footer: {
-            Text("Reopen this library exactly as you left it")
+            Text(.filtersPreserveHint)
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
         }
@@ -235,7 +236,7 @@ struct FilterView: View {
     /// (value, label) options for a facet — fixed vocab for derived facets,
     /// server vocab otherwise.
     private func valueOptions(for facet: CatalogFacet) -> [(value: String, label: String)] {
-        (viewModel.facets ?? CatalogFacets()).optionPairs(for: facet, hasProfile: hasProfile)
+        (viewModel.facets ?? CatalogFacets()).optionPairs(for: facet, hasProfile: hasProfile, locale: locale)
     }
 }
 
@@ -283,13 +284,13 @@ private struct FacetValuePicker: View {
         .filterScrollContentBackgroundHidden()
         .environment(\.defaultMinListRowHeight, 50)
         .siloSheetBackground()
-        .navigationTitle(facet.title)
+        .navigationTitle(Text(facet.title))
         .siloNavigationTitleDisplayMode(.inline)
         .siloNavigationBarSurfaceBackground()
         .toolbar {
             if !draft.selectedValues(facet).isEmpty {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Clear") { draft.clear(facet) }
+                    Button(.filtersClear) { draft.clear(facet) }
                         .foregroundColor(.siloSecondaryText)
                 }
             }

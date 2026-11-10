@@ -149,7 +149,8 @@ final class PlayerShuffleStateTests: XCTestCase {
     }
 
     func testStartFailuresExplainThemselves() {
-        XCTAssertEqual(ShuffleLauncher.failureMessage(for: conflict), "Nothing here can be played.")
-        XCTAssertEqual(ShuffleLauncher.failureMessage(for: URLError(.timedOut)), "Couldn't start the shuffle. Try again.")
+        let en = Locale(identifier: "en")
+        XCTAssertEqual(AppLanguage.string(ShuffleLauncher.failureMessage(for: conflict), locale: en), "Nothing here can be played.")
+        XCTAssertEqual(AppLanguage.string(ShuffleLauncher.failureMessage(for: URLError(.timedOut)), locale: en), "Couldn't start the shuffle. Try again.")
     }
 }

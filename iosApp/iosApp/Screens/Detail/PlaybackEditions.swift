@@ -29,10 +29,22 @@ enum PlaybackEditions {
         return order.map { key in
             Edition(
                 id: key,
-                label: labels[key] ?? "Standard",
+                label: labels[key] ?? standardLabel,
                 versions: groups[key] ?? []
             )
         }
+    }
+
+    /// The label of a version with no named edition. It is data as well as
+    /// text: `FileVersion.editionDisplayLabel` returns it and the download
+    /// sheet compares against it, so it stays English and is translated only
+    /// where it is shown.
+    static let standardLabel = "Standard" // i18n-ignore: compared edition value; shown through displayLabel
+
+    /// An edition label as shown: the catalog's "Standard" for the unnamed
+    /// edition, otherwise the label from the file.
+    static func displayLabel(_ label: String, locale: Locale) -> String {
+        label == standardLabel ? AppLanguage.string(.detailEditionStandard, locale: locale) : label
     }
 
     /// The edition that owns `fileId`, if any.
