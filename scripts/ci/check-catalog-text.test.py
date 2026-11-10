@@ -108,6 +108,7 @@ class ScanSourceTests(unittest.TestCase):
             'let title = name ?? ("Unknown name")',
             'let label = on ? ("Enabled") : ("Disabled")',
             'let label = on ? "Enabled" : ( "Disabled" )',
+            'let title = name??("Unknown name")',
         ]:
             self.assertIn(1, guard.scan_source(source, mappings=True), source)
             self.assertEqual(guard.scan_source(source), [], source)

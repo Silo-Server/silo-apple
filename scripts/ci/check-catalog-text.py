@@ -254,7 +254,7 @@ def scan_source(raw: str, mappings: bool = False) -> list[int]:
             if prose(text):
                 report(offset, m.start())
     for m in MAPPING.finditer(code) if mappings else ():
-        if m.group().startswith("?") and code[m.end()] == "(" and re.search(r"[\w)\]]$", code[:m.start()]):
+        if m.group() == "?" and code[m.end()] == "(" and re.search(r"[\w)\]]$", code[:m.start()]):
             continue  # an optional call, `handler?("…")`
         call = enclosing_call(code, m.start())
         if call is not None and LOGGING_CALL.search(call):
