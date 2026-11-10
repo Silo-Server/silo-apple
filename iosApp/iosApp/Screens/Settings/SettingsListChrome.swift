@@ -66,6 +66,17 @@ private struct MacSettingsMenuStyle: MenuStyle {
 }
 #endif
 
+/// Rebuilds a list when the layout direction changes. After a live switch
+/// from a right-to-left language back to a left-to-right one, a list that
+/// was shown right to left keeps its rows mirrored until it is made again.
+private struct RebuiltOnDirectionChange: ViewModifier {
+    @Environment(\.layoutDirection) private var layoutDirection
+
+    func body(content: Content) -> some View {
+        content.id(layoutDirection)
+    }
+}
+
 extension View {
     func settingsListChrome() -> some View {
         #if os(macOS)
@@ -87,6 +98,7 @@ extension View {
         siloGroupedListStyle()
             .siloScrollContentBackgroundHidden()
             .background(SettingsBackdrop())
+            .modifier(RebuiltOnDirectionChange())
         #endif
     }
 
