@@ -20,7 +20,7 @@ func mediaCardAccessibilityLabel(
         components.append(episodeLabel)
     }
     if let year {
-        components.append(String(year))
+        components.append(LocaleFormat.integer(year, locale: locale))
     }
     if isWatched {
         components.append(AppLanguage.string(.shellCardWatched, locale: locale))
@@ -438,7 +438,7 @@ struct MediaCard: View {
 
     @ViewBuilder
     private var yearText: some View {
-        if let secondLine = subtitle ?? year.map(String.init) {
+        if let secondLine = subtitle ?? year.map({ LocaleFormat.integer($0, locale: locale) }) {
             Text(secondLine)
                 .font(.siloCardMetadata)
                 .foregroundColor(.siloSecondaryText)
@@ -533,7 +533,7 @@ private struct FocusableMediaCard<Content: View>: View {
 
             TVMediaCardCaption(
                 title: title,
-                secondLine: subtitle ?? year.map(String.init),
+                secondLine: subtitle ?? year.map { LocaleFormat.integer($0, locale: locale) },
                 cardWidth: cardWidth,
                 cardHeight: cardHeight,
                 focusedItemId: focusedItemId,

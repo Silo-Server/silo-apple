@@ -785,15 +785,15 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
 // MARK: - Display text
 
 extension DownloadRecord {
-    /// The season and episode in `locale`, as `both` writes them ("S1 · E2"
-    /// by default), or the one number that is known ("S1", "E2"). Nil when
-    /// the record knows neither.
+    /// The season and episode code as `both` writes it in `locale` ("S1 · E2"
+    /// by default; ASCII digits, D78), or the one number that is known ("S1",
+    /// "E2"). Nil when the record knows neither.
     func episodeTag(
         locale: Locale = AppLanguage.formattingLocale,
         both: (String, String) -> LocalizedStringResource = { .catalogEpisodeCaption($0, $1) }
     ) -> String? {
-        let season = shownNumbers.season.map { LocaleFormat.integer($0, locale: locale) }
-        let episode = shownNumbers.episode.map { LocaleFormat.integer($0, locale: locale) }
+        let season = shownNumbers.season.map { LocaleFormat.codeNumber($0) }
+        let episode = shownNumbers.episode.map { LocaleFormat.codeNumber($0) }
         let resource: LocalizedStringResource
         switch (season, episode) {
         case let (season?, episode?): resource = both(season, episode)
@@ -805,10 +805,13 @@ extension DownloadRecord {
     }
 
     /// `subtitle` as a row shows it: an episode's season and episode in
-    /// `locale` when the record knows them, otherwise what was stored (a
-    /// movie's year).
+    /// `locale` when the record knows them, a movie's stored year in
+    /// `locale`'s digits, otherwise what was stored.
     func displaySubtitle(locale: Locale = AppLanguage.formattingLocale) -> String? {
-        (type == "episode" ? episodeTag(locale: locale) : nil) ?? subtitle
+        if type == "episode" { return episodeTag(locale: locale) ?? subtitle }
+        // A movie's year is stored in ASCII digits (D44).
+        guard let subtitle, subtitle.allSatisfy({ $0.isASCII && $0.isNumber }), let year = Int(subtitle) else { return subtitle }
+        return LocaleFormat.integer(year, locale: locale)
     }
 
     /// The name stored for an untitled episode: English "Episode 2" (D44).

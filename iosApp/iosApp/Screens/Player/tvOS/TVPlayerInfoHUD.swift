@@ -687,7 +687,7 @@ private struct InfoPane: View {
 
     private var metaBits: [String] {
         var bits: [String] = []
-        if let year = viewModel.metadata.year { bits.append(String(year)) }
+        if let year = viewModel.metadata.year { bits.append(LocaleFormat.integer(year, locale: locale)) }
         if viewModel.duration > 0 {
             bits.append(PlayerTimeFormatter.formatRuntime(viewModel.duration))
         }

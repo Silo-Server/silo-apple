@@ -16,6 +16,12 @@ enum LocaleFormat {
         Int(value).formatted(.number.grouping(.never).locale(locale))
     }
 
+    /// A season or episode number inside a code ("S2", "E05", "S2021E01"),
+    /// in ASCII digits in every language: codes are technical (D78).
+    static func codeNumber(_ value: some BinaryInteger) -> String {
+        String(Int(value))
+    }
+
     /// `value` with exactly `fractionDigits` decimals, rounded as `printf`
     /// rounds: "1.25", "1,25" in German.
     static func decimal(_ value: Double, fractionDigits: Int, locale: Locale = AppLanguage.formattingLocale) -> String {

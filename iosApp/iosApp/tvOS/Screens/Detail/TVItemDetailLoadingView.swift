@@ -304,7 +304,7 @@ struct TVItemDetailLoadingView: View {
             HStack(spacing: 12) {
                 placeholder(width: 250, height: 22, cornerRadius: 6)
                 if let year = seed?.year {
-                    Text(String(year))
+                    Text(LocaleFormat.integer(year))
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.64))
                 }
@@ -341,7 +341,7 @@ struct TVItemDetailLoadingView: View {
         guard let seed else { return [] }
         var values: [String] = []
         if let year = seed.year, year > 0 {
-            values.append(String(year))
+            values.append(LocaleFormat.integer(year))
         }
         if let genre = nonEmpty(seed.genre) {
             values.append(genre)

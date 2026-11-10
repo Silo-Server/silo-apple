@@ -21,12 +21,13 @@ extension BrowseItem: EpisodeCaptionSource {}
 enum EpisodeCardCaption {
     /// "S01E02" — zero-padded so codes line up across a row.
     static func code(season: Int, episode: Int, locale: Locale = AppLanguage.formattingLocale) -> String {
-        AppLanguage.string(.catalogEpisodeTag(padded(season, locale: locale), padded(episode, locale: locale)), locale: locale)
+        AppLanguage.string(.catalogEpisodeTag(padded(season), padded(episode)), locale: locale)
     }
 
-    /// Two digits at least, in the locale's digits: "01", "12", "2021".
-    private static func padded(_ number: Int, locale: Locale) -> String {
-        LocaleFormat.localized(String(format: "%02d", number), locale: locale)
+    /// Two digits at least, in ASCII digits like every code (D78): "01",
+    /// "12", "2021".
+    private static func padded(_ number: Int) -> String {
+        String(format: "%02d", number)
     }
 
     /// Spoken season and episode: "Season 1, Episode 2", or "Specials,

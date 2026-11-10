@@ -198,9 +198,9 @@ struct OfflineSeriesBrowseView: View {
     }
 
     private func episodeTag(_ record: DownloadRecord) -> String? {
-        guard let episode = record.episodeNumber.map({ LocaleFormat.integer($0, locale: locale) }) else { return nil }
+        guard let episode = record.episodeNumber.map({ LocaleFormat.codeNumber($0) }) else { return nil }
         if let season = record.seasonNumber, season > 0 {
-            return AppLanguage.string(.detailEpisodeCode(LocaleFormat.integer(season, locale: locale), episode), locale: locale)
+            return AppLanguage.string(.detailEpisodeCode(LocaleFormat.codeNumber(season), episode), locale: locale)
         }
         return AppLanguage.string(.calendarEpisodeShort(episode), locale: locale)
     }
@@ -370,7 +370,7 @@ struct OfflineDownloadDetailView: View {
                 tokens.append(.text(series))
             }
         }
-        if let year = manifest?.year, year > 0 { tokens.append(.text(String(year))) }
+        if let year = manifest?.year, year > 0 { tokens.append(.text(LocaleFormat.integer(year, locale: locale))) }
         if let runtime = MediaTextFormatting.runtime(minutes: manifest?.runtime) {
             tokens.append(.text(runtime))
         }

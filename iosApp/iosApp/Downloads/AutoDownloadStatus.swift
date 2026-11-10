@@ -193,8 +193,8 @@ enum AutoDownloadRules {
         case .waiting(let episode, let phase):
             return waitingLine(episode: episode, phase: phase)
         case .next(let upcoming):
-            let season = "\(upcoming.seasonNumber)"
-            let episode = "\(upcoming.episodeNumber)"
+            let season = LocaleFormat.integer(upcoming.seasonNumber)
+            let episode = LocaleFormat.integer(upcoming.episodeNumber)
             let premiere = upcoming.episodeNumber == 1
             switch day(upcoming.airDate, now: now, calendar: calendar) {
             case .today:
@@ -227,8 +227,8 @@ enum AutoDownloadRules {
         case .paused:
             return AppLanguage.string(.downloadsMonitorHeadlinePaused)
         case .next(let upcoming):
-            let season = "\(upcoming.seasonNumber)"
-            let episode = "\(upcoming.episodeNumber)"
+            let season = LocaleFormat.integer(upcoming.seasonNumber)
+            let episode = LocaleFormat.integer(upcoming.episodeNumber)
             let premiere = upcoming.episodeNumber == 1
             switch day(upcoming.airDate, now: now, calendar: calendar) {
             case .today:
@@ -292,7 +292,7 @@ enum AutoDownloadRules {
             default: return AppLanguage.string(.downloadsMonitorWaitingUnnamedNext)
             }
         }
-        let number = "\(episode)"
+        let number = LocaleFormat.integer(episode)
         switch phase {
         case .waitingForWiFi: return AppLanguage.string(.downloadsMonitorWaitingWifi(number))
         case .waitingForConnection: return AppLanguage.string(.downloadsMonitorWaitingConnection(number))

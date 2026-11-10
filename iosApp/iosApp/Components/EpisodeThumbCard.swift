@@ -279,7 +279,7 @@ struct EpisodeThumbCard: View {
             return item.title
         }
         if let year = item.year {
-            return String(year)
+            return LocaleFormat.integer(year, locale: locale)
         }
         return nil
     }

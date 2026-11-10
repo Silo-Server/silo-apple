@@ -36,7 +36,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         type = item.type
         title = item.title
         if let season = item.seasonNumber, let episode = item.episodeNumber {
-            let code = AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.integer(season), LocaleFormat.integer(episode)))
+            let code = AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
             subtitle = [item.seriesTitle.map { AppLanguage.isolated($0) }, code].compactMap { $0 }.joined(separator: " · ")
             suggestionSubtitle = [item.seriesTitle, "S\(season):E\(episode)"].compactMap { $0 }.joined(separator: " · ")
         } else {
@@ -125,7 +125,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     /// "2024 · 2h 46m" style facts for the hero.
     var factsLine: [String] {
         var facts: [String] = []
-        if let year, year > 0 { facts.append(String(year)) }
+        if let year, year > 0 { facts.append(LocaleFormat.integer(year)) }
         if let runtime = MediaTextFormatting.runtime(minutes: runtimeMinutes) { facts.append(runtime) }
         return facts
     }
@@ -150,7 +150,7 @@ extension WatchPartySelectedItem {
         self.init(previewContentId: episode.contentId, type: "episode",
                   title: episode.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber))),
                   subtitle: "\(AppLanguage.isolated(series.title)) · "
-                      + AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber))),
+                      + AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber))),
                   suggestionSubtitle: "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)",
                   posterUrl: seasonPoster ?? series.posterUrl,
                   posterThumbhash: seasonPoster != nil ? season?.posterThumbhash : series.posterThumbhash,

@@ -31,11 +31,11 @@ struct PreparedPlayback {
             let episodeTag: String = {
                 switch (watchDetail.seasonNumber, watchDetail.episodeNumber) {
                 case let (season?, episode?):
-                    return AppLanguage.string(.catalogEpisodeTag(LocaleFormat.integer(season), LocaleFormat.integer(episode)))
+                    return AppLanguage.string(.catalogEpisodeTag(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
                 case let (season?, nil):
-                    return AppLanguage.string(.calendarSeasonShort(LocaleFormat.integer(season)))
+                    return AppLanguage.string(.calendarSeasonShort(LocaleFormat.codeNumber(season)))
                 case let (nil, episode?):
-                    return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.integer(episode)))
+                    return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.codeNumber(episode)))
                 case (nil, nil):
                     return ""
                 }
@@ -59,11 +59,11 @@ struct PreparedPlayback {
             guard isEpisode else { return nil }
             switch (watchDetail.seasonNumber, watchDetail.episodeNumber) {
             case let (season?, episode?):
-                return AppLanguage.string(.catalogEpisodeCaption(LocaleFormat.integer(season), LocaleFormat.integer(episode)))
+                return AppLanguage.string(.catalogEpisodeCaption(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
             case let (season?, nil):
-                return AppLanguage.string(.calendarSeasonShort(LocaleFormat.integer(season)))
+                return AppLanguage.string(.calendarSeasonShort(LocaleFormat.codeNumber(season)))
             case let (nil, episode?):
-                return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.integer(episode)))
+                return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.codeNumber(episode)))
             case (nil, nil):
                 return nil
             }

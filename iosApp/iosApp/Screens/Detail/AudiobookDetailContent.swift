@@ -446,7 +446,7 @@ struct AudiobookDetailContent<BelowOverview: View>: View {
                                     .foregroundStyle(Color.siloOnSurface)
                                     .lineLimit(1)
                                 if let year = narration.year {
-                                    Text(String(year))
+                                    Text(LocaleFormat.integer(year, locale: locale))
                                         .font(.system(size: 13))
                                         .foregroundStyle(Color.siloOnSurface.opacity(0.6))
                                 }

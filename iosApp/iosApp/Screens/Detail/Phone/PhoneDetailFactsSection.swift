@@ -139,7 +139,7 @@ struct DetailFacts {
         if let releaseDate = DetailDateFormatting.longDate(detail.releaseDate) {
             facts.append(Fact(label: label(.detailReleased), value: releaseDate))
         } else if let year = detail.year, year > 0 {
-            facts.append(Fact(label: label(.detailReleased), value: String(year)))
+            facts.append(Fact(label: label(.detailReleased), value: LocaleFormat.integer(year, locale: locale)))
         }
         let length = PlayerTimeFormatter.formatRuntime(BookDetailPresentation.totalDurationSeconds(of: detail))
         if !length.isEmpty {

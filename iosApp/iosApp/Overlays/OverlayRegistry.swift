@@ -317,7 +317,7 @@ private extension OverlayRegistry {
             iconCapable: false,
             getValue: { data in
                 guard let year = data.year, year > 0 else { return nil }
-                return String(year)
+                return LocaleFormat.integer(year)
             }
         ),
         OverlayDef(

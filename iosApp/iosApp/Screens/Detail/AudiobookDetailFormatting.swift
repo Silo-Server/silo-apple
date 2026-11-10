@@ -152,7 +152,7 @@ func audiobookRelatedItemAccessibilityLabel(_ item: AudiobookRelatedItem) -> Str
         components.append(AppLanguage.string(.detailAudiobookBookNumber(seriesIndex)))
     }
     if let year = item.year {
-        components.append(String(year))
+        components.append(LocaleFormat.integer(year))
     }
     return components.joined(separator: ", ")
 }

@@ -294,7 +294,7 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
         case .itemType:
             return AppLanguage.string(value == "series" ? .filtersValueSeries : .filtersValueMovie, locale: locale)
         case .decade:
-            return Int(value).map { AppLanguage.string(.filtersDecade(String($0)), locale: locale) } ?? value
+            return Int(value).map { AppLanguage.string(.filtersDecade(LocaleFormat.integer($0, locale: locale)), locale: locale) } ?? value
         case .dynamicRange:
             return AppLanguage.string(value == "dolby_vision" ? .filtersValueDolbyVision : .filtersValueHdr, locale: locale)
         case .watchStatus:

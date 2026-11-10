@@ -400,7 +400,7 @@ struct TVRequestsPage: View {
 
     static func marqueeContent(_ item: TVRequestItem, row: TVRequestRow) -> TVMarqueeContent {
         var meta: [String] = []
-        if let year = item.year, year > 0 { meta.append(String(year)) }
+        if let year = item.year, year > 0 { meta.append(LocaleFormat.integer(year)) }
         meta.append(item.mediaType.displayName)
         let progress: RequestProgress?
         let statusText: String?

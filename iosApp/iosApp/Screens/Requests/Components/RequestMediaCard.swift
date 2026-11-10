@@ -33,6 +33,7 @@ struct RequestMediaCard: View {
     /// Overrides `RequestsUI.cardWidth` (Skyline rows use dense posters).
     private var widthOverride: CGFloat?
     @State private var uiCustomization = UICustomizationPreferences.shared
+    @Environment(\.locale) private var locale
 
     init(result: RequestMediaResult, onTap: @escaping () -> Void) {
         self.title = result.title
@@ -69,7 +70,7 @@ struct RequestMediaCard: View {
 
     private var accessibilityTitle: String {
         var label = title
-        if let year, year > 0 { label += ", \(year)" }
+        if let year, year > 0 { label += ", " + LocaleFormat.integer(year, locale: locale) }
         if let progress { label += ", \(progress.shortLabel)" }
         return label
     }
@@ -162,7 +163,7 @@ struct RequestMediaCard: View {
             if showsStatusInCaption, let progress {
                 RequestStatusLabel(progress: progress)
             } else if let year, year > 0 {
-                Text(String(year))
+                Text(LocaleFormat.integer(year, locale: locale))
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)
             }

@@ -185,7 +185,7 @@ extension TVMarqueeContent {
             }
             meta.append(item.title)
         } else {
-            if let year = item.year, year > 0 { meta.append(String(year)) }
+            if let year = item.year, year > 0 { meta.append(LocaleFormat.integer(year)) }
             if let genre = item.genres?.first(where: { !$0.isEmpty }) { meta.append(genre) }
         }
 
@@ -291,7 +291,7 @@ extension TVMarqueeContent {
 
     private static func episodeToken(season: Int?, episode: Int?) -> String? {
         switch (season, episode) {
-        case let (season?, episode?): return AppLanguage.string(.homeSeasonEpisode(LocaleFormat.integer(season), LocaleFormat.integer(episode)))
+        case let (season?, episode?): return AppLanguage.string(.homeSeasonEpisode(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
         case let (season?, nil): return AppLanguage.string(.homeSeasonOnly(LocaleFormat.integer(season)))
         case let (nil, episode?): return AppLanguage.string(.homeEpisodeOnly(LocaleFormat.integer(episode)))
         default: return nil

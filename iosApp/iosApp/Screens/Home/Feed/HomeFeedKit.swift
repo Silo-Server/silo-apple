@@ -94,7 +94,7 @@ enum HomeFeedMeta {
     /// episodes, otherwise the year. One line, so every card in a row keeps
     /// the same height.
     static func cardSecondLine(for item: SectionItem, locale: Locale) -> String? {
-        EpisodeCardCaption.line(for: item, locale: locale) ?? item.year.map(String.init)
+        EpisodeCardCaption.line(for: item, locale: locale) ?? item.year.map { LocaleFormat.integer($0, locale: locale) }
     }
 
     /// Caption under a resume still — "23m left".
@@ -424,7 +424,7 @@ struct HomePosterCard: View {
         if let episodeAccessibilityLabel {
             components.append(episodeAccessibilityLabel)
         } else if let year = item.year {
-            components.append(String(year))
+            components.append(LocaleFormat.integer(year, locale: locale))
         }
         if isPlayed {
             components.append(AppLanguage.string(.homeWatched, locale: locale))
@@ -666,7 +666,7 @@ struct HomeStillCard: View {
         if let episodeLabel = EpisodeCardCaption.accessibilityLabel(for: item, locale: locale) {
             components.append(episodeLabel)
         } else if let year = item.year {
-            components.append(String(year))
+            components.append(LocaleFormat.integer(year, locale: locale))
         }
         if let resumeCaption = HomeFeedMeta.resumeCaption(for: item, locale: locale) {
             components.append(resumeCaption)
