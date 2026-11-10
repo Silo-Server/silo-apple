@@ -25,6 +25,10 @@ struct TVPlaybackActionSelectors: View {
 
     var body: some View {
         HStack(spacing: 18) {
+            if showsEditionSelector {
+                editionMenu
+                    .focused(focusedAction, equals: .edition)
+            }
             versionMenu
                 .focused(focusedAction, equals: .version)
             audioMenu
@@ -33,6 +37,12 @@ struct TVPlaybackActionSelectors: View {
                 .focused(focusedAction, equals: .subtitles)
         }
         .preference(key: TVDisabledDetailActionsKey.self, value: disabledActions)
+        // Edition is the only selector that unmounts. If it had focus when the
+        // playback target lost its extra editions, hand focus to its neighbour.
+        .onChange(of: showsEditionSelector) { _, shows in
+            guard !shows, focusedAction.wrappedValue == .edition else { return }
+            focusedAction.wrappedValue = isVersionDisabled ? .play : .version
+        }
         // The parent observes the store, so hydration repaints it.
         .task { await ProfilePrefsStore.shared.hydrateIfNeeded() }
     }
@@ -43,10 +53,69 @@ struct TVPlaybackActionSelectors: View {
 
     private var disabledActions: Set<TVDetailAction> {
         var actions: Set<TVDetailAction> = []
+        // An unmounted Edition selector can't take focus either, for example
+        // after moving to an episode that has a single edition.
+        if !showsEditionSelector || isVersionDisabled { actions.insert(.edition) }
         if isVersionDisabled { actions.insert(.version) }
         if isAudioDisabled { actions.insert(.audio) }
         if isSubtitleDisabled { actions.insert(.subtitles) }
         return actions
+    }
+
+    private var editions: [PlaybackEditions.Edition] {
+        PlaybackEditions.editions(from: versions)
+    }
+
+    private var showsEditionSelector: Bool { editions.count > 1 }
+
+    private var currentEdition: PlaybackEditions.Edition? {
+        DetailPlaybackFormatting.currentEdition(versions: versions, currentVersion: currentVersion)
+    }
+
+    /// The Versions menu lists only the current edition's files once a title
+    /// has more than one edition, as on iOS.
+    private var scopedVersions: [FileVersion] {
+        DetailPlaybackFormatting.versionSelectorVersions(versions: versions, currentVersion: currentVersion)
+    }
+
+    private var editionValue: String {
+        PlaybackEditions.displayLabel(
+            currentEdition?.label ?? currentVersion?.editionDisplayLabel ?? PlaybackEditions.standardLabel,
+            locale: locale
+        )
+    }
+
+    private var editionMenu: some View {
+        TVCircleMenuButton(
+            icon: "rectangle.stack",
+            title: AppLanguage.string(.detailEdition, locale: locale),
+            accessibilityLabel: AppLanguage.string(.detailEditionSpoken(editionValue), locale: locale),
+            stabilizesFocusMotion: true,
+            menuTitle: AppLanguage.string(.detailEdition, locale: locale),
+            items: {
+                editions.map { edition in
+                    TVActionPopoverItem(
+                        id: "edition-\(edition.id)",
+                        title: PlaybackEditions.displayLabel(edition.label, locale: locale),
+                        detail: AppLanguage.string(.detailEditionVersionCount(edition.versions.count), locale: locale),
+                        isSelected: currentEdition?.id == edition.id
+                    )
+                }
+            },
+            onSelect: { item in
+                guard let edition = editions.first(where: { "edition-\($0.id)" == item.id }) else { return }
+                // Same pick as iPhone: the edition's best file for the
+                // viewer's preferred quality.
+                let best = DetailVersionSelection.displayVersion(
+                    versions: edition.versions,
+                    selectedFileId: nil,
+                    lastFileId: nil,
+                    preferredQualityId: PlayerSettings.shared.preferredQuality
+                )
+                onSelectVersion(best?.fileId)
+            }
+        )
+        .disabled(isVersionDisabled)
     }
 
     private var versionMenu: some View {
@@ -64,7 +133,7 @@ struct TVPlaybackActionSelectors: View {
                         detail: AppLanguage.string(.detailAutoVersion, locale: locale),
                         isSelected: selectedVersionFileId == nil
                     )
-                ] + versions.map { version in
+                ] + scopedVersions.map { version in
                     TVActionPopoverItem(
                         id: "file-\(version.fileId)",
                         title: DetailPlaybackFormatting.versionShortLabel(version),

@@ -418,6 +418,7 @@ enum TVCircleFocusMotion {
 enum TVDetailAction: Hashable {
     case play
     case startOver
+    case edition
     case version
     case audio
     case subtitles
@@ -425,7 +426,7 @@ enum TVDetailAction: Hashable {
     case more
 }
 
-/// Row actions that are mounted but disabled, reported by the playback
+/// Row actions that are disabled or not mounted, reported by the playback
 /// selectors so the row never offers one as its entry target.
 struct TVDisabledDetailActionsKey: PreferenceKey {
     static let defaultValue: Set<TVDetailAction> = []
