@@ -89,5 +89,6 @@ private struct AudioMiniProgressLine: View {
             .frame(height: 2)
             .scaleEffect(x: fraction, y: 1, anchor: .leading)
             .allowsHitTesting(false)
+            .mediaLayoutDirection()
     }
 }

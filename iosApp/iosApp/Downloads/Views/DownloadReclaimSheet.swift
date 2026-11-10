@@ -69,7 +69,7 @@ struct DownloadReclaimSheet: View {
 
     private func header(count: Int) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(.downloadsReclaimFinishedCount(count: count, String(count)))
+            Text(.downloadsReclaimFinishedCount(count: count, LocaleFormat.integer(count)))
                 .font(.footnote)
                 .foregroundColor(.siloSecondaryText)
         }
@@ -121,7 +121,7 @@ struct DownloadReclaimSheet: View {
             } label: {
                 HStack(spacing: 9) {
                     Image(systemName: "trash")
-                    Text(.downloadsBulkDeleteButton(String(selected.count), DownloadFormatting.bytes(selectedBytes)))
+                    Text(.downloadsBulkDeleteButton(LocaleFormat.integer(selected.count), DownloadFormatting.bytes(selectedBytes)))
                         .fontWeight(.bold)
                 }
                 .font(.subheadline)

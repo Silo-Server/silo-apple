@@ -2897,7 +2897,7 @@ struct MainTabView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
 
             Button(action: dismissSidebar) {
-                Image(systemName: "arrow.left")
+                Image(systemName: "arrow.backward")
                     .font(.body.weight(.semibold))
                     .frame(
                         width: SiloTheme.topBarIconHitSize,

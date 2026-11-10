@@ -36,7 +36,7 @@ struct AutoDownloadBanner: View {
                             .lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    Image(systemName: "chevron.right")
+                    Image(systemName: "chevron.forward")
                         .font(.footnote.weight(.semibold))
                         .foregroundColor(.siloSecondaryText)
                 }

@@ -68,7 +68,7 @@ struct DownloadsSettingsView: View {
                     .tint(.siloSwitchOn)
                 Picker(selection: $settings.simultaneousDownloads) {
                     ForEach(DownloadSettings.simultaneousDownloadChoices, id: \.self) { count in
-                        Text(verbatim: "\(count)").tag(count)
+                        Text(verbatim: LocaleFormat.integer(count)).tag(count)
                     }
                 } label: {
                     Text(.downloadsSettingsSimultaneous)
@@ -108,7 +108,7 @@ struct DownloadsSettingsView: View {
                     if settings.defaultMaxStorageGB == 0 {
                         Text(.downloadsSettingsStorageLimitUnlimited)
                     } else {
-                        Text(.downloadsSettingsStorageLimitGb(String(settings.defaultMaxStorageGB)))
+                        Text(.downloadsSettingsStorageLimitGb(LocaleFormat.integer(settings.defaultMaxStorageGB)))
                     }
                 }
             } header: {
@@ -190,7 +190,7 @@ struct DownloadsSettingsView: View {
                 } header: {
                     Text(.downloadsSettingsOfflineProgress)
                 } footer: {
-                    Text(.downloadsSettingsHeldProgressFooter(count: manager.heldProgressCount, String(manager.heldProgressCount)))
+                    Text(.downloadsSettingsHeldProgressFooter(count: manager.heldProgressCount, LocaleFormat.integer(manager.heldProgressCount)))
                 }
                 .listRowBackground(Color.siloGroupedCell)
             }

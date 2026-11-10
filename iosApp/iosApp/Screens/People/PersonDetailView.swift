@@ -885,12 +885,12 @@ private extension Person {
 
 private func personFilmographyCountLabel(total: Int?, loaded: Int, hasMore: Bool) -> LocalizedStringResource? {
     if let total {
-        return .libraryTitleCount(count: total, String(total))
+        return .libraryTitleCount(count: total, LocaleFormat.integer(total))
     }
     guard loaded > 0 else { return nil }
     return hasMore
-        ? .libraryTitleCountMore(count: loaded, String(loaded))
-        : .libraryTitleCount(count: loaded, String(loaded))
+        ? .libraryTitleCountMore(count: loaded, LocaleFormat.integer(loaded))
+        : .libraryTitleCount(count: loaded, LocaleFormat.integer(loaded))
 }
 
 private func clean(_ value: String?) -> String? {
@@ -902,7 +902,7 @@ private func clean(_ value: String?) -> String? {
 
 private func formattedPersonDate(_ value: String?) -> String? {
     guard let date = parsePersonDate(value) else { return clean(value) }
-    return SelfDateFormatter.personDisplay.string(from: date)
+    return LocaleFormat.dateFormatter(dateStyle: .medium, calendar: Calendar(identifier: .gregorian)).string(from: date)
 }
 
 private func personAge(from birthValue: String?) -> Int? {
@@ -923,15 +923,6 @@ private enum SelfDateFormatter {
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-
-    static let personDisplay: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = .current
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
         return formatter
     }()
 }

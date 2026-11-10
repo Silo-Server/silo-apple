@@ -99,7 +99,7 @@ struct BoxSetDetailView: View {
         if let years = boxSet.yearsText { tokens.append(years) }
         if boxSet.playedCount > 0 {
             tokens.append(AppLanguage.string(
-                .boxSetsWatchedFact(String(boxSet.playedCount), boxSet.movieCount),
+                .boxSetsWatchedFact(LocaleFormat.integer(boxSet.playedCount), boxSet.movieCount),
                 locale: locale
             ))
         }
@@ -199,7 +199,7 @@ struct BoxSetDetailView: View {
             title: viewModel.detail?.boxSet.title ?? "",
             isScrollGlassEnabled: viewModel.detail != nil,
             scrollState: scrollState,
-            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.backward" : nil),
             leadingAccessibilityLabel: showsClose
                 ? AppLanguage.string(.detailCloseDetails, locale: locale)
                 : (showsBack ? AppLanguage.string(.commonBack, locale: locale) : nil),

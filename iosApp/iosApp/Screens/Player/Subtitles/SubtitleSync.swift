@@ -863,7 +863,7 @@ enum SubtitleSyncLabel {
         case "pending", "running":
             let percent = sync.flatMap(percent) ?? 0
             return percent > 0
-                ? AppLanguage.string(.playerSubtitleSyncStatusSyncingPercent(String(percent)))
+                ? AppLanguage.string(.playerSubtitleSyncStatusSyncingPercent(LocaleFormat.integer(percent)))
                 : AppLanguage.string(.playerTracksSyncing)
         case "no_match":
             return AppLanguage.string(.playerSubtitleSyncStatusNoMatch)
@@ -950,7 +950,7 @@ enum SubtitleSyncLabel {
     static func offset(_ offsetMs: Int) -> String {
         // `magnitude` cannot overflow, unlike `abs(Int.min)`.
         let seconds = Double(offsetMs.magnitude) / 1000
-        return "\(offsetMs < 0 ? "\u{2212}" : "+")\(String(format: "%.1f", seconds)) s"
+        return "\(offsetMs < 0 ? "\u{2212}" : "+")\(LocaleFormat.decimal(seconds, fractionDigits: 1)) s"
     }
 
     private static let frameRates: [Double] = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60]

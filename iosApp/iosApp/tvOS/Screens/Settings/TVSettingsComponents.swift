@@ -148,7 +148,7 @@ enum TVSettingsOptions {
     /// stored one between them (see ``SubtitleAppearance/opacityPickerValues(current:lowest:step:)``).
     private static func opacityOptions(current: Int, from: Int) -> [TVSettingsOption] {
         SubtitleAppearance.opacityPickerValues(current: current, lowest: from, step: 5)
-            .map { .init(id: String($0), label: .verbatim("\($0)%")) }
+            .map { .init(id: String($0), label: .verbatim(LocaleFormat.percent($0))) }
     }
 
     static func backgroundOpacity(current: Int) -> [TVSettingsOption] {
@@ -320,7 +320,7 @@ struct TVSettingsPickerRow: View {
                     .opacity(0.68)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.system(size: 18, weight: .semibold))
                     .opacity(0.55)
             }

@@ -39,7 +39,7 @@ struct CalendarWeekStrip: View {
     /// the card chrome above this (assembled by `CalendarView`).
     private var phoneBody: some View {
         HStack(spacing: 6) {
-            phoneNavButton(systemImage: "chevron.left", action: onPreviousWeek)
+            phoneNavButton(systemImage: "chevron.backward", action: onPreviousWeek)
                 .accessibilityLabel(Text(.calendarPreviousWeek))
 
             HStack(spacing: 0) {
@@ -55,7 +55,7 @@ struct CalendarWeekStrip: View {
                 }
             }
 
-            phoneNavButton(systemImage: "chevron.right", action: onNextWeek)
+            phoneNavButton(systemImage: "chevron.forward", action: onNextWeek)
                 .accessibilityLabel(Text(.calendarNextWeek))
         }
         .animation(SiloTheme.springAnimation, value: selectedDay)
@@ -82,7 +82,7 @@ struct CalendarWeekStrip: View {
     #if os(tvOS)
     private var tvBody: some View {
         HStack(spacing: stripSpacing) {
-            chevronButton(systemImage: "chevron.left", control: .previous, action: onPreviousWeek)
+            chevronButton(systemImage: "chevron.backward", control: .previous, action: onPreviousWeek)
                 .accessibilityLabel(Text(.calendarPreviousWeek))
 
             HStack(spacing: dayButtonSpacing) {
@@ -99,7 +99,7 @@ struct CalendarWeekStrip: View {
                 }
             }
 
-            chevronButton(systemImage: "chevron.right", control: .next, action: onNextWeek)
+            chevronButton(systemImage: "chevron.forward", control: .next, action: onNextWeek)
                 .accessibilityLabel(Text(.calendarNextWeek))
 
             if !isCurrentWeek {
@@ -276,15 +276,15 @@ private struct CalendarRichDayCell: View {
     }
 
     private var weekdayLabel: String {
-        date.formatted(.dateTime.weekday(.abbreviated))
+        date.formatted(.dateTime.weekday(.abbreviated).locale(locale))
     }
 
     private var dayNumber: String {
-        date.formatted(.dateTime.day())
+        date.formatted(.dateTime.day().locale(locale))
     }
 
     private var accessibilityDescription: String {
-        let base = date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        let base = date.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(locale))
         guard eventCount > 0 else { return base }
         return AppLanguage.string(.calendarDayEventCount(eventCount, base), locale: locale)
     }
@@ -342,15 +342,15 @@ private struct CalendarDayButton: View {
     }
 
     private var weekdayLabel: String {
-        date.formatted(.dateTime.weekday(.abbreviated))
+        date.formatted(.dateTime.weekday(.abbreviated).locale(locale))
     }
 
     private var dayNumber: String {
-        date.formatted(.dateTime.day())
+        date.formatted(.dateTime.day().locale(locale))
     }
 
     private var accessibilityDescription: String {
-        let day = date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        let day = date.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(locale))
         return hasEvents ? AppLanguage.string(.calendarDayHasEvents(day), locale: locale) : day
     }
 

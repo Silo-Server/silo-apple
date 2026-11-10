@@ -38,9 +38,9 @@ enum DownloadNotifier {
         guard count > 0 else { return }
         let body: String
         if seriesTitles.count == 1, let title = seriesTitles.first {
-            body = AppLanguage.string(.downloadsNotificationNewEpisodesOfSeries(count: count, "\(count)", title))
+            body = AppLanguage.string(.downloadsNotificationNewEpisodesOfSeries(count: count, LocaleFormat.integer(count), title))
         } else {
-            body = AppLanguage.string(.downloadsNotificationNewEpisodes(count: count, "\(count)"))
+            body = AppLanguage.string(.downloadsNotificationNewEpisodes(count: count, LocaleFormat.integer(count)))
         }
         post(id: "downloads-monitoring-\(UUID().uuidString)", body: body)
     }
@@ -51,7 +51,7 @@ enum DownloadNotifier {
     private static func displayName(for record: DownloadRecord) -> String {
         let base = record.seriesTitle ?? record.title ?? AppLanguage.string(.downloadsNotificationDefaultTitle)
         if let season = record.seasonNumber, let episode = record.episodeNumber {
-            return AppLanguage.string(.downloadsNotificationEpisodeName(base, "\(season)", "\(episode)"))
+            return AppLanguage.string(.downloadsNotificationEpisodeName(base, LocaleFormat.integer(season), LocaleFormat.integer(episode)))
         }
         return base
     }

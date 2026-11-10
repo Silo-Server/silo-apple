@@ -174,7 +174,7 @@ struct TVAudiobookViewModel {
                 listened.isEmpty ? .detailAudiobookInProgress : .detailAudiobookListened(listened)
             )
         }
-        return AppLanguage.string(.detailAudiobookCurrentChapter(String(index + 1), chapterTitle(index)))
+        return AppLanguage.string(.detailAudiobookCurrentChapter(LocaleFormat.integer(index + 1), chapterTitle(index)))
     }
 
     /// "8:12 into the chapter · 5h 28m left in the book".
@@ -198,7 +198,7 @@ struct TVAudiobookViewModel {
         let runtime = runtimeLabel
         if !runtime.isEmpty { pieces.append(runtime) }
         if !chapters.isEmpty {
-            pieces.append(AppLanguage.string(.detailAudiobookChapterCount(count: chapters.count, String(chapters.count))))
+            pieces.append(AppLanguage.string(.detailAudiobookChapterCount(count: chapters.count, LocaleFormat.integer(chapters.count))))
         }
         return pieces.isEmpty ? nil : pieces.joined(separator: " · ")
     }
@@ -206,9 +206,9 @@ struct TVAudiobookViewModel {
     var runtimeLabel: String { PlayerTimeFormatter.formatRuntime(totalDuration) }
 
     func chapterTitle(_ index: Int) -> String {
-        guard chapters.indices.contains(index) else { return AppLanguage.string(.detailAudiobookChapter(String(index + 1))) }
+        guard chapters.indices.contains(index) else { return AppLanguage.string(.detailAudiobookChapter(LocaleFormat.integer(index + 1))) }
         if let title = chapters[index].title, !title.isEmpty { return title }
-        return AppLanguage.string(.detailAudiobookChapter(String(index + 1)))
+        return AppLanguage.string(.detailAudiobookChapter(LocaleFormat.integer(index + 1)))
     }
 
     // MARK: - Actions

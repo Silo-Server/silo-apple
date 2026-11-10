@@ -98,7 +98,7 @@ extension PlaybackStats {
             (AppLanguage.string(.playerStatsSubtitles), subtitles)
         ]))
         if let playbackRate, playbackRate.isFinite, playbackRate > 0 {
-            rows.append((AppLanguage.string(.playerStatsPlaybackRate), String(format: "%.2fx", playbackRate)))
+            rows.append((AppLanguage.string(.playerStatsPlaybackRate), LocaleFormat.decimal(playbackRate, fractionDigits: 2) + "x"))
         }
         return rows
     }
@@ -115,10 +115,10 @@ extension PlaybackStats {
             rows.append((AppLanguage.string(.playerStatsReaderRunway), formatBytes(readerWindowAheadBytes)))
         }
         if let observedFrameRate, observedFrameRate.isFinite, observedFrameRate > 0 {
-            rows.append((AppLanguage.string(.playerStatsObservedFrameRate), String(format: "%.2f fps", observedFrameRate)))
+            rows.append((AppLanguage.string(.playerStatsObservedFrameRate), LocaleFormat.decimal(observedFrameRate, fractionDigits: 2) + " fps"))
         }
         if let droppedVideoFrames, droppedVideoFrames >= 0 {
-            rows.append((AppLanguage.string(.playerStatsDroppedFrames), "\(droppedVideoFrames)"))
+            rows.append((AppLanguage.string(.playerStatsDroppedFrames), LocaleFormat.integer(droppedVideoFrames)))
         }
         if let accumulatedFrameDelaySeconds,
            accumulatedFrameDelaySeconds.isFinite,
@@ -126,7 +126,7 @@ extension PlaybackStats {
             rows.append((AppLanguage.string(.playerStatsAccumulatedFrameDelay), formatSeconds(accumulatedFrameDelaySeconds)))
         }
         if let avSyncGapMilliseconds, avSyncGapMilliseconds.isFinite {
-            rows.append((AppLanguage.string(.playerStatsAvSyncGap), String(format: "%.1f ms", avSyncGapMilliseconds)))
+            rows.append((AppLanguage.string(.playerStatsAvSyncGap), LocaleFormat.decimal(avSyncGapMilliseconds, fractionDigits: 1) + " ms"))
         }
         return rows
     }
@@ -160,7 +160,7 @@ extension PlaybackStats {
     var engineRows: [(String, String)] {
         var rows: [(String, String)] = []
         if let producerRestartCount, producerRestartCount > 0 {
-            rows.append((AppLanguage.string(.playerStatsProducerRestarts), "\(producerRestartCount)"))
+            rows.append((AppLanguage.string(.playerStatsProducerRestarts), LocaleFormat.integer(producerRestartCount)))
         }
         if let residentMemoryBytes, residentMemoryBytes >= 0 {
             rows.append((AppLanguage.string(.playerStatsResidentMemory), formatBytes(residentMemoryBytes)))
@@ -209,18 +209,18 @@ extension PlaybackStats {
     }
 
     private func formatBitsPerSecond(_ bps: Double) -> String {
-        guard bps.isFinite, bps > 0 else { return "0 bps" }
+        guard bps.isFinite, bps > 0 else { return LocaleFormat.integer(0) + " bps" }
         if bps >= 1_000_000 {
-            return String(format: "%.2f Mbps", bps / 1_000_000)
+            return LocaleFormat.decimal(bps / 1_000_000, fractionDigits: 2) + " Mbps"
         }
-        return String(format: "%.0f Kbps", bps / 1_000)
+        return LocaleFormat.decimal(bps / 1_000, fractionDigits: 0) + " Kbps"
     }
 
     private func formatSeconds(_ seconds: Double) -> String {
-        String(format: "%.2f s", max(0, seconds))
+        LocaleFormat.decimal(max(0, seconds), fractionDigits: 2) + " s"
     }
 
     private func formatBytes(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        LocaleFormat.bytes(bytes)
     }
 }

@@ -291,7 +291,7 @@ struct TVPlayerScrubber: View {
         HStack(spacing: 7) {
             Image(systemName: timelineAutoSeekRate < 0 ? "backward.fill" : "forward.fill")
                 .font(.system(size: 13, weight: .bold))
-            Text(verbatim: "\(abs(timelineAutoSeekRate))x")
+            Text(verbatim: LocaleFormat.localized("\(abs(timelineAutoSeekRate))") + "x")
                 .font(.system(size: 18, weight: .bold, design: .rounded))
                 .monospacedDigit()
         }

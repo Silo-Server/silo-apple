@@ -61,7 +61,7 @@ struct ChangeAccountView: View {
                             model.choose(row, router: router)
                         }
                     }
-                    Button(.settingsAccountsSignOut, systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                    Button(.settingsAccountsSignOut, systemImage: "rectangle.portrait.and.arrow.forward", role: .destructive) {
                         signOut(row)
                     }
                 }

@@ -260,7 +260,7 @@ struct SearchView: View {
 
     private var titleResults: some View {
         VStack(alignment: .leading, spacing: SiloTheme.padding) {
-            Text(.searchResultCount(count: viewModel.total, String(viewModel.total)))
+            Text(.searchResultCount(count: viewModel.total, LocaleFormat.integer(viewModel.total)))
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
 

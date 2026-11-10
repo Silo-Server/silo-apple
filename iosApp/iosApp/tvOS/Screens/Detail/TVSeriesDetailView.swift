@@ -451,7 +451,7 @@ struct TVSeriesDetailView: View {
         guard !isShowingSeriesOverview else { return detail.overview }
         let episodeTitle = matchingPlaybackDetail?.title
             ?? displayedEpisode?.title
-            ?? displayedEpisode.map { AppLanguage.string(.detailEpisode(String($0.episodeNumber)), locale: locale) }
+            ?? displayedEpisode.map { AppLanguage.string(.detailEpisode(LocaleFormat.integer($0.episodeNumber, locale: locale)), locale: locale) }
         let overview = heroEpisodeOverview?.text
         switch (episodeTitle, overview) {
         case let (.some(title), .some(line)) where !title.isEmpty && !line.isEmpty:
@@ -470,10 +470,10 @@ struct TVSeriesDetailView: View {
             return TVHeroMetadata.seriesSourceTokens(from: detail)
         }
         let season = AppLanguage.string(
-            episode.seasonNumber == 0 ? .detailSpecials : .detailSeason(String(episode.seasonNumber)),
+            episode.seasonNumber == 0 ? .detailSpecials : .detailSeason(LocaleFormat.integer(episode.seasonNumber)),
             locale: locale
         )
-        return [season, AppLanguage.string(.detailEpisode(String(episode.episodeNumber)), locale: locale)]
+        return [season, AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber, locale: locale)), locale: locale)]
     }
 
     private var heroFactsLine: [TVHeroFactToken] {
@@ -1120,7 +1120,7 @@ struct TVSeriesDetailView: View {
     private func seasonLabel(_ season: Season) -> String {
         if let title = season.title, !title.isEmpty { return title }
         if season.seasonNumber == 0 { return AppLanguage.string(.detailSpecials, locale: locale) }
-        return AppLanguage.string(.detailSeason(String(season.seasonNumber)), locale: locale)
+        return AppLanguage.string(.detailSeason(LocaleFormat.integer(season.seasonNumber, locale: locale)), locale: locale)
     }
 
     // MARK: - Supporting rails

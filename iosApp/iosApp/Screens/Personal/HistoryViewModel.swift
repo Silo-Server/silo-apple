@@ -25,7 +25,7 @@ class HistoryViewModel {
     var countLabel: LocalizedStringResource {
         let count = totalItems ?? items.count
         let isLowerBound = totalItems == nil && hasMore
-        return isLowerBound ? .collectionsItemCountMore(count: count, String(count)) : .collectionsItemCount(count: count, String(count))
+        return isLowerBound ? .collectionsItemCountMore(count: count, LocaleFormat.integer(count)) : .collectionsItemCount(count: count, LocaleFormat.integer(count))
     }
 
     func load(reset: Bool) async {

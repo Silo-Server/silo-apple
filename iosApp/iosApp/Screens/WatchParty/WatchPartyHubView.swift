@@ -845,7 +845,7 @@ struct WatchPartyLobbyView: View {
                 Divider()
             }
             Button { session.leaveRoom() } label: {
-                Label(.watchPartyOptionsLeave, systemImage: "rectangle.portrait.and.arrow.right")
+                Label(.watchPartyOptionsLeave, systemImage: "rectangle.portrait.and.arrow.forward")
             }
             if room.selfCanManageRoom {
                 Button(role: .destructive) { confirmsEnd = true } label: {

@@ -614,7 +614,7 @@ struct TVEpisodeCard: View {
             } label: {
                 // String arguments so year-numbered seasons don't render as "S2,021".
                 Label {
-                    Text(.detailPlayEpisode(String(episode.seasonNumber), String(episode.episodeNumber)))
+                    Text(.detailPlayEpisode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))
                 } icon: {
                     Image(systemName: "play.fill")
                 }

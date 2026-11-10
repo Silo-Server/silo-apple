@@ -156,7 +156,7 @@ struct RequestDetailView: View {
             title: viewModel.detail?.title ?? "",
             isScrollGlassEnabled: viewModel.detail != nil,
             scrollState: scrollState,
-            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.backward" : nil),
             leadingAccessibilityLabel: showsClose
                 ? AppLanguage.string(.requestsDetailClose)
                 : (showsBack ? AppLanguage.string(.commonBack) : nil),
@@ -342,7 +342,7 @@ struct RequestDetailView: View {
                 HStack(alignment: .top, spacing: 8) {
                     summaryField(.requestsStripStatus, value: progress.longLabel, tint: progress.tint)
                     if let record = viewModel.displayedRecord {
-                        summaryField(.requestsStripRequested, value: record.createdAt.formatted(.dateTime.month(.abbreviated).day()))
+                        summaryField(.requestsStripRequested, value: record.createdAt.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale)))
                         if let quality = RequestTargetSummary.text(for: record.targets)
                             ?? RequestTargetSummary.qualities(for: record.targets) {
                             summaryField(.requestsStripQuality, value: quality)
@@ -464,7 +464,7 @@ struct RequestDetailView: View {
                 .controlSize(.small)
                 .tint(.siloSecondaryText)
         case .openInLibrary:
-            Image(systemName: "arrow.up.right")
+            Image(systemName: "arrow.up.forward")
         case .status(let state):
             Circle()
                 .fill(state.tint.color)
@@ -676,7 +676,7 @@ struct RequestStatusCard: View {
     }
 
     private static func timestamp(_ date: Date) -> String {
-        date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+        date.formatted(.dateTime.month(.abbreviated).day().hour().minute().locale(AppLanguage.formattingLocale))
     }
 }
 

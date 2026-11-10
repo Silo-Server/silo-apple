@@ -140,7 +140,7 @@ struct PhoneSeasonChips: View {
                     .font(.siloCardTitle)
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)
-                Text(.detailEpisodeCount(count: season.episodeCount, String(season.episodeCount)))
+                Text(.detailEpisodeCount(count: season.episodeCount, LocaleFormat.integer(season.episodeCount)))
                     .font(.siloCardMetadata)
                     .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
@@ -192,7 +192,7 @@ struct PhoneSeasonChips: View {
     private func label(for season: Season) -> String {
         if let title = season.title, !title.isEmpty { return title }
         if season.seasonNumber == 0 { return AppLanguage.string(.detailSpecials, locale: locale) }
-        return AppLanguage.string(.detailSeason(String(season.seasonNumber)), locale: locale)
+        return AppLanguage.string(.detailSeason(LocaleFormat.integer(season.seasonNumber, locale: locale)), locale: locale)
     }
 }
 #endif

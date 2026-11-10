@@ -45,11 +45,11 @@ struct AccountRemovalRequest: Identifiable, Equatable {
     /// deletes …" after another sentence. Nil without downloads.
     static func downloadsSentence(count: Int, bytes: Int64, also: Bool = false) -> String? {
         guard count > 0 else { return nil }
-        let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        let size = LocaleFormat.bytes(bytes)
         let device = DeviceNoun.current
         return AppLanguage.string(also
-            ? LocalizedStringResource.accountRemovalDownloadsAlso(count: count, "\(count)", size, device)
-            : .accountRemovalDownloads(count: count, "\(count)", size, device))
+            ? LocalizedStringResource.accountRemovalDownloadsAlso(count: count, LocaleFormat.integer(count), size, device)
+            : .accountRemovalDownloads(count: count, LocaleFormat.integer(count), size, device))
     }
 }
 

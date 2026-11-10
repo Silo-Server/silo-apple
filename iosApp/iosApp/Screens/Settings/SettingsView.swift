@@ -266,7 +266,7 @@ struct SettingsView: View {
         Link(destination: destination) {
             HStack {
                 SettingsRowLabel(title: title, systemImage: systemImage, color: .gray)
-                Image(systemName: "arrow.up.right")
+                Image(systemName: "arrow.up.forward")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(Color.siloSecondaryText.opacity(0.6))
             }
@@ -347,7 +347,7 @@ struct SettingsRowLabel: View {
 /// (`NavigationLink` rows draw their own).
 struct SettingsRowChevron: View {
     var body: some View {
-        Image(systemName: "chevron.right")
+        Image(systemName: "chevron.forward")
             .font(.footnote.weight(.semibold))
             .foregroundStyle(Color.siloSecondaryText.opacity(0.6))
             .accessibilityHidden(true)

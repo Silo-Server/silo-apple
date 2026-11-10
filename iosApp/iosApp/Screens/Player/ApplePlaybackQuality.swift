@@ -348,10 +348,10 @@ enum ApplePlaybackQuality {
         if kbps >= 1000 {
             let mbps = Double(kbps) / 1000.0
             if mbps.rounded(.towardZero) == mbps {
-                return "\(Int(mbps)) Mbps"
+                return "\(LocaleFormat.integer(Int(mbps))) Mbps"
             }
-            return String(format: "%.1f Mbps", mbps)
+            return LocaleFormat.decimal(mbps, fractionDigits: 1) + " Mbps"
         }
-        return "\(kbps) kbps"
+        return "\(LocaleFormat.integer(kbps)) kbps"
     }
 }

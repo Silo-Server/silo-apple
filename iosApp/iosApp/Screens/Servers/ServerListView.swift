@@ -90,7 +90,7 @@ struct ServerListView: View {
                         Text(.serversAddServer)
                             .font(.system(size: 26))
                         Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
+                        Image(systemName: "chevron.forward")
                             .font(.system(size: 18, weight: .semibold))
                             .opacity(0.55)
                     }

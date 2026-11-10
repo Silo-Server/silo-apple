@@ -177,6 +177,8 @@ struct TVBrowseSortPanel: View {
 // MARK: - Filter panel (list → values)
 
 struct TVBrowseFilterPanel: View {
+    /// Back to the filter list is a press toward the leading side.
+    @Environment(\.layoutDirection) private var layoutDirection
     let facets: CatalogFacets
     let onApply: (CatalogFilterState) -> Void
     let onPreserveChange: (Bool) -> Void
@@ -259,7 +261,7 @@ struct TVBrowseFilterPanel: View {
         .focusSection()
         .onExitCommand(perform: handleExit)
         .onMoveCommand { direction in
-            if direction == .left, case .values = screen {
+            if direction.inLayout(layoutDirection) == .left, case .values = screen {
                 showFilterList()
             }
         }
@@ -344,7 +346,7 @@ struct TVBrowseFilterPanel: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
 
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.system(size: 18, weight: .semibold))
                     .opacity(0.55)
             }
@@ -428,7 +430,7 @@ struct TVBrowseFilterPanel: View {
     private func valueList(for facet: CatalogFacet) -> some View {
         Button(action: showFilterList) {
             HStack(spacing: 14) {
-                Image(systemName: "chevron.left")
+                Image(systemName: "chevron.backward")
                     .font(.system(size: 20, weight: .semibold))
                 Text(.filtersAllFilters)
                 Spacer(minLength: 0)

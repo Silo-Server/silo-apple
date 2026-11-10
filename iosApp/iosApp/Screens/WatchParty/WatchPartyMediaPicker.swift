@@ -81,7 +81,7 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropIsEpisodeStill = episode.stillUrl != nil ? episode.stillIsEpisodeStill : false
         episodeWatchState = EpisodeWatchState(episode.userData)
         if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { facts = [runtime] }
-        lobbyTitle = episode.title ?? AppLanguage.string(.detailEpisode(String(episode.episodeNumber)))
+        lobbyTitle = episode.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber)))
         lobbySubtitle = Self.lobbyLine(series: series.title, season: episode.seasonNumber, episode: episode.episodeNumber)
         runtimeMinutes = episode.runtime
     }
@@ -141,7 +141,7 @@ private struct WatchPartyMediaChoice: Hashable {
         backdropURL = series.backdropUrl
         backdropThumbhash = series.backdropThumbhash
         backdropIsEpisodeStill = false
-        lobbyTitle = nextUp.title ?? AppLanguage.string(.detailEpisode(String(nextUp.episodeNumber)))
+        lobbyTitle = nextUp.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(nextUp.episodeNumber)))
         lobbySubtitle = Self.lobbyLine(series: series.title, season: nextUp.seasonNumber, episode: nextUp.episodeNumber)
         seriesLink = series
         seasonNumber = nextUp.seasonNumber
@@ -149,12 +149,12 @@ private struct WatchPartyMediaChoice: Hashable {
 
     /// "S1 · E2 · Title" on this page.
     private static func episodeLine(season: Int, episode: Int, title: String?) -> String {
-        AppLanguage.string(.watchPartyEpisodesLine(String(season), String(episode))) + (title.map { " · \(AppLanguage.isolated($0))" } ?? "")
+        AppLanguage.string(.watchPartyEpisodesLine(LocaleFormat.integer(season), LocaleFormat.integer(episode))) + (title.map { " · \(AppLanguage.isolated($0))" } ?? "")
     }
 
     /// "Series · S1:E2" under the episode's title in the lobby.
     private static func lobbyLine(series: String, season: Int, episode: Int) -> String {
-        "\(AppLanguage.isolated(series)) · " + AppLanguage.string(.watchPartyFactsEpisodeCode(String(season), String(episode)))
+        "\(AppLanguage.isolated(series)) · " + AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.integer(season), LocaleFormat.integer(episode)))
     }
 }
 
@@ -526,7 +526,7 @@ struct WatchPartyMediaPicker: View {
         guard section.id == Self.togetherSectionID || section.id == Self.watchlistSectionID,
               let entry = entry(for: item.contentId), !entry.members.isEmpty else { return nil }
         if section.id == Self.togetherSectionID, let nextUp = entry.nextUp {
-            return AppLanguage.string(.watchPartyPickerNextEpisode(String(nextUp.seasonNumber), String(nextUp.episodeNumber)))
+            return AppLanguage.string(.watchPartyPickerNextEpisode(LocaleFormat.integer(nextUp.seasonNumber), LocaleFormat.integer(nextUp.episodeNumber)))
         }
         return memberNames(entry.members)
     }
@@ -760,7 +760,7 @@ private struct WatchPartySearchPage: View {
                                    subtitle: AppLanguage.string(.searchInitialBody))
                         .padding(.top, 80)
                 } else {
-                    Text(.requestsSearchResultCount(count: viewModel.total, "\(viewModel.total)"))
+                    Text(.requestsSearchResultCount(count: viewModel.total, LocaleFormat.integer(viewModel.total)))
                         .font(.siloCaption)
                         .foregroundColor(.siloSecondaryText)
                     TVCatalogGrid(
@@ -945,7 +945,7 @@ private struct WatchPartyEpisodePicker: View {
     }
 
     private func episodeLine(_ episode: EpisodeListItem) -> String {
-        var parts = [AppLanguage.string(.watchPartyEpisodesLine(String(episode.seasonNumber), String(episode.episodeNumber)))]
+        var parts = [AppLanguage.string(.watchPartyEpisodesLine(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))]
         if let title = episode.title, !title.isEmpty { parts.append(title) }
         if let runtime = MediaTextFormatting.runtime(minutes: episode.runtime) { parts.append(runtime) }
         return parts.joined(separator: " · ")
@@ -1029,8 +1029,8 @@ private struct WatchPartyEpisodePicker: View {
             .frame(width: Self.stillWidth, height: Self.stillWidth * 9 / 16)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 4) {
-                Text(.watchPartyEpisodesNumbered(String(episode.episodeNumber),
-                                                 episode.title ?? AppLanguage.string(.detailEpisode(String(episode.episodeNumber)))))
+                Text(.watchPartyEpisodesNumbered(LocaleFormat.integer(episode.episodeNumber),
+                                                 episode.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber)))))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(2)

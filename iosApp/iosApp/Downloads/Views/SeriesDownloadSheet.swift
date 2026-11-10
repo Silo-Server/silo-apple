@@ -388,8 +388,8 @@ struct SeriesDownloadSheet: View {
         switch row {
         case .episode:
             guard let episode else { return text(.downloadsSeriesSheetThisEpisode) }
-            let name = episode.title ?? text(.detailEpisode(String(episode.episodeNumber)))
-            return "S\(episode.seasonNumber) · E\(episode.episodeNumber) · \(name)"
+            let name = episode.title ?? text(.detailEpisode(LocaleFormat.integer(episode.episodeNumber)))
+            return "S\(LocaleFormat.integer(episode.seasonNumber, locale: locale)) · E\(LocaleFormat.integer(episode.episodeNumber, locale: locale)) · \(name)"
         case .season: return oneTimeSeason?.downloadDisplayName ?? text(.downloadsSeriesSheetSeason)
         case .all: return text(.downloadsSeriesSheetAllEpisodes)
         }
@@ -405,7 +405,7 @@ struct SeriesDownloadSheet: View {
             return text(.downloadsSeriesSheetThisEpisodeOnly)
         case .season:
             let count = oneTimeSeason?.episodeCount ?? 0
-            return text(.downloadsSeriesRowEpisodes(count: count, String(count)))
+            return text(.downloadsSeriesRowEpisodes(count: count, LocaleFormat.integer(count)))
         case .all:
             return text(.downloadsSeriesSheetEverySeason)
         }
@@ -492,7 +492,7 @@ struct SeriesDownloadSheet: View {
         case .mode(.future): return text(.downloadsSeriesSheetRuleFuture)
         case .mode(.latestSeason):
             guard let latestSeasonNumber else { return text(.downloadsSeriesSheetRuleLatest) }
-            return text(.downloadsSeriesSheetRuleLatestFrom(String(latestSeasonNumber)))
+            return text(.downloadsSeriesSheetRuleLatestFrom(LocaleFormat.integer(latestSeasonNumber)))
         case .mode(.specificSeasons), .custom:
             return AutoDownloadRules.seasonList(existing?.seasonNumbers ?? [])
         }

@@ -346,7 +346,7 @@ struct PhonePlaybackSelectorRow: View {
     #if os(macOS)
     private static let chevronSymbol = "chevron.down"
     #else
-    private static let chevronSymbol = "chevron.right"
+    private static let chevronSymbol = "chevron.forward"
     #endif
 
     @ViewBuilder

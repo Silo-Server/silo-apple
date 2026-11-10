@@ -103,7 +103,7 @@ struct SubtitleSyncIndicator: View {
         var parts = [notice.title]
         if let detail = notice.detail { parts.append(detail) }
         if notice.tone == .progress, let percent = notice.percent {
-            parts.append(AppLanguage.string(.playerSubtitleSyncPercentSpoken(String(percent)), locale: locale))
+            parts.append(AppLanguage.string(.playerSubtitleSyncPercentSpoken(LocaleFormat.integer(percent, locale: locale)), locale: locale))
         }
         return parts.joined(separator: ". ")
     }
@@ -140,14 +140,14 @@ struct SubtitleSyncProgressBar: View {
             ProgressView(value: Double(min(100, max(0, percent))), total: 100)
                 .progressViewStyle(.linear)
                 .tint(.white.opacity(0.85))
-            Text(verbatim: "\(percent)%")
+            Text(verbatim: LocaleFormat.percent(percent))
                 .font(Metrics.font.monospacedDigit())
                 .foregroundStyle(Color.siloSecondaryText)
                 .frame(minWidth: Metrics.labelWidth, alignment: .trailing)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(.playerSubtitleSyncProgressLabel))
-        .accessibilityValue(Text(.playerSubtitleSyncPercentSpoken(String(percent))))
+        .accessibilityValue(Text(.playerSubtitleSyncPercentSpoken(LocaleFormat.integer(percent))))
     }
 
     private enum Metrics {

@@ -98,7 +98,7 @@ struct MarqueeTVSetupSteps: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(.setupStepAudio("\(number)", AppLanguage.string(title)))
+        .accessibilityLabel(.setupStepAudio(LocaleFormat.integer(number), AppLanguage.string(title)))
     }
 }
 

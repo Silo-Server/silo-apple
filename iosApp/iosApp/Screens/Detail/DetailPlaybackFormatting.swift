@@ -206,7 +206,7 @@ enum DetailPlaybackFormatting {
         TrackLabels.name(
             language: track.language,
             meaningfulTitle: usefulAudioTitle(track),
-            fallback: AppLanguage.string(.detailTrack(String(ordinal + 1)))
+            fallback: AppLanguage.string(.detailTrack(LocaleFormat.integer(ordinal + 1)))
         )
     }
 
@@ -511,7 +511,7 @@ enum DetailPlaybackFormatting {
         TrackLabels.name(
             language: track.language,
             meaningfulTitle: meaningfulSubtitleTitle(track),
-            fallback: AppLanguage.string(.detailTrack(String(ordinal + 1)))
+            fallback: AppLanguage.string(.detailTrack(LocaleFormat.integer(ordinal + 1)))
         )
     }
 
@@ -579,17 +579,8 @@ enum DetailPlaybackFormatting {
         TrackLabels.subtitleCodec(codec)
     }
 
-    private static let fileSizeFormatter: ByteCountFormatter = {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useMB, .useGB]
-        formatter.countStyle = .file
-        formatter.includesUnit = true
-        formatter.isAdaptive = true
-        return formatter
-    }()
-
     static func formatFileSize(_ bytes: Int64) -> String {
-        fileSizeFormatter.string(fromByteCount: bytes)
+        LocaleFormat.bytes(bytes, megabytesAndUp: true)
     }
 
     private static func compactAudioLayout(_ track: AudioTrack) -> String? {

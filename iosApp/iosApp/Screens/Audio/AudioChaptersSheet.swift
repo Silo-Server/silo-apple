@@ -59,7 +59,7 @@ struct AudioChaptersSheet: View {
                         .frame(width: 24)
                         .accessibilityHidden(true)
                 } else {
-                    Text(verbatim: "\(number)")
+                    Text(verbatim: LocaleFormat.integer(number))
                         .font(.footnote.weight(.medium))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)

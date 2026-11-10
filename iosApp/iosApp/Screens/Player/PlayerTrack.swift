@@ -76,7 +76,7 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
 
     /// "Track N", for a row with nothing better to show.
     private var fallbackName: String {
-        AppLanguage.string(.detailTrack(String(trackId)))
+        AppLanguage.string(.detailTrack(LocaleFormat.integer(trackId)))
     }
 
     /// The track's own title when it says something the name, codec, and

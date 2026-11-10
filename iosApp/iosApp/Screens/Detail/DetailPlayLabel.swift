@@ -17,7 +17,7 @@ enum DetailPlayLabel {
 
     /// "Resume S1·E2" or "Play S1·E2" for the series page's next-up episode.
     static func episode(_ episode: EpisodeListItem) -> String {
-        let code = AppLanguage.string(.detailEpisodeCode(String(episode.seasonNumber), String(episode.episodeNumber)))
+        let code = AppLanguage.string(.detailEpisodeCode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))
         return AppLanguage.string(resumePosition(episode.userData) == nil
             ? .detailPlayEpisodeCode(code)
             : .detailResumeEpisodeCode(code))

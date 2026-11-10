@@ -237,7 +237,7 @@ enum AetherPlaybackStatsProjection {
             pixelAspectRatio: snapshot.sourceVideoPixelAspectRatio
         )
         let frameRate = snapshot.sourceVideoFrameRate.flatMap { fps in
-            fps.isFinite && fps > 0 ? String(format: "%.3f fps", fps) : nil
+            fps.isFinite && fps > 0 ? LocaleFormat.decimal(fps, fractionDigits: 3) + " fps" : nil
         }
         let details = [dimensions, frameRate]
             .compactMap { $0 }
@@ -312,12 +312,12 @@ enum AetherPlaybackStatsProjection {
 
     private static func dimensionLabel(width: Int32, height: Int32, pixelAspectRatio: Double) -> String? {
         guard width > 0, height > 0 else { return nil }
-        let coded = "\(width)×\(height)"
+        let coded = LocaleFormat.localized("\(width)×\(height)")
         guard pixelAspectRatio.isFinite,
               pixelAspectRatio > 0,
               abs(pixelAspectRatio - 1) > 0.001 else { return coded }
         let displayWidth = Int((Double(width) * pixelAspectRatio).rounded())
-        return AppLanguage.string(.playerStatsDimensionsWithDisplay(coded, "\(displayWidth)×\(height)"))
+        return AppLanguage.string(.playerStatsDimensionsWithDisplay(coded, LocaleFormat.localized("\(displayWidth)×\(height)")))
     }
 
     private static func dynamicRangeLabel(

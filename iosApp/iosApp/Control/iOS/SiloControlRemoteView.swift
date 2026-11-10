@@ -382,7 +382,10 @@ private struct RemoteNowPlayingContent: View {
         }
     }
 
-    private var scrubber: some View {
+    /// The timeline and transport read left to right in every language.
+    private var scrubber: some View { scrubberContent.mediaLayoutDirection() }
+
+    private var scrubberContent: some View {
         // Ticks only while playing; a paused clock's time doesn't move.
         TimelineView(.animation(minimumInterval: 0.25, paused: !clock.isPlaying())) { ctx in
             let live = scrubPreview ?? clock.displayTime(asOf: ctx.date)
@@ -458,7 +461,9 @@ private struct RemoteNowPlayingContent: View {
         ))
     }
 
-    private var transport: some View {
+    private var transport: some View { transportContent.mediaLayoutDirection() }
+
+    private var transportContent: some View {
         HStack(spacing: 28) {
             if state.hasNextEpisode {
                 Image(systemName: "forward.end.fill")
@@ -550,7 +555,7 @@ private struct RemoteNowPlayingContent: View {
             )
             .tint(Color.siloOnSurface)
             .accessibilityLabel(Text(.remoteVolume))
-            .accessibilityValue(Text(.remoteVolumePercent(String(Int((state.isMuted ? 0 : state.volume) * 100)))))
+            .accessibilityValue(Text(.remoteVolumePercent(LocaleFormat.integer(Int((state.isMuted ? 0 : state.volume) * 100)))))
 
             Image(systemName: "speaker.wave.3.fill")
                 .font(.system(size: 18, weight: .medium))
@@ -685,7 +690,7 @@ private struct RemoteOptionMenus: View, Equatable {
     }
 
     private func speedLabel(_ speed: Double) -> String {
-        "\(speed)×"
+        LocaleFormat.localized("\(speed)") + "×"
     }
 }
 

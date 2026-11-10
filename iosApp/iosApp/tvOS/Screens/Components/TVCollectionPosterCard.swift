@@ -136,21 +136,21 @@ struct TVCollectionPosterCard: View {
     private func countMessage(for count: Int) -> LocalizedStringResource {
         switch collection.collectionType?.lowercased() {
         case "movie", "movies":
-            return .libraryCollectionCardMovies(count: count, String(count))
+            return .libraryCollectionCardMovies(count: count, LocaleFormat.integer(count))
         case "series", "show", "shows", "tvshows":
-            return .libraryCollectionCardShows(count: count, String(count))
+            return .libraryCollectionCardShows(count: count, LocaleFormat.integer(count))
         case "album", "albums":
-            return .libraryCollectionCardAlbums(count: count, String(count))
+            return .libraryCollectionCardAlbums(count: count, LocaleFormat.integer(count))
         case "audiobook", "audiobooks", "book", "books":
-            return .libraryCollectionCardBooks(count: count, String(count))
+            return .libraryCollectionCardBooks(count: count, LocaleFormat.integer(count))
         default:
-            return .collectionsItemCount(count: count, String(count))
+            return .collectionsItemCount(count: count, LocaleFormat.integer(count))
         }
     }
 
     private var accessibilityLabel: String {
         if let count = collection.itemCount, count > 0 {
-            return AppLanguage.string(.libraryCollectionCardSpokenCount(count: count, String(count), collection.name), locale: locale)
+            return AppLanguage.string(.libraryCollectionCardSpokenCount(count: count, LocaleFormat.integer(count, locale: locale), collection.name), locale: locale)
         }
         return AppLanguage.string(.libraryCollectionCardSpoken(collection.name), locale: locale)
     }

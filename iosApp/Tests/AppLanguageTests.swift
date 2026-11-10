@@ -25,11 +25,26 @@ final class AppLanguageMatchingTests: XCTestCase {
         XCTAssertNil(AppLanguage.match("es", shipped: ["en"]))
     }
 
+    /// D26: the device's region, calendar and hour cycle stay the user's,
+    /// as the system shows them once `AppleLanguages` holds the language.
     func testLocaleKeepsTheDeviceRegionAndHourCycle() {
         let locale = AppLanguage.locale(for: "es", base: Locale(identifier: "en_GB@hours=h23"))
         XCTAssertEqual(locale.language.languageCode, .spanish)
         XCTAssertEqual(locale.region, .unitedKingdom)
         XCTAssertEqual(locale.hourCycle, .zeroToTwentyThree)
+    }
+
+    /// D55: Arabic writes Arabic-Indic digits on any device, unless the
+    /// user chose other digits. Apple's plain `ar` would write Latin ones.
+    func testArabicWritesArabicIndicDigitsUnlessTheUserChoseOthers() {
+        let onUSDevice = AppLanguage.locale(for: "ar", base: Locale(identifier: "en_US"))
+        XCTAssertEqual(1234.formatted(.number.grouping(.never).locale(onUSDevice)), "١٢٣٤")
+        let afterRelaunch = AppLanguage.locale(for: "ar", base: Locale(identifier: "ar_US"))
+        XCTAssertEqual(1234.formatted(.number.grouping(.never).locale(afterRelaunch)), "١٢٣٤")
+        let westernDigits = AppLanguage.locale(for: "ar", base: Locale(identifier: "ar_EG@numbers=latn"))
+        XCTAssertEqual(1234.formatted(.number.grouping(.never).locale(westernDigits)), "1234")
+        let english = AppLanguage.locale(for: "en", base: Locale(identifier: "en_US"))
+        XCTAssertEqual(1234.formatted(.number.grouping(.never).locale(english)), "1234")
     }
 
     /// D28: isolates only in a right-to-left interface; LTR keeps its bytes.

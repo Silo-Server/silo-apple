@@ -128,6 +128,8 @@ enum TVRootDestination: Hashable {
 /// it floats over each page's own scrim and dims to 70% while focus is
 /// down in the content zone.
 struct TVTopMenuBar: View {
+    /// Search leads the bar, so the press toward the tabs swaps in RTL.
+    @Environment(\.layoutDirection) private var layoutDirection
     let roots: [TVRootDestination]
     let selectedRoot: TVRootDestination
     let currentProfile: UserProfile?
@@ -573,7 +575,7 @@ struct TVTopMenuBar: View {
         // in the centered layout the native focus graph resolves this first.
         // Down hands focus to the page's first item, matching the tabs.
         .onMoveCommand { direction in
-            switch direction {
+            switch direction.inLayout(layoutDirection) {
             case .right:
                 guard let firstRoot = roots.first else { return }
                 focusedItem = .root(firstRoot)
@@ -871,12 +873,13 @@ private struct TVTopMenuDownHandler: ViewModifier {
 private struct TVTopMenuLeadingBoundaryHandler: ViewModifier {
     let isLeading: Bool
     let onMoveLeft: () -> Void
+    @Environment(\.layoutDirection) private var layoutDirection
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if isLeading {
             content.onMoveCommand { direction in
-                if direction == .left { onMoveLeft() }
+                if direction.inLayout(layoutDirection) == .left { onMoveLeft() }
             }
         } else {
             content
@@ -1194,7 +1197,7 @@ struct TVProfileDropdown: View {
             // Account, in Switch Server's place, lists every saved account by
             // server (spec §4.3). Servers are managed in Settings › Accounts.
             actionButton(.menuChangeAccount, systemImage: "person.crop.circle.badge.checkmark", id: .changeAccount, action: onChangeAccount)
-            actionButton(.menuSignOut, systemImage: "rectangle.portrait.and.arrow.right", id: .signOut, isDestructive: true, action: onSignOut)
+            actionButton(.menuSignOut, systemImage: "rectangle.portrait.and.arrow.forward", id: .signOut, isDestructive: true, action: onSignOut)
         }
         .padding(SiloTheme.Skyline.dropdownPadding)
         .frame(width: SiloTheme.Skyline.dropdownWidth, alignment: .leading)

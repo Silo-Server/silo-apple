@@ -26,7 +26,7 @@ struct LoginView: View {
         // back from server setup, so going back waits until it settles.
         MarqueeStage(scrim: .bottomDeep, frostStart: 0.40, onBack: viewModel.isBusy ? nil : { leave() }) {
             MarqueeTopBar {
-                MarqueeIconButton(systemImage: "chevron.left",
+                MarqueeIconButton(systemImage: "chevron.backward",
                                   accessibilityLabel: backLabel) {
                     leave()
                 }

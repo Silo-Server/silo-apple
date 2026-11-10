@@ -32,13 +32,10 @@ struct AudioFullPlayerView: View {
     }
 
     /// "1×", "1.25×", "0.75×": up to two decimals with trailing zeros dropped,
-    /// using "." in every locale. Shared by the rate menus on every platform.
-    static func rateLabel(_ rate: Double) -> String {
-        rate.formatted(
-            .number
-                .precision(.fractionLength(0...2))
-                .locale(Locale(identifier: "en_US_POSIX"))
-        ) + "×"
+    /// in the app's language ("1,25×" in German). Shared by the rate menus on
+    /// every platform.
+    static func rateLabel(_ rate: Double, locale: Locale = AppLanguage.formattingLocale) -> String {
+        LocaleFormat.rate(rate, locale: locale)
     }
 
     private func stop(player: AudioPlayerViewModel) {
@@ -157,9 +154,12 @@ private struct PortraitPlayerLayout: View {
     private var controls: some View {
         VStack(spacing: 0) {
             AudioScrubberSection(player: player)
+                .mediaLayoutDirection()
                 .padding(.horizontal, 8)
 
             AudioTransportControls(player: player)
+
+                .mediaLayoutDirection()
                 .padding(.top, 20)
 
             optionsRow
@@ -375,6 +375,8 @@ private struct TVPlayerLayout: View {
 
                 AudioScrubberSection(player: player)
 
+                    .mediaLayoutDirection()
+
                 HStack(spacing: 20) {
                     Button {
                         player.previousChapter()
@@ -413,6 +415,7 @@ private struct TVPlayerLayout: View {
                     .accessibilityLabel(Text(.audiobookTransportNextChapter))
                 }
                 .buttonStyle(.bordered)
+                .mediaLayoutDirection()
 
                 HStack(spacing: 20) {
                     Menu {

@@ -31,7 +31,7 @@ enum ProfileTransitionError: LocalizedError {
                 return AppLanguage.string(.pinLockoutLater)
             }
             let minutes = Int((retryAfter / 60).rounded(.up))
-            return AppLanguage.string(.pinLockoutMinutes(count: minutes, "\(minutes)"))
+            return AppLanguage.string(.pinLockoutMinutes(count: minutes, LocaleFormat.integer(minutes)))
         case .noActiveServer:
             return AppLanguage.string(.profilesErrorChooseServer)
         case .identityChanged:

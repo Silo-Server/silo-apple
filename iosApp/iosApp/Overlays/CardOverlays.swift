@@ -20,6 +20,11 @@ struct CardOverlays: View {
     let prefs: CardOverlayPrefs
     var variant: Variant = .poster
 
+    /// Positions are configured by physical corner ("bottom left"), so they
+    /// stay put in a right-to-left language, as on web (D58): the leading
+    /// side is the right there, so left and right swap.
+    @Environment(\.layoutDirection) private var layoutDirection
+
     enum Variant {
         case poster      // standard 2:3 poster card
         case wide        // backdrop card (continue watching, hero) — leaves
@@ -55,13 +60,26 @@ struct CardOverlays: View {
         if badges.isEmpty {
             EmptyView()
         } else {
-            VStack(alignment: alignment(for: position), spacing: preset.gap * scale) {
+            let corner = physical(position)
+            VStack(alignment: alignment(for: corner), spacing: preset.gap * scale) {
                 ForEach(badges, id: \.id) { state in
                     OverlayBadgeView(state: state, preset: preset, scale: scale)
                 }
             }
-            .padding(insets(for: position, scale: scale))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: anchor(for: position))
+            .padding(insets(for: corner, scale: scale))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: anchor(for: corner))
+        }
+    }
+
+    /// The corner in layout terms: `.topLeft` is the leading corner left to
+    /// right and the trailing one right to left.
+    private func physical(_ position: OverlayPosition) -> OverlayPosition {
+        guard layoutDirection == .rightToLeft else { return position }
+        switch position {
+        case .topLeft: return .topRight
+        case .topRight: return .topLeft
+        case .bottomLeft: return .bottomRight
+        case .bottomRight: return .bottomLeft
         }
     }
 

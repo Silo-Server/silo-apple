@@ -66,7 +66,7 @@ struct OfflineSeriesBrowseView: View {
                 manager.deleteDownloads(ids: current.map(\.id).filter(confirmed.contains))
                 dismiss()
             } label: {
-                Text(.downloadsBulkConfirm(count: count, String(count)))
+                Text(.downloadsBulkConfirm(count: count, LocaleFormat.integer(count)))
             }
             Button(role: .cancel) {} label: { Text(.downloadsManagerKeep) }
         }
@@ -83,7 +83,7 @@ struct OfflineSeriesBrowseView: View {
                     posterThumbhash: group.posterThumbhash,
                     posterFileURL: manager.seriesPosterImageURL(for: group),
                     availability: AppLanguage.string(.downloadsOfflineSeriesAvailability(count: 
-                        group.episodeCount, String(group.episodeCount), DownloadFormatting.bytes(group.totalBytes)
+                        group.episodeCount, LocaleFormat.integer(group.episodeCount, locale: locale), DownloadFormatting.bytes(group.totalBytes)
                     ), locale: locale),
                     isMonitored: group.isMonitored,
                     playTitle: playTitle(season),
@@ -123,7 +123,7 @@ struct OfflineSeriesBrowseView: View {
                     Button {
                         selectedSeasonNumber = season.seasonNumber
                     } label: {
-                        Text(season.isSpecials ? .detailSpecials : LocalizedStringResource.downloadsEntrySeason(String(season.seasonNumber)))
+                        Text(season.isSpecials ? .detailSpecials : LocalizedStringResource.downloadsEntrySeason(LocaleFormat.integer(season.seasonNumber)))
                             .font(.system(size: 13.5, weight: .semibold))
                             .foregroundColor(isSelected ? .siloOnSurface : .siloSecondaryText)
                             .padding(.horizontal, 14)
@@ -155,7 +155,7 @@ struct OfflineSeriesBrowseView: View {
                 .foregroundColor(.siloOnSurface)
             Spacer()
             Text(.downloadsOfflineSeriesSeasonOnDevice(count: 
-                season.episodeCount, String(season.episodeCount), DownloadFormatting.bytes(season.totalBytes)
+                season.episodeCount, LocaleFormat.integer(season.episodeCount), DownloadFormatting.bytes(season.totalBytes)
             ))
                 .font(.system(size: 11.5))
                 .foregroundColor(.siloOnSurface.opacity(0.38))
@@ -401,7 +401,7 @@ struct OfflineDownloadDetailView: View {
             let langs = subtitles.compactMap { $0.language }.joined(separator: ", ")
             rows.append((
                 text(.downloadsOfflineDetailFactSubtitles),
-                langs.isEmpty ? text(.downloadsOfflineDetailSubtitleTracks(count: subtitles.count, String(subtitles.count))) : langs
+                langs.isEmpty ? text(.downloadsOfflineDetailSubtitleTracks(count: subtitles.count, LocaleFormat.integer(subtitles.count))) : langs
             ))
         }
         var quality: [String] = []
@@ -417,7 +417,7 @@ struct OfflineDownloadDetailView: View {
         }
         if !quality.isEmpty { rows.append((text(.downloadsSettingsQuality), quality.joined(separator: " · "))) }
         if let date = record.downloadedAt {
-            rows.append((text(.downloadsOfflineDetailFactDownloaded), date.formatted(date: .abbreviated, time: .omitted)))
+            rows.append((text(.downloadsOfflineDetailFactDownloaded), date.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, locale: AppLanguage.formattingLocale))))
         }
         return rows
     }

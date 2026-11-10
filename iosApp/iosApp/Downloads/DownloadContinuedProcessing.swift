@@ -386,7 +386,7 @@ final class DownloadContinuedProcessing {
         var parts: [String] = []
         if content.totalCount > 1 {
             parts.append(AppLanguage.string(
-                .downloadsProgressDone("\(content.completedCount)", "\(content.totalCount)")
+                .downloadsProgressDone(LocaleFormat.integer(content.completedCount), LocaleFormat.integer(content.totalCount))
             ))
         }
         switch content.phase {
@@ -396,8 +396,9 @@ final class DownloadContinuedProcessing {
             parts.append(AppLanguage.string(.downloadsStatusPaused))
         case .downloading, .completed:
             if let headline, headline.fileSize > 0 {
-                parts.append(headline.bytesDownloaded.formatted(.byteCount(style: .file))
-                    + " / " + headline.fileSize.formatted(.byteCount(style: .file)))
+                let locale = AppLanguage.formattingLocale
+                parts.append(headline.bytesDownloaded.formatted(.byteCount(style: .file).locale(locale))
+                    + " / " + headline.fileSize.formatted(.byteCount(style: .file).locale(locale)))
             } else {
                 parts.append(AppLanguage.string(.downloadsNotificationStarting))
             }
