@@ -157,8 +157,8 @@ final class AppLanguagePreferencesTests: XCTestCase {
         XCTAssertEqual(tags.first, .some(nil))
         XCTAssertEqual(Set(tags.dropFirst().dropLast()), ["en", "es", "fr", "ar"])
         XCTAssertEqual(tags.last, "it")
-        XCTAssertEqual(store.selectedLabel, "Italiano")
-        XCTAssertTrue(store.footer.contains("isn’t available in Italiano"))
+        XCTAssertEqual(AppLanguage.string(store.selectedLabel), "Italiano")
+        XCTAssertTrue(AppLanguage.string(store.footer).contains("isn’t available in Italiano"))
     }
 
     func testRegionalTagIsAppliedWithoutTheUnavailableFooter() async {
@@ -169,7 +169,7 @@ final class AppLanguagePreferencesTests: XCTestCase {
         await store.refresh()
         XCTAssertEqual(store.displayed, "es")
         XCTAssertTrue(store.options.contains { $0.tag == "es-MX" }, "the stored tag stays selectable")
-        XCTAssertFalse(store.footer.contains("isn’t available"))
+        XCTAssertFalse(AppLanguage.string(store.footer).contains("isn’t available"))
     }
 
     /// D18: the user picked French in system settings after Silo applied

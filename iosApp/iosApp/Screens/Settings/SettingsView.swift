@@ -16,6 +16,9 @@ struct SettingsView: View {
     @State private var viewModel = SettingsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @Environment(AppRouter.self) private var router
+    /// Rows show view-model text resolved in the app language; reading the
+    /// locale re-renders them when it changes.
+    @Environment(\.locale) private var locale
     #if os(iOS)
     @State private var diagnosticsModel = DiagnosticsViewModel()
     #endif
@@ -25,6 +28,7 @@ struct SettingsView: View {
     #endif
 
     var body: some View {
+        let _ = locale
         Group {
             #if os(iOS)
             iOSOverview
@@ -62,7 +66,7 @@ struct SettingsView: View {
             signOutSection
         }
         .settingsListChrome()
-        .navigationTitle("Settings")
+        .navigationTitle(Text(.settingsTitle))
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
         .task {
@@ -79,10 +83,10 @@ struct SettingsView: View {
                 AccountSignInView(model: accountSignIn)
             } label: {
                 SettingsRowLabel(
-                    title: "Sign-in",
+                    title: .settingsSignInTitle,
                     systemImage: "person.badge.key.fill",
                     color: .blue,
-                    value: accountSignIn.identities.first?.providerName
+                    value: accountSignIn.identities.first.map { .verbatim($0.providerName) }
                 )
             }
         }
@@ -122,11 +126,11 @@ struct SettingsView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityHint("Switches to a different profile")
+            .accessibilityHint(Text(.settingsOverviewSwitchProfileHint))
 
         } footer: {
             if viewModel.userInfo?.isAdmin == true {
-                Text("Signed in as an administrator.")
+                Text(.settingsOverviewAdministratorFooter)
                     .foregroundStyle(Color.siloSecondaryText)
             }
         }
@@ -144,7 +148,7 @@ struct SettingsView: View {
                 GeneralSettingsView()
             } label: {
                 SettingsRowLabel(
-                    title: "General",
+                    title: .settingsGeneral,
                     systemImage: "gearshape.fill",
                     color: .purple,
                     value: launchPreferences.behavior.title
@@ -155,10 +159,10 @@ struct SettingsView: View {
                 InterfaceCustomizationView()
             } label: {
                 SettingsRowLabel(
-                    title: "Interface",
+                    title: .settingsInterfaceTitle,
                     systemImage: "rectangle.3.group.fill",
                     color: .indigo,
-                    value: uiCustomization.cardPresentation.posterSize.title
+                    value: .verbatim(uiCustomization.cardPresentation.posterSize.title)
                 )
             }
 
@@ -166,10 +170,10 @@ struct SettingsView: View {
                 PlaybackSettingsView(viewModel: viewModel)
             } label: {
                 SettingsRowLabel(
-                    title: "Playback",
+                    title: .settingsPlayback,
                     systemImage: "play.fill",
                     color: .blue,
-                    value: viewModel.preferredQualityLabel
+                    value: .verbatim(viewModel.preferredQualityLabel)
                 )
             }
 
@@ -177,10 +181,10 @@ struct SettingsView: View {
                 SubtitleSettingsView(viewModel: viewModel)
             } label: {
                 SettingsRowLabel(
-                    title: "Subtitles",
+                    title: .settingsSubtitles,
                     systemImage: "captions.bubble.fill",
                     color: .pink,
-                    value: viewModel.subtitleLanguageName
+                    value: .verbatim(viewModel.subtitleLanguageName)
                 )
             }
 
@@ -189,7 +193,7 @@ struct SettingsView: View {
                     DownloadsSettingsView()
                 } label: {
                     SettingsRowLabel(
-                        title: "Downloads",
+                        title: .settingsDownloadsTitle,
                         systemImage: "arrow.down.circle.fill",
                         color: .blue
                     )
@@ -207,10 +211,10 @@ struct SettingsView: View {
             } label: {
                 HStack(spacing: 0) {
                     SettingsRowLabel(
-                        title: "Accounts",
+                        title: .accountsTitle,
                         systemImage: "person.2.fill",
                         color: .teal,
-                        value: viewModel.serverDisplayName
+                        value: .verbatim(viewModel.serverDisplayName)
                     )
                     SettingsRowChevron()
                         .padding(.leading, 8)
@@ -223,28 +227,28 @@ struct SettingsView: View {
     // MARK: - About
 
     private var aboutSection: some View {
-        Section("About") {
+        Section(.settingsAboutTitle) {
             SettingsRowLabel(
-                title: "Version",
+                title: .settingsAboutVersion,
                 systemImage: "info",
                 color: .gray,
-                value: SettingsViewModel.versionString
+                value: .verbatim(SettingsViewModel.versionString)
             )
 
-            externalLink("Privacy Policy", systemImage: "hand.raised.fill", SiloLegalLinks.privacyPolicy)
+            externalLink(.settingsAboutPrivacyPolicy, systemImage: "hand.raised.fill", SiloLegalLinks.privacyPolicy)
 
             NavigationLink {
                 AcknowledgementsView()
             } label: {
                 SettingsRowLabel(
-                    title: "Acknowledgements",
+                    title: .settingsAboutAcknowledgements,
                     systemImage: "curlybraces",
                     color: .indigo
                 )
             }
 
             externalLink(
-                "Source Code",
+                .settingsAboutSourceCode,
                 systemImage: "chevron.left.forwardslash.chevron.right",
                 SiloLegalLinks.sourceCode
             )
@@ -255,7 +259,7 @@ struct SettingsView: View {
     /// around it so every label in the section shares one leading edge. The
     /// arrow marks it as opening in the browser.
     private func externalLink(
-        _ title: String,
+        _ title: LocalizedStringResource,
         systemImage: String,
         _ destination: URL
     ) -> some View {
@@ -278,7 +282,7 @@ struct SettingsView: View {
             Button(role: .destructive) {
                 router.signOutAndReset()
             } label: {
-                Text("Sign Out")
+                Text(.settingsSignOut)
                     .font(.siloBody.weight(.semibold))
                     .foregroundStyle(Color.siloErrorInk)
                     .frame(maxWidth: .infinity)
@@ -302,10 +306,10 @@ struct SettingsView: View {
 /// Settings-app style row label: a colored rounded-square icon badge,
 /// the row title, and an optional trailing value in secondary color.
 struct SettingsRowLabel: View {
-    let title: String
+    let title: LocalizedStringResource
     let systemImage: String
     let color: Color
-    var value: String? = nil
+    var value: LocalizedStringResource? = nil
 
     /// The Mac keeps its chrome monochrome, so every tile is the same grey
     /// whatever `color` a row passes.

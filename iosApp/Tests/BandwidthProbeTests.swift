@@ -983,8 +983,8 @@ final class ConnectionSpeedTextTests: XCTestCase {
     }
 
     func testTryAgainSaysOneSecondAtOne() {
-        XCTAssertEqual(VM.tryAgainMessage(seconds: 1), "Try again in 1 second")
-        XCTAssertEqual(VM.tryAgainMessage(seconds: 30), "Try again in 30 seconds")
+        XCTAssertEqual(AppLanguage.string(VM.tryAgainMessage(seconds: 1)), "Try again in 1 second")
+        XCTAssertEqual(AppLanguage.string(VM.tryAgainMessage(seconds: 30)), "Try again in 30 seconds")
     }
 
     func testSpeedTestsAreSkippedOnMeteredNetworks() {

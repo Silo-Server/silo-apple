@@ -8,8 +8,8 @@ enum ThirdPartyCredits {
     struct Credit: Identifiable, Sendable {
         let name: String
         /// What Silo shows or loads from the service.
-        let use: String
-        /// Wording the service's terms require, shown verbatim.
+        let use: LocalizedStringResource
+        /// Wording the service's terms require, shown verbatim in English.
         var notice: String? = nil
         var logoAsset: String? = nil
 
@@ -21,23 +21,23 @@ enum ThirdPartyCredits {
         // Credits section of any app that shows TMDB data.
         Credit(
             name: "TMDB",
-            use: "Ratings, and the search results, discovery rows, and artwork in Requests.",
+            use: .settingsAboutCreditTmdb,
             notice: "This application uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.",
             logoAsset: RatingEntryView.tmdbLogoAsset
         ),
-        Credit(name: "IMDb", use: "Ratings shown on titles, when your server provides them."),
-        Credit(name: "Rotten Tomatoes", use: "Critic and audience scores shown on titles, when your server provides them."),
+        Credit(name: "IMDb", use: .settingsAboutCreditImdb),
+        Credit(name: "Rotten Tomatoes", use: .settingsAboutCreditRottenTomatoes),
         Credit(
             name: "Common Sense Media and MDBList",
-            use: "Suggested minimum viewer ages, when your server provides them."
+            use: .settingsAboutCreditAdvisoryAges
         ),
         Credit(
             name: "OpenSubtitles, SubDL, and Subsource",
-            use: "Subtitle search results, found through your server."
+            use: .settingsAboutCreditSubtitleSearch
         ),
         Credit(
             name: "DiceBear",
-            use: "Generated profile avatars, loaded from DiceBear when shown.",
+            use: .settingsAboutCreditDiceBear,
             notice: """
             Fun Emoji is a remix of "Fun Emoji Set" by Davis Uche, licensed under \
             CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Bottts is a \
@@ -45,8 +45,8 @@ enum ThirdPartyCredits {
             Initials are by DiceBear, licensed under CC0 1.0.
             """
         ),
-        Credit(name: "YouTube", use: "Trailer thumbnails. Trailers open in the YouTube app or website."),
+        Credit(name: "YouTube", use: .settingsAboutCreditYouTube),
     ]
 
-    static let trademarkNotice = "These names and logos belong to their owners. Silo is not affiliated with or endorsed by them."
+    static let trademarkNotice: LocalizedStringResource = .settingsAboutTrademarkNotice
 }

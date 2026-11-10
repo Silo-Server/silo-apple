@@ -15,7 +15,7 @@ private struct MacSettingsToggleStyle: ToggleStyle {
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(.isToggle)
-            .accessibilityValue(configuration.isOn ? "On" : "Off")
+            .accessibilityValue(Text(configuration.isOn ? LocalizedStringResource.settingsOn : .settingsOff))
         } label: {
             configuration.label
         }

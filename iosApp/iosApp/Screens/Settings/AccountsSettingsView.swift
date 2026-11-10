@@ -21,14 +21,14 @@ struct AccountsSettingsView: View {
                 Button {
                     router.resetToServerSetup()
                 } label: {
-                    Label("Add a server", systemImage: "plus")
+                    Label(.accountsAddAServer, systemImage: "plus")
                         .foregroundColor(.siloOnSurface)
                 }
             }
             .listRowBackground(Color.siloGroupedCell)
         }
         .settingsListChrome()
-        .navigationTitle("Accounts")
+        .navigationTitle(Text(.accountsTitle))
         .siloNavigationTitleDisplayMode(.inline)
         .task(id: directory.accounts.map(\.id)) {
             directory.reload()
@@ -47,16 +47,16 @@ struct AccountsSettingsView: View {
                 // Not `.destructive`: that removes the row at once, and it
                 // would stay gone after Cancel in the confirmation.
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    Button("Sign Out") { signOut(account) }
+                    Button(.settingsAccountsSignOut) { signOut(account) }
                         .tint(.red)
                 }
                 .contextMenu {
                     if account.needsSignIn {
-                        Button("Sign In Again", systemImage: "person.crop.circle.badge.exclamationmark") {
+                        Button(.settingsAccountsSignInAgain, systemImage: "person.crop.circle.badge.exclamationmark") {
                             router.beginSignIn(onServer: server.id, renewing: account.localAccountId)
                         }
                     }
-                    Button("Sign Out", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                    Button(.settingsAccountsSignOut, systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
                         signOut(account)
                     }
                 }
@@ -65,14 +65,14 @@ struct AccountsSettingsView: View {
             Button {
                 router.beginAddAccount(onServer: server.id)
             } label: {
-                Label("Add an account on \(server.displayName)", systemImage: "person.badge.plus")
+                Label(.accountsAddAccountOnServer(server.displayName), systemImage: "person.badge.plus")
                     .foregroundColor(.siloOnSurface)
             }
 
             Button(role: .destructive) {
                 Task { await router.confirmRemoveServer(server.id) }
             } label: {
-                Label("Remove server", systemImage: "trash")
+                Label(.accountsRemoveServer, systemImage: "trash")
             }
         } header: {
             ServerSectionHeader(server: server)
@@ -127,6 +127,7 @@ private struct AccountRow: View {
     let account: SavedAccountSummary
     let isInUse: Bool
     let downloads: DownloadAccountSummary?
+    @Environment(\.locale) private var locale
 
     var body: some View {
         HStack(spacing: 12) {
@@ -135,7 +136,7 @@ private struct AccountRow: View {
                 .foregroundColor(.siloOnSurface)
                 .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
-                Text(account.username ?? "Account")
+                Text(account.username.map { LocalizedStringResource.verbatim($0) } ?? .settingsAccountsAccount)
                     .font(.siloSubheadline)
                     .foregroundColor(.siloOnSurface)
                     .lineLimit(1)
@@ -146,17 +147,18 @@ private struct AccountRow: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityValue(isInUse ? "In use" : "")
+        .accessibilityValue(isInUse ? Text(.settingsAccountsInUse) : Text(verbatim: ""))
     }
 
     /// "3 profiles · 12 downloads", or why the account can't be used yet.
     private var details: String {
-        var parts: [String] = []
-        if account.needsSignIn { parts.append("Sign in again") }
-        if let profiles = ChangeAccountList.profileCount(account.cachedProfiles.count) { parts.append(profiles) }
+        var resources: [LocalizedStringResource] = []
+        if account.needsSignIn { resources.append(.accountsBadgeSignInAgain) }
+        if let profiles = ChangeAccountList.profileCount(account.cachedProfiles.count) { resources.append(profiles) }
         if let count = downloads?.count, count > 0 {
-            parts.append("\(count) \(count == 1 ? "download" : "downloads")")
+            resources.append(.accountsDownloadCount(count: count, String(count)))
         }
+        let parts = resources.map { AppLanguage.string($0, locale: locale) }
         return parts.isEmpty ? " " : parts.joined(separator: " · ")
     }
 }
@@ -177,38 +179,55 @@ private struct AccountDetailView: View {
         List {
             if let account {
                 Section {
-                    LabeledContent("Account", value: account.username ?? "Not known yet")
-                    LabeledContent("Server", value: ServerRegistry.shared.entry(with: serverId)?.displayName ?? "")
-                    LabeledContent("Downloads", value: downloadsText)
+                    LabeledContent {
+                        Text(account.username.map { LocalizedStringResource.verbatim($0) } ?? .settingsAccountsPageUsernameUnknown)
+                    } label: {
+                        Text(.settingsAccountsPageAccount)
+                    }
+                    .accessibilityElement(children: .combine)
+                    LabeledContent {
+                        Text(verbatim: ServerRegistry.shared.entry(with: serverId)?.displayName ?? "")
+                    } label: {
+                        Text(.accountServer)
+                    }
+                    .accessibilityElement(children: .combine)
+                    LabeledContent {
+                        Text(downloadsText)
+                    } label: {
+                        Text(.accountDownloads)
+                    }
+                    .accessibilityElement(children: .combine)
                 }
                 .listRowBackground(Color.siloGroupedCell)
 
                 if !account.cachedProfiles.isEmpty {
-                    Section("Profiles") {
+                    Section {
                         ForEach(account.cachedProfiles) { profile in
                             Text(profile.name)
                         }
+                    } header: {
+                        Text(.accountProfiles)
                     }
                     .listRowBackground(Color.siloGroupedCell)
                 }
 
                 Section {
                     if account.needsSignIn {
-                        Button("Sign in again") {
+                        Button(.accountSignInAgain) {
                             router.beginSignIn(onServer: serverId, renewing: localAccountId)
                         }
                     }
-                    Button("Sign out", role: .destructive) {
+                    Button(.commonSignOut, role: .destructive) {
                         Task { await router.confirmSignOut(account: localAccountId, onServer: serverId) }
                     }
                 } footer: {
-                    Text("Signing out deletes this account's downloads from this device.")
+                    Text(.settingsAccountsPageSignOutFooter)
                 }
                 .listRowBackground(Color.siloGroupedCell)
             }
         }
         .settingsListChrome()
-        .navigationTitle(account?.username ?? "Account")
+        .navigationTitle(Text(account?.username.map { LocalizedStringResource.verbatim($0) } ?? .settingsAccountsAccount))
         .siloNavigationTitleDisplayMode(.inline)
         .onChange(of: account == nil) { _, gone in
             // Signed out from here: nothing left to show.
@@ -216,10 +235,10 @@ private struct AccountDetailView: View {
         }
     }
 
-    private var downloadsText: String {
-        guard let summary = downloads[localAccountId], summary.count > 0 else { return "None" }
+    private var downloadsText: LocalizedStringResource {
+        guard let summary = downloads[localAccountId], summary.count > 0 else { return .accountDownloadsNone }
         let size = ByteCountFormatter.string(fromByteCount: summary.bytes, countStyle: .file)
-        return "\(summary.count) · \(size)"
+        return .verbatim("\(summary.count) · \(size)")
     }
 }
 #endif

@@ -19,7 +19,7 @@ struct GeneralSettingsView: View {
             }
         }
         .settingsListChrome()
-        .navigationTitle("General")
+        .navigationTitle(Text(.settingsGeneral))
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
         .task {
@@ -31,19 +31,19 @@ struct GeneralSettingsView: View {
 
     private var profileSection: some View {
         Section {
-            Picker("Profile Selection", selection: $launchPreferences.behavior) {
+            Picker(.settingsControlProfileSelection, selection: $launchPreferences.behavior) {
                 ForEach(ProfileLaunchBehavior.allCases) { behavior in
                     Text(behavior.title)
-                        .accessibilityHint(behavior.standardDescription)
+                        .accessibilityHint(Text(behavior.standardDescription))
                         .tag(behavior)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
-            .accessibilityValue(launchPreferences.behavior.title)
-            .accessibilityHint(launchPreferences.behavior.standardDescription)
+            .accessibilityValue(Text(launchPreferences.behavior.title))
+            .accessibilityHint(Text(launchPreferences.behavior.standardDescription))
         } header: {
-            Text("Profiles")
+            Text(.settingsGeneralProfilesHeader)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             Text(launchPreferences.behavior.standardDescription)
@@ -55,7 +55,7 @@ struct GeneralSettingsView: View {
     private var languageSection: some View {
         Section {
             Picker(
-                "App Language",
+                .settingsAppLanguageTitle,
                 selection: Binding(
                     get: { appLanguage.currentChoice?.tag ?? "" },
                     set: { id in Task { await appLanguage.select(id.isEmpty ? nil : id) } }
@@ -68,9 +68,9 @@ struct GeneralSettingsView: View {
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
             .disabled(appLanguage.isBusy)
-            .accessibilityValue(appLanguage.selectedLabel)
+            .accessibilityValue(Text(appLanguage.selectedLabel))
         } header: {
-            Text("Language")
+            Text(.settingsAppLanguageHeader)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
@@ -87,7 +87,7 @@ struct GeneralSettingsView: View {
     private var advisoryAgeSection: some View {
         Section {
             Toggle(
-                "Show Advisory Age",
+                .settingsGeneralShowAdvisoryAge,
                 isOn: Binding(
                     get: { advisoryAgePreference.showsAdvisoryAge },
                     set: { value in
@@ -99,13 +99,13 @@ struct GeneralSettingsView: View {
             .tint(.siloSwitchOn)
             .disabled(advisoryAgePreference.isSaving)
         } header: {
-            Text("Ratings")
+            Text(.settingsGeneralRatingsHeader)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Show a suggested minimum viewer age, such as Common Sense Media’s, on movie and show details. This does not change what the profile may watch.")
+                Text(.settingsGeneralShowAdvisoryAgeFooter)
                 if let writeError = advisoryAgePreference.writeError {
-                    Text(writeError)
+                    Text(verbatim: writeError)
                 }
             }
             .foregroundStyle(Color.siloSecondaryText)

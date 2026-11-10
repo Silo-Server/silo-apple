@@ -7,10 +7,10 @@ enum ChangeAccountBadge: Equatable {
     /// Its credentials expired or were revoked.
     case signInAgain
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .current: "Current"
-        case .signInAgain: "Sign in again"
+        case .current: .changeAccountCurrent
+        case .signInAgain: .accountsBadgeSignInAgain
         }
     }
 }
@@ -22,18 +22,18 @@ struct ChangeAccountRow: Identifiable, Equatable {
 
     var id: String { account.localAccountId }
     var serverId: String { account.serverId }
-    var username: String { account.username ?? "Account" }
+    var username: String { account.username ?? AppLanguage.string(.settingsAccountsAccount) }
     /// The avatar's letter.
     var initial: String { username.first.map { String($0).uppercased() } ?? "?" }
     /// "3 profiles" or "1 profile", from the account's cached list. Nil
     /// before any list was cached (an account migrated without one).
-    var profileCount: String? { ChangeAccountList.profileCount(account.cachedProfiles.count) }
+    var profileCount: LocalizedStringResource? { ChangeAccountList.profileCount(account.cachedProfiles.count) }
     var isCurrent: Bool { badge == .current }
     var needsSignIn: Bool { account.needsSignIn }
     /// What choosing the row does, for VoiceOver.
-    var accessibilityHint: String {
-        if needsSignIn { return "Opens sign-in" }
-        return isCurrent ? "Shows this account's profiles" : "Switches to this account"
+    var accessibilityHint: LocalizedStringResource {
+        if needsSignIn { return .accountsRowHintSignIn }
+        return isCurrent ? .accountsRowHintShowProfiles : .accountsRowHintSwitch
     }
 }
 
@@ -45,7 +45,7 @@ struct ChangeAccountServer: Identifiable, Equatable {
     var id: String { server.id }
     var name: String { server.displayName }
     /// The line under Add an account.
-    var addAccountDetail: String { "Sign in on \(name)" }
+    var addAccountDetail: LocalizedStringResource { .changeAccountSignInOn(name) }
 }
 
 /// Builds Change Account's list (spec §4.1). Pure, so it draws offline and
@@ -74,9 +74,9 @@ enum ChangeAccountList {
         return account.localAccountId == openAccountId ? .current : nil
     }
 
-    static func profileCount(_ count: Int) -> String? {
+    static func profileCount(_ count: Int) -> LocalizedStringResource? {
         guard count > 0 else { return nil }
-        return count == 1 ? "1 profile" : "\(count) profiles"
+        return .accountProfilesCount(count)
     }
 }
 
