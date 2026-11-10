@@ -42,8 +42,8 @@ enum TVSettingsOptions {
 
     /// The Maximum Bitrate picker: "No limit", then each cap.
     static func maxBitrate(_ choicesKbps: [Int]) -> [TVSettingsOption] {
-        [.init(id: SettingsViewModel.noBitrateLimitTag, label: .verbatim(SiloQualityPresets.noBitrateLimitLabel))]
-            + choicesKbps.map { .init(id: String($0), label: .verbatim(SiloQualityPresets.bitrateLabel($0))) }
+        [.init(id: SettingsViewModel.noBitrateLimitTag, label: SiloQualityPresets.noBitrateLimitLabel)]
+            + choicesKbps.map { .init(id: String($0), label: SiloQualityPresets.bitrateLabel($0)) }
     }
 
     static func audioLanguage(_ languages: [PlaybackLanguageOption], language: String) -> [TVSettingsOption] {

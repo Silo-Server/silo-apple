@@ -143,6 +143,7 @@ enum PhoneEpisodeRailLayout {
 }
 
 private struct PhoneEpisodeCard: View {
+    @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     let isCurrent: Bool
     let cardWidth: CGFloat
@@ -231,7 +232,7 @@ private struct PhoneEpisodeCard: View {
                 nowViewingTag
             }
 
-            Text(EpisodeCardCaption.railTitle(for: episode))
+            Text(EpisodeCardCaption.railTitle(for: episode, locale: locale))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(titleColor)
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
@@ -294,7 +295,7 @@ private struct PhoneEpisodeCard: View {
     }
 
     private var accessibilityDescription: String {
-        PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent)
+        PhoneEpisodeFormatting.accessibilityDescription(for: episode, isCurrent: isCurrent, locale: locale)
     }
 
     private var spoilers: EpisodeSpoilerSettings {

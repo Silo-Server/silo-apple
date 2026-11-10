@@ -704,7 +704,9 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     // Display fields cached so the Downloads list renders before the
     // manifest is fetched and offline.
     var title: String?
-    var subtitle: String?                // e.g. "2024" or "S1 · E2"
+    /// e.g. "2024" or "S1 · E2", stored in English (D44). Rows show
+    /// `displaySubtitle(locale:)`.
+    var subtitle: String?
     var type: String?                    // "movie" | "episode" | "series"
     var seriesId: String?
     /// Cached parent-series title for episode downloads (from the manifest),
@@ -714,6 +716,10 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
     /// manifest.
     var seasonNumber: Int? = nil
     var episodeNumber: Int? = nil
+    /// The numbers an episode download request named. Display text uses
+    /// them until the manifest's `seasonNumber` and `episodeNumber` arrive.
+    var requestSeasonNumber: Int? = nil
+    var requestEpisodeNumber: Int? = nil
     var posterThumbhash: String?
     /// ThumbHash of the parent series poster, for an episode download.
     var seriesPosterThumbhash: String? = nil
@@ -773,6 +779,62 @@ struct DownloadRecord: Codable, Identifiable, Hashable, Sendable {
             return AppLanguage.string(.downloadsFailureServerError)
         default: return AppLanguage.string(.downloadsFailureGeneric)
         }
+    }
+}
+
+// MARK: - Display text
+
+extension DownloadRecord {
+    /// The season and episode in `locale`, as `both` writes them ("S1 · E2"
+    /// by default), or the one number that is known ("S1", "E2"). Nil when
+    /// the record knows neither.
+    func episodeTag(
+        locale: Locale = AppLanguage.formattingLocale,
+        both: (String, String) -> LocalizedStringResource = { .catalogEpisodeCaption($0, $1) }
+    ) -> String? {
+        let season = shownNumbers.season.map { LocaleFormat.integer($0, locale: locale) }
+        let episode = shownNumbers.episode.map { LocaleFormat.integer($0, locale: locale) }
+        let resource: LocalizedStringResource
+        switch (season, episode) {
+        case let (season?, episode?): resource = both(season, episode)
+        case let (season?, nil): resource = .calendarSeasonShort(season)
+        case let (nil, episode?): resource = .calendarEpisodeShort(episode)
+        case (nil, nil): return nil
+        }
+        return AppLanguage.string(resource, locale: locale)
+    }
+
+    /// `subtitle` as a row shows it: an episode's season and episode in
+    /// `locale` when the record knows them, otherwise what was stored (a
+    /// movie's year).
+    func displaySubtitle(locale: Locale = AppLanguage.formattingLocale) -> String? {
+        (type == "episode" ? episodeTag(locale: locale) : nil) ?? subtitle
+    }
+
+    /// The name stored for an untitled episode: English "Episode 2" (D44).
+    /// `shownTitle(locale:)` shows it in the app language.
+    static func storedEpisodeName(_ number: Int) -> String {
+        AppLanguage.inEnglish { AppLanguage.string(.detailEpisode(LocaleFormat.integer(number))) }
+    }
+
+    /// `title` as the app shows it: the stored stand-in name of an untitled
+    /// episode in `locale`, any other title as stored.
+    func shownTitle(locale: Locale = AppLanguage.formattingLocale) -> String? {
+        guard let title, type == "episode", let episodeNumber = shownNumbers.episode,
+              title == Self.storedEpisodeName(episodeNumber) else { return title }
+        return AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber, locale: locale)), locale: locale)
+    }
+
+    /// The manifest's numbers once it has given any, else the request's.
+    private var shownNumbers: (season: Int?, episode: Int?) {
+        seasonNumber != nil || episodeNumber != nil
+            ? (seasonNumber, episodeNumber)
+            : (requestSeasonNumber, requestEpisodeNumber)
+    }
+
+    /// `shownTitle(locale:)`, else the content id.
+    func displayTitle(locale: Locale = AppLanguage.formattingLocale) -> String {
+        shownTitle(locale: locale) ?? contentId
     }
 }
 

@@ -89,9 +89,23 @@ private struct AppLanguageEnvironment: ViewModifier {
     @State private var language = AppLanguagePreferences.shared
 
     func body(content: Content) -> some View {
+        let direction: LayoutDirection = language.isRightToLeft ? .rightToLeft : .leftToRight
         content
             .environment(\.locale, language.locale)
-            .environment(\.layoutDirection, language.isRightToLeft ? .rightToLeft : .leftToRight)
+            .environment(\.layoutDirection, direction)
+            #if os(iOS) || os(tvOS)
+            // Sheets and full-screen covers get a new hosting controller that
+            // takes its direction from UIKit traits, not from this
+            // environment, so a live switch would leave them in the launch
+            // direction. The scene override reaches every presented page.
+            // App-wide UIKit direction (`userInterfaceLayoutDirection`) still
+            // follows `AppleLanguages`, so it changes at the next launch.
+            .onChange(of: direction, initial: true) { _, direction in
+                for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+                    scene.traitOverrides.layoutDirection = UITraitEnvironmentLayoutDirection(direction)
+                }
+            }
+            #endif
     }
 }
 

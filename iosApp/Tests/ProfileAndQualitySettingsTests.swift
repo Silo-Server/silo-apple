@@ -407,7 +407,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         await harness.settings.refreshFromServer()
 
         XCTAssertEqual(SiloQualityPresets.resolutionLabel(harness.settings.preferredQualityResolution), "4K")
-        XCTAssertEqual(SiloQualityPresets.bitrateLabel(harness.settings.maxBitrateKbps), "3 Mbps")
+        XCTAssertEqual(AppLanguage.string(SiloQualityPresets.bitrateLabel(harness.settings.maxBitrateKbps)), "3 Mbps")
         let choices = SiloQualityPresets.bitrateChoices(including: harness.settings.maxBitrateKbps)
         XCTAssertEqual(
             choices,
@@ -418,7 +418,7 @@ final class ProfileAndQualitySettingsTests: XCTestCase {
         // A cap a choice already covers is not listed twice.
         XCTAssertEqual(SiloQualityPresets.bitrateChoices(including: 6_000), SiloQualityPresets.bitrateChoicesKbps)
         XCTAssertEqual(SiloQualityPresets.bitrateChoices(including: nil), SiloQualityPresets.bitrateChoicesKbps)
-        XCTAssertEqual(SiloQualityPresets.bitrateLabel(nil), "No limit")
+        XCTAssertEqual(AppLanguage.string(SiloQualityPresets.bitrateLabel(nil)), "No limit")
     }
 
     func testEveryResolutionChoiceIsAContractMemberThatRoundTrips() {

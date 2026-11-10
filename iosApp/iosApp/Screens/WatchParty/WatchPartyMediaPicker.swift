@@ -885,7 +885,7 @@ private struct WatchPartyEpisodePicker: View {
                         HStack(spacing: 16) {
                             ForEach(seasons) { season in
                                 TVSeriesModeTab(
-                                    title: season.downloadDisplayName,
+                                    title: season.displayName(locale: locale),
                                     isSelected: seasonNumber == season.seasonNumber,
                                     rendersFocusedAppearance: focusedSeasonNumber == season.seasonNumber
                                 ) {

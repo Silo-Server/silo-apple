@@ -350,34 +350,56 @@ struct ProfileSelectionView: View {
     /// Changing account and signing out are utilities, kept small and below
     /// the people. Signing out asks first, naming the account and server.
     private var footerActions: some View {
+        #if os(tvOS)
         HStack(spacing: footerSpacing) {
-            Button {
-                router.showChangeAccount()
-            } label: {
-                #if os(tvOS)
-                Label(.profilesChangeAccount, systemImage: "person.2")
-                #else
-                Label(.profilesFooterChangeAccount, systemImage: "person.2")
-                #endif
+            changeAccountButton
+            signOutButton
+        }
+        #else
+        // Longer translations don't fit side by side on a narrow phone;
+        // stack them rather than truncate a label.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: footerSpacing) {
+                changeAccountButton
+                signOutButton
             }
-            .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
-            #if os(tvOS)
-            .focused($pickerFocus, equals: .changeAccount)
-            #endif
+            VStack(spacing: 4) {
+                changeAccountButton
+                signOutButton
+            }
+        }
+        #endif
+    }
 
-            Button {
-                #if os(tvOS)
-                returnFocus = .signOut
-                #endif
-                router.signOutAndReset()
-            } label: {
-                Label(.commonSignOut, systemImage: "rectangle.portrait.and.arrow.forward")
-            }
-            .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
+    private var changeAccountButton: some View {
+        Button {
+            router.showChangeAccount()
+        } label: {
             #if os(tvOS)
-            .focused($pickerFocus, equals: .signOut)
+            Label(.profilesChangeAccount, systemImage: "person.2")
+            #else
+            Label(.profilesFooterChangeAccount, systemImage: "person.2")
             #endif
         }
+        .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
+        #if os(tvOS)
+        .focused($pickerFocus, equals: .changeAccount)
+        #endif
+    }
+
+    private var signOutButton: some View {
+        Button {
+            #if os(tvOS)
+            returnFocus = .signOut
+            #endif
+            router.signOutAndReset()
+        } label: {
+            Label(.commonSignOut, systemImage: "rectangle.portrait.and.arrow.forward")
+        }
+        .buttonStyle(.marquee(footerKind, fullWidth: false, compact: true))
+        #if os(tvOS)
+        .focused($pickerFocus, equals: .signOut)
+        #endif
     }
 
     private var footerKind: MarqueeButtonStyle.Kind {

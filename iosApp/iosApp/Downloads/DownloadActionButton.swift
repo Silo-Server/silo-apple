@@ -13,7 +13,11 @@ struct DownloadActionButton: View {
     private let isEpisode: Bool
     private let seriesId: String?
     private let displayTitle: String
+    /// Stored with the record in English (D44); rows build the shown
+    /// season and episode from `seasonNumber` and `episodeNumber`.
     private let displaySubtitle: String?
+    private let seasonNumber: Int?
+    private let episodeNumber: Int?
     private let year: Int?
     private let posterThumbhash: String?
     /// Full version metadata for the options sheet and the large-file guard.
@@ -51,6 +55,8 @@ struct DownloadActionButton: View {
             episodeNumber: detail.episodeNumber,
             fallback: detail.seriesTitle
         )
+        seasonNumber = detail.seasonNumber
+        episodeNumber = detail.episodeNumber
         year = detail.year
         posterThumbhash = detail.posterThumbhash
         self.versions = versions
@@ -261,6 +267,8 @@ struct DownloadActionButton: View {
                         episodeId: contentId,
                         displayTitle: displayTitle,
                         displaySubtitle: displaySubtitle,
+                        seasonNumber: seasonNumber,
+                        episodeNumber: episodeNumber,
                         posterThumbhash: posterThumbhash,
                         fileId: options.fileId,
                         quality: options.quality

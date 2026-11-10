@@ -10,11 +10,11 @@ enum CardPosterSize: String, Codable, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .compact: return "Compact"
-        case .standard: return "Standard"
-        case .large: return "Large"
+        case .compact: .settingsCardsSizeCompact
+        case .standard: .settingsCardsSizeStandard
+        case .large: .settingsCardsSizeLarge
         }
     }
 

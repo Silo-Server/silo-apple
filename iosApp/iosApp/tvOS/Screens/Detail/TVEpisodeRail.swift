@@ -515,6 +515,7 @@ private extension View {
 }
 
 struct TVEpisodeCard: View {
+    @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     var isCurrent: Bool = false
     var baseCardWidth: CGFloat = 480
@@ -601,7 +602,8 @@ struct TVEpisodeCard: View {
             title: episode.title,
             metadata: EpisodeCardCaption.railMetadata(for: episode),
             isCurrent: isCurrent,
-            isPlayed: isPlayed
+            isPlayed: isPlayed,
+            locale: locale
         )
     }
 
@@ -614,7 +616,7 @@ struct TVEpisodeCard: View {
             } label: {
                 // String arguments so year-numbered seasons don't render as "S2,021".
                 Label {
-                    Text(.detailPlayEpisode(LocaleFormat.integer(episode.seasonNumber), LocaleFormat.integer(episode.episodeNumber)))
+                    Text(.detailPlayEpisode(LocaleFormat.integer(episode.seasonNumber, locale: locale), LocaleFormat.integer(episode.episodeNumber, locale: locale)))
                 } icon: {
                     Image(systemName: "play.fill")
                 }
@@ -668,6 +670,7 @@ struct TVEpisodeCard: View {
 }
 
 private struct EpisodeCardLabel: View {
+    @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     let isPlayed: Bool
     /// Spoiler protection: blur the still of an episode the profile has not
@@ -691,7 +694,7 @@ private struct EpisodeCardLabel: View {
             // episode's synopsis is already in the hero above the rail.
             VStack(alignment: .leading, spacing: TVEpisodeCardCaptionMetrics.lineSpacing) {
                 captionLine(
-                    EpisodeCardCaption.railTitle(for: episode),
+                    EpisodeCardCaption.railTitle(for: episode, locale: locale),
                     font: .system(size: usesAnchoredStyle ? 20 : 24, weight: .semibold),
                     height: usesAnchoredStyle
                         ? TVEpisodeCardCaptionMetrics.anchoredTitleHeight

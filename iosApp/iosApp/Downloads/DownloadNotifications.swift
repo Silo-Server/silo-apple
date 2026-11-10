@@ -49,7 +49,7 @@ enum DownloadNotifier {
     /// title is preferred for episodes because the S/E marker already
     /// disambiguates which entry finished.
     private static func displayName(for record: DownloadRecord) -> String {
-        let base = record.seriesTitle ?? record.title ?? AppLanguage.string(.downloadsNotificationDefaultTitle)
+        let base = record.seriesTitle ?? record.shownTitle() ?? AppLanguage.string(.downloadsNotificationDefaultTitle)
         if let season = record.seasonNumber, let episode = record.episodeNumber {
             return AppLanguage.string(.downloadsNotificationEpisodeName(base, LocaleFormat.integer(season), LocaleFormat.integer(episode)))
         }

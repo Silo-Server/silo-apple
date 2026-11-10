@@ -1009,8 +1009,8 @@ private struct MobileChapterMenuItems: View {
     }
 
     private func chapterMenuTitle(_ chapter: PlayerChapterInfo) -> String {
-        let number = String(chapter.index + 1)
-        let title = chapter.title
+        let number = LocaleFormat.integer(chapter.index + 1, locale: locale)
+        let title = chapter.title.map { AppLanguage.isolated($0) }
             ?? AppLanguage.string(.optionsChapterNumbered(number), locale: locale)
         return "\(number).  \(title)"
     }

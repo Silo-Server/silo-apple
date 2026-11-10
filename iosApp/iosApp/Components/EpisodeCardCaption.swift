@@ -20,19 +20,40 @@ extension BrowseItem: EpisodeCaptionSource {}
 /// across a row.
 enum EpisodeCardCaption {
     /// "S01E02" — zero-padded so codes line up across a row.
-    static func code(season: Int, episode: Int) -> String {
-        String(format: "S%02dE%02d", season, episode)
+    static func code(season: Int, episode: Int, locale: Locale = AppLanguage.formattingLocale) -> String {
+        AppLanguage.string(.catalogEpisodeTag(padded(season, locale: locale), padded(episode, locale: locale)), locale: locale)
+    }
+
+    /// Two digits at least, in the locale's digits: "01", "12", "2021".
+    private static func padded(_ number: Int, locale: Locale) -> String {
+        LocaleFormat.localized(String(format: "%02d", number), locale: locale)
+    }
+
+    /// Spoken season and episode: "Season 1, Episode 2", or "Specials,
+    /// Episode 2" for season 0.
+    static func spokenCode(season: Int, episode: Int, locale: Locale = AppLanguage.formattingLocale) -> String {
+        let seasonLabel: LocalizedStringResource = season == 0
+            ? .detailSpecials
+            : .detailSeason(LocaleFormat.integer(season, locale: locale))
+        return [seasonLabel, .detailEpisode(LocaleFormat.integer(episode, locale: locale))]
+            .map { AppLanguage.string($0, locale: locale) }
+            .joined(separator: ", ")
+    }
+
+    /// "S01E02 · Pilot" from an episode code and title.
+    static func titled(code: String, title: String, locale: Locale = AppLanguage.formattingLocale) -> String {
+        AppLanguage.string(.detailEpisodeCardTitle(code, title), locale: locale)
     }
 
     static func isEpisode(_ item: some EpisodeCaptionSource) -> Bool {
         item.type.lowercased() == "episode"
     }
 
-    static func code(for item: some EpisodeCaptionSource) -> String? {
+    static func code(for item: some EpisodeCaptionSource, locale: Locale = AppLanguage.formattingLocale) -> String? {
         guard isEpisode(item),
               let season = item.seasonNumber,
               let episode = item.episodeNumber else { return nil }
-        return code(season: season, episode: episode)
+        return code(season: season, episode: episode, locale: locale)
     }
 
     /// The episode's own title, or `nil` when it is empty or merely repeats
@@ -59,18 +80,19 @@ enum EpisodeCardCaption {
 
     /// Secondary caption line: "S01E02 · Pilot". Falls back to whichever part
     /// is available; `nil` for non-episodes.
-    static func line(for item: some EpisodeCaptionSource) -> String? {
-        let parts = [code(for: item), episodeTitle(for: item)].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    static func line(for item: some EpisodeCaptionSource, locale: Locale = AppLanguage.formattingLocale) -> String? {
+        let code = code(for: item, locale: locale)
+        let title = episodeTitle(for: item)
+        if let code, let title { return titled(code: code, title: title, locale: locale) }
+        return code ?? title
     }
 
     /// Spoken form for accessibility: "Season 1, Episode 2, Pilot".
-    static func accessibilityLabel(for item: some EpisodeCaptionSource) -> String? {
+    static func accessibilityLabel(for item: some EpisodeCaptionSource, locale: Locale = AppLanguage.formattingLocale) -> String? {
         guard isEpisode(item) else { return nil }
         var parts: [String] = []
         if let season = item.seasonNumber, let episode = item.episodeNumber {
-            let seasonLabel = season == 0 ? "Specials" : "Season \(season)"
-            parts.append("\(seasonLabel), Episode \(episode)")
+            parts.append(spokenCode(season: season, episode: episode, locale: locale))
         }
         if let title = episodeTitle(for: item) {
             parts.append(title)
@@ -87,11 +109,11 @@ enum EpisodeCardCaption {
 extension EpisodeCardCaption {
     /// "S01E02 · Pilot", so a special (S00) and each episode's place in the
     /// season read at a glance. Just the code when the episode has no title.
-    static func railTitle(for episode: EpisodeListItem) -> String {
-        let code = Self.code(season: episode.seasonNumber, episode: episode.episodeNumber)
+    static func railTitle(for episode: EpisodeListItem, locale: Locale = AppLanguage.formattingLocale) -> String {
+        let code = Self.code(season: episode.seasonNumber, episode: episode.episodeNumber, locale: locale)
         guard let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines),
               !title.isEmpty else { return code }
-        return "\(code) · \(title)"
+        return titled(code: code, title: title, locale: locale)
     }
 
     /// "Feb 18, 2026  ·  52m", or nil when neither part is known.

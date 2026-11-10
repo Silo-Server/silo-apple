@@ -153,7 +153,7 @@ struct HomeFeedRow: View {
     /// Episode context for accessibility when episode-discovery cards are
     /// visually captioned with their series name.
     private func episodeAccessibilityLabel(for item: SectionItem) -> String? {
-        EpisodeCardCaption.accessibilityLabel(for: item)
+        EpisodeCardCaption.accessibilityLabel(for: item, locale: locale)
     }
 
     /// Removal is only offered where it means something: Continue Watching

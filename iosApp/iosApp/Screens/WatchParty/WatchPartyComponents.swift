@@ -411,6 +411,8 @@ private struct WatchPartyButtonBody: View {
     var body: some View {
         configuration.label
             .font(.system(size: fontSize, weight: .semibold))
+            // A label that wraps (longer translations) stays centered.
+            .multilineTextAlignment(.center)
             .foregroundStyle(foreground)
             .frame(maxWidth: maxWidth, minHeight: height)
             .padding(.horizontal, horizontalPadding)

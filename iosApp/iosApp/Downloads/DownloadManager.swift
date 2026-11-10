@@ -1251,11 +1251,16 @@ final class DownloadManager {
         )
     }
 
+    /// `seasonNumber` and `episodeNumber` let the row show its season and
+    /// episode in the app language before the manifest arrives;
+    /// `displaySubtitle` is stored as is.
     func downloadEpisode(
         seriesId: String,
         episodeId: String,
         displayTitle: String?,
         displaySubtitle: String?,
+        seasonNumber: Int? = nil,
+        episodeNumber: Int? = nil,
         posterThumbhash: String?,
         fileId: Int? = nil,
         quality: String? = nil
@@ -1269,6 +1274,7 @@ final class DownloadManager {
             seriesId: seriesId,
             displayTitle: displayTitle,
             displaySubtitle: displaySubtitle,
+            displayNumbers: (seasonNumber, episodeNumber),
             posterThumbhash: posterThumbhash
         )
     }
@@ -1295,6 +1301,7 @@ final class DownloadManager {
         seriesId: String? = nil,
         displayTitle: String? = nil,
         displaySubtitle: String? = nil,
+        displayNumbers: (season: Int?, episode: Int?) = (nil, nil),
         posterThumbhash: String? = nil
     ) async throws {
         guard downloadsEnabled else { throw DownloadError.unavailable }
@@ -1357,6 +1364,7 @@ final class DownloadManager {
                     created.items,
                     displayTitle: displayTitle,
                     displaySubtitle: displaySubtitle,
+                    displayNumbers: displayNumbers,
                     type: type,
                     seriesId: seriesId,
                     posterThumbhash: posterThumbhash
@@ -1418,6 +1426,7 @@ final class DownloadManager {
         _ entries: [APIv2DownloadEntry],
         displayTitle: String?,
         displaySubtitle: String?,
+        displayNumbers: (season: Int?, episode: Int?) = (nil, nil),
         type: String?,
         seriesId: String?,
         posterThumbhash: String?
@@ -1436,6 +1445,7 @@ final class DownloadManager {
                 into: &records,
                 displayTitle: entries.count == 1 ? displayTitle : nil,
                 displaySubtitle: entries.count == 1 ? displaySubtitle : nil,
+                displayNumbers: entries.count == 1 ? displayNumbers : (nil, nil),
                 type: type,
                 seriesId: seriesId,
                 posterThumbhash: entries.count == 1 ? posterThumbhash : nil
@@ -1563,7 +1573,7 @@ final class DownloadManager {
     /// unreadable, or was never produced.
     func resumeDownload(id: String) {
         guard var record = file.records[id], record.localStatus == .paused else { return }
-        beginContinuedProcessing(title: record.title)
+        beginContinuedProcessing(title: record.shownTitle())
         // The pause's resume-data capture is still in flight — flag the
         // intent and let `finishPause` re-queue with the data instead of
         // discarding the partial transfer.
@@ -1618,7 +1628,7 @@ final class DownloadManager {
 
     func retryDownload(id: String) {
         guard var record = file.records[id], record.localStatus == .failed else { return }
-        beginContinuedProcessing(title: record.title)
+        beginContinuedProcessing(title: record.shownTitle())
         record.localStatus = .queued
         record.retryCount = 0
         record.lastError = nil
@@ -1853,6 +1863,7 @@ final class DownloadManager {
         record.episodeNumber = record.episodeNumber ?? manifest.episodeNumber
         if record.subtitle == nil {
             if manifest.type == "episode" {
+                // Stored English (D44); rows show `displaySubtitle(locale:)`.
                 let season = manifest.seasonNumber.map { "S\($0)" }
                 let episode = manifest.episodeNumber.map { "E\($0)" }
                 record.subtitle = [season, episode].compactMap { $0 }.joined(separator: " · ")
@@ -4311,6 +4322,7 @@ final class DownloadManager {
         into records: inout [String: DownloadRecord],
         displayTitle: String?,
         displaySubtitle: String?,
+        displayNumbers: (season: Int?, episode: Int?),
         type: String?,
         seriesId: String?,
         posterThumbhash: String?
@@ -4328,6 +4340,8 @@ final class DownloadManager {
         var record = makeRecord(from: row, type: type)
         record.title = displayTitle
         record.subtitle = displaySubtitle
+        record.requestSeasonNumber = displayNumbers.season
+        record.requestEpisodeNumber = displayNumbers.episode
         record.seriesId = seriesId ?? record.seriesId
         record.posterThumbhash = posterThumbhash
         records[row.id] = record

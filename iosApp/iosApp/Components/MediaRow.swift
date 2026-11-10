@@ -17,6 +17,7 @@ enum MediaRowLayout {
 /// A horizontal scrolling row of media cards with a title header (optional
 /// icon) and safe-area leading padding.
 struct MediaRow: View {
+    @Environment(\.locale) private var locale
     let title: String
     let items: [SectionItem]
     let onItemTap: (String) -> Void
@@ -374,7 +375,7 @@ struct MediaRow: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .accessibilityHint(SectionExploreAllCard.label)
+                .accessibilityHint(Text(SectionExploreAllCard.label))
             } else {
                 headerTitle
             }
@@ -517,7 +518,7 @@ struct MediaRow: View {
                 imageIsEpisodeStill: item.posterIsEpisodeStill,
                 mediaType: item.type,
                 year: item.year,
-                subtitle: EpisodeCardCaption.line(for: item),
+                subtitle: EpisodeCardCaption.line(for: item, locale: locale),
                 progress: progressValue(for: item),
                 userState: item.userState,
                 overlayData: OverlayData.from(item),
@@ -698,7 +699,7 @@ struct MediaRow: View {
     /// Episode context for accessibility when a poster is captioned with its
     /// series title.
     private func episodeAccessibilityLabel(for item: SectionItem) -> String? {
-        EpisodeCardCaption.accessibilityLabel(for: item)
+        EpisodeCardCaption.accessibilityLabel(for: item, locale: locale)
     }
 
     // MARK: - Metrics

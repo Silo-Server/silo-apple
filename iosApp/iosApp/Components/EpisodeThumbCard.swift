@@ -36,6 +36,7 @@ struct EpisodeThumbCard: View {
     var baseCardWidth: CGFloat? = nil
 
     @Environment(\.browseLibraryId) private var browseLibraryId
+    @Environment(\.locale) private var locale
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
@@ -271,7 +272,7 @@ struct EpisodeThumbCard: View {
 
     /// Secondary line — "S01E02 · Pilot" for episodes, otherwise year.
     private var subtitleLine: String? {
-        if let episodeLine = EpisodeCardCaption.line(for: item) {
+        if let episodeLine = EpisodeCardCaption.line(for: item, locale: locale) {
             return episodeLine
         }
         if item.seriesTitle != nil {
@@ -291,13 +292,13 @@ struct EpisodeThumbCard: View {
             components.append(subtitleLine)
         }
         if isPlayed {
-            components.append("Watched")
+            components.append(AppLanguage.string(.shellCardWatched, locale: locale))
         }
         return components.joined(separator: ", ")
     }
 
     private var episodeAccessibilityLabel: String? {
-        EpisodeCardCaption.accessibilityLabel(for: item)
+        EpisodeCardCaption.accessibilityLabel(for: item, locale: locale)
     }
 
     private var progressValue: Double? {

@@ -15,11 +15,12 @@ struct SectionExploreAllCard: View {
     /// the row's native focus graph.
     var focusedItemId: FocusState<String?>.Binding? = nil
     let action: () -> Void
+    @Environment(\.locale) private var locale
 
     /// Focus identity inside a row's `focusedItemId`. Content IDs never take
     /// this form.
     static let focusId = "silo.row.exploreAll"
-    static let label = "Explore all"
+    static let label: LocalizedStringResource = .rowsExploreAll
 
     var body: some View {
         button
@@ -35,12 +36,17 @@ struct SectionExploreAllCard: View {
         Button(action: action) { tile }
             .buttonStyle(TVCardOutlineButtonStyle(cornerRadius: cornerRadius))
             .applyRowFocus(focusedItemId)
-            .accessibilityLabel("\(Self.label), \(rowTitle)")
+            .accessibilityLabel(accessibilityText)
         #else
         Button(action: action) { tile }
             .buttonStyle(.plain)
-            .accessibilityLabel("\(Self.label), \(rowTitle)")
+            .accessibilityLabel(accessibilityText)
         #endif
+    }
+
+    /// "Explore all, Movies".
+    private var accessibilityText: String {
+        "\(AppLanguage.string(Self.label, locale: locale)), \(rowTitle)"
     }
 
     private var tile: some View {

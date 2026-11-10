@@ -93,8 +93,8 @@ enum HomeFeedMeta {
     /// Secondary caption line under a card title: "S01E02 · Pilot" for
     /// episodes, otherwise the year. One line, so every card in a row keeps
     /// the same height.
-    static func cardSecondLine(for item: SectionItem) -> String? {
-        EpisodeCardCaption.line(for: item) ?? item.year.map(String.init)
+    static func cardSecondLine(for item: SectionItem, locale: Locale) -> String? {
+        EpisodeCardCaption.line(for: item, locale: locale) ?? item.year.map(String.init)
     }
 
     /// Caption under a resume still — "23m left".
@@ -407,7 +407,7 @@ struct HomePosterCard: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
 
-            if let secondLine = secondLineOverride ?? HomeFeedMeta.cardSecondLine(for: item) {
+            if let secondLine = secondLineOverride ?? HomeFeedMeta.cardSecondLine(for: item, locale: locale) {
                 Text(secondLine)
                     .font(HomeFeedMetrics.captionMetadataFont)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.5))
@@ -640,7 +640,7 @@ struct HomeStillCard: View {
             // Episode code + title (or the year for movies). Space is
             // reserved even when empty so a row mixing episodes and
             // movies keeps one caption height.
-            Text(HomeFeedMeta.cardSecondLine(for: item) ?? "")
+            Text(HomeFeedMeta.cardSecondLine(for: item, locale: locale) ?? "")
                 .font(HomeFeedMetrics.captionMetadataFont)
                 .foregroundStyle(Color.siloOnSurface.opacity(0.7))
                 .monospacedDigit()
@@ -663,7 +663,7 @@ struct HomeStillCard: View {
 
     private var accessibilityDescription: String {
         var components = [HomeFeedMeta.cardTitle(for: item)]
-        if let episodeLabel = EpisodeCardCaption.accessibilityLabel(for: item) {
+        if let episodeLabel = EpisodeCardCaption.accessibilityLabel(for: item, locale: locale) {
             components.append(episodeLabel)
         } else if let year = item.year {
             components.append(String(year))
@@ -700,7 +700,7 @@ struct HomeSectionHeader: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .accessibilityHint(SectionExploreAllCard.label)
+                .accessibilityHint(Text(SectionExploreAllCard.label))
             } else {
                 label
             }
