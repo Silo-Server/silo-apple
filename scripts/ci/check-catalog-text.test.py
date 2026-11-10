@@ -84,7 +84,7 @@ class ScanSourceTests(unittest.TestCase):
             'Text("\\(names.joined(separator: ", "))")',
             'Text(foo("bar"))',
             'let queue = DispatchQueue(label: "org.siloserver.silo.loader")',
-            '@Parameter(title: "shell.siri.searchTerm")',
+            '@Parameter(title: "shell.searchIntent.term")',
             'PINKey(label: "delete.backward")',
             'DiagTrace.record(category: .player, message: "player presented")',
             'DiagTrace.breadcrumb(category: .ui, message: "screen changed")',
