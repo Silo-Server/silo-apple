@@ -15,7 +15,7 @@ the guard flags:
   Identifiers ("chevron.left", "org.siloserver.silo") and logging calls pass.
 - In a path listed with the `mappings` flag, a sentence mapped to shown text
   outside a call: `return "…"`, `case .x: "…"`, a ternary branch, a `??`
-  fallback or `.append("…")`.
+  fallback or `.append("…")`, and the literals its interpolations show.
 
 Use the generated key instead (Text(.commonDone)), Text(verbatim:) or
 .verbatim(…) for text that isn't interface text, and end a line that must keep a
@@ -257,9 +257,15 @@ def scan_source(raw: str, mappings: bool = False) -> list[int]:
         if call is not None and LOGGING_CALL.search(call):
             continue
         end, text = string_end(src, m.end())
-        compared = re.match(r"\s*[=!]=", src[end:])
-        if not compared and prose(text):
+        if re.match(r"\s*[=!]=", src[end:]):
+            continue
+        if prose(text):
             report(m.end(), m.start())
+        # The literals an interpolation shows: `return "\\(name ?? "Unknown")"`.
+        for inner in interpolations(src, m.end(), end):
+            for offset, shown in argument_literals(src, inner):
+                if prose(shown):
+                    report(offset, m.start())
     return sorted(hits)
 
 
