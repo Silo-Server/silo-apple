@@ -104,6 +104,10 @@ class ScanSourceTests(unittest.TestCase):
             'return "\\(name ?? "Unknown title")"',
             'return "\\(enabled ? "Enabled" : "Disabled")"',
             'case .off: "\\(prefix) \\(muted ? "Muted" : "Off")"',
+            'return ("No items")',
+            'let title = name ?? ("Unknown name")',
+            'let label = on ? ("Enabled") : ("Disabled")',
+            'let label = on ? "Enabled" : ( "Disabled" )',
         ]:
             self.assertIn(1, guard.scan_source(source, mappings=True), source)
             self.assertEqual(guard.scan_source(source), [], source)
@@ -115,6 +119,9 @@ class ScanSourceTests(unittest.TestCase):
             'return "\\(name ?? "")"',
             'return "\\(kind == "movie" ? 1 : 2)"',
             'return "\\(isMovie ? "movie" : "series")"',
+            'return ("movie")',
+            'return ("episode") == kind',
+            'handler?("Done")',
             'if detail.type == "episode" { return nil }',
             'return "HDR"  // i18n-ignore: technical token',
             'DiagTrace.breadcrumb(message: done ? "Finished loading" : "Started loading")',

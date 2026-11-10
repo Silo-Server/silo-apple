@@ -57,9 +57,10 @@ LOGGING_CALL = re.compile(
     r"|(?:^|\.)(?:log|cmpLog|breadcrumb|recordBreadcrumb|renderedLine)$"
 )
 # A literal mapped to shown text outside a call: `return "…"`, `case .x: "…"`,
-# either branch of a ternary, a `??` fallback, or `.append("…")`.
+# either branch of a ternary, a `??` fallback, or `.append("…")`, also inside
+# grouping parentheses (`return ("…")`).
 MAPPING = re.compile(
-    r"(?:\breturn|\bcase\b[^:\n]*:|\?\??|\?[^:\n]*[^\s:?]\s+:|\.append\()\s*(?=\")"
+    r"(?:\breturn|\bcase\b[^:\n]*:|\?\??|\?[^:\n]*[^\s:?]\s+:|\.append\()\s*(?=(?:\(\s*)*\")"
 )
 
 LETTER = re.compile(r"[A-Za-z]")
@@ -253,16 +254,19 @@ def scan_source(raw: str, mappings: bool = False) -> list[int]:
             if prose(text):
                 report(offset, m.start())
     for m in MAPPING.finditer(code) if mappings else ():
+        if m.group().startswith("?") and code[m.end()] == "(" and re.search(r"[\w)\]]$", code[:m.start()]):
+            continue  # an optional call, `handler?("…")`
         call = enclosing_call(code, m.start())
         if call is not None and LOGGING_CALL.search(call):
             continue
-        end, text = string_end(src, m.end())
-        if re.match(r"\s*[=!]=", src[end:]):
+        quote = src.index('"', m.end())
+        end, text = string_end(src, quote)
+        if re.match(r"[\s)]*[=!]=", src[end:]):
             continue
         if prose(text):
-            report(m.end(), m.start())
+            report(quote, m.start())
         # The literals an interpolation shows: `return "\\(name ?? "Unknown")"`.
-        for inner in interpolations(src, m.end(), end):
+        for inner in interpolations(src, quote, end):
             for offset, shown in argument_literals(src, inner):
                 if prose(shown):
                     report(offset, m.start())
