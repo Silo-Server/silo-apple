@@ -80,10 +80,14 @@ enum MacPlayerCommand: Equatable {
     case speedDown
     case speedUp
     case normalSpeed
+    case volumeUp
+    case volumeDown
+    case toggleMute
 
     var repeatsWhileHeld: Bool {
         switch self {
-        case .skipBackward, .skipForward, .previousChapter, .nextChapter, .speedDown, .speedUp:
+        case .skipBackward, .skipForward, .previousChapter, .nextChapter, .speedDown, .speedUp,
+             .volumeUp, .volumeDown:
             return true
         default:
             return false
@@ -97,6 +101,8 @@ enum MacPlayerCommand: Equatable {
         static let keypadEnter: UInt16 = 76
         static let leftArrow: UInt16 = 123
         static let rightArrow: UInt16 = 124
+        static let downArrow: UInt16 = 125
+        static let upArrow: UInt16 = 126
     }
 
     /// The command for a key press, or nil for a key the player leaves
@@ -111,6 +117,8 @@ enum MacPlayerCommand: Equatable {
         case (KeyCode.returnKey, []), (KeyCode.keypadEnter, []): self = .confirm; return
         case (KeyCode.leftArrow, []): self = .skipBackward; return
         case (KeyCode.rightArrow, []): self = .skipForward; return
+        case (KeyCode.upArrow, []): self = .volumeUp; return
+        case (KeyCode.downArrow, []): self = .volumeDown; return
         case (KeyCode.leftArrow, .command): self = .previousChapter; return
         case (KeyCode.rightArrow, .command): self = .nextChapter; return
         default: break
@@ -123,6 +131,7 @@ enum MacPlayerCommand: Equatable {
         case ("s", .command): self = .trackMenu
         case ("i", .command): self = .playbackInfo
         case ("f", []): self = .toggleFullScreen
+        case ("m", []): self = .toggleMute
         case ("[", .shift), ("{", .shift): self = .speedDown
         case ("]", .shift), ("}", .shift): self = .speedUp
         case ("[", [.shift, .command]), ("{", [.shift, .command]): self = .normalSpeed

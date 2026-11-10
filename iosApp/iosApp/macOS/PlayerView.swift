@@ -323,6 +323,12 @@ private struct MacPlayerScreen: View {
             viewModel.setPlaybackSpeed(MacPlayerMenuContent.adjacentSpeed(to: viewModel.settings.playbackSpeed, offset: -1))
         case .speedUp:
             viewModel.setPlaybackSpeed(MacPlayerMenuContent.adjacentSpeed(to: viewModel.settings.playbackSpeed, offset: 1))
+        case .volumeUp, .volumeDown:
+            viewModel.stepVolume(by: command == .volumeUp ? 0.1 : -0.1)
+            viewModel.revealControls()
+        case .toggleMute:
+            viewModel.toggleMuteOrRestore()
+            viewModel.revealControls()
         case .normalSpeed:
             viewModel.setPlaybackSpeed(1.0)
         }

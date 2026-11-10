@@ -83,7 +83,9 @@ final class TrackpadScrubCaptureView: NSView {
         if event.phase.contains(.began) {
             consumesMomentum = false
             ownsSwipe = false
-            guard isEnabled, bounds.contains(convert(event.locationInWindow, from: nil)) else {
+            // A swipe over the volume control changes the volume instead.
+            guard isEnabled, bounds.contains(convert(event.locationInWindow, from: nil)),
+                  !MacVolumeScrollArea.claims(event) else {
                 viewModel.trackpadScrubEnded(committing: false)
                 return false
             }
