@@ -10,6 +10,7 @@ iosApp/iosApp/Control
 iosApp/iosApp/DesignSystem
 iosApp/iosApp/Downloads
 iosApp/iosApp/iOS
+iosApp/iosApp/macOS/OnboardingTourMacLayout.swift  mappings
 iosApp/iosApp/macOS/MacSettingsCommand.swift
 # Navigation/UICustomizationPreferences.swift still returns English status messages (follow-up).
 iosApp/iosApp/Navigation/AppNavPreferences.swift
