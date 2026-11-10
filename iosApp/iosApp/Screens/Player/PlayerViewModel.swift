@@ -5311,6 +5311,7 @@ class PlayerViewModel {
     func beginHoldFastForward(rate: Double = 2.0) {
         guard !isWatchPartyPlayback else { return }
         guard !isHoldFastForwarding, isPlaying else { return }
+        stillWatchingGuard.recordViewerAction()
         isHoldFastForwarding = true
         aetherPlaybackController.setSpeed(rate)
     }
@@ -11109,6 +11110,8 @@ extension PlayerViewModel {
             guard let seconds = command.seconds else {
                 throw SiloControlPlayerError.missingSeekPosition
             }
+            // SiloRemote's skip buttons and scrubber: the viewer's seek.
+            stillWatchingGuard.recordViewerAction()
             seekTo(seconds: seconds)
         case .stop:
             if isWatchPartyPlayback { cleanup() }
