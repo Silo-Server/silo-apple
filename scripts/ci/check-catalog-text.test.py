@@ -98,6 +98,7 @@ class ScanSourceTests(unittest.TestCase):
         for source in [
             'case .needsSetup: return "Setup needed"',
             'case .seasonPremiere: "NEW SEASON"',
+            'default: "Unknown status"',
             'let label = isOn ? "Remove from Watchlist" : "Add to Watchlist"',
             'let title = name ?? "Unknown title"',
             'tokens.append("Default")',
@@ -117,6 +118,7 @@ class ScanSourceTests(unittest.TestCase):
             self.assertEqual(guard.scan_source(source), [], source)
         for source in [
             'case .tv: "tv"',
+            'default: "unknown"',
             'return isMovie ? "movie" : "series"',
             'return "rename:\\(group.id)"',
             'return "frame=\\(Int(frame.minX))"',

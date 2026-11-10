@@ -14,7 +14,7 @@ the guard flags:
   EmptyStateView(title: "No favorites") or Overlay(message: isOn ? "On" : "Off").
   Identifiers ("chevron.left", "org.siloserver.silo") and logging calls pass.
 - In a path listed with the `mappings` flag, a sentence mapped to shown text
-  outside a call: `return "…"`, `case .x: "…"`, a ternary branch, a `??`
+  outside a call: `return "…"`, `case .x: "…"`, `default: "…"`, a ternary branch, a `??`
   fallback or `.append("…")`, and the literals its interpolations show.
 
 Use the generated key instead (Text(.commonDone)), Text(verbatim:) or
@@ -57,10 +57,11 @@ LOGGING_CALL = re.compile(
     r"|(?:^|\.)(?:log|cmpLog|breadcrumb|recordBreadcrumb|renderedLine)$"
 )
 # A literal mapped to shown text outside a call: `return "…"`, `case .x: "…"`,
+# `default: "…"`,
 # either branch of a ternary, a `??` fallback, or `.append("…")`, also inside
 # grouping parentheses (`return ("…")`).
 MAPPING = re.compile(
-    r"(?:\breturn|\bcase\b[^:\n]*:|\?\??|\.append\()\s*(?=(?:\(\s*)*\")"
+    r"(?:\breturn|\bcase\b[^:\n]*:|\bdefault\s*:|\?\??|\.append\()\s*(?=(?:\(\s*)*\")"
 )
 # A ternary's `?`, spaced on both sides as Swift requires; its else branch is
 # found by ternary_else_starts, whatever the formatting.
