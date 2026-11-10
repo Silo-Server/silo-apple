@@ -266,6 +266,8 @@ struct PlaybackSettingsView: View {
                 options: onOffChoices
             )
 
+            // The Mac player has no Next Up screen, so the limit does not apply there.
+            #if !os(macOS)
             // Client-local, so there is no profile value to go back to.
             SettingsChoiceRow(
                 title: "Still Watching Prompt",
@@ -273,6 +275,7 @@ struct PlaybackSettingsView: View {
                 options: SettingsViewModel.stillWatchingChoices.map { SettingsChoice(id: $0.id, label: $0.label) },
                 selection: $viewModel.stillWatchingSelection
             )
+            #endif
 
             choiceRow(
                 "Show Next Up",

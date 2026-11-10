@@ -3990,7 +3990,10 @@ class PlayerViewModel {
     /// into, so it waits for Play Now.
     private var nextUpPickAutoPlays: Bool {
         guard settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
+        #if !os(macOS)
+        // The Mac player has no Next Up screen to wait on, so it never gates.
         guard !stillWatchingGuard.shouldGate(threshold: settings.stillWatchingThreshold) else { return false }
+        #endif
         return !pick.isFromOnDeck
     }
 
@@ -4080,6 +4083,7 @@ class PlayerViewModel {
     @discardableResult
     func keepWatchingCurrentEpisode() -> Bool {
         guard !isWatchPartyPlayback else { return false }
+        stillWatchingGuard.recordViewerAction()
         // Staying on this item wins over a shuffle advance still in flight;
         // its late answer must not switch playback. If the server already
         // moved on, the next Play Now replays that pick.
@@ -5647,7 +5651,11 @@ class PlayerViewModel {
             },
             // Remote-position events use the source axis published above and
             // must pass through the VM so a bounded V3 transport can replan.
-            seek:        { [weak self] t in self?.seekTo(seconds: t) },
+            // A system seek comes from the viewer, so it counts as still watching.
+            seek:        { [weak self] t in
+                self?.stillWatchingGuard.recordViewerAction()
+                self?.seekTo(seconds: t)
+            },
             // A command answered `.success` while the controller has no load
             // reports work the system will never observe.
             hasActiveLoad: { [weak self] in
@@ -5680,8 +5688,10 @@ class PlayerViewModel {
         )
     }
 
+    /// Play from the viewer: Now Playing, SiloControl, or the end of a scrub.
     private func handleNowPlayingPlay() {
         guard !isReconnecting else { return }
+        stillWatchingGuard.recordViewerAction()
         if watchPartyAdapter?.request(.play) == true { return }
         noteViewerTransportCommand(play: true)
         if !holdPlayIntentForFreshLoad(true) {
@@ -5692,7 +5702,9 @@ class PlayerViewModel {
         #endif
     }
 
+    /// Pause from the viewer: Now Playing or SiloControl.
     private func handleNowPlayingPause() {
+        stillWatchingGuard.recordViewerAction()
         if watchPartyAdapter?.request(.pause) == true { return }
         noteViewerTransportCommand(play: false)
         if !holdPlayIntentForFreshLoad(false) {
@@ -7435,6 +7447,7 @@ class PlayerViewModel {
     /// for `always`'s undo. Either way the intro is decided and the pill goes.
     func selectIntroSkipPrompt() {
         guard let target = withoutAnimation({ introSkipPrompt.select() }) else { return }
+        stillWatchingGuard.recordViewerAction()
         Self.logger.info(
             "[CMP-MARKERS] intro prompt selected target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
@@ -9274,8 +9287,15 @@ class PlayerViewModel {
         }
     }
 
+    /// A chapter the viewer picked from a chapter list.
+    func jumpToChapter(at seconds: Double) {
+        stillWatchingGuard.recordViewerAction()
+        seekTo(seconds: seconds)
+    }
+
     func seekToAdjacentChapter(forward: Bool) {
         guard !chapters.isEmpty else { return }
+        stillWatchingGuard.recordViewerAction()
         let sorted = chapters.sorted { $0.time < $1.time }
         let target: PlayerChapterInfo?
         if forward {

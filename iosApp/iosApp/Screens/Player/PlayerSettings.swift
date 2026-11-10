@@ -801,7 +801,7 @@ final class PlayerSettings {
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
         )
         stillWatchingThreshold = Self.clampStillWatchingThreshold(
-            Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: 3)
+            Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: Self.defaultStillWatchingThreshold)
         )
         deviceOverriddenKeys = Self.cachedOverriddenKeys(defaults)
 
@@ -1363,6 +1363,7 @@ final class PlayerSettings {
             deinterlaceFieldRate != .fullMotion,
             // A build without the object-audio components hides this setting.
             AetherObjectAudioPolicy.isAvailable && !trueHDAtmosEnabled,
+            stillWatchingThreshold != Self.defaultStillWatchingThreshold,
         ].filter { $0 }.count
     }
 
@@ -1510,6 +1511,7 @@ final class PlayerSettings {
         deinterlaceMode = .automatic
         deinterlaceFieldRate = .fullMotion
         trueHDAtmosEnabled = true
+        stillWatchingThreshold = Self.defaultStillWatchingThreshold
     }
 
     /// Keep showing this device's own values for keys whose change has not
@@ -1896,7 +1898,7 @@ final class PlayerSettings {
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
         )
         stillWatchingThreshold = Self.clampStillWatchingThreshold(
-            Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: 3)
+            Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: Self.defaultStillWatchingThreshold)
         )
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
         dolbyVisionEnabled = Self.cachedBool(defaults, key: Keys.dolbyVisionEnabled, defaultValue: true)
@@ -2324,7 +2326,7 @@ final class PlayerSettings {
         defaults.set(false, forKey: key(Keys.autoSkipRecap))
         defaults.set(true, forKey: key(Keys.autoPlayNextEpisode))
         defaults.set(30, forKey: key(Keys.nextUpPromptSeconds))
-        defaults.set(3, forKey: key(Keys.stillWatchingThreshold))
+        defaults.set(Self.defaultStillWatchingThreshold, forKey: key(Keys.stillWatchingThreshold))
         defaults.set(true, forKey: key(Keys.hdrEnabled))
         defaults.set(true, forKey: key(Keys.dolbyVisionEnabled))
         defaults.set(true, forKey: key(Keys.seekCacheEnabled))
@@ -2484,6 +2486,7 @@ final class PlayerSettings {
     }
 
     static let stillWatchingThresholdRange = 0...20
+    static let defaultStillWatchingThreshold = 3
 
     private static func clampStillWatchingThreshold(_ threshold: Int) -> Int {
         min(max(threshold, stillWatchingThresholdRange.lowerBound), stillWatchingThresholdRange.upperBound)

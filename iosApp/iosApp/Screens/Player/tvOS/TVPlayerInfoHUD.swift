@@ -2069,7 +2069,7 @@ private struct ChaptersPane: View {
                             time: PlayerTimeFormatter.formatHMS(chapter.time),
                             isCurrent: currentIndex == index
                         ) {
-                            viewModel.seekTo(seconds: chapter.time)
+                            viewModel.jumpToChapter(at: chapter.time)
                             onSelect()
                         }
                     }
