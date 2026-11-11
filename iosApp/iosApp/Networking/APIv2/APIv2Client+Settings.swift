@@ -29,8 +29,12 @@ extension APIv2Client {
     /// `getOverlayConfig` (profile optional): the server-wide overlay default
     /// and baseline, the same for every profile of the server.
     func overlayConfig(expectedIdentity: HTTPRequestIdentity? = nil) async throws -> APIv2OverlayConfig {
-        let data = try await settingsRead("/api/v2/settings/overlay-config", expectedIdentity: expectedIdentity)
-        return try HTTPClient.makeJSONDecoder().decode(APIv2OverlayConfig.self, from: data)
+        let response = try await settingsResponse(
+            "/api/v2/settings/overlay-config", expectedIdentity: expectedIdentity
+        )
+        // The image library's paths are server-relative.
+        return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url)
+            .decode(APIv2OverlayConfig.self, from: response.data)
     }
 
     /// `listEffectiveSettings` (profile required) for `profileID`, which must

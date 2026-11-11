@@ -194,6 +194,17 @@ struct APIv2Client: Sendable {
 
     func settingsRead(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
                       expectedIdentity: HTTPRequestIdentity? = nil, profileRequired: Bool = false) async throws -> Data {
+        try await settingsResponse(
+            path, query: query, profileID: profileID,
+            expectedIdentity: expectedIdentity, profileRequired: profileRequired
+        ).data
+    }
+
+    /// `settingsRead` with the response's URL, for a reply whose
+    /// server-relative paths are resolved while decoding.
+    func settingsResponse(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
+                          expectedIdentity: HTTPRequestIdentity? = nil,
+                          profileRequired: Bool = false) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         if profileRequired && auth.profileId == nil { throw SettingsAPIError.profileRequired }
@@ -208,7 +219,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 200 else { throw APIv2Error.incompleteCatalogRead }
-        return response.data
+        return response
     }
 
     /// The settings value writes (`APIv2Client+Settings.swift`), under the same
