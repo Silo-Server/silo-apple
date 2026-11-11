@@ -1105,12 +1105,12 @@ private struct TVDropdownBoundaryMoveHandler: ViewModifier {
 // MARK: - Profile dropdown
 
 private enum TVProfileAction: Hashable {
-    /// Switch Profile or Add Profile (`ProfileMenuRow`).
-    case profileRow
     case history
     case requests
     case watchParty
     case settings
+    /// Switch Profile or Add Profile (`ProfileMenuRow`).
+    case profileRow
     case changeAccount
     case signOut
 }
@@ -1131,8 +1131,8 @@ struct TVProfileDropdown: View {
     let serverHost: String?
     /// Whether focus has entered the panel.
     let entersPanel: Bool
-    /// Bumped by the host when focus should enter — lands on the first row:
-    /// the profile row, or Change Account when there is none.
+    /// Bumped by the host when focus should enter — lands on the first row,
+    /// History.
     let focusEntryGeneration: Int
     /// Reports whether any row currently holds focus, so the host can drop
     /// the avatar's focus ring once focus descends (§5.8).
@@ -1179,25 +1179,13 @@ struct TVProfileDropdown: View {
               generation > 0,
               generation != lastAppliedEntryGeneration else { return }
         lastAppliedEntryGeneration = generation
-        focusedAction = profileRow == nil ? .changeAccount : .profileRow
+        focusedAction = .history
     }
 
     private var panel: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
 
-            // Who is watching comes first: the open account's profiles, then
-            // Change Account, which lists every saved account by server
-            // (spec §4.3). Servers are managed in Settings › Accounts.
-            if let profileRow {
-                actionButton(
-                    profileRow.title,
-                    systemImage: profileRow.systemImage,
-                    id: .profileRow,
-                    action: profileRow == .addProfile ? onAddProfile : onSwitchProfile
-                )
-            }
-            actionButton(.menuChangeAccount, systemImage: "person.crop.circle.badge.checkmark", id: .changeAccount, action: onChangeAccount)
             // Watchlist and Favorites live under For You, not here.
             actionButton(.menuHistory, systemImage: "clock.fill", id: .history, action: onHistory)
             if showsRequests {
@@ -1210,6 +1198,19 @@ struct TVProfileDropdown: View {
             divider
 
             actionButton(.menuSettings, systemImage: "gearshape.fill", id: .settings, action: onSettings)
+            // Who is watching sits together, in the phones' order: the open
+            // account's profiles, then Change Account, which in Switch
+            // Server's place lists every saved account by server (spec §4.3).
+            // Servers are managed in Settings › Accounts.
+            if let profileRow {
+                actionButton(
+                    profileRow.title,
+                    systemImage: profileRow.systemImage,
+                    id: .profileRow,
+                    action: profileRow == .addProfile ? onAddProfile : onSwitchProfile
+                )
+            }
+            actionButton(.menuChangeAccount, systemImage: "person.crop.circle.badge.checkmark", id: .changeAccount, action: onChangeAccount)
             actionButton(.menuSignOut, systemImage: "rectangle.portrait.and.arrow.forward", id: .signOut, isDestructive: true, action: onSignOut)
         }
         .padding(SiloTheme.Skyline.dropdownPadding)

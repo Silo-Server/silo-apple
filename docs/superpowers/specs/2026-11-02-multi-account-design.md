@@ -185,21 +185,23 @@ profile limit (`max_profiles` on the profile list):
   the row while one is active. The phone, tablet and Mac never hold one.
 - **Change Account** is always shown. It is where accounts and servers are added.
 - **Order.** Phone, tablet and Mac are unchanged: Settings, the profile row, Change Account, then
-  Sign Out. On TV the profile row stays first and Change Account moves up to sit under it:
+  Sign Out. *Amended 2026-11-11 (owner decision), replacing the 2026-11-10 order that put the
+  profile row and Change Account first.* On TV the profile row moves down to sit directly above
+  Change Account, in the second group between Settings and Sign Out, the same order as the
+  phones:
 
   ```
-  Switch Profile | Add Profile      (or absent)
-  Change Account
   History
   Requests            (while the server offers Requests)
   Watch Party         (while the server offers one)
   ─────────
   Settings
+  Switch Profile | Add Profile      (or absent)
+  Change Account
   Sign Out
   ```
 
-  The TV menu opens focused on its first row: the profile row, or Change Account when there is
-  none.
+  The TV menu opens focused on its first row, History.
 
 ### 4.4 Signing out and removing
 
