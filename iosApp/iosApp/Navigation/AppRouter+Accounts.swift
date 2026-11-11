@@ -98,14 +98,18 @@ struct AddProfileRequest: Identifiable, Equatable {
         freshProfileCount != 1
     }
 
-    /// Whether the session a step started in is still the one open: the
-    /// same server, account and profile. A step that waited on the server
-    /// acts only then, so a late answer never opens the form, the picker
-    /// or an alert over the account or profile that replaced it. Profile
-    /// IDs repeat across accounts on one server, so all three are compared.
-    /// False when no profile was open to begin with.
-    static func isStillOpen(_ started: AccountScope?, now current: AccountScope?) -> Bool {
-        guard let started, started.profileId != nil else { return false }
+    /// Whether a step that waited on the server may go on. The session it
+    /// started in must still be the one open: the same server, account and
+    /// profile, so a late answer never opens the form, the picker or an
+    /// alert over the account or profile that replaced it. Profile IDs
+    /// repeat across accounts on one server, so all three are compared.
+    /// And no Add Profile request may be on screen: one that came up while
+    /// the step waited is newer, and an older read must not replace it or
+    /// take it to the picker. False when no profile was open to begin with.
+    static func mayProceed(
+        startedIn started: AccountScope?, now current: AccountScope?, onScreen request: AddProfileRequest?
+    ) -> Bool {
+        guard request == nil, let started, started.profileId != nil else { return false }
         return started == current
     }
 }
@@ -224,8 +228,11 @@ extension AppRouter {
             // The menu closed before the list was asked for, so the account
             // or profile can have changed meanwhile. The list, and a cached
             // one above all, then belongs to the session that was replaced.
+            // Add Profile can also have been chosen again and be on screen.
             guard authState == .authenticated,
-                  AddProfileRequest.isStillOpen(session, now: AccountScope.current) else { return }
+                  AddProfileRequest.mayProceed(
+                      startedIn: session, now: AccountScope.current, onScreen: addProfileRequest
+                  ) else { return }
             switch AddProfileRequest.start(profiles: profiles, openProfileID: session?.profileId) {
             case .form(let primary):
                 addProfileRequest = AddProfileRequest(primary: primary, session: session)
@@ -261,13 +268,16 @@ extension AppRouter {
     /// The form is closed while the list is read, so the account or profile
     /// can change meanwhile, and a read that fails for that reason looks
     /// like one that couldn't be made. The picker therefore shows only
-    /// while the session the request was made in is still the one open.
+    /// while the session the request was made in is still the one open,
+    /// and not over an Add Profile request that came up meanwhile.
     func finishAddProfile(_ request: AddProfileRequest) {
         closeAddProfile(request)
         Task { @MainActor in
             let freshCount = (try? await StartupContentPrefetcher.fetchProfiles())?.count
             guard authState == .authenticated,
-                  AddProfileRequest.isStillOpen(request.session, now: AccountScope.current),
+                  AddProfileRequest.mayProceed(
+                      startedIn: request.session, now: AccountScope.current, onScreen: addProfileRequest
+                  ),
                   AddProfileRequest.showsPicker(afterCreateWith: freshCount) else { return }
             switchProfile()
         }

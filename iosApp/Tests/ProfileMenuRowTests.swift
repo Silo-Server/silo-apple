@@ -105,28 +105,36 @@ final class ProfileMenuRowTests: XCTestCase {
 
     /// Add Profile waits on the server twice with nothing on screen: before
     /// the form opens and after it closes. The account or profile can change
-    /// in that time. What follows (the form, an alert, the picker) belongs
-    /// to the session the row was chosen under, and to no other.
+    /// in that time, and Add Profile can be chosen again. What follows (the
+    /// form, an alert, the picker) belongs to the session the row was chosen
+    /// under, and never lands on a newer request.
     func testAStepThatWaitedActsOnlyInTheSessionItStartedIn() {
         let started = AccountScope(serverId: "server", localAccountId: "account-a", profileId: "p-1")
-        typealias Row = (now: AccountScope?, expected: Bool, what: String)
+        let open = UserProfile(id: "p-1", name: "Open", avatarEmoji: nil, hasPin: false, isChild: false)
+        let newer = AddProfileRequest(primary: open, session: started)
+        typealias Row = (now: AccountScope?, onScreen: AddProfileRequest?, expected: Bool, what: String)
         let rows: [Row] = [
-            (started, true, "nothing changed"),
-            (AccountScope(serverId: "server", localAccountId: "account-a", profileId: "p-2"), false, "another profile"),
-            (AccountScope(serverId: "server", localAccountId: "account-a", profileId: nil), false, "no profile open"),
+            (started, nil, true, "nothing changed"),
+            (AccountScope(serverId: "server", localAccountId: "account-a", profileId: "p-2"), nil, false, "another profile"),
+            (AccountScope(serverId: "server", localAccountId: "account-a", profileId: nil), nil, false, "no profile open"),
             // Profile IDs repeat across accounts on one server.
-            (AccountScope(serverId: "server", localAccountId: "account-b", profileId: "p-1"), false, "another account"),
-            (AccountScope(serverId: "other", localAccountId: "account-a", profileId: "p-1"), false, "another server"),
-            (nil, false, "no account selected"),
+            (AccountScope(serverId: "server", localAccountId: "account-b", profileId: "p-1"), nil, false, "another account"),
+            (AccountScope(serverId: "other", localAccountId: "account-a", profileId: "p-1"), nil, false, "another server"),
+            (nil, nil, false, "no account selected"),
+            // Add Profile was chosen again while the step waited.
+            (started, newer, false, "a newer request on screen"),
         ]
         for row in rows {
-            XCTAssertEqual(AddProfileRequest.isStillOpen(started, now: row.now), row.expected, row.what)
+            XCTAssertEqual(
+                AddProfileRequest.mayProceed(startedIn: started, now: row.now, onScreen: row.onScreen),
+                row.expected, row.what
+            )
         }
 
         // Nothing was open to begin with.
         let noProfile = AccountScope(serverId: "server", localAccountId: "account-a", profileId: nil)
-        XCTAssertFalse(AddProfileRequest.isStillOpen(noProfile, now: noProfile))
-        XCTAssertFalse(AddProfileRequest.isStillOpen(nil, now: nil))
+        XCTAssertFalse(AddProfileRequest.mayProceed(startedIn: noProfile, now: noProfile, onScreen: nil))
+        XCTAssertFalse(AddProfileRequest.mayProceed(startedIn: nil, now: nil, onScreen: nil))
     }
 
     /// After a create, the picker shows unless a fresh list positively shows
