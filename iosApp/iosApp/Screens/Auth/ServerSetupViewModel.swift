@@ -35,6 +35,8 @@ class ServerSetupViewModel {
     var port: String = ""
     /// What a running connect is for. Set while `isLoading`.
     @ObservationIgnored private var submitted: (host: String, scheme: ServerSetupScheme, port: String)?
+    /// The running connect, kept so `cancelConnect` can stop it.
+    @ObservationIgnored private var connectTask: Task<Void, Never>?
     var showsAdvancedOptions: Bool = false
     var isLoading: Bool = false
     /// A failure for the typed address; the address field shows it.
@@ -97,6 +99,24 @@ class ServerSetupViewModel {
     }
 
     private(set) var insecurePrompt: InsecurePrompt?
+
+    /// Runs a connect that `cancelConnect` can stop. Ignored while one is
+    /// already running.
+    func begin(_ connect: @escaping @MainActor () async -> Void) {
+        guard connectTask == nil else { return }
+        connectTask = Task {
+            await connect()
+            connectTask = nil
+        }
+    }
+
+    /// Stops the running connect. It ends without an error, and the address,
+    /// protocol and port stay as typed. `isLoading` stays true until it has
+    /// ended, so the screen's ways back keep waiting for it. A server that
+    /// has already answered still opens: by then it is being saved.
+    func cancelConnect() {
+        connectTask?.cancel()
+    }
 
     /// Validate the server URL and determine whether setup or login is needed.
     @MainActor
@@ -219,6 +239,9 @@ class ServerSetupViewModel {
         var lookedUpBareName = false
         var index = 0
         while index < candidates.count {
+            // A cancelled connect stops before the next address, and before
+            // asking about plain HTTP.
+            guard !Task.isCancelled else { return }
             let candidate = candidates[index]
             if !allowInsecure, candidate.lowercased().hasPrefix("http://") {
                 // A secure address already proved a version mismatch; asking to
@@ -234,8 +257,8 @@ class ServerSetupViewModel {
                     lookedUpBareName = true
                     if let origin = await resolveBareName(bareName), !attempted.contains(origin) {
                         candidates.insert(origin, at: index)
-                        continue
                     }
+                    continue
                 }
                 insecurePrompt = InsecurePrompt(
                     address: ServerBranding.hostLabel(candidate),
@@ -249,6 +272,8 @@ class ServerSetupViewModel {
             attempted.append(candidate)
             do {
                 let status = try await checkServer(candidate)
+                // A cancel that arrived while the server was being saved is
+                // too late: it is the active server now, so the app goes on.
                 connected = true
                 // This view is also pushed onto the login stack (Change
                 // Server, then Add Server) while `authState` is already
@@ -275,6 +300,8 @@ class ServerSetupViewModel {
             }
         }
 
+        // A cancelled connect is not a failure to report.
+        guard !Task.isCancelled else { return }
         Self.logger.error(
             "Server autodiscovery failed candidates=\(attempted.joined(separator: ", "), privacy: .public) lastError=\(String(describing: lastError), privacy: .public)"
         )
@@ -439,13 +466,13 @@ extension View {
             // first; it has always offered Connect there.
             #if os(tvOS)
             Button(.setupCleartextConnect) {
-                Task { await model.confirmInsecure(prompt, router: router) }
+                model.begin { await model.confirmInsecure(prompt, router: router) }
             }
             Button(.commonCancel, role: .cancel) { model.cancelInsecure(prompt) }
             #else
             Button(.commonCancel, role: .cancel) { model.cancelInsecure(prompt) }
             Button(.setupCleartextConnect) {
-                Task { await model.confirmInsecure(prompt, router: router) }
+                model.begin { await model.confirmInsecure(prompt, router: router) }
             }
             #endif
         } message: { prompt in

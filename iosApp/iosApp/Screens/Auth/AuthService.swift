@@ -178,6 +178,9 @@ final class AuthService: @unchecked Sendable {
     /// its name completed with a domain (an overlay provider's bare name), is
     /// committed as that HTTPS origin: the redirect answers reads only, so
     /// saving the typed URL would fail sign-in.
+    ///
+    /// Cancelling the calling task stops the probes and throws with nothing
+    /// saved. Once setup status has answered, the check finishes regardless.
     func checkServer(url: String) async throws -> APIv2SetupStatus {
         var normalized = ServerRegistry.normalize(url: url)
         if normalized.lowercased().hasPrefix("http://"),
@@ -209,22 +212,27 @@ final class AuthService: @unchecked Sendable {
             lastUsedAt: Date(),
             verifiedServerId: verifiedServerId
         )
-        // A saved entry for the same origin keeps its own id.
-        guard let saved = serverRegistry.addOrUpdate(entry) else {
-            throw ServerRegistryError.persistenceFailed
-        }
-        if serverRegistry.activeServerId != saved.id {
-            guard await serverRegistry.switchTo(serverId: saved.id) else {
+        // The candidate has answered, so a cancellation from here on is too
+        // late: the steps below run in a task of their own and finish as they
+        // would for a check nobody cancelled. Stopping partway would leave the
+        // server saved but not active, or active with the caller told the
+        // check had failed.
+        return try await Task {
+            // A saved entry for the same origin keeps its own id.
+            guard let saved = serverRegistry.addOrUpdate(entry) else {
                 throw ServerRegistryError.persistenceFailed
             }
-        }
-        // Now that the candidate is the active server, establish the v2
-        // contract verdict the pilot gate reads. Recorded after the switch so
-        // a candidate that is not committed never touches the active verdict.
-        await recordContractVerdict(serverId: saved.id, serverURL: saved.url)
-        try Task.checkCancellation()
-
-        return status
+            if serverRegistry.activeServerId != saved.id {
+                guard await serverRegistry.switchTo(serverId: saved.id) else {
+                    throw ServerRegistryError.persistenceFailed
+                }
+            }
+            // Now that the candidate is the active server, establish the v2
+            // contract verdict the pilot gate reads. Recorded after the switch so
+            // a candidate that is not committed never touches the active verdict.
+            await recordContractVerdict(serverId: saved.id, serverURL: saved.url)
+            return status
+        }.value
     }
 
     /// Refreshes the active registry entry from the server's native branding.

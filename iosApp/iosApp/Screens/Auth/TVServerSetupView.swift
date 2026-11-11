@@ -83,6 +83,7 @@ struct TVServerSetupView: View {
         .onDisappear {
             router.isReceivingCompanionSetup = false
             discovery.stop()
+            viewModel.cancelConnect()
             advertiser.stop()
             Task { await coordinator.cancel() }
         }
@@ -149,7 +150,7 @@ struct TVServerSetupView: View {
                 isConnecting: viewModel.isLoading,
                 connectingID: viewModel.connectingServerID
             ) { server in
-                Task { await viewModel.connect(to: server, router: router) }
+                viewModel.begin { await viewModel.connect(to: server, router: router) }
             }
             .padding(.top, 18)
             if let error = viewModel.discoveryError?.message {
@@ -182,7 +183,7 @@ struct TVServerSetupView: View {
         }
         .defaultFocus($focusedField, .enterAddress, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, .enterAddress)
-        .onExitCommand(perform: canReturnToPicker ? returnToPicker : nil)
+        .onExitCommand(perform: phoneFirstExit)
         .animation(.easeOut(duration: 0.32), value: discovery.servers)
         .animation(.easeInOut(duration: 0.2), value: viewModel.discoveryError)
     }
@@ -277,15 +278,11 @@ struct TVServerSetupView: View {
                 .buttonStyle(.marquee(.primary, fullWidth: false, isLoading: viewModel.isLoading))
                 .focused($focusedField, equals: .connect)
 
-                Button {
-                    viewModel.clearError()
-                    isEnteringAddress = false
-                } label: {
-                    Text(.commonBack)
+                Button(action: leaveManualEntry) {
+                    Text(viewModel.isLoading ? LocalizedStringResource.commonCancel : .commonBack)
                 }
                 .buttonStyle(.marquee(.plain, fullWidth: false))
                 .focused($focusedField, equals: .back)
-                .disabled(viewModel.isLoading)
             }
             // Full width, so Down from the port field at the far end of the
             // row above still reaches the row; entering it lands on Connect.
@@ -298,13 +295,7 @@ struct TVServerSetupView: View {
         }
         .defaultFocus($focusedField, .host, priority: .userInitiated)
         .marqueeTVFocusAfterKeyboard($focusedField, pending: $focusAfterKeyboard)
-        // Leaving mid-probe would let a late connect pull the app on, so
-        // the way back waits for it.
-        .onExitCommand {
-            guard !viewModel.isLoading else { return }
-            viewModel.clearError()
-            isEnteringAddress = false
-        }
+        .onExitCommand(perform: leaveManualEntry)
         .animation(SiloTheme.springAnimation, value: viewModel.showsAdvancedOptions)
         .animation(.easeInOut(duration: 0.2), value: viewModel.error)
         .keepsSubmittedServerInputs(viewModel)
@@ -323,9 +314,28 @@ struct TVServerSetupView: View {
         router.returnToPicker()
     }
 
+    /// Menu on the phone-first page: it stops a found server's connect, and
+    /// is otherwise the way back, or the system's when this page has none.
+    private var phoneFirstExit: (() -> Void)? {
+        if viewModel.isLoading { return viewModel.cancelConnect }
+        return canReturnToPicker ? returnToPicker : nil
+    }
+
+    /// Back and Menu on manual entry. Leaving mid-probe would let a late
+    /// connect pull the app on, so while one runs they stop it and stay; the
+    /// way back opens once it has ended.
+    private func leaveManualEntry() {
+        guard !viewModel.isLoading else {
+            viewModel.cancelConnect()
+            return
+        }
+        viewModel.clearError()
+        isEnteringAddress = false
+    }
+
     private func connect() {
         guard !viewModel.isLoading else { return }
-        Task { await viewModel.connect(router: router) }
+        viewModel.begin { await viewModel.connect(router: router) }
     }
 
     // MARK: - Advertiser lifecycle
