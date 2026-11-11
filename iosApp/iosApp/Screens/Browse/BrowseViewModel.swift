@@ -285,6 +285,8 @@ class BrowseViewModel {
                   myRead == letterIndexRead, !Task.isCancelled else { return }
             // A list that changed shape changed its pages too; read them again.
             let changed = index != letterIndex
+            // A jump still loading aimed at a position the old index gave.
+            if changed { jumpGeneration += 1 }
             letterIndex = index
             offersLetterIndex = index != nil
             if let index { ResponseCache.shared.set(index, for: lettersCacheKey, fetchedAt: writeToken) }
@@ -378,6 +380,9 @@ class BrowseViewModel {
         let myGeneration = generation
         isLoading = false
         isLoadingEarlier = false
+        // It also overtakes a first load still running, which would have
+        // marked the grid loaded.
+        hasLoaded = true
         let read = try? await readPage(query)
         guard myGeneration == generation, myJump == jumpGeneration, !Task.isCancelled,
               let read else { return nil }
