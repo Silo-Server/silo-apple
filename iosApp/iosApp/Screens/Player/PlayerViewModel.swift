@@ -1095,11 +1095,10 @@ class PlayerViewModel {
     /// would otherwise have no idea why it was abandoned.
     @ObservationIgnored
     private var lastAetherAudioTrackSwitchFailure: PlaybackErrorInfo?
-    /// The load the player stopped because it was still opening when its
-    /// start budget ran out (``finishAetherLoad(_:boundedBy:)``). Its
-    /// cancellation is that failure, not the app abandoning the load.
-    @ObservationIgnored
-    private var startBudgetExpiredLoadEpoch: AetherPlaybackController.LoadEpoch?
+    /// The opening of the plan being loaded, while ``loadAether`` bounds it,
+    /// and the timer that ticks it.
+    @ObservationIgnored private var activeOpeningBudget: PlaybackOpeningBudget?
+    @ObservationIgnored private var openingBudgetTimer: PlayerPromptTimer?
     /// Serializes every Protocol V3 source replacement, including a same-plan
     /// reload whose only change is a refreshed bearer. Reusing this gate keeps
     /// credential recovery from racing route replans, seeks, or track changes.
@@ -4561,12 +4560,19 @@ class PlayerViewModel {
         // From here the outgoing plan's source is being replaced: its waits
         // are a source reload, not stalls.
         bufferingSourceSwapGeneration = expectedStreamLoadGeneration
+        // A plan's source opens within the start budget or fails, so the
+        // server can offer another route. AetherEngine bounds server HLS
+        // itself; nothing else bounds direct play or the software route
+        // until the plan is adopted (`armStartDeadline`). A download has no
+        // server to replan against.
+        let openingBudget = Self.boundsOpening(prepared) ? beginOpeningBudget() : nil
+        defer { if let openingBudget { endOpeningBudget(openingBudget) } }
         do {
             try await loadAetherSource(
                 prepared: prepared, streamRequest: streamRequest,
                 expectedStreamLoadGeneration: expectedStreamLoadGeneration,
                 resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
-                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true)
+                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true, openingBudget: openingBudget)
         } catch {
             guard let route = streamLocalRoute, !Task.isCancelled, Self.isLocalRouteLoadFailure(error) else { throw error }
             LocalRouteController.reportFailure(of: route)
@@ -4574,8 +4580,59 @@ class PlayerViewModel {
                 prepared: prepared, streamRequest: streamRequest,
                 expectedStreamLoadGeneration: expectedStreamLoadGeneration,
                 resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
-                shouldPlayWhenReady: abandonedLoadPlayIntent ?? shouldPlayWhenReady, takesLocalRoute: false)
+                shouldPlayWhenReady: abandonedLoadPlayIntent ?? shouldPlayWhenReady, takesLocalRoute: false,
+                openingBudget: openingBudget)
         }
+    }
+
+    /// Whether opening `prepared` runs under the start budget: a Protocol V3
+    /// plan on any route but server HLS.
+    static func boundsOpening(_ prepared: PreparedPlayback) -> Bool {
+        guard let delivery = prepared.protocolV3?.plan.delivery else { return false }
+        return delivery != PlaybackProtocolV3.PlanDelivery.remuxHLS
+            && delivery != PlaybackProtocolV3.PlanDelivery.transcodeHLS
+    }
+
+    private func beginOpeningBudget() -> PlaybackOpeningBudget {
+        let budget = PlaybackOpeningBudget()
+        activeOpeningBudget = budget
+        tickOpeningBudget(budget)
+        return budget
+    }
+
+    /// Ends `budget`'s ticks unless a newer opening replaced it.
+    private func endOpeningBudget(_ budget: PlaybackOpeningBudget) {
+        guard activeOpeningBudget === budget else { return }
+        activeOpeningBudget = nil
+        openingBudgetTimer?.cancel()
+        openingBudgetTimer = nil
+    }
+
+    /// Ticks once a second while `budget` is the opening in progress. It
+    /// holds through an outage as the start deadline does: an outage never
+    /// ends playback by itself, and a lost connection is not a failed route
+    /// (§6.2). Here the outage is the player's reconnect, or the device or
+    /// server being unreachable; the start deadline's reader and request
+    /// signals belong to an adopted plan and have not begun.
+    private func tickOpeningBudget(_ budget: PlaybackOpeningBudget) {
+        guard activeOpeningBudget === budget, !isDisposed else { return }
+        let monitor = ConnectionMonitor.shared
+        let outage = connectionState != .connected || !monitor.isDeviceOnline || monitor.serverStatus == .unreachable
+        if budget.tick(outage: outage, atMs: bufferingClock.elapsedMs) {
+            Self.logger.warning("[CMP-BUFFERING] start budget ran out while the source was opening: failing the load")
+            return
+        }
+        openingBudgetTimer = bufferingClock.schedule(after: 1) { [weak self] in
+            self?.tickOpeningBudget(budget)
+        }
+    }
+
+    /// The failure an opening that ran out of budget reports.
+    private static func openingBudgetFailure(_ underlying: Error) -> AetherPlaybackController.LoadFailure {
+        AetherPlaybackController.LoadFailure(
+            failure: PlaybackErrorInfo(kind: .noPlayableTrackWithinBudget, message: startDeadlineMessage),
+            underlying: underlying
+        )
     }
 
     /// Whether a load failed to reach its source, as one over a local route
@@ -4597,7 +4654,8 @@ class PlayerViewModel {
         resumeSourcePosition: Double?,
         reselectsPlanSubtitle: Bool,
         shouldPlayWhenReady: Bool,
-        takesLocalRoute: Bool
+        takesLocalRoute: Bool,
+        openingBudget: PlaybackOpeningBudget?
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         streamLocalRoute = nil
@@ -4675,12 +4733,23 @@ class PlayerViewModel {
                 // and depends on a fragile post-load pipeline rebuild.
                 let sourceURL = streamRequest.url
                 let sourceHeaders = streamRequest.headers
-                let probe = try await Task.detached(priority: .userInitiated) {
-                    try AetherEngine.probe(
-                        url: sourceURL,
-                        options: LoadOptions(httpHeaders: sourceHeaders)
-                    )
-                }.value
+                // Part of the opening: the budget interrupts its I/O.
+                let cancellation = openingBudget.map { _ in ProbeCancellation() }
+                openingBudget?.stepBegan { cancellation?.cancel() }
+                let probe: SourceProbe
+                do {
+                    defer { openingBudget?.stepEnded() }
+                    probe = try await Task.detached(priority: .userInitiated) {
+                        try AetherEngine.probe(
+                            url: sourceURL,
+                            options: LoadOptions(httpHeaders: sourceHeaders),
+                            cancellation: cancellation
+                        )
+                    }.value
+                } catch {
+                    if openingBudget?.hasRunOut == true { throw Self.openingBudgetFailure(error) }
+                    throw error
+                }
                 try requireCurrentStreamLoad(expectedStreamLoadGeneration)
                 guard probe.audioTracks.indices.contains(selectedAudioOrdinal),
                       let exactStreamIndex = Int32(exactly: probe.audioTracks[selectedAudioOrdinal].id) else {
@@ -4849,25 +4918,16 @@ class PlayerViewModel {
         sourceWatch = PlaybackSourceWatch()
         establishedAetherLoadEpoch = nil
         lastAetherAudioTrackSwitchFailure = nil
-        startBudgetExpiredLoadEpoch = nil
         committedProtocolV3LoadEpoch = nil
         pendingProtocolV3FirstFrameEpoch = nil
         do {
-            // A plan's load opens within the start budget or fails, so the
-            // server can offer another route. AetherEngine bounds server HLS
-            // itself; nothing else bounds direct play or the software route
-            // until the plan is adopted (`armStartDeadline`). A download has
-            // no server to replan against.
-            let boundsLoad = prepared.protocolV3 != nil && !spec.options.nativeRemoteHLS
-            try await finishAetherLoad(
-                loadEpoch,
-                boundedBy: boundsLoad ? PlaybackStartDeadline.budgetMs : nil
-            )
+            try await finishAetherLoad(loadEpoch, within: openingBudget)
         } catch {
             let resolved = resolveAbandonedAetherLoad(
                 error,
                 epoch: loadEpoch,
-                expectedStreamLoadGeneration: expectedStreamLoadGeneration
+                expectedStreamLoadGeneration: expectedStreamLoadGeneration,
+                openingBudgetRanOut: openingBudget?.hasRunOut == true
             )
             if activeAetherLoadEpoch == loadEpoch {
                 activeAetherLoadEpoch = nil
@@ -4921,27 +4981,24 @@ class PlayerViewModel {
         activeAetherLoadEpoch != nil && establishedAetherLoadEpoch == activeAetherLoadEpoch
     }
 
-    /// Awaits the engine's load of `epoch`. With a budget, a load still
-    /// opening when it runs out is cancelled, which ends AetherEngine's load
-    /// generation, and ``resolveAbandonedAetherLoad`` reports it as
+    /// Awaits the engine's load of `epoch`. Under an opening budget, a load
+    /// still opening when it runs out is cancelled, which ends AetherEngine's
+    /// load generation, and ``resolveAbandonedAetherLoad`` reports it as
     /// `noPlayableTrackWithinBudget`: the load's own catch then asks the
     /// server for the next route, as for any other load that fails to open.
-    /// The budget runs whatever the viewer's play intent, since opening the
-    /// source does not wait for it.
-    private func finishAetherLoad(_ epoch: AetherPlaybackController.LoadEpoch, boundedBy budgetMs: Int?) async throws {
-        guard let budgetMs else {
+    /// The controller keeps the viewer's play intent for that route.
+    private func finishAetherLoad(
+        _ epoch: AetherPlaybackController.LoadEpoch,
+        within openingBudget: PlaybackOpeningBudget?
+    ) async throws {
+        guard let openingBudget else {
             try await aetherPlaybackController.finishLoad(epoch)
             return
         }
         let controller = aetherPlaybackController
         let load = Task { @MainActor in try await controller.finishLoad(epoch) }
-        let timer = bufferingClock.schedule(after: TimeInterval(budgetMs) / 1000) { [weak self] in
-            guard let self, !self.isDisposed, self.activeAetherLoadEpoch == epoch else { return }
-            Self.logger.warning("[CMP-BUFFERING] start budget ran out while the load was opening: failing the load")
-            self.startBudgetExpiredLoadEpoch = epoch
-            load.cancel()
-        }
-        defer { timer.cancel() }
+        openingBudget.stepBegan { load.cancel() }
+        defer { openingBudget.stepEnded() }
         try await withTaskCancellationHandler {
             try await load.value
         } onCancel: {
@@ -4964,7 +5021,8 @@ class PlayerViewModel {
     private func resolveAbandonedAetherLoad(
         _ error: Error,
         epoch: AetherPlaybackController.LoadEpoch,
-        expectedStreamLoadGeneration: UInt64
+        expectedStreamLoadGeneration: UInt64,
+        openingBudgetRanOut: Bool
     ) -> Error {
         guard error is CancellationError,
               !Task.isCancelled,
@@ -4973,11 +5031,11 @@ class PlayerViewModel {
               activeAetherLoadEpoch == epoch else {
             return error
         }
-        let startBudgetFailure = startBudgetExpiredLoadEpoch == epoch
-            ? PlaybackErrorInfo(kind: .noPlayableTrackWithinBudget, message: Self.startDeadlineMessage)
-            : nil
-        let failure = startBudgetFailure
-            ?? lastAetherAudioTrackSwitchFailure
+        if openingBudgetRanOut {
+            Self.logger.error("Opening ran out of start budget; treating as a load failure")
+            return Self.openingBudgetFailure(error)
+        }
+        let failure = lastAetherAudioTrackSwitchFailure
             ?? aetherPlaybackController.engine.errorInfo
             ?? PlaybackErrorInfo(
                 kind: .audioTrackSwitchFailed,
