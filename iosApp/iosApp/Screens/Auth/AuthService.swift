@@ -520,6 +520,33 @@ final class AuthService: @unchecked Sendable {
         }
     }
 
+    /// Checks the open profile's PIN and replaces its stored proof with the
+    /// one the server returns for it, for an action that PIN gates while the
+    /// profile stays open (Add Profile in the profile menu). The same check
+    /// and commit `selectProfile` makes, without its reset of profile-scoped
+    /// state: the identity is unchanged, only its proof, which goes stale
+    /// when the PIN is set or changed on another device after the profile
+    /// was opened. Nothing remembered changes.
+    func renewOpenProfileProof(profileId: String, pin: String, api: SiloAPI = .shared) async throws {
+        guard let expectedAccount = await tokenStore.refreshAccountIdentity() else {
+            throw ProfileTransitionError.noActiveAccount
+        }
+        guard !(await tokenStore.hasTemporaryScope()) else {
+            throw ProfileTransitionError.temporaryIdentityActive
+        }
+        guard await tokenStore.getProfileId() == profileId else {
+            throw ProfileTransitionError.identityChanged
+        }
+        guard let proof = try await api.verifyProfileSelection(profileId: profileId, pin: pin) else {
+            throw ProfileTransitionError.missingPINProof
+        }
+        guard await tokenStore.activateProfile(
+            profileID: profileId, profileToken: proof, expectedAccount: expectedAccount
+        ) else {
+            throw ProfileTransitionError.identityChanged
+        }
+    }
+
     /// Resolve the active server's launch policy. Returns `true` only when a
     /// complete remembered identity was restored; callers otherwise present
     /// Who's Watching while retaining the account session.

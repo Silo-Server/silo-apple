@@ -36,4 +36,34 @@ final class ProfileMenuRowTests: XCTestCase {
             )
         }
     }
+
+    /// Add Profile opens its form only for the open profile, so it can never
+    /// change who is watching.
+    func testAddProfileStartsOnlyForTheOpenProfile() {
+        let open = UserProfile(id: "p-open", name: "Open", avatarEmoji: nil, hasPin: true, isChild: false)
+        let other = UserProfile(id: "p-other", name: "Other", avatarEmoji: nil, hasPin: false, isChild: false)
+
+        XCTAssertEqual(
+            AddProfileRequest.start(profiles: [open], openProfileID: "p-open"),
+            .form(AddProfileRequest(primary: open))
+        )
+        // The row was drawn from an older list: several profiles means the
+        // picker, as Switch Profile opens it.
+        XCTAssertEqual(AddProfileRequest.start(profiles: [open, other], openProfileID: "p-open"), .picker)
+        // The only listed profile isn't the open one, or nothing is open.
+        XCTAssertEqual(AddProfileRequest.start(profiles: [other], openProfileID: "p-open"), .unavailable)
+        XCTAssertEqual(AddProfileRequest.start(profiles: [open], openProfileID: nil), .unavailable)
+        // No list could be read.
+        XCTAssertEqual(AddProfileRequest.start(profiles: [], openProfileID: "p-open"), .unavailable)
+    }
+
+    /// After a create, the picker shows unless a fresh list positively shows
+    /// that nothing was added.
+    func testPickerShowsAfterACreateUnlessAFreshListHoldsOneProfile() {
+        XCTAssertTrue(AddProfileRequest.showsPicker(afterCreateWith: 2))
+        XCTAssertTrue(AddProfileRequest.showsPicker(afterCreateWith: 5))
+        // The list could not be read: the profile was, or may have been, created.
+        XCTAssertTrue(AddProfileRequest.showsPicker(afterCreateWith: nil))
+        XCTAssertFalse(AddProfileRequest.showsPicker(afterCreateWith: 1))
+    }
 }

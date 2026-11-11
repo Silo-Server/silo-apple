@@ -152,6 +152,49 @@ final class ProfilesV2Tests: XCTestCase {
         XCTAssertEqual(try body(XCTUnwrap(stub.requests.first)) as? [String: String], ["pin": "1234"])
     }
 
+    /// Add Profile in the profile menu asks for the open primary profile's
+    /// PIN. The proof the server returns for that PIN must replace the stored
+    /// one, or a create is still sent with a proof that went stale when the
+    /// PIN was set or changed elsewhere.
+    func testRenewingTheOpenProfilesProofInstallsTheOneTheServerReturns() async throws {
+        let (api, tokens) = try await client()
+        await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
+        let accountValue = await tokens.refreshAccountIdentity()
+        let account = try XCTUnwrap(accountValue)
+        let opened = await tokens.activateProfile(profileID: "p-owner", profileToken: "pvt_stale", expectedAccount: account)
+        XCTAssertTrue(opened)
+        let auth = AuthService(tokenStore: tokens)
+
+        stub.reply(200, #"{"valid":true,"profile_token":"pvt_fresh","expires_at":null}"#)
+        try await auth.renewOpenProfileProof(profileId: "p-owner", pin: "1234", api: api)
+        var proof = await tokens.getProfileToken()
+        var profileID = await tokens.getProfileId()
+        XCTAssertEqual(proof, "pvt_fresh")
+        XCTAssertEqual(profileID, "p-owner")
+
+        // A wrong PIN leaves the stored proof alone.
+        stub.reply(200, #"{"valid":false,"expires_at":null}"#)
+        do {
+            try await auth.renewOpenProfileProof(profileId: "p-owner", pin: "0000", api: api)
+            XCTFail("A PIN the server rejected must throw")
+        } catch ProfileTransitionError.incorrectPIN {}
+        proof = await tokens.getProfileToken()
+        XCTAssertEqual(proof, "pvt_fresh")
+
+        // Another profile's PIN is never checked here: the open profile
+        // cannot change, and no request is sent.
+        let sent = stub.requests.count
+        do {
+            try await auth.renewOpenProfileProof(profileId: "p-other", pin: "1234", api: api)
+            XCTFail("Only the open profile's proof can be renewed")
+        } catch ProfileTransitionError.identityChanged {}
+        proof = await tokens.getProfileToken()
+        profileID = await tokens.getProfileId()
+        XCTAssertEqual(stub.requests.count, sent)
+        XCTAssertEqual(proof, "pvt_fresh")
+        XCTAssertEqual(profileID, "p-owner")
+    }
+
     func testWrongPINIsReportedAsAnIncorrectPINNotAnExpiredSession() async throws {
         let api = try await api()
         stub.reply(200, #"{"valid":false,"expires_at":null}"#)

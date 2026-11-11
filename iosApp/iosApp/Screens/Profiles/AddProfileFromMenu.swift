@@ -70,8 +70,10 @@ private struct AddProfileFromMenuView: View {
         Task {
             defer { isVerifyingPIN = false }
             do {
-                // The open profile stays selected; only the PIN is checked.
-                _ = try await SiloAPI.shared.verifyProfileSelection(profileId: request.primary.id, pin: pin)
+                // The open profile stays open. The proof the server returns
+                // for this PIN replaces the stored one, so the create that
+                // follows is authorized by it.
+                try await AuthService.shared.renewOpenProfileProof(profileId: request.primary.id, pin: pin)
                 MarqueeHaptics.success()
                 isUnlocked = true
             } catch {

@@ -62,6 +62,37 @@ struct AddProfileRequest: Identifiable, Equatable {
     let primary: UserProfile
 
     var id: String { primary.id }
+
+    /// What choosing Add Profile does.
+    enum Start: Equatable {
+        /// The new-profile form, behind the primary profile's PIN when it
+        /// has one.
+        case form(AddProfileRequest)
+        /// The account has several profiles after all (the row was drawn
+        /// from an older list): its picker, as Switch Profile opens it.
+        case picker
+        /// No profile list, or its only profile isn't the open one. The form
+        /// never opens for a profile that isn't open, so Add Profile cannot
+        /// change who is watching.
+        case unavailable
+    }
+
+    /// - Parameters:
+    ///   - profiles: the account's profiles, fresh when the server answered.
+    ///   - openProfileID: the profile that is open.
+    static func start(profiles: [UserProfile], openProfileID: String?) -> Start {
+        guard profiles.count <= 1 else { return .picker }
+        guard let only = profiles.first, only.id == openProfileID else { return .unavailable }
+        return .form(AddProfileRequest(primary: only))
+    }
+
+    /// Whether the picker shows once the form has closed after a create that
+    /// succeeded or whose answer never arrived. Only a fresh list that holds
+    /// one profile shows nothing was added; a list that couldn't be read
+    /// doesn't.
+    static func showsPicker(afterCreateWith freshProfileCount: Int?) -> Bool {
+        freshProfileCount != 1
+    }
 }
 
 /// Where the app goes when the active server has no signed-in account.
@@ -175,22 +206,27 @@ extension AppRouter {
             let cached: [UserProfile]? = ResponseCache.shared.get(CacheKey.profiles)
             let profiles = (try? await StartupContentPrefetcher.fetchProfiles()) ?? cached ?? []
             guard authState == .authenticated else { return }
-            guard let primary = profiles.first(where: \.isPrimary) ?? (profiles.count == 1 ? profiles.first : nil) else {
+            switch AddProfileRequest.start(profiles: profiles, openProfileID: AuthService.shared.profileId) {
+            case .form(let request):
+                addProfileRequest = request
+            case .picker:
+                switchProfile()
+            case .unavailable:
                 accountActionError = AppLanguage.string(.profilesErrorNoPrimaryCreate)
-                return
             }
-            addProfileRequest = AddProfileRequest(primary: primary)
         }
     }
 
     /// The new-profile form closed after creating a profile, or after a
-    /// create whose answer never arrived. With a second profile in the
-    /// account, its picker shows, as it does after adding from the picker;
-    /// when the list still holds one, the screen underneath stays.
+    /// create whose answer never arrived: the account's picker shows, as it
+    /// does after adding from the picker. The screen underneath stays only
+    /// when a fresh list shows that nothing was added.
     func finishAddProfile() {
         addProfileRequest = nil
         Task { @MainActor in
-            guard let profiles = try? await StartupContentPrefetcher.fetchProfiles(), profiles.count > 1 else { return }
+            let freshCount = (try? await StartupContentPrefetcher.fetchProfiles())?.count
+            guard authState == .authenticated,
+                  AddProfileRequest.showsPicker(afterCreateWith: freshCount) else { return }
             switchProfile()
         }
     }
