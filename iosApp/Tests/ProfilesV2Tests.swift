@@ -101,6 +101,29 @@ final class ProfilesV2Tests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/profiles"])
     }
 
+    /// The server answers 404 when a request names a deleted profile, so the
+    /// list read must not name the active one.
+    func testListProfilesDoesNotNameTheActiveProfile() async throws {
+        let (api, tokens) = try await client()
+        // A profile proof belongs to a signed-in account, so sign in first.
+        let signedIn = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
+        XCTAssertTrue(signedIn)
+        addTeardownBlock { _ = await tokens.clearTokens() }
+        await tokens.setProfileId("p-deleted")
+        let savedProof = await tokens.setProfileToken("proof")
+        XCTAssertTrue(savedProof)
+        stub.reply(200, #"{"items":[\#(try profileJSON())]}"#)
+
+        let profiles = try await api.listProfiles()
+
+        XCTAssertEqual(profiles.map(\.id), ["p-owner"])
+        let request = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(request.header("X-Profile-Id") ?? "", "")
+        // On a playback handoff the server declares the bound profile itself
+        // and checks this proof.
+        XCTAssertEqual(request.header("X-Profile-Token"), "proof")
+    }
+
     func testProfileListReportsWhetherTheServerAcceptsRequestsAllowed() async throws {
         let api = try await api()
         stub.reply(200, #"{"items":[\#(try profileJSON())],"requests_allowed_supported":true}"#)
