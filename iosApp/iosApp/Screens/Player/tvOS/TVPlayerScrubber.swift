@@ -167,6 +167,11 @@ struct TVPlayerScrubber: View {
                     holdPausedPendingResume = false
                 }
             }
+            // A hold keeps playback running, so the item can end and the
+            // end-of-playback screen replace the controls mid-hold. The
+            // hold's timer is this view's own: left running, it would keep
+            // moving the preview under every later skip.
+            .onDisappear { stopTimelineAutoSeek() }
             .onMoveCommand(perform: handleMove)
             .onExitCommand {
                 if isTimelineScrubbing || viewModel.isScrubbing {
