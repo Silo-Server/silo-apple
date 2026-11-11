@@ -8,18 +8,25 @@ enum MediaCardAspect {
     case square
 }
 
+/// `subtitle` is the card's second caption line, spoken in place of the year.
+/// An episode card's line is its code and title, which `episodeLabel` already
+/// spells out, so that card keeps its year.
 func mediaCardAccessibilityLabel(
     title: String,
     episodeLabel: String?,
     year: Int?,
+    subtitle: String? = nil,
     isWatched: Bool,
     locale: Locale = AppLanguage.formattingLocale
 ) -> String {
     var components = [title]
-    if let episodeLabel, !episodeLabel.isEmpty {
+    let hasEpisodeLabel = episodeLabel?.isEmpty == false
+    if let episodeLabel, hasEpisodeLabel {
         components.append(episodeLabel)
     }
-    if let year {
+    if let subtitle, !hasEpisodeLabel {
+        components.append(subtitle)
+    } else if let year {
         components.append(LocaleFormat.integer(year, locale: locale))
     }
     if isWatched {
@@ -68,7 +75,8 @@ struct MediaCard: View {
     var year: Int? = nil
     /// Secondary caption line drawn in place of the year — episode cards pass
     /// "S01E02 · Pilot" so the code and episode title sit under the series
-    /// name. Always one line; see `EpisodeCardCaption`.
+    /// name, and series cards pass the years they ran (`CardYears`). Always
+    /// one line; see `EpisodeCardCaption`.
     var subtitle: String? = nil
     var progress: Double? = nil
     var userState: MediaItemUserState? = nil
@@ -392,6 +400,7 @@ struct MediaCard: View {
             title: title,
             episodeLabel: episodeAccessibilityLabel,
             year: year,
+            subtitle: subtitle,
             isWatched: isPlayed,
             locale: locale
         )
@@ -589,6 +598,7 @@ private struct FocusableMediaCard<Content: View>: View {
             title: title,
             episodeLabel: episodeAccessibilityLabel,
             year: year,
+            subtitle: subtitle,
             isWatched: isWatched,
             locale: locale
         )

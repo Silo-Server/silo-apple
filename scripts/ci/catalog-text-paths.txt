@@ -4,6 +4,7 @@
 iosApp/DownloadsActivity
 iosApp/iosApp/Components/AccountRemovalConfirmation.swift
 iosApp/iosApp/Components/BoxSetCardBadges.swift  mappings
+iosApp/iosApp/Components/CardYears.swift  mappings
 iosApp/iosApp/Components/EpisodeCardCaption.swift  mappings
 iosApp/iosApp/Components/EpisodeThumbCard.swift  mappings
 iosApp/iosApp/Components/MediaCard.swift  mappings

@@ -172,6 +172,8 @@ struct SectionItem: Codable, Identifiable, Hashable {
     var pendingTranslationLanguage: String? = nil
     /// Localized fields ("overview", "tagline") machine-translated by AI.
     var machineTranslatedFields: [String]? = nil
+    /// A series' last air date, "2023-05-28". Absent from older servers and caches.
+    var lastAirDate: String? = nil
     var id: String { contentId }
 
     /// Lift a catalog row into a section row so client-composed shelves
@@ -219,6 +221,7 @@ struct SectionItem: Codable, Identifiable, Hashable {
         logoUrl = nil
         userState = item.userState
         overlaySummary = item.overlaySummary
+        lastAirDate = item.lastAirDate
     }
 }
 
@@ -323,8 +326,8 @@ extension BrowseItem {
     /// Lift a Home row into the catalog shape for Watch Party's picker, which
     /// opens a confirmation page from a `BrowseItem`. Every field the two
     /// types share is copied; artwork on a decoded section row is already
-    /// resolved. `addedAt`, `releaseDate` and `lastAirDate` are not on
-    /// section rows and stay nil.
+    /// resolved. `addedAt` and `releaseDate` are not on section rows and
+    /// stay nil.
     init(sectionItem item: SectionItem) {
         self.init(
             contentId: item.contentId,
@@ -368,7 +371,7 @@ extension BrowseItem {
             seasonPosterThumbhash: item.seasonPosterThumbhash,
             addedAt: nil,
             releaseDate: nil,
-            lastAirDate: nil,
+            lastAirDate: item.lastAirDate,
             userState: item.userState,
             overlaySummary: item.overlaySummary
         )

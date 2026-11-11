@@ -166871,6 +166871,114 @@
         }
       }
     },
+    "shell.card.yearRange" : {
+      "comment" : "Apple iOS, tvOS and macOS: the years a series ran, shown under its poster card in library grids, search results and Home rows once it has ended, such as 2019 – 2023. {first}: the year it started; {last}: the year its last episode aired. Both are already written in the app's digits.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – %2$@"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – %2$@"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ – %2$@"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – %2$@"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – %2$@"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – %2$@"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – %2$@"
+          }
+        }
+      }
+    },
+    "shell.card.yearsToPresent" : {
+      "comment" : "Apple iOS, tvOS and macOS: the years line under the poster card of a series that is still running, in library grids, search results and Home rows, such as 2021 – Present. {first}: the year it started, already written in the app's digits. Use the same dash and spacing as shell.card.yearRange, and keep it short: it sits under a narrow poster.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – Present"
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – Present"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ – Present"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – Present"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – Present"
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – Present"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – Present"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ – Present"
+          }
+        }
+      }
+    },
     "shell.error.decodingFailed" : {
       "comment" : "Apple (iPhone, iPad, Mac, Apple TV): error message on a screen that failed to load because the app couldn't read the server's reply.",
       "extractionState" : "manual",

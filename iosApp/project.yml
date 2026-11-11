@@ -428,6 +428,8 @@ targets:
           - "AutoDownloadStatusTests.swift"
           # TrackpadScrub and the trackpad scrub API are declared under #if os(iOS) || os(macOS).
           - "TrackpadScrubTests.swift"
+          # HomeFeedMeta is declared under #if !os(tvOS).
+          - "CardYearsTests.swift"
           # Same non-fixture files as SiloTests, re-added below with no phase.
           - "Fixtures/ASS/README.md"
           - "Fixtures/ASS/generate-font.py"
