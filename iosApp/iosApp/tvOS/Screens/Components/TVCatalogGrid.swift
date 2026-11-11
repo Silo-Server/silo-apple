@@ -78,7 +78,9 @@ struct TVCatalogGrid: View {
                             imageIsEpisodeStill: item.posterIsEpisodeStill,
                             mediaType: boxSet == nil ? item.type : "movie",
                             year: item.year,
-                            subtitle: boxSet?.cardCaption ?? EpisodeCardCaption.line(for: item, locale: locale),
+                            subtitle: boxSet?.cardCaption
+                                ?? EpisodeCardCaption.line(for: item, locale: locale)
+                                ?? CardYears.caption(for: item, locale: locale),
                             userState: boxSet == nil ? item.userState : nil,
                             overlayData: boxSet == nil ? OverlayData.from(item) : nil,
                             action: { open(item) },
