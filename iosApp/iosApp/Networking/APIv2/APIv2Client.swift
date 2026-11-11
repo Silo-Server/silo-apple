@@ -605,6 +605,30 @@ struct APIv2Client: Sendable {
         return APIv2CatalogResult(auth: auth, value: page, continuation: continuation)
     }
 
+    /// The letter index of a title-ordered browse, bound to the caller's
+    /// captured owner like the pages it positions.
+    func catalogLetters(_ query: APIv2CatalogLettersQuery, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogLetters {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let body = try encoder.encode(query)
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "POST", path: "/api/v2/catalog/letters", body: body,
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogLetters.self, from: raw.data)
+    }
+
     /// Facets depend on the viewer's library access, so the read is bound to
     /// the caller's captured owner like the other catalog reads.
     func catalogFilters(libraryId: String?, includeTechnical: Bool = true,

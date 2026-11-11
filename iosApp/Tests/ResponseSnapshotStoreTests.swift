@@ -42,6 +42,20 @@ final class ResponseSnapshotStoreTests: XCTestCase {
         XCTAssertNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.profiles))
     }
 
+    func testLetterPagesAreNotKept() {
+        var letter = CatalogFilterState()
+        letter.namePrefix = "M"
+        letter.genres = ["Drama"]
+        XCTAssertNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.browse(libraryId: 4, filterKey: letter.cacheKeyFragment)))
+        XCTAssertNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.browse(libraryId: 4, filterKey: letter.cacheKeyFragment, mediaScope: "movie")))
+        XCTAssertNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.tvLibrary(libraryId: 4, filterKey: letter.cacheKeyFragment)))
+
+        // A filter value that looks like a letter stays a filter: values are encoded.
+        var filtered = CatalogFilterState()
+        filtered.genres = ["|p=M"]
+        XCTAssertNotNil(ResponseSnapshotStore.snapshotType(forKey: CacheKey.browse(libraryId: 4, filterKey: filtered.cacheKeyFragment)))
+    }
+
     /// Invalidating a key family also drops its snapshots, so a later seed
     /// cannot restore what was invalidated.
     func testRemovingMatchingKeysLeavesTheRestAndOtherProfiles() {
