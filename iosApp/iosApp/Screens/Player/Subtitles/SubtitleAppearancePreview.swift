@@ -129,12 +129,14 @@ struct SubtitleAppearancePreview: View {
         playfieldFontSize * Self.fontScale
     }
 
+    /// Fixed sizes for every family, as the cue overlay draws them: Dynamic
+    /// Type does not scale subtitles.
     private var sampleFont: Font {
         switch appearance.fontFamily {
         case .serif: return .system(size: sampleFontSize, weight: .semibold, design: .serif)
         case .monospace: return .system(size: sampleFontSize, weight: .semibold, design: .monospaced)
         case .sansSerif: return .system(size: sampleFontSize, weight: .semibold)
-        default: return .custom(appearance.fontFamily.assFontName, size: sampleFontSize)
+        default: return .custom(appearance.fontFamily.assFontName, fixedSize: sampleFontSize)
         }
     }
 }
