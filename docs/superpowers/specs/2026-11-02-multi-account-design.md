@@ -142,11 +142,35 @@ opens directly; otherwise its "Who's watching?" shows.
 
 ### 4.2 When the picker appears
 
-The existing **Profile Selection** setting (Automatic, Every Time, After 1 Hour, After 12 Hours)
-is unchanged and now applies to the account and profile:
-- **Automatic** restores the last account and profile. If that profile no longer exists, Silo
-  shows that account's picker.
-- If the open account has a single profile without a PIN, the picker never appears.
+*Amended 2026-11-10 (owner decision).* On a device several accounts share, each with one profile,
+Every Time used to open the last account's only profile without asking. Selection now starts at
+Change Account there.
+
+The existing **Profile Selection** setting (Automatic, Every Time, After 1 Hour, After 12 Hours),
+its labels and its detail lines are unchanged. It applies to the account and profile:
+- **Automatic** restores the last account and profile with no screen, however many accounts are
+  saved. If that profile no longer exists, Silo shows that account's picker.
+- **Selection is required** by Every Time at a cold launch and on a return from the background,
+  and by After 1 Hour or After 12 Hours once the timer has lapsed. What shows then depends on how
+  many accounts are saved on the device, across all servers and counting accounts that must sign
+  in again:
+  - **Two or more accounts:** Change Account shows where the picker would have shown or the only
+    profile would have opened. No profile is open while it shows. It opens as it does from the
+    menu: the last-used account is marked Current, its server is selected, and on TV its card has
+    focus. Choosing an account, the Current one included, opens it as §4.1 describes: a single
+    profile without a PIN opens directly, otherwise its picker waits for a choice, and an account
+    that must sign in again opens sign-in with the username filled in. Change Account is the root
+    screen here, with no way back to content: Back and Menu do what they do on the launch picker.
+    Backing out of a sign-in or a server setup started from it returns to it.
+  - **One account:** unchanged. A single profile without a PIN opens directly, whatever Profile
+    Selection says; otherwise the picker shows. In the single-profile case the picker is never
+    drawn, not even for a frame: the loading state shows until the profile opens.
+- **Switch Profile** in the menu always opens the open account's picker, never Change Account.
+- Whatever takes precedence over the picker keeps that precedence over Change Account: the
+  profile paired with the Apple TV user, a remote-playback handoff session, a required password
+  change, and playback that keeps the profile in use in the background. A pending deep link or
+  Watch Party invitation continues after a profile opens. The TV's first-run offer to remember a
+  profile still appears after the first profile is opened.
 
 ### 4.3 Switching
 

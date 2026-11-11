@@ -1,5 +1,21 @@
 import Foundation
 
+/// The screen that asks for a choice when Profile Selection requires one.
+enum ProfileSelectionPrompt: Equatable, Sendable {
+    /// The open account's "Who's watching?". A single profile without a
+    /// PIN opens from it without the picker being drawn.
+    case picker
+    /// Change Account, with no profile open: on a device several accounts
+    /// share, the person chooses the account before a profile.
+    case changeAccount
+
+    /// - Parameter savedAccountCount: every account saved on the device,
+    ///   across all servers, including those that must sign in again.
+    init(savedAccountCount: Int) {
+        self = savedAccountCount >= 2 ? .changeAccount : .picker
+    }
+}
+
 struct ProfileLaunchState: Codable, Equatable, Sendable {
     var behavior: ProfileLaunchBehavior = .automatic
     /// The profile each account opens with, keyed by `Account.localAccountId`.
@@ -106,6 +122,19 @@ struct ProfileLaunchState: Codable, Equatable, Sendable {
         guard backgroundedAt != nil else { return false }
         if behavior == .askEveryLaunch { return true }
         return hasExpiredAwayInterval(at: now)
+    }
+
+    /// What a cold launch shows in place of the profile it may not reopen.
+    /// Nil when Profile Selection asks for nothing, so Automatic and a timer
+    /// still running reopen the last account and profile.
+    func promptAtLaunch(savedAccountCount: Int, at now: Date = .now) -> ProfileSelectionPrompt? {
+        requiresSelectionAtLaunch(at: now) ? ProfileSelectionPrompt(savedAccountCount: savedAccountCount) : nil
+    }
+
+    /// What a return from the background shows once the open profile is
+    /// closed. Nil when the profile stays open.
+    func promptAfterBackground(savedAccountCount: Int, at now: Date = .now) -> ProfileSelectionPrompt? {
+        requiresSelectionAfterBackground(at: now) ? ProfileSelectionPrompt(savedAccountCount: savedAccountCount) : nil
     }
 
     static func load(from defaults: SharedDefaults) -> ProfileLaunchState {

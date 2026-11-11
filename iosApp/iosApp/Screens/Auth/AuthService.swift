@@ -570,7 +570,8 @@ final class AuthService: @unchecked Sendable {
 
     /// Resolve the active server's launch policy. Returns `true` only when a
     /// complete remembered identity was restored; callers otherwise present
-    /// Who's Watching while retaining the account session.
+    /// Who's Watching, or Change Account at a cold launch that requires a
+    /// choice while several accounts are saved, retaining the account session.
     func resolveActiveProfileForSession() async -> Bool {
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
             return false

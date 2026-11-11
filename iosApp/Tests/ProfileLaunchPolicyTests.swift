@@ -127,6 +127,56 @@ final class ProfileLaunchPolicyTests: XCTestCase {
         )
     }
 
+    /// When Profile Selection asks for a choice, several saved accounts get
+    /// Change Account and one account keeps its picker. When it asks for
+    /// nothing, neither shows, however many accounts are saved.
+    func testSelectionPromptFollowsProfileSelectionAndSavedAccountCount() {
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+        let hour: TimeInterval = 60 * 60
+        typealias Row = (
+            behavior: ProfileLaunchBehavior, awayFor: TimeInterval?, accounts: Int,
+            atLaunch: ProfileSelectionPrompt?, afterBackground: ProfileSelectionPrompt?
+        )
+        let rows: [Row] = [
+            // Every Time asks at every cold launch, and on a return only
+            // after a real background interval.
+            (.askEveryLaunch, nil, 1, .picker, nil),
+            (.askEveryLaunch, nil, 2, .changeAccount, nil),
+            (.askEveryLaunch, 0, 0, .picker, .picker),
+            (.askEveryLaunch, 0, 1, .picker, .picker),
+            (.askEveryLaunch, 0, 2, .changeAccount, .changeAccount),
+            (.askEveryLaunch, 0, 5, .changeAccount, .changeAccount),
+            // Automatic never asks.
+            (.automatic, nil, 2, nil, nil),
+            (.automatic, 24 * hour, 2, nil, nil),
+            // A timer asks once it has lapsed.
+            (.afterOneHour, nil, 2, nil, nil),
+            (.afterOneHour, hour - 1, 2, nil, nil),
+            (.afterOneHour, hour, 1, .picker, .picker),
+            (.afterOneHour, hour, 2, .changeAccount, .changeAccount),
+            (.afterTwelveHours, 12 * hour - 1, 2, nil, nil),
+            (.afterTwelveHours, 12 * hour, 1, .picker, .picker),
+            (.afterTwelveHours, 12 * hour, 2, .changeAccount, .changeAccount),
+        ]
+
+        for row in rows {
+            let state = ProfileLaunchState(
+                behavior: row.behavior,
+                backgroundedAt: row.awayFor == nil ? nil : start
+            )
+            let now = start.addingTimeInterval(row.awayFor ?? 0)
+            let label = "\(row.behavior.rawValue), away \(row.awayFor.map { "\($0)s" } ?? "never"), \(row.accounts) accounts"
+            XCTAssertEqual(
+                state.promptAtLaunch(savedAccountCount: row.accounts, at: now), row.atLaunch,
+                "cold launch: \(label)"
+            )
+            XCTAssertEqual(
+                state.promptAfterBackground(savedAccountCount: row.accounts, at: now), row.afterBackground,
+                "return: \(label)"
+            )
+        }
+    }
+
     func testLegacyLaunchStateWithoutBackgroundMarkerStillDecodes() throws {
         let legacy = Data(
             #"{"behavior":"automatic","rememberedByServerID":{},"selectionRequiredServerIDs":[]}"#.utf8
