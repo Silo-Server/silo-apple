@@ -481,6 +481,8 @@ struct AetherSubtitleOverlay: View {
         return text
     }
 
+    /// Every family draws at exactly `size`, which the caller has already
+    /// scaled to the video. Dynamic Type must not scale a named family again.
     private func font(_ family: AetherSubtitleRenderStyle.FontFamily, size: CGFloat) -> Font {
         switch family {
         case .sansSerif:
@@ -490,7 +492,7 @@ struct AetherSubtitleOverlay: View {
         case .monospace:
             return .system(size: size, weight: .semibold, design: .monospaced)
         case .custom(let name):
-            return .custom(name, size: size)
+            return .custom(name, fixedSize: size)
         }
     }
 
