@@ -174491,13 +174491,13 @@
       "localizations" : {
         "ar" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "%1$@ – %2$@"
           }
         },
         "de" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "%1$@ – %2$@"
           }
         },
@@ -174509,31 +174509,31 @@
         },
         "es" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "%1$@ – %2$@"
           }
         },
         "fr" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "%1$@ – %2$@"
           }
         },
         "ja" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "%1$@ – %2$@"
           }
         },
         "pt-BR" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "%1$@ – %2$@"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "%1$@ – %2$@"
           }
         }
@@ -174545,14 +174545,14 @@
       "localizations" : {
         "ar" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%1$@ – Present"
+            "state" : "translated",
+            "value" : "%1$@ – الآن"
           }
         },
         "de" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%1$@ – Present"
+            "state" : "translated",
+            "value" : "%1$@ – heute"
           }
         },
         "en" : {
@@ -174563,32 +174563,32 @@
         },
         "es" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%1$@ – Present"
+            "state" : "translated",
+            "value" : "%1$@ – hoy"
           }
         },
         "fr" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%1$@ – Present"
+            "state" : "translated",
+            "value" : "%1$@ – à ce jour"
           }
         },
         "ja" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%1$@ – Present"
+            "state" : "translated",
+            "value" : "%1$@ – 現在"
           }
         },
         "pt-BR" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%1$@ – Present"
+            "state" : "translated",
+            "value" : "%1$@ – Atual"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "%1$@ – Present"
+            "state" : "translated",
+            "value" : "%1$@ – 至今"
           }
         }
       }
