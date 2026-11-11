@@ -48,7 +48,7 @@ private struct AddProfileFromMenuView: View {
 
     var body: some View {
         if isUnlocked {
-            CreateProfileView { router.finishAddProfile() }
+            CreateProfileView { router.finishAddProfile(request) }
         } else {
             PINEntryView(
                 profile: request.primary,

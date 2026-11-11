@@ -64,11 +64,11 @@ final class ProfileMenuRowTests: XCTestCase {
         router.sessionOwner = { nil }
         router.setAuthState(.authenticated, reason: "test")
 
-        router.addProfileRequest = AddProfileRequest(primary: open)
+        router.addProfileRequest = AddProfileRequest(primary: open, session: nil)
         router.setAuthState(.authenticated, reason: "test")
         XCTAssertNil(router.addProfileRequest)
 
-        router.addProfileRequest = AddProfileRequest(primary: open)
+        router.addProfileRequest = AddProfileRequest(primary: open, session: nil)
         router.setAuthState(.needsLogin, reason: "test")
         XCTAssertNil(router.addProfileRequest)
     }
@@ -81,14 +81,14 @@ final class ProfileMenuRowTests: XCTestCase {
     func testALatePINCheckBelongsToTheRequestThatStartedIt() {
         let open = UserProfile(id: "p-open", name: "Open", avatarEmoji: nil, hasPin: true, isChild: false)
         let router = AppRouter()
-        let first = AddProfileRequest(primary: open)
+        let first = AddProfileRequest(primary: open, session: nil)
         router.addProfileRequest = first
         XCTAssertTrue(router.isPresenting(first))
 
         // The prompt is closed while the server checks the PIN, then the
         // row is chosen again.
         router.addProfileRequest = nil
-        let second = AddProfileRequest(primary: open)
+        let second = AddProfileRequest(primary: open, session: nil)
         router.addProfileRequest = second
 
         // The first check's late answer, whatever it is.
@@ -101,6 +101,32 @@ final class ProfileMenuRowTests: XCTestCase {
         router.closeAddProfile(second, reporting: "failure")
         XCTAssertNil(router.addProfileRequest)
         XCTAssertEqual(router.accountActionError, "failure")
+    }
+
+    /// Add Profile waits on the server twice with nothing on screen: before
+    /// the form opens and after it closes. The account or profile can change
+    /// in that time. What follows (the form, an alert, the picker) belongs
+    /// to the session the row was chosen under, and to no other.
+    func testAStepThatWaitedActsOnlyInTheSessionItStartedIn() {
+        let started = AccountScope(serverId: "server", localAccountId: "account-a", profileId: "p-1")
+        typealias Row = (now: AccountScope?, expected: Bool, what: String)
+        let rows: [Row] = [
+            (started, true, "nothing changed"),
+            (AccountScope(serverId: "server", localAccountId: "account-a", profileId: "p-2"), false, "another profile"),
+            (AccountScope(serverId: "server", localAccountId: "account-a", profileId: nil), false, "no profile open"),
+            // Profile IDs repeat across accounts on one server.
+            (AccountScope(serverId: "server", localAccountId: "account-b", profileId: "p-1"), false, "another account"),
+            (AccountScope(serverId: "other", localAccountId: "account-a", profileId: "p-1"), false, "another server"),
+            (nil, false, "no account selected"),
+        ]
+        for row in rows {
+            XCTAssertEqual(AddProfileRequest.isStillOpen(started, now: row.now), row.expected, row.what)
+        }
+
+        // Nothing was open to begin with.
+        let noProfile = AccountScope(serverId: "server", localAccountId: "account-a", profileId: nil)
+        XCTAssertFalse(AddProfileRequest.isStillOpen(noProfile, now: noProfile))
+        XCTAssertFalse(AddProfileRequest.isStillOpen(nil, now: nil))
     }
 
     /// After a create, the picker shows unless a fresh list positively shows

@@ -64,6 +64,9 @@ struct AddProfileRequest: Identifiable, Equatable {
     /// The account's primary profile, which manages its profiles: with one
     /// profile, the open one.
     let primary: UserProfile
+    /// The server, account and profile the row was chosen under. What
+    /// follows a create belongs to that session only.
+    let session: AccountScope?
 
     /// What choosing Add Profile does.
     enum Start: Equatable {
@@ -93,6 +96,17 @@ struct AddProfileRequest: Identifiable, Equatable {
     /// doesn't.
     static func showsPicker(afterCreateWith freshProfileCount: Int?) -> Bool {
         freshProfileCount != 1
+    }
+
+    /// Whether the session a step started in is still the one open: the
+    /// same server, account and profile. A step that waited on the server
+    /// acts only then, so a late answer never opens the form, the picker
+    /// or an alert over the account or profile that replaced it. Profile
+    /// IDs repeat across accounts on one server, so all three are compared.
+    /// False when no profile was open to begin with.
+    static func isStillOpen(_ started: AccountScope?, now current: AccountScope?) -> Bool {
+        guard let started, started.profileId != nil else { return false }
+        return started == current
     }
 }
 
@@ -201,15 +215,20 @@ extension AppRouter {
     /// asked first when it has one.
     func beginAddProfile() {
         guard addProfileRequest == nil, authState == .authenticated else { return }
+        let session = AccountScope.current
         Task { @MainActor in
             // A fresh list, so a PIN set on another device is asked for; the
             // cached one when the server can't be reached.
             let cached: [UserProfile]? = ResponseCache.shared.get(CacheKey.profiles)
             let profiles = (try? await StartupContentPrefetcher.fetchProfiles()) ?? cached ?? []
-            guard authState == .authenticated else { return }
-            switch AddProfileRequest.start(profiles: profiles, openProfileID: AuthService.shared.profileId) {
+            // The menu closed before the list was asked for, so the account
+            // or profile can have changed meanwhile. The list, and a cached
+            // one above all, then belongs to the session that was replaced.
+            guard authState == .authenticated,
+                  AddProfileRequest.isStillOpen(session, now: AccountScope.current) else { return }
+            switch AddProfileRequest.start(profiles: profiles, openProfileID: session?.profileId) {
             case .form(let primary):
-                addProfileRequest = AddProfileRequest(primary: primary)
+                addProfileRequest = AddProfileRequest(primary: primary, session: session)
             case .picker:
                 switchProfile()
             case .unavailable:
@@ -234,15 +253,21 @@ extension AppRouter {
         if let error { accountActionError = error }
     }
 
-    /// The new-profile form closed after creating a profile, or after a
-    /// create whose answer never arrived: the account's picker shows, as it
-    /// does after adding from the picker. The screen underneath stays only
-    /// when a fresh list shows that nothing was added.
-    func finishAddProfile() {
-        addProfileRequest = nil
+    /// `request`'s new-profile form closed after creating a profile, or
+    /// after a create whose answer never arrived: the account's picker
+    /// shows, as it does after adding from the picker. The screen underneath
+    /// stays when a fresh list shows that nothing was added.
+    ///
+    /// The form is closed while the list is read, so the account or profile
+    /// can change meanwhile, and a read that fails for that reason looks
+    /// like one that couldn't be made. The picker therefore shows only
+    /// while the session the request was made in is still the one open.
+    func finishAddProfile(_ request: AddProfileRequest) {
+        closeAddProfile(request)
         Task { @MainActor in
             let freshCount = (try? await StartupContentPrefetcher.fetchProfiles())?.count
             guard authState == .authenticated,
+                  AddProfileRequest.isStillOpen(request.session, now: AccountScope.current),
                   AddProfileRequest.showsPicker(afterCreateWith: freshCount) else { return }
             switchProfile()
         }
