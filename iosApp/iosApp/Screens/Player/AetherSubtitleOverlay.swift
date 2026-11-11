@@ -44,6 +44,13 @@ struct AetherSubtitleOverlay: View {
     var body: some View {
         GeometryReader { geometry in
             let videoRect = displayedVideoRect(in: geometry.size)
+            // Fill crops the picture to the surface, so the part of it on
+            // screen is the whole surface. Text with no place of its own is
+            // laid out there; measured against the cropped edges it would be
+            // cut off with them.
+            let textRect = engine.videoGravity == .resizeAspectFill
+                ? CGRect(origin: .zero, size: geometry.size)
+                : videoRect
             // Built once per evaluation: it sanitizes the appearance and
             // parses its colors, and every cue below needs it.
             let style = AetherSubtitleRenderStyle(appearance: appearance)
@@ -52,14 +59,14 @@ struct AetherSubtitleOverlay: View {
                     ASSSubtitleLayer(session: assSubtitles, videoRect: videoRect, delaySeconds: subtitleDelaySeconds)
                 } else {
                     cueLayer(activeCues(primaryCursor, of: primary, usesMovieTimeline: primaryUsesMovieTimeline),
-                             style: style, videoRect: videoRect, secondary: false)
+                             style: style, videoRect: videoRect, textRect: textRect, secondary: false)
                 }
                 cueLayer(activeCues(secondaryCursor, of: secondary, usesMovieTimeline: secondaryUsesMovieTimeline),
-                         style: style, videoRect: videoRect, secondary: true)
+                         style: style, videoRect: videoRect, textRect: textRect, secondary: true)
                 liveCueLayer(activeLiveCues(livePrimaryCursor, in: livePrimaryCues),
-                             style: style, videoRect: videoRect, secondary: false)
+                             style: style, videoRect: textRect, secondary: false)
                 liveCueLayer(activeLiveCues(liveSecondaryCursor, in: liveSecondaryCues),
-                             style: style, videoRect: videoRect, secondary: true)
+                             style: style, videoRect: textRect, secondary: true)
             }
         }
         .allowsHitTesting(false)
@@ -153,14 +160,18 @@ struct AetherSubtitleOverlay: View {
         }
     }
 
+    /// Bitmap cues and text with an authored position are placed on the
+    /// picture, at `videoRect`. Other text is laid out in `textRect`.
     @ViewBuilder
     private func cueLayer(
         _ cues: [SubtitleCue],
         style: AetherSubtitleRenderStyle,
         videoRect: CGRect,
+        textRect: CGRect,
         secondary: Bool
     ) -> some View {
         ForEach(cues) { cue in
+            let layoutRect = cue.placement?.position == nil ? textRect : videoRect
             switch cue.body {
             case .image(let subtitleImage):
                 let rect = bitmapRect(subtitleImage, videoRect: videoRect)
@@ -170,20 +181,20 @@ struct AetherSubtitleOverlay: View {
                     .position(x: rect.midX, y: rect.midY)
             case .text(let value):
                 positionedText(
-                    styledPlainText(value, style: style, videoRect: videoRect),
+                    styledPlainText(value, style: style, videoRect: layoutRect),
                     placement: cue.placement,
                     style: style,
-                    videoRect: videoRect,
+                    videoRect: layoutRect,
                     secondary: secondary
                 )
             case .richText(let runs):
                 positionedText(
                     runs.reduce(Text("")) { accumulated, run in
-                        Text("\(accumulated)\(styledText(run, style: style, videoRect: videoRect))") // i18n-ignore: joins two Text values
+                        Text("\(accumulated)\(styledText(run, style: style, videoRect: layoutRect))") // i18n-ignore: joins two Text values
                     },
                     placement: cue.placement,
                     style: style,
-                    videoRect: videoRect,
+                    videoRect: layoutRect,
                     secondary: secondary
                 )
             }
