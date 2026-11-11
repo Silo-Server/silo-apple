@@ -408,8 +408,12 @@ struct BrowseView: View {
     private func jump(to letter: String) {
         pendingJump?.cancel()
         let commands = gridCommands
+        let list = viewModel.listIdentity
         pendingJump = Task {
-            guard let position = await viewModel.position(forJumpTo: letter), !Task.isCancelled else { return }
+            guard let position = await viewModel.position(forJumpTo: letter), !Task.isCancelled,
+                  // A sort, filter or library change while the jump waited
+                  // put a different list in the grid.
+                  viewModel.listIdentity == list else { return }
             commands.scroll(toPosition: position)
         }
     }

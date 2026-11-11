@@ -271,5 +271,7 @@ enum CacheKey {
         // watch-status filters make a page profile-specific.
         "tvlibrary:",
         "catalogFilters:",
+        // Letter indexes count what the profile may see.
+        "browseletters:",
     ]
 }

@@ -52,7 +52,10 @@ final class BrowseViewModelTests: XCTestCase {
             .json(200, Self.page(titles(129..<130))),
         ])
         let cacheKey = CacheKey.browse(libraryId: 811, filterKey: CatalogFilterState.none.cacheKeyFragment)
-        defer { ResponseCache.shared.remove(cacheKey) }
+        defer {
+            ResponseCache.shared.remove(cacheKey)
+            ResponseCache.shared.remove("browseletters:" + cacheKey)
+        }
         let viewModel = BrowseViewModel(
             readFirstPage: { libraryId, state, mediaScope in
                 try await api.catalogPage(CatalogQueryBuilder.build(
@@ -139,6 +142,46 @@ final class BrowseViewModelTests: XCTestCase {
         // keeps the titles already read.
         await viewModel.loadLetterIndex()
         XCTAssertTrue(viewModel.pager === pager)
+    }
+
+    func testAJumpToALoadedLetterOverridesAnEarlierJumpStillLoading() async throws {
+        let stub = APIv2TestStub()
+        let api = try await stubbedAPI(stub)
+        let letters = #"{"total":130,"letters":[{"letter":"A","count":70,"position":0},{"letter":"Y","count":60,"position":70}],"runs":[{"letter":"A","position":0},{"letter":"Y","position":70}]}"#
+        stub.sequence([
+            .json(200, Self.page(["movie:alien", "movie:avatar"], nextCursor: "cursor-2")),
+            .json(200, letters),
+            .json(200, Self.page(["movie:yojimbo"])),
+        ])
+        let cacheKey = CacheKey.browse(libraryId: 812, filterKey: CatalogFilterState.none.cacheKeyFragment)
+        defer {
+            ResponseCache.shared.remove(cacheKey)
+            ResponseCache.shared.remove("browseletters:" + cacheKey)
+        }
+        let viewModel = BrowseViewModel(
+            readFirstPage: { libraryId, state, mediaScope in
+                try await api.catalogPage(CatalogQueryBuilder.build(
+                    state, libraryId: libraryId, mediaType: .movie, limit: 60, includeType: false, enforcedScope: mediaScope
+                ))
+            },
+            readPage: { try await api.catalogPage($0) },
+            readLetters: { try await api.catalogLetters($0) }
+        )
+        await viewModel.configure(libraryId: 812, libraryType: "movies")
+        await viewModel.loadItems(reset: true)
+        await viewModel.loadLetterIndex()
+
+        stub.hold(path: "/api/v2/catalog")
+        let toY = Task { await viewModel.jump(to: "Y", columns: 3) }
+        await stub.waitUntilHeld()
+        let toA = await viewModel.jump(to: "A", columns: 3)
+        stub.release()
+        let staleY = await toY.value
+
+        XCTAssertEqual(toA, "movie:alien")
+        XCTAssertNil(staleY, "the later jump wins")
+        XCTAssertEqual(viewModel.items.first?.contentId, "movie:alien")
+        XCTAssertFalse(viewModel.hasEarlier)
     }
 
     private func stubbedAPI(_ stub: APIv2TestStub) async throws -> SiloAPI {

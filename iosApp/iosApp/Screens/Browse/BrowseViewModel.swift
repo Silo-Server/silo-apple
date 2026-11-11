@@ -37,6 +37,15 @@ class BrowseViewModel {
     /// After a jump, the grid pages by list position in both directions
     /// instead of following page 1's continuation.
     private var pagesByPosition = false
+    /// List position after the last title read below a jump. Duplicates
+    /// dropped from `items` would make `windowStart + items.count` fall short
+    /// of it and read the same titles again.
+    private var windowEnd = 0
+    /// Bumped by every jump, so a jump still waiting for its titles gives way
+    /// to a later one, including a later jump to a letter already loaded.
+    private var jumpGeneration = 0
+    /// Bumped by every letter-index read; only the latest one publishes.
+    private var letterIndexRead = 0
     /// The list `pager` reads, as `currentCacheKey` named it.
     private var pagerKey: String?
     private var isLoadingEarlier = false
@@ -97,6 +106,8 @@ class BrowseViewModel {
         mediaType = mediaScope.map { $0 == .movie ? .movie : .series } ?? resolvedMediaType
 
         if libraryChanged {
+            // Another library may have a letter index where the last didn't.
+            offersLetterIndex = true
             // A load-more during the metadata await read the old library or
             // type under the new generation; drop it before the new scope loads.
             invalidatePages()
@@ -263,13 +274,21 @@ class BrowseViewModel {
         }
         let configuration = configurationGeneration
         let key = currentCacheKey
+        letterIndexRead += 1
+        let myRead = letterIndexRead
+        // Captured before the read, so a cache cleared meanwhile (a profile
+        // switch) isn't filled again with this answer.
+        let writeToken = ResponseCache.shared.writeToken
         do {
             let index = try await readLetters(titleQuery(limit: 1))
-            guard configuration == configurationGeneration, key == currentCacheKey, !Task.isCancelled else { return }
+            guard configuration == configurationGeneration, key == currentCacheKey,
+                  myRead == letterIndexRead, !Task.isCancelled else { return }
+            // A list that changed shape changed its pages too; read them again.
+            let changed = index != letterIndex
             letterIndex = index
             offersLetterIndex = index != nil
-            if let index { ResponseCache.shared.set(index, for: lettersCacheKey) }
-            syncPager(rereadsTitles: rereadsTitles)
+            if let index { ResponseCache.shared.set(index, for: lettersCacheKey, fetchedAt: writeToken) }
+            syncPager(rereadsTitles: rereadsTitles || changed)
         } catch {
             // Keep the index already shown; the next load from the top asks again.
         }
@@ -339,8 +358,11 @@ class BrowseViewModel {
     /// starts over from a few rows above the letter, aligned to `columns` so
     /// every title keeps its column as earlier titles load above it.
     func jump(to letter: String, columns: Int) async -> String? {
+        jumpGeneration += 1
+        let myJump = jumpGeneration
         guard let letterIndex, let position = letterIndex.position(of: letter) else { return nil }
-        if position >= windowStart, position < windowStart + items.count {
+        let loadedEnd = pagesByPosition ? windowEnd : items.count
+        if position >= windowStart, position < loadedEnd, items.indices.contains(position - windowStart) {
             return items[position - windowStart].id
         }
         let columns = max(columns, 1)
@@ -353,12 +375,14 @@ class BrowseViewModel {
         generation += 1
         let myGeneration = generation
         isLoadingEarlier = false
-        guard let read = try? await readPage(query), myGeneration == generation else { return nil }
+        guard let read = try? await readPage(query), myGeneration == generation,
+              myJump == jumpGeneration else { return nil }
         items = Self.unique(read.response.items)
         windowStart = start
+        windowEnd = start + read.response.items.count
         pagesByPosition = true
         continuation = nil
-        hasMore = start + items.count < letterIndex.total && !items.isEmpty
+        hasMore = windowEnd < letterIndex.total && !read.response.items.isEmpty
         isLoading = false
         let offset = position - start
         return items.indices.contains(offset) ? items[offset].id : items.last?.id
@@ -390,14 +414,15 @@ class BrowseViewModel {
         let myGeneration = generation
         isLoading = true
         var query = titleQuery(limit: Self.windowPageSize)
-        query.seek = windowStart + items.count
+        query.seek = windowEnd
         let read = try? await readPage(query)
         guard myGeneration == generation else { return }
         isLoading = false
         guard let read else { return }
         let shown = Set(items.map(\.id))
         items.append(contentsOf: read.response.items.filter { !shown.contains($0.id) })
-        hasMore = !read.response.items.isEmpty && windowStart + items.count < total
+        windowEnd += read.response.items.count
+        hasMore = !read.response.items.isEmpty && windowEnd < total
     }
 
     private static func unique(_ items: [BrowseItem]) -> [BrowseItem] {
@@ -415,6 +440,7 @@ class BrowseViewModel {
     /// Back to paging forward from the first title.
     private func closeWindow() {
         windowStart = 0
+        windowEnd = 0
         pagesByPosition = false
         isLoadingEarlier = false
     }
