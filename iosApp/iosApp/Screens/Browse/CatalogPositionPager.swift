@@ -80,6 +80,9 @@ final class CatalogPositionPager {
         guard !first.isEmpty else { return }
         for page in pageNumbers(0..<min(first.count, total)) {
             pages[page] = nil
+            failed.remove(page)
+            // A read already under way would put older titles back.
+            reads.removeValue(forKey: page)?.task.cancel()
         }
         seed(first)
         pump()

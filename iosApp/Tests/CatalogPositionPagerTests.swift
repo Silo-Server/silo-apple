@@ -154,6 +154,22 @@ final class CatalogPositionPagerTests: XCTestCase {
         XCTAssertGreaterThan(server.starts.filter { $0 == 100 }.count, readsBefore)
     }
 
+    func testAReadUnderWayDoesNotUndoFreshTitlesFromTheTop() async {
+        let server = Server(total: 250)
+        server.holdsReads = true
+        let pager = server.pager()
+        pager.show(0..<15)
+        await eventually { server.starts.contains(0) }
+
+        var fresh = Server.titles(0..<100)
+        fresh[0] = Server.titles(500..<501)[0]
+        pager.replaceFromTop(fresh)
+        server.releaseReads()
+        await eventually { pager.isLoaded(100..<200) }
+
+        XCTAssertEqual(pager.item(at: 0)?.contentId, "movie:t500")
+    }
+
     func testACancelledPagerStopsReading() async {
         let server = Server(total: 1000)
         server.holdsReads = true
