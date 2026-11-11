@@ -101,6 +101,29 @@ final class ProfilesV2Tests: XCTestCase {
         XCTAssertEqual(stub.requestedPaths, ["/api/v2/profiles"])
     }
 
+    /// The server answers 404 when a request names a deleted profile, so the
+    /// list read must not name the active one.
+    func testListProfilesDoesNotNameTheActiveProfile() async throws {
+        let (api, tokens) = try await client()
+        // A profile proof belongs to a signed-in account, so sign in first.
+        let signedIn = await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
+        XCTAssertTrue(signedIn)
+        addTeardownBlock { _ = await tokens.clearTokens() }
+        await tokens.setProfileId("p-deleted")
+        let savedProof = await tokens.setProfileToken("proof")
+        XCTAssertTrue(savedProof)
+        stub.reply(200, #"{"items":[\#(try profileJSON())]}"#)
+
+        let profiles = try await api.listProfiles()
+
+        XCTAssertEqual(profiles.map(\.id), ["p-owner"])
+        let request = try XCTUnwrap(stub.requests.first)
+        XCTAssertEqual(request.header("X-Profile-Id") ?? "", "")
+        // On a playback handoff the server declares the bound profile itself
+        // and checks this proof.
+        XCTAssertEqual(request.header("X-Profile-Token"), "proof")
+    }
+
     func testProfileListReportsWhetherTheServerAcceptsRequestsAllowed() async throws {
         let api = try await api()
         stub.reply(200, #"{"items":[\#(try profileJSON())],"requests_allowed_supported":true}"#)
@@ -112,6 +135,19 @@ final class ProfilesV2Tests: XCTestCase {
         stub.reply(200, #"{"items":[\#(try profileJSON())]}"#)
         let unsupported = try await api.householdProfileList()
         XCTAssertFalse(unsupported.requestsAllowedSupported)
+    }
+
+    func testProfileListCarriesTheAccountsProfileLimit() async throws {
+        let api = try await api()
+        stub.reply(200, #"{"items":[\#(try profileJSON())],"max_profiles":1}"#)
+        let capped = try await api.householdProfileList()
+        XCTAssertEqual(capped.maxProfiles, 1)
+
+        // A remote-playback handoff, a limit the server could not read and
+        // an older server omit the member.
+        stub.reply(200, #"{"items":[\#(try profileJSON())]}"#)
+        let unknown = try await api.householdProfileList()
+        XCTAssertNil(unknown.maxProfiles)
     }
 
     func testProfileRequestsAllowedDecodesAndIsAbsentOnAnOlderServer() throws {
@@ -137,6 +173,84 @@ final class ProfilesV2Tests: XCTestCase {
         XCTAssertEqual(stub.requests.first?.url?.absoluteString,
                        "https://profiles.example/api/v2/profiles/p%2F2/verify-pin")
         XCTAssertEqual(try body(XCTUnwrap(stub.requests.first)) as? [String: String], ["pin": "1234"])
+    }
+
+    /// Add Profile in the profile menu asks for the open primary profile's
+    /// PIN. The proof the server returns for that PIN must replace the stored
+    /// one, or a create is still sent with a proof that went stale when the
+    /// PIN was set or changed elsewhere.
+    func testRenewingTheOpenProfilesProofInstallsTheOneTheServerReturns() async throws {
+        let (api, tokens) = try await client()
+        await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
+        let accountValue = await tokens.refreshAccountIdentity()
+        let account = try XCTUnwrap(accountValue)
+        let opened = await tokens.activateProfile(profileID: "p-owner", profileToken: "pvt_stale", expectedAccount: account)
+        XCTAssertTrue(opened)
+        let auth = AuthService(tokenStore: tokens)
+        let verify: @Sendable (String, String) async throws -> String? = {
+            try await api.verifyProfileSelection(profileId: $0, pin: $1)
+        }
+
+        stub.reply(200, #"{"valid":true,"profile_token":"pvt_fresh","expires_at":null}"#)
+        try await auth.renewOpenProfileProof(profileId: "p-owner", pin: "1234", verify: verify)
+        var proof = await tokens.getProfileToken()
+        var profileID = await tokens.getProfileId()
+        XCTAssertEqual(proof, "pvt_fresh")
+        XCTAssertEqual(profileID, "p-owner")
+
+        // A wrong PIN leaves the stored proof alone.
+        stub.reply(200, #"{"valid":false,"expires_at":null}"#)
+        do {
+            try await auth.renewOpenProfileProof(profileId: "p-owner", pin: "0000", verify: verify)
+            XCTFail("A PIN the server rejected must throw")
+        } catch ProfileTransitionError.incorrectPIN {}
+        proof = await tokens.getProfileToken()
+        XCTAssertEqual(proof, "pvt_fresh")
+
+        // Another profile's PIN is never checked here: the open profile
+        // cannot change, and no request is sent.
+        let sent = stub.requests.count
+        do {
+            try await auth.renewOpenProfileProof(profileId: "p-other", pin: "1234", verify: verify)
+            XCTFail("Only the open profile's proof can be renewed")
+        } catch ProfileTransitionError.identityChanged {}
+        proof = await tokens.getProfileToken()
+        profileID = await tokens.getProfileId()
+        XCTAssertEqual(stub.requests.count, sent)
+        XCTAssertEqual(proof, "pvt_fresh")
+        XCTAssertEqual(profileID, "p-owner")
+    }
+
+    /// The server's answer to the PIN can arrive after the open profile was
+    /// closed (Every Time on a return from the background) or replaced by
+    /// another. The late proof must not put the old profile back.
+    func testALatePINAnswerCannotReopenAProfileThatWasClosedOrReplaced() async throws {
+        for replacement in [nil, "p-other"] as [String?] {
+            let (_, tokens) = try await client()
+            await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
+            let accountValue = await tokens.refreshAccountIdentity()
+            let account = try XCTUnwrap(accountValue)
+            let opened = await tokens.activateProfile(profileID: "p-owner", profileToken: "pvt_stale", expectedAccount: account)
+            XCTAssertTrue(opened)
+
+            do {
+                try await AuthService(tokenStore: tokens).renewOpenProfileProof(profileId: "p-owner", pin: "1234") { _, _ in
+                    // The open profile changes while the server checks the PIN.
+                    if let replacement {
+                        _ = await tokens.activateProfile(profileID: replacement, profileToken: "pvt_other", expectedAccount: account)
+                    } else {
+                        _ = await tokens.deactivateProfile(expectedAccount: account, expectedProfileID: "p-owner")
+                    }
+                    return "pvt_late"
+                }
+                XCTFail("A proof for a profile that is no longer open must be refused")
+            } catch ProfileTransitionError.identityChanged {}
+
+            let profileID = await tokens.getProfileId()
+            let proof = await tokens.getProfileToken()
+            XCTAssertEqual(profileID, replacement)
+            XCTAssertEqual(proof, replacement == nil ? nil : "pvt_other")
+        }
     }
 
     func testWrongPINIsReportedAsAnIncorrectPINNotAnExpiredSession() async throws {

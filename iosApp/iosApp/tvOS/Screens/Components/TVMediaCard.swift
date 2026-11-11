@@ -213,9 +213,14 @@ struct TVMediaCard: View {
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 
             if let overlayData, overlayStore.enabled {
-                CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
-                    .frame(width: resolvedCardWidth, height: cardHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+                CardOverlays(
+                    data: overlayData,
+                    prefs: overlayStore.prefs,
+                    variant: .poster,
+                    images: overlayStore.images
+                )
+                .frame(width: resolvedCardWidth, height: cardHeight)
+                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
             if let boxSet {
@@ -229,10 +234,13 @@ struct TVMediaCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
-            if isPlayed {
-                watchedBadge
-                    .padding(12)
-            }
+            // Shown whether or not badges are on.
+            CardWatchStatus(
+                played: isPlayed,
+                episodesLeft: personalState.episodesLeft(userState),
+                cardWidth: resolvedCardWidth
+            )
+            .frame(width: resolvedCardWidth, height: cardHeight)
 
             if marksCurrentFilm {
                 BoxSetCurrentFilmMarker(showsOutline: !isFocused)
@@ -266,18 +274,6 @@ struct TVMediaCard: View {
         }
         .multilineTextAlignment(.center)
         .frame(width: resolvedCardWidth, alignment: .center)
-    }
-
-    private var watchedBadge: some View {
-        ZStack {
-            Circle()
-                .fill(Color.siloOnSurface)
-                .frame(width: 40, height: 40)
-                .shadow(color: .black.opacity(0.3), radius: 4)
-            Image(systemName: "checkmark")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundColor(Color.siloBackground)
-        }
     }
 
     private var accessibilityDescription: String {

@@ -190,7 +190,8 @@ struct EpisodeThumbCard: View {
                 CardOverlays(
                     data: resolvedOverlayData,
                     prefs: overlayStore.prefs,
-                    variant: .wide
+                    variant: .wide,
+                    images: overlayStore.images
                 )
                 .frame(width: cardWidth, height: cardHeight)
                 .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))

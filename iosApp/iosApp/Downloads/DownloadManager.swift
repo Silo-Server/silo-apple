@@ -62,8 +62,11 @@ final class DownloadManager {
     private(set) var file: DownloadStoreFile = .empty {
         didSet {
             rebuildDownloadedIndex()
-            let enabled = file.capability?.isUsable == true
+            let access = file.capability?.access
+            let enabled = access == .usable
             if enabled != downloadsEnabled { downloadsEnabled = enabled }
+            let restricted = access == .restricted
+            if restricted != downloadsRestricted { downloadsRestricted = restricted }
             syncLiveActivity()
         }
     }
@@ -280,6 +283,10 @@ final class DownloadManager {
     /// whole `file` blob — reassigned on every transfer progress tick — as
     /// their observed state.
     private(set) var downloadsEnabled: Bool = false
+    /// Stored mirror of `capability?.access == .restricted`, kept the same
+    /// way: the server offers downloads and this account's policy denies
+    /// them, so title pages show Download as unavailable.
+    private(set) var downloadsRestricted: Bool = false
     /// Leaf ids currently waiting for POST /downloads to return. This belongs
     /// to the manager (rather than one button) so a detail rebuild cannot make
     /// the preparing indicator disappear during registration. Each pending id

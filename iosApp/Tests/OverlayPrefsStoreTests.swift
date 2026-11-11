@@ -132,6 +132,44 @@ final class OverlayPrefsStoreTests: XCTestCase {
         XCTAssertEqual(requestedKeys, ["ui.card_overlays", "ui.card_overlays_enabled"])
     }
 
+    func testListedBadgeImagesResolveAgainstTheServerAndUnlistedRefsAreDropped() async throws {
+        let listed = String(repeating: "a", count: 64) + ".webp"
+        let deleted = String(repeating: "b", count: 64) + ".webp"
+        let stub = StubURLProtocol.Handler()
+        stub.route(StubURLProtocol.pathSuffix(Self.configPath)) { _ in
+            .json(#"""
+            {"enabled":true,"quick_actions_enabled":false,"quick_actions_default":"both",
+             "images":[{"ref":"\#(listed)","name":"4K","url":"/api/v2/overlay-images/\#(listed)",
+                        "width":300,"height":120}],
+             "image_uploads_available":true}
+            """#)
+        }
+        stub.route(StubURLProtocol.pathSuffix(Self.effectivePath)) { _ in
+            .json(#"""
+            {"items":[{"key":"ui.card_overlays","value":{"version":2,"preset":"classic","order":[],"items":{
+               "resolution":{"enabled":true,"position":"top-left","image":"\#(deleted)",
+                             "valueImages":{"2160p":"\#(listed)","1080p":"\#(deleted)"}}}},
+             "source":"profile","scope":"profile"}],"revision":99}
+            """#)
+        }
+        let (api, _) = try await makeAPI(stub: stub, profileId: "profile-a")
+        let store = OverlayPrefsStore(api: api)
+
+        await store.refresh()
+
+        XCTAssertNil(store.lastError)
+        XCTAssertEqual(
+            store.images,
+            [listed: OverlayImageAsset(
+                url: try XCTUnwrap(URL(string: "https://overlay.example/api/v2/overlay-images/\(listed)")),
+                aspectRatio: 2.5
+            )]
+        )
+        let resolution = try XCTUnwrap(store.prefs.items[.resolution])
+        XCTAssertNil(resolution.image, "a deleted image must not cost a request per card")
+        XCTAssertEqual(resolution.valueImages, ["2160p": listed])
+    }
+
     func testProfileChoiceOverridesTheServerDefaultInEitherDirection() async throws {
         // (server default, profile choice, expected)
         let cases: [(Bool, Bool?, Bool)] = [

@@ -85,11 +85,32 @@ struct MediaItemUserState: Codable, Hashable {
     let played: Bool
     let isFavorite: Bool
     let inWatchlist: Bool
+    /// Episodes the profile has watched, and available episodes it has not.
+    /// The v2 catalog sends them only for a series or season the profile has
+    /// not finished.
+    var watchedCount: Int? = nil
+    var unplayedCount: Int? = nil
 
-    init(played: Bool = false, isFavorite: Bool = false, inWatchlist: Bool = false) {
+    init(
+        played: Bool = false,
+        isFavorite: Bool = false,
+        inWatchlist: Bool = false,
+        watchedCount: Int? = nil,
+        unplayedCount: Int? = nil
+    ) {
         self.played = played
         self.isFavorite = isFavorite
         self.inWatchlist = inWatchlist
+        self.watchedCount = watchedCount
+        self.unplayedCount = unplayedCount
+    }
+
+    /// The episodes a started, unfinished series or season has left, or nil.
+    /// An untouched one has none to show: its count would be on every new
+    /// show. Mirrors `remainingEpisodes` in web's `CardWatchStatus.tsx`.
+    var episodesLeft: Int? {
+        guard !played, (watchedCount ?? 0) > 0, let unplayedCount, unplayedCount > 0 else { return nil }
+        return unplayedCount
     }
 }
 

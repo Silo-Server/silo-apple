@@ -206,6 +206,8 @@ final class DetailDismissalNavigationTests: XCTestCase {
     func testCloseButtonWaitsForTapInEveryPhase() async throws {
         let model = PlayerViewModel()
         defer { model.cleanup() }
+        // Each phase taps twice in a row and expects the second tap to hide.
+        model.controlsTapGrace = .zero
         for phase in ["loading", "playing", "next-up", "error"] {
             model.isLoading = phase == "loading"
             model.showNextUpScreen = phase == "next-up"

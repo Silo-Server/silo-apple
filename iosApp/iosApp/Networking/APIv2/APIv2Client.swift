@@ -194,6 +194,17 @@ struct APIv2Client: Sendable {
 
     func settingsRead(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
                       expectedIdentity: HTTPRequestIdentity? = nil, profileRequired: Bool = false) async throws -> Data {
+        try await settingsResponse(
+            path, query: query, profileID: profileID,
+            expectedIdentity: expectedIdentity, profileRequired: profileRequired
+        ).data
+    }
+
+    /// `settingsRead` with the response's URL, for a reply whose
+    /// server-relative paths are resolved while decoding.
+    func settingsResponse(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
+                          expectedIdentity: HTTPRequestIdentity? = nil,
+                          profileRequired: Bool = false) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         if profileRequired && auth.profileId == nil { throw SettingsAPIError.profileRequired }
@@ -208,7 +219,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 200 else { throw APIv2Error.incompleteCatalogRead }
-        return response.data
+        return response
     }
 
     /// The settings value writes (`APIv2Client+Settings.swift`), under the same
@@ -349,21 +360,25 @@ struct APIv2Client: Sendable {
     }
 
     private func householdRequest<T: Decodable>(_ method: String, path: String, query: [String: String] = [:],
-                                                body: Data? = nil, status: Int) async throws -> T {
-        let response = try await householdResponse(method, path: path, query: query, body: body)
+                                                body: Data? = nil, status: Int, namesProfile: Bool = true) async throws -> T {
+        let response = try await householdResponse(method, path: path, query: query, body: body, namesProfile: namesProfile)
         guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
         return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 
+    /// `namesProfile: false` sends an empty `X-Profile-Id` even while a
+    /// profile is active, as the profile picker does before one is chosen.
+    /// The profile's PIN proof stays attached: on a playback handoff the
+    /// server declares the bound profile itself and checks that proof.
     private func householdResponse(_ method: String, path: String, query: [String: String] = [:], body: Data? = nil,
-                                   acceptedStatuses: Set<Int> = []) async throws -> HTTPRawResponse {
+                                   acceptedStatuses: Set<Int> = [], namesProfile: Bool = true) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
+        let identity = namesProfile ? auth.profileId.map { Self.requestIdentity(auth, profile: $0) } : nil
         return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: path, query: query, body: body,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
+                    headers: identity == nil ? ["X-Profile-Id": ""] : [:],
                     requestIdentity: identity, acceptedStatuses: acceptedStatuses,
                     expectedAccount: auth.account, expectedAuth: auth)
             }
@@ -375,13 +390,17 @@ struct APIv2Client: Sendable {
     }
 
     /// The household's profiles together with the optional profile members
-    /// this server accepts on create and update.
+    /// this server accepts on create and update. The list belongs to the
+    /// account, and the server answers 404 when a request names a deleted
+    /// profile, so this read sends no profile ID.
     func householdProfileList() async throws -> HouseholdProfileList {
-        let collection: APIv2ProfileCollection = try await householdRequest("GET", path: "/api/v2/profiles", status: 200)
+        let collection: APIv2ProfileCollection = try await householdRequest("GET", path: "/api/v2/profiles", status: 200,
+            namesProfile: false)
         let rows = try collection.completeItems()
         guard Set(rows.map(\.id)).count == rows.count else { throw APIv2Error.incompleteCollection }
         return HouseholdProfileList(profiles: rows.map(\.asUserProfile),
-            requestsAllowedSupported: collection.requestsAllowedSupported == true)
+            requestsAllowedSupported: collection.requestsAllowedSupported == true,
+            maxProfiles: collection.maxProfiles)
     }
 
     func createHouseholdProfile(_ body: CreateProfileRequestBody) async throws -> UserProfile {

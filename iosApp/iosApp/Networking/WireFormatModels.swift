@@ -49,6 +49,9 @@ struct HouseholdProfileList {
     let profiles: [UserProfile]
     /// The server accepts `requests_allowed` on profile create and update.
     let requestsAllowedSupported: Bool
+    /// How many profiles the account may have; nil when the server didn't
+    /// say (`APIv2ProfileCollection.maxProfiles`).
+    let maxProfiles: Int?
 }
 
 // MARK: - Library collections

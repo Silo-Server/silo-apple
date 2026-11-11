@@ -9,7 +9,7 @@ enum ProfileLaunchBehavior: String, Codable, CaseIterable, Identifiable, Sendabl
 
     var id: String { rawValue }
 
-    /// How long Silo can be away before Who's Watching is shown again.
+    /// How long Silo can be away before a profile has to be chosen again.
     /// `nil` for the untimed behaviors.
     var awayTimeout: TimeInterval? {
         switch self {

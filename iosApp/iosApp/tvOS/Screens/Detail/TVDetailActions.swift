@@ -674,17 +674,22 @@ struct TVPillButtonStyle: ButtonStyle {
     let focusTreatment: FocusTreatment
     let stabilizesFocusMotion: Bool
     let fixedWidth: CGFloat?
+    /// Drawn focused without holding focus: the player's press capture owns
+    /// the remote and sends Select here.
+    let isSelectTarget: Bool
 
     init(
         kind: Kind,
         focusTreatment: FocusTreatment = .hero,
         stabilizesFocusMotion: Bool = false,
-        fixedWidth: CGFloat? = nil
+        fixedWidth: CGFloat? = nil,
+        isSelectTarget: Bool = false
     ) {
         self.kind = kind
         self.focusTreatment = focusTreatment
         self.stabilizesFocusMotion = stabilizesFocusMotion
         self.fixedWidth = fixedWidth
+        self.isSelectTarget = isSelectTarget
     }
 
     func makeBody(configuration: Configuration) -> some View {
@@ -693,7 +698,8 @@ struct TVPillButtonStyle: ButtonStyle {
             kind: kind,
             focusTreatment: focusTreatment,
             stabilizesFocusMotion: stabilizesFocusMotion,
-            fixedWidth: fixedWidth
+            fixedWidth: fixedWidth,
+            isSelectTarget: isSelectTarget
         )
     }
 }
@@ -704,8 +710,11 @@ private struct TVPillButtonBody: View {
     let focusTreatment: TVPillButtonStyle.FocusTreatment
     let stabilizesFocusMotion: Bool
     let fixedWidth: CGFloat?
+    let isSelectTarget: Bool
 
-    @Environment(\.isFocused) private var isFocused
+    @Environment(\.isFocused) private var hasFocus
+
+    private var isFocused: Bool { hasFocus || isSelectTarget }
 
     var body: some View {
         configuration.label
