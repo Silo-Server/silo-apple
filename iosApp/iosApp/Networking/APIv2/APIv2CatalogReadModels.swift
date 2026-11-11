@@ -442,11 +442,13 @@ enum APIv2CatalogRead {
         let colorTransfer: String?
         let dolbyVision: String?
         let frameRate: String?
+        let hdr10Plus: Bool?
         let height: Int64?
         let level: Int64?
         let profile: String?
         let title: String?
         let videoRange: String?
+        let videoRangeType: String?
         let width: Int64?
     }
 

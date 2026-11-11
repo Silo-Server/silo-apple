@@ -1122,7 +1122,13 @@ struct VideoTrack: Codable, Identifiable, Hashable {
     let colorPrimaries: String?
     let colorTransfer: String?
     let videoRange: String?
+    /// The server's finer class of the range ("HDR10", "HDR10Plus", "HLG",
+    /// "DOVIWithHDR10", …); `videoRange` only tells HDR from Dolby Vision.
+    let videoRangeType: String?
     let dolbyVision: String?
+    /// The stream carries HDR10+ dynamic metadata, on its own or beside
+    /// Dolby Vision.
+    let hdr10Plus: Bool?
     let title: String?
     let language: String?
     var id: Int { index ?? 0 }

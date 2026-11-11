@@ -57,6 +57,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @State private var resumeLookupTask: Task<Void, Never>?
     /// The download options sheet, opened from the More menu.
     @State private var showDownloadOptions = false
+    /// The viewer opened the Media Info section.
+    @State private var showsMediaInfo = false
 
     var body: some View {
         PhoneDetailPageSurface(
@@ -307,6 +309,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
 
             detailsSection
                 .padding(.horizontal, SiloTheme.safePadding)
+
+            PhoneMediaInfoSection(version: effectiveVersion, isExpanded: $showsMediaInfo)
         }
     }
 
