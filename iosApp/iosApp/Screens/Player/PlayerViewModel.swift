@@ -5552,6 +5552,14 @@ class PlayerViewModel {
         } else if duration.isFinite, duration > 0 {
             currentTime = duration
         }
+        // Solo playback refuses the viewer's seeks from here on. A scrub left
+        // open could never be finished, and a seek session or a skip still
+        // in its debounce would seek the ended item anyway. End them now
+        // that `currentTime`, which the timeline returns to, is settled.
+        if refusesSeekAtEndOfFile {
+            cancelHoldSeek()
+            cancelScrub()
+        }
         isLoading = false
         isBuffering = false
         isLoadingSubtitles = false
