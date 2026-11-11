@@ -89,11 +89,10 @@ private extension OverlayRegistry {
 
     static func audioIcon(_ value: String?) -> OverlayIconId? {
         guard let value, !value.isEmpty else { return nil }
-        // `contains` instead of equality so "TrueHD Atmos" / "Dolby
-        // TrueHD Atmos" (Blu-ray remux labelling) still picks the brand
-        // mark. The server normalizes most strings to plain "Atmos",
-        // but some passthrough surfaces preserve the upstream label.
-        return value.lowercased().contains("atmos") ? .atmos : .volume
+        // Mirrors web's `audioIcon`: the ATMOS wordmark only for a value it
+        // fully expresses, so "TrueHD Atmos" keeps its whole label beside
+        // the plain audio icon on every client.
+        return value.lowercased() == "atmos" ? .atmos : .volume
     }
 
     static func videoCodecIcon(_ value: String?) -> OverlayIconId? {

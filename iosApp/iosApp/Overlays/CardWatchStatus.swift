@@ -30,9 +30,12 @@ struct CardWatchStatus: View {
         let size = Self.size * scale
         Group {
             if played {
-                Image(systemName: "checkmark")
-                    .font(.system(size: size * 0.5, weight: .heavy))
-                    .foregroundStyle(.white)
+                WatchedCheckMark()
+                    .stroke(
+                        .white,
+                        style: StrokeStyle(lineWidth: size * 0.62 * 3.25 / 24, lineCap: .round, lineJoin: .round)
+                    )
+                    .frame(width: size * 0.62, height: size * 0.62)
                     .frame(width: size, height: size)
                     .background(Circle().fill(Self.watchedFill))
                     .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 1))
@@ -59,5 +62,21 @@ struct CardWatchStatus: View {
         .allowsHitTesting(false)
         // The host card's own accessibility label says "Watched".
         .accessibilityHidden(true)
+    }
+}
+
+/// The web's check (Lucide's, in a 24-unit box), so the mark is the same
+/// shape on every client.
+private struct WatchedCheckMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        let unit = min(rect.width, rect.height) / 24
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * unit, y: rect.minY + y * unit)
+        }
+        var path = Path()
+        path.move(to: point(20, 6))
+        path.addLine(to: point(9, 17))
+        path.addLine(to: point(4, 12))
+        return path
     }
 }

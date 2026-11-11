@@ -13,9 +13,12 @@ struct OverlayIcon: View {
 
     var body: some View {
         if let wordmark = iconId.wordmark {
-            // The web marks are 10-unit text in a 12-unit-high box.
+            // The web marks are 10-unit text in a 12-unit-high box; ATMOS
+            // is 9-unit text spaced half a unit apart.
+            let units: CGFloat = iconId == .atmos ? 9 : 10
             Text(verbatim: wordmark)
-                .font(.system(size: size * 10 / 12, weight: .black))
+                .font(.system(size: size * units / 12, weight: .black))
+                .tracking(iconId == .atmos ? size * 0.5 / 12 : 0)
                 .foregroundStyle(tint)
                 .fixedSize()
                 .frame(height: size)
@@ -38,7 +41,7 @@ struct OverlayIcon: View {
         case .film:      return "film"
         case .ribbon:    return "rosette"
         case .subtitles: return "captions.bubble"
-        case .languages: return "globe"
+        case .languages: return "translate"
         case .building:  return "building.2"
         case .shield:    return "shield"
         case .users:     return "person.2.fill"

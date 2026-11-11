@@ -85,6 +85,25 @@ final class OverlayRegistryTests: XCTestCase {
         XCTAssertNil(imdb.getValue(OverlayData()))
     }
 
+    func testAtmosMarkNeedsAnExactAtmosValue() throws {
+        let audio = try def("audio")
+        XCTAssertEqual(audio.getIcon?(OverlayData(audio: "Atmos")), .atmos)
+        XCTAssertEqual(audio.getIcon?(OverlayData(audio: "ATMOS")), .atmos)
+        // The mark would not say "TrueHD", so the label stays whole beside the plain icon.
+        XCTAssertEqual(audio.getIcon?(OverlayData(audio: "TrueHD Atmos")), .volume)
+    }
+
+    func testStudioAndNetworkAreTheFirstNameWithTextTrimmed() throws {
+        let item = try HTTPClient.makeJSONDecoder().decode(
+            BrowseItem.self,
+            from: Data(#"{"content_id":"movie:a","type":"movie","title":"A","studios":[" ","  A24 "],"networks":[]}"#.utf8)
+        )
+        let data = OverlayData.from(item)
+        XCTAssertEqual(data.studio, "A24")
+        XCTAssertEqual(try def("studio").getValueKey?(data), "A24")
+        XCTAssertNil(data.network)
+    }
+
     func testResolutionHdrNamesHdr10Plus() throws {
         XCTAssertEqual(try def("resolution_hdr").getValue(OverlayData(resolution: "2160p", hdr: "HDR10+")), "4K HDR10+")
     }
