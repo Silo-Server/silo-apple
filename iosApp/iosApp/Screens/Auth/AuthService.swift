@@ -180,7 +180,8 @@ final class AuthService: @unchecked Sendable {
     /// saving the typed URL would fail sign-in.
     ///
     /// Cancelling the calling task stops the probes and throws with nothing
-    /// saved. Once setup status has answered, the check finishes regardless.
+    /// saved. Once setup status has answered it is too late: the check goes
+    /// on to save the server and make it active, as if nobody had cancelled.
     func checkServer(url: String) async throws -> APIv2SetupStatus {
         var normalized = ServerRegistry.normalize(url: url)
         if normalized.lowercased().hasPrefix("http://"),
@@ -213,11 +214,10 @@ final class AuthService: @unchecked Sendable {
             verifiedServerId: verifiedServerId
         )
         // The candidate has answered, so a cancellation from here on is too
-        // late: the steps below run in a task of their own and finish as they
-        // would for a check nobody cancelled. Stopping partway would leave the
-        // server saved but not active, or active with the caller told the
-        // check had failed.
-        return try await Task {
+        // late: saving it and making it active run in a task of their own and
+        // finish as they would for a check nobody cancelled. A switch that
+        // stopped partway would leave the server saved but not active.
+        let saved = try await Task {
             // A saved entry for the same origin keeps its own id.
             guard let saved = serverRegistry.addOrUpdate(entry) else {
                 throw ServerRegistryError.persistenceFailed
@@ -227,12 +227,17 @@ final class AuthService: @unchecked Sendable {
                     throw ServerRegistryError.persistenceFailed
                 }
             }
-            // Now that the candidate is the active server, establish the v2
-            // contract verdict the pilot gate reads. Recorded after the switch so
-            // a candidate that is not committed never touches the active verdict.
-            await recordContractVerdict(serverId: saved.id, serverURL: saved.url)
-            return status
+            return saved
         }.value
+        // Now that the candidate is the active server, establish the v2
+        // contract verdict the pilot gate reads. Recorded after the switch so
+        // a candidate that is not committed never touches the active verdict.
+        // A cancelled caller cuts this read short and still hears that the
+        // server is active; the app reads the verdict again when it reacts
+        // to the new active server (`refreshActiveServerName`).
+        await recordContractVerdict(serverId: saved.id, serverURL: saved.url)
+
+        return status
     }
 
     /// Refreshes the active registry entry from the server's native branding.

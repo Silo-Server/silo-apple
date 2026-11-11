@@ -317,7 +317,7 @@ struct TVServerSetupView: View {
     /// Menu on the phone-first page: it stops a found server's connect, and
     /// is otherwise the way back, or the system's when this page has none.
     private var phoneFirstExit: (() -> Void)? {
-        if viewModel.isLoading { return viewModel.cancelConnect }
+        if viewModel.isLoading { return { viewModel.cancelConnect() } }
         return canReturnToPicker ? returnToPicker : nil
     }
 

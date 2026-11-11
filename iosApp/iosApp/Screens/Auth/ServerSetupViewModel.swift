@@ -102,10 +102,10 @@ class ServerSetupViewModel {
 
     /// Runs a connect that `cancelConnect` can stop. Ignored while one is
     /// already running.
-    func begin(_ connect: @escaping @MainActor () async -> Void) {
+    func begin(_ attempt: @escaping @MainActor () async -> Void) {
         guard connectTask == nil else { return }
         connectTask = Task {
-            await connect()
+            await attempt()
             connectTask = nil
         }
     }
@@ -113,7 +113,7 @@ class ServerSetupViewModel {
     /// Stops the running connect. It ends without an error, and the address,
     /// protocol and port stay as typed. `isLoading` stays true until it has
     /// ended, so the screen's ways back keep waiting for it. A server that
-    /// has already answered still opens: by then it is being saved.
+    /// has already answered still opens (see `AuthService.checkServer`).
     func cancelConnect() {
         connectTask?.cancel()
     }
@@ -258,6 +258,8 @@ class ServerSetupViewModel {
                     if let origin = await resolveBareName(bareName), !attempted.contains(origin) {
                         candidates.insert(origin, at: index)
                     }
+                    // Back to the top either way, where a cancel during the
+                    // lookup is seen before this address is asked about.
                     continue
                 }
                 insecurePrompt = InsecurePrompt(
@@ -272,8 +274,8 @@ class ServerSetupViewModel {
             attempted.append(candidate)
             do {
                 let status = try await checkServer(candidate)
-                // A cancel that arrived while the server was being saved is
-                // too late: it is the active server now, so the app goes on.
+                // The server is active now, even if a cancel arrived while it
+                // was being saved, so the app goes on to it.
                 connected = true
                 // This view is also pushed onto the login stack (Change
                 // Server, then Add Server) while `authState` is already
@@ -300,7 +302,6 @@ class ServerSetupViewModel {
             }
         }
 
-        // A cancelled connect is not a failure to report.
         guard !Task.isCancelled else { return }
         Self.logger.error(
             "Server autodiscovery failed candidates=\(attempted.joined(separator: ", "), privacy: .public) lastError=\(String(describing: lastError), privacy: .public)"

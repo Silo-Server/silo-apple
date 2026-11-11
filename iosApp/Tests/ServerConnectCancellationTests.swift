@@ -4,8 +4,8 @@ import XCTest
 /// Cancelling a server connect stops it and leaves no trace: no error, no
 /// plain-HTTP question, no further address, and the saved servers as they
 /// were. A cancel that arrives once the server has answered is too late; the
-/// connect then finishes whole, so no server is ever saved or active without
-/// the app moving on to it.
+/// connect then goes on as if nobody had cancelled, so a cancel is never the
+/// reason a server is saved or active without the app moving on to it.
 @MainActor
 final class ServerConnectCancellationTests: XCTestCase {
     private static let newURL = "https://new.example"
@@ -54,8 +54,8 @@ final class ServerConnectCancellationTests: XCTestCase {
             checkServer: { url in
                 probes.yield(url)
                 guard url.hasPrefix("http://") else { throw URLError(.cannotConnectToHost) }
-                // Never answers; ends only when the connect is cancelled.
-                try await Task.sleep(for: .seconds(3600))
+                // Does not answer in time; a cancelled connect ends it at once.
+                try await Task.sleep(for: .seconds(30))
                 throw URLError(.timedOut)
             },
             hasSession: { false },
@@ -69,6 +69,8 @@ final class ServerConnectCancellationTests: XCTestCase {
 
         let connect = Task { await viewModel.confirmInsecure(router: router) }
         var urls = probed.makeAsyncIterator()
+        // The HTTPS address from the connect above, then the first plain-HTTP
+        // one, which is now in flight.
         var tried = [await urls.next(), await urls.next()]
         connect.cancel()
         await connect.value
@@ -103,8 +105,9 @@ final class ServerConnectCancellationTests: XCTestCase {
         let viewModel = ServerSetupViewModel(
             checkServer: { url in
                 probes.yield(url)
-                // Past the point where the server is saved and made active,
-                // which a cancel no longer interrupts.
+                // The server answers after the cancel, as a check that was
+                // already saving it does. The form must not go back to idle
+                // with that server active.
                 await Task { await answered.wait() }.value
                 return APIv2SetupStatus(needsSetup: false)
             },
@@ -152,6 +155,7 @@ final class ServerConnectCancellationTests: XCTestCase {
         check.set(task)
         let status = try await task.value
 
+        XCTAssertTrue(check.didCancel, "the cancel must land during the switch")
         XCTAssertFalse(status.needsSetup)
         XCTAssertEqual(stack.registry.activeServerId, Self.newID)
         XCTAssertEqual(stack.registry.entries.map(\.id), [Self.home.id, Self.newID])
@@ -159,7 +163,7 @@ final class ServerConnectCancellationTests: XCTestCase {
 
     func testACheckCancelledAfterTheSwitchStillReportsTheServerItMadeActive() async throws {
         let stack = try await makeStack()
-        // The contract read comes after the switch.
+        // The contract read comes after the switch; the cancel cuts it short.
         stack.stub.hold(path: APIv2Probe.path)
         let service = stack.service
 
@@ -234,12 +238,20 @@ private struct SavedRegistry: Encodable {
 private final class TaskBox: @unchecked Sendable {
     private let lock = NSLock()
     private var task: Task<APIv2SetupStatus, Error>?
+    private var cancelled = false
+
+    /// Whether `cancel` found a task to cancel.
+    var didCancel: Bool { lock.withLock { cancelled } }
 
     func set(_ task: Task<APIv2SetupStatus, Error>) {
         lock.withLock { self.task = task }
     }
 
     func cancel() {
-        lock.withLock { task }?.cancel()
+        let task = lock.withLock { () -> Task<APIv2SetupStatus, Error>? in
+            cancelled = self.task != nil
+            return self.task
+        }
+        task?.cancel()
     }
 }
