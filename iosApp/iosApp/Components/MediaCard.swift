@@ -330,11 +330,17 @@ struct MediaCard: View {
                 .frame(width: cardWidth, height: cardHeight)
 
             // Server / user-customized overlays (resolution, HDR, ratings, …)
-            // sit under the watched check + progress bar so those built-in
-            // affordances always win the same corner if they conflict.
+            // sit under the progress bar, and leave the top-right corner to
+            // the watch status below.
             if let overlayData, overlayStore.enabled {
-                CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
-                    .frame(width: cardWidth, height: cardHeight)
+                CardOverlays(
+                    data: overlayData,
+                    prefs: overlayStore.prefs,
+                    variant: .poster,
+                    images: overlayStore.images,
+                    hasProgressBar: (progress ?? 0) > 0
+                )
+                .frame(width: cardWidth, height: cardHeight)
             }
 
             if let boxSet {
@@ -346,26 +352,15 @@ struct MediaCard: View {
                 ProgressBar(value: progress)
             }
 
-            // Watched indicator — white circle with check (Plezy style)
-            if isPlayed {
-                HStack {
-                    Spacer()
-                    ZStack {
-                        Circle()
-                            .fill(Color.siloOnSurface)
-                            .frame(width: checkBadgeSize, height: checkBadgeSize)
-                            .shadow(color: .black.opacity(0.3), radius: 4)
-                        Image(systemName: "checkmark")
-                            .font(.system(size: checkIconSize, weight: .bold))
-                            .foregroundColor(Color.siloBackground)
-                    }
-                }
-                .padding(checkBadgePadding)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-            }
+            // Shown whether or not badges are on.
+            CardWatchStatus(
+                played: isPlayed,
+                episodesLeft: personalState.episodesLeft(userState),
+                cardWidth: cardWidth
+            )
 
             #if !os(tvOS)
-            DownloadedBadgeOverlay(contentId: contentId, padding: checkBadgePadding)
+            DownloadedBadgeOverlay(contentId: contentId, padding: 6)
             #endif
         }
         .frame(width: cardWidth, height: cardHeight)
@@ -449,33 +444,6 @@ struct MediaCard: View {
                 .frame(width: cardWidth, alignment: .leading)
         }
     }
-
-    // MARK: - Metric helpers
-
-    private var checkBadgeSize: CGFloat {
-        #if os(tvOS)
-        return 40
-        #else
-        return 20
-        #endif
-    }
-
-    private var checkIconSize: CGFloat {
-        #if os(tvOS)
-        return 20
-        #else
-        return 10
-        #endif
-    }
-
-    private var checkBadgePadding: CGFloat {
-        #if os(tvOS)
-        return 12
-        #else
-        return 6
-        #endif
-    }
-
 }
 
 // MARK: - tvOS Focusable wrapper

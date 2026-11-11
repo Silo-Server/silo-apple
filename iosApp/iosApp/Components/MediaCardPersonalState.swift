@@ -52,6 +52,13 @@ final class MediaCardPersonalState {
         playedOverride ?? (base?.played == true)
     }
 
+    /// The episodes a started series or season has left, for the card's
+    /// watch-status corner. A watched change made from this card leaves the
+    /// loaded counts stale, so none shows until the card's `userState` changes.
+    func episodesLeft(_ base: MediaItemUserState?) -> Int? {
+        playedOverride == nil ? base?.episodesLeft : nil
+    }
+
     func isFavorite(_ base: MediaItemUserState?) -> Bool {
         favoriteOverride ?? (base?.isFavorite == true)
     }
