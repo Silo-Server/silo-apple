@@ -15,6 +15,13 @@ struct ProfileSelectionView: View {
     /// the backdrop with that profile's color.
     @State private var pressedProfileID: String?
     @State private var selectingProfileID: String?
+    /// The person asked for this picker (Switch Profile), so it shows even
+    /// when there is only one profile to choose.
+    @State private var requestedByPerson = false
+    /// Whether the picker has settled what it shows. Until then an account
+    /// whose only profile has no PIN draws the loading state instead of its
+    /// tile, so a picker that opens that profile is never drawn (spec §4.2).
+    @State private var hasSettled: Bool
     #if !os(tvOS)
     @State private var headerHeight: CGFloat = 0
     @State private var footerHeight: CGFloat = 0
@@ -56,6 +63,12 @@ struct ProfileSelectionView: View {
         pinEntryContext != nil
     }
 
+    init(router: AppRouter) {
+        self.router = router
+        // A picker the person asked for shows even a single profile, at once.
+        _hasSettled = State(initialValue: router.pickerRequestedByPerson && !router.skipsSingleProfilePicker)
+    }
+
     var body: some View {
         ZStack {
             background
@@ -69,12 +82,10 @@ struct ProfileSelectionView: View {
         .task {
             MarqueeScene.shared.showActiveServer()
             MarqueeScene.shared.focus = .profiles
-            let requestedByPerson = router.pickerRequestedByPerson
+            requestedByPerson = router.pickerRequestedByPerson
             router.pickerRequestedByPerson = false
             async let account: Void = viewModel.loadAccount()
-            await viewModel.loadProfiles()
-            await skipPickerIfSingleProfile()
-            if !requestedByPerson { await openOnlyProfileIfNeeded() }
+            await loadProfilesAndSettle()
             await account
         }
         .onChange(of: viewModel.requiresPasswordChange) { _, required in
@@ -198,6 +209,21 @@ struct ProfileSelectionView: View {
         pinEntryContext?.profile.id ?? selectingProfileID ?? pressedProfileID
     }
 
+    /// Loads the list and opens its only profile when that is due;
+    /// otherwise the picker draws.
+    private func loadProfilesAndSettle() async {
+        if viewModel.profiles.isEmpty {
+            // Nothing is drawn yet, so a list of one can still open unseen.
+            hasSettled = requestedByPerson && !router.skipsSingleProfilePicker
+        }
+        await viewModel.loadProfiles()
+        await skipPickerIfSingleProfile()
+        if !requestedByPerson { await openOnlyProfileIfNeeded() }
+        // While the TV's remember offer waits on a profile that opened this
+        // way, the picker stays undrawn behind it.
+        if viewModel.rememberOffer == nil { hasSettled = true }
+    }
+
     /// A household with one profile and no PIN doesn't need a picker after
     /// signing in: go straight to Home. A failed load keeps the request, so a
     /// successful Retry still skips, and so does the picker shown after a
@@ -227,11 +253,24 @@ struct ProfileSelectionView: View {
     /// lands, keep the loading state rather than flash a refusal.
     private var showsLoading: Bool {
         viewModel.requiresPasswordChange || (viewModel.isLoading && viewModel.profiles.isEmpty)
+            || awaitsOnlyProfile
+    }
+
+    /// The list is one profile without a PIN and the picker has yet to
+    /// settle: that profile is about to open, or a fresh list is about to
+    /// show there is a choice after all.
+    private var awaitsOnlyProfile: Bool {
+        !hasSettled && viewModel.error == nil
+            && viewModel.profiles.count == 1 && viewModel.profiles.first?.hasPin == false
     }
 
     @ViewBuilder
     private var pickerContent: some View {
-        if showsLoading {
+        if viewModel.rememberOffer != nil, awaitsOnlyProfile {
+            // The offer asks about a profile that opened without the picker;
+            // only the backdrop shows behind it.
+            Color.clear
+        } else if showsLoading {
             LoadingView(message: AppLanguage.string(.profilesLoading))
         } else if let error = viewModel.error, viewModel.profiles.isEmpty {
             #if os(tvOS)
@@ -254,10 +293,7 @@ struct ProfileSelectionView: View {
 
     private func errorView(_ error: ErrorState) -> some View {
         ErrorView(state: error, onRetry: {
-            Task {
-                await viewModel.loadProfiles()
-                await skipPickerIfSingleProfile()
-            }
+            Task { await loadProfilesAndSettle() }
         })
     }
 

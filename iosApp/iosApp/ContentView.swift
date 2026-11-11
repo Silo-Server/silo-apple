@@ -748,7 +748,8 @@ struct ContentView: View {
 
     /// Turn an expired away interval into the same durable identity boundary
     /// as an explicit profile switch. The account and remembered-profile hint
-    /// remain available to Who's Watching.
+    /// remain available to Who's Watching, or to Change Account, which shows
+    /// in its place when several accounts are saved.
     @MainActor
     private func applyProfileReturnPolicy() async {
         guard !isApplyingProfileReturnPolicy,
@@ -799,7 +800,7 @@ struct ContentView: View {
         }
         #endif
         guard deactivated else { return }
-        router.showProfileSelection()
+        router.showProfileSelectionAfterReturn()
     }
 
     #if os(iOS) || os(tvOS)
@@ -887,7 +888,8 @@ struct ContentView: View {
     }
 
     /// The open account's "Who's watching?", or Change Account while no
-    /// account is open and another can be chosen (spec §4.1).
+    /// account is open and another can be chosen (spec §4.1), or while the
+    /// person chooses the account first (spec §4.2).
     @ViewBuilder
     private var profileFlowRoot: some View {
         if router.authState == .needsProfile, router.showsChangeAccountRoot {
@@ -1238,7 +1240,7 @@ struct ContentView: View {
         LaunchTimeline.recordInitialStateResolved(state: state.diagnosticsState)
         #endif
         StartupContentPrefetcher.prefetchForInitialRoute(state)
-        router.authState = state
+        router.commitLaunchRoute(state)
     }
 
     /// Saved servers' push registrations still need renewing while no

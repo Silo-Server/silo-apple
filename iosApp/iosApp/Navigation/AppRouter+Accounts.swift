@@ -283,10 +283,46 @@ extension AppRouter {
         }
     }
 
+    // MARK: - When Profile Selection asks for a choice
+
+    /// Every account saved on this device, across all servers, including
+    /// those that must sign in again.
+    private static func savedAccountCount() -> Int {
+        let directory = AccountDirectory.shared
+        directory.reload()
+        return directory.accounts.count
+    }
+
+    /// Commits the route a cold launch resolved. When Profile Selection
+    /// asks for a choice and several accounts are saved, the profile flow
+    /// starts at Change Account with no profile open, instead of the last
+    /// account's picker or its only profile (spec §4.2).
+    func commitLaunchRoute(_ state: AuthState) {
+        switch state {
+        case .needsProfile, .serverRecovery:
+            // A server that has to be recovered first still leads here.
+            choosesAccountFirst = ProfileLaunchPreferences.shared.state
+                .promptAtLaunch(savedAccountCount: Self.savedAccountCount()) == .changeAccount
+        case .loading, .needsServerSetup, .needsLogin, .needsPasswordChange, .authenticated:
+            choosesAccountFirst = false
+        }
+        authState = state
+    }
+
+    /// Profile Selection closed the open profile on a return from the
+    /// background: Change Account when several accounts are saved, otherwise
+    /// the open account's picker (spec §4.2).
+    func showProfileSelectionAfterReturn() {
+        let prompt = ProfileLaunchPreferences.shared.state
+            .promptAfterBackground(savedAccountCount: Self.savedAccountCount())
+        showProfileSelection(choosingAccountFirst: prompt == .changeAccount)
+    }
+
     // MARK: - Change Account
 
     /// Opens Change Account (spec §4.1): pushed over the picker or Home, or
-    /// the profile flow's root while no account is open.
+    /// the profile flow's root while no account is open or the person
+    /// chooses the account first.
     func showChangeAccount() {
         switch authState {
         case .needsProfile where showsChangeAccountRoot:
@@ -321,13 +357,25 @@ extension AppRouter {
         withTransaction(transaction, body)
     }
 
-    /// The open account chosen in Change Account: its picker again.
+    /// The open account chosen in Change Account: its picker again. Where
+    /// Change Account is the root because the person chooses the account
+    /// first, no profile is open and there is no picker underneath, so the
+    /// open account opens as any other does: its only profile without a PIN
+    /// directly, otherwise its picker.
     func showCurrentAccountPicker() {
-        if authState == .needsProfile {
-            popToRoot()
-        } else {
+        guard authState == .needsProfile else {
             switchProfile()
+            return
         }
+        guard showsChangeAccountRoot else {
+            popToRoot()
+            return
+        }
+        recordScreenBreadcrumb(target: "profileSelection", action: "changeAccount")
+        choosesAccountFirst = false
+        skipsSingleProfilePicker = true
+        pickerRequestedByPerson = false
+        withoutStackCrossfade { resetAfterServerResolution(to: .needsProfile) }
     }
 
     /// Makes another saved account the active one on its server (switching
@@ -341,6 +389,7 @@ extension AppRouter {
         try await AccountSessions.switchTo(account: localAccountId, onServer: serverId)
         MarqueeScene.shared.showActiveServer()
         recordScreenBreadcrumb(target: "profileSelection", action: "changeAccount")
+        choosesAccountFirst = false
         skipsSingleProfilePicker = true
         pickerRequestedByPerson = false
         // The server can refuse the account's session during the switch.
