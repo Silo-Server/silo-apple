@@ -53,7 +53,7 @@ struct PreparedPlayback {
     /// everything off the already-fetched `WatchDetail` + `FileVersion` so
     /// the overlay doesn't need a second API call — we only transform the
     /// shapes the server already gave us into display strings.
-    func playerMetadata(primaryAudioLayout: String? = nil) -> PlayerMetadata {
+    func playerMetadata() -> PlayerMetadata {
         let isEpisode = watchDetail.type == "episode"
         let episodeTag: () -> String? = {
             guard isEpisode else { return nil }
@@ -69,22 +69,6 @@ struct PreparedPlayback {
             }
         }
 
-        var badges: [String] = []
-        if let resolution = selectedVersion.resolution, !resolution.isEmpty {
-            badges.append(PlayerMetadata.badgeLabel(forResolution: resolution))
-        }
-        if selectedVersion.hdr == true {
-            badges.append("HDR")
-        }
-        if let codec = selectedVersion.codecVideo?.uppercased(), !codec.isEmpty {
-            badges.append(codec)
-        }
-        if let layout = primaryAudioLayout?.uppercased(), !layout.isEmpty {
-            badges.append(layout)
-        } else if let audioCodec = selectedVersion.codecAudio?.uppercased(), !audioCodec.isEmpty {
-            badges.append(audioCodec)
-        }
-
         return PlayerMetadata(
             seriesTitle: isEpisode ? watchDetail.seriesTitle : nil,
             episodeTag: episodeTag(),
@@ -92,7 +76,7 @@ struct PreparedPlayback {
             primaryTitle: watchDetail.title,
             year: isEpisode ? nil : watchDetail.year,
             overview: watchDetail.overview,
-            badges: badges
+            badges: PlayerMetadata.streamBadges(version: selectedVersion, audioCodec: nil)
         )
     }
 }
@@ -141,9 +125,10 @@ struct PlaybackV3SubtitleRefusal: LocalizedError, Equatable {
 
 /// Secondary metadata shown in the tvOS player overlay's hero strip.
 /// Populated from the playback session at load time via
-/// `PreparedPlayback.playerMetadata(primaryAudioLayout:)` — everything here
+/// `PreparedPlayback.playerMetadata()` — everything here
 /// is already fetched as part of `/api/v2/watch/{id}`, so no extra API
-/// calls are needed.
+/// calls are needed. The player then keeps `badges` on the audio track and
+/// the file that are playing.
 struct PlayerMetadata: Equatable {
     /// For episodes: series title, e.g. "Foundation".
     var seriesTitle: String?
@@ -171,6 +156,28 @@ struct PlayerMetadata: Equatable {
         overview: nil,
         badges: []
     )
+
+    /// The pills for `version`: resolution, HDR, video codec, then audio
+    /// codec. `audioCodec` names the audio track that is playing; without it
+    /// the file's own audio codec stands in.
+    static func streamBadges(version: FileVersion, audioCodec: String?) -> [String] {
+        var badges: [String] = []
+        if let resolution = version.resolution, !resolution.isEmpty {
+            badges.append(badgeLabel(forResolution: resolution))
+        }
+        if version.hdr == true {
+            badges.append("HDR")
+        }
+        if let codec = version.codecVideo?.uppercased(), !codec.isEmpty {
+            badges.append(codec)
+        }
+        if let audioCodec = audioCodec?.uppercased(), !audioCodec.isEmpty {
+            badges.append(audioCodec)
+        } else if let audioCodec = version.codecAudio?.uppercased(), !audioCodec.isEmpty {
+            badges.append(audioCodec)
+        }
+        return badges
+    }
 
     /// Map raw resolution strings ("1920x1080", "1080p", "2160p") to the
     /// short marketing label shown in the overlay ("4K" / "FHD" / "HD" / "SD").

@@ -508,7 +508,12 @@ class PlayerViewModel {
     static let connectionLostMessage =
         "Connection lost\nSilo couldn't reconnect to the server. Check your connection, then try again to continue where you left off."
     var remoteDismissToken: UUID?
-    var audioTracks: [PlayerTrack] = []
+    var audioTracks: [PlayerTrack] = [] {
+        didSet { audioTracksFileId = currentSelectedVersion?.fileId }
+    }
+    /// The file `audioTracks` lists. A replan can adopt another file before
+    /// that file's tracks are published.
+    @ObservationIgnored private var audioTracksFileId: Int?
     var subtitleTracks: [PlayerTrack] = [] {
         didSet { updateSubtitleSyncActiveTrack() }
     }
@@ -630,7 +635,9 @@ class PlayerViewModel {
     /// Resigning active keeps the plan's running summary; quitting ends it.
     @ObservationIgnored private var macBufferingSummaryObservers: [NSObjectProtocol] = []
     #endif
-    var selectedAudioId: Int64?
+    var selectedAudioId: Int64? {
+        didSet { refreshStreamBadges() }
+    }
     var selectedSubtitleId: Int64? {
         didSet {
             guard selectedSubtitleId != oldValue else { return }
@@ -778,7 +785,7 @@ class PlayerViewModel {
 
     func skipCurrentSegment() {
         if showRecapSkip, let recapRange {
-            seekTo(seconds: recapRange.end)
+            seekTo(seconds: recapRange.end, revealingControls: false)
         } else if showCreditsSkip {
             skipCredits()
         }
@@ -1304,7 +1311,9 @@ class PlayerViewModel {
     private var deferredAutoSubtitlePick: SubtitleAutoSelection?
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
-    private var currentSelectedVersion: FileVersion?
+    private var currentSelectedVersion: FileVersion? {
+        didSet { refreshStreamBadges() }
+    }
     private var activePreparedProtocolV3: PreparedPlaybackV3?
     private var activePlaybackSessionId: String?
     var watchPartyAdapter: WatchPartyPlaybackAdapter?
@@ -5688,6 +5697,14 @@ class PlayerViewModel {
         } else if duration.isFinite, duration > 0 {
             currentTime = duration
         }
+        // Solo playback refuses the viewer's seeks from here on. A scrub left
+        // open could never be finished, and a seek session or a skip still
+        // in its debounce would seek the ended item anyway. End them now
+        // that `currentTime`, which the timeline returns to, is settled.
+        if refusesSeekAtEndOfFile {
+            cancelHoldSeek()
+            cancelScrub()
+        }
         isLoading = false
         isBuffering = false
         isLoadingSubtitles = false
@@ -8034,8 +8051,11 @@ class PlayerViewModel {
     }
 
     /// Seek to a specific timestamp. Used by the chapter sheet and the tvOS
-    /// progress-bar scrubber.
-    func seekTo(seconds: Double) {
+    /// progress-bar scrubber. Brings up the controls unless
+    /// `revealingControls` is false, as it is for a recap or credits skip:
+    /// hidden controls then stay hidden, and controls that are showing get a
+    /// fresh auto-hide.
+    func seekTo(seconds: Double, revealingControls: Bool = true) {
         guard !refusesSeekAtEndOfFile else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -8043,7 +8063,9 @@ class PlayerViewModel {
             "[CMP-SEEK] absolute seek requested seconds=\(seconds, privacy: .public)"
         )
         commitSeek(to: max(0, seconds), source: "absolute")
-        scheduleHideControls()
+        if revealingControls || showControls {
+            scheduleHideControls()
+        }
     }
 
     private func applyMarkerTimeline(_ timeline: PlayerMarkerTimeline) {
@@ -8158,8 +8180,8 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-MARKERS] auto-skip intro target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
-        // Not `seekTo`: that reveals the transport, and nobody touched the
-        // remote. The undo pill is the feedback for this seek.
+        // Not `seekTo`: by default that reveals the transport, and nobody
+        // touched the remote. The undo pill is the feedback for this seek.
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
         commitSeek(to: target, source: "introAutoSkip")
@@ -8229,7 +8251,7 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-MARKERS] auto-skip recap target=\(target, privacy: .public) current=\(time, privacy: .public)"
         )
-        seekTo(seconds: target)
+        seekTo(seconds: target, revealingControls: false)
     }
 
     private func performCreditsSkip(to target: Double) {
@@ -8246,7 +8268,7 @@ class PlayerViewModel {
             handleEndOfFile(sourceEnded: false)
             return
         }
-        seekTo(seconds: target)
+        seekTo(seconds: target, revealingControls: false)
     }
 
     /// Credits that run to the end of the file leave nothing to seek to.
@@ -9490,8 +9512,19 @@ class PlayerViewModel {
     }
 
     func toggleControls() {
+        // A tap aimed at a button can land beside it. Just after a tap brought
+        // the controls up, another keeps them and restarts the auto-hide,
+        // unless a scrub or an open sheet has suspended it.
+        if showControls, let revealedAt = controlsRevealedByTapAt,
+           ContinuousClock.now - revealedAt < controlsTapGrace {
+            if hideControlsTask?.isCancelled == false {
+                scheduleHideControls()
+            }
+            return
+        }
         showControls.toggle()
         if showControls {
+            controlsRevealedByTapAt = .now
             scheduleHideControls()
         }
     }
@@ -10190,6 +10223,27 @@ class PlayerViewModel {
 
     private func audioSelectionIndex(for track: PlayerTrack) -> Int? {
         track.srcId ?? track.ffIndex
+    }
+
+    /// Rewrites the stream badges for the file and the audio track playing
+    /// now. Between items no file is loaded and the outgoing badges stand.
+    private func refreshStreamBadges() {
+        guard let version = currentSelectedVersion else { return }
+        let badges = PlayerMetadata.streamBadges(version: version, audioCodec: selectedAudioCodec(in: version))
+        if metadata.badges != badges { metadata.badges = badges }
+    }
+
+    /// The catalog's codec for the selected audio track: the engine names a
+    /// track by its decoder (`dca` for DTS). Nil when the published tracks do
+    /// not line up with the file's, so its own audio codec stands in.
+    private func selectedAudioCodec(in version: FileVersion) -> String? {
+        guard audioTracksFileId == version.fileId,
+              let catalogTracks = version.audioTracks, catalogTracks.count == audioTracks.count,
+              let ordinal = audioTracks.first(where: { $0.trackId == selectedAudioId })?.srcId,
+              catalogTracks.indices.contains(ordinal) else {
+            return nil
+        }
+        return catalogTracks[ordinal].codec
     }
 
     /// Re-registers session-created sidecars (finished AI jobs, downloaded
@@ -11146,6 +11200,12 @@ class PlayerViewModel {
     /// interaction before auto-hiding while playing. Matches Infuse/Apple TV.
     /// Tests shorten it.
     @ObservationIgnored var autoHideDelay: Duration = .seconds(5)
+
+    /// How long after a tap brings the controls up another tap on the
+    /// background keeps them instead of hiding them. Tests shorten it.
+    @ObservationIgnored var controlsTapGrace: Duration = .milliseconds(1500)
+    /// When a tap last brought the controls up.
+    @ObservationIgnored private var controlsRevealedByTapAt: ContinuousClock.Instant?
 
     private func scheduleHideControls() {
         // The HUD pins its host visible (`pinControlsVisible` in `openHUD`).

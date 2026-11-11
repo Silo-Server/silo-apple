@@ -1341,16 +1341,26 @@ actor TokenStore {
     }
 
     /// Caches the profiles a fresh list returned for the active account, so
-    /// the picker can draw them offline. Ignored when the account changed
-    /// since `expected` was captured.
-    func updateCachedProfiles(_ profiles: [AccountProfile], expected: RefreshAccountIdentity) {
+    /// the picker can draw them offline, with the account's profile limit
+    /// from the same list. Ignored when the account changed since `expected`
+    /// was captured. True when the saved account changed.
+    @discardableResult
+    func updateCachedProfiles(
+        _ profiles: [AccountProfile], maxProfiles: Int?, expected: RefreshAccountIdentity
+    ) -> Bool {
         guard temporaryScope == nil, refreshAccountIdentity() == expected,
-              let account = activeAccount, account.cachedProfiles != profiles else { return }
+              let account = activeAccount,
+              account.cachedProfiles != profiles || account.maxProfiles != maxProfiles else { return false }
         do {
-            try accounts.updateCachedProfiles(profiles, for: account.localAccountId, onServer: activeServerId)
+            try accounts.updateCachedProfiles(
+                profiles, maxProfiles: maxProfiles, for: account.localAccountId, onServer: activeServerId
+            )
             activeAccount?.cachedProfiles = profiles
+            activeAccount?.maxProfiles = maxProfiles
+            return true
         } catch {
             recordSessionEvent(phase: "profileCache", outcome: "failed", reason: Self.persistenceFailureReason(error))
+            return false
         }
     }
 
@@ -1616,6 +1626,36 @@ actor TokenStore {
         // stays until this profile's registration replaces it, as the
         // server's registration does.
         defaults.set(profileID, forKey: profileIdDefaultsKey)
+        profileSelectionGeneration = UUID()
+        mirrorActiveTokensForExtension()
+        return true
+    }
+
+    /// Replaces the open profile's verification proof in one actor turn,
+    /// after its PIN was checked again while it stayed open. Fails closed
+    /// unless the same account and the same profile are still installed and
+    /// no temporary remote-playback identity owns request authentication: an
+    /// answer that arrives after the profile was closed or replaced must not
+    /// put it back. The profile ID is left as it is. The selection
+    /// generation changes, as for any new proof: a rejection or recovery
+    /// still in flight for the replaced proof must not clear this one.
+    func renewProfileProof(
+        _ profileToken: String,
+        forProfile profileID: String,
+        expectedAccount: RefreshAccountIdentity
+    ) -> Bool {
+        guard temporaryScope == nil,
+              refreshAccountIdentity() == expectedAccount,
+              !profileID.isEmpty,
+              defaults.string(forKey: profileIdDefaultsKey) == profileID else {
+            return false
+        }
+        ensureLoaded()
+        guard let account = activeAccount,
+              accounts.setProfileToken(profileToken, for: account.localAccountId, onServer: activeServerId) else {
+            return false
+        }
+        cachedProfileToken = profileToken
         profileSelectionGeneration = UUID()
         mirrorActiveTokensForExtension()
         return true

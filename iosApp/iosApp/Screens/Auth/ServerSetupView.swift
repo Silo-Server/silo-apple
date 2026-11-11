@@ -38,7 +38,15 @@ struct ServerSetupView: View {
                 } else {
                     SiloWordmarkView(width: 92)
                 }
-            } trailing: { EmptyView() }
+            } trailing: {
+                // Back and swipe-back wait for a connect; this stops it.
+                if viewModel.isLoading {
+                    Button(.commonCancel) { viewModel.cancelConnect() }
+                        .buttonStyle(.marquee(.plain, fullWidth: false))
+                        // The label, not the button's padding, meets the column's edge.
+                        .padding(.trailing, -MarqueeMetrics.buttonPadding)
+                }
+            }
         } content: {
             MarqueeHeadline(title: AppLanguage.string(.setupConnectHeadline), lead: AppLanguage.string(.setupBody))
 
@@ -79,7 +87,7 @@ struct ServerSetupView: View {
                     // A keyboard submit that failed earlier must not hide the
                     // lists while this connect runs.
                     submittedWithKeyboard = false
-                    Task { await viewModel.connect(to: server, router: router) }
+                    viewModel.begin { await viewModel.connect(to: server, router: router) }
                 }
                 .padding(.top, 22)
                 if let error = viewModel.discoveryError {
@@ -123,7 +131,10 @@ struct ServerSetupView: View {
             // that server's address filled in.
             if let prefill = router.consumeServerSetupPrefill() { viewModel.host = prefill }
         }
-        .onDisappear { discovery.stop() }
+        .onDisappear {
+            discovery.stop()
+            viewModel.cancelConnect()
+        }
         .marqueeTransparentNavigation()
         .keepsSubmittedServerInputs(viewModel)
     }
@@ -134,7 +145,7 @@ struct ServerSetupView: View {
     private func connect() {
         guard !viewModel.isLoading else { return }
         submittedWithKeyboard = focusedField != nil
-        Task { await viewModel.connect(router: router) }
+        viewModel.begin { await viewModel.connect(router: router) }
     }
 
     // MARK: - Advanced options

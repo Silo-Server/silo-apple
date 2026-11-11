@@ -8,6 +8,9 @@ struct SavedAccountSummary: Identifiable, Equatable, Sendable {
     let localAccountId: String
     let username: String?
     let cachedProfiles: [AccountProfile]
+    /// How many profiles the account may have; nil when the server didn't
+    /// say with its last profile list.
+    let maxProfiles: Int?
     /// The server rejected the account's credentials; it must sign in again
     /// and its downloads stay.
     let needsSignIn: Bool
@@ -20,6 +23,7 @@ struct SavedAccountSummary: Identifiable, Equatable, Sendable {
         localAccountId = account.localAccountId
         username = account.username
         cachedProfiles = account.cachedProfiles
+        maxProfiles = account.maxProfiles
         needsSignIn = !account.isSignedIn
         lastUsedAt = account.lastUsedAt
     }

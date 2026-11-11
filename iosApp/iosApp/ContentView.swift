@@ -134,6 +134,7 @@ struct ContentView: View {
             Text(router.accountActionError ?? "")
         }
         .modifier(AccountRemovalConfirmationModifier(router: router))
+        .modifier(AddProfileFromMenuModifier(router: router))
         #if !os(tvOS)
         .alert(LegacyDownloadStorage.noticeMessage, isPresented: Binding(
             get: {
@@ -247,6 +248,11 @@ struct ContentView: View {
             router.presentedPlayer = nil
             audioStore.dismissFullPlayer()
             Task { await audioStore.player.close() }
+            // The picker stays up even with one profile left. Opening that
+            // profile at once would move the person to it unasked, and
+            // returns to Home fast enough that the previous profile's
+            // screens are kept.
+            router.pickerRequestedByPerson = true
             router.showProfileSelection()
         }
         .onChange(of: serverRegistry.activeServerId) { previousServerID, activeServerID in
@@ -742,7 +748,8 @@ struct ContentView: View {
 
     /// Turn an expired away interval into the same durable identity boundary
     /// as an explicit profile switch. The account and remembered-profile hint
-    /// remain available to Who's Watching.
+    /// remain available to Who's Watching, or to Change Account, which shows
+    /// in its place when several accounts are saved.
     @MainActor
     private func applyProfileReturnPolicy() async {
         guard !isApplyingProfileReturnPolicy,
@@ -793,7 +800,7 @@ struct ContentView: View {
         }
         #endif
         guard deactivated else { return }
-        router.showProfileSelection()
+        router.showProfileSelectionAfterReturn()
     }
 
     #if os(iOS) || os(tvOS)
@@ -881,7 +888,8 @@ struct ContentView: View {
     }
 
     /// The open account's "Who's watching?", or Change Account while no
-    /// account is open and another can be chosen (spec §4.1).
+    /// account is open and another can be chosen (spec §4.1), or while the
+    /// person chooses the account first (spec §4.2).
     @ViewBuilder
     private var profileFlowRoot: some View {
         if router.authState == .needsProfile, router.showsChangeAccountRoot {
@@ -1232,7 +1240,7 @@ struct ContentView: View {
         LaunchTimeline.recordInitialStateResolved(state: state.diagnosticsState)
         #endif
         StartupContentPrefetcher.prefetchForInitialRoute(state)
-        router.authState = state
+        router.commitLaunchRoute(state)
     }
 
     /// Saved servers' push registrations still need renewing while no
@@ -1282,6 +1290,10 @@ struct ContentView: View {
         // instead of every foreground paying for a request.
         AdvisoryAgePreferenceStore.shared.markStale()
         Task { await refreshSessionStores(overlayPhase: "foreground_refresh") }
+        // The account's profiles and profile limit, which the profile menu
+        // draws its profile row from; a cold launch reads them in
+        // `StartupContentPrefetcher.prefetchForInitialRoute`.
+        StartupContentPrefetcher.prefetchProfiles()
         #if os(iOS)
         Task {
             await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
