@@ -53,6 +53,67 @@ struct AccountRemovalRequest: Identifiable, Equatable {
     }
 }
 
+/// Add Profile in the profile menu (spec §4.3): the new-profile form over
+/// the screen the menu was opened from, behind the primary profile's PIN
+/// when it has one.
+struct AddProfileRequest: Identifiable, Equatable {
+    /// One per time the row is chosen. A PIN check that outlives its prompt
+    /// names the request it belongs to, so it cannot close or unlock a
+    /// later one for the same profile.
+    let id = UUID()
+    /// The account's primary profile, which manages its profiles: with one
+    /// profile, the open one.
+    let primary: UserProfile
+    /// The server, account and profile the row was chosen under. What
+    /// follows a create belongs to that session only.
+    let session: AccountScope?
+
+    /// What choosing Add Profile does.
+    enum Start: Equatable {
+        /// The new-profile form, behind `primary`'s PIN when it has one.
+        case form(primary: UserProfile)
+        /// The account has several profiles after all (the row was drawn
+        /// from an older list): its picker, as Switch Profile opens it.
+        case picker
+        /// No profile list, or its only profile isn't the open one. The form
+        /// never opens for a profile that isn't open, so Add Profile cannot
+        /// change who is watching.
+        case unavailable
+    }
+
+    /// - Parameters:
+    ///   - profiles: the account's profiles, fresh when the server answered.
+    ///   - openProfileID: the profile that is open.
+    static func start(profiles: [UserProfile], openProfileID: String?) -> Start {
+        guard profiles.count <= 1 else { return .picker }
+        guard let only = profiles.first, only.id == openProfileID else { return .unavailable }
+        return .form(primary: only)
+    }
+
+    /// Whether the picker shows once the form has closed after a create that
+    /// succeeded or whose answer never arrived. Only a fresh list that holds
+    /// one profile shows nothing was added; a list that couldn't be read
+    /// doesn't.
+    static func showsPicker(afterCreateWith freshProfileCount: Int?) -> Bool {
+        freshProfileCount != 1
+    }
+
+    /// Whether a step that waited on the server may go on. The session it
+    /// started in must still be the one open: the same server, account and
+    /// profile, so a late answer never opens the form, the picker or an
+    /// alert over the account or profile that replaced it. Profile IDs
+    /// repeat across accounts on one server, so all three are compared.
+    /// And no Add Profile request may be on screen: one that came up while
+    /// the step waited is newer, and an older read must not replace it or
+    /// take it to the picker. False when no profile was open to begin with.
+    static func mayProceed(
+        startedIn started: AccountScope?, now current: AccountScope?, onScreen request: AddProfileRequest?
+    ) -> Bool {
+        guard request == nil, let started, started.profileId != nil else { return false }
+        return started == current
+    }
+}
+
 /// Where the app goes when the active server has no signed-in account.
 enum SignedOutDestination: Equatable {
     /// Other saved accounts can be chosen: Change Account, as the root of
@@ -149,6 +210,77 @@ extension AppRouter {
               let selected = AccountScope.localAccountId(onServer: serverId) else { return nil }
         let account = AccountDirectory.shared.account(selected)
         return account?.needsSignIn == true ? account?.username : nil
+    }
+
+    // MARK: - Add Profile from the profile menu
+
+    /// Opens profile creation from the profile menu by the picker's rules:
+    /// the account's primary profile manages its profiles, and its PIN is
+    /// asked first when it has one.
+    func beginAddProfile() {
+        guard addProfileRequest == nil, authState == .authenticated else { return }
+        let session = AccountScope.current
+        Task { @MainActor in
+            // A fresh list, so a PIN set on another device is asked for; the
+            // cached one when the server can't be reached.
+            let cached: [UserProfile]? = ResponseCache.shared.get(CacheKey.profiles)
+            let profiles = (try? await StartupContentPrefetcher.fetchProfiles()) ?? cached ?? []
+            // The menu closed before the list was asked for, so the account
+            // or profile can have changed meanwhile. The list, and a cached
+            // one above all, then belongs to the session that was replaced.
+            // Add Profile can also have been chosen again and be on screen.
+            guard authState == .authenticated,
+                  AddProfileRequest.mayProceed(
+                      startedIn: session, now: AccountScope.current, onScreen: addProfileRequest
+                  ) else { return }
+            switch AddProfileRequest.start(profiles: profiles, openProfileID: session?.profileId) {
+            case .form(let primary):
+                addProfileRequest = AddProfileRequest(primary: primary, session: session)
+            case .picker:
+                switchProfile()
+            case .unavailable:
+                accountActionError = AppLanguage.string(.profilesErrorNoPrimaryCreate)
+            }
+        }
+    }
+
+    /// Whether `request` is the one on screen. False once its prompt was
+    /// closed, also when Add Profile was chosen again since.
+    func isPresenting(_ request: AddProfileRequest) -> Bool {
+        addProfileRequest?.id == request.id
+    }
+
+    /// Closes Add Profile for `request`, with `error` in the account alert
+    /// when there is one. Nothing happens once that request is gone: a PIN
+    /// check that finishes late must not close a newer prompt or form, or
+    /// report an error for a request the person already left.
+    func closeAddProfile(_ request: AddProfileRequest, reporting error: String? = nil) {
+        guard isPresenting(request) else { return }
+        addProfileRequest = nil
+        if let error { accountActionError = error }
+    }
+
+    /// `request`'s new-profile form closed after creating a profile, or
+    /// after a create whose answer never arrived: the account's picker
+    /// shows, as it does after adding from the picker. The screen underneath
+    /// stays when a fresh list shows that nothing was added.
+    ///
+    /// The form is closed while the list is read, so the account or profile
+    /// can change meanwhile, and a read that fails for that reason looks
+    /// like one that couldn't be made. The picker therefore shows only
+    /// while the session the request was made in is still the one open,
+    /// and not over an Add Profile request that came up meanwhile.
+    func finishAddProfile(_ request: AddProfileRequest) {
+        closeAddProfile(request)
+        Task { @MainActor in
+            let freshCount = (try? await StartupContentPrefetcher.fetchProfiles())?.count
+            guard authState == .authenticated,
+                  AddProfileRequest.mayProceed(
+                      startedIn: request.session, now: AccountScope.current, onScreen: addProfileRequest
+                  ),
+                  AddProfileRequest.showsPicker(afterCreateWith: freshCount) else { return }
+            switchProfile()
+        }
     }
 
     // MARK: - Change Account

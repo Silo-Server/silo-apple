@@ -134,6 +134,7 @@ struct ContentView: View {
             Text(router.accountActionError ?? "")
         }
         .modifier(AccountRemovalConfirmationModifier(router: router))
+        .modifier(AddProfileFromMenuModifier(router: router))
         #if !os(tvOS)
         .alert(LegacyDownloadStorage.noticeMessage, isPresented: Binding(
             get: {
@@ -1282,6 +1283,10 @@ struct ContentView: View {
         // instead of every foreground paying for a request.
         AdvisoryAgePreferenceStore.shared.markStale()
         Task { await refreshSessionStores(overlayPhase: "foreground_refresh") }
+        // The account's profiles and profile limit, which the profile menu
+        // draws its profile row from; a cold launch reads them in
+        // `StartupContentPrefetcher.prefetchForInitialRoute`.
+        StartupContentPrefetcher.prefetchProfiles()
         #if os(iOS)
         Task {
             await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()

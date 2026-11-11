@@ -227,6 +227,10 @@ struct APIv2ProfileCollection: Decodable {
     /// The server accepts and enforces `requests_allowed`. Absent on a server
     /// that predates the per-profile requests switch.
     let requestsAllowedSupported: Bool?
+    /// How many profiles the account may have. Absent on a remote-playback
+    /// handoff session, when the server could not read the limit, and on a
+    /// server that predates it.
+    let maxProfiles: Int?
 
     func completeItems() throws -> [APIv2Profile] {
         try APIv2CatalogReadCollection(items: items, page: page).completeItems()

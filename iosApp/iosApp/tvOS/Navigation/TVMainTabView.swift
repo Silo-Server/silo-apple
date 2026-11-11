@@ -52,6 +52,9 @@ struct TVMainTabView: View {
     /// Sign Out was chosen in the profile menu and its confirmation is up,
     /// so cancelling it returns focus to the avatar.
     @State private var isConfirmingMenuSignOut = false
+    /// Add Profile was chosen in the profile menu and its form is up, so
+    /// closing it without a new profile returns focus to the avatar.
+    @State private var isAddingProfileFromMenu = false
     @State private var accountDirectory = AccountDirectory.shared
     @State private var librariesStaleSinceBackground = false
     @State private var registry = ServerRegistry.shared
@@ -202,6 +205,14 @@ struct TVMainTabView: View {
         .onChange(of: router.pendingRemoval == nil) { _, dismissed in
             guard dismissed, isConfirmingMenuSignOut else { return }
             isConfirmingMenuSignOut = false
+            Task { @MainActor in
+                await Task.yield()
+                focusTopMenuIfVisible(focusing: .profile)
+            }
+        }
+        .onChange(of: router.addProfileRequest == nil) { _, dismissed in
+            guard dismissed, isAddingProfileFromMenu else { return }
+            isAddingProfileFromMenu = false
             Task { @MainActor in
                 await Task.yield()
                 focusTopMenuIfVisible(focusing: .profile)
@@ -739,7 +750,14 @@ struct TVMainTabView: View {
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
             showsRequests: RequestsFeatureStore.shared.isEnabled,
             showsWatchParty: WatchPartyEntry.isAvailable,
+            profileRow: profileMenuRow,
             onSwitchProfile: { closePanel(then: switchProfile) },
+            onAddProfile: {
+                closePanel(then: {
+                    isAddingProfileFromMenu = true
+                    router.beginAddProfile()
+                })
+            },
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
             onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
@@ -751,6 +769,22 @@ struct TVMainTabView: View {
                     router.signOutAndReset()
                 })
             }
+        )
+        // Profiles added or removed elsewhere change the profile row. A
+        // phone's remote playback lists its own profile, not the account's.
+        .task(id: isActive) {
+            guard isActive, RemotePlaybackIdentityManager.shared.activeIdentity == nil else { return }
+            _ = try? await StartupContentPrefetcher.fetchProfiles()
+        }
+    }
+
+    /// Switch Profile, Add Profile, or no row (spec §4.3). A phone's remote
+    /// playback borrows this TV's identity; its session can neither switch
+    /// nor add a profile, so the row is hidden while it lasts.
+    private var profileMenuRow: ProfileMenuRow? {
+        ProfileMenuRow.row(
+            for: accountDirectory.openAccount,
+            isHandoffSession: RemotePlaybackIdentityManager.shared.activeIdentity != nil
         )
     }
 

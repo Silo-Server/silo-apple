@@ -1105,11 +1105,12 @@ private struct TVDropdownBoundaryMoveHandler: ViewModifier {
 // MARK: - Profile dropdown
 
 private enum TVProfileAction: Hashable {
-    case switchProfile
     case history
     case requests
     case watchParty
     case settings
+    /// Switch Profile or Add Profile (`ProfileMenuRow`).
+    case profileRow
     case changeAccount
     case signOut
 }
@@ -1130,7 +1131,8 @@ struct TVProfileDropdown: View {
     let serverHost: String?
     /// Whether focus has entered the panel.
     let entersPanel: Bool
-    /// Bumped by the host when focus should enter — lands on the first row.
+    /// Bumped by the host when focus should enter — lands on the first row,
+    /// History.
     let focusEntryGeneration: Int
     /// Reports whether any row currently holds focus, so the host can drop
     /// the avatar's focus ring once focus descends (§5.8).
@@ -1139,7 +1141,11 @@ struct TVProfileDropdown: View {
     let showsRequests: Bool
     /// Whether Watch Party is on and the server supports it (`WatchPartyEntry`).
     let showsWatchParty: Bool
+    /// Switch Profile, Add Profile, or no row, by the open account's profile
+    /// count and limit.
+    let profileRow: ProfileMenuRow?
     let onSwitchProfile: () -> Void
+    let onAddProfile: () -> Void
     let onHistory: () -> Void
     let onRequests: () -> Void
     let onWatchParty: () -> Void
@@ -1173,14 +1179,13 @@ struct TVProfileDropdown: View {
               generation > 0,
               generation != lastAppliedEntryGeneration else { return }
         lastAppliedEntryGeneration = generation
-        focusedAction = .switchProfile
+        focusedAction = .history
     }
 
     private var panel: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
 
-            actionButton(.menuSwitchProfile, systemImage: "person.2.fill", id: .switchProfile, action: onSwitchProfile)
             // Watchlist and Favorites live under For You, not here.
             actionButton(.menuHistory, systemImage: "clock.fill", id: .history, action: onHistory)
             if showsRequests {
@@ -1193,9 +1198,18 @@ struct TVProfileDropdown: View {
             divider
 
             actionButton(.menuSettings, systemImage: "gearshape.fill", id: .settings, action: onSettings)
-            // Switch Profile shows the open account's profiles; Change
-            // Account, in Switch Server's place, lists every saved account by
-            // server (spec §4.3). Servers are managed in Settings › Accounts.
+            // Who is watching sits together, in the phones' order: the open
+            // account's profiles, then Change Account, which in Switch
+            // Server's place lists every saved account by server (spec §4.3).
+            // Servers are managed in Settings › Accounts.
+            if let profileRow {
+                actionButton(
+                    profileRow.title,
+                    systemImage: profileRow.systemImage,
+                    id: .profileRow,
+                    action: profileRow == .addProfile ? onAddProfile : onSwitchProfile
+                )
+            }
             actionButton(.menuChangeAccount, systemImage: "person.crop.circle.badge.checkmark", id: .changeAccount, action: onChangeAccount)
             actionButton(.menuSignOut, systemImage: "rectangle.portrait.and.arrow.forward", id: .signOut, isDestructive: true, action: onSignOut)
         }
