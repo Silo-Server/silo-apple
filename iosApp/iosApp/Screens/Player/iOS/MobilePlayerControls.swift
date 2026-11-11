@@ -26,15 +26,23 @@ struct MobilePlayerControls: View {
     @State private var activeSheet: PlayerSheet?
     @State private var tracksDetent: PresentationDetent = .medium
     @State private var tracksNestedSheetCovers = false
+    @State private var chaptersDetent: PresentationDetent = .medium
+    @State private var qualityDetent: PresentationDetent = .medium
     /// Trailing time label mode: remaining ("−12:34") when true, total
     /// duration otherwise. Tap the label to flip — the native player idiom.
     @State private var showsRemainingTime = true
     @State private var pictureInPicture = PictureInPictureCoordinator.shared
     @State private var orientationCoordinator = PlayerOrientationCoordinator.shared
     /// Floating stats card. Kept here rather than on the view model because
-    /// it is purely presentation, and kept outside the `showControls` gate
-    /// below so the auto-hide takes the transport away without it.
+    /// it is purely presentation. It shows while the controls are away and
+    /// steps aside while they show: it is too tall to fit between them.
     @State private var showsStats = false
+    /// Set when switching the stats on closes the sheet: the controls then
+    /// hide instead of restarting their auto-hide, so the stats show at once.
+    @State private var hidesControlsWhenSheetCloses = false
+    /// Global top edge of the timeline while the controls show. Skip pills
+    /// float just above it so they never cover the time labels.
+    @State private var timelineMinY: CGFloat?
     @Environment(\.playerTabletopLayout) private var tabletopLayout
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -47,7 +55,11 @@ struct MobilePlayerControls: View {
         // the sheet mid-interaction — then re-presents it when controls come
         // back, because @State activeSheet survives the rebuild.
         ZStack {
-            if viewModel.showControls {
+            // Fills the player whatever else shows, so the side panel
+            // overlay below has the player's size to lay out in.
+            Color.clear.allowsHitTesting(false)
+            // A side panel takes the controls' place; the picture stays.
+            if viewModel.showControls && panelSheet == nil {
                 // GeometryReader pins the control stack to the player's own
                 // bounds. The bars are siblings of the shared player notice in
                 // `PlayerView`'s ZStack; inside the player's `.fullScreenCover`
@@ -71,24 +83,28 @@ struct MobilePlayerControls: View {
                         // strip and the taller bottom stack, which would pull
                         // it off-centre. Kept beneath the bars so the scrub
                         // preview draws over it.
-                        centerCluster
-                            .opacity(recedingOpacity)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .ignoresSafeArea()
-
-                        VStack(spacing: 0) {
-                            topStrip(compact: pane.width < pane.height)
+                        if let dock = portraitDock(in: proxy) {
+                            dockedControls(dock, pane: pane)
+                        } else {
+                            centerCluster(playSize: Self.playButtonSize, skipSize: Self.skipButtonSize, spacing: 48)
                                 .opacity(recedingOpacity)
-                            Spacer()
-                            bottomStack
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .ignoresSafeArea()
+
+                            VStack(spacing: 0) {
+                                topStrip(compact: pane.width < pane.height)
+                                    .opacity(recedingOpacity)
+                                Spacer()
+                                bottomStack
+                            }
+                            .padding(.horizontal)
+                            .padding(.top)
+                            // Hug the bottom: the safe-area inset already keeps
+                            // the action row clear of the home indicator, so only
+                            // a hairline of extra breathing room is needed.
+                            .padding(.bottom, 2)
+                            .frame(width: pane.width, height: pane.height)
                         }
-                        .padding(.horizontal)
-                        .padding(.top)
-                        // Hug the bottom: the safe-area inset already keeps
-                        // the action row clear of the home indicator, so only
-                        // a hairline of extra breathing room is needed.
-                        .padding(.bottom, 2)
-                        .frame(width: pane.width, height: pane.height)
                     }
                     .padding(.top, paneTop)
                     .animation(.easeOut(duration: 0.18), value: viewModel.isScrubbing)
@@ -99,8 +115,8 @@ struct MobilePlayerControls: View {
             if viewModel.showSegmentSkip {
                 segmentSkipPill
             }
-            if showsStats {
-                MobilePlaybackStatsOverlay(stats: viewModel.playbackStats)
+            if showsStats && !viewModel.showControls {
+                MobilePlaybackStatsOverlay(stats: viewModel.playbackStats) { showsStats = false }
                     .transition(.opacity)
             }
         }
@@ -111,29 +127,23 @@ struct MobilePlayerControls: View {
         // Fades in, and out when its timer runs out. Tap takes it down at once
         // (see `PlayerViewModel.selectIntroSkipPrompt`).
         .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
-        .sheet(item: $activeSheet) { sheet in
-            switch sheet {
-            case .tracks:
-                TrackSelectionSheet(viewModel: viewModel, nestedSheetCoversPlayer: $tracksNestedSheetCovers) {
-                    activeSheet = nil
-                }
-                    .presentationDetents([.medium, .large], selection: $tracksDetent)
+        // A phone on its side gets the menus as a panel at the trailing
+        // edge, sized to its content and with the picture still in view; a
+        // full-screen sheet would stretch short lists across the whole
+        // screen. Upright phones and iPads keep the native sheets.
+        .overlay { sidePanel }
+        .animation(.easeOut(duration: 0.22), value: panelSheet)
+        .sheet(item: Binding(
+            get: { usesSidePanel ? nil : activeSheet },
+            set: { activeSheet = $0 }
+        )) { sheet in
+            if let detent = detentBinding(for: sheet) {
+                sheetContent(sheet)
+                    .presentationDetents([.medium, .large], selection: detent)
                     .presentationDragIndicator(.visible)
-            case .settings:
-                PlayerSettingsSheet(
-                    viewModel: viewModel,
-                    sleepTimer: viewModel.sleepTimer,
-                    statsOverlayVisible: Binding(
-                        get: { showsStats },
-                        set: { newValue in
-                            showsStats = newValue
-                            // Switching it on closes the sheet: the stats are
-                            // only useful over the picture they describe.
-                            if newValue { activeSheet = nil }
-                        }
-                    )
-                )
-                .presentationDetents([.large])
+            } else {
+                sheetContent(sheet)
+                    .presentationDetents([.large])
             }
         }
         .onChange(of: activeSheet) { _, newValue in
@@ -141,16 +151,103 @@ struct MobilePlayerControls: View {
             // auto-hide timer once it closes.
             if newValue != nil {
                 viewModel.pinControlsVisible()
+                return
+            }
+            if hidesControlsWhenSheetCloses {
+                hidesControlsWhenSheetCloses = false
+                viewModel.dismissControls()
             } else {
                 viewModel.resumeAutoHide()
-                tracksDetent = .medium
-                tracksNestedSheetCovers = false
             }
+            tracksDetent = .medium
+            chaptersDetent = .medium
+            qualityDetent = .medium
+            tracksNestedSheetCovers = false
         }
         // Initial too: controls that mount again say whether their sheet
         // came back with them.
         .onChange(of: sheetCoversPlayer, initial: true) { _, covers in
             viewModel.playerSheetCoversPlayer(covers)
+        }
+    }
+
+    @ViewBuilder
+    private func sheetContent(_ sheet: PlayerSheet) -> some View {
+        switch sheet {
+        case .tracks:
+            TrackSelectionSheet(viewModel: viewModel, nestedSheetCoversPlayer: $tracksNestedSheetCovers) {
+                activeSheet = nil
+            }
+        case .quality:
+            QualitySheet(viewModel: viewModel) { activeSheet = nil }
+        case .chapters:
+            ChapterListSheet(viewModel: viewModel) { activeSheet = nil }
+        case .settings:
+            PlayerSettingsSheet(
+                viewModel: viewModel,
+                sleepTimer: viewModel.sleepTimer,
+                statsOverlayVisible: Binding(
+                    get: { showsStats },
+                    set: { newValue in
+                        showsStats = newValue
+                        // Switching it on closes the sheet and the
+                        // controls: the stats are only useful over the
+                        // picture they describe, and show while the
+                        // controls are away.
+                        if newValue {
+                            hidesControlsWhenSheetCloses = true
+                            activeSheet = nil
+                        }
+                    }
+                ),
+                onDismiss: { activeSheet = nil }
+            )
+        }
+    }
+
+    /// The half/full-height selection of a sheet that offers both; nil for
+    /// the settings, which always open full height.
+    private func detentBinding(for sheet: PlayerSheet) -> Binding<PresentationDetent>? {
+        switch sheet {
+        case .tracks: $tracksDetent
+        case .quality: $qualityDetent
+        case .chapters: $chaptersDetent
+        case .settings: nil
+        }
+    }
+
+    /// Landscape phone: the menus open as a trailing panel instead of a sheet.
+    private var usesSidePanel: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && verticalSizeClass == .compact
+    }
+
+    private var panelSheet: PlayerSheet? {
+        usesSidePanel ? activeSheet : nil
+    }
+
+    @ViewBuilder
+    private var sidePanel: some View {
+        if let sheet = panelSheet {
+            ZStack(alignment: .trailing) {
+                // The picture stays in view, dimmed; a tap on it closes.
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { activeSheet = nil }
+                    .accessibilityHidden(true)
+                // The rows keep to the safe area; the plate behind them runs
+                // out to the screen edges.
+                sheetContent(sheet)
+                    .frame(width: sheet == .tracks ? 620 : 380)
+                    .frame(maxHeight: .infinity)
+                    .background {
+                        UnevenRoundedRectangle(topLeadingRadius: 22, bottomLeadingRadius: 22, style: .continuous)
+                            .fill(Color(white: 0.06))
+                            .shadow(color: .black.opacity(0.5), radius: 24, x: -6)
+                            .ignoresSafeArea()
+                    }
+                    .transition(.move(edge: .trailing))
+            }
         }
     }
 
@@ -162,16 +259,16 @@ struct MobilePlayerControls: View {
 
     // MARK: - Top strip
 
-    private func topStrip(compact: Bool) -> some View {
+    private func topStrip(compact: Bool, showsTitle: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 12) {
                 closeButton
                 if !compact { titleBlock }
                 Spacer(minLength: 0)
-                if !compact { externalPlaybackControls }
+                if !compact || !showsTitle { externalPlaybackControls }
                 if showsRotationControls { rotationControls }
             }
-            if compact {
+            if compact && showsTitle {
                 HStack(spacing: 12) {
                     titleBlock
                     Spacer(minLength: 12)
@@ -241,6 +338,109 @@ struct MobilePlayerControls: View {
         guard let tabletopLayout else { return 0 }
         let top = tabletopLayout.controlsMinY - proxy.frame(in: .global).minY
         return min(max(top, 0), proxy.size.height)
+    }
+
+    /// Where the letterboxed picture sits, in the controls' own coordinates,
+    /// when an upright phone leaves room under it for the controls.
+    private struct PortraitDock {
+        let pictureTop: CGFloat
+        let pictureBottom: CGFloat
+    }
+
+    /// The picture is centred on the whole screen, so a phone held upright
+    /// shows a film as a band across the middle. The controls then gather
+    /// around that band (title above it, timeline, transport and actions
+    /// below it) instead of spreading to the screen edges. Nil when the
+    /// picture fills the height, its size is not known yet, or the room
+    /// under it is too small.
+    private func portraitDock(in proxy: GeometryProxy) -> PortraitDock? {
+        guard tabletopLayout == nil, proxy.size.width < proxy.size.height else { return nil }
+        let engine = viewModel.aetherEngine
+        let pixelAspect = engine.sourceVideoPixelAspectRatio > 0 ? engine.sourceVideoPixelAspectRatio : 1
+        let videoWidth = CGFloat(engine.sourceVideoWidth) * CGFloat(pixelAspect)
+        let videoHeight = CGFloat(engine.sourceVideoHeight)
+        guard videoWidth > 0, videoHeight > 0 else { return nil }
+        let insets = proxy.safeAreaInsets
+        let screenWidth = proxy.size.width + insets.leading + insets.trailing
+        let screenHeight = proxy.size.height + insets.top + insets.bottom
+        let pictureHeight = min(screenHeight, screenWidth * videoHeight / videoWidth)
+        let top = (screenHeight - pictureHeight) / 2 - insets.top
+        let bottom = top + pictureHeight
+        guard proxy.size.height - bottom >= Self.dockMinHeight, top >= Self.dockTopMinHeight else { return nil }
+        return PortraitDock(pictureTop: top, pictureBottom: bottom)
+    }
+
+    /// Room the docked timeline, transport and action row need under the picture.
+    private static let dockMinHeight: CGFloat = 210
+    /// Room the top strip and title need above the picture.
+    private static let dockTopMinHeight: CGFloat = 140
+
+    @ViewBuilder
+    private func dockedControls(_ dock: PortraitDock, pane: CGSize) -> some View {
+        // The top strip and title sit together just above the picture, so
+        // the whole HUD reads as one group around it.
+        VStack(alignment: .leading, spacing: 14) {
+            topStrip(compact: true, showsTitle: false)
+            dockTitleBlock
+                .padding(.horizontal, 4)
+        }
+        .opacity(recedingOpacity)
+        .padding(.horizontal)
+        .frame(width: pane.width, height: max(0, dock.pictureTop - 12), alignment: .bottom)
+        .frame(width: pane.width, height: pane.height, alignment: .top)
+
+        VStack(spacing: 14) {
+            timeline
+            centerCluster(playSize: 60, skipSize: 46, spacing: 40)
+                .opacity(recedingOpacity)
+            actionRow
+                .opacity(recedingOpacity)
+        }
+        .padding(.horizontal)
+        .padding(.top, dock.pictureBottom + 14)
+        .frame(width: pane.width, height: pane.height, alignment: .top)
+    }
+
+    /// The title over the picture in the docked layout: series line, then
+    /// the title at a size that holds its own above a film.
+    private var dockTitleBlock: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if let eyebrow = titleEyebrow {
+                Text(eyebrow)
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.8)
+                    .foregroundStyle(.white.opacity(0.7))
+                    .lineLimit(1)
+            }
+            Text(heroTitle)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+            // What is on screen now: runtime and the chapter playing, so the
+            // band over the picture carries information, not just a name.
+            if let line = dockDetailLine {
+                Text(line)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var dockDetailLine: String? {
+        var parts: [String] = []
+        if viewModel.duration > 0 {
+            parts.append(PlayerTimeFormatter.formatRuntime(viewModel.duration, locale: locale))
+        }
+        if let chapter = viewModel.chapters.last(where: { $0.time <= viewModel.currentTime }) {
+            parts.append(chapter.title.map { AppLanguage.isolated($0) }
+                ?? AppLanguage.string(
+                    .optionsChapterNumbered(LocaleFormat.integer(chapter.index + 1, locale: locale)),
+                    locale: locale
+                ))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private var rotationControls: some View {
@@ -322,17 +522,17 @@ struct MobilePlayerControls: View {
 
     /// Play/pause is the largest control, flanked by smaller skips — the
     /// same 64/52pt hierarchy and 48pt spacing as the Android phone player.
-    private var centerCluster: some View {
-        HStack(spacing: 48) {
+    private func centerCluster(playSize: CGFloat, skipSize: CGFloat, spacing: CGFloat) -> some View {
+        HStack(spacing: spacing) {
             Button {
                 viewModel.skipBackward()
             } label: {
                 Image(systemName: SeekIntervalLabel.symbolName(.backward, seconds: viewModel.skipIntervals.backward))
                     .font(.system(size: 24, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: Self.skipButtonSize, height: Self.skipButtonSize)
+                    .frame(width: skipSize, height: skipSize)
             }
-            .buttonStyle(MobilePlayerGlassButtonStyle(size: Self.skipButtonSize))
+            .buttonStyle(MobilePlayerGlassButtonStyle(size: skipSize))
             .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.backward, seconds: viewModel.skipIntervals.backward))
             .disabled(!viewModel.canRequestSeek)
 
@@ -355,9 +555,9 @@ struct MobilePlayerControls: View {
                             .offset(x: viewModel.isPlaying ? 0 : 2)
                     }
                 }
-                .frame(width: Self.playButtonSize, height: Self.playButtonSize)
+                .frame(width: playSize, height: playSize)
             }
-            .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9), size: Self.playButtonSize))
+            .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9), size: playSize))
             .accessibilityLabel(Text(viewModel.isPlaying
                 ? LocalizedStringResource.playerControlsPause
                 : .playerControlsPlay))
@@ -370,9 +570,9 @@ struct MobilePlayerControls: View {
                 Image(systemName: SeekIntervalLabel.symbolName(.forward, seconds: viewModel.skipIntervals.forward))
                     .font(.system(size: 24, weight: .medium))
                     .foregroundStyle(.white)
-                    .frame(width: Self.skipButtonSize, height: Self.skipButtonSize)
+                    .frame(width: skipSize, height: skipSize)
             }
-            .buttonStyle(MobilePlayerGlassButtonStyle(size: Self.skipButtonSize))
+            .buttonStyle(MobilePlayerGlassButtonStyle(size: skipSize))
             .accessibilityLabel(SeekIntervalLabel.accessibilityLabel(.forward, seconds: viewModel.skipIntervals.forward))
             .disabled(!viewModel.canRequestSeek)
         }
@@ -382,22 +582,28 @@ struct MobilePlayerControls: View {
     static let playButtonSize: CGFloat = 64
     static let skipButtonSize: CGFloat = 52
 
-    /// A checkmark-sized blank for the unchecked menu rows. Menus redraw
-    /// template images in their own tint, so it is drawn clear as original.
-    private static let clearCheckmark: Image = {
-        let symbol = UIImage(systemName: "checkmark")?
-            .withTintColor(.clear, renderingMode: .alwaysOriginal) ?? UIImage()
-        return Image(uiImage: symbol).renderingMode(.original)
-    }()
-
     // MARK: - Bottom stack
 
     private var bottomStack: some View {
         VStack(spacing: 10) {
-            MobilePlayerTimeline(viewModel: viewModel, showsRemainingTime: $showsRemainingTime)
+            timeline
             actionRow
                 .opacity(recedingOpacity)
         }
+    }
+
+    private var timeline: some View {
+        MobilePlayerTimeline(viewModel: viewModel, showsRemainingTime: $showsRemainingTime)
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { timelineMinY = $0 }
+            .onDisappear { timelineMinY = nil }
+    }
+
+    /// Bottom padding for a skip pill: clear of the timeline while the
+    /// controls show, near the bottom edge when it floats alone.
+    private func pillBottomPadding(in proxy: GeometryProxy) -> CGFloat {
+        guard viewModel.showControls, let timelineMinY else { return 24 }
+        // 20pt: the time labels' touch targets reach 16pt above the row.
+        return max(24, proxy.frame(in: .global).maxY - timelineMinY + 20)
     }
 
     // MARK: - Action row
@@ -465,28 +671,11 @@ struct MobilePlayerControls: View {
         }
     }
 
+    /// Opens the quality sheet: every tier with its bitrate, scrolling, and
+    /// clear of the transport.
     private func qualityMenu(compact: Bool) -> some View {
-        let menu = Menu {
-            // The menu indents only rows that carry an icon, so every row
-            // gets a checkmark, invisible unless checked: the titles stay
-            // in one column instead of the checked one shifting right. The
-            // bitrate goes underneath so the indented titles still fit.
-            ForEach(viewModel.qualityOptions) { option in
-                Button {
-                    viewModel.switchQuality(option.id)
-                } label: {
-                    Text(option.label)
-                    if let bitrate = option.bitrateText {
-                        Text(bitrate)
-                    }
-                    if option.id == viewModel.highlightedQualityOptionId {
-                        Image(systemName: "checkmark")
-                    } else {
-                        Self.clearCheckmark
-                    }
-                }
-                .disabled(viewModel.isQualitySwitching)
-            }
+        Button {
+            activeSheet = .quality
         } label: {
             HStack(spacing: 5) {
                 if viewModel.isQualitySwitching {
@@ -505,18 +694,13 @@ struct MobilePlayerControls: View {
                         .font(.system(size: 12, weight: .semibold))
                     Text(qualityValueText)
                         .font(.system(size: 11, weight: .medium))
-                        .opacity(0.7)
+                        .opacity(0.8)
                 }
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 12)
             .frame(height: SiloTheme.topBarIconHitSize)
         }
-        .menuStyle(.button)
-        // Keep Auto at the top, reading down.
-        .menuOrder(.fixed)
-
-        return menu
         .buttonStyle(MobilePlayerGlassButtonStyle(
             tint: viewModel.activeQualityId == ApplePlaybackQuality.autoId ? nil : Color.white.opacity(0.22)
         ))
@@ -566,20 +750,16 @@ struct MobilePlayerControls: View {
 
     // MARK: - Chapters menu
 
-    /// Native chapter picker: one row per chapter with the timestamp as the
-    /// menu subtitle and a checkmark on the chapter currently playing.
+    /// Opens the chapter sheet, which starts scrolled to the chapter playing.
     private func chaptersMenu(style: ActionRowStyle) -> some View {
-        Menu {
-            MobileChapterMenuItems(viewModel: viewModel)
+        Button {
+            activeSheet = .chapters
         } label: {
             menuPillLabel(
                 systemImage: "list.bullet",
                 title: style == .icons ? nil : LocalizedStringResource.optionsChapters
             )
         }
-        .menuStyle(.button)
-        // Keep Chapter 1 at the top, reading down.
-        .menuOrder(.fixed)
         .buttonStyle(MobilePlayerGlassButtonStyle())
     }
 
@@ -633,62 +813,75 @@ struct MobilePlayerControls: View {
     @ViewBuilder
     private var introSkipPill: some View {
         if let pill = viewModel.introSkipPrompt.pill {
-            VStack(alignment: .trailing, spacing: 4) {
-                Spacer()
-                if let caption = pill.kind.caption {
-                    Text(caption)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
-                        .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
-                        .padding(.trailing, 12)
-                        .accessibilityHidden(true)
-                }
-                Button {
-                    viewModel.selectIntroSkipPrompt()
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: pill.kind == .skip ? "forward.end.fill" : "arrow.counterclockwise")
-                        Text(pill.kind.actionTitle)
+            GeometryReader { proxy in
+                VStack(alignment: .trailing, spacing: 4) {
+                    Spacer()
+                    if let caption = pill.kind.caption {
+                        Text(caption)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.75))
+                            .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
+                            .padding(.trailing, 12)
+                            .accessibilityHidden(true)
                     }
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .frame(height: SiloTheme.topBarIconHitSize)
+                    Button {
+                        viewModel.selectIntroSkipPrompt()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: pill.kind == .skip ? "forward.end.fill" : "arrow.counterclockwise")
+                            Text(pill.kind.actionTitle)
+                        }
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .frame(height: SiloTheme.topBarIconHitSize)
+                    }
+                    .buttonStyle(MobilePlayerPillButtonStyle(pill: pill))
+                    .accessibilityLabel(pill.kind.accessibilityLabel)
                 }
-                .buttonStyle(MobilePlayerPillButtonStyle(pill: pill))
-                .accessibilityLabel(pill.kind.accessibilityLabel)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.horizontal, 24)
+                // Clear the timeline while the controls are up; hug the bottom
+                // edge when the pill is floating alone.
+                .padding(.bottom, pillBottomPadding(in: proxy))
+                .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.horizontal, 24)
-            // Clear the bottom stack while the controls are up; hug the
-            // bottom edge when the pill is floating alone.
-            .padding(.bottom, viewModel.showControls ? 88 : 24)
-            .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
             .transition(.opacity)
         }
     }
 
     private var segmentSkipPill: some View {
-        VStack {
-            Spacer()
-            HStack {
+        GeometryReader { proxy in
+            VStack(alignment: .trailing, spacing: 10) {
                 Spacer()
-                Button {
-                    viewModel.skipCurrentSegment()
-                } label: {
-                    Label(viewModel.segmentSkipLabel, systemImage: "forward.end.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.85))
-                        .padding(.horizontal, 16)
-                        .frame(height: SiloTheme.topBarIconHitSize)
+                // With the next episode named, the card carries the actions
+                // (Play next episode, Not now), as on the TVs and Android;
+                // otherwise the recap or credits skip stays a pill.
+                Group {
+                    if let upNext = viewModel.creditsNextEpisode {
+                        MobileCreditsUpNextCard(viewModel: viewModel, episode: upNext)
+                    } else {
+                        HStack {
+                            Spacer()
+                            Button {
+                                viewModel.skipCurrentSegment()
+                            } label: {
+                                Label(viewModel.segmentSkipLabel, systemImage: "forward.end.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.black.opacity(0.85))
+                                    .padding(.horizontal, 16)
+                                    .frame(height: SiloTheme.topBarIconHitSize)
+                            }
+                            .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
+                            .accessibilityLabel(viewModel.segmentSkipLabel)
+                        }
+                    }
                 }
-                .buttonStyle(MobilePlayerGlassButtonStyle(tint: .white.opacity(0.9)))
-                .accessibilityLabel(viewModel.segmentSkipLabel)
+                .padding(.horizontal, 24)
+                .padding(.bottom, pillBottomPadding(in: proxy))
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, viewModel.showControls ? 88 : 24)
+            .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
         }
-        .animation(.easeOut(duration: 0.2), value: viewModel.showControls)
         .transition(.opacity)
     }
 
@@ -714,15 +907,14 @@ struct MobilePlayerControls: View {
     /// a compact height every sheet is full height, and a sheet the tracks
     /// sheet opens can cover the player on its own.
     private var sheetCoversPlayer: Bool {
-        switch activeSheet {
-        case .settings: true
-        case .tracks: tracksDetent == .large || verticalSizeClass == .compact || tracksNestedSheetCovers
-        case nil: false
-        }
+        guard let activeSheet else { return false }
+        guard let detent = detentBinding(for: activeSheet) else { return true }
+        return detent.wrappedValue == .large || verticalSizeClass == .compact
+            || (activeSheet == .tracks && tracksNestedSheetCovers)
     }
 
     private enum PlayerSheet: Identifiable {
-        case tracks, settings
+        case tracks, quality, chapters, settings
         var id: Self { self }
     }
 }
@@ -776,10 +968,16 @@ private struct MobilePlayerTimeline: View {
             } label: {
                 Text(trailingTimeText)
                     .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.white.opacity(0.85))
                     .monospacedDigit()
+                    // A 44pt touch target around the small label; the
+                    // negative padding below keeps the row's layout.
+                    .frame(minWidth: 44, alignment: .trailing)
+                    .padding(.vertical, 16)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .padding(.vertical, -16)
             .accessibilityLabel(Text(showsRemainingTime
                 ? LocalizedStringResource.playerProgressTimeRemaining
                 : .playerProgressDuration))
@@ -981,41 +1179,6 @@ private struct MobilePlayerTimeline: View {
     }
 }
 
-/// Chapter menu rows. Reads the clock for the checkmark, so it is kept out of
-/// the controls' own body.
-private struct MobileChapterMenuItems: View {
-    let viewModel: PlayerViewModel
-    @Environment(\.locale) private var locale
-
-    var body: some View {
-        let currentChapterIndex = viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
-        ForEach(viewModel.chapters) { chapter in
-            Button {
-                viewModel.seekTo(seconds: chapter.time)
-            } label: {
-                if currentChapterIndex == chapter.index {
-                    Label {
-                        Text(chapterMenuTitle(chapter))
-                        Text(PlayerTimeFormatter.formatHMS(chapter.time))
-                    } icon: {
-                        Image(systemName: "checkmark")
-                    }
-                } else {
-                    Text(chapterMenuTitle(chapter))
-                    Text(PlayerTimeFormatter.formatHMS(chapter.time))
-                }
-            }
-        }
-    }
-
-    private func chapterMenuTitle(_ chapter: PlayerChapterInfo) -> String {
-        let number = LocaleFormat.integer(chapter.index + 1, locale: locale)
-        let title = chapter.title.map { AppLanguage.isolated($0) }
-            ?? AppLanguage.string(.optionsChapterNumbered(number), locale: locale)
-        return "\(number).  \(title)"
-    }
-}
-
 /// The player pills' capsule, shared by the intro-skip and buffering-quality
 /// pills: a dark scrim with the timer's fill creeping behind the label,
 /// brighter while pressed. A button without a timer, such as **Keep quality**,
@@ -1055,13 +1218,17 @@ struct MobilePlayerGlassButtonStyle: ButtonStyle {
     var tint: Color? = nil
     var size: CGFloat = SiloTheme.topBarIconHitSize
 
+    /// Untinted glass over a bright frame leaves white labels under 4.5:1;
+    /// a little black in the glass keeps them legible on any picture.
+    static let legibilityTint = Color.black.opacity(0.22)
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .frame(minWidth: size)
             .frame(height: size)
             .opacity(configuration.isPressed ? 0.75 : 1)
             .contentShape(Capsule())
-            .siloPlayerGlass(in: Capsule(), tint: tint, interactive: true)
+            .siloPlayerGlass(in: Capsule(), tint: tint ?? Self.legibilityTint, interactive: true)
     }
 }
 
@@ -1080,6 +1247,113 @@ struct MobilePlayerChromeVisibility: ViewModifier {
             .allowsHitTesting(isVisible)
             .accessibilityHidden(!isVisible)
             .animation(.easeOut(duration: 0.18), value: isVisible)
+    }
+}
+/// "Up next" during the credits: the episode that follows, when it starts,
+/// "Play next episode" to start it now and "Not now" to stop it starting by
+/// itself this time. Its own view, so the countdown's clock ticks re-render the card
+/// alone.
+private struct MobileCreditsUpNextCard: View {
+    let viewModel: PlayerViewModel
+    let episode: PlayerNextUpEpisode
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(.upNextHeading)
+                    .textCase(.uppercase)
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(1.2)
+                    .foregroundStyle(.white.opacity(0.72))
+                Text(verbatim: episodeLine)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                if let timingText {
+                    timingText
+                        .font(.system(size: 13))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .lineLimit(1)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            // The card's actions: play the named episode now (lit), or not
+            // now (quiet).
+            HStack(spacing: 8) {
+                Button {
+                    viewModel.selectSegmentAction()
+                } label: {
+                    Text(viewModel.segmentActionLabel)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 16)
+                        .frame(minHeight: 44)
+                        .background(Capsule().fill(Color.white))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                // Stops this episode starting the next by itself and puts the
+                // card away; the auto-play setting is untouched.
+                Button {
+                    viewModel.declineCreditsAutoPlay()
+                } label: {
+                    Text(.markerCreditsCardNotNow)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 44)
+                        .background(Capsule().fill(Color.white.opacity(0.1)))
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.3), lineWidth: 1))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 8)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: 360, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.black.opacity(0.86))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+        )
+    }
+
+    /// "S2 · E5 · Title": the code from the catalog, the title as the
+    /// server wrote it.
+    private var episodeLine: String {
+        let code = AppLanguage.string(
+            .catalogEpisodeCaption(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber)),
+            locale: locale
+        )
+        return "\(code) · \(AppLanguage.isolated(episode.title))"
+    }
+
+    /// When the credits end, the time in bold, and what follows. One catalog
+    /// message with the time restyled in place, so translations can reorder it.
+    /// Nil when auto-play is on but stood down for this episode (Keep
+    /// Watching): neither line would be true then.
+    private var timingText: Text? {
+        let remaining = PlayerTimeFormatter.formatHMS(viewModel.creditsRemainingSeconds, locale: locale)
+        let message: LocalizedStringResource
+        if viewModel.nextUpAutoPlayArmed {
+            message = .upNextCreditsEndThenPlays(remaining)
+        } else if !viewModel.settings.autoPlayNextEpisode {
+            message = .upNextCreditsEndAutoPlayOff(remaining)
+        } else {
+            return nil
+        }
+        var line = AttributedString(AppLanguage.string(message, locale: locale))
+        if let range = line.range(of: remaining) {
+            line[range].inlinePresentationIntent = .stronglyEmphasized
+            line[range].foregroundColor = .white
+        }
+        return Text(line)
     }
 }
 #endif

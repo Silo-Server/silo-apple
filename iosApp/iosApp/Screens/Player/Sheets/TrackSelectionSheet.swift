@@ -14,6 +14,7 @@ struct TrackSelectionSheet: View {
     @State private var translateDetent: PresentationDetent = .medium
     @State private var showSubtitleSearchMenu = false
     @Environment(\.locale) private var locale
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     private var aiSubtitlesAvailable: Bool {
         SubtitleTranslateMenu.hasActionableSource(viewModel)
@@ -21,29 +22,25 @@ struct TrackSelectionSheet: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                if !viewModel.audioTracks.isEmpty {
-                    Section { audioRows } header: { Text(.playerTracksAudio) }
-                }
-
-                if !viewModel.subtitleTracks.isEmpty {
-                    Section { subtitleRows(isSecondary: false) } header: { Text(.playerTracksSubtitles) }
-
-                    timingSection
-
-                    if viewModel.supportsSecondarySubtitles,
-                       viewModel.selectedSubtitleId != nil,
-                       !viewModel.availableSecondarySubtitleTracks.isEmpty {
-                        Section {
-                            subtitleRows(isSecondary: true)
-                        } header: {
-                            Text(.playerTracksSecondarySubtitles)
+            Group {
+                // A phone on its side is too short to stack the two lists, so
+                // audio and subtitles sit side by side and both stay in view.
+                if verticalSizeClass == .compact, !viewModel.audioTracks.isEmpty {
+                    HStack(spacing: 0) {
+                        List {
+                            Section { audioRows } header: { Text(.playerTracksAudio) }
+                        }
+                        List {
+                            subtitleSections
                         }
                     }
-                }
-
-                if aiSubtitlesAvailable || viewModel.subtitleSearchEnabled {
-                    subtitleToolsSection
+                } else {
+                    List {
+                        if !viewModel.audioTracks.isEmpty {
+                            Section { audioRows } header: { Text(.playerTracksAudio) }
+                        }
+                        subtitleSections
+                    }
                 }
             }
             .listStyle(.insetGrouped)
@@ -53,6 +50,7 @@ struct TrackSelectionSheet: View {
             }
             .navigationTitle(Text(.playerTracksTitle))
             .navigationBarTitleDisplayMode(.inline)
+            .playerSheetNavigationBar()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button { onDismiss() } label: { Text(.commonDone) }
@@ -86,6 +84,29 @@ struct TrackSelectionSheet: View {
         }
         .onChange(of: nestedCovers, initial: true) { _, covers in
             nestedSheetCoversPlayer = covers
+        }
+    }
+
+    @ViewBuilder
+    private var subtitleSections: some View {
+        if !viewModel.subtitleTracks.isEmpty {
+            Section { subtitleRows(isSecondary: false) } header: { Text(.playerTracksSubtitles) }
+
+            timingSection
+
+            if viewModel.supportsSecondarySubtitles,
+               viewModel.selectedSubtitleId != nil,
+               !viewModel.availableSecondarySubtitleTracks.isEmpty {
+                Section {
+                    subtitleRows(isSecondary: true)
+                } header: {
+                    Text(.playerTracksSecondarySubtitles)
+                }
+            }
+        }
+
+        if aiSubtitlesAvailable || viewModel.subtitleSearchEnabled {
+            subtitleToolsSection
         }
     }
 
@@ -274,21 +295,27 @@ private struct TrackSelectionRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
+                // Name and format chips on one line; a long title (a
+                // commentary's description) gets its own two lines under it
+                // instead of being cut in the middle.
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
                         Text(name)
                             .lineLimit(1)
-                            .truncationMode(.middle)
-                        if let detail {
-                            Text(detail)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                            .layoutPriority(1)
+                        if !pills.isEmpty {
+                            pillRow
                         }
                     }
 
-                    if !pills.isEmpty {
-                        pillRow
+                    if let detail {
+                        // Up to three lines: a commentary names its speakers,
+                        // which is what tells same-language tracks apart.
+                        Text(detail)
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.78))
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     if let status {

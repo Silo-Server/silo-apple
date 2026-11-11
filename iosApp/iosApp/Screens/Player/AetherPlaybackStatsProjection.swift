@@ -5,6 +5,7 @@ import Foundation
 struct AetherPlaybackStatsSourceMetadata: Equatable {
     let source: String?
     let delivery: String?
+    let playMethod: String?
     let container: String?
     let playbackRate: Double?
     let secondarySubtitleLabel: String?
@@ -24,6 +25,9 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
     ) {
         source = Self.sourceLabel(for: sourceURL)
         self.delivery = Self.deliveryLabel(delivery)
+        playMethod = sourceURL?.isFileURL == true
+            ? AppLanguage.string(.playerStatsOfflineFile)
+            : Self.playMethodLabel(delivery)
         self.container = Self.containerLabel(container)
         self.playbackRate = playbackRate
         self.secondarySubtitleLabel = secondarySubtitleLabel
@@ -48,6 +52,17 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
         case PlaybackProtocolV3.PlanDelivery.transcodeHLS: return AppLanguage.string(.playerStatsDeliveryServerTranscodeHls)
         default:
             return value.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    /// The delivery in viewer terms, for the stats summary.
+    private static func playMethodLabel(_ value: String?) -> String? {
+        switch normalized(value)?.lowercased() {
+        case PlaybackProtocolV3.PlanDelivery.originalHTTP: return AppLanguage.string(.playerStatsPlayMethodDirectPlay)
+        case PlaybackProtocolV3.PlanDelivery.remuxProgressive,
+             PlaybackProtocolV3.PlanDelivery.remuxHLS: return AppLanguage.string(.playerStatsPlayMethodRemuxed)
+        case PlaybackProtocolV3.PlanDelivery.transcodeHLS: return AppLanguage.string(.playerStatsPlayMethodTranscoded)
+        default: return nil
         }
     }
 
@@ -198,6 +213,7 @@ enum AetherPlaybackStatsProjection {
             route: routeLabel(snapshot.route),
             source: source.source,
             delivery: source.delivery,
+            playMethod: source.playMethod,
             container: source.container,
             video: videoStream(snapshot),
             audio: audioStream(track: activeAudio, decoder: snapshot.activeAudioDecoder),
@@ -236,9 +252,8 @@ enum AetherPlaybackStatsProjection {
             height: snapshot.sourceVideoHeight,
             pixelAspectRatio: snapshot.sourceVideoPixelAspectRatio
         )
-        let frameRate = snapshot.sourceVideoFrameRate.flatMap { fps in
-            fps.isFinite && fps > 0 ? LocaleFormat.decimal(fps, fractionDigits: 3) + " fps" : nil
-        }
+        let fps = snapshot.sourceVideoFrameRate.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        let frameRate = fps.map { LocaleFormat.decimal($0, fractionDigits: 3) + " fps" }
         let details = [dimensions, frameRate]
             .compactMap { $0 }
             .joined(separator: " · ")
@@ -247,14 +262,39 @@ enum AetherPlaybackStatsProjection {
             detail: details.isEmpty ? nil : details,
             bitrateBps: snapshot.sourceVideoBitrateBps > 0
                 ? Double(snapshot.sourceVideoBitrateBps)
-                : nil
+                : nil,
+            label: resolutionClass(width: snapshot.sourceVideoWidth, height: snapshot.sourceVideoHeight),
+            labelDetail: fps.map(shortFrameRate)
         )
+    }
+
+    /// "4K", "1080p" … by width, so a scope crop of a 1080p master (1920×800)
+    /// still reads as 1080p.
+    private static func resolutionClass(width: Int32, height: Int32) -> String? {
+        guard width > 0, height > 0 else { return nil }
+        switch width {
+        case 3800...: return "4K"
+        case 2500...: return "1440p"
+        case 1900...: return "1080p"
+        case 1260...: return "720p"
+        default: return "\(height)p"
+        }
+    }
+
+    /// "23.976 fps", "24 fps", "59.94 fps".
+    private static func shortFrameRate(_ fps: Double) -> String {
+        LocaleFormat.trimmed(fps, maxFractionDigits: 3) + " fps"
     }
 
     private static func audioStream(track: TrackInfo?, decoder: String?) -> PlaybackStats.MediaStream {
         guard let track else {
             return PlaybackStats.MediaStream(codec: decoder, detail: nil, bitrateBps: nil)
         }
+        let layout = track.isAtmos ? "Atmos" : channelLabel(track.channels)
+        let label = normalized(track.codec).map { codec in
+            [PlaybackStats.codecName(codec), layout].compactMap { $0 }.joined(separator: " ")
+        }
+        let languageName = normalized(track.language).flatMap { LocaleFormat.languageName($0) }
         var details: [String] = []
         if !track.name.isEmpty { details.append(track.name) }
         if let language = normalized(track.language),
@@ -273,7 +313,9 @@ enum AetherPlaybackStatsProjection {
         return PlaybackStats.MediaStream(
             codec: track.codec,
             detail: details.joined(separator: " · "),
-            bitrateBps: track.bitrate > 0 ? Double(track.bitrate) : nil
+            bitrateBps: track.bitrate > 0 ? Double(track.bitrate) : nil,
+            label: label,
+            labelDetail: languageName ?? normalized(track.name)
         )
     }
 

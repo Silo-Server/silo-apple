@@ -51,18 +51,45 @@ struct PlaybackStatsPanel: View {
     /// inert (no scrolling) without clipping anything.
     private var plainList: some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 4) {
-            ForEach(stats.compactRows, id: \.0) { row in
+            ForEach(Array(plainGroups.enumerated()), id: \.offset) { index, group in
+                // A caption per group, so the compact set reads as three
+                // short lists rather than one wall of fields.
                 GridRow {
-                    Text(verbatim: "\(row.0):")
-                        .foregroundStyle(.white.opacity(0.58))
-                        .gridColumnAlignment(.leading)
-                    Text(row.1)
-                        .foregroundStyle(.white.opacity(0.95))
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(group.title)
+                        .textCase(.uppercase)
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .padding(.top, index == 0 ? 0 : 8)
+                        .gridCellColumns(2)
+                }
+                ForEach(group.rows, id: \.0) { row in
+                    GridRow {
+                        Text(row.0)
+                            .foregroundStyle(.white.opacity(0.66))
+                            .gridColumnAlignment(.leading)
+                        Text(row.1)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }
-        .font(.system(size: 11))
+        .font(.system(size: 12))
+    }
+
+    /// `compactRows`, grouped as the sectioned layout groups them.
+    private var plainGroups: [(title: LocalizedStringResource, rows: [(String, String)])] {
+        let compact = Set(stats.compactRows.map(\.0))
+        func pick(_ rows: [(String, String)]) -> [(String, String)] {
+            rows.filter { compact.contains($0.0) }
+        }
+        return [
+            (title: .playerStatsSectionSource, rows: pick(stats.sourceRows)),
+            (title: .playerStatsSectionMedia, rows: pick(stats.mediaRows)),
+            (title: .playerHudPlayback, rows: pick(stats.bufferRows + stats.networkRows))
+        ].filter { !$0.rows.isEmpty }
     }
 
     private var leftSections: [StatsSection] {

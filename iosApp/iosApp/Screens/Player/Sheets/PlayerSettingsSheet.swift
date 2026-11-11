@@ -34,12 +34,15 @@ private struct RangeSpinner<Value: Strideable>: View {
 struct PlayerSettingsSheet: View {
     let viewModel: PlayerViewModel
     let sleepTimer: SleepTimer
-    /// Visibility of the stats annotation. A binding rather than a one-shot
-    /// action because the overlay itself has no dismiss affordance — this row
-    /// is both the on and the off switch. Nil hides the row.
+    /// Visibility of the stats overlay. A binding rather than a one-shot
+    /// action because the overlay's own close button turns it off too, and
+    /// this row must show that. Nil hides the row.
     var statsOverlayVisible: Binding<Bool>?
+    /// Closes the settings. Explicit rather than the environment's dismiss:
+    /// on a phone held sideways the settings are a panel inside the player,
+    /// where that action would close the player itself.
+    let onDismiss: () -> Void
 
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.locale) private var locale
 
     var body: some View {
@@ -52,9 +55,10 @@ struct PlayerSettingsSheet: View {
             }
             .navigationTitle(Text(.playerSettingsSheetTitle))
             .navigationBarTitleDisplayMode(.inline)
+            .playerSheetNavigationBar()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button { dismiss() } label: { Text(.commonDone) }
+                    Button { onDismiss() } label: { Text(.commonDone) }
                 }
             }
         }
@@ -67,7 +71,7 @@ struct PlayerSettingsSheet: View {
         Section {
             if viewModel.hasQualityChoice {
                 NavigationLink {
-                    qualityPage
+                    QualityList(viewModel: viewModel)
                 } label: {
                     LabeledContent {
                         Text(activeQualityLabel)
@@ -97,50 +101,6 @@ struct PlayerSettingsSheet: View {
     private var activeQualityLabel: String {
         viewModel.activeQualityOption?.label
             ?? ApplePlaybackQuality.displayName(for: viewModel.activeQualityId)
-    }
-
-    private var qualityPage: some View {
-        List {
-            Section {
-                ForEach(viewModel.qualityOptions) { option in
-                    Button {
-                        viewModel.switchQuality(option.id)
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(option.label)
-                                    .foregroundStyle(.primary)
-                                if let subtitle = option.subtitle {
-                                    Text(subtitle)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            Spacer()
-                            if option.id == viewModel.highlightedQualityOptionId {
-                                Image(systemName: "checkmark")
-                                    .fontWeight(.semibold)
-                                    .foregroundStyle(.tint)
-                            }
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .disabled(viewModel.isQualitySwitching)
-                }
-            } footer: {
-                if viewModel.isQualitySwitching {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text(.playerQualitySwitching)
-                    }
-                } else if let error = viewModel.qualitySwitchError {
-                    Text(error)
-                        .foregroundStyle(.red)
-                }
-            }
-        }
-        .navigationTitle(Text(.optionsQuality))
-        .navigationBarTitleDisplayMode(.inline)
     }
 
     @ViewBuilder
@@ -360,8 +320,12 @@ struct PlayerSettingsSheet: View {
                 } label: {
                     Text(.playerSettingsSpeed)
                 }
+                // A pushed list, like Settings: a popup menu over the sheet
+                // lets the rows and switches behind it show through.
+                .pickerStyle(.navigationLink)
             }
             sleepTimerPicker
+                .pickerStyle(.navigationLink)
 
             if sleepTimer.isActive {
                 LabeledContent {

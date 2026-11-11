@@ -1028,6 +1028,57 @@ struct PlayerView: View {
 
     @ViewBuilder
     private func errorView(_ error: String) -> some View {
+        #if os(iOS)
+        // A heading says what happened, the server's message says why, and
+        // the one action most likely to help is the prominent one.
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 30))
+                .foregroundStyle(Color.siloError)
+                .padding(.bottom, 4)
+                .accessibilityHidden(true)
+            Text(.playerErrorCantPlayTitle)
+                .font(.headline)
+                .foregroundStyle(.white)
+            // Plain guidance first; the server's own wording (often internal
+            // terms) stays as a smaller detail for support and bug reports.
+            // The guidance says the video couldn't start, so a failure after
+            // the first frame (a reconnect that gave up, a failed reload)
+            // shows only the heading and the details.
+            if !viewModel.hasStartedPlayback {
+                Text(viewModel.errorIsRetryable
+                     ? LocalizedStringResource.playerErrorCouldNotStartRetry
+                     : .playerErrorCouldNotStart)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .multilineTextAlignment(.center)
+            }
+            Text(.playerErrorDetails(error))
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+                .multilineTextAlignment(.center)
+            HStack(spacing: 12) {
+                if viewModel.errorIsRetryable {
+                    Button { viewModel.retry() } label: {
+                        Text(viewModel.retryButtonTitle).frame(minWidth: 112, minHeight: 44)
+                    }
+                    .siloPrimaryButton()
+                    Button { dismissPlayer() } label: {
+                        Text(.playerGoBack).frame(minWidth: 112, minHeight: 44)
+                    }
+                    .siloSecondaryButton()
+                } else {
+                    Button { dismissPlayer() } label: {
+                        Text(.playerGoBack).frame(minWidth: 112, minHeight: 44)
+                    }
+                    .siloPrimaryButton()
+                }
+            }
+            .padding(.top, 10)
+        }
+        .padding(.horizontal, 32)
+        .frame(maxWidth: 440)
+        #else
         VStack(spacing: 16) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 40))
@@ -1053,6 +1104,7 @@ struct PlayerView: View {
                     .frame(minWidth: 140)
             }
         }
+        #endif
     }
 }
 

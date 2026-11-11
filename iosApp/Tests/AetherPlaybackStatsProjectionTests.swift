@@ -105,6 +105,21 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         XCTAssertEqual(stats.networkThroughputBps, 95_000_000)
         XCTAssertEqual(stats.readerWindowAheadBytes, 8_000_000)
         XCTAssertEqual(stats.residentMemoryBytes, 384_000_000)
+        XCTAssertEqual(stats.playMethod, "Direct play")
+        XCTAssertEqual(stats.video.label, "4K")
+        XCTAssertEqual(stats.video.labelDetail, "23.976 fps")
+        XCTAssertEqual(stats.audio.label, "E-AC-3 Atmos")
+
+        let summary = stats.summary
+        XCTAssertEqual(summary.status, "Playing")
+        XCTAssertEqual(summary.health, .neutral)
+        XCTAssertEqual(summary.context, "Direct play · MKV")
+        XCTAssertEqual(summary.readings.map(\.title), ["Picture", "Sound", "Stream", "Frames"])
+        XCTAssertEqual(summary.readings[2].value, "18.5 Mbps")
+        XCTAssertEqual(
+            summary.readings[3],
+            .init(title: "Frames", value: "3 dropped", detail: "12.5 s buffered", needsAttention: true)
+        )
 
         let labels = Set(stats.allRows.map(\.0))
         XCTAssertFalse(labels.contains("Loopback generation"))
@@ -260,6 +275,28 @@ final class AetherPlaybackStatsProjectionTests: XCTestCase {
         )
 
         XCTAssertEqual(stats.dynamicRange, "HDR10 → SDR")
+    }
+
+    func testSummaryStatusFlagsOnlyRealTrouble() {
+        let cases: [(status: String?, dropped: Int?, expected: String, health: PlaybackStats.Summary.Health)] = [
+            ("Playing", 0, "Playing smoothly", .good),
+            // Unmeasured is not smooth.
+            ("Playing", nil, "Playing", .neutral),
+            ("Playing", 2, "Playing", .neutral),
+            ("Paused", 0, "Paused", .neutral),
+            ("Rebuffering", 0, "Rebuffering", .attention),
+            ("Stalled", nil, "Stalled", .attention),
+            ("Reconnecting", nil, "Reconnecting", .attention),
+            ("Error", nil, "Error", .attention),
+            (nil, nil, "Waiting for playback", .neutral)
+        ]
+        for testCase in cases {
+            var stats = PlaybackStats()
+            stats.playbackStatus = testCase.status
+            stats.droppedVideoFrames = testCase.dropped
+            XCTAssertEqual(stats.summary.status, testCase.expected, "\(String(describing: testCase.status))")
+            XCTAssertEqual(stats.summary.health, testCase.health, "\(String(describing: testCase.status))")
+        }
     }
 
     func testIdleSnapshotProducesNoSyntheticEngineRows() {

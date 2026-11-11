@@ -783,6 +783,62 @@ class PlayerViewModel {
     var showSegmentSkip: Bool { showRecapSkip || showCreditsSkip }
     var segmentSkipLabel: String { AppLanguage.string(showRecapSkip ? .markerSkipRecap : .markerSkipCredits) }
 
+    /// The episode the credits card names, which the credits action plays at
+    /// once: in the final credits only (earlier credits, with a scene after
+    /// them, keep Skip Credits), series order only (a shuffle's pick is not
+    /// this series'), and never in a Watch Party, whose room owns what plays
+    /// next.
+    var creditsNextEpisode: PlayerNextUpEpisode? {
+        guard showCreditsSkip, creditsRange == markerTimeline.ranges(.credits).last,
+              shuffleState == nil, !isWatchPartyPlayback, !creditsAutoPlayDeclined,
+              let next = nextUpEpisode, next.isEpisode, !next.isFromOnDeck
+        else { return nil }
+        return next
+    }
+
+    /// Seconds until the credits under the playhead end, for the credits
+    /// card's countdown.
+    var creditsRemainingSeconds: Double {
+        guard let creditsRange else { return 0 }
+        let end = duration > 0 ? min(creditsRange.end, duration) : creditsRange.end
+        return max(0, end - currentTime)
+    }
+
+    /// "Not now" on the credits card: this item won't start the next one by
+    /// itself, and the card goes (Skip Credits stays). The auto-play setting
+    /// is untouched. A reload of the same item (reconnect, retry, quality
+    /// switch) keeps it; loading other content clears it.
+    private(set) var creditsAutoPlayDeclined = false
+
+    func declineCreditsAutoPlay() {
+        creditsAutoPlayDeclined = true
+        cancelNextUpAutoPlay()
+    }
+
+    /// Whether the next pick will still start by itself when this item ends:
+    /// auto-play is on, the pick is one it starts, and nothing has stood it
+    /// down for this item (Keep Watching, a cancelled countdown, or the
+    /// credits card's "Not now").
+    var nextUpAutoPlayArmed: Bool {
+        nextUpPickAutoPlays && !nextUpAutoplayCancelled && !nextUpPromptDismissed
+    }
+
+    /// The segment pill's label: "Play next episode" while the credits card
+    /// names one, otherwise the skip.
+    var segmentActionLabel: String {
+        creditsNextEpisode != nil ? AppLanguage.string(.markerPlayNextEpisode) : segmentSkipLabel
+    }
+
+    /// The segment pill's action (button or Select): plays the named next
+    /// episode during the credits, otherwise skips the recap or credits.
+    func selectSegmentAction() {
+        if creditsNextEpisode != nil {
+            playNextEpisodeNow()
+        } else {
+            skipCurrentSegment()
+        }
+    }
+
     func skipCurrentSegment() {
         if showRecapSkip, let recapRange {
             seekTo(seconds: recapRange.end, revealingControls: false)
@@ -4022,11 +4078,12 @@ class PlayerViewModel {
         startNextUpCountdownIfNeeded()
     }
 
-    /// Auto-play is on and the pick is the next episode or a shuffle's pick.
-    /// An On Deck pick is another title the viewer didn't ask to continue
-    /// into, so it waits for Play Now.
+    /// Auto-play is on, the credits card's "Not now" hasn't declined it for
+    /// this item, and the pick is the next episode or a shuffle's pick. An On
+    /// Deck pick is another title the viewer didn't ask to continue into, so
+    /// it waits for Play Now.
     private var nextUpPickAutoPlays: Bool {
-        guard settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
+        guard settings.autoPlayNextEpisode, !creditsAutoPlayDeclined, let pick = nextUpEpisode else { return false }
         return !pick.isFromOnDeck
     }
 
@@ -4155,6 +4212,8 @@ class PlayerViewModel {
     func setNextUpAutoPlayEnabled(_ enabled: Bool) {
         settings.setAutoPlayNextEpisode(enabled)
         if enabled {
+            // Turning auto-play on overrides an earlier "Not now".
+            creditsAutoPlayDeclined = false
             nextUpAutoplayCancelled = false
             startNextUpCountdownIfNeeded()
         } else {
@@ -6222,6 +6281,7 @@ class PlayerViewModel {
             introSkipPrompt.reset()
             resetBufferingQuality()
             autoSkippedRecapKeys = []
+            creditsAutoPlayDeclined = false
             viewingHasPlayed = false
             hasStartedPlayback = false
             reconnectLoadRequest = nil
