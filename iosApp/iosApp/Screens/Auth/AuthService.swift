@@ -522,27 +522,48 @@ final class AuthService: @unchecked Sendable {
 
     /// Checks the open profile's PIN and replaces its stored proof with the
     /// one the server returns for it, for an action that PIN gates while the
-    /// profile stays open (Add Profile in the profile menu). The same check
-    /// and commit `selectProfile` makes, without its reset of profile-scoped
+    /// profile stays open (Add Profile in the profile menu). The same server
+    /// check `selectProfile` makes, without its reset of profile-scoped
     /// state: the identity is unchanged, only its proof, which goes stale
     /// when the PIN is set or changed on another device after the profile
     /// was opened. Nothing remembered changes.
-    func renewOpenProfileProof(profileId: String, pin: String, api: SiloAPI = .shared) async throws {
+    ///
+    /// The profile can be closed or replaced while the server checks the PIN
+    /// (Every Time on a return from the background). The token store commits
+    /// the proof only if that profile is still the open one, so a late
+    /// answer never puts it back.
+    ///
+    /// - Parameter verify: the server's check of the PIN, returning the
+    ///   profile's new proof. Tests replace it.
+    func renewOpenProfileProof(
+        profileId: String,
+        pin: String,
+        verify: @Sendable (_ profileId: String, _ pin: String) async throws -> String? = {
+            try await SiloAPI.shared.verifyProfileSelection(profileId: $0, pin: $1)
+        }
+    ) async throws {
         guard let expectedAccount = await tokenStore.refreshAccountIdentity() else {
             throw ProfileTransitionError.noActiveAccount
         }
         guard !(await tokenStore.hasTemporaryScope()) else {
             throw ProfileTransitionError.temporaryIdentityActive
         }
+        // No PIN is sent for a profile that isn't open. Whether it still is
+        // when the answer arrives is the token store's check.
         guard await tokenStore.getProfileId() == profileId else {
             throw ProfileTransitionError.identityChanged
         }
-        guard let proof = try await api.verifyProfileSelection(profileId: profileId, pin: pin) else {
+        let answer: String?
+        do {
+            answer = try await verify(profileId, pin)
+        } catch HTTPError.authorityChanged, HTTPError.requestIdentityChanged {
+            // The request's owner fence saw the profile change first.
+            throw ProfileTransitionError.identityChanged
+        }
+        guard let proof = answer else {
             throw ProfileTransitionError.missingPINProof
         }
-        guard await tokenStore.activateProfile(
-            profileID: profileId, profileToken: proof, expectedAccount: expectedAccount
-        ) else {
+        guard await tokenStore.renewProfileProof(proof, forProfile: profileId, expectedAccount: expectedAccount) else {
             throw ProfileTransitionError.identityChanged
         }
     }

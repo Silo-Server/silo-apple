@@ -222,6 +222,24 @@ final class ProfileVerificationSignalTests: XCTestCase {
         XCTAssertEqual(proof, "proof-2")
     }
 
+    /// The same holds when the open profile's proof was renewed in place
+    /// (Add Profile's PIN step): a recovery queued for the replaced proof
+    /// must not close the profile the person just verified again.
+    func testRecoveryKeepsARenewedProofOfTheSameProfile() async throws {
+        let h = try await harness()
+        let event = try await rejectedEvent(h)
+        let renewed = await h.tokens.renewProfileProof("proof-2", forProfile: "profile",
+            expectedAccount: event.account)
+        XCTAssertTrue(renewed)
+
+        await recoveryService(h).recoverFromProfileVerificationRequired(event)
+
+        let profileID = await h.tokens.getProfileId()
+        let proof = await h.tokens.getProfileToken()
+        XCTAssertEqual(profileID, "profile")
+        XCTAssertEqual(proof, "proof-2")
+    }
+
     private func rejectedEvent(_ h: Harness) async throws -> ProfileVerificationRequiredEvent {
         let (signals, observer) = observeSignals(for: h.serverId)
         defer { NotificationCenter.default.removeObserver(observer) }

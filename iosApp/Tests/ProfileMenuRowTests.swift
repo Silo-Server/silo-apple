@@ -57,6 +57,25 @@ final class ProfileMenuRowTests: XCTestCase {
         XCTAssertEqual(AddProfileRequest.start(profiles: [], openProfileID: "p-open"), .unavailable)
     }
 
+    /// The PIN prompt and the form belong to the profile that was open when
+    /// Add Profile was chosen. A route change closes them, including Home
+    /// committed again under another account or profile.
+    @MainActor
+    func testAddProfileFormClosesOnAnyRouteChange() {
+        let open = UserProfile(id: "p-open", name: "Open", avatarEmoji: nil, hasPin: true, isChild: false)
+        let router = AppRouter()
+        router.sessionOwner = { nil }
+        router.setAuthState(.authenticated, reason: "test")
+
+        router.addProfileRequest = AddProfileRequest(primary: open)
+        router.setAuthState(.authenticated, reason: "test")
+        XCTAssertNil(router.addProfileRequest)
+
+        router.addProfileRequest = AddProfileRequest(primary: open)
+        router.setAuthState(.needsLogin, reason: "test")
+        XCTAssertNil(router.addProfileRequest)
+    }
+
     /// After a create, the picker shows unless a fresh list positively shows
     /// that nothing was added.
     func testPickerShowsAfterACreateUnlessAFreshListHoldsOneProfile() {

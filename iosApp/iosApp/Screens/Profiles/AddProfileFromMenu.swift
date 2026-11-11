@@ -84,6 +84,10 @@ private struct AddProfileFromMenuView: View {
                     // Clears the entry; the lockout is not another wrong PIN.
                     wrongPINCount += 1
                     pinError = error.localizedDescription
+                } else if case ProfileTransitionError.identityChanged = error {
+                    // The profile was closed or replaced while the PIN was
+                    // checked: the screen that replaced it is already up.
+                    router.addProfileRequest = nil
                 } else {
                     router.addProfileRequest = nil
                     router.accountActionError = error.localizedDescription

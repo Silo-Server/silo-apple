@@ -105,6 +105,10 @@ final class AppRouter {
             // commit `.authenticated` over `.authenticated` under a new owner.
             authenticatedOwner = authState == .authenticated ? sessionOwner() : nil
             if authState != .needsPasswordChange { passwordChangeAccount = nil }
+            // Add Profile's PIN prompt and form belong to the profile that
+            // was open when the menu row was chosen. Any route change, even
+            // to Home again under another account or profile, closes them.
+            if addProfileRequest != nil { addProfileRequest = nil }
             if authState == .needsProfile {
                 // With no account open, the profile flow starts at Change
                 // Account (spec §4.1); otherwise a fresh picker for the open
@@ -122,8 +126,6 @@ final class AppRouter {
             if authState != .authenticated {
                 watchPartySheetPresented = false
                 pendingWatchPartyPresentation = nil
-                // Add Profile's form belongs to the profile that was open.
-                addProfileRequest = nil
                 PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
                 dismissItemDetail()
             }

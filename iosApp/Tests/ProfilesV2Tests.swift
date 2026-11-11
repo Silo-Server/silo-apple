@@ -164,9 +164,12 @@ final class ProfilesV2Tests: XCTestCase {
         let opened = await tokens.activateProfile(profileID: "p-owner", profileToken: "pvt_stale", expectedAccount: account)
         XCTAssertTrue(opened)
         let auth = AuthService(tokenStore: tokens)
+        let verify: @Sendable (String, String) async throws -> String? = {
+            try await api.verifyProfileSelection(profileId: $0, pin: $1)
+        }
 
         stub.reply(200, #"{"valid":true,"profile_token":"pvt_fresh","expires_at":null}"#)
-        try await auth.renewOpenProfileProof(profileId: "p-owner", pin: "1234", api: api)
+        try await auth.renewOpenProfileProof(profileId: "p-owner", pin: "1234", verify: verify)
         var proof = await tokens.getProfileToken()
         var profileID = await tokens.getProfileId()
         XCTAssertEqual(proof, "pvt_fresh")
@@ -175,7 +178,7 @@ final class ProfilesV2Tests: XCTestCase {
         // A wrong PIN leaves the stored proof alone.
         stub.reply(200, #"{"valid":false,"expires_at":null}"#)
         do {
-            try await auth.renewOpenProfileProof(profileId: "p-owner", pin: "0000", api: api)
+            try await auth.renewOpenProfileProof(profileId: "p-owner", pin: "0000", verify: verify)
             XCTFail("A PIN the server rejected must throw")
         } catch ProfileTransitionError.incorrectPIN {}
         proof = await tokens.getProfileToken()
@@ -185,7 +188,7 @@ final class ProfilesV2Tests: XCTestCase {
         // cannot change, and no request is sent.
         let sent = stub.requests.count
         do {
-            try await auth.renewOpenProfileProof(profileId: "p-other", pin: "1234", api: api)
+            try await auth.renewOpenProfileProof(profileId: "p-other", pin: "1234", verify: verify)
             XCTFail("Only the open profile's proof can be renewed")
         } catch ProfileTransitionError.identityChanged {}
         proof = await tokens.getProfileToken()
@@ -193,6 +196,38 @@ final class ProfilesV2Tests: XCTestCase {
         XCTAssertEqual(stub.requests.count, sent)
         XCTAssertEqual(proof, "pvt_fresh")
         XCTAssertEqual(profileID, "p-owner")
+    }
+
+    /// The server's answer to the PIN can arrive after the open profile was
+    /// closed (Every Time on a return from the background) or replaced by
+    /// another. The late proof must not put the old profile back.
+    func testALatePINAnswerCannotReopenAProfileThatWasClosedOrReplaced() async throws {
+        for replacement in [nil, "p-other"] as [String?] {
+            let (_, tokens) = try await client()
+            await tokens.saveTokens(accessToken: "access", refreshToken: "refresh")
+            let accountValue = await tokens.refreshAccountIdentity()
+            let account = try XCTUnwrap(accountValue)
+            let opened = await tokens.activateProfile(profileID: "p-owner", profileToken: "pvt_stale", expectedAccount: account)
+            XCTAssertTrue(opened)
+
+            do {
+                try await AuthService(tokenStore: tokens).renewOpenProfileProof(profileId: "p-owner", pin: "1234") { _, _ in
+                    // The open profile changes while the server checks the PIN.
+                    if let replacement {
+                        _ = await tokens.activateProfile(profileID: replacement, profileToken: "pvt_other", expectedAccount: account)
+                    } else {
+                        _ = await tokens.deactivateProfile(expectedAccount: account, expectedProfileID: "p-owner")
+                    }
+                    return "pvt_late"
+                }
+                XCTFail("A proof for a profile that is no longer open must be refused")
+            } catch ProfileTransitionError.identityChanged {}
+
+            let profileID = await tokens.getProfileId()
+            let proof = await tokens.getProfileToken()
+            XCTAssertEqual(profileID, replacement)
+            XCTAssertEqual(proof, replacement == nil ? nil : "pvt_other")
+        }
     }
 
     func testWrongPINIsReportedAsAnIncorrectPINNotAnExpiredSession() async throws {

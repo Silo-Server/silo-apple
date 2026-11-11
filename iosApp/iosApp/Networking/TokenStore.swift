@@ -1631,6 +1631,36 @@ actor TokenStore {
         return true
     }
 
+    /// Replaces the open profile's verification proof in one actor turn,
+    /// after its PIN was checked again while it stayed open. Fails closed
+    /// unless the same account and the same profile are still installed and
+    /// no temporary remote-playback identity owns request authentication: an
+    /// answer that arrives after the profile was closed or replaced must not
+    /// put it back. The profile ID is left as it is. The selection
+    /// generation changes, as for any new proof: a rejection or recovery
+    /// still in flight for the replaced proof must not clear this one.
+    func renewProfileProof(
+        _ profileToken: String,
+        forProfile profileID: String,
+        expectedAccount: RefreshAccountIdentity
+    ) -> Bool {
+        guard temporaryScope == nil,
+              refreshAccountIdentity() == expectedAccount,
+              !profileID.isEmpty,
+              defaults.string(forKey: profileIdDefaultsKey) == profileID else {
+            return false
+        }
+        ensureLoaded()
+        guard let account = activeAccount,
+              accounts.setProfileToken(profileToken, for: account.localAccountId, onServer: activeServerId) else {
+            return false
+        }
+        cachedProfileToken = profileToken
+        profileSelectionGeneration = UUID()
+        mirrorActiveTokensForExtension()
+        return true
+    }
+
     /// Clears the complete persistent profile identity atomically. The account
     /// session remains installed so the profile picker can load household
     /// profiles without forcing another sign-in. The profile's push display
