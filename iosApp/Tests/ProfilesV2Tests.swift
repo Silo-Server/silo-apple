@@ -114,6 +114,19 @@ final class ProfilesV2Tests: XCTestCase {
         XCTAssertFalse(unsupported.requestsAllowedSupported)
     }
 
+    func testProfileListCarriesTheAccountsProfileLimit() async throws {
+        let api = try await api()
+        stub.reply(200, #"{"items":[\#(try profileJSON())],"max_profiles":1}"#)
+        let capped = try await api.householdProfileList()
+        XCTAssertEqual(capped.maxProfiles, 1)
+
+        // A remote-playback handoff, a limit the server could not read and
+        // an older server omit the member.
+        stub.reply(200, #"{"items":[\#(try profileJSON())]}"#)
+        let unknown = try await api.householdProfileList()
+        XCTAssertNil(unknown.maxProfiles)
+    }
+
     func testProfileRequestsAllowedDecodesAndIsAbsentOnAnOlderServer() throws {
         let decoder = HTTPClient.makeJSONDecoder()
         let blocked = try APIv2FixtureTestSupport.mutatedBody(named: "update_profile_ok", bundleClass: Self.self) {

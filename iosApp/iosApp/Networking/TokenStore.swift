@@ -1341,16 +1341,26 @@ actor TokenStore {
     }
 
     /// Caches the profiles a fresh list returned for the active account, so
-    /// the picker can draw them offline. Ignored when the account changed
-    /// since `expected` was captured.
-    func updateCachedProfiles(_ profiles: [AccountProfile], expected: RefreshAccountIdentity) {
+    /// the picker can draw them offline, with the account's profile limit
+    /// from the same list. Ignored when the account changed since `expected`
+    /// was captured. True when the saved account changed.
+    @discardableResult
+    func updateCachedProfiles(
+        _ profiles: [AccountProfile], maxProfiles: Int?, expected: RefreshAccountIdentity
+    ) -> Bool {
         guard temporaryScope == nil, refreshAccountIdentity() == expected,
-              let account = activeAccount, account.cachedProfiles != profiles else { return }
+              let account = activeAccount,
+              account.cachedProfiles != profiles || account.maxProfiles != maxProfiles else { return false }
         do {
-            try accounts.updateCachedProfiles(profiles, for: account.localAccountId, onServer: activeServerId)
+            try accounts.updateCachedProfiles(
+                profiles, maxProfiles: maxProfiles, for: account.localAccountId, onServer: activeServerId
+            )
             activeAccount?.cachedProfiles = profiles
+            activeAccount?.maxProfiles = maxProfiles
+            return true
         } catch {
             recordSessionEvent(phase: "profileCache", outcome: "failed", reason: Self.persistenceFailureReason(error))
+            return false
         }
     }
 

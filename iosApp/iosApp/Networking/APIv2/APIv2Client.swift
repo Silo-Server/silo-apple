@@ -381,7 +381,8 @@ struct APIv2Client: Sendable {
         let rows = try collection.completeItems()
         guard Set(rows.map(\.id)).count == rows.count else { throw APIv2Error.incompleteCollection }
         return HouseholdProfileList(profiles: rows.map(\.asUserProfile),
-            requestsAllowedSupported: collection.requestsAllowedSupported == true)
+            requestsAllowedSupported: collection.requestsAllowedSupported == true,
+            maxProfiles: collection.maxProfiles)
     }
 
     func createHouseholdProfile(_ body: CreateProfileRequestBody) async throws -> UserProfile {

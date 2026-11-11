@@ -122,6 +122,8 @@ final class AppRouter {
             if authState != .authenticated {
                 watchPartySheetPresented = false
                 pendingWatchPartyPresentation = nil
+                // Add Profile's form belongs to the profile that was open.
+                addProfileRequest = nil
                 PlayerIdentityBoundary.endEngagedVideoPictureInPicture()
                 dismissItemDetail()
             }
@@ -171,6 +173,9 @@ final class AppRouter {
     /// A sign-out, server removal, or replacement waiting for the person to
     /// confirm it (`AccountRemovalConfirmationModifier`).
     var pendingRemoval: AccountRemovalRequest?
+    /// Add Profile was chosen in the profile menu and its new-profile form
+    /// is up (`AddProfileFromMenuModifier`).
+    var addProfileRequest: AddProfileRequest?
     /// The person asked for the picker (Switch Profile), so it shows even
     /// when there is only one profile to choose.
     var pickerRequestedByPerson = false

@@ -407,11 +407,16 @@ final class AccountStore: @unchecked Sendable {
         }
     }
 
-    /// Refreshes the profiles cached for the picker. A no-op when nothing
+    /// Refreshes the profiles cached for the picker, and the account's
+    /// profile limit as their list reported it. A no-op when nothing
     /// changed, so callers can pass every fetched list.
-    func updateCachedProfiles(_ profiles: [AccountProfile], for localAccountId: String, onServer serverId: String) throws {
+    func updateCachedProfiles(
+        _ profiles: [AccountProfile], maxProfiles: Int?,
+        for localAccountId: String, onServer serverId: String
+    ) throws {
         _ = try update(localAccountId, onServer: serverId) { account in
             account.cachedProfiles = profiles
+            account.maxProfiles = maxProfiles
         }
     }
 
@@ -566,6 +571,7 @@ final class AccountStore: @unchecked Sendable {
                     refreshToken: account.refreshToken,
                     epoch: account.epoch,
                     cachedProfiles: account.cachedProfiles,
+                    maxProfiles: account.maxProfiles,
                     addedAt: account.addedAt,
                     lastUsedAt: account.lastUsedAt,
                     needsSignIn: account.needsSignIn

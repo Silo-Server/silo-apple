@@ -426,14 +426,19 @@ final class AuthService: @unchecked Sendable {
     // MARK: - Profiles
 
     /// The active account's profiles. Each fresh list is also cached on the
-    /// account, so the profile picker can draw it offline.
+    /// account with its profile limit, so the profile picker can draw it
+    /// offline and the profile menu knows whether another profile fits.
     func getProfiles() async throws -> [UserProfile] {
         let expectedAccount = await tokenStore.refreshAccountIdentity()
-        let profiles = try await SiloAPI.shared.listProfiles()
-        if let expectedAccount {
-            await tokenStore.updateCachedProfiles(profiles.map(AccountProfile.init), expected: expectedAccount)
+        let list = try await SiloAPI.shared.householdProfileList()
+        if let expectedAccount,
+           await tokenStore.updateCachedProfiles(
+               list.profiles.map(AccountProfile.init), maxProfiles: list.maxProfiles, expected: expectedAccount
+           ) {
+            // The profile menu draws its profile row from the saved account.
+            await AccountDirectory.shared.reload()
         }
-        return profiles
+        return list.profiles
     }
 
     // MARK: - Temporary password

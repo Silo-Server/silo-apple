@@ -53,6 +53,17 @@ struct AccountRemovalRequest: Identifiable, Equatable {
     }
 }
 
+/// Add Profile in the profile menu (spec §4.3): the new-profile form over
+/// the screen the menu was opened from, behind the primary profile's PIN
+/// when it has one.
+struct AddProfileRequest: Identifiable, Equatable {
+    /// The account's primary profile, which manages its profiles: with one
+    /// profile, the open one.
+    let primary: UserProfile
+
+    var id: String { primary.id }
+}
+
 /// Where the app goes when the active server has no signed-in account.
 enum SignedOutDestination: Equatable {
     /// Other saved accounts can be chosen: Change Account, as the root of
@@ -149,6 +160,39 @@ extension AppRouter {
               let selected = AccountScope.localAccountId(onServer: serverId) else { return nil }
         let account = AccountDirectory.shared.account(selected)
         return account?.needsSignIn == true ? account?.username : nil
+    }
+
+    // MARK: - Add Profile from the profile menu
+
+    /// Opens profile creation from the profile menu by the picker's rules:
+    /// the account's primary profile manages its profiles, and its PIN is
+    /// asked first when it has one.
+    func beginAddProfile() {
+        guard addProfileRequest == nil, authState == .authenticated else { return }
+        Task { @MainActor in
+            // A fresh list, so a PIN set on another device is asked for; the
+            // cached one when the server can't be reached.
+            let cached: [UserProfile]? = ResponseCache.shared.get(CacheKey.profiles)
+            let profiles = (try? await StartupContentPrefetcher.fetchProfiles()) ?? cached ?? []
+            guard authState == .authenticated else { return }
+            guard let primary = profiles.first(where: \.isPrimary) ?? (profiles.count == 1 ? profiles.first : nil) else {
+                accountActionError = AppLanguage.string(.profilesErrorNoPrimaryCreate)
+                return
+            }
+            addProfileRequest = AddProfileRequest(primary: primary)
+        }
+    }
+
+    /// The new-profile form closed after creating a profile, or after a
+    /// create whose answer never arrived. With a second profile in the
+    /// account, its picker shows, as it does after adding from the picker;
+    /// when the list still holds one, the screen underneath stays.
+    func finishAddProfile() {
+        addProfileRequest = nil
+        Task { @MainActor in
+            guard let profiles = try? await StartupContentPrefetcher.fetchProfiles(), profiles.count > 1 else { return }
+            switchProfile()
+        }
     }
 
     // MARK: - Change Account

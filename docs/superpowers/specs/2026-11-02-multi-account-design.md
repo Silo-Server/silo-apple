@@ -161,6 +161,46 @@ changes as follows:
 
 Because #981/#982 aligned this menu across platforms, both platforms change it in the same release.
 
+*Amended 2026-11-10 (owner decision).* The menu always showed Switch Profile, even when the account
+had one profile and nothing to switch to, and on TV Change Account sat five rows away from it,
+beside Sign Out. The profile row now depends on the open account's cached profile list and its
+profile limit (`max_profiles` on the profile list):
+
+| Profiles | Limit | Row | Action |
+|---|---|---|---|
+| Two or more | any | **Switch Profile** | Opens the open account's "Who's watching?", which stays open |
+| One | more than one, or unknown | **Add Profile** | Opens profile creation directly, after the primary profile's PIN when it has one |
+| One | one | no row | |
+| No list read yet | any | **Switch Profile** | As before |
+
+- **Add Profile** uses the picker's profile-creation flow and its primary-profile and PIN rules.
+  After a profile is created the picker shows; cancelling returns to the screen the menu was
+  opened from. Its icon is `person.badge.plus` (`person.fill.badge.plus` on Apple TV).
+- The row follows the list without a restart. The profile list is read in the background at a
+  cold launch and on a return from the background, and when the menu opens on iPhone, iPad and
+  Apple TV, so an account that never sees its picker still learns its limit. The limit is kept
+  with the account's cached profile list across restarts. It is unknown only when the server
+  does not send it or no list has been read.
+- A remote-playback handoff session can neither switch nor add a profile, so the Apple TV hides
+  the row while one is active. The phone, tablet and Mac never hold one.
+- **Change Account** is always shown. It is where accounts and servers are added.
+- **Order.** Phone, tablet and Mac are unchanged: Settings, the profile row, Change Account, then
+  Sign Out. On TV the profile row stays first and Change Account moves up to sit under it:
+
+  ```
+  Switch Profile | Add Profile      (or absent)
+  Change Account
+  History
+  Requests            (while the server offers Requests)
+  Watch Party         (while the server offers one)
+  ─────────
+  Settings
+  Sign Out
+  ```
+
+  The TV menu opens focused on its first row: the profile row, or Change Account when there is
+  none.
+
 ### 4.4 Signing out and removing
 
 **Sign out of an account** does the following:
