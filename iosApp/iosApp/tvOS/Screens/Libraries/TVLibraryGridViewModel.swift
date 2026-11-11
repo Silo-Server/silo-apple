@@ -299,8 +299,9 @@ final class TVLibraryGridViewModel {
             guard myGeneration == generation, !Task.isCancelled else { return }
 
             if startsOver || page.startsOver {
-                // Settled before an empty page replaces a cached one: the
-                // view shows the empty state as soon as `items` is empty.
+                // Settled before an empty page replaces what is showing:
+                // the view shows the empty state once `items` is empty and
+                // no load is running.
                 if page.response.items.isEmpty {
                     var probe = CatalogQueryBuilder.libraryProbe(libraryId: libraryId)
                     // A Movies/Series view of a mixed library is empty when that
