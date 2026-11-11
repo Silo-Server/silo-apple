@@ -201,7 +201,13 @@ extension AppleDecodeCapabilities {
     /// model. Keeping this adapter beside the model lets shared capability code
     /// compile in extensions that do not carry the playback protocol.
     static func playbackV3VideoDecodeAttestation() -> [PlaybackV3VideoDecodeCapability] {
-        videoDecodeAttestation().map { capability in
+        playbackV3VideoDecode(videoDecodeAttestation())
+    }
+
+    static func playbackV3VideoDecode(
+        _ capabilities: [AppleVideoDecodeCapability]
+    ) -> [PlaybackV3VideoDecodeCapability] {
+        capabilities.map { capability in
             PlaybackV3VideoDecodeCapability(
                 codec: capability.codec,
                 decoderName: capability.decoderName,
