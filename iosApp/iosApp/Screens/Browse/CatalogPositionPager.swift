@@ -73,6 +73,18 @@ final class CatalogPositionPager {
         }
     }
 
+    /// Fresh titles from the top of the list: they replace the pages they
+    /// cover. A page they cover only in part is dropped and read again, so
+    /// no page keeps titles older than these.
+    func replaceFromTop(_ first: [BrowseItem]) {
+        guard !first.isEmpty else { return }
+        for page in pageNumbers(0..<min(first.count, total)) {
+            pages[page] = nil
+        }
+        seed(first)
+        pump()
+    }
+
     /// The grid now shows `positions`. Reads their pages, then the pages
     /// beside them, the one it is moving toward first.
     func show(_ positions: Range<Int>) {

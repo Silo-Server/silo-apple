@@ -58,7 +58,13 @@ struct BrowseView: View {
                     available: Set(index.letters.map(\.letter)),
                     jumped: jumpedLetter,
                     onEngage: engageLetterIndex,
-                    onPreview: { viewModel.prepareJump(to: $0) },
+                    onPreview: { letter in
+                        // Only the iPhone and iPad grid reads by page; the
+                        // Mac's jump reads its own window.
+                        #if os(iOS)
+                        viewModel.prepareJump(to: letter)
+                        #endif
+                    },
                     onJump: jump(to:)
                 )
                 .transition(.opacity)

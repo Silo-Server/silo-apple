@@ -164,9 +164,9 @@ class BrowseViewModel {
             startsOver = startsOver || page.startsOver
             if startsOver {
                 items = page.response.items
-                // The letter index can arrive first; hand its pager the
-                // titles it would otherwise read again.
-                if windowStart == 0 { pager?.seed(items) }
+                // These titles are fresher than any the pager read before:
+                // they replace its pages from the top.
+                if windowStart == 0 { pager?.replaceFromTop(items) }
                 ResponseCache.shared.set(page.response, for: currentCacheKey, fetchedAt: writeToken)
                 refineMediaType(from: page.response)
                 if items.isEmpty {
@@ -316,7 +316,8 @@ class BrowseViewModel {
     func position(forJumpTo letter: String, patience: Duration = .milliseconds(300)) async -> Int? {
         guard let pager, let position = letterIndex?.position(of: letter) else { return nil }
         await pager.awaitLanding(at: position, patience: patience)
-        return position
+        // A sort, filter or library change during the wait replaced the list.
+        return self.pager === pager ? position : nil
     }
 
     /// Keep the pager while it reads the list the index describes; otherwise
@@ -375,15 +376,18 @@ class BrowseViewModel {
         generation += 1
         let myGeneration = generation
         isLoadingEarlier = false
-        guard let read = try? await readPage(query), myGeneration == generation,
-              myJump == jumpGeneration else { return nil }
+        let read = try? await readPage(query)
+        guard myGeneration == generation else { return nil }
+        // The bump above stranded any load that was running; release it
+        // whether this read worked or a later jump overtook it.
+        isLoading = false
+        guard myJump == jumpGeneration, let read else { return nil }
         items = Self.unique(read.response.items)
         windowStart = start
         windowEnd = start + read.response.items.count
         pagesByPosition = true
         continuation = nil
         hasMore = windowEnd < letterIndex.total && !read.response.items.isEmpty
-        isLoading = false
         let offset = position - start
         return items.indices.contains(offset) ? items[offset].id : items.last?.id
     }

@@ -134,6 +134,26 @@ final class CatalogPositionPagerTests: XCTestCase {
         XCTAssertEqual(server.starts, [100])
     }
 
+    func testFreshTitlesFromTheTopReplaceOlderPages() async {
+        let server = Server(total: 250)
+        let pager = server.pager()
+        pager.show(0..<15)
+        await eventually { pager.isLoaded(0..<200) }
+        XCTAssertEqual(pager.item(at: 0)?.title, "Title 0")
+
+        // A reload from the top renamed the first title.
+        var fresh = Server.titles(0..<100)
+        fresh[0] = Server.titles(500..<501)[0]
+        pager.replaceFromTop(fresh)
+        XCTAssertEqual(pager.item(at: 0)?.contentId, "movie:t500")
+
+        // Fresh titles covering only part of a page send it to be read again.
+        let readsBefore = server.starts.filter { $0 == 100 }.count
+        pager.replaceFromTop(Server.titles(0..<160))
+        await eventually { server.starts.filter { $0 == 100 }.count > readsBefore }
+        XCTAssertGreaterThan(server.starts.filter { $0 == 100 }.count, readsBefore)
+    }
+
     func testACancelledPagerStopsReading() async {
         let server = Server(total: 1000)
         server.holdsReads = true
