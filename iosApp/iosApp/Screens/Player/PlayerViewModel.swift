@@ -9367,8 +9367,19 @@ class PlayerViewModel {
     }
 
     func toggleControls() {
+        // A tap aimed at a button can land beside it. Just after a tap brought
+        // the controls up, another keeps them and restarts the auto-hide,
+        // unless a scrub or an open sheet has suspended it.
+        if showControls, let revealedAt = controlsRevealedByTapAt,
+           ContinuousClock.now - revealedAt < controlsTapGrace {
+            if hideControlsTask?.isCancelled == false {
+                scheduleHideControls()
+            }
+            return
+        }
         showControls.toggle()
         if showControls {
+            controlsRevealedByTapAt = .now
             scheduleHideControls()
         }
     }
@@ -11044,6 +11055,12 @@ class PlayerViewModel {
     /// interaction before auto-hiding while playing. Matches Infuse/Apple TV.
     /// Tests shorten it.
     @ObservationIgnored var autoHideDelay: Duration = .seconds(5)
+
+    /// How long after a tap brings the controls up another tap on the
+    /// background keeps them instead of hiding them. Tests shorten it.
+    @ObservationIgnored var controlsTapGrace: Duration = .milliseconds(1500)
+    /// When a tap last brought the controls up.
+    @ObservationIgnored private var controlsRevealedByTapAt: ContinuousClock.Instant?
 
     private func scheduleHideControls() {
         // The HUD pins its host visible (`pinControlsVisible` in `openHUD`).
