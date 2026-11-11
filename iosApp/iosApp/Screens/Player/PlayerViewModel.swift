@@ -4575,13 +4575,15 @@ class PlayerViewModel {
                 resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
                 shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true, openingBudget: localBudget)
         } catch {
-            // A local address that never opened its source, as a LAN address
-            // away from home does, failed as a route: the saved address gets
-            // a budget of its own before the plan counts as failed.
-            guard let route = streamLocalRoute, !Task.isCancelled,
-                  Self.isLocalRouteLoadFailure(error, openingBudgetRanOut: localBudget?.hasRunOut == true)
-            else { throw error }
-            LocalRouteController.reportFailure(of: route)
+            // The saved address gets a budget of its own before the plan
+            // counts as failed.
+            let outcome = Self.localRouteOpeningOutcome(
+                error,
+                budgetRanOut: localBudget?.hasRunOut == true,
+                sourceAnswered: localBudget?.sourceAnsweredWhenRunOut
+            )
+            guard let route = streamLocalRoute, !Task.isCancelled, outcome.retriesSavedAddress else { throw error }
+            if outcome.reportsRouteFailed { LocalRouteController.reportFailure(of: route) }
             let savedAddressBudget = boundsOpening ? beginOpeningBudget() : nil
             defer { if let savedAddressBudget { endOpeningBudget(savedAddressBudget) } }
             try await loadAetherSource(
@@ -4626,13 +4628,42 @@ class PlayerViewModel {
         guard activeOpeningBudget === budget, !isDisposed else { return }
         let monitor = ConnectionMonitor.shared
         let outage = connectionState != .connected || !monitor.isDeviceOnline || monitor.serverStatus == .unreachable
-        if budget.tick(outage: outage, atMs: bufferingClock.elapsedMs) {
+        if budget.tick(outage: outage, sourceAnswered: openingSourceAnswered, atMs: bufferingClock.elapsedMs) {
             Self.logger.warning("[CMP-BUFFERING] start budget ran out while the source was opening: failing the load")
             return
         }
         openingBudgetTimer = bufferingClock.schedule(after: 1) { [weak self] in
             self?.tickOpeningBudget(budget)
         }
+    }
+
+    /// While the engine is loading a source it has not yet started, whether
+    /// that source answered: AetherEngine records `sourceOpened` once the
+    /// connection is made and the first bytes arrive. Nil outside such a
+    /// load, as during the probe before it, which records no progress.
+    private var openingSourceAnswered: Bool? {
+        guard let epoch = activeAetherLoadEpoch, establishedAetherLoadEpoch != epoch,
+              aetherPlaybackController.activeLoadEpoch == epoch else { return nil }
+        guard let progress = aetherPlaybackController.engine.startupProgress else { return false }
+        return progress.checkpoint >= .sourceOpened
+    }
+
+    /// What a failed opening on the local route means. This start always
+    /// tries the saved address after a failure that says nothing about what
+    /// the server sent. The route itself is reported failed, which demotes it
+    /// for every request until its next check, only on evidence its address
+    /// did not answer: a connection failure, or a budget that ran out while
+    /// the engine was still connecting. A source that answered and then did
+    /// not open, such as a file this device cannot play, or a probe that
+    /// cannot tell, leaves the route alone.
+    static func localRouteOpeningOutcome(
+        _ error: Error,
+        budgetRanOut: Bool,
+        sourceAnswered: Bool?
+    ) -> (retriesSavedAddress: Bool, reportsRouteFailed: Bool) {
+        if budgetRanOut { return (true, sourceAnswered == false) }
+        let unreachable = isLocalRouteLoadFailure(error)
+        return (unreachable, unreachable)
     }
 
     /// The failure an opening that ran out of budget reports.
@@ -4644,12 +4675,10 @@ class PlayerViewModel {
     }
 
     /// Whether a load failed to reach its source, as one over a local route
-    /// that stopped working does: the connection failed, the source
-    /// presented a key the pin refused, or the opening ran out of its budget
-    /// before the connection gave up. A failure about what the source sent,
+    /// that stopped working does: the connection failed, or the source
+    /// presented a key the pin refused. A failure about what the source sent,
     /// such as an HTTP status or unreadable media, leaves the route alone.
-    static func isLocalRouteLoadFailure(_ error: Error, openingBudgetRanOut: Bool = false) -> Bool {
-        if openingBudgetRanOut { return true }
+    static func isLocalRouteLoadFailure(_ error: Error) -> Bool {
         guard let load = error as? AetherPlaybackController.LoadFailure else {
             return LocalRoute.isRouteFailure(error)
         }

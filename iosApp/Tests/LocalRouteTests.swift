@@ -355,11 +355,19 @@ final class LocalRouteTests: XCTestCase {
         ] {
             XCTAssertFalse(PlayerViewModel.isLocalRouteLoadFailure(error), "\(error)")
         }
-        // An opening that hung until its budget ran out never reached the
-        // source: the saved address is tried before the plan fails.
+        // An opening that ran out of budget always tries the saved address;
+        // only one still connecting demotes the route for other requests.
         let hung = load(.noPlayableTrackWithinBudget)
         XCTAssertFalse(PlayerViewModel.isLocalRouteLoadFailure(hung))
-        XCTAssertTrue(PlayerViewModel.isLocalRouteLoadFailure(hung, openingBudgetRanOut: true))
+        func outcome(_ error: Error, ranOut: Bool = false, answered: Bool? = nil) -> [Bool] {
+            let o = PlayerViewModel.localRouteOpeningOutcome(error, budgetRanOut: ranOut, sourceAnswered: answered)
+            return [o.retriesSavedAddress, o.reportsRouteFailed]
+        }
+        XCTAssertEqual(outcome(hung, ranOut: true, answered: true), [true, false], "the source answered: a file that will not open")
+        XCTAssertEqual(outcome(hung, ranOut: true, answered: nil), [true, false], "the probe cannot tell")
+        XCTAssertEqual(outcome(hung, ranOut: true, answered: false), [true, true], "the address never answered")
+        XCTAssertEqual(outcome(load(.sourceOpenFailed, code: NSURLErrorTimedOut)), [true, true])
+        XCTAssertEqual(outcome(load(.sourceRefused, code: 403)), [false, false])
     }
     #endif
 

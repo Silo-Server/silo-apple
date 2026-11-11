@@ -59,6 +59,10 @@ final class PlaybackOpeningBudget {
     private var deadline = PlaybackStartDeadline()
     private var cancelStepInFlight: (() -> Void)?
     private(set) var hasRunOut = false
+    /// Whether the source had answered when the budget ran out: true once
+    /// the engine's load had its first bytes, false if it was still
+    /// connecting, nil when the step in flight could not tell.
+    private(set) var sourceAnsweredWhenRunOut: Bool?
 
     /// A step of the opening begins; `cancel` stops it if the budget runs out
     /// before ``stepEnded()``.
@@ -72,12 +76,14 @@ final class PlaybackOpeningBudget {
     }
 
     /// Spends the budget unless an outage holds it. True on the tick that
-    /// runs it out, which cancels the step in flight.
-    func tick(outage: Bool, atMs now: Int) -> Bool {
+    /// runs it out, which records `sourceAnswered` and cancels the step in
+    /// flight.
+    func tick(outage: Bool, sourceAnswered: Bool? = nil, atMs now: Int) -> Bool {
         guard !hasRunOut else { return false }
         deadline.update(viewerWantsToPlay: true, outage: outage, atMs: now)
         guard deadline.hasPassed(atMs: now) else { return false }
         hasRunOut = true
+        sourceAnsweredWhenRunOut = sourceAnswered
         cancelStepInFlight?()
         return true
     }
