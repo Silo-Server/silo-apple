@@ -184,6 +184,62 @@ final class BrowseViewModelTests: XCTestCase {
         XCTAssertFalse(viewModel.hasEarlier)
     }
 
+    func testAJumpThatOvertakesALoadingPageLeavesTheGridFreeToLoadMore() async throws {
+        let stub = APIv2TestStub()
+        let api = try await stubbedAPI(stub)
+        let letters = #"{"total":300,"letters":[{"letter":"A","count":100,"position":0},{"letter":"M","count":100,"position":100},{"letter":"Y","count":100,"position":200}],"runs":[{"letter":"A","position":0},{"letter":"M","position":100},{"letter":"Y","position":200}]}"#
+        stub.sequence([
+            .json(200, Self.page(["movie:alien", "movie:avatar"], nextCursor: "cursor-2")),
+            .json(200, letters),
+            .json(200, Self.page((182..<260).map { "movie:t\($0)" })),
+            .json(200, Self.page(["movie:t260"])),
+        ])
+        let cacheKey = CacheKey.browse(libraryId: 813, filterKey: CatalogFilterState.none.cacheKeyFragment)
+        defer {
+            ResponseCache.shared.remove(cacheKey)
+            ResponseCache.shared.remove("browseletters:" + cacheKey)
+        }
+        // Positional reads park here while `parking` is set, and fail while
+        // `failing` is set.
+        var parking = false
+        var failing = false
+        var parked: CheckedContinuation<Void, Never>?
+        let viewModel = BrowseViewModel(
+            readFirstPage: { libraryId, state, mediaScope in
+                try await api.catalogPage(CatalogQueryBuilder.build(
+                    state, libraryId: libraryId, mediaType: .movie, limit: 60, includeType: false, enforcedScope: mediaScope
+                ))
+            },
+            readPage: { query in
+                if failing { throw URLError(.notConnectedToInternet) }
+                if parking { await withCheckedContinuation { parked = $0 } }
+                return try await api.catalogPage(query)
+            },
+            readLetters: { try await api.catalogLetters($0) }
+        )
+        await viewModel.configure(libraryId: 813, libraryType: "movies")
+        await viewModel.loadItems(reset: true)
+        await viewModel.loadLetterIndex()
+        let landedOnY = await viewModel.jump(to: "Y", columns: 3)
+        XCTAssertNotNil(landedOnY)
+
+        // The page below Y is loading when a jump to M overtakes it and fails.
+        parking = true
+        let loadMore = Task { await viewModel.loadItems() }
+        while parked == nil { await Task.yield() }
+        XCTAssertTrue(viewModel.isLoading)
+        parking = false
+        failing = true
+        let failedJump = await viewModel.jump(to: "M", columns: 3)
+        XCTAssertNil(failedJump)
+        XCTAssertFalse(viewModel.isLoading, "the overtaken page no longer blocks loading more")
+
+        failing = false
+        parked?.resume()
+        await loadMore.value
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
     private func stubbedAPI(_ stub: APIv2TestStub) async throws -> SiloAPI {
         let name = "BrowseViewModelTests.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: name))

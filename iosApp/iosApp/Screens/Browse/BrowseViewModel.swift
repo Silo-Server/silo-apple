@@ -372,16 +372,14 @@ class BrowseViewModel {
         let start = rowStart - before
         var query = titleQuery(limit: min(100, before + Self.windowPageSize))
         query.seek = start
-        // Supersedes any load in flight; its results would belong elsewhere.
+        // Supersedes any load in flight; its results would belong elsewhere,
+        // and it won't clear the loading state it set, so clear it here.
         generation += 1
         let myGeneration = generation
+        isLoading = false
         isLoadingEarlier = false
         let read = try? await readPage(query)
-        guard myGeneration == generation else { return nil }
-        // The bump above stranded any load that was running; release it
-        // whether this read worked or a later jump overtook it.
-        isLoading = false
-        guard myJump == jumpGeneration, let read else { return nil }
+        guard myGeneration == generation, myJump == jumpGeneration, let read else { return nil }
         items = Self.unique(read.response.items)
         windowStart = start
         windowEnd = start + read.response.items.count
