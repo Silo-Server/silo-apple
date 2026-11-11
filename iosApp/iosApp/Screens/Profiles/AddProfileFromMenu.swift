@@ -63,7 +63,10 @@ private struct AddProfileFromMenuView: View {
     }
 
     /// The prompt stays open while the server checks the PIN and after a
-    /// rejected one; anything else closes it and reports the error.
+    /// rejected one; anything else closes it and reports the error. The
+    /// check can outlive the prompt (the cover can be dismissed while the
+    /// server answers), so its result applies only while this request is
+    /// still the one on screen.
     private func verify(_ pin: String) {
         isVerifyingPIN = true
         pinError = nil
@@ -74,9 +77,11 @@ private struct AddProfileFromMenuView: View {
                 // for this PIN replaces the stored one, so the create that
                 // follows is authorized by it.
                 try await AuthService.shared.renewOpenProfileProof(profileId: request.primary.id, pin: pin)
+                guard router.isPresenting(request) else { return }
                 MarqueeHaptics.success()
                 isUnlocked = true
             } catch {
+                guard router.isPresenting(request) else { return }
                 if case ProfileTransitionError.incorrectPIN = error {
                     wrongPINCount += 1
                     pinError = AppLanguage.string(.pinWrong)
@@ -87,10 +92,9 @@ private struct AddProfileFromMenuView: View {
                 } else if case ProfileTransitionError.identityChanged = error {
                     // The profile was closed or replaced while the PIN was
                     // checked: the screen that replaced it is already up.
-                    router.addProfileRequest = nil
+                    router.closeAddProfile(request)
                 } else {
-                    router.addProfileRequest = nil
-                    router.accountActionError = error.localizedDescription
+                    router.closeAddProfile(request, reporting: error.localizedDescription)
                 }
             }
         }

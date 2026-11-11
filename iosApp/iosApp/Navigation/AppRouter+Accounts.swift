@@ -57,17 +57,18 @@ struct AccountRemovalRequest: Identifiable, Equatable {
 /// the screen the menu was opened from, behind the primary profile's PIN
 /// when it has one.
 struct AddProfileRequest: Identifiable, Equatable {
+    /// One per time the row is chosen. A PIN check that outlives its prompt
+    /// names the request it belongs to, so it cannot close or unlock a
+    /// later one for the same profile.
+    let id = UUID()
     /// The account's primary profile, which manages its profiles: with one
     /// profile, the open one.
     let primary: UserProfile
 
-    var id: String { primary.id }
-
     /// What choosing Add Profile does.
     enum Start: Equatable {
-        /// The new-profile form, behind the primary profile's PIN when it
-        /// has one.
-        case form(AddProfileRequest)
+        /// The new-profile form, behind `primary`'s PIN when it has one.
+        case form(primary: UserProfile)
         /// The account has several profiles after all (the row was drawn
         /// from an older list): its picker, as Switch Profile opens it.
         case picker
@@ -83,7 +84,7 @@ struct AddProfileRequest: Identifiable, Equatable {
     static func start(profiles: [UserProfile], openProfileID: String?) -> Start {
         guard profiles.count <= 1 else { return .picker }
         guard let only = profiles.first, only.id == openProfileID else { return .unavailable }
-        return .form(AddProfileRequest(primary: only))
+        return .form(primary: only)
     }
 
     /// Whether the picker shows once the form has closed after a create that
@@ -207,14 +208,30 @@ extension AppRouter {
             let profiles = (try? await StartupContentPrefetcher.fetchProfiles()) ?? cached ?? []
             guard authState == .authenticated else { return }
             switch AddProfileRequest.start(profiles: profiles, openProfileID: AuthService.shared.profileId) {
-            case .form(let request):
-                addProfileRequest = request
+            case .form(let primary):
+                addProfileRequest = AddProfileRequest(primary: primary)
             case .picker:
                 switchProfile()
             case .unavailable:
                 accountActionError = AppLanguage.string(.profilesErrorNoPrimaryCreate)
             }
         }
+    }
+
+    /// Whether `request` is the one on screen. False once its prompt was
+    /// closed, also when Add Profile was chosen again since.
+    func isPresenting(_ request: AddProfileRequest) -> Bool {
+        addProfileRequest?.id == request.id
+    }
+
+    /// Closes Add Profile for `request`, with `error` in the account alert
+    /// when there is one. Nothing happens once that request is gone: a PIN
+    /// check that finishes late must not close a newer prompt or form, or
+    /// report an error for a request the person already left.
+    func closeAddProfile(_ request: AddProfileRequest, reporting error: String? = nil) {
+        guard isPresenting(request) else { return }
+        addProfileRequest = nil
+        if let error { accountActionError = error }
     }
 
     /// The new-profile form closed after creating a profile, or after a

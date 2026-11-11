@@ -43,10 +43,7 @@ final class ProfileMenuRowTests: XCTestCase {
         let open = UserProfile(id: "p-open", name: "Open", avatarEmoji: nil, hasPin: true, isChild: false)
         let other = UserProfile(id: "p-other", name: "Other", avatarEmoji: nil, hasPin: false, isChild: false)
 
-        XCTAssertEqual(
-            AddProfileRequest.start(profiles: [open], openProfileID: "p-open"),
-            .form(AddProfileRequest(primary: open))
-        )
+        XCTAssertEqual(AddProfileRequest.start(profiles: [open], openProfileID: "p-open"), .form(primary: open))
         // The row was drawn from an older list: several profiles means the
         // picker, as Switch Profile opens it.
         XCTAssertEqual(AddProfileRequest.start(profiles: [open, other], openProfileID: "p-open"), .picker)
@@ -74,6 +71,36 @@ final class ProfileMenuRowTests: XCTestCase {
         router.addProfileRequest = AddProfileRequest(primary: open)
         router.setAuthState(.needsLogin, reason: "test")
         XCTAssertNil(router.addProfileRequest)
+    }
+
+    /// A PIN check can finish after its prompt was closed and Add Profile
+    /// was chosen again for the same profile. Its result belongs to the
+    /// request that started it: it must not close the newer prompt, unlock
+    /// it, or report an error for the request the person already left.
+    @MainActor
+    func testALatePINCheckBelongsToTheRequestThatStartedIt() {
+        let open = UserProfile(id: "p-open", name: "Open", avatarEmoji: nil, hasPin: true, isChild: false)
+        let router = AppRouter()
+        let first = AddProfileRequest(primary: open)
+        router.addProfileRequest = first
+        XCTAssertTrue(router.isPresenting(first))
+
+        // The prompt is closed while the server checks the PIN, then the
+        // row is chosen again.
+        router.addProfileRequest = nil
+        let second = AddProfileRequest(primary: open)
+        router.addProfileRequest = second
+
+        // The first check's late answer, whatever it is.
+        XCTAssertFalse(router.isPresenting(first))
+        router.closeAddProfile(first, reporting: "late failure")
+        XCTAssertEqual(router.addProfileRequest, second)
+        XCTAssertNil(router.accountActionError)
+
+        // The request on screen still closes, with its own error.
+        router.closeAddProfile(second, reporting: "failure")
+        XCTAssertNil(router.addProfileRequest)
+        XCTAssertEqual(router.accountActionError, "failure")
     }
 
     /// After a create, the picker shows unless a fresh list positively shows
