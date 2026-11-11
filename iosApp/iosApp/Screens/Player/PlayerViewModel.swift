@@ -508,7 +508,12 @@ class PlayerViewModel {
     static let connectionLostMessage =
         "Connection lost\nSilo couldn't reconnect to the server. Check your connection, then try again to continue where you left off."
     var remoteDismissToken: UUID?
-    var audioTracks: [PlayerTrack] = []
+    var audioTracks: [PlayerTrack] = [] {
+        didSet { audioTracksFileId = currentSelectedVersion?.fileId }
+    }
+    /// The file `audioTracks` lists. A replan can adopt another file before
+    /// that file's tracks are published.
+    @ObservationIgnored private var audioTracksFileId: Int?
     var subtitleTracks: [PlayerTrack] = [] {
         didSet { updateSubtitleSyncActiveTrack() }
     }
@@ -630,7 +635,9 @@ class PlayerViewModel {
     /// Resigning active keeps the plan's running summary; quitting ends it.
     @ObservationIgnored private var macBufferingSummaryObservers: [NSObjectProtocol] = []
     #endif
-    var selectedAudioId: Int64?
+    var selectedAudioId: Int64? {
+        didSet { refreshStreamBadges() }
+    }
     var selectedSubtitleId: Int64? {
         didSet {
             guard selectedSubtitleId != oldValue else { return }
@@ -1300,7 +1307,9 @@ class PlayerViewModel {
     private var deferredAutoSubtitlePick: SubtitleAutoSelection?
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
-    private var currentSelectedVersion: FileVersion?
+    private var currentSelectedVersion: FileVersion? {
+        didSet { refreshStreamBadges() }
+    }
     private var activePreparedProtocolV3: PreparedPlaybackV3?
     private var activePlaybackSessionId: String?
     var watchPartyAdapter: WatchPartyPlaybackAdapter?
@@ -10045,6 +10054,27 @@ class PlayerViewModel {
 
     private func audioSelectionIndex(for track: PlayerTrack) -> Int? {
         track.srcId ?? track.ffIndex
+    }
+
+    /// Rewrites the stream badges for the file and the audio track playing
+    /// now. Between items no file is loaded and the outgoing badges stand.
+    private func refreshStreamBadges() {
+        guard let version = currentSelectedVersion else { return }
+        let badges = PlayerMetadata.streamBadges(version: version, audioCodec: selectedAudioCodec(in: version))
+        if metadata.badges != badges { metadata.badges = badges }
+    }
+
+    /// The catalog's codec for the selected audio track: the engine names a
+    /// track by its decoder (`dca` for DTS). Nil when the published tracks do
+    /// not line up with the file's, so its own audio codec stands in.
+    private func selectedAudioCodec(in version: FileVersion) -> String? {
+        guard audioTracksFileId == version.fileId,
+              let catalogTracks = version.audioTracks, catalogTracks.count == audioTracks.count,
+              let ordinal = audioTracks.first(where: { $0.trackId == selectedAudioId })?.srcId,
+              catalogTracks.indices.contains(ordinal) else {
+            return nil
+        }
+        return catalogTracks[ordinal].codec
     }
 
     /// Re-registers session-created sidecars (finished AI jobs, downloaded
