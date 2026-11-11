@@ -105,11 +105,11 @@ struct TVPlayerControls: View {
     }
 
     /// Where the skip pills sit above the bottom edge. While the controls
-    /// show it clears the whole transport stack — title, scrubber, time row
-    /// and buttons — so a pill never covers the end of the timeline or the
+    /// show it sits just above the scrubber, level with the title on the
+    /// other side, so a pill never covers the end of the timeline or the
     /// remaining-time label; it drops toward the corner when they hide.
     private var skipPillBottomInset: CGFloat {
-        viewModel.showControls && !isHUDPresented ? 400 : 96
+        viewModel.showControls && !isHUDPresented ? 240 : 96
     }
 
     var body: some View {
