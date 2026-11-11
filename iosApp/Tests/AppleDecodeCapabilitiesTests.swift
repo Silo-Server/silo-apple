@@ -267,7 +267,11 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
             PlaybackProtocolV3.Evidence.declared
         )
         let decode = try XCTUnwrap(object["video_decode"] as? [[String: Any]])
+        #if os(tvOS)
+        XCTAssertTrue(decode.isEmpty, "Apple TV 4K keeps the unbounded declaration")
+        #else
         XCTAssertTrue(decode.contains { $0["codec"] as? String == "mpeg2video" && $0["max_height"] as? Int == 480 })
+        #endif
         XCTAssertEqual(
             object["codecs_video"] as? [String],
             AppleDecodeCapabilities.declaredOnlineVideo.codecs
