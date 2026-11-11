@@ -4564,24 +4564,32 @@ class PlayerViewModel {
         // server can offer another route. AetherEngine bounds server HLS
         // itself; nothing else bounds direct play or the software route
         // until the plan is adopted (`armStartDeadline`). A download has no
-        // server to replan against.
-        let openingBudget = Self.boundsOpening(prepared) ? beginOpeningBudget() : nil
-        defer { if let openingBudget { endOpeningBudget(openingBudget) } }
+        // server to replan against. Each address gets its own budget.
+        let boundsOpening = Self.boundsOpening(prepared)
+        let localBudget = boundsOpening ? beginOpeningBudget() : nil
         do {
+            defer { if let localBudget { endOpeningBudget(localBudget) } }
             try await loadAetherSource(
                 prepared: prepared, streamRequest: streamRequest,
                 expectedStreamLoadGeneration: expectedStreamLoadGeneration,
                 resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
-                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true, openingBudget: openingBudget)
+                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true, openingBudget: localBudget)
         } catch {
-            guard let route = streamLocalRoute, !Task.isCancelled, Self.isLocalRouteLoadFailure(error) else { throw error }
+            // A local address that never opened its source, as a LAN address
+            // away from home does, failed as a route: the saved address gets
+            // a budget of its own before the plan counts as failed.
+            guard let route = streamLocalRoute, !Task.isCancelled,
+                  Self.isLocalRouteLoadFailure(error, openingBudgetRanOut: localBudget?.hasRunOut == true)
+            else { throw error }
             LocalRouteController.reportFailure(of: route)
+            let savedAddressBudget = boundsOpening ? beginOpeningBudget() : nil
+            defer { if let savedAddressBudget { endOpeningBudget(savedAddressBudget) } }
             try await loadAetherSource(
                 prepared: prepared, streamRequest: streamRequest,
                 expectedStreamLoadGeneration: expectedStreamLoadGeneration,
                 resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
                 shouldPlayWhenReady: abandonedLoadPlayIntent ?? shouldPlayWhenReady, takesLocalRoute: false,
-                openingBudget: openingBudget)
+                openingBudget: savedAddressBudget)
         }
     }
 
@@ -4636,10 +4644,12 @@ class PlayerViewModel {
     }
 
     /// Whether a load failed to reach its source, as one over a local route
-    /// that stopped working does: the connection failed, or the source
-    /// presented a key the pin refused. A failure about what the source sent,
+    /// that stopped working does: the connection failed, the source
+    /// presented a key the pin refused, or the opening ran out of its budget
+    /// before the connection gave up. A failure about what the source sent,
     /// such as an HTTP status or unreadable media, leaves the route alone.
-    static func isLocalRouteLoadFailure(_ error: Error) -> Bool {
+    static func isLocalRouteLoadFailure(_ error: Error, openingBudgetRanOut: Bool = false) -> Bool {
+        if openingBudgetRanOut { return true }
         guard let load = error as? AetherPlaybackController.LoadFailure else {
             return LocalRoute.isRouteFailure(error)
         }

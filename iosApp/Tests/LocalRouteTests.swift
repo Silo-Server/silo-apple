@@ -355,6 +355,11 @@ final class LocalRouteTests: XCTestCase {
         ] {
             XCTAssertFalse(PlayerViewModel.isLocalRouteLoadFailure(error), "\(error)")
         }
+        // An opening that hung until its budget ran out never reached the
+        // source: the saved address is tried before the plan fails.
+        let hung = load(.noPlayableTrackWithinBudget)
+        XCTAssertFalse(PlayerViewModel.isLocalRouteLoadFailure(hung))
+        XCTAssertTrue(PlayerViewModel.isLocalRouteLoadFailure(hung, openingBudgetRanOut: true))
     }
     #endif
 
