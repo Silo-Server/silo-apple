@@ -177,10 +177,11 @@ struct PlayerView: View {
                         //     the signed ladder, Tap Select = commit + exit,
                         //     Menu = cancel + exit (handled in onExitCommand).
                         //     Taps against Up/Down are ignored; holds are no-ops.
-                        // While a buffering or intro-skip pill is up the sink
-                        // stays mounted and Select acts on the pill (the spec's
-                        // root-level Select), so every other press keeps its
-                        // playback meaning and the pill's timer runs on regardless.
+                        // While a buffering, intro-skip or recap/credits pill
+                        // is up the sink stays mounted and Select acts on the
+                        // pill (the spec's root-level Select), so every other
+                        // press keeps its playback meaning and a timed pill's
+                        // timer runs on regardless.
                         // The buffering prompt is the exception: it has two
                         // buttons, so Left and Right move between them instead
                         // of skipping.
@@ -189,7 +190,6 @@ struct PlayerView: View {
                         // (docs/tvos-focus.md), and the sink's Down handler
                         // force-switches the HUD tab underneath the user.
                         if !viewModel.isStartingPlayback && !viewModel.isHUDPresented &&
-                            (!viewModel.showSegmentSkip || viewModel.isHoldSeeking) &&
                             (!viewModel.showControls || viewModel.isHoldSeeking) {
                             TVPressCaptureView(
                                 onArrowTap: { direction in
@@ -239,6 +239,11 @@ struct PlayerView: View {
                                         selectBufferingTarget()
                                     } else if viewModel.showIntroSkip {
                                         viewModel.selectIntroSkipPrompt()
+                                    } else if viewModel.showSegmentSkip {
+                                        // After the intro pill, which the
+                                        // recap/credits pill waits for.
+                                        timelinePreviewContactCanToggle = false
+                                        viewModel.skipCurrentSegment()
                                     } else if viewModel.isPlaying {
                                         timelinePreviewContactCanToggle = false
                                         hideTimelinePreview(immediately: true)
@@ -867,7 +872,7 @@ struct PlayerView: View {
     private var bufferingPillIsSelectTarget: Bool {
         if capturesSelectForBufferingPillWhileLoading { return true }
         return !viewModel.isStartingPlayback && !viewModel.isHUDPresented && !viewModel.showControls &&
-            !viewModel.showSegmentSkip && !viewModel.isHoldSeeking
+            !viewModel.isHoldSeeking
     }
 
     /// One focus owner at a time (docs/tvos-focus.md), as for the intro pill.
