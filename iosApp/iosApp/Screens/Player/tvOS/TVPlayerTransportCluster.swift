@@ -117,11 +117,11 @@ struct TVPlayerTransportCluster: View {
             .foregroundStyle(isFocused ? Color.black : Color.white)
             .frame(width: Self.buttonSize, height: Self.buttonSize)
             .background(
-                Circle().fill(isFocused ? Color.white : Color.black.opacity(0.35))
+                Circle().fill(isFocused ? Color.white : Color.black.opacity(0.5))
             )
             .overlay(
                 Circle().stroke(
-                    Color.white.opacity(isFocused ? 0 : 0.22),
+                    Color.white.opacity(isFocused ? 0 : 0.32),
                     lineWidth: 1
                 )
             )
@@ -132,6 +132,23 @@ struct TVPlayerTransportCluster: View {
             .onTapGesture(perform: action)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityAddTraits(.isButton)
+            // The focused button names itself below the row: icons alone
+            // leave "options" and "Up Next" to guesswork from the couch.
+            // Drawn outside the focusable so it is neither part of the
+            // focus target nor a second element in the accessibility tree.
+            .overlay(alignment: .bottom) {
+                if isFocused {
+                    accessibilityLabel
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .fixedSize()
+                        .shadow(color: .black.opacity(0.7), radius: 4, y: 1)
+                        .offset(y: 36)
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
     }
 }
 #endif

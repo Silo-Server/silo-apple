@@ -75,7 +75,7 @@ struct PlaybackStatsSummaryView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
-            .font(.system(size: isTV ? 34 : 16, weight: .semibold))
+            .font(.system(size: isTV ? 32 : 16, weight: .semibold))
             if let detail = reading.detail {
                 Text(detail)
                     .font(.system(size: isTV ? 22 : 11))
@@ -88,8 +88,8 @@ struct PlaybackStatsSummaryView: View {
 
         if isTV {
             content
-                .padding(24)
-                .frame(maxWidth: .infinity, minHeight: 170, alignment: .topLeading)
+                .padding(20)
+                .frame(maxWidth: .infinity, minHeight: 140, alignment: .topLeading)
                 .background(
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
                         .fill(Color.white.opacity(0.07))

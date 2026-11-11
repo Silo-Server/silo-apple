@@ -61,7 +61,8 @@ enum TrackLabels {
         if codec.contains("aac") { return "AAC" }
         if codec.contains("mp3") { return "MP3" }
         if codec.contains("truehd") { return "TrueHD" }
-        if codec.contains("dts") { return "DTS" }
+        // FFmpeg calls DTS "dca"; viewers know it as DTS.
+        if codec.contains("dts") || codec == "dca" { return "DTS" }
         if codec.contains("flac") { return "FLAC" }
         return codec.uppercased()
     }

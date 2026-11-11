@@ -88,7 +88,14 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
     /// `detailLabel` followed by the attribute pills, for rows that show one
     /// secondary line.
     var attributesLabel: String? {
-        let parts = [detailLabel].compactMap { $0 } + attributePillLabels()
+        attributesLabel(includingFormat: true)
+    }
+
+    /// `attributesLabel`, leaving out the codec or subtitle format when
+    /// `includingFormat` is false (a list that shows it only where two
+    /// tracks would otherwise read the same).
+    func attributesLabel(includingFormat: Bool) -> String? {
+        let parts = [detailLabel].compactMap { $0 } + attributePillLabels(includingFormat: includingFormat)
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
@@ -140,9 +147,11 @@ struct PlayerTrack: Identifiable, Equatable, Hashable {
 
     /// Codec, channel layout, and flags, unjoined, for UIs that render each
     /// attribute as its own pill. Same order and names as the detail page.
-    func attributePillLabels() -> [String] {
+    func attributePillLabels(includingFormat: Bool = true) -> [String] {
         var parts: [String] = []
         switch kind {
+        case _ where !includingFormat:
+            break
         case .audio:
             if let codec = TrackLabels.audioCodec(Self.normalizedText(codec)) { parts.append(codec) }
             if let layout = channelCountLabel { parts.append(layout) }

@@ -22,6 +22,9 @@ struct TVPlayerControls: View {
     fileprivate static let transportHorizontalInset: CGFloat = 80
     fileprivate static let scrubPreviewCardWidth: CGFloat = 340
     fileprivate static let scrubPreviewBottomInset: CGFloat = 300
+    /// Bottom inset of the skip pills while the controls are up: the pill's
+    /// bottom edge lines up with the title line, above the timeline.
+    fileprivate static let skipPillControlsInset: CGFloat = 278
 
     let viewModel: PlayerViewModel
     let showsTimelinePreview: Bool
@@ -46,7 +49,8 @@ struct TVPlayerControls: View {
     /// Remembered so reopening the HUD lands on the last-used tab rather
     /// than always snapping back to Info. Lives at this level because the
     /// HUD view is recreated each time HUD presentation toggles.
-    @State private var activeHUDTab: TVPlayerInfoHUD.Tab = .info
+    // The first tab; the HUD moves to the first one this title offers.
+    @State private var activeHUDTab: TVPlayerInfoHUD.Tab = .subtitles
 
     /// Flipped on immediately *before* the HUD appears so the scrubber's
     /// focus-lost path treats the resulting blur as a cancel rather than a
@@ -75,9 +79,6 @@ struct TVPlayerControls: View {
     /// if it ends as a light touch. Select and drag interactions clear this
     /// candidate so their existing transport behavior remains exclusive.
     @State private var fullHUDContactCanToggle = false
-    /// Bumped each time the controls hide, which replaces the recap/credits
-    /// pill's view (see `segmentSkipLayer`).
-    @State private var segmentSkipPillGeneration = 0
 
     // Focus states. SwiftUI's focus engine only holds focus on one
     // focusable at a time, so selecting one of these implicitly clears the
@@ -94,6 +95,14 @@ struct TVPlayerControls: View {
 
     private var isHUDPresented: Bool { viewModel.isHUDPresented }
 
+    /// The skip pills (and Not now) are focusable only with the controls up,
+    /// outside a timeline scrub (a drag drifting upward would land on them
+    /// and cancel it) and outside the open HUD (whose own focus graph Down
+    /// would otherwise leave for them).
+    private var skipPillsAreFocusable: Bool {
+        viewModel.showControls && !isTimelineScrubbing && !isHUDPresented
+    }
+
     /// The recap/credits pill waits for the intro pill: the two share a
     /// corner, and Select at the player root goes to the intro pill first.
     private var showsSegmentSkipPill: Bool {
@@ -109,7 +118,7 @@ struct TVPlayerControls: View {
     /// other side, so a pill never covers the end of the timeline or the
     /// remaining-time label; it drops toward the corner when they hide.
     private var skipPillBottomInset: CGFloat {
-        viewModel.showControls && !isHUDPresented ? 240 : 96
+        viewModel.showControls && !isHUDPresented ? Self.skipPillControlsInset : 96
     }
 
     var body: some View {
@@ -270,7 +279,14 @@ struct TVPlayerControls: View {
         }
         .onChange(of: viewModel.showControls) { _, shown in
             fullHUDContactCanToggle = false
-            if !shown { segmentSkipPillGeneration += 1 }
+            // The skip pills leave the focus graph with the controls. Drop
+            // their focus claims too, or the engine spends the next remote
+            // press moving off a disabled pill instead of handing it to the
+            // shell's press capture (Up would not reveal the controls).
+            if !shown {
+                isIntroSkipFocused = false
+                isSegmentSkipFocused = false
+            }
         }
         .onChange(of: isTimelineScrubbing) { _, scrubbing in
             onTimelineScrubbingChange(scrubbing)
@@ -397,31 +413,42 @@ struct TVPlayerControls: View {
                 bufferingPillFocus.wrappedValue = .primary
             } else if viewModel.showIntroSkip {
                 isScrubberFocused = false
-                isIntroSkipFocused = true
+                // Next turn: the pill is re-created as the controls appear
+                // (see `introSkipLayer`), and a claim in that same update is
+                // dropped by the engine.
+                DispatchQueue.main.async { isIntroSkipFocused = true }
             } else if showsSegmentSkipPill && !viewModel.isScrubbing {
                 // Not while a quick skip that brought the controls up is
                 // still in flight: that viewer is working the timeline, and
                 // from the scrubber the next Left or Right skips again.
                 isScrubberFocused = false
-                isSegmentSkipFocused = true
+                DispatchQueue.main.async { isSegmentSkipFocused = true }
             } else {
                 isScrubberFocused = true
             }
         }
     }
 
-    /// Subtle bottom gradient so the transport has contrast against bright
-    /// frames. Kept shallow because the scrubber and icon buttons carry their
-    /// own outlines.
+    /// Eased bottom scrim so the title, timeline and buttons hold their
+    /// contrast over bright frames while the top of the picture stays clear.
     private var bottomGradient: some View {
         VStack(spacing: 0) {
             Spacer()
             LinearGradient(
-                colors: [.clear, .black.opacity(0.55)],
+                stops: [
+                    .init(color: .clear, location: 0),
+                    // Dark enough by the title's small lines, which sit near
+                    // the top of the scrim.
+                    .init(color: .black.opacity(0.42), location: 0.24),
+                    .init(color: .black.opacity(0.72), location: 0.66),
+                    .init(color: .black.opacity(0.86), location: 1)
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .frame(height: 240)
+            // Taller and darker: a bright, busy frame washed out the unplayed
+            // track and the small title lines.
+            .frame(height: 460)
         }
     }
 
@@ -461,16 +488,21 @@ struct TVPlayerControls: View {
             ) {
                 viewModel.selectIntroSkipPrompt()
             }
-            // Out of the focus graph during a timeline scrub, like the
-            // transport row: a drag that drifts upward would otherwise land
-            // here and cancel the scrub.
-            .disabled(!viewModel.showControls || isTimelineScrubbing)
+            .disabled(!skipPillsAreFocusable)
             .focused($isIntroSkipFocused)
+            // A fresh view when the controls toggle: a focused pill that is
+            // merely disabled keeps focus until the next press, which the
+            // engine then spends moving off it instead of handing it to the
+            // shell's press capture.
+            .id(viewModel.showControls)
             // Its own focus region, sized to the pill: a section spanning the
             // screen would hold Down inside it instead of handing focus to the
             // transport below.
             .focusSection()
             .padding(.horizontal, 80)
+            // Beside the title, just above the end of the timeline, while the
+            // controls are up (`skipPillControlsInset`), so it never covers
+            // the timeline or the remaining-time label.
             .padding(.bottom, skipPillBottomInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             .animation(.easeOut(duration: 0.22), value: viewModel.showControls)
@@ -478,48 +510,105 @@ struct TVPlayerControls: View {
     }
 
     /// The Skip Recap / Skip Credits pill, up for as long as the playhead is
-    /// inside the marker. It follows the intro pill's position and focus
-    /// rules (see `introSkipLayer`): the press capture's Select target while
-    /// the controls are hidden, an ordinary button above the transport while
+    /// inside the marker, on the card naming the next episode during the
+    /// credits. It follows the intro pill's position and focus rules (see
+    /// `introSkipLayer`): the press capture's Select target while the
+    /// controls are hidden, an ordinary button above the transport while
     /// they show.
     private var segmentSkipLayer: some View {
-        Button {
-            viewModel.skipCurrentSegment()
-        } label: {
-            Label(viewModel.segmentSkipLabel, systemImage: "forward.end.fill")
-                .font(.system(size: 26, weight: .semibold))
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-                .frame(width: 220)
+        Group {
+            if let upNext = viewModel.creditsNextEpisode {
+                // One plate: the next episode, whether it starts by itself,
+                // and the skip that leads there.
+                VStack(alignment: .leading, spacing: 18) {
+                    TVCreditsUpNextCard(viewModel: viewModel, episode: upNext)
+                    HStack(spacing: 16) {
+                        segmentSkipButton
+                        notNowButton
+                    }
+                    .focusSection()
+                }
+                .padding(22)
+                // The HUD panels' glass and edge, so the card reads as part of
+                // the same player rather than a separate slab.
+                .siloPlayerGlass(
+                    in: RoundedRectangle(cornerRadius: 28, style: .continuous),
+                    tint: Color.black.opacity(0.62)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.4), radius: 18, y: 8)
+            } else {
+                segmentSkipButton
+            }
         }
-        .buttonStyle(TVPillButtonStyle(
-            kind: .primary,
-            focusTreatment: .compact,
-            isSelectTarget: !viewModel.showControls && !isHUDPresented
-        ))
-        .disabled(!viewModel.showControls || isTimelineScrubbing)
-        .focused($isSegmentSkipFocused)
-        .accessibilityLabel(viewModel.segmentSkipLabel)
-        // Sized to the pill, like the intro pill's: a section spanning the
-        // screen holds every direction inside it, so focus could not leave
-        // the pill for the transport.
-        .focusSection()
         // Gone for a timeline scrub, where it is disabled anyway: at this
         // height it would cover the scrub preview card when the scrub starts
         // in the credits. Only while the controls show, so the press
         // capture's Select target is never invisible.
         .opacity(hidesSegmentSkipPillForScrub ? 0 : 1)
         .accessibilityHidden(hidesSegmentSkipPillForScrub)
-        // A new view each time the controls hide. This pill outlives the
-        // controls, and hiding them disables it where it stands: a disabled
-        // view keeps focus and swallows presses until the next move.
-        // Replacing it drops focus at once, so focus falls to the shell's
-        // press capture as it does when the transport leaves.
-        .id(segmentSkipPillGeneration)
         .padding(.horizontal, 80)
+        // Same place as the intro pill.
         .padding(.bottom, skipPillBottomInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         .animation(.easeOut(duration: 0.22), value: viewModel.showControls)
+    }
+
+    /// Beside "Play next episode": "Not now" stops this episode starting the
+    /// next one by itself and puts the card away (Skip Credits stays); the
+    /// auto-play setting is untouched. Focusable with the controls up, like
+    /// the pill; with them hidden, Select still goes to the pill.
+    private var notNowButton: some View {
+        Button {
+            viewModel.declineCreditsAutoPlay()
+            // A press with the controls up: restart their auto-hide, so they
+            // don't go the moment focus lands on Skip Credits.
+            viewModel.revealControls()
+            // This button goes with the card, and Skip Credits is rebuilt
+            // alone with a new identity, so nothing would hold focus. Hand it
+            // to the pill on the next turn, once it is in the focus graph.
+            DispatchQueue.main.async {
+                if showsSegmentSkipPill && viewModel.showControls && !isHUDPresented {
+                    isSegmentSkipFocused = true
+                }
+            }
+        } label: {
+            Text(.markerCreditsCardNotNow)
+        }
+        // Quiet beside the pill, which stays the lit, primary action.
+        .buttonStyle(TVQuietTextButtonStyle())
+        .disabled(!skipPillsAreFocusable)
+        .id(viewModel.showControls)  // see `introSkipLayer`
+    }
+
+    // The intro pill's capsule and focus model: with the controls hidden the
+    // shell's press capture owns the remote (Select skips, the arrows keep
+    // their playback meaning), so the pill is drawn lit as the Select target
+    // but is not focusable; with the controls up it is an ordinary button and
+    // Down reaches the transport.
+    private var segmentSkipButton: some View {
+        Button {
+            viewModel.selectSegmentAction()
+        } label: {
+            Text(viewModel.segmentActionLabel)
+        }
+        .buttonStyle(TVPlayerPillButtonStyle(
+            isSelectTarget: !viewModel.showControls && !isHUDPresented,
+            // In the credits card it grows from its leading edge, inside the
+            // card's padding; alone it lines up with the controls' edge.
+            scaleAnchor: viewModel.creditsNextEpisode != nil ? .leading : .trailing
+        ))
+        .disabled(!skipPillsAreFocusable)
+        .focused($isSegmentSkipFocused)
+        .id(viewModel.showControls)  // see `introSkipLayer`
+        .accessibilityLabel(viewModel.segmentActionLabel)
+        // Its own focus region, sized to the pill, as `introSkipLayer`: a
+        // section spanning the screen holds every direction inside it, so
+        // the transport below could not be reached while the pill showed.
+        .focusSection()
     }
 
     // MARK: - Transport stack
@@ -597,8 +686,8 @@ struct TVPlayerControls: View {
             VStack(alignment: .leading, spacing: 2) {
                 if let series = viewModel.metadata.seriesTitle, !series.isEmpty {
                     Text(series)
-                        .font(.siloSmall.weight(.medium))
-                        .foregroundStyle(.white.opacity(0.65))
+                        .font(.siloSmall.weight(.semibold))
+                        .foregroundStyle(.white)
                         .lineLimit(1)
                 }
                 HStack(spacing: 10) {
@@ -608,12 +697,19 @@ struct TVPlayerControls: View {
                         .lineLimit(1)
                     if let episode = viewModel.metadata.episodeTag {
                         Text(episode)
-                            .font(.siloSmall)
-                            .foregroundStyle(.white.opacity(0.6))
+                            .font(.siloSmall.weight(.medium))
+                            .foregroundStyle(.white)
                     }
                 }
             }
-            .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
+            // Two shadows: a tight one for the edges, a soft one so the
+            // small lines hold over bright, busy frames (end credits on a
+            // white sky).
+            .shadow(color: .black.opacity(0.7), radius: 2, y: 1)
+            .shadow(color: .black.opacity(0.8), radius: 10)
+            // Leaves the right side to the skip pills, which sit beside the
+            // title while the controls are up.
+            .frame(maxWidth: 1100, alignment: .leading)
         }
     }
 
@@ -737,6 +833,110 @@ private struct TVPlayerTimeRow: View {
 
     private func formatClockTime(_ date: Date) -> String {
         date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: AppLanguage.formattingLocale))
+    }
+}
+
+/// The "Up next" lines on Skip Credits' plate: the episode the skip leads to,
+/// and whether it starts by itself. Read-only; Skip Credits keeps the focus.
+private struct TVCreditsUpNextCard: View {
+    /// Read here, not in the overlay, so the clock re-renders only this card.
+    let viewModel: PlayerViewModel
+    let episode: PlayerNextUpEpisode
+
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 20) {
+            // The next episode's still, so the card shows what plays next.
+            if let still = episode.stillUrl, !still.isEmpty {
+                AsyncImageView(
+                    url: still,
+                    thumbhash: episode.stillThumbhash,
+                    targetSize: CGSize(width: 192, height: 108)
+                )
+                .frame(width: 192, height: 108)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(.upNextHeading)
+                    .font(.system(size: 18, weight: .semibold))
+                    .tracking(1.6)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .textCase(.uppercase)
+                Text(verbatim: episodeLine)
+                    .font(.system(size: 28, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                if let timingText {
+                    timingText
+                        .font(.system(size: 22))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: 440, alignment: .leading)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// "S2 · E5 · Title": the code from the catalog, the title as the
+    /// server wrote it.
+    private var episodeLine: String {
+        let code = AppLanguage.string(
+            .catalogEpisodeCaption(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber)),
+            locale: locale
+        )
+        return "\(code) · \(AppLanguage.isolated(episode.title))"
+    }
+
+    /// When the credits end, the time set in bold, and what follows (Next Up
+    /// and its countdown take over at the end). One catalog message with the
+    /// time restyled in place, so translations can reorder it. Nil when
+    /// auto-play is on but stood down for this episode (Keep Watching):
+    /// neither line would be true then.
+    private var timingText: Text? {
+        let remaining = PlayerTimeFormatter.formatHMS(viewModel.creditsRemainingSeconds, locale: locale)
+        let message: LocalizedStringResource
+        if viewModel.nextUpAutoPlayArmed {
+            message = .upNextCreditsEndThenPlays(remaining)
+        } else if !viewModel.settings.autoPlayNextEpisode {
+            message = .upNextCreditsEndAutoPlayOff(remaining)
+        } else {
+            return nil
+        }
+        var line = AttributedString(AppLanguage.string(message, locale: locale))
+        if let range = line.range(of: remaining) {
+            line[range].inlinePresentationIntent = .stronglyEmphasized
+            line[range].foregroundColor = .white
+        }
+        return Text(line)
+    }
+}
+
+/// A secondary action: a faint capsule at rest, so it reads as a button,
+/// then a white capsule like the pills' focused state.
+private struct TVQuietTextButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        TVQuietTextButtonBody(configuration: configuration)
+    }
+}
+
+private struct TVQuietTextButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    @Environment(\.isFocused) private var isFocused
+
+    var body: some View {
+        configuration.label
+            .font(.system(size: 26, weight: .medium))
+            .foregroundStyle(isFocused ? Color.black : Color.white.opacity(0.85))
+            .padding(.horizontal, 28)
+            .frame(height: 64)
+            .background(Capsule().fill(isFocused ? Color.white : Color.white.opacity(0.1)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(isFocused ? 0 : 0.3), lineWidth: 2))
+            .scaleEffect(configuration.isPressed ? 0.97 : (isFocused ? 1.05 : 1))
+            .focusEffectDisabled()
+            .animation(.easeInOut(duration: 0.18), value: isFocused)
     }
 }
 

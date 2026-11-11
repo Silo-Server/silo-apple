@@ -552,6 +552,55 @@ final class PressCaptureUIView: UIView {
 
     override var canBecomeFocused: Bool { true }
 
+    /// Watches for focus coming to rest on nothing while this view is mounted.
+    private var focusObserver: NSObjectProtocol?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if let focusObserver {
+            NotificationCenter.default.removeObserver(focusObserver)
+            self.focusObserver = nil
+        }
+        guard window != nil else { return }
+        // This view is the remote's only target while it is mounted, but it
+        // used to get focus only by being the one focusable left once the
+        // controls had gone. As they fade, the engine could rest on a
+        // control that is on its way out (the next press was spent moving off
+        // it) or, when a skip pill timed out as the controls hid, on nothing
+        // at all, and then no press reached anyone. Take focus as it mounts
+        // (the outgoing control can hold it for a moment, so ask again until
+        // it lands), and whenever focus later comes to rest on nothing.
+        focusObserver = NotificationCenter.default.addObserver(
+            forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext
+            guard context?.nextFocusedItem == nil else { return }
+            MainActor.assumeIsolated { self?.claimFocus(onlyIfUnfocused: true, attempts: Self.claimAttempts) }
+        }
+        claimFocus(onlyIfUnfocused: false, attempts: Self.claimAttempts)
+    }
+
+    /// About three seconds of asking, longer than the controls take to go.
+    private static let claimAttempts = 12
+
+    /// Asks on the next turn, so a view that is leaving (the controls showing
+    /// again) is gone by then and doesn't claim on its way out.
+    /// `onlyIfUnfocused` never takes focus from something that has it (the
+    /// screen under a closing player).
+    private func claimFocus(onlyIfUnfocused: Bool, attempts: Int) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.window != nil, !self.isFocused,
+                  let focusSystem = UIFocusSystem.focusSystem(for: self),
+                  !onlyIfUnfocused || focusSystem.focusedItem == nil else { return }
+            focusSystem.requestFocusUpdate(to: self)
+            focusSystem.updateFocusIfNeeded()
+            guard !self.isFocused, attempts > 1 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.claimFocus(onlyIfUnfocused: onlyIfUnfocused, attempts: attempts - 1)
+            }
+        }
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         let indirectTouches = touches.filter { $0.type == .indirect }
         let wasInactive = activeIndirectTouchIDs.isEmpty

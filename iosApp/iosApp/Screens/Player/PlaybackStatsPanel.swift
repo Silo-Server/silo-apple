@@ -121,36 +121,66 @@ struct PlaybackStatsPanel: View {
     private func column(_ sections: [StatsSection]) -> some View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 24, verticalSpacing: 10) {
             ForEach(sections) { section in
-                rows(for: section)
+                rows(for: section, isFirstInColumn: section.id == sections.first?.id)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
-    private func rows(for section: StatsSection) -> some View {
+    private func rows(for section: StatsSection, isFirstInColumn: Bool) -> some View {
         if !section.rows.isEmpty {
-            GridRow {
-                Text(section.title)
-                    .textCase(.uppercase)
-                    .font(headerFont)
-                    .foregroundStyle(.white.opacity(0.52))
-                    .gridColumnAlignment(.trailing)
+            if usesTVTypography {
+                // TV: each section opens with a full-width heading under a
+                // hairline, and its labels line up on one left edge.
+                GridRow {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !isFirstInColumn {
+                            Rectangle()
+                                .fill(Color.white.opacity(0.12))
+                                .frame(height: 1)
+                                .padding(.top, 10)
+                        }
+                        Text(section.title)
+                            .textCase(.uppercase)
+                            .font(headerFont)
+                            .tracking(1.6)
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
+                    .gridCellColumns(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .modifier(TVWholeRowCell())
                     .id(section.id)
-                Color.clear
-                    .frame(height: 1)
+                }
+            } else {
+                GridRow {
+                    Text(section.title)
+                        .textCase(.uppercase)
+                        .font(headerFont)
+                        .foregroundStyle(.white.opacity(0.52))
+                        .gridColumnAlignment(.trailing)
+                        .id(section.id)
+                    Color.clear
+                        .frame(height: 1)
+                }
             }
             ForEach(section.rows, id: \.0) { row in
                 GridRow {
                     Text(row.0)
                         .font(labelFont)
-                        .foregroundStyle(.white.opacity(0.74))
+                        .foregroundStyle(.white.opacity(usesTVTypography ? 0.68 : 0.74))
+                        .frame(minWidth: usesTVTypography ? 260 : nil, alignment: .leading)
+                        .modifier(TVWholeRowCell(isEnabled: usesTVTypography, fillsRow: true))
+                    // On TV a long value (codec chains) wraps rather than
+                    // shrinking or ending in an ellipsis.
                     Text(row.1)
                         .font(valueFont)
                         .foregroundStyle(.white)
                         .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.76)
+                        .lineLimit(usesTVTypography ? 3 : 1)
+                        .minimumScaleFactor(usesTVTypography ? 1 : 0.76)
+                        .fixedSize(horizontal: false, vertical: usesTVTypography)
+                        .modifier(TVWholeRowCell(isEnabled: usesTVTypography))
                 }
             }
         }
@@ -158,20 +188,46 @@ struct PlaybackStatsPanel: View {
 
     private var headerFont: Font {
         usesTVTypography
-            ? .system(size: 13, weight: .semibold)
+            ? .system(size: 18, weight: .semibold)
             : .caption.weight(.semibold)
     }
 
     private var labelFont: Font {
+        // TV: quieter labels so the readings carry the weight.
         usesTVTypography
-            ? .system(size: 20, weight: .medium)
+            ? .system(size: 21, weight: .regular)
             : .callout.weight(.medium)
     }
 
     private var valueFont: Font {
         usesTVTypography
-            ? .system(size: 20, weight: .regular)
+            ? .system(size: 24, weight: .semibold)
             : .callout.monospacedDigit()
+    }
+
+    /// TV: a row shows only while all of it is inside the scroll view, as
+    /// the HUD's lists do, so a page never ends on a cut line under its
+    /// "More" cue.
+    private struct TVWholeRowCell: ViewModifier {
+        var isEnabled = true
+        /// As tall as the row (a label beside a wrapped value), so the two
+        /// hide together, without asking the grid for more height.
+        var fillsRow = false
+
+        func body(content: Content) -> some View {
+            if isEnabled {
+                content
+                    .frame(maxHeight: fillsRow ? .infinity : nil, alignment: .topLeading)
+                    .gridCellUnsizedAxes(fillsRow ? .vertical : [])
+                    .visualEffect { effect, proxy in
+                        let viewport = proxy.bounds(of: .scrollView(axis: .vertical))
+                        let whole = viewport.map { $0.minY <= 0.5 && $0.maxY >= proxy.size.height - 0.5 } ?? true
+                        return effect.opacity(whole ? 1 : 0)
+                    }
+            } else {
+                content
+            }
+        }
     }
 
     private struct StatsSection: Identifiable {

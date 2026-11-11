@@ -241,9 +241,11 @@ struct PlayerView: View {
                                         viewModel.selectIntroSkipPrompt()
                                     } else if viewModel.showSegmentSkip {
                                         // After the intro pill, which the
-                                        // recap/credits pill waits for.
+                                        // recap/credits pill waits for. Plays
+                                        // the next episode the credits card
+                                        // names, otherwise skips.
                                         timelinePreviewContactCanToggle = false
-                                        viewModel.skipCurrentSegment()
+                                        viewModel.selectSegmentAction()
                                     } else if viewModel.isPlaying {
                                         timelinePreviewContactCanToggle = false
                                         hideTimelinePreview(immediately: true)

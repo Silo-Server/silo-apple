@@ -219,8 +219,8 @@ struct TVPlayerScrubber: View {
                         .offset(x: width * progressFraction)
                 }
 
-                // Chapter ticks float on top of the fill — white at full
-                // opacity so they read through the played region too.
+                // Chapter boundaries cut the track (dark notches through fill
+                // and rail alike) instead of standing above it as ticks.
                 chapterTicks(barWidth: width)
 
                 // Playhead puck — only while focused so the bar reads as a
@@ -264,9 +264,9 @@ struct TVPlayerScrubber: View {
                 // endcap and reads as an artifact.
                 if fraction > 0.001 {
                     Rectangle()
-                        .fill(Color.white.opacity(0.85))
-                        .frame(width: isTimelineScrubbing ? 4 : 3, height: trackHeight + 14)
-                        .offset(x: barWidth * fraction - 1)
+                        .fill(Color.black.opacity(0.7))
+                        .frame(width: 3, height: trackHeight)
+                        .offset(x: barWidth * fraction - 1.5)
                 }
             }
         }

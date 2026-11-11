@@ -934,10 +934,6 @@ class PlayerViewModel {
         default: return delivery.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
-    /// One-line, user-facing Aether route description for the player HUD.
-    var playbackRouteDisplay: String {
-        "AetherEngine · \(activeRouteDisplayLabel)"
-    }
     var routeStatusRows: [PlayerRouteStatusRow] {
         [
             PlayerRouteStatusRow(label: AppLanguage.string(.playerHudPlayback), value: activeRouteDisplayLabel),

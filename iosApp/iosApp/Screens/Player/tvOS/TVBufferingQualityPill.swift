@@ -50,7 +50,7 @@ struct TVBufferingQualityPill: View {
     }
 
     private func buttonStyle(_ action: Action) -> TVPlayerPillButtonStyle {
-        TVPlayerPillButtonStyle(pill: nil, isSelectTarget: selectTarget == action, unfocusedLabelOpacity: 0.85)
+        TVPlayerPillButtonStyle(isSelectTarget: selectTarget == action, unfocusedLabelOpacity: 0.85)
     }
 }
 

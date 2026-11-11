@@ -1,8 +1,9 @@
 #if os(tvOS)
 import SwiftUI
 
-/// Infuse-style floating top-center HUD. A pill-tab header (Info / Video /
-/// Audio / Subtitles / Chapters) selects which content pane renders below.
+/// Infuse-style floating top-center HUD. A pill-tab header (Subtitles /
+/// Audio / Chapters / Settings / Info) selects which content pane renders
+/// below, in one panel sized to that pane (`panelSize`).
 /// Drops on top of the video with no dimming backdrop so playback stays
 /// visible, matching the "HUD over media" idiom rather than a modal sheet.
 /// Menu dismisses via `onExitCommand` on the host view.
@@ -12,14 +13,19 @@ import SwiftUI
 /// columns are `.focusSection()`s and the tab bar routes entry to the
 /// active pill with `defaultFocus(priority: .userInitiated)`. `@FocusState`
 /// is used only to seed focus (HUD open, dialog open) and to restore it
-/// (dialog close), never to drive per-press movement. The two read-only
-/// panes (Info / Stats) are single composite focusables that page their
-/// scroll content, which is the sanctioned exception.
+/// (dialog close), never to drive per-press movement. Info's technical
+/// details are a single composite focusable that pages its scroll content,
+/// which is the sanctioned exception.
 struct TVPlayerInfoHUD: View {
     let viewModel: PlayerViewModel
     @Binding var activeTab: Tab
     @State private var readOnlyPaneIsAtTop = true
     @State private var subtitleOverlayActive = false
+    /// Options in the Settings pane's open picker (nil when none is open), so
+    /// the panel grows to show them all and shrinks back after.
+    @State private var settingsPickerRows: Int?
+    /// Info's technical details are open (the panel is taller then).
+    @State private var showsTechnicalDetails = false
     @State private var showSubtitleSearchMenu = false
     @State private var showAITranslateMenu = false
 
@@ -35,23 +41,23 @@ struct TVPlayerInfoHUD: View {
     let onDismiss: () -> Void
 
     enum Tab: Hashable, CaseIterable {
-        case info, stats, video, audio, subtitles, chapters
+        case subtitles, audio, chapters, video, info
 
         var title: LocalizedStringResource {
             switch self {
-            case .info:      return .optionsTabInfo
-            case .stats:     return .optionsTabStats
-            case .video:     return .optionsTabVideo
-            case .audio:     return .optionsTabAudio
             case .subtitles: return .optionsTabSubtitles
+            case .audio:     return .optionsTabAudio
             case .chapters:  return .optionsTabChapters
+            // Picture and playback settings; "Video" read as picture-only.
+            case .video:     return .settingsTitle
+            case .info:      return .optionsTabInfo
             }
         }
     }
 
-    /// Tabs shown for the current session. Info, Stats and Video are always
-    /// available; Audio / Subtitles / Chapters are hidden (not disabled) when
-    /// the stream has none of those.
+    /// Tabs shown for the current session, the ones viewers use most first.
+    /// Settings and Info are always available; Subtitles / Audio / Chapters
+    /// are hidden (not disabled) when the stream has none of those.
     ///
     /// Subtitles also appears when the stream has no tracks but the server can
     /// still produce them (AI transcription or translation, or a provider
@@ -59,14 +65,15 @@ struct TVPlayerInfoHUD: View {
     /// search term uses the *enabled* predicate, not the visible one, so a
     /// greyed-out row is never the sole reason the tab exists.
     private var availableTabs: [Tab] {
-        var tabs: [Tab] = [.info, .stats, .video]
-        if !viewModel.audioTracks.isEmpty { tabs.append(.audio) }
+        var tabs: [Tab] = []
         if !viewModel.subtitleTracks.isEmpty
             || SubtitleTranslateMenu.hasActionableSource(viewModel)
             || viewModel.subtitleSearchEnabled {
             tabs.append(.subtitles)
         }
+        if !viewModel.audioTracks.isEmpty { tabs.append(.audio) }
         if !viewModel.chapters.isEmpty { tabs.append(.chapters) }
+        tabs.append(contentsOf: [.video, .info])
         return tabs
     }
 
@@ -140,10 +147,10 @@ struct TVPlayerInfoHUD: View {
             }
         }
         .focusSection()
-        // Info and Stats are single composite focus owners. Once either has
-        // paged below its top anchor, remove the rail from the focus graph so
-        // an Up press cannot both page the pane and escape to the active tab.
-        // The pane re-enables the rail when it reaches the top again.
+        // Info's technical details are a single composite focus owner. Once
+        // they have paged below their top anchor, remove the rail from the
+        // focus graph so an Up press cannot both page the pane and escape to
+        // the active tab. The pane re-enables the rail at the top again.
         .disabled(isReadOnlyPaneScrolled || subtitleOverlayActive)
         // Rail: moving Up from the panel must land on the *active* pill, not
         // the geometrically nearest one — with focus-driven selection a
@@ -159,16 +166,13 @@ struct TVPlayerInfoHUD: View {
             case .info:
                 InfoPane(
                     viewModel: viewModel,
+                    showsTechnicalDetails: $showsTechnicalDetails,
                     isAtTop: $readOnlyPaneIsAtTop,
                     onMoveToTabs: focusActiveTab
                 )
-            case .stats:
-                StatsPane(
-                    viewModel: viewModel,
-                    isAtTop: $readOnlyPaneIsAtTop,
-                    onMoveToTabs: focusActiveTab
-                )
-            case .video:     VideoPane(viewModel: viewModel)
+            case .video:
+                VideoPane(viewModel: viewModel)
+                    .onPreferenceChange(HUDPickerRowsKey.self) { settingsPickerRows = $0 }
             case .audio:     AudioPane(viewModel: viewModel)
             case .subtitles:
                 SubtitlesPane(
@@ -182,17 +186,17 @@ struct TVPlayerInfoHUD: View {
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 22)
-        // Width sits at ~60% of a 1920pt tvOS frame. Height is fixed at the
-        // tallest pane's needs — content-hugging here would resize the panel
-        // on every tab swap, which cascades into a SwiftUI relayout pass.
-        // Top-aligned so short panes (Video with few rows) keep their column
-        // headers pinned to the top instead of floating mid-panel.
-        .frame(maxWidth: 1100, minHeight: 380, maxHeight: 380, alignment: .top)
-        // Glass carries enough light that the panel lifts off the video
-        // without extra dark tint; the stroke + shadow still define the
-        // edge over a fully-black frame. Low-power TVs draw a flat
-        // translucent fill instead (see siloPlayerGlass).
-        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        // Sized to the active pane, under the same tabs: a short pane gets a
+        // short panel rather than an empty slab, and long lists scroll
+        // inside the tallest one. Top-aligned so column headers stay put.
+        .frame(width: panelSize.width, height: panelSize.height, alignment: .top)
+        .animation(.easeOut(duration: SiloTheme.fastDuration), value: panelSize)
+        // A neutral dark fill, not glass: glass took on the picture's colour
+        // and never looked the same twice.
+        .background(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(Color(white: 0.06).opacity(0.9))
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 28, style: .continuous)
                 .stroke(Color.white.opacity(0.14), lineWidth: 1)
@@ -201,8 +205,27 @@ struct TVPlayerInfoHUD: View {
         .focusSection()
     }
 
+    /// Room for the active pane: Settings' few rows (or every option of its
+    /// open picker), the audio tracks, the synopsis or the technical details;
+    /// the long lists get the full height and scroll.
+    private var panelSize: CGSize {
+        switch activeTab {
+        case .subtitles:
+            return CGSize(width: 1240, height: 620)
+        case .audio:
+            return CGSize(width: 900, height: min(620, max(300, 170 + CGFloat(viewModel.audioTracks.count) * 84)))
+        case .chapters:
+            return CGSize(width: 1100, height: 620)
+        case .video:
+            let rows = settingsPickerRows.map { 130 + CGFloat($0) * 62 } ?? 300
+            return CGSize(width: 1000, height: min(620, rows))
+        case .info:
+            return CGSize(width: 1320, height: showsTechnicalDetails ? 560 : 470)
+        }
+    }
+
     private var isReadOnlyPaneScrolled: Bool {
-        (activeTab == .info || activeTab == .stats) && !readOnlyPaneIsAtTop
+        activeTab == .info && !readOnlyPaneIsAtTop
     }
 
     /// Move off a tab that is no longer in `availableTabs`, taking focus with
@@ -216,7 +239,7 @@ struct TVPlayerInfoHUD: View {
     /// strands the user in the HUD. `.defaultFocus` only seeds on first
     /// appearance of the focus scope, so it cannot cover this.
     ///
-    /// `availableTabs` always contains `.info`, so `first` is effectively
+    /// `availableTabs` always contains Settings and Info, so `first` is effectively
     /// non-nil; it stays optional to keep this honest if that ever changes.
     private func repairActiveTabIfUnavailable() {
         guard !availableTabs.contains(activeTab),
@@ -225,7 +248,7 @@ struct TVPlayerInfoHUD: View {
         focusedTab = first
     }
 
-    /// Used by the composite Info/Stats panes when Up is pressed at the top
+    /// Used by Info when Up is pressed at the top
     /// of their scroll content. Button-based panes don't need this — the
     /// tab bar's `defaultFocus` rail routes native Up movement instead.
     private func focusActiveTab() {
@@ -281,10 +304,11 @@ private struct HUDTabPillBody: View {
 
     var body: some View {
         configuration.label
-            .font(.system(size: 22, weight: .semibold))
+            .font(.system(size: 24, weight: .semibold))
             .foregroundStyle(foreground)
             .padding(.horizontal, 24)
-            .padding(.vertical, 10)
+            // 12pt keeps the pill above the 48pt TV focus-target floor.
+            .padding(.vertical, 12)
             .background(Capsule(style: .continuous).fill(background))
             .overlay(Capsule(style: .continuous).stroke(strokeColor, lineWidth: 1))
             .contentShape(Capsule())
@@ -294,18 +318,21 @@ private struct HUDTabPillBody: View {
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isSelected)
     }
 
+    // Focus is the one solid white treatment across the player; the
+    // selected tab, when focus is elsewhere, is a quieter lit pill.
     private var foreground: Color {
-        (isSelected || isFocused) ? .black : .white
+        isFocused ? .black : .white
     }
 
     private var background: Color {
-        if isSelected { return .white }
-        if isFocused  { return .white.opacity(0.9) }
+        if isFocused  { return .white }
+        if isSelected { return .white.opacity(0.24) }
         return .black.opacity(0.45)
     }
 
     private var strokeColor: Color {
-        (isSelected || isFocused) ? .clear : .white.opacity(0.18)
+        if isFocused { return .clear }
+        return isSelected ? .white.opacity(0.55) : .white.opacity(0.18)
     }
 }
 
@@ -323,9 +350,9 @@ private struct PaneColumn<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(header)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .tracking(1.6)
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(.white.opacity(0.68))
                 .textCase(.uppercase)
             content()
         }
@@ -333,25 +360,164 @@ private struct PaneColumn<Content: View>: View {
     }
 }
 
+/// Fades the last rows of a pane's scroll content into the panel instead of
+/// cutting them at its edge, so a list that continues reads as continuing.
+/// The bottom margin lets the last row scroll clear of the fade.
+private struct HUDScrollEdgeFade: ViewModifier {
+    /// Room reserved under the list for the "More" cue, so it never sits on
+    /// a row.
+    static let footerHeight: CGFloat = 40
+
+    /// What the cue calls the content below.
+    var label: LocalizedStringResource = .playerHudMore
+
+    @State private var continuesBelow = false
+    /// Where the viewport sits in the list: its top and height as fractions
+    /// of the content. Nil when everything fits.
+    @State private var position: ClosedRange<CGFloat>?
+
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.containerSize.height
+                    < geometry.contentSize.height - 1
+            } action: { _, below in
+                continuesBelow = below
+            }
+            .onScrollGeometryChange(for: ClosedRange<CGFloat>?.self) { geometry in
+                let total = geometry.contentSize.height
+                let visible = geometry.containerSize.height
+                guard total > visible + 1 else { return nil }
+                let top = max(0, geometry.contentOffset.y) / total
+                return top...min(1, top + visible / total)
+            } action: { _, range in
+                position = range
+            }
+            // The list scrolls under the cue's strip. Draw none of it there,
+            // so content that isn't hidden row by row never runs under "More".
+            .mask {
+                GeometryReader { proxy in
+                    Rectangle()
+                        .frame(height: max(0, proxy.size.height - Self.footerHeight))
+                        .frame(maxHeight: .infinity, alignment: .top)
+                }
+                .ignoresSafeArea()
+            }
+            // A slim bar at the list's right edge: how much of the list shows
+            // and where, so earlier rows read as there as much as later ones.
+            .overlay(alignment: .topTrailing) {
+                if let position {
+                    GeometryReader { proxy in
+                        let track = proxy.size.height - Self.footerHeight
+                        Capsule()
+                            .fill(Color.white.opacity(0.14))
+                            .frame(width: 4, height: track)
+                            .overlay(alignment: .top) {
+                                Capsule()
+                                    .fill(Color.white.opacity(0.7))
+                                    .frame(width: 4, height: max(24, track * (position.upperBound - position.lowerBound)))
+                                    .offset(y: track * position.lowerBound)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
+                }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                ZStack {
+                    if continuesBelow {
+                        Label { Text(label) } icon: { Image(systemName: "chevron.down") }
+                            .font(.system(size: 21, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.85))
+                            .transition(.opacity)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: Self.footerHeight, maxHeight: Self.footerHeight)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: continuesBelow)
+    }
+}
+
+/// Shows a list row only when the whole row is inside its list's viewport:
+/// the list never ends on half a row (the "More" cue says it continues).
+/// Focus moving onto a hidden row scrolls it fully into view first.
+private struct HUDWholeRow: ViewModifier {
+    func body(content: Content) -> some View {
+        content.visualEffect { effect, proxy in
+            let viewport = proxy.bounds(of: .scrollView(axis: .vertical))
+            let whole = viewport.map { $0.minY <= 0.5 && $0.maxY >= proxy.size.height - 0.5 } ?? true
+            return effect.opacity(whole ? 1 : 0)
+        }
+    }
+}
+
+private extension View {
+    func hudScrollEdgeFade(label: LocalizedStringResource = .playerHudMore) -> some View {
+        modifier(HUDScrollEdgeFade(label: label))
+    }
+    func hudWholeRow() -> some View { modifier(HUDWholeRow()) }
+
+    /// The opaque plate of a dialog over the panel (a picker card, subtitle
+    /// appearance): nothing behind it reads through.
+    func hudDialogPlate() -> some View {
+        let shape = RoundedRectangle(cornerRadius: 28, style: .continuous)
+        return background(shape.fill(Color(white: 0.07).opacity(0.97)))
+            .overlay(shape.stroke(Color.white.opacity(0.18), lineWidth: 1))
+    }
+}
+
+/// How many options a pane's open picker shows, so the panel can size to it.
+private struct HUDPickerRowsKey: PreferenceKey {
+    static let defaultValue: Int? = nil
+    static func reduce(value: inout Int?, nextValue: () -> Int?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// Lays short content out as is and scrolls only content taller than the
+/// room it is given, so a short list lets the panel hug it.
+private struct HUDFittingScroll<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            content()
+            ScrollView(showsIndicators: false) {
+                content()
+            }
+            .hudScrollEdgeFade()
+        }
+    }
+}
+
 private struct HUDScrollablePane<Content: View>: View {
     let accessibilityLabel: LocalizedStringResource
     let scrollTargetIDs: [String]
+    let moreLabel: LocalizedStringResource
     @Binding var isAtTop: Bool
     let onMoveToTabs: () -> Void
     let content: () -> Content
 
     @State private var scrollTargetIndex: Int = 0
+    /// The scroll position, to tell a Down that moved nothing.
+    @State private var contentOffsetY: CGFloat = 0
     @FocusState private var isFocused: Bool
 
     init(
         accessibilityLabel: LocalizedStringResource,
         scrollTargetIDs: [String] = [],
+        moreLabel: LocalizedStringResource = .playerHudMore,
         isAtTop: Binding<Bool>,
         onMoveToTabs: @escaping () -> Void,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.accessibilityLabel = accessibilityLabel
         self.scrollTargetIDs = scrollTargetIDs
+        self.moreLabel = moreLabel
         self._isAtTop = isAtTop
         self.onMoveToTabs = onMoveToTabs
         self.content = content
@@ -363,6 +529,12 @@ private struct HUDScrollablePane<Content: View>: View {
                 content()
                     .padding(.trailing, 8)
             }
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentOffset.y
+            } action: { _, offset in
+                contentOffsetY = offset
+            }
+            .hudScrollEdgeFade(label: moreLabel)
             .frame(maxHeight: .infinity, alignment: .top)
             .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             .focusable(true)
@@ -412,10 +584,23 @@ private struct HUDScrollablePane<Content: View>: View {
         }
 
         guard nextIndex != scrollTargetIndex else { return }
+        let previousIndex = scrollTargetIndex
+        let offsetBefore = contentOffsetY
         scrollTargetIndex = nextIndex
 
         withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
             proxy.scrollTo(scrollTargetIDs[nextIndex], anchor: .top)
+        }
+
+        // The last targets can sit closer to the end than a page and all
+        // land at the end. A Down that moved nothing takes its step back, so
+        // the next Up pages instead of stepping back to where the list is.
+        if direction == .down {
+            DispatchQueue.main.asyncAfter(deadline: .now() + SiloTheme.fastDuration + 0.15) {
+                if scrollTargetIndex == nextIndex, abs(contentOffsetY - offsetBefore) < 1 {
+                    scrollTargetIndex = previousIndex
+                }
+            }
         }
     }
 }
@@ -428,12 +613,12 @@ private struct LabelValueRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(label)
-                .font(.system(size: 22, weight: .medium))
+                .font(.system(size: 24, weight: .medium))
                 .foregroundStyle(.white)
             Spacer(minLength: 16)
             Text(value)
-                .font(.system(size: 22))
-                .foregroundStyle(.white.opacity(0.7))
+                .font(.system(size: 24))
+                .foregroundStyle(.white.opacity(0.82))
                 .monospacedDigit()
                 .lineLimit(1)
         }
@@ -469,8 +654,8 @@ private struct HUDRowButtonBody: View {
 
     var body: some View {
         configuration.label
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(background)
@@ -516,8 +701,9 @@ private struct HUDSettingRow: View {
             )
         }
         .buttonStyle(HUDRowButtonStyle())
+        .hudWholeRow()
         .accessibilityLabel(Text(label))
-        .accessibilityValue(value)
+        .accessibilityValue(value.isEmpty ? (detail ?? "") : value)
     }
 }
 
@@ -525,6 +711,7 @@ private struct HUDSettingRow: View {
 /// open-dialog → pick → close round-trip.
 private struct HUDToggleRow: View {
     let label: LocalizedStringResource
+    var detail: String? = nil
     let isOn: Bool
     let onToggle: (Bool) -> Void
 
@@ -535,7 +722,9 @@ private struct HUDToggleRow: View {
             HUDSettingRowLabel(
                 label: label,
                 value: AppLanguage.string(HUDPickerOptions.boolLabel(isOn), locale: locale),
-                showsChevron: false
+                detail: detail,
+                showsChevron: false,
+                switchOn: isOn
             )
         }
         .buttonStyle(HUDRowButtonStyle())
@@ -552,6 +741,8 @@ private struct HUDSettingRowLabel: View {
     var colorHex: String? = nil
     var systemImage: String? = nil
     let showsChevron: Bool
+    /// A switch in place of the value text, for on/off rows.
+    var switchOn: Bool? = nil
 
     @Environment(\.isFocused) private var isFocused
 
@@ -559,20 +750,22 @@ private struct HUDSettingRowLabel: View {
         HStack(spacing: 14) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 22, weight: .semibold))
             }
             // Second line mirrors `HUDTrackRowLabel`'s attributes line: 17pt,
             // dimmed, focus-inverted. Only rendered when a `detail` is given,
             // so ordinary rows keep their exact single-line metrics.
             VStack(alignment: .leading, spacing: 3) {
                 Text(label)
-                    .font(.system(size: 22, weight: .medium))
+                    .font(.system(size: 25, weight: .medium))
                     .lineLimit(1)
                 if let detail {
+                    // Two lines: an explanation cut to "…" explains nothing.
                     Text(detail)
-                        .font(.system(size: 17))
-                        .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
-                        .lineLimit(1)
+                        .font(.system(size: 22))
+                        .foregroundStyle(isFocused ? .black.opacity(0.72) : .white.opacity(0.8))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 18)
@@ -580,14 +773,18 @@ private struct HUDSettingRowLabel: View {
                 if let colorHex {
                     ColorSwatch(hex: colorHex)
                 }
-                Text(value)
-                    .font(.system(size: 22, weight: .semibold))
-                    .lineLimit(1)
-                    .foregroundStyle(isFocused ? .black.opacity(0.78) : .white.opacity(0.72))
+                if let switchOn {
+                    HUDSwitch(isOn: switchOn, isFocused: isFocused)
+                } else {
+                    Text(value)
+                        .font(.system(size: 24, weight: .semibold))
+                        .lineLimit(1)
+                        .foregroundStyle(isFocused ? .black.opacity(0.78) : .white.opacity(0.8))
+                }
                 if showsChevron {
                     Image(systemName: "chevron.forward")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(isFocused ? .black.opacity(0.55) : .white.opacity(0.45))
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(isFocused ? .black.opacity(0.6) : .white.opacity(0.6))
                 }
             }
         }
@@ -595,88 +792,203 @@ private struct HUDSettingRowLabel: View {
     }
 }
 
+/// On/off state drawn as a switch, inverted on a focused (white) row.
+private struct HUDSwitch: View {
+    let isOn: Bool
+    let isFocused: Bool
+
+    var body: some View {
+        // Ink on the row's ground; an "on" track is filled with ink and its
+        // knob takes the ground colour.
+        let ink: Color = isFocused ? .black : .white
+        let ground: Color = isFocused ? .white : .black
+        Capsule()
+            .fill(isOn ? ink : ink.opacity(0.22))
+            .frame(width: 58, height: 32)
+            .overlay(alignment: isOn ? .trailing : .leading) {
+                Circle()
+                    .fill(isOn ? ground : ink)
+                    .frame(width: 24, height: 24)
+                    .padding(4)
+            }
+            .animation(.easeOut(duration: SiloTheme.fastDuration), value: isOn)
+            .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Info pane
 
 private struct InfoPane: View {
     let viewModel: PlayerViewModel
+    /// Technical details (what Stats was) open in this panel, in place of
+    /// About and Now playing. The HUD owns it: the panel is taller then.
+    @Binding var showsTechnicalDetails: Bool
     @Binding var isAtTop: Bool
     let onMoveToTabs: () -> Void
+    @FocusState private var toggleFocused: Bool
 
     @Environment(\.locale) private var locale
 
-    private static let topAnchor = "info.top"
-    private static let bottomAnchor = "info.bottom"
+    private static let topAnchor = "info.details.top"
+    private static let detailsAnchor = "info.details.rows"
+    private static let bottomAnchor = "info.details.bottom"
+    /// The first page of the details: the health line and the readings.
+    private static let summaryPageHeight: CGFloat = 300
 
     var body: some View {
-        HUDScrollablePane(
-            accessibilityLabel: .playerHudInfoDetails,
-            // Top/bottom anchors so Down can page a long overview to its end
-            // and Up returns to the top, then to the tabs. Without any targets
-            // the pane was a dead focus stop that couldn't scroll at all.
-            scrollTargetIDs: [Self.topAnchor, Self.bottomAnchor],
-            isAtTop: $isAtTop,
-            onMoveToTabs: onMoveToTabs
-        ) {
-            VStack(alignment: .leading, spacing: 0) {
-                Color.clear.frame(height: 0).id(Self.topAnchor)
-                HStack(alignment: .top, spacing: 48) {
-                PaneColumn(.playerHudTitle) {
-                    if let series = viewModel.metadata.seriesTitle, !series.isEmpty {
-                        Text(series.uppercased())
-                            .font(.system(size: 16, weight: .semibold))
-                            .tracking(1.8)
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                    Text(displayTitle)
-                        .font(.system(size: 34, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                    if let episode = viewModel.metadata.episodeTag {
-                        Text(episode)
-                            .font(.system(size: 22, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.75))
-                    }
-                    if !metaBits.isEmpty {
-                        Text(metaBits.joined(separator: "  ·  "))
-                            .font(.system(size: 20))
-                            .foregroundStyle(.white.opacity(0.65))
-                            .monospacedDigit()
-                    }
-                    if let overview = viewModel.metadata.overview, !overview.isEmpty {
-                        Text(overview)
-                            .font(.system(size: 20))
-                            .foregroundStyle(.white.opacity(0.75))
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 4)
-                    }
-                }
-
-                PaneColumn(.playerHudStream) {
-                    if !viewModel.metadata.badges.isEmpty {
-                        HStack(spacing: 8) {
-                            ForEach(viewModel.metadata.badges, id: \.self) { badge in
-                                Text(badge)
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .tracking(0.4)
-                                    .foregroundStyle(.white)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 4)
-                                    .overlay(
-                                        Capsule().stroke(Color.white.opacity(0.35), lineWidth: 1)
-                                    )
-                            }
-                        }
-                        .padding(.bottom, 4)
-                    }
-                    ForEach(streamRows, id: \.id) { row in
-                        LabelValueRow(label: row.label, value: row.value)
-                    }
-                    InfoCurrentChapterRow(viewModel: viewModel)
-                }
-                }
-                Color.clear.frame(height: 0).id(Self.bottomAnchor)
+        Group {
+            if showsTechnicalDetails {
+                technicalDetails
+            } else {
+                about
             }
         }
+        // Down from the tabs lands on the toggle, the pane's one control
+        // until the details open.
+        .defaultFocus($toggleFocused, true, priority: .userInitiated)
+    }
+
+    /// "Technical details" / "Hide technical details", top right in both
+    /// states so focus stays put when it flips.
+    private var technicalDetailsToggle: some View {
+        Button {
+            showsTechnicalDetails.toggle()
+            // Next turn, once the other state's button is in the focus graph.
+            DispatchQueue.main.async { toggleFocused = true }
+        } label: {
+            Label {
+                Text(showsTechnicalDetails
+                     ? LocalizedStringResource.playerHudHideTechnicalDetails
+                     : .playerHudTechnicalDetails)
+            } icon: {
+                Image(systemName: showsTechnicalDetails ? "chevron.up" : "waveform.path.ecg")
+            }
+            .font(.system(size: 21, weight: .semibold))
+            // Dark on the focused row's white, as the setting rows are.
+            .foregroundStyle(toggleFocused ? Color.black : Color.white)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+        }
+        .buttonStyle(HUDRowButtonStyle(cornerRadius: 22))
+        .focused($toggleFocused)
+        // Paged below the details' top, the rail is out of the focus graph
+        // and Up must reach the pane to page back. A focusable toggle above
+        // would take that press instead, and from it Up leads nowhere.
+        .disabled(showsTechnicalDetails && !isAtTop)
+    }
+
+    private var about: some View {
+        HStack(alignment: .top, spacing: 40) {
+            PaneColumn(.playerHudAbout) {
+                if let series = viewModel.metadata.seriesTitle, !series.isEmpty {
+                    Text(series.uppercased())
+                        .font(.system(size: 18, weight: .semibold))
+                        .tracking(1.8)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                Text(displayTitle)
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                if let episode = viewModel.metadata.episodeTag {
+                    Text(episode)
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                }
+                if !metaBits.isEmpty {
+                    Text(metaBits.joined(separator: "  ·  "))
+                        .font(.system(size: 23))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .monospacedDigit()
+                }
+                if let overview = viewModel.metadata.overview, !overview.isEmpty {
+                    // The height the lines above leave in the panel, ending
+                    // on an ellipsis rather than under its edge. Laid out
+                    // last, so the title and facts keep their lines.
+                    Text(overview)
+                        .font(.system(size: 25))
+                        .foregroundStyle(.white.opacity(0.95))
+                        .lineSpacing(6)
+                        .padding(.top, 4)
+                        .layoutPriority(-1)
+                }
+            }
+            // The synopsis takes the width; the facts beside it are short.
+            .frame(width: 640, alignment: .topLeading)
+
+            // A hairline between the story and the playback facts.
+            Rectangle()
+                .fill(Color.white.opacity(0.14))
+                .frame(width: 1)
+                .padding(.vertical, 4)
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text(.playerHudNowPlayingHeading)
+                        .font(.system(size: 18, weight: .semibold))
+                        .tracking(1.6)
+                        .foregroundStyle(.white.opacity(0.68))
+                        .textCase(.uppercase)
+                    Spacer()
+                    technicalDetailsToggle
+                }
+                ForEach(streamRows, id: \.id) { row in
+                    LabelValueRow(label: row.label, value: row.value)
+                }
+                InfoCurrentChapterRow(viewModel: viewModel)
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .focusSection()
+        }
+    }
+
+    /// What the Stats tab was: the health summary first, then every row,
+    /// paged with Down. Up at the top returns to the toggle.
+    private var technicalDetails: some View {
+        let stats = viewModel.playbackStats
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(.playerHudTechnicalDetails)
+                    .font(.system(size: 18, weight: .semibold))
+                    .tracking(1.6)
+                    .foregroundStyle(.white.opacity(0.68))
+                    .textCase(.uppercase)
+                Spacer()
+                technicalDetailsToggle
+            }
+            HUDScrollablePane(
+                accessibilityLabel: .playerStatsTitle,
+                scrollTargetIDs: detailsScrollTargets,
+                moreLabel: isAtTop ? .playerStatsAllDetails : .playerHudMore,
+                isAtTop: $isAtTop,
+                onMoveToTabs: { toggleFocused = true }
+            ) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Color.clear.frame(height: 0).id(Self.topAnchor)
+                    PlaybackStatsSummaryView(summary: stats.summary, scale: .tv)
+                        .frame(maxWidth: .infinity, minHeight: Self.summaryPageHeight, alignment: .topLeading)
+                    Color.clear.frame(height: 0).id(Self.detailsAnchor)
+                    PlaybackStatsPanel(stats: stats, usesTVTypography: true, usesTwoColumnLayout: true)
+                        // Hidden on the summary page, where only its first
+                        // rows would show under the cue; shown once paged to.
+                        .visualEffect { effect, proxy in
+                            let viewport = proxy.bounds(of: .scrollView(axis: .vertical))
+                            let pagedTo = viewport.map { $0.minY > -$0.height / 2 } ?? true
+                            return effect.opacity(pagedTo ? 1 : 0)
+                        }
+                    Color.clear.frame(height: 0).id(Self.bottomAnchor)
+                }
+            }
+        }
+    }
+
+    /// Paging targets: the summary, the rows, the later sections, the end.
+    private var detailsScrollTargets: [String] {
+        var ids = [Self.topAnchor, Self.detailsAnchor]
+        if !viewModel.playbackStats.networkRows.isEmpty { ids.append(PlaybackStatsPanel.networkSectionID) }
+        if !viewModel.playbackStats.engineRows.isEmpty { ids.append(PlaybackStatsPanel.engineSectionID) }
+        ids.append(Self.bottomAnchor)
+        return ids
     }
 
     private var displayTitle: String {
@@ -689,18 +1001,21 @@ private struct InfoPane: View {
         var bits: [String] = []
         if let year = viewModel.metadata.year { bits.append(LocaleFormat.integer(year, locale: locale)) }
         if viewModel.duration > 0 {
-            bits.append(PlayerTimeFormatter.formatRuntime(viewModel.duration))
+            bits.append(PlayerTimeFormatter.formatRuntime(viewModel.duration, locale: locale))
         }
         return bits
     }
 
     private var streamRows: [(id: String, label: LocalizedStringResource, value: String)] {
-        // One concise route line (engine · delivery). The decision trace
-        // and full route diagnostics stay in the Stats pane / settings —
-        // this pane is the casual "what am I watching" surface.
-        var rows: [(id: String, label: LocalizedStringResource, value: String)] = [
-            (id: "route", label: .playerHudRoute, value: viewModel.playbackRouteDisplay),
-        ]
+        // What is playing, in viewer terms. The route (engine · delivery)
+        // and the rest of the diagnostics live in Technical details — this
+        // view is the casual "what am I watching" surface.
+        var rows: [(id: String, label: LocalizedStringResource, value: String)] = []
+        // The picture as the Stats summary names it ("1080p"), in place of
+        // the badges that repeated the Audio row.
+        if let picture = viewModel.playbackStats.video.label, !picture.isEmpty {
+            rows.append((id: "video", label: .playerHudVideo, value: picture))
+        }
         if let audio = viewModel.audioTracks.first(where: { $0.trackId == viewModel.selectedAudioId }) {
             var bits: [String] = []
             if let codec = TrackLabels.audioCodec(audio.codec) { bits.append(codec) }
@@ -741,58 +1056,6 @@ private struct InfoCurrentChapterRow: View {
     }
 }
 
-// MARK: - Stats pane
-
-private struct StatsPane: View {
-    let viewModel: PlayerViewModel
-    @Binding var isAtTop: Bool
-    let onMoveToTabs: () -> Void
-
-    private static let topAnchor = "stats.top"
-    private static let bottomAnchor = "stats.bottom"
-
-    var body: some View {
-        HUDScrollablePane(
-            accessibilityLabel: .playerStatsTitle,
-            scrollTargetIDs: scrollTargetIDs,
-            isAtTop: $isAtTop,
-            onMoveToTabs: onMoveToTabs
-        ) {
-            VStack(alignment: .leading, spacing: 0) {
-                Color.clear.frame(height: 0).id(Self.topAnchor)
-                PlaybackStatsPanel(
-                    stats: viewModel.playbackStats,
-                    usesTVTypography: true,
-                    usesTwoColumnLayout: true
-                )
-                Color.clear.frame(height: 0).id(Self.bottomAnchor)
-            }
-        }
-    }
-
-    /// Paging targets. The pane opens scrolled to the top (Source/Media),
-    /// so the target list must start with a top anchor — without it the
-    /// index nominally sits on the first section while the view shows the
-    /// top, making the first Down skip a section and, worse, Up exit to
-    /// the tab bar while Source/Media are still scrolled off above. The
-    /// bottom anchor makes the tail of the last section reachable when it
-    /// is taller than the viewport.
-    private var scrollTargetIDs: [String] {
-        var ids: [String] = [Self.topAnchor]
-        if !viewModel.playbackStats.bufferRows.isEmpty {
-            ids.append(PlaybackStatsPanel.bufferSectionID)
-        }
-        if !viewModel.playbackStats.networkRows.isEmpty {
-            ids.append(PlaybackStatsPanel.networkSectionID)
-        }
-        if !viewModel.playbackStats.engineRows.isEmpty {
-            ids.append(PlaybackStatsPanel.engineSectionID)
-        }
-        ids.append(Self.bottomAnchor)
-        return ids
-    }
-}
-
 // MARK: - Video pane
 
 /// Playback / display / sync controls. Multi-option settings open the shared
@@ -813,13 +1076,13 @@ private struct VideoPane: View {
         case quality
         case speed
         case aspect
-        case subtitleDelay
     }
 
     var body: some View {
         ZStack {
-            HStack(alignment: .top, spacing: 48) {
-                PaneColumn(.playerHudPlayback) {
+            HStack(alignment: .top, spacing: 40) {
+                // What is shown, and how it is drawn.
+                PaneColumn(.playerHudPicture) {
                     VStack(spacing: 2) {
                         if viewModel.hasQualityChoice {
                             HUDSettingRow(label: .optionsQuality, value: qualityValue) {
@@ -842,6 +1105,35 @@ private struct VideoPane: View {
                             .focused($focusedField, equals: .quality)
                         }
 
+                        HUDSettingRow(label: .playerHudAspect, value: viewModel.settings.videoGravity.label) {
+                            presentPicker(
+                                for: .aspect,
+                                HUDPickerPresentation(
+                                    title: .playerHudAspect,
+                                    options: Self.aspectOptions,
+                                    selection: viewModel.settings.videoGravity.rawValue,
+                                    onSelect: { value in
+                                        if let gravity = VideoGravity(rawValue: value) {
+                                            viewModel.setVideoGravity(gravity)
+                                        }
+                                    }
+                                )
+                            )
+                        }
+                        .focused($focusedField, equals: .aspect)
+
+                    }
+                }
+                .focusSection()
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.14))
+                    .frame(width: 1)
+                    .padding(.vertical, 4)
+
+                // How playback runs.
+                PaneColumn(.playerHudPlayback) {
+                    VStack(spacing: 2) {
                         if !viewModel.isWatchPartyPlayback {
                             HUDSettingRow(label: .playerSettingsSpeed, value: Self.speedLabel(viewModel.settings.playbackSpeed)) {
                                 presentPicker(
@@ -861,56 +1153,10 @@ private struct VideoPane: View {
                             .focused($focusedField, equals: .speed)
                         }
 
-                        HUDSettingRow(label: .playerHudAspect, value: viewModel.settings.videoGravity.label) {
-                            presentPicker(
-                                for: .aspect,
-                                HUDPickerPresentation(
-                                    title: .playerHudAspect,
-                                    options: Self.aspectOptions,
-                                    selection: viewModel.settings.videoGravity.rawValue,
-                                    onSelect: { value in
-                                        if let gravity = VideoGravity(rawValue: value) {
-                                            viewModel.setVideoGravity(gravity)
-                                        }
-                                    }
-                                )
-                            )
-                        }
-                        .focused($focusedField, equals: .aspect)
-                    }
-                }
-                .focusSection()
-
-                PaneColumn(.playerHudSync) {
-                    VStack(spacing: 2) {
-                        if viewModel.backendCapabilities.supportsSubtitleDelay {
-                            HUDSettingRow(
-                                label: .playerSettingsSubtitleDelay,
-                                value: HUDPickerOptions.delayLabel(viewModel.settings.subtitleSyncMs)
-                            ) {
-                                presentPicker(
-                                    for: .subtitleDelay,
-                                    HUDPickerPresentation(
-                                        title: .playerSettingsSubtitleDelayTitle,
-                                        options: HUDPickerOptions.delayOptions(
-                                            from: -2_000,
-                                            through: 2_000,
-                                            by: 100,
-                                            including: viewModel.settings.subtitleSyncMs
-                                        ),
-                                        selection: String(viewModel.settings.subtitleSyncMs),
-                                        onSelect: { value in
-                                            if let ms = Int(value) {
-                                                viewModel.setSubtitleSyncMilliseconds(ms)
-                                            }
-                                        }
-                                    )
-                                )
-                            }
-                            .focused($focusedField, equals: .subtitleDelay)
-                        }
-
-                        if !viewModel.isWatchPartyPlayback {
+                        // For an episode, or anything in a shuffle, whose
+                        // next pick this decides; a movie alone has no next.
+                        if !viewModel.isWatchPartyPlayback,
+                           viewModel.metadata.episodeTag != nil || viewModel.shuffleState != nil {
                             HUDToggleRow(label: .optionsAutoplayNext, isOn: viewModel.settings.autoPlayNextEpisode) {
                                 viewModel.settings.setAutoPlayNextEpisode($0)
                             }
@@ -920,7 +1166,7 @@ private struct VideoPane: View {
                 .focusSection()
             }
             .disabled(activePicker != nil)
-            .opacity(activePicker != nil ? 0.28 : 1)
+            .opacity(activePicker != nil ? 0 : 1)
 
             if let activePicker {
                 HUDPickerDialog(
@@ -933,6 +1179,7 @@ private struct VideoPane: View {
             }
         }
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: activePicker?.id)
+        .preference(key: HUDPickerRowsKey.self, value: activePicker?.options.count)
     }
 
     private var qualityValue: String {
@@ -969,9 +1216,10 @@ private struct VideoPane: View {
         String(format: "%.2f", value)
     }
 
-    /// "1.0×", "1.25×", in the app's language ("1,25×").
+    /// "1×", "1.25×", "1.5×": one format, no padded zeros, in the app's
+    /// language ("1,25×").
     private static func speedLabel(_ value: Double) -> String {
-        LocaleFormat.decimal(value, fractionDigits: value == 1.0 ? 1 : 2) + "×"
+        LocaleFormat.rate(value)
     }
 
     /// Computed on each read, so the labels follow the app's language. The
@@ -1035,28 +1283,67 @@ private struct HUDPickerPresentation: Identifiable {
     let onSelect: (String) -> Void
 }
 
-/// Modal option list over a dimmed, `.disabled` pane — disabling the
-/// background is what keeps focus contained in here. Movement and
-/// keep-visible scrolling are native; focus is seeded onto the current
-/// selection when the dialog appears.
+/// Option list over a `.disabled` pane — disabling the background is what
+/// keeps focus contained in here. Movement and keep-visible scrolling are
+/// native; focus is seeded onto the current selection when it appears.
+///
+/// `.page` replaces the pane inside the HUD panel (the pane hides while it
+/// shows), so the options read as a step into the setting rather than a
+/// card over half-visible rows. `.card` floats over another dialog.
 private struct HUDPickerDialog: View {
+    enum Presentation { case page, card }
+
     let title: LocalizedStringResource
     let options: [HUDDropdownOption]
     let selection: String
+    var presentation: Presentation = .page
     let onSelect: (String) -> Void
     let onClose: () -> Void
 
     @FocusState private var focusedOptionID: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(title)
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(.white)
+        Group {
+            switch presentation {
+            case .page:
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .transition(.opacity)
+            case .card:
+                content
+                    .padding(.horizontal, 34)
+                    .padding(.vertical, 28)
+                    .frame(width: 620, alignment: .topLeading)
+                    .hudDialogPlate()
+                    .shadow(color: .black.opacity(0.62), radius: 26, y: 14)
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
+            }
+        }
+        .focusSection()
+        .defaultFocus($focusedOptionID, initialFocusID)
+        .onExitCommand(perform: onClose)
+    }
+
+    private var titleSize: CGFloat { presentation == .page ? 26 : 30 }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                // Menu steps back to the pane; the chevron says so.
+                if presentation == .page {
+                    Image(systemName: "chevron.backward")
+                        .font(.system(size: titleSize * 0.7, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .accessibilityHidden(true)
+                }
+                Text(title)
+                    .font(.system(size: titleSize, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
 
             ScrollViewReader { proxy in
-                ScrollView(showsIndicators: options.count > 7) {
-                    VStack(spacing: 4) {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 2) {
                         ForEach(options) { option in
                             HUDPickerOptionRow(
                                 option: option,
@@ -1070,7 +1357,8 @@ private struct HUDPickerDialog: View {
                         }
                     }
                 }
-                .frame(maxHeight: 520)
+                .frame(maxHeight: presentation == .card ? 520 : .infinity)
+                .hudScrollEdgeFade()
                 .onAppear {
                     if let initialFocusID {
                         proxy.scrollTo(initialFocusID, anchor: .center)
@@ -1079,19 +1367,6 @@ private struct HUDPickerDialog: View {
                 }
             }
         }
-        .padding(.horizontal, 34)
-        .padding(.vertical, 28)
-        .frame(width: 620, alignment: .topLeading)
-        .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .stroke(Color.white.opacity(0.18), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.62), radius: 26, y: 14)
-        .focusSection()
-        .defaultFocus($focusedOptionID, initialFocusID)
-        .onExitCommand(perform: onClose)
-        .transition(.scale(scale: 0.96).combined(with: .opacity))
     }
 
     private func isSelected(_ option: HUDDropdownOption) -> Bool {
@@ -1114,6 +1389,7 @@ private struct HUDPickerOptionRow: View {
             HUDPickerOptionLabel(option: option, isSelected: isSelected)
         }
         .buttonStyle(HUDRowButtonStyle(isSelected: isSelected))
+        .hudWholeRow()
         .accessibilityLabel(option.label)
         .accessibilityValue(isSelected ? Text(.playerMenuSelected) : Text(verbatim: ""))
     }
@@ -1131,12 +1407,12 @@ private struct HUDPickerOptionLabel: View {
                 ColorSwatch(hex: colorHex)
             }
             Text(option.label)
-                .font(.system(size: 24, weight: .medium))
+                .font(.system(size: 26, weight: .medium))
                 .lineLimit(1)
             Spacer(minLength: 12)
             if isSelected {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 24, weight: .semibold))
             }
         }
         .foregroundStyle(isFocused ? Color.black : Color.white)
@@ -1166,6 +1442,7 @@ private struct SubtitleAppearanceDialog: View {
 
     private enum Field: Hashable {
         case close
+        case deviceOverride
         case matchSystem
         case style
         case font
@@ -1198,6 +1475,18 @@ private struct SubtitleAppearanceDialog: View {
 
                 ScrollView(showsIndicators: true) {
                     VStack(spacing: 2) {
+                        HUDToggleRow(
+                            label: .playerHudStyleThisAppleTvOnly,
+                            detail: AppLanguage.string(.playerHudStyleThisAppleTvOnlyDetail, locale: locale),
+                            isOn: viewModel.settings.subtitleUsesDeviceAppearanceOverride
+                        ) { enabled in
+                            Task {
+                                await viewModel.setSubtitleDeviceOverrideEnabled(enabled)
+                            }
+                        }
+                        .focused($focusedField, equals: .deviceOverride)
+                        .id(Field.deviceOverride)
+
                         HUDToggleRow(
                             label: .playerSubtitlesUseDeviceSettings,
                             isOn: viewModel.settings.subtitleMatchesSystemAppearance
@@ -1435,16 +1724,15 @@ private struct SubtitleAppearanceDialog: View {
                     }
                     .padding(.trailing, 8)
                 }
+                .hudScrollEdgeFade()
                 .frame(maxHeight: 560)
             }
             .padding(.horizontal, 34)
             .padding(.vertical, 28)
             .frame(width: 720, alignment: .topLeading)
-            .siloPlayerGlass(in: RoundedRectangle(cornerRadius: 28, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
-            )
+            // Opaque, like the picker card: the subtitle rows dimmed behind it
+            // would otherwise read through the glass.
+            .hudDialogPlate()
             .shadow(color: .black.opacity(0.6), radius: 26, y: 14)
             .focusSection()
             .defaultFocus($focusedField, .style)
@@ -1456,6 +1744,7 @@ private struct SubtitleAppearanceDialog: View {
                     title: activePicker.title,
                     options: activePicker.options,
                     selection: activePicker.selection,
+                    presentation: .card,
                     onSelect: activePicker.onSelect,
                     onClose: closePicker
                 )
@@ -1577,14 +1866,15 @@ private struct AudioPane: View {
     var body: some View {
         HStack(alignment: .top, spacing: 48) {
             PaneColumn(.playerHudTracks) {
-                ScrollView(showsIndicators: false) {
+                HUDFittingScroll {
                     // Keep the complete focus graph mounted so native tvOS
                     // movement and keep-visible scrolling share one owner.
                     VStack(spacing: 2) {
                         ForEach(viewModel.audioTracks) { track in
+                            let text = Self.rowText(track)
                             HUDTrackRow(
-                                name: track.primaryLabel,
-                                attributes: track.attributesLabel,
+                                name: text.name,
+                                attributes: text.attributes,
                                 isSelected: viewModel.selectedAudioId == track.trackId
                             ) {
                                 viewModel.selectAudio(track)
@@ -1594,24 +1884,25 @@ private struct AudioPane: View {
                 }
             }
             .focusSection()
-
-            PaneColumn(.playerHudOptions) {
-                LabelValueRow(label: .playerHudChannels, value: selectedChannels ?? "—")
-                LabelValueRow(label: .playerHudCodec,  value: selectedCodec ?? "—")
-            }
+            // The selected track's codec and channels are on its row; no
+            // column repeats them.
         }
     }
 
-    private var selectedTrack: PlayerTrack? {
-        viewModel.audioTracks.first(where: { $0.trackId == viewModel.selectedAudioId })
-    }
-
-    private var selectedChannels: String? {
-        selectedTrack?.channelCountLabel
-    }
-
-    private var selectedCodec: String? {
-        TrackLabels.audioCodec(selectedTrack?.codec)
+    /// A track with a title of its own ("Commentary with …") leads with it:
+    /// several English tracks would otherwise all read "English", with what
+    /// tells them apart cut short on the second line.
+    static func rowText(_ track: PlayerTrack) -> (name: String, attributes: String?) {
+        guard let detail = track.detailLabel else {
+            return (track.primaryLabel, track.attributesLabel)
+        }
+        var pills = track.attributesLabel ?? ""
+        if pills.hasPrefix(detail) {
+            pills = String(pills.dropFirst(detail.count))
+            if pills.hasPrefix(" · ") { pills = String(pills.dropFirst(3)) }
+        }
+        let attributes = [track.primaryLabel, pills].filter { !$0.isEmpty }.joined(separator: " · ")
+        return (detail, attributes)
     }
 }
 
@@ -1637,33 +1928,51 @@ private struct SubtitlesPane: View {
         case syncTiming
         case resetTiming
         case delay
-        case save
-        case size
-        case position
         case appearance
     }
 
     private var hasPresentedOverlay: Bool {
-        showAppearanceDialog || activePicker != nil || showAITranslateMenu
-            || showSubtitleSearchMenu
+        showAppearanceDialog || activePicker != nil || showAITranslateMenu || showSubtitleSearchMenu
     }
 
     var body: some View {
         ZStack {
-            HStack(alignment: .top, spacing: 58) {
-                PaneColumn(.playerHudTracks) { trackRows }
-                    .frame(width: 470, alignment: .topLeading)
+            // The tracks, and beside them the style and the other actions:
+            // the fixed panel has room for both.
+            HStack(alignment: .top, spacing: 40) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(.playerHudTracks)
+                        .font(.system(size: 18, weight: .semibold))
+                        .tracking(1.6)
+                        .foregroundStyle(.white.opacity(0.68))
+                        .textCase(.uppercase)
+                    trackRows
+                }
+                .frame(width: 600, alignment: .topLeading)
+                .focusSection()
+
+                if firstOptionRow != nil {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.14))
+                        .frame(width: 1)
+                        .padding(.vertical, 4)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(.playerHudStyle)
+                            .font(.system(size: 18, weight: .semibold))
+                            .tracking(1.6)
+                            .foregroundStyle(.white.opacity(0.68))
+                            .textCase(.uppercase)
+                        optionRows
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                     .focusSection()
-                PaneColumn(.playerHudOptions) { optionRows }
-                    .frame(width: 440, alignment: .topLeading)
-                    .focusSection()
+                }
             }
-            // The Subtitles pill is geometrically closest to the Options
-            // column. Explicitly route Down into the leftmost Tracks column
-            // so entering this pane is consistent with the other track panes.
+            // Down from the tab bar enters the list at its first row (Off).
             .defaultFocus($entryTrackFocused, true, priority: .userInitiated)
             .disabled(hasPresentedOverlay)
-            .opacity(hasPresentedOverlay ? 0.28 : 1)
+            // A picker page replaces the pane; the dialogs float over it.
+            .opacity(activePicker != nil ? 0 : (hasPresentedOverlay ? 0.2 : 1))
 
             if showAppearanceDialog {
                 SubtitleAppearanceDialog(
@@ -1753,9 +2062,11 @@ private struct SubtitlesPane: View {
         SubtitleTranslateMenu.hasActionableSource(viewModel)
     }
 
+    /// "Large · Bottom · Box": what the appearance dialog is set to.
     private var appearanceSummary: String {
         let appearance = viewModel.settings.subtitleAppearance
-        return "\(appearance.backgroundStyle.label), \(appearance.fontSize.label), \(appearance.position.label)"
+        return [appearance.fontSize.label, appearance.position.label, appearance.backgroundStyle.label]
+            .joined(separator: " · ")
     }
 
     private func presentPicker(for option: Option, _ presentation: HUDPickerPresentation) {
@@ -1782,23 +2093,12 @@ private struct SubtitlesPane: View {
             // Eager by design: every native Button stays in one stable focus
             // graph, and the ScrollView performs its own keep-visible motion.
             VStack(alignment: .leading, spacing: 2) {
-                HUDTrackRow(
-                    name: AppLanguage.string(.playerTracksSubtitlesOff, locale: locale),
-                    attributes: nil,
-                    isSelected: viewModel.selectedSubtitleId == nil
-                ) {
-                    viewModel.disableSubtitles()
-                }
-                .focused($entryTrackFocused)
+                // One ordered list, one line per track (details beside the
+                // name), so every row is the same height. Off leads.
+                trackCell(nil, sharedLabels: [])
+                let sharedLabels = sharedTrackLabels
                 ForEach(viewModel.orderedSubtitleTracks) { track in
-                    HUDTrackRow(
-                        name: track.primaryLabel,
-                        attributes: attributes(for: track),
-                        isSelected: viewModel.selectedSubtitleId == track.trackId,
-                        isDisabled: track.hasUnsupportedFormat
-                    ) {
-                        viewModel.selectSubtitle(track)
-                    }
+                    trackCell(track, sharedLabels: sharedLabels)
                 }
 
                 if viewModel.supportsSecondarySubtitles,
@@ -1831,16 +2131,51 @@ private struct SubtitlesPane: View {
                 }
             }
         }
+        .hudScrollEdgeFade()
+    }
+
+    /// One row of the track list: a track, or Off for nil.
+    @ViewBuilder
+    private func trackCell(_ track: PlayerTrack?, sharedLabels: Set<String>) -> some View {
+        if let track {
+            HUDTrackRow(
+                name: track.primaryLabel,
+                attributes: attributes(for: track, showsFormat: sharedLabels.contains(track.singleLineLabel)),
+                isSelected: viewModel.selectedSubtitleId == track.trackId,
+                isDisabled: track.hasUnsupportedFormat,
+                inlineAttributes: true
+            ) {
+                viewModel.selectSubtitle(track)
+            }
+        } else {
+            HUDTrackRow(
+                name: AppLanguage.string(.playerTracksSubtitlesOff, locale: locale),
+                attributes: nil,
+                isSelected: viewModel.selectedSubtitleId == nil
+            ) {
+                viewModel.disableSubtitles()
+            }
+            .focused($entryTrackFocused)
+        }
     }
 
     /// The track's attributes, followed by its sync status when it can be
-    /// synced ("Syncing… 40%", "Synced −3.0 s").
-    private func attributes(for track: PlayerTrack) -> String? {
+    /// synced ("Syncing… 40%", "Synced −3.0 s"). The format ("SRT") only
+    /// when another track would otherwise read the same.
+    private func attributes(for track: PlayerTrack, showsFormat: Bool) -> String? {
         let status = track.hasUnsupportedFormat
             ? PlayerTrack.unsupportedFormatLabel
             : viewModel.subtitleSyncStatus(for: track)
-        let parts = [track.attributesLabel, status].compactMap { $0 }.filter { !$0.isEmpty }
+        let parts = [track.attributesLabel(includingFormat: showsFormat), status]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Labels two or more subtitle tracks share, whose rows need the format.
+    private var sharedTrackLabels: Set<String> {
+        let counts = Dictionary(viewModel.orderedSubtitleTracks.map { ($0.singleLineLabel, 1) }, uniquingKeysWith: +)
+        return Set(counts.filter { $0.value > 1 }.keys)
     }
 
     /// The selected track's sync entry, when timing actions apply.
@@ -1949,20 +2284,31 @@ private struct SubtitlesPane: View {
         return nil
     }
 
+    /// The Style column's first row; nil when the server offers no subtitle
+    /// options at all (the column is then left out).
+    private var firstOptionRow: Option? {
+        if aiSubtitlesAvailable { return .translate }
+        if viewModel.subtitleSearchEnabled { return .search }
+        if let timing = timingFocusTargets.first { return timing }
+        if viewModel.backendCapabilities.supportsSubtitleDelay { return .delay }
+        if viewModel.backendCapabilities.supportsSubtitleStyling { return .appearance }
+        return nil
+    }
+
     @ViewBuilder
     private var optionRows: some View {
-        // Scrollable: with every capability present (AI, Search, Delay,
-        // Save, Size, Position, Appearance) the column outgrows the fixed
-        // panel height; without a ScrollView the last row clips at the
-        // panel edge and focus can't bring it fully into view.
-        ScrollView(showsIndicators: false) {
+        // Scrollable: with every capability present (AI, Search, the timing
+        // rows, Delay, Appearance) the column can outgrow the panel's
+        // height; without a ScrollView the last row clips at the panel edge
+        // and focus can't bring it fully into view.
+        HUDFittingScroll {
             optionRowsContent
         }
     }
 
     @ViewBuilder
     private var optionRowsContent: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 8) {
             if aiSubtitlesAvailable {
                 HUDSettingRow(
                     label: .playerAiTranslateOpenMenu,
@@ -2011,59 +2357,12 @@ private struct SubtitlesPane: View {
                 .id(Option.delay)
             }
             if viewModel.backendCapabilities.supportsSubtitleStyling {
-                HUDToggleRow(
-                    label: .playerHudOnlyOnThisAppleTv,
-                    isOn: viewModel.settings.subtitleUsesDeviceAppearanceOverride
-                ) { enabled in
-                    Task {
-                        await viewModel.setSubtitleDeviceOverrideEnabled(enabled)
-                    }
-                }
-                .focused($focusedOption, equals: .save)
-                .id(Option.save)
-                HUDSettingRow(
-                    label: .playerSubtitlesStyleSize,
-                    value: viewModel.settings.subtitleAppearance.fontSize.label
-                ) {
-                    presentPicker(
-                        for: .size,
-                        HUDPickerPresentation(
-                            title: .playerHudPickerSubtitleSize,
-                            options: HUDPickerOptions.subtitleSizes,
-                            selection: viewModel.settings.subtitleAppearance.fontSize.rawValue,
-                            onSelect: { value in
-                                if let size = SubtitleFontSizePreset(rawValue: value) {
-                                    viewModel.updateSubtitleAppearance { $0.fontSize = size }
-                                }
-                            }
-                        )
-                    )
-                }
-                .focused($focusedOption, equals: .size)
-                .id(Option.size)
-                HUDSettingRow(
-                    label: .playerSubtitlesStylePosition,
-                    value: viewModel.settings.subtitleAppearance.position.label
-                ) {
-                    presentPicker(
-                        for: .position,
-                        HUDPickerPresentation(
-                            title: .playerHudPickerSubtitlePosition,
-                            options: HUDPickerOptions.subtitlePositions,
-                            selection: viewModel.settings.subtitleAppearance.position.rawValue,
-                            onSelect: { value in
-                                if let position = SubtitlePositionPreset(rawValue: value) {
-                                    viewModel.updateSubtitleAppearance { $0.position = position }
-                                }
-                            }
-                        )
-                    )
-                }
-                .focused($focusedOption, equals: .position)
-                .id(Option.position)
+                // Size, position, colors and the per-device switch live in
+                // the appearance dialog; the pane keeps the track list first.
                 HUDSettingRow(
                     label: .playerHudSubtitleAppearance,
-                    value: appearanceSummary,
+                    value: "",
+                    detail: appearanceSummary,
                     systemImage: "textformat"
                 ) {
                     showAppearanceDialog = true
@@ -2090,26 +2389,56 @@ private struct ChaptersPane: View {
     /// Updated by `CurrentChapterIndexReader` only when the chapter changes,
     /// so the list doesn't re-render on every playback clock tick.
     @State private var currentIndex: Int?
+    @State private var scrolledToCurrent = false
+    @State private var redirectedEntry = false
+    @FocusState private var focusedRow: Int?
 
     var body: some View {
         PaneColumn(.optionsChapters) {
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 2) {
-                    ForEach(Array(viewModel.chapters.enumerated()), id: \.offset) { index, chapter in
-                        HUDChapterRow(
-                            number: index + 1,
-                            title: chapter.title ?? AppLanguage.string(.optionsChapterNumbered(LocaleFormat.integer(index + 1, locale: locale)), locale: locale),
-                            time: PlayerTimeFormatter.formatHMS(chapter.time),
-                            isCurrent: currentIndex == index
-                        ) {
-                            viewModel.seekTo(seconds: chapter.time)
-                            onSelect()
+            // Opens on the chapter that is playing, which is also where focus
+            // enters the list, rather than at chapter 1.
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 2) {
+                        ForEach(Array(viewModel.chapters.enumerated()), id: \.offset) { index, chapter in
+                            HUDChapterRow(
+                                number: index + 1,
+                                title: chapter.title ?? AppLanguage.string(.optionsChapterNumbered(LocaleFormat.integer(index + 1, locale: locale)), locale: locale),
+                                time: PlayerTimeFormatter.formatHMS(chapter.time),
+                                isCurrent: currentIndex == index
+                            ) {
+                                viewModel.seekTo(seconds: chapter.time)
+                                onSelect()
+                            }
+                            .focused($focusedRow, equals: index)
+                            .id(index)
                         }
+                    }
+                }
+                .hudScrollEdgeFade()
+                .onChange(of: currentIndex, initial: true) { _, index in
+                    guard !scrolledToCurrent, let index else { return }
+                    scrolledToCurrent = true
+                    // Next turn: on the first pass the rows aren't laid out
+                    // yet, the scroll is dropped, and the list opens at
+                    // chapter 1 with the playing one out of view.
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(index, anchor: .center)
                     }
                 }
             }
         }
         .focusSection()
+        .defaultFocus($focusedRow, currentIndex)
+        // Down from the tab bar lands on the row nearest the tab, not the
+        // default; the first time focus enters, move it to the chapter
+        // playing, and the list scrolls it into view.
+        .onChange(of: focusedRow) { old, new in
+            guard old == nil, new != nil, !redirectedEntry,
+                  let current = currentIndex, new != current else { return }
+            redirectedEntry = true
+            focusedRow = current
+        }
         .background {
             CurrentChapterIndexReader(viewModel: viewModel, index: $currentIndex)
         }
@@ -2144,6 +2473,7 @@ private struct HUDChapterRow: View {
             HUDChapterRowLabel(number: number, title: title, time: time, isCurrent: isCurrent)
         }
         .buttonStyle(HUDRowButtonStyle(cornerRadius: 8))
+        .hudWholeRow()
         .accessibilityLabel(title)
         .accessibilityValue(isCurrent ? Text(.playerHudCurrentlyPlaying) : Text(verbatim: ""))
     }
@@ -2160,26 +2490,36 @@ private struct HUDChapterRowLabel: View {
     var body: some View {
         HStack(spacing: 16) {
             Text(verbatim: LocaleFormat.localized(String(format: "%02d", number)))
-                .font(.system(size: 20, weight: .semibold, design: .rounded))
+                .font(.system(size: 22, weight: .semibold, design: .rounded))
                 .foregroundStyle(isFocused ? .black.opacity(0.55) : .white.opacity(0.55))
                 .monospacedDigit()
                 .frame(width: 44, alignment: .leading)
 
             Text(title)
-                .font(.system(size: 22, weight: .medium))
+                .font(.system(size: 25, weight: isCurrent ? .semibold : .medium))
                 .foregroundStyle(isFocused ? .black : .white)
                 .lineLimit(1)
 
             Spacer(minLength: 12)
 
+            // Named, not just an icon: the row the picture is on.
             if isCurrent {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(isFocused ? .black.opacity(0.8) : .white.opacity(0.8))
+                Label {
+                    Text(.playerStatsPhasePlaying)
+                } icon: {
+                    Image(systemName: "speaker.wave.2.fill")
+                }
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(isFocused ? .black : .white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule().fill(isFocused ? Color.black.opacity(0.1) : Color.white.opacity(0.16))
+                    )
             }
 
             Text(time)
-                .font(.system(size: 20, weight: .medium))
+                .font(.system(size: 22, weight: .medium))
                 .foregroundStyle(isFocused ? .black.opacity(0.65) : .white.opacity(0.65))
                 .monospacedDigit()
         }
@@ -2193,15 +2533,19 @@ private struct HUDTrackRow: View {
     let attributes: String?
     let isSelected: Bool
     var isDisabled: Bool = false
+    /// Details on the name's line rather than under it, for lists whose
+    /// details are short (subtitle flags) and whose rows should all match.
+    var inlineAttributes = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HUDTrackRowLabel(name: name, attributes: attributes, isSelected: isSelected)
+            HUDTrackRowLabel(name: name, attributes: attributes, isSelected: isSelected, inline: inlineAttributes)
         }
         .buttonStyle(HUDRowButtonStyle(cornerRadius: 8))
         .disabled(isDisabled)
         .opacity(isDisabled ? 0.35 : 1.0)
+        .hudWholeRow()
         .accessibilityLabel(accessibilityName)
         .accessibilityValue(isSelected ? Text(.playerMenuSelected) : Text(verbatim: ""))
     }
@@ -2218,27 +2562,46 @@ private struct HUDTrackRowLabel: View {
     let name: String
     let attributes: String?
     let isSelected: Bool
+    var inline = false
 
     @Environment(\.isFocused) private var isFocused
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(name)
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundStyle(isFocused ? .black : .white)
-                    .lineLimit(1)
-                if let attributes {
-                    Text(attributes)
-                        .font(.system(size: 17))
-                        .foregroundStyle(isFocused ? .black.opacity(0.62) : .white.opacity(0.55))
+            if inline {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(name)
+                        .font(.system(size: 25, weight: .medium))
+                        .foregroundStyle(isFocused ? .black : .white)
                         .lineLimit(1)
+                    if let attributes {
+                        Text(attributes)
+                            .font(.system(size: 22))
+                            .foregroundStyle(isFocused ? .black.opacity(0.72) : .white.opacity(0.8))
+                            .lineLimit(1)
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 3) {
+                    // Two lines: a commentary title names its speakers.
+                    Text(name)
+                        .font(.system(size: 25, weight: .medium))
+                        .foregroundStyle(isFocused ? .black : .white)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let attributes {
+                        Text(attributes)
+                            .font(.system(size: 22))
+                            .foregroundStyle(isFocused ? .black.opacity(0.72) : .white.opacity(0.8))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             Spacer(minLength: 8)
             if isSelected {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(isFocused ? .black : .white)
             }
         }
