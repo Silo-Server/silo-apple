@@ -379,7 +379,8 @@ class BrowseViewModel {
         isLoading = false
         isLoadingEarlier = false
         let read = try? await readPage(query)
-        guard myGeneration == generation, myJump == jumpGeneration, let read else { return nil }
+        guard myGeneration == generation, myJump == jumpGeneration, !Task.isCancelled,
+              let read else { return nil }
         items = Self.unique(read.response.items)
         windowStart = start
         windowEnd = start + read.response.items.count

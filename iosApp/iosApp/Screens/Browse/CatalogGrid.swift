@@ -73,6 +73,7 @@ struct CatalogGrid: View {
     var body: some View {
         let widthOverride = cardWidthOverride
         let columns = columns
+        let laidOutColumns = Self.laidOutColumnCount(columns, width: gridWidth)
         LazyVGrid(columns: columns, spacing: rowSpacing) {
             if items.isEmpty && isLoading {
                 // First page still loading: the grid's own shape, unfilled.
@@ -95,17 +96,17 @@ struct CatalogGrid: View {
                     if item.id == items.suffix(Self.loadMoreLead).first?.id, hasMore {
                         onLoadMore()
                     }
-                    if hasEarlier, entry.index < columns.count * 2 {
-                        onLoadEarlier(columns.count)
+                    if hasEarlier, entry.index < laidOutColumns * 2 {
+                        onLoadEarlier(laidOutColumns)
                     }
                 }
             }
         }
         .scrollTargetLayout(isEnabled: tracksScrollPosition)
-        .onChange(of: columns.count, initial: true) { _, count in
+        .onChange(of: laidOutColumns, initial: true) { _, count in
             onColumnCount(count)
         }
-        #if os(iOS)
+        #if !os(tvOS)
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
@@ -137,6 +138,17 @@ struct CatalogGrid: View {
         #else
         return nil
         #endif
+    }
+
+    /// Columns the grid lays out. The Mac's single adaptive column holds as
+    /// many cards as fit the width, as LazyVGrid fits them.
+    static func laidOutColumnCount(_ columns: [GridItem], width: CGFloat) -> Int {
+        guard columns.count == 1, case .adaptive(let minimum, _) = columns[0].size else {
+            return max(columns.count, 1)
+        }
+        let spacing = columns[0].spacing ?? 8
+        guard width > 0 else { return 1 }
+        return max(1, Int((width + spacing) / (minimum + spacing)))
     }
 
     private var usesThreeColumnPhoneLayout: Bool {

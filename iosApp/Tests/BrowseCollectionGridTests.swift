@@ -132,3 +132,19 @@ final class BrowseCollectionGridTests: XCTestCase {
         XCTAssertEqual(pad.cardWidth * 6 + pad.spacing * 5, 1000, accuracy: 0.01, "iPad cards fill the row")
     }
 }
+
+/// The Mac grid lays its posters out in one adaptive column; jumps and the
+/// titles read above a jump need the number of cards it fits in a row.
+final class CatalogGridColumnCountTests: XCTestCase {
+    func testAnAdaptiveColumnCountsTheCardsThatFitTheWidth() {
+        let adaptive = [GridItem(.adaptive(minimum: 120), spacing: 8)]
+        XCTAssertEqual(CatalogGrid.laidOutColumnCount(adaptive, width: 1000), 7)
+        XCTAssertEqual(CatalogGrid.laidOutColumnCount(adaptive, width: 100), 1)
+        XCTAssertEqual(CatalogGrid.laidOutColumnCount(adaptive, width: 0), 1)
+    }
+
+    func testFixedColumnsCountThemselves() {
+        let three = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+        XCTAssertEqual(CatalogGrid.laidOutColumnCount(three, width: 1000), 3)
+    }
+}
