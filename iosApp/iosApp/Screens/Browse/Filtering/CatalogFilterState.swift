@@ -132,7 +132,7 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
     var dolbyVision: Bool = false
     var watchStatus: WatchStatusFilter? = nil
 
-    /// Alphabet-rail prefix (tvOS). Orthogonal to facets, included in the
+    /// Letter-jump prefix. Orthogonal to facets, included in the
     /// cache key but never persisted (a transient jump).
     var namePrefix: String? = nil
 
@@ -338,5 +338,11 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
         if dolbyVision { parts.append("dv") }
         if let w = watchStatus { parts.append("ws=\(encode(w.rawValue))") }
         return parts.joined(separator: "|")
+    }
+
+    /// Whether a cache key built from `cacheKeyFragment` is for a letter's
+    /// page. Values are percent-encoded, so only the prefix part reads `|p=`.
+    static func isLetterPage(cacheKey: String) -> Bool {
+        cacheKey.contains("|p=")
     }
 }

@@ -27,7 +27,9 @@ struct BrowseView: View {
 
     private var rootContent: some View {
         Group {
-            if viewModel.items.isEmpty, let error = viewModel.error {
+            // A letter that failed to load shows its error under the controls
+            // (`emptyContent`), so All still leads back to the cached titles.
+            if viewModel.items.isEmpty, let error = viewModel.error, viewModel.filterState.namePrefix == nil {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadItems(reset: true) } })
             } else if viewModel.items.isEmpty, viewModel.hasLoaded, !viewModel.isLoading {
                 emptyContent
@@ -72,13 +74,20 @@ struct BrowseView: View {
 
                 controlBar
 
+                letterStrip
+
                 if hasActiveFilters {
                     activeFilterChips
                 }
 
-                emptyState
-                    .frame(minHeight: 320)
-                    .padding(.horizontal, SiloTheme.padding)
+                if let error = viewModel.error {
+                    ErrorView(state: error, onRetry: { Task { await viewModel.loadItems(reset: true) } })
+                        .frame(minHeight: 320)
+                } else {
+                    emptyState
+                        .frame(minHeight: 320)
+                        .padding(.horizontal, SiloTheme.padding)
+                }
             }
             .frame(maxWidth: .infinity)
         }
@@ -126,6 +135,8 @@ struct BrowseView: View {
                 }
 
                 controlBar
+
+                letterStrip
 
                 if hasActiveFilters {
                     activeFilterChips
@@ -294,6 +305,14 @@ struct BrowseView: View {
         .padding(.horizontal, 13)
         .padding(.vertical, 8)
         .siloGlass(in: .capsule)
+    }
+
+    // MARK: - Letter jump
+
+    private var letterStrip: some View {
+        BrowseLetterStrip(selected: viewModel.filterState.namePrefix) { letter in
+            Task { await viewModel.jumpToPrefix(letter) }
+        }
     }
 
     // MARK: - Active Filters

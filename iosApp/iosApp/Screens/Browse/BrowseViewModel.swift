@@ -34,6 +34,20 @@ class BrowseViewModel {
     /// discards its results instead of appending stale data.
     private var generation = 0
 
+    typealias FirstPageRead = @MainActor (
+        _ libraryId: Int?, _ state: CatalogFilterState, _ mediaScope: LibraryVideoScope?
+    ) async throws -> CatalogListPage
+
+    /// Reads page 1 of the grid. The app shares the startup prefetch's
+    /// request; tests read from a stubbed server.
+    private let readFirstPage: FirstPageRead
+
+    init(readFirstPage: @escaping FirstPageRead = {
+        try await StartupContentPrefetcher.fetchBrowseFirstPage(libraryId: $0, state: $1, mediaScope: $2)
+    }) {
+        self.readFirstPage = readFirstPage
+    }
+
     @discardableResult
     func configure(libraryId: Int?, libraryType: String? = nil, mediaScope: LibraryVideoScope? = nil) async -> Bool {
         configurationGeneration += 1
@@ -96,11 +110,7 @@ class BrowseViewModel {
             if let continuation {
                 page = try await SiloAPI.shared.nextCatalogPage(continuation)
             } else {
-                page = try await StartupContentPrefetcher.fetchBrowseFirstPage(
-                    libraryId: libraryId,
-                    state: filterState,
-                    mediaScope: mediaScope
-                )
+                page = try await readFirstPage(libraryId, filterState, mediaScope)
             }
             // Discard if another reset superseded us while we awaited.
             guard myGeneration == generation else { return }
@@ -161,6 +171,15 @@ class BrowseViewModel {
             next.sort = key
             next.order = nil
         }
+        await apply(next)
+    }
+
+    /// Show only titles starting with `letter`, or the whole library again
+    /// for nil. The letter lasts for this visit: `BrowsePrefsStore` never
+    /// saves it.
+    func jumpToPrefix(_ letter: String?) async {
+        var next = filterState
+        next.namePrefix = letter
         await apply(next)
     }
 
