@@ -248,6 +248,11 @@ struct ContentView: View {
             router.presentedPlayer = nil
             audioStore.dismissFullPlayer()
             Task { await audioStore.player.close() }
+            // The picker stays up even with one profile left. Opening that
+            // profile at once would move the person to it unasked, and
+            // returns to Home fast enough that the previous profile's
+            // screens are kept.
+            router.pickerRequestedByPerson = true
             router.showProfileSelection()
         }
         .onChange(of: serverRegistry.activeServerId) { previousServerID, activeServerID in

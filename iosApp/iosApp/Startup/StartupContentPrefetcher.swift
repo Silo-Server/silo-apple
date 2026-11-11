@@ -168,6 +168,12 @@ enum StartupContentPrefetcher {
                 await AuthService.shared.recoverFromInvalidProfile(
                     expectedProfileID: requestProfileID
                 )
+            } else if requestProfileID != nil, Self.indicatesNotFound(error) {
+                // A deleted profile is a plain `not_found` too. The account's
+                // profile list tells them apart, and `fetchProfiles`
+                // reconciles the active profile against it. Awaited, so the
+                // return to Who's Watching comes before Home sees the error.
+                _ = try? await fetchProfiles()
             }
             throw error
         }
@@ -179,6 +185,11 @@ enum StartupContentPrefetcher {
         // apart from any other missing resource.
         guard case .problem(let problem) = error as? APIv2Error else { return false }
         return problem.identifier == "profile_verification_required"
+    }
+
+    private static func indicatesNotFound(_ error: Error) -> Bool {
+        guard case .problem(let problem) = error as? APIv2Error else { return false }
+        return problem.status == 404 && problem.identifier == "not_found"
     }
 
     #if os(iOS) || os(tvOS)
