@@ -52,7 +52,7 @@ struct TVPlaybackActionSelectors: View {
     private var versionMenu: some View {
         TVCircleMenuButton(
             icon: "square.stack",
-            title: AppLanguage.string(.detailVersionsButton, locale: locale),
+            title: AppLanguage.string(.detailVersion, locale: locale),
             accessibilityLabel: AppLanguage.string(.detailVersionSpoken(versionValue), locale: locale),
             stabilizesFocusMotion: true,
             menuTitle: AppLanguage.string(.detailVersion, locale: locale),
@@ -87,7 +87,7 @@ struct TVPlaybackActionSelectors: View {
     private var audioMenu: some View {
         TVCircleMenuButton(
             icon: "speaker.wave.2",
-            title: AppLanguage.string(.detailAudioButton, locale: locale),
+            title: AppLanguage.string(.detailAudio, locale: locale),
             accessibilityLabel: AppLanguage.string(.detailAudioSpoken(audioValue), locale: locale),
             stabilizesFocusMotion: true,
             menuTitle: AppLanguage.string(.detailAudio, locale: locale),
