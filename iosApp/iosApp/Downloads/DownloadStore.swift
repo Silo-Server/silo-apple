@@ -16,7 +16,7 @@ actor DownloadStore {
     /// (`AccountStore.legacyDataOwner(forServer:)`). Throws when the account
     /// index can't be read.
     private let legacyOwner: @Sendable (String) throws -> String?
-    /// Scopes whose store file exists but could neither be read nor moved
+    /// Scopes whose store file exists but could neither be read nor set
     /// aside, or whose account could not take over its server's downloads
     /// from before accounts. Saving one of them would replace the file with
     /// whatever the manager built from an empty load, so saves stay off
@@ -39,7 +39,9 @@ actor DownloadStore {
 
     /// Load the persisted blob for a scope, or a fresh empty one when the
     /// scope has no store yet. A store that can't be decoded is renamed
-    /// aside first, so the empty blob never overwrites it.
+    /// aside first, so the empty blob never overwrites it. One that can be
+    /// decoded without a few of its elements loads without them
+    /// (`salvagedFile`), after its original is copied aside.
     func load(serverId: String, localAccountId: String, profileId: String) -> DownloadStoreFile {
         loadScope(serverId: serverId, localAccountId: localAccountId, profileId: profileId).file
     }
@@ -81,12 +83,90 @@ actor DownloadStore {
             return DownloadStoreLoad(file: file, outcome: .loaded)
         } catch {
             Self.logger.error("Download store decode failed: \(String(describing: error), privacy: .public)")
-            if quarantine(url) {
-                unsavableScopes.remove(scope)
-                return DownloadStoreLoad(file: .empty, outcome: .quarantined)
+            guard let salvaged = salvagedFile(from: data) else {
+                if quarantine(url) {
+                    unsavableScopes.remove(scope)
+                    return DownloadStoreLoad(file: .empty, outcome: .quarantined)
+                }
+                unsavableScopes.insert(scope)
+                return DownloadStoreLoad(file: .empty, outcome: .unreadable)
             }
-            unsavableScopes.insert(scope)
-            return DownloadStoreLoad(file: .empty, outcome: .unreadable)
+            // The original is kept before anything can overwrite it.
+            guard keepOriginal(data, of: url) else {
+                unsavableScopes.insert(scope)
+                return DownloadStoreLoad(file: .empty, outcome: .unreadable)
+            }
+            unsavableScopes.remove(scope)
+            // Rewritten now, so the next load reads the store whole.
+            save(salvaged, serverId: serverId, localAccountId: localAccountId, profileId: profileId)
+            return DownloadStoreLoad(file: salvaged, outcome: .loaded)
+        }
+    }
+
+    /// The store in `data` without the records, queued progress events, and
+    /// resume points that can't be decoded on their own: ones a newer
+    /// version saved with a value this version doesn't know, or damaged
+    /// ones. Leaving one out costs that element, not every download in the
+    /// scope. Nil when nothing can be left out, when the store can't be
+    /// decoded without them either, or when leaving them out is not safe:
+    ///
+    /// - A monitor is never left out. Its series would have no storage
+    ///   limit until the next monitor list brings it back, and a store
+    ///   still waiting on `legacyMonitorsPending` would record it as an
+    ///   earlier version's and hide it.
+    /// - A record is not left out of a store still waiting on
+    ///   `legacyRowsPending`: its first registry read deletes every server
+    ///   row the store doesn't know, which would include the record's.
+    private func salvagedFile(from data: Data) -> DownloadStoreFile? {
+        // Only a valid object can be written back: `JSONSerialization` can
+        // read an out-of-range number as infinite, and raises an exception
+        // when asked to write one.
+        guard var store = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              JSONSerialization.isValidJSONObject(store) else { return nil }
+        // Removes the collection's unreadable elements; returns how many.
+        func leaveOutUnreadable<Element: Decodable>(_ key: String, as type: Element.Type) -> Int {
+            var errors: [Error] = []
+            func isReadable(_ element: Any) -> Bool {
+                guard let error = decodeError(of: element, as: type) else { return true }
+                errors.append(error)
+                return false
+            }
+            switch store[key] {
+            case let elements as [String: Any]: store[key] = elements.filter { isReadable($0.value) }
+            case let elements as [Any]: store[key] = elements.filter(isReadable)
+            default: break
+            }
+            if let first = errors.first {
+                Self.logger.error("Download store has \(errors.count, privacy: .public) unreadable elements in \(key, privacy: .public); the first: \(String(describing: first), privacy: .public)")
+            }
+            return errors.count
+        }
+        let records = leaveOutUnreadable("records", as: DownloadRecord.self)
+        let progress = leaveOutUnreadable("progressQueue", as: QueuedProgress.self)
+            + leaveOutUnreadable("localProgress", as: LocalProgressEntry.self)
+        guard records + progress > 0 else { return nil }
+        do {
+            let file = try decoder.decode(DownloadStoreFile.self, from: JSONSerialization.data(withJSONObject: store))
+            guard records == 0 || file.legacyRowsPending != true else {
+                Self.logger.error("Download store is waiting on legacy cleanup; not loading it without a record")
+                return nil
+            }
+            return file
+        } catch {
+            Self.logger.error("Download store decode failed without them too: \(String(describing: error), privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Why one element of a stored collection doesn't decode on its own;
+    /// nil when it does.
+    private func decodeError<Element: Decodable>(of element: Any, as type: Element.Type) -> Error? {
+        do {
+            let data = try JSONSerialization.data(withJSONObject: element, options: .fragmentsAllowed)
+            _ = try decoder.decode(type, from: data)
+            return nil
+        } catch {
+            return error
         }
     }
 
@@ -376,19 +456,45 @@ actor DownloadStore {
             return false
         }
     }
+
+    /// Copies a store's original beside it, under the name a quarantined
+    /// store gets, before the store is rewritten without what could not be
+    /// read. A copy of the same bytes left by an earlier load counts, so a
+    /// rewrite that keeps failing leaves one copy, not one per load.
+    /// Returns false when no copy is there.
+    private func keepOriginal(_ data: Data, of url: URL) -> Bool {
+        let directory = url.deletingLastPathComponent()
+        let prefix = "\(url.lastPathComponent).corrupt-"
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        let alreadyKept = names.contains {
+            $0.hasPrefix(prefix) && (try? Data(contentsOf: directory.appendingPathComponent($0))) == data
+        }
+        guard !alreadyKept else { return true }
+        let aside = directory.appendingPathComponent(prefix + UUID().uuidString, isDirectory: false)
+        do {
+            try FileManager.default.copyItem(at: url, to: aside)
+            Self.logger.error("Kept the download store's original as \(aside.lastPathComponent, privacy: .public)")
+            return true
+        } catch {
+            Self.logger.error("Could not keep the download store's original; not saving this scope: \(String(describing: error), privacy: .public)")
+            return false
+        }
+    }
 }
 
 /// A scope's store as `DownloadStore.loadScope` found it.
 struct DownloadStoreLoad: Sendable {
     enum Outcome: Equatable, Sendable {
-        /// The store was read and decoded.
+        /// The store was read and decoded, whole or without the elements
+        /// that could not be read.
         case loaded
         /// The scope has no store file.
         case missing
         /// The store could not be decoded and was renamed aside.
         case quarantined
-        /// The store is present but could not be read, or could not be
-        /// renamed aside after a failed decode. Its contents may be fine.
+        /// The store is present but could not be read, or could not be set
+        /// aside after a failed decode: renamed, or copied before a load
+        /// without some of its elements. Its contents may be fine.
         case unreadable
     }
 
@@ -399,7 +505,8 @@ struct DownloadStoreLoad: Sendable {
     /// directory none of its records owns can be deleted. A missing or
     /// quarantined store counts: nothing in this version can read the
     /// directories it owned again, and the server's rows download afresh.
-    /// An unreadable store may still own them.
+    /// The sweep also deletes the directory of a record a store was loaded
+    /// without. An unreadable store may still own its directories.
     var tracksScopeStorage: Bool { outcome != .unreadable }
 }
 
