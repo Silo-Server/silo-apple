@@ -30,7 +30,10 @@ struct OverlayIcon: View {
             Image(systemName: symbolName(for: iconId))
                 .font(.system(size: size * 0.85, weight: .semibold))
                 .foregroundStyle(tint)
-                .frame(width: size, height: size)
+                // A symbol wider than the box (translate) keeps its own
+                // width instead of running into the label.
+                .frame(minWidth: size)
+                .frame(height: size)
         }
     }
 
