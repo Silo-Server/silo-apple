@@ -30,7 +30,7 @@ enum DateFormatters {
         guard let date = parseRFC3339(raw) else {
             return nil
         }
-        return date.formatted(date: .omitted, time: .shortened)
+        return date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: AppLanguage.formattingLocale))
     }
 
     /// Localized short time from a wall-clock "HH:mm" string, interpreted
@@ -45,7 +45,7 @@ enum DateFormatters {
               ) else {
             return nil
         }
-        return date.formatted(date: .omitted, time: .shortened)
+        return date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: AppLanguage.formattingLocale))
     }
 
     /// An RFC 3339 instant, with or without fractional seconds.

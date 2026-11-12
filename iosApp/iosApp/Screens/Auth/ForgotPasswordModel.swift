@@ -41,7 +41,7 @@ final class ForgotPasswordModel {
         guard phase == .editing else { return }
         let login = login.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !login.isEmpty else {
-            error = FormError("Enter your username or email.")
+            error = FormError(AppLanguage.string(.signInForgotErrorLoginRequired))
             return
         }
         phase = .sending
@@ -75,11 +75,11 @@ final class ForgotPasswordModel {
         case APIv2Error.incompleteAuthResponse:
             // A success other than 202, such as a captive portal's page; the
             // error's own copy is about sign-in.
-            return "Couldn't send the request. Try again."
+            return AppLanguage.string(.signInForgotErrorFailed)
         default:
             return ErrorState(error).message
         }
     }
 
-    nonisolated static let rateLimitedMessage = "Too many requests from this network. Wait a minute, then try again."
+    nonisolated static var rateLimitedMessage: String { AppLanguage.string(.signInForgotErrorRateLimited) }
 }

@@ -6,6 +6,7 @@ struct AudioChaptersSheet: View {
     let player: AudioPlayerViewModel
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
 
     var body: some View {
         let currentID = player.currentChapter?.id
@@ -28,13 +29,13 @@ struct AudioChaptersSheet: View {
                     }
                 }
             }
-            .navigationTitle("Chapters")
+            .navigationTitle(Text(.optionsChapters))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button(.commonDone) { dismiss() }
                 }
             }
         }
@@ -58,7 +59,7 @@ struct AudioChaptersSheet: View {
                         .frame(width: 24)
                         .accessibilityHidden(true)
                 } else {
-                    Text("\(number)")
+                    Text(verbatim: LocaleFormat.integer(number))
                         .font(.footnote.weight(.medium))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
@@ -66,7 +67,7 @@ struct AudioChaptersSheet: View {
                         .accessibilityHidden(true)
                 }
 
-                Text(chapter.title ?? "Chapter \(chapter.index + 1)")
+                Text(chapter.displayTitle(locale: locale))
                     .font(.body.weight(isCurrent ? .semibold : .regular))
                     .foregroundStyle(isCurrent ? player.palette.accent : Color.siloOnSurface)
                     .lineLimit(1)

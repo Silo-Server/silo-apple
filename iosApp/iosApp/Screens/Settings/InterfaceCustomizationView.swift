@@ -29,35 +29,35 @@ struct InterfaceCustomizationView: View {
             if preferences.hasDeviceOverrides {
                 Section {
                     Label(
-                        "This device has older device-specific interface settings that override family sync.",
+                        .settingsInterfaceDeviceOverride,
                         systemImage: "iphone.and.arrow.forward"
                     )
-                    Button("Use Synced \(familySettingsName) Settings") {
+                    Button(DeviceFamily.current.useSyncedSettings) {
                         preferences.useFamilySettings()
                     }
                     .disabled(preferences.isSaving || !preferences.allowsEditing)
                 } footer: {
-                    Text("Clearing the device override makes the controls below apply to all like-family devices on this profile.")
+                    Text(.settingsInterfaceDeviceOverrideFooter)
                 }
             }
 
             Section {
-                Picker("Poster Size", selection: posterSize) {
+                Picker(.settingsCardsPosterSize, selection: posterSize) {
                     ForEach(CardPosterSize.allCases) { size in
                         Text(size.title).tag(size)
                     }
                 }
 
                 if preferences.cardPresentationUsesFamilyOverride {
-                    Button("Use Profile Default") {
+                    Button(.settingsCardsUseProfileDefault) {
                         preferences.resetCardPresentationToInherited()
                     }
                     .disabled(preferences.isSaving)
                 }
             } header: {
-                Text("Cards & Posters")
+                Text(.settingsCardsTitle)
             } footer: {
-                Text("Poster size syncs with other \(familyLabel) devices on this profile.")
+                Text(DeviceFamily.current.posterSizeSyncs)
             }
             .disabled(
                 !preferences.allowsEditing
@@ -85,7 +85,7 @@ struct InterfaceCustomizationView: View {
         #else
         .siloGroupedListStyle()
         #endif
-        .navigationTitle("Interface")
+        .navigationTitle(Text(.settingsInterfaceTitle))
         .task {
             async let preferencesRefresh: Void = preferences.refresh()
             async let titleArtRefresh: Void = titleArt.refresh()
@@ -110,21 +110,37 @@ struct InterfaceCustomizationView: View {
         )
     }
 
-    private var familyLabel: String {
+}
+
+/// The settings family this device syncs card settings with, and the
+/// whole-sentence texts that name it.
+private enum DeviceFamily {
+    case mobile, tablet, desktop, other
+
+    static var current: DeviceFamily {
         switch AppleDeviceIdentity.current.clientFamily {
-        case "mobile": return "iPhone-like"
-        case "tablet": return "tablet-like"
-        case "desktop": return "desktop-like"
-        default: return "similar"
+        case "mobile": return .mobile
+        case "tablet": return .tablet
+        case "desktop": return .desktop
+        default: return .other
         }
     }
 
-    private var familySettingsName: String {
-        switch AppleDeviceIdentity.current.clientFamily {
-        case "mobile": return "Mobile"
-        case "tablet": return "Tablet"
-        case "desktop": return "Desktop"
-        default: return "Family"
+    var useSyncedSettings: LocalizedStringResource {
+        switch self {
+        case .mobile: return .settingsInterfaceUseSyncedMobile
+        case .tablet: return .settingsInterfaceUseSyncedTablet
+        case .desktop: return .settingsInterfaceUseSyncedDesktop
+        case .other: return .settingsInterfaceUseSyncedFamily
+        }
+    }
+
+    var posterSizeSyncs: LocalizedStringResource {
+        switch self {
+        case .mobile: return .settingsInterfacePosterSizeSyncsMobile
+        case .tablet: return .settingsInterfacePosterSizeSyncsTablet
+        case .desktop: return .settingsInterfacePosterSizeSyncsDesktop
+        case .other: return .settingsInterfacePosterSizeSyncsOther
         }
     }
 }
@@ -138,8 +154,8 @@ private struct TitleArtSettingsSection: View {
     var body: some View {
         Section {
             TitlePagesToggleRow(
-                title: "Show Title Art",
-                subtitle: "Use logo artwork as the title when available.",
+                title: .settingsControlTitleArt,
+                subtitle: .settingsTitleArtFooter,
                 systemImage: "photo.artframe",
                 isOn: Binding(
                     get: { preferences.showsTitleArt },
@@ -147,8 +163,8 @@ private struct TitleArtSettingsSection: View {
                 )
             )
             TitlePagesToggleRow(
-                title: "Apply to All Devices",
-                subtitle: "Use this choice everywhere on this profile.",
+                title: .settingsInterfaceApplyToAllDevices,
+                subtitle: .settingsInterfaceApplyToAllDevicesSubtitle,
                 systemImage: "laptopcomputer.and.iphone",
                 isOn: Binding(
                     get: { preferences.appliesToAllDevices },
@@ -157,7 +173,9 @@ private struct TitleArtSettingsSection: View {
             )
             if preferences.appliesToAllDevices {
                 Label(
-                    "Title art is \(preferences.showsTitleArt ? "on" : "off") on every device signed into this profile. Changing it here changes it everywhere.",
+                    preferences.showsTitleArt
+                        ? LocalizedStringResource.settingsInterfaceTitleArtAllOn
+                        : .settingsInterfaceTitleArtAllOff,
                     systemImage: "info.circle"
                 )
                 .font(.footnote)
@@ -169,26 +187,56 @@ private struct TitleArtSettingsSection: View {
                     .foregroundStyle(Color.siloSecondaryText)
             }
         } header: {
-            Text("Title Pages")
+            Text(.settingsTitleArtTitle)
         } footer: {
             if preferences.appliesToAllDevices {
-                Text("Turn off Apply to All Devices to choose for this \(TitlePagesDevice.noun) only.")
+                Text(TitlePagesDevice.current.applyToAllFooter)
             } else {
-                Text("Only affects this \(TitlePagesDevice.noun). Your other devices keep their own setting.")
+                Text(TitlePagesDevice.current.onlyThisDeviceFooter)
             }
         }
         .disabled(!preferences.allowsEditing)
     }
 }
 
-/// What the "this device" footers call the device.
+/// The device the "this device" footers name. Each footer is one whole
+/// sentence per device, so translators can fit the device's name to it.
 private enum TitlePagesDevice {
-    static var noun: String {
+    case iPhone, iPad, mac, appleTV
+
+    static var current: TitlePagesDevice {
         switch AppleDeviceIdentity.current.clientFamily {
-        case "tablet": return "iPad"
-        case "desktop": return "Mac"
-        case "tv": return "Apple TV"
-        default: return "iPhone"
+        case "tablet": return .iPad
+        case "desktop": return .mac
+        case "tv": return .appleTV
+        default: return .iPhone
+        }
+    }
+
+    var applyToAllFooter: LocalizedStringResource {
+        switch self {
+        case .iPhone: return .settingsInterfaceApplyToAllFooterIphone
+        case .iPad: return .settingsInterfaceApplyToAllFooterIpad
+        case .mac: return .settingsInterfaceApplyToAllFooterMac
+        case .appleTV: return .settingsInterfaceApplyToAllFooterAppleTv
+        }
+    }
+
+    var onlyThisDeviceFooter: LocalizedStringResource {
+        switch self {
+        case .iPhone: return .settingsInterfaceOnlyThisDeviceFooterIphone
+        case .iPad: return .settingsInterfaceOnlyThisDeviceFooterIpad
+        case .mac: return .settingsInterfaceOnlyThisDeviceFooterMac
+        case .appleTV: return .settingsInterfaceOnlyThisDeviceFooterAppleTv
+        }
+    }
+
+    var themeMusicFooter: LocalizedStringResource {
+        switch self {
+        case .iPhone: return .settingsInterfaceThemeMusicFooterIphone
+        case .iPad: return .settingsInterfaceThemeMusicFooterIpad
+        case .mac: return .settingsInterfaceThemeMusicFooterMac
+        case .appleTV: return .settingsInterfaceThemeMusicFooterAppleTv
         }
     }
 }
@@ -201,8 +249,8 @@ private struct ThemeMusicSettingsSection: View {
     var body: some View {
         Section {
             TitlePagesToggleRow(
-                title: "Play Theme Music",
-                subtitle: "Play a title's theme song from your library while its page is open.",
+                title: .settingsControlThemeMusic,
+                subtitle: .settingsInterfacePlayThemeMusicSubtitle,
                 systemImage: "music.note",
                 isOn: Binding(
                     get: { preferences.playsThemeMusic },
@@ -210,8 +258,8 @@ private struct ThemeMusicSettingsSection: View {
                 )
             )
             TitlePagesToggleRow(
-                title: "Loop Theme Music",
-                subtitle: "Repeat the theme while the page stays open.",
+                title: .settingsControlThemeMusicLoop,
+                subtitle: .settingsInterfaceLoopThemeMusicSubtitle,
                 systemImage: "repeat",
                 isOn: Binding(
                     get: { preferences.loops },
@@ -225,9 +273,9 @@ private struct ThemeMusicSettingsSection: View {
                     .foregroundStyle(Color.siloSecondaryText)
             }
         } header: {
-            Text("Theme Music")
+            Text(.settingsSectionThemeMusic)
         } footer: {
-            Text("Only affects this \(TitlePagesDevice.noun).")
+            Text(TitlePagesDevice.current.themeMusicFooter)
         }
         .disabled(!preferences.allowsEditing)
     }
@@ -236,8 +284,8 @@ private struct ThemeMusicSettingsSection: View {
 /// The Settings overview toggle on iPhone and iPad; a plain labeled toggle on
 /// the Mac, which has no overview row style.
 private struct TitlePagesToggleRow: View {
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringResource
+    let subtitle: LocalizedStringResource
     let systemImage: String
     @Binding var isOn: Bool
 

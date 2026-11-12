@@ -104,9 +104,17 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
     /// Taken from On Deck because the current item has no successor. It may
     /// be another title in another library.
     var isFromOnDeck = false
+    /// `title` is the app's "Episode N" for an episode the server left untitled.
+    private(set) var titleIsFallback = false
 
     var id: String { contentId }
-    var episodeLabel: String? { isEpisode ? "S\(seasonNumber):E\(episodeNumber)" : nil }
+    /// `title` as the Remote Control state sends it: English (D44).
+    var remoteTitle: String {
+        titleIsFallback ? AppLanguage.inEnglish { AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber))) } : title
+    }
+    var episodeLabel: String? {
+        isEpisode ? AppLanguage.string(.playerEyebrowEpisode(LocaleFormat.codeNumber(seasonNumber), LocaleFormat.codeNumber(episodeNumber))) : nil
+    }
 
     init(episode: EpisodeListItem, seriesId: String?, seriesTitle: String?) {
         isEpisode = true
@@ -119,7 +127,8 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         if let trimmedTitle, !trimmedTitle.isEmpty {
             title = trimmedTitle
         } else {
-            title = "Episode \(episode.episodeNumber)"
+            title = AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber)))
+            titleIsFallback = true
         }
         overview = episode.overview
         runtime = episode.runtime
@@ -137,7 +146,8 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         seasonNumber = item.seasonNumber ?? 0
         episodeNumber = item.episodeNumber ?? 0
         let trimmedTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        title = trimmedTitle.isEmpty && item.isEpisode ? "Episode \(episodeNumber)" : trimmedTitle
+        titleIsFallback = trimmedTitle.isEmpty && item.isEpisode
+        title = titleIsFallback ? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber))) : trimmedTitle
         overview = item.overview
         runtime = item.runtime
         // An episode card's poster is its 16:9 still; a movie's poster is
@@ -159,7 +169,8 @@ struct PlayerNextUpEpisode: Identifiable, Hashable {
         seasonNumber = section.seasonNumber ?? 0
         episodeNumber = section.episodeNumber ?? 0
         let trimmedTitle = section.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        title = trimmedTitle.isEmpty && isEpisode ? "Episode \(episodeNumber)" : trimmedTitle
+        titleIsFallback = trimmedTitle.isEmpty && isEpisode
+        title = titleIsFallback ? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episodeNumber))) : trimmedTitle
         overview = section.overview
         runtime = section.runtime
         stillUrl = item.artworkUrl
@@ -452,6 +463,9 @@ class PlayerViewModel {
     /// when not buffering or when the active backend doesn't report it.
     var bufferingProgress: Double?
     var error: String?
+    /// The English of the terminal error `error` shows, for the Remote
+    /// Control state (D44: the phone gets English, as it did before).
+    private var displayedError: (shown: String, english: String)?
     var showControls = false
     #if os(iOS)
     var shouldShowMobilePlayerChrome: Bool {
@@ -475,22 +489,31 @@ class PlayerViewModel {
     /// The notice the player shows: the reconnect status while it runs,
     /// otherwise the latest transient notice.
     var presentedNotice: PlayerNotice? {
-        isReconnecting ? Self.reconnectingNotice : activeNotice
+        isReconnecting ? reconnectingNotice : activeNotice
     }
     /// The error view's retry action, which restarts the reconnect after the
     /// player gave up on a lost connection.
     var retryButtonTitle: String {
-        connectionState == .lost ? "Try again" : "Retry"
+        AppLanguage.string(connectionState == .lost ? .commonTryAgain : .commonRetry)
     }
-    private static let reconnectingNotice = PlayerNotice(
-        title: "Reconnecting…",
-        message: "The connection to the server was lost. Playback will continue where you left off.",
+    /// Built once per player, in the language the player opened in; one
+    /// instance keeps its identity while the reconnect runs.
+    private let reconnectingNotice = PlayerNotice(
+        title: AppLanguage.string(.playerNoticeReconnectingTitle),
+        message: AppLanguage.string(.playerNoticeReconnectingBody),
         tone: .info
     )
+    /// English: the stable failure token and logs read it (D44). The error
+    /// view shows `displayedPlaybackError(_:)`'s translation.
     static let connectionLostMessage =
         "Connection lost\nSilo couldn't reconnect to the server. Check your connection, then try again to continue where you left off."
     var remoteDismissToken: UUID?
-    var audioTracks: [PlayerTrack] = []
+    var audioTracks: [PlayerTrack] = [] {
+        didSet { audioTracksFileId = currentSelectedVersion?.fileId }
+    }
+    /// The file `audioTracks` lists. A replan can adopt another file before
+    /// that file's tracks are published.
+    @ObservationIgnored private var audioTracksFileId: Int?
     var subtitleTracks: [PlayerTrack] = [] {
         didSet { updateSubtitleSyncActiveTrack() }
     }
@@ -612,7 +635,9 @@ class PlayerViewModel {
     /// Resigning active keeps the plan's running summary; quitting ends it.
     @ObservationIgnored private var macBufferingSummaryObservers: [NSObjectProtocol] = []
     #endif
-    var selectedAudioId: Int64?
+    var selectedAudioId: Int64? {
+        didSet { refreshStreamBadges() }
+    }
     var selectedSubtitleId: Int64? {
         didSet {
             guard selectedSubtitleId != oldValue else { return }
@@ -756,12 +781,12 @@ class PlayerViewModel {
         markerPlaybackHasStarted && !isLoading && isInRecapWindow && canRequestSeek
     }
     var showSegmentSkip: Bool { showRecapSkip || showCreditsSkip }
-    var segmentSkipLabel: String { showRecapSkip ? "Skip Recap" : "Skip Credits" }
+    var segmentSkipLabel: String { AppLanguage.string(showRecapSkip ? .markerSkipRecap : .markerSkipCredits) }
 
     func skipCurrentSegment() {
         stillWatchingGuard.recordViewerAction()
         if showRecapSkip, let recapRange {
-            seekTo(seconds: recapRange.end)
+            seekTo(seconds: recapRange.end, revealingControls: false)
         } else if showCreditsSkip {
             skipCredits()
         }
@@ -835,28 +860,35 @@ class PlayerViewModel {
             }
         )
     }
+    /// The route in English: the diagnostics' `play_method` and the logs'
+    /// route (D44).
     var activeRouteLabel: String {
+        AppLanguage.inEnglish { activeRouteDisplayLabel }
+    }
+    /// The route in the app's language, for the screen.
+    var activeRouteDisplayLabel: String {
         guard let delivery = aetherPlaybackController.activeSpec?.delivery else {
             return "AetherEngine"
         }
         switch delivery {
-        case PlaybackProtocolV3.PlanDelivery.originalHTTP: return "Original"
-        case PlaybackProtocolV3.PlanDelivery.remuxProgressive: return "Server Remux"
-        case PlaybackProtocolV3.PlanDelivery.remuxHLS: return "Server Remux HLS"
-        case PlaybackProtocolV3.PlanDelivery.transcodeHLS: return "Server Transcode HLS"
+        case PlaybackProtocolV3.PlanDelivery.originalHTTP: return AppLanguage.string(.playerStatsDeliveryOriginal)
+        case PlaybackProtocolV3.PlanDelivery.remuxProgressive: return AppLanguage.string(.playerStatsDeliveryServerRemux)
+        case PlaybackProtocolV3.PlanDelivery.remuxHLS: return AppLanguage.string(.playerStatsDeliveryServerRemuxHls)
+        case PlaybackProtocolV3.PlanDelivery.transcodeHLS:
+            return AppLanguage.string(.playerStatsDeliveryServerTranscodeHls)
         default: return delivery.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
     /// One-line, user-facing Aether route description for the player HUD.
     var playbackRouteDisplay: String {
-        "AetherEngine · \(activeRouteLabel)"
+        "AetherEngine · \(activeRouteDisplayLabel)"
     }
     var routeStatusRows: [PlayerRouteStatusRow] {
         [
-            PlayerRouteStatusRow(label: "Playback", value: activeRouteLabel),
-            PlayerRouteStatusRow(label: "Engine", value: "AetherEngine"),
+            PlayerRouteStatusRow(label: AppLanguage.string(.playerHudPlayback), value: activeRouteDisplayLabel),
+            PlayerRouteStatusRow(label: AppLanguage.string(.playerHudEngine), value: "AetherEngine"), // i18n-ignore: engine name
             PlayerRouteStatusRow(
-                label: "Route",
+                label: AppLanguage.string(.playerHudRoute),
                 value: aetherPlaybackController.engine.videoRoute.rawValue
             ),
         ]
@@ -1071,6 +1103,10 @@ class PlayerViewModel {
     /// would otherwise have no idea why it was abandoned.
     @ObservationIgnored
     private var lastAetherAudioTrackSwitchFailure: PlaybackErrorInfo?
+    /// The opening of the plan being loaded, while ``loadAether`` bounds it,
+    /// and the timer that ticks it.
+    @ObservationIgnored private var activeOpeningBudget: PlaybackOpeningBudget?
+    @ObservationIgnored private var openingBudgetTimer: PlayerPromptTimer?
     /// Serializes every Protocol V3 source replacement, including a same-plan
     /// reload whose only change is a refreshed bearer. Reusing this gate keeps
     /// credential recovery from racing route replans, seeks, or track changes.
@@ -1276,7 +1312,9 @@ class PlayerViewModel {
     private var deferredAutoSubtitlePick: SubtitleAutoSelection?
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
-    private var currentSelectedVersion: FileVersion?
+    private var currentSelectedVersion: FileVersion? {
+        didSet { refreshStreamBadges() }
+    }
     private var activePreparedProtocolV3: PreparedPlaybackV3?
     private var activePlaybackSessionId: String?
     var watchPartyAdapter: WatchPartyPlaybackAdapter?
@@ -1708,7 +1746,7 @@ class PlayerViewModel {
                 self.attemptProtocolV3Replan(
                     position: self.currentTime,
                     classification: "output_route_changed",
-                    message: "The Apple audio output route changed.",
+                    message: "The Apple audio output route changed.", // i18n-ignore: English data: logged or sent to the server (D44)
                     outputRouteSnapshot: observedSnapshot
                 )
             }
@@ -1799,7 +1837,7 @@ class PlayerViewModel {
         let issued = attemptProtocolV3Replan(
             position: currentTime.isFinite ? max(0, currentTime) : 0,
             classification: "quality_changed",
-            message: "The connection changed between mobile data and Wi-Fi.",
+            message: "The connection changed between mobile data and Wi-Fi.", // i18n-ignore: English data: logged or sent to the server (D44)
             operation: PlaybackProtocolV3.ReplanOperation.qualityChange,
             qualityAxes: axes,
             viewerQualityChange: true
@@ -2118,8 +2156,8 @@ class PlayerViewModel {
             // post-load engine failure is recovered rather than stranding the
             // user on a spinner.
             showNotice(
-                title: "Couldn't change audio",
-                message: "The audio track couldn't be switched. The previous track was kept.",
+                title: AppLanguage.string(.playerNoticeAudioChangeFailedTitle),
+                message: AppLanguage.string(.playerNoticeAudioChangeFailedKept),
                 tone: .warning,
                 duration: 5
             )
@@ -2198,8 +2236,8 @@ class PlayerViewModel {
         }
         if failure.kind == .sourceRateLimited {
             showNotice(
-                title: "Playback delayed",
-                message: "The media source is rate limiting requests. Try again in a moment.",
+                title: AppLanguage.string(.playerNoticeDelayedTitle),
+                message: AppLanguage.string(.playerNoticeSourceRateLimited),
                 tone: .info,
                 duration: 5
             )
@@ -2770,7 +2808,7 @@ class PlayerViewModel {
         guard let audioPick = queued?.subtitlePick?.audioPick else { return nil }
         return QueuedProtocolV3TrackChange(
             classification: "audio_track_changed",
-            message: "User selected an audio track.",
+            message: "User selected an audio track.", // i18n-ignore: English data: logged or sent to the server (D44)
             target: audioPick
         )
     }
@@ -3356,7 +3394,7 @@ class PlayerViewModel {
             } catch {
                 let loadFailure = self.protocolV3LoadFailureRecovery(error)
                 if let refusal = error as? PlaybackV3TerminalFailure {
-                    self.watchPartyAdapter?.onFailure?(refusal.reason, refusal.message)
+                    self.watchPartyAdapter?.onFailure?(refusal.reason, refusal.localizedDescription)
                 }
                 if let uncommittedPrepared {
                     if loadFailure.shouldAdvanceRoute {
@@ -3413,7 +3451,7 @@ class PlayerViewModel {
                             // This task's exit asks for it.
                             self.pendingProtocolV3TrackChange = QueuedProtocolV3TrackChange(
                                 classification: "audio_track_changed",
-                                message: "User selected an audio track.",
+                                message: "User selected an audio track.", // i18n-ignore: English data: logged or sent to the server (D44)
                                 target: audioPick
                             )
                         }
@@ -3456,7 +3494,8 @@ class PlayerViewModel {
                     return
                 }
                 self.finalizeTerminalPlaybackError(
-                    error.localizedDescription,
+                    Self.diagnosticMessage(for: error),
+                    displayMessage: error.localizedDescription,
                     retryable: Self.isRetryablePlaybackFailure(error)
                 )
             }
@@ -3496,7 +3535,7 @@ class PlayerViewModel {
         return attemptProtocolV3Replan(
             position: currentTime,
             classification: "subtitle_track_changed",
-            message: "Subtitle switched among the stream's renditions.",
+            message: "Subtitle switched among the stream's renditions.", // i18n-ignore: English data: logged or sent to the server (D44)
             trackTarget: .subtitle(trackId: selection.appTrackID(in: plan),
                                    combinedIndex: selection.inventoryItem(in: plan)?.combinedIndex),
             keepsPlaying: true
@@ -3586,7 +3625,7 @@ class PlayerViewModel {
                 failure.message
             )
         }
-        let message = error.localizedDescription
+        let message = Self.diagnosticMessage(for: error)
         return (true, protocolV3FailureClassification(message), message)
     }
 
@@ -4348,7 +4387,7 @@ class PlayerViewModel {
                 self.shuffleState?.applyRefreshFailure(error)
                 self.shuffleActionError = ShuffleError.classify(error) == .nothingToPlay
                     ? nil
-                    : "Couldn't continue the shuffle."
+                    : AppLanguage.string(.upNextShuffleContinueFailed)
                 self.publishShuffleNextUp()
             }
         }
@@ -4407,7 +4446,7 @@ class PlayerViewModel {
                 self.shuffleState?.applyRefreshFailure(error)
                 self.shuffleActionError = ShuffleError.classify(error) == .nothingToPlay
                     ? nil
-                    : "Couldn't pick another."
+                    : AppLanguage.string(.upNextPickAnotherFailed)
                 self.publishShuffleNextUp()
                 self.startNextUpCountdownIfNeeded()
             }
@@ -4550,21 +4589,118 @@ class PlayerViewModel {
         // From here the outgoing plan's source is being replaced: its waits
         // are a source reload, not stalls.
         bufferingSourceSwapGeneration = expectedStreamLoadGeneration
+        // A plan's source opens within the start budget or fails, so the
+        // server can offer another route. AetherEngine bounds server HLS
+        // itself; nothing else bounds direct play or the software route
+        // until the plan is adopted (`armStartDeadline`). A download has no
+        // server to replan against. Each address gets its own budget.
+        let boundsOpening = Self.boundsOpening(prepared)
+        let localBudget = boundsOpening ? beginOpeningBudget() : nil
         do {
+            defer { if let localBudget { endOpeningBudget(localBudget) } }
             try await loadAetherSource(
                 prepared: prepared, streamRequest: streamRequest,
                 expectedStreamLoadGeneration: expectedStreamLoadGeneration,
                 resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
-                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true)
+                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true, openingBudget: localBudget)
         } catch {
-            guard let route = streamLocalRoute, !Task.isCancelled, Self.isLocalRouteLoadFailure(error) else { throw error }
-            LocalRouteController.reportFailure(of: route)
+            // The saved address gets a budget of its own before the plan
+            // counts as failed.
+            let outcome = Self.localRouteOpeningOutcome(
+                error,
+                budgetRanOut: localBudget?.hasRunOut == true,
+                sourceAnswered: localBudget?.sourceAnsweredWhenRunOut
+            )
+            guard let route = streamLocalRoute, !Task.isCancelled, outcome.retriesSavedAddress else { throw error }
+            if outcome.reportsRouteFailed { LocalRouteController.reportFailure(of: route) }
+            let savedAddressBudget = boundsOpening ? beginOpeningBudget() : nil
+            defer { if let savedAddressBudget { endOpeningBudget(savedAddressBudget) } }
             try await loadAetherSource(
                 prepared: prepared, streamRequest: streamRequest,
                 expectedStreamLoadGeneration: expectedStreamLoadGeneration,
                 resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
-                shouldPlayWhenReady: abandonedLoadPlayIntent ?? shouldPlayWhenReady, takesLocalRoute: false)
+                shouldPlayWhenReady: abandonedLoadPlayIntent ?? shouldPlayWhenReady, takesLocalRoute: false,
+                openingBudget: savedAddressBudget)
         }
+    }
+
+    /// Whether opening `prepared` runs under the start budget: a Protocol V3
+    /// plan on any route but server HLS.
+    static func boundsOpening(_ prepared: PreparedPlayback) -> Bool {
+        guard let delivery = prepared.protocolV3?.plan.delivery else { return false }
+        return delivery != PlaybackProtocolV3.PlanDelivery.remuxHLS
+            && delivery != PlaybackProtocolV3.PlanDelivery.transcodeHLS
+    }
+
+    private func beginOpeningBudget() -> PlaybackOpeningBudget {
+        let budget = PlaybackOpeningBudget()
+        activeOpeningBudget = budget
+        tickOpeningBudget(budget)
+        return budget
+    }
+
+    /// Ends `budget`'s ticks unless a newer opening replaced it.
+    private func endOpeningBudget(_ budget: PlaybackOpeningBudget) {
+        guard activeOpeningBudget === budget else { return }
+        activeOpeningBudget = nil
+        openingBudgetTimer?.cancel()
+        openingBudgetTimer = nil
+    }
+
+    /// Ticks once a second while `budget` is the opening in progress. It
+    /// holds through an outage as the start deadline does: an outage never
+    /// ends playback by itself, and a lost connection is not a failed route
+    /// (§6.2). Here the outage is the player's reconnect, or the device or
+    /// server being unreachable; the start deadline's reader and request
+    /// signals belong to an adopted plan and have not begun.
+    private func tickOpeningBudget(_ budget: PlaybackOpeningBudget) {
+        guard activeOpeningBudget === budget, !isDisposed else { return }
+        let monitor = ConnectionMonitor.shared
+        let outage = connectionState != .connected || !monitor.isDeviceOnline || monitor.serverStatus == .unreachable
+        if budget.tick(outage: outage, sourceAnswered: openingSourceAnswered, atMs: bufferingClock.elapsedMs) {
+            Self.logger.warning("[CMP-BUFFERING] start budget ran out while the source was opening: failing the load")
+            return
+        }
+        openingBudgetTimer = bufferingClock.schedule(after: 1) { [weak self] in
+            self?.tickOpeningBudget(budget)
+        }
+    }
+
+    /// While the engine is loading a source it has not yet started, whether
+    /// that source answered: AetherEngine records `sourceOpened` once the
+    /// connection is made and the first bytes arrive. Nil outside such a
+    /// load, as during the probe before it, which records no progress.
+    private var openingSourceAnswered: Bool? {
+        guard let epoch = activeAetherLoadEpoch, establishedAetherLoadEpoch != epoch,
+              aetherPlaybackController.activeLoadEpoch == epoch else { return nil }
+        guard let progress = aetherPlaybackController.engine.startupProgress else { return false }
+        return progress.checkpoint >= .sourceOpened
+    }
+
+    /// What a failed opening on the local route means. This start always
+    /// tries the saved address after a failure that says nothing about what
+    /// the server sent. The route itself is reported failed, which demotes it
+    /// for every request until its next check, only on evidence its address
+    /// did not answer: a connection failure, or a budget that ran out while
+    /// the engine was still connecting. A source that answered and then did
+    /// not open, such as a file this device cannot play, or a probe that
+    /// cannot tell, leaves the route alone.
+    static func localRouteOpeningOutcome(
+        _ error: Error,
+        budgetRanOut: Bool,
+        sourceAnswered: Bool?
+    ) -> (retriesSavedAddress: Bool, reportsRouteFailed: Bool) {
+        if budgetRanOut { return (true, sourceAnswered == false) }
+        let unreachable = isLocalRouteLoadFailure(error)
+        return (unreachable, unreachable)
+    }
+
+    /// The failure an opening that ran out of budget reports.
+    private static func openingBudgetFailure(_ underlying: Error) -> AetherPlaybackController.LoadFailure {
+        AetherPlaybackController.LoadFailure(
+            failure: PlaybackErrorInfo(kind: .noPlayableTrackWithinBudget, message: startDeadlineMessage),
+            underlying: underlying
+        )
     }
 
     /// Whether a load failed to reach its source, as one over a local route
@@ -4586,7 +4722,8 @@ class PlayerViewModel {
         resumeSourcePosition: Double?,
         reselectsPlanSubtitle: Bool,
         shouldPlayWhenReady: Bool,
-        takesLocalRoute: Bool
+        takesLocalRoute: Bool,
+        openingBudget: PlaybackOpeningBudget?
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         streamLocalRoute = nil
@@ -4664,12 +4801,23 @@ class PlayerViewModel {
                 // and depends on a fragile post-load pipeline rebuild.
                 let sourceURL = streamRequest.url
                 let sourceHeaders = streamRequest.headers
-                let probe = try await Task.detached(priority: .userInitiated) {
-                    try AetherEngine.probe(
-                        url: sourceURL,
-                        options: LoadOptions(httpHeaders: sourceHeaders)
-                    )
-                }.value
+                // Part of the opening: the budget interrupts its I/O.
+                let cancellation = openingBudget.map { _ in ProbeCancellation() }
+                openingBudget?.stepBegan { cancellation?.cancel() }
+                let probe: SourceProbe
+                do {
+                    defer { openingBudget?.stepEnded() }
+                    probe = try await Task.detached(priority: .userInitiated) {
+                        try AetherEngine.probe(
+                            url: sourceURL,
+                            options: LoadOptions(httpHeaders: sourceHeaders),
+                            cancellation: cancellation
+                        )
+                    }.value
+                } catch {
+                    if openingBudget?.hasRunOut == true { throw Self.openingBudgetFailure(error) }
+                    throw error
+                }
                 try requireCurrentStreamLoad(expectedStreamLoadGeneration)
                 guard probe.audioTracks.indices.contains(selectedAudioOrdinal),
                       let exactStreamIndex = Int32(exactly: probe.audioTracks[selectedAudioOrdinal].id) else {
@@ -4841,12 +4989,13 @@ class PlayerViewModel {
         committedProtocolV3LoadEpoch = nil
         pendingProtocolV3FirstFrameEpoch = nil
         do {
-            try await aetherPlaybackController.finishLoad(loadEpoch)
+            try await finishAetherLoad(loadEpoch, within: openingBudget)
         } catch {
             let resolved = resolveAbandonedAetherLoad(
                 error,
                 epoch: loadEpoch,
-                expectedStreamLoadGeneration: expectedStreamLoadGeneration
+                expectedStreamLoadGeneration: expectedStreamLoadGeneration,
+                openingBudgetRanOut: openingBudget?.hasRunOut == true
             )
             if activeAetherLoadEpoch == loadEpoch {
                 activeAetherLoadEpoch = nil
@@ -4900,8 +5049,34 @@ class PlayerViewModel {
         activeAetherLoadEpoch != nil && establishedAetherLoadEpoch == activeAetherLoadEpoch
     }
 
+    /// Awaits the engine's load of `epoch`. Under an opening budget, a load
+    /// still opening when it runs out is cancelled, which ends AetherEngine's
+    /// load generation, and ``resolveAbandonedAetherLoad`` reports it as
+    /// `noPlayableTrackWithinBudget`: the load's own catch then asks the
+    /// server for the next route, as for any other load that fails to open.
+    /// The controller keeps the viewer's play intent for that route.
+    private func finishAetherLoad(
+        _ epoch: AetherPlaybackController.LoadEpoch,
+        within openingBudget: PlaybackOpeningBudget?
+    ) async throws {
+        guard let openingBudget else {
+            try await aetherPlaybackController.finishLoad(epoch)
+            return
+        }
+        let controller = aetherPlaybackController
+        let load = Task { @MainActor in try await controller.finishLoad(epoch) }
+        openingBudget.stepBegan { load.cancel() }
+        defer { openingBudget.stepEnded() }
+        try await withTaskCancellationHandler {
+            try await load.value
+        } onCancel: {
+            load.cancel()
+        }
+    }
+
     /// Distinguishes "the app abandoned this load" from "the engine abandoned
-    /// it under us".
+    /// it under us", or from the player failing a load that missed its start
+    /// budget.
     ///
     /// `AetherEngine.load` unwinds as a cancellation whenever a newer engine
     /// generation supersedes it — including when the *engine itself* started
@@ -4914,7 +5089,8 @@ class PlayerViewModel {
     private func resolveAbandonedAetherLoad(
         _ error: Error,
         epoch: AetherPlaybackController.LoadEpoch,
-        expectedStreamLoadGeneration: UInt64
+        expectedStreamLoadGeneration: UInt64,
+        openingBudgetRanOut: Bool
     ) -> Error {
         guard error is CancellationError,
               !Task.isCancelled,
@@ -4923,11 +5099,15 @@ class PlayerViewModel {
               activeAetherLoadEpoch == epoch else {
             return error
         }
+        if openingBudgetRanOut {
+            Self.logger.error("Opening ran out of start budget; treating as a load failure")
+            return Self.openingBudgetFailure(error)
+        }
         let failure = lastAetherAudioTrackSwitchFailure
             ?? aetherPlaybackController.engine.errorInfo
             ?? PlaybackErrorInfo(
                 kind: .audioTrackSwitchFailed,
-                message: "Playback could not be set up with the selected audio track."
+                message: Self.audioTrackSetupFailedMessage
             )
         Self.logger.error(
             "Aether abandoned an in-flight load (kind=\(failure.kind.rawValue, privacy: .public)); treating as a load failure"
@@ -5517,7 +5697,7 @@ class PlayerViewModel {
             level: isPremature ? .warning : .info,
             category: .playback,
             tag: "Player",
-            message: "playback reached end of stream",
+            message: "playback reached end of stream", // i18n-ignore: English data: logged or sent to the server (D44)
             attrs: [
                 "reason": .string(isPremature ? "premature_source_end" : "natural_end"),
                 "play_method": .string(activeRouteLabel),
@@ -5537,6 +5717,14 @@ class PlayerViewModel {
             currentTime = observedPosition
         } else if duration.isFinite, duration > 0 {
             currentTime = duration
+        }
+        // Solo playback refuses the viewer's seeks from here on. A scrub left
+        // open could never be finished, and a seek session or a skip still
+        // in its debounce would seek the ended item anyway. End them now
+        // that `currentTime`, which the timeline returns to, is settled.
+        if refusesSeekAtEndOfFile {
+            cancelHoldSeek()
+            cancelScrub()
         }
         isLoading = false
         isBuffering = false
@@ -5605,10 +5793,12 @@ class PlayerViewModel {
             // that stops short.
             let isDownload = lastLoadRequest?.offlineDownloadId != nil
             showNotice(
-                title: isDownload ? "Download incomplete" : "Connection lost",
-                message: isDownload
-                    ? "The downloaded video file ends early. Delete and re-download it."
-                    : "Lost connection to the server before the episode finished.",
+                title: AppLanguage.string(
+                    isDownload ? .playerNoticeDownloadIncompleteTitle : .playerNoticeConnectionLostTitle
+                ),
+                message: AppLanguage.string(
+                    isDownload ? .playerNoticeDownloadEndsEarly : .playerNoticeConnectionLostBeforeEnd
+                ),
                 tone: .warning,
                 duration: 6
             )
@@ -6571,21 +6761,42 @@ class PlayerViewModel {
     private func handleBeginFreshLoadFailure(error: Error, origin: LoadOrigin) {
         watchPartyAdapter?.onFailure?((error as? PlaybackV3TerminalFailure)?.reason, error.localizedDescription)
         isNextUpTransitioning = false
-        let message: String = {
+        // `diagnosticMessage` is English, for the failure token and the logs
+        // (D44); `message` is what the player shows.
+        let diagnosticMessage: String = {
             if case BeginFreshLoadError.startSessionTimeout = error {
                 return "The server didn't respond in time."
             }
-            if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty {
-                return localized
+            if let failure = error as? PlaybackV3TerminalFailure {
+                return failure.message
+            }
+            if let english = AppLanguage.inEnglish({ (error as? LocalizedError)?.errorDescription }), !english.isEmpty {
+                return english
             }
             return String(describing: error)
+        }()
+        let message: String = {
+            if case BeginFreshLoadError.startSessionTimeout = error {
+                return AppLanguage.string(.playerErrorServerNoResponse)
+            }
+            if let failure = error as? PlaybackV3TerminalFailure {
+                return failure.localizedDescription
+            }
+            if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty {
+                return Self.displayedPlaybackError(localized)
+            }
+            return Self.displayedPlaybackError(diagnosticMessage)
         }()
 
         switch origin {
         case .userInitiated:
-            finalizeTerminalPlaybackError(message, retryable: Self.isRetryablePlaybackFailure(error))
+            finalizeTerminalPlaybackError(
+                diagnosticMessage,
+                displayMessage: message,
+                retryable: Self.isRetryablePlaybackFailure(error)
+            )
         case .autoplay:
-            let logMessage = MediaLogRedactor.sanitize(message)
+            let logMessage = MediaLogRedactor.sanitize(diagnosticMessage)
             Self.logger.warning(
                 "[CMP] beginFreshLoad recovered from autoplay failure: \(logMessage, privacy: .public)"
             )
@@ -6605,14 +6816,14 @@ class PlayerViewModel {
             isLoadingNextUpEpisode = false
             showNextUpScreen = true
             nextUpScreenVideoEnded = true
-            var noticeTitle = "Couldn't start the next episode"
+            var noticeTitle = AppLanguage.string(.upNextNextEpisodeFailedTitle)
             // A shuffle keeps offering the pick that failed: Play Now
             // retries it, since it never reached a first frame. A later part
             // of an item that already played moves on to the next pick.
             if let shuffleState {
                 let isNextPart = lastLoadRequest?.contentId == shuffleState.advanceFromContentId
-                shuffleActionError = isNextPart ? "Couldn't play the next part." : "Couldn't start the next pick."
-                noticeTitle = isNextPart ? "Couldn't play the next part" : "Couldn't start the next pick"
+                shuffleActionError = AppLanguage.string(isNextPart ? .upNextNextPartFailed : .upNextNextPickFailed)
+                noticeTitle = AppLanguage.string(isNextPart ? .upNextNextPartFailedTitle : .upNextNextPickFailedTitle)
                 publishShuffleNextUp()
             }
             // The tvOS episode panel shows the reason itself. The other
@@ -6632,7 +6843,7 @@ class PlayerViewModel {
                 )
             }
         case .recovery:
-            let logMessage = MediaLogRedactor.sanitize(message)
+            let logMessage = MediaLogRedactor.sanitize(diagnosticMessage)
             Self.logger.warning(
                 "[CMP] beginFreshLoad recovered from playback recovery failure: \(logMessage, privacy: .public)"
             )
@@ -6643,7 +6854,7 @@ class PlayerViewModel {
             // it, it would sit over the dead player indefinitely.
             introSkipPrompt.withdraw()
             showNotice(
-                title: "Playback recovery failed",
+                title: AppLanguage.string(.playerNoticeRecoveryFailedTitle),
                 message: message,
                 tone: .warning,
                 duration: 6
@@ -6653,7 +6864,7 @@ class PlayerViewModel {
                 // The start was answered with a plan, so the reconnect is
                 // over and the new transport failed on its own: an ordinary
                 // playback failure.
-                finalizeTerminalPlaybackError(message)
+                finalizeTerminalPlaybackError(diagnosticMessage, displayMessage: message)
                 return
             }
             // The failed start stopped the old session in the bridge, so the
@@ -6677,7 +6888,37 @@ class PlayerViewModel {
         (error as? PlaybackV3TerminalFailure)?.retryable ?? true
     }
 
-    private func finalizeTerminalPlaybackError(_ message: String, retryable: Bool = true) {
+    /// The English text of `error` for the server, the logs and the failure
+    /// token (D44): a terminal failure's own message, not its translation.
+    nonisolated static func diagnosticMessage(for error: Error) -> String {
+        (error as? PlaybackV3TerminalFailure)?.message
+            ?? AppLanguage.inEnglish { error.localizedDescription }
+    }
+
+    private static let audioTrackSetupFailedMessage =
+        "Playback could not be set up with the selected audio track."
+
+    /// What the error view shows for an English playback message: the
+    /// catalog's text for the player's own messages, otherwise the message
+    /// as written (server and engine text).
+    private static func displayedPlaybackError(_ message: String) -> String {
+        switch message {
+        case connectionLostMessage: return AppLanguage.string(.playerErrorConnectionLost)
+        case startDeadlineMessage:
+            return AppLanguage.string(.playerErrorStartDeadline(PlaybackStartDeadline.budgetMs / 1000))
+        case audioTrackSetupFailedMessage: return AppLanguage.string(.playerErrorAudioTrackSetupFailed)
+        default: return message
+        }
+    }
+
+    /// `message` is English: the failure token and the logs read it.
+    /// `displayMessage` is what the error view shows; without one the view
+    /// shows `displayedPlaybackError(message)`.
+    private func finalizeTerminalPlaybackError(
+        _ message: String,
+        displayMessage: String? = nil,
+        retryable: Bool = true
+    ) {
         #if os(iOS) || os(tvOS)
         // Terminal outcome #1 of 2 (the other is `handleEndOfFile`). Every
         // Aether recovery path ends either here or in `handleEndOfFile`,
@@ -6688,7 +6929,7 @@ class PlayerViewModel {
             level: .error,
             category: .playback,
             tag: "Player",
-            message: "playback ended in failure",
+            message: "playback ended in failure", // i18n-ignore: English data: logged or sent to the server (D44)
             attrs: [
                 "reason": .string(stablePlaybackFailureToken(for: message)),
                 "play_method": .string(activeRouteLabel),
@@ -6718,7 +6959,9 @@ class PlayerViewModel {
         // The error view hides the pill, but Menu, Escape and Return still
         // reach it; a reload's stall froze its timer, so it would never leave.
         introSkipPrompt.withdraw()
-        error = message
+        let shown = displayMessage ?? Self.displayedPlaybackError(message)
+        error = shown
+        displayedError = (shown, message)
         errorIsRetryable = retryable
         isLoading = false
         isPlaying = false
@@ -6918,7 +7161,7 @@ class PlayerViewModel {
            attemptProtocolV3Replan(
                position: reconnectCycle.position,
                classification: PlaybackReconnectPolicy.classification,
-               message: "Reconnect at the saved position after the connection to the server was lost."
+               message: "Reconnect at the saved position after the connection to the server was lost." // i18n-ignore: English data: logged or sent to the server (D44)
            ) {
             return
         }
@@ -6960,7 +7203,8 @@ class PlayerViewModel {
             scheduleReconnectSessionStart()
         case .giveUp:
             giveUpReconnect(
-                message: error.localizedDescription,
+                message: Self.diagnosticMessage(for: error),
+                displayMessage: error.localizedDescription,
                 retryable: Self.isRetryablePlaybackFailure(error)
             )
         }
@@ -7012,12 +7256,12 @@ class PlayerViewModel {
     /// viewer, and keep the position and intent for Try again. A refusal the
     /// server marked not retryable offers no Try again, so the connection is
     /// not reported as lost.
-    private func giveUpReconnect(message: String, retryable: Bool = true) {
+    private func giveUpReconnect(message: String, displayMessage: String? = nil, retryable: Bool = true) {
         Self.logger.error("Playback reconnect gave up after \(self.reconnectCycle.attempts, privacy: .public) attempts")
         let position = reconnectCycle.position
         cancelReconnect()
         currentTime = position
-        finalizeTerminalPlaybackError(message, retryable: retryable)
+        finalizeTerminalPlaybackError(message, displayMessage: displayMessage, retryable: retryable)
         if retryable {
             connectionState = .lost
         }
@@ -7232,7 +7476,7 @@ class PlayerViewModel {
             let issued = attemptProtocolV3Replan(
                 position: target,
                 classification: "quality_changed",
-                message: "User selected playback quality \(resolvedQualityId).",
+                message: "User selected playback quality \(resolvedQualityId).", // i18n-ignore: English data: logged or sent to the server (D44)
                 operation: PlaybackProtocolV3.ReplanOperation.qualityChange,
                 qualityPreference: resolvedQualityId,
                 // Auto keeps the saved cap for the connection.
@@ -7242,14 +7486,14 @@ class PlayerViewModel {
             )
             if !issued {
                 isQualitySwitching = false
-                qualitySwitchError = "Couldn't change quality right now. Try again."
+                qualitySwitchError = AppLanguage.string(.playerNoticeQualityChangeBusy)
             }
             return
         }
         guard var request = lastLoadRequest,
               request.offlineDownloadId == nil else {
             isQualitySwitching = false
-            qualitySwitchError = "Quality selection is unavailable for offline playback."
+            qualitySwitchError = AppLanguage.string(.playerNoticeQualityOffline)
             return
         }
         // A switch the player takes is a quality change; a refused one isn't.
@@ -7379,15 +7623,15 @@ class PlayerViewModel {
         switch failure {
         case .notReady:
             showNotice(
-                title: "Picture in Picture not ready",
-                message: "This video isn't ready for Picture in Picture yet. Try again in a moment.",
+                title: AppLanguage.string(.playerNoticePipNotReadyTitle),
+                message: AppLanguage.string(.playerNoticePipNotReady),
                 tone: .warning,
                 duration: 4
             )
         case .failed:
             showNotice(
-                title: "Picture in Picture failed",
-                message: "iOS couldn't start Picture in Picture for this video.",
+                title: AppLanguage.string(.playerNoticePipFailedTitle),
+                message: AppLanguage.string(.playerNoticePipFailed),
                 tone: .warning,
                 duration: 5
             )
@@ -7806,7 +8050,7 @@ class PlayerViewModel {
                     guard self.attemptProtocolV3Replan(
                         position: sourceSeconds,
                         classification: "seek_reanchor",
-                        message: "Reanchor the active stream at the requested source position.",
+                        message: "Reanchor the active stream at the requested source position.", // i18n-ignore: English data: logged or sent to the server (D44)
                         operation: PlaybackProtocolV3.ReplanOperation.seekReanchor
                     ) else {
                         self.isLoading = false
@@ -7816,8 +8060,8 @@ class PlayerViewModel {
                             self.aetherPlaybackController.play()
                         }
                         self.showNotice(
-                            title: "Couldn't seek",
-                            message: "Playback couldn't move to that position. Try again.",
+                            title: AppLanguage.string(.playerNoticeSeekFailedTitle),
+                            message: AppLanguage.string(.playerNoticeSeekFailed),
                             tone: .warning,
                             duration: 5
                         )
@@ -7846,8 +8090,11 @@ class PlayerViewModel {
     }
 
     /// Seek to a specific timestamp. Used by the chapter sheet and the tvOS
-    /// progress-bar scrubber.
-    func seekTo(seconds: Double) {
+    /// progress-bar scrubber. Brings up the controls unless
+    /// `revealingControls` is false, as it is for a recap or credits skip:
+    /// hidden controls then stay hidden, and controls that are showing get a
+    /// fresh auto-hide.
+    func seekTo(seconds: Double, revealingControls: Bool = true) {
         guard !refusesSeekAtEndOfFile else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -7855,7 +8102,9 @@ class PlayerViewModel {
             "[CMP-SEEK] absolute seek requested seconds=\(seconds, privacy: .public)"
         )
         commitSeek(to: max(0, seconds), source: "absolute")
-        scheduleHideControls()
+        if revealingControls || showControls {
+            scheduleHideControls()
+        }
     }
 
     private func applyMarkerTimeline(_ timeline: PlayerMarkerTimeline) {
@@ -7970,8 +8219,8 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-MARKERS] auto-skip intro target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
-        // Not `seekTo`: that reveals the transport, and nobody touched the
-        // remote. The undo pill is the feedback for this seek.
+        // Not `seekTo`: by default that reveals the transport, and nobody
+        // touched the remote. The undo pill is the feedback for this seek.
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
         commitSeek(to: target, source: "introAutoSkip")
@@ -8041,7 +8290,7 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-MARKERS] auto-skip recap target=\(target, privacy: .public) current=\(time, privacy: .public)"
         )
-        seekTo(seconds: target)
+        seekTo(seconds: target, revealingControls: false)
     }
 
     private func performCreditsSkip(to target: Double) {
@@ -8058,7 +8307,7 @@ class PlayerViewModel {
             handleEndOfFile(sourceEnded: false)
             return
         }
-        seekTo(seconds: target)
+        seekTo(seconds: target, revealingControls: false)
     }
 
     /// Credits that run to the end of the file leave nothing to seek to.
@@ -8307,7 +8556,7 @@ class PlayerViewModel {
             guard attemptProtocolV3Replan(
                 position: currentTime,
                 classification: "audio_track_changed",
-                message: "User selected audio track \(track.title ?? String(track.trackId)).",
+                message: "User selected audio track \(track.title ?? String(track.trackId)).", // i18n-ignore: English data: logged or sent to the server (D44)
                 requeueWhenBusy: true,
                 trackTarget: queuedTrackTarget(forAudio: track)
             ) else {
@@ -8315,8 +8564,8 @@ class PlayerViewModel {
                 pendingAudioFfIndex = priorPendingAudioFfIndex
                 reapplySystemSubtitlePolicy()
                 showNotice(
-                    title: "Couldn't change audio",
-                    message: "The audio track couldn't be switched. Try again.",
+                    title: AppLanguage.string(.playerNoticeAudioChangeFailedTitle),
+                    message: AppLanguage.string(.playerNoticeAudioChangeFailed),
                     tone: .warning,
                     duration: 5
                 )
@@ -8437,7 +8686,7 @@ class PlayerViewModel {
             guard attemptProtocolV3Replan(
                 position: currentTime,
                 classification: "subtitle_track_changed",
-                message: "User selected subtitle track \(track.title ?? String(track.trackId)).",
+                message: "User selected subtitle track \(track.title ?? String(track.trackId)).", // i18n-ignore: English data: logged or sent to the server (D44)
                 requeueWhenBusy: true,
                 trackTarget: trackTarget,
                 subtitlePick: ReplannedSubtitlePick(
@@ -8448,8 +8697,8 @@ class PlayerViewModel {
             ) else {
                 restoreSubtitleSelection(prior)
                 showNotice(
-                    title: "Couldn't change subtitles",
-                    message: "The subtitle track couldn't be switched. Try again.",
+                    title: AppLanguage.string(.playerNoticeSubtitleChangeFailedTitle),
+                    message: AppLanguage.string(.playerNoticeSubtitleChangeFailed),
                     tone: .warning,
                     duration: 5
                 )
@@ -8504,7 +8753,7 @@ class PlayerViewModel {
             guard attemptProtocolV3Replan(
                 position: currentTime,
                 classification: "subtitle_track_changed",
-                message: "User disabled subtitles.",
+                message: "User disabled subtitles.", // i18n-ignore: English data: logged or sent to the server (D44)
                 requeueWhenBusy: true,
                 trackTarget: .subtitle(trackId: nil, combinedIndex: nil),
                 subtitlePick: ReplannedSubtitlePick(
@@ -8515,8 +8764,8 @@ class PlayerViewModel {
             ) else {
                 restoreSubtitleSelection(prior)
                 showNotice(
-                    title: "Couldn't change subtitles",
-                    message: "Subtitles couldn't be turned off. Try again.",
+                    title: AppLanguage.string(.playerNoticeSubtitleChangeFailedTitle),
+                    message: AppLanguage.string(.playerNoticeSubtitlesOffFailed),
                     tone: .warning,
                     duration: 5
                 )
@@ -8661,8 +8910,8 @@ class PlayerViewModel {
 
     private func showUnsupportedSubtitleNotice() {
         showNotice(
-            title: "This subtitle can't be shown",
-            message: "The server can't deliver this track, so your subtitles haven't changed.",
+            title: AppLanguage.string(.playerNoticeSubtitleRefusedTitle),
+            message: AppLanguage.string(.playerNoticeSubtitleRefused),
             tone: .warning,
             duration: 5
         )
@@ -8733,7 +8982,7 @@ class PlayerViewModel {
     /// after the menu opened.
     var subtitleSearchUnavailableReason: String? {
         guard subtitleSearchVisible, !subtitleSearchEnabled else { return nil }
-        return "Not set up on this server"
+        return AppLanguage.string(.subtitleSearchNotSetUpShort)
     }
 
     /// Run a provider search for the current media file. Synchronous on the
@@ -9209,8 +9458,8 @@ class PlayerViewModel {
     /// transcribe+translate jobs alike), so it avoids "Translating…" wording.
     func showLiveSubtitlePreparingNotice() {
         showNotice(
-            title: "Preparing subtitles",
-            message: "Generating subtitles for the current scene — playback resumes in a moment.",
+            title: AppLanguage.string(.playerNoticeLiveSubtitlesPreparingTitle),
+            message: AppLanguage.string(.playerNoticeLiveSubtitlesPreparing),
             tone: .info,
             duration: 30
         )
@@ -9236,7 +9485,7 @@ class PlayerViewModel {
     /// Soft failure notice for the live subtitle path.
     func showLiveSubtitleFailureNotice(_ message: String) {
         showNotice(
-            title: "Subtitles unavailable",
+            title: AppLanguage.string(.playerNoticeLiveSubtitlesFailedTitle),
             message: message,
             tone: .warning,
             duration: 5
@@ -9310,8 +9559,19 @@ class PlayerViewModel {
     }
 
     func toggleControls() {
+        // A tap aimed at a button can land beside it. Just after a tap brought
+        // the controls up, another keeps them and restarts the auto-hide,
+        // unless a scrub or an open sheet has suspended it.
+        if showControls, let revealedAt = controlsRevealedByTapAt,
+           ContinuousClock.now - revealedAt < controlsTapGrace {
+            if hideControlsTask?.isCancelled == false {
+                scheduleHideControls()
+            }
+            return
+        }
         showControls.toggle()
         if showControls {
+            controlsRevealedByTapAt = .now
             scheduleHideControls()
         }
     }
@@ -9735,8 +9995,8 @@ class PlayerViewModel {
             aetherPlaybackController.pause()
             if isAdminIssued(command) {
                 showNotice(
-                    title: "Playback paused by admin",
-                    message: "An administrator paused this session.",
+                    title: AppLanguage.string(.playerNoticeAdminPausedTitle),
+                    message: AppLanguage.string(.playerNoticeAdminPaused),
                     tone: .warning,
                     duration: 6
                 )
@@ -9745,8 +10005,8 @@ class PlayerViewModel {
             aetherPlaybackController.play()
             if isAdminIssued(command) {
                 showNotice(
-                    title: "Playback resumed by admin",
-                    message: "An administrator resumed this session.",
+                    title: AppLanguage.string(.playerNoticeAdminResumedTitle),
+                    message: AppLanguage.string(.playerNoticeAdminResumed),
                     tone: .info,
                     duration: 6
                 )
@@ -9760,10 +10020,12 @@ class PlayerViewModel {
             }
             if isAdminIssued(command) {
                 showNotice(
-                    title: wasPaused ? "Playback resumed by admin" : "Playback paused by admin",
-                    message: wasPaused
-                        ? "An administrator resumed this session."
-                        : "An administrator paused this session.",
+                    title: AppLanguage.string(
+                        wasPaused ? .playerNoticeAdminResumedTitle : .playerNoticeAdminPausedTitle
+                    ),
+                    message: AppLanguage.string(
+                        wasPaused ? .playerNoticeAdminResumed : .playerNoticeAdminPaused
+                    ),
                     tone: wasPaused ? .info : .warning,
                     duration: 6
                 )
@@ -9782,8 +10044,8 @@ class PlayerViewModel {
             applyRemoteSeek(to: position)
             if isAdminIssued(command) {
                 showNotice(
-                    title: "Playback changed by admin",
-                    message: "An administrator changed the playback position.",
+                    title: AppLanguage.string(.playerNoticeAdminSeekedTitle),
+                    message: AppLanguage.string(.playerNoticeAdminSeeked),
                     tone: .warning,
                     duration: 5
                 )
@@ -9791,25 +10053,29 @@ class PlayerViewModel {
         case .displayMessage:
             showNotice(
                 title: command.payload.string(forKeys: "title")
-                    ?? (isAdminIssued(command) ? "Message from admin" : "Playback notice"),
+                    ?? AppLanguage.string(
+                        isAdminIssued(command) ? .playerNoticeAdminMessageTitle : .playerNoticeServerMessageTitle
+                    ),
                 message: command.payload.string(forKeys: "message")
-                    ?? "A server message was received.",
+                    ?? AppLanguage.string(.playerNoticeServerMessage),
                 tone: isAdminIssued(command) ? .warning : .info,
                 duration: isAdminIssued(command) ? 10 : 8
             )
         case .serverRestarting:
             showNotice(
-                title: command.payload.string(forKeys: "title") ?? "Server restarting",
+                title: command.payload.string(forKeys: "title")
+                    ?? AppLanguage.string(.playerNoticeServerRestartingTitle),
                 message: command.payload.string(forKeys: "message")
-                    ?? "Playback may end shortly while the server restarts.",
+                    ?? AppLanguage.string(.playerNoticeServerRestarting),
                 tone: .warning,
                 duration: 10
             )
         case .serverShuttingDown:
             showNotice(
-                title: command.payload.string(forKeys: "title") ?? "Server shutting down",
+                title: command.payload.string(forKeys: "title")
+                    ?? AppLanguage.string(.playerNoticeServerShuttingDownTitle),
                 message: command.payload.string(forKeys: "message")
-                    ?? "Playback may end shortly while the server shuts down.",
+                    ?? AppLanguage.string(.playerNoticeServerShuttingDown),
                 tone: .warning,
                 duration: 10
             )
@@ -9819,11 +10085,13 @@ class PlayerViewModel {
                 let isTerminate = command.name == .terminate
                 showNotice(
                     title: command.payload.string(forKeys: "title")
-                        ?? (isTerminate ? "Session ended by admin" : "Playback stopped by admin"),
+                        ?? AppLanguage.string(
+                            isTerminate ? .playerNoticeAdminEndedTitle : .playerNoticeAdminStoppedTitle
+                        ),
                     message: command.payload.string(forKeys: "message")
-                        ?? (isTerminate
-                            ? "An administrator ended this playback session."
-                            : "An administrator stopped this playback session."),
+                        ?? AppLanguage.string(
+                            isTerminate ? .playerNoticeAdminEnded : .playerNoticeAdminStopped
+                        ),
                     tone: .warning,
                     duration: 1.2
                 )
@@ -9879,8 +10147,8 @@ class PlayerViewModel {
         cancelReconnect()
         aetherPlaybackController.pause()
         showNotice(
-            title: "Playback stopped by admin",
-            message: "An administrator ended this playback session.",
+            title: AppLanguage.string(.playerNoticeAdminStoppedTitle),
+            message: AppLanguage.string(.playerNoticeAdminEnded),
             tone: .warning,
             duration: 1.2
         )
@@ -10002,6 +10270,27 @@ class PlayerViewModel {
 
     private func audioSelectionIndex(for track: PlayerTrack) -> Int? {
         track.srcId ?? track.ffIndex
+    }
+
+    /// Rewrites the stream badges for the file and the audio track playing
+    /// now. Between items no file is loaded and the outgoing badges stand.
+    private func refreshStreamBadges() {
+        guard let version = currentSelectedVersion else { return }
+        let badges = PlayerMetadata.streamBadges(version: version, audioCodec: selectedAudioCodec(in: version))
+        if metadata.badges != badges { metadata.badges = badges }
+    }
+
+    /// The catalog's codec for the selected audio track: the engine names a
+    /// track by its decoder (`dca` for DTS). Nil when the published tracks do
+    /// not line up with the file's, so its own audio codec stands in.
+    private func selectedAudioCodec(in version: FileVersion) -> String? {
+        guard audioTracksFileId == version.fileId,
+              let catalogTracks = version.audioTracks, catalogTracks.count == audioTracks.count,
+              let ordinal = audioTracks.first(where: { $0.trackId == selectedAudioId })?.srcId,
+              catalogTracks.indices.contains(ordinal) else {
+            return nil
+        }
+        return catalogTracks[ordinal].codec
     }
 
     /// Re-registers session-created sidecars (finished AI jobs, downloaded
@@ -10468,7 +10757,7 @@ class PlayerViewModel {
             // server resolve that choice before declaring it rendered locally.
             attemptProtocolV3Replan(
                 position: currentTime, classification: "subtitle_track_changed",
-                message: "Applying the subtitle choice after a video route change.",
+                message: "Applying the subtitle choice after a video route change.", // i18n-ignore: English data: logged or sent to the server (D44)
                 requeueWhenBusy: true,
                 trackTarget: .subtitle(trackId: trackID, combinedIndex: selection.inventoryItem(in: plan)?.combinedIndex)
             )
@@ -10864,7 +11153,7 @@ class PlayerViewModel {
         attemptProtocolV3Replan(
             position: currentTime,
             classification: "subtitle_track_changed",
-            message: "Automatic caption policy selected a different subtitle track."
+            message: "Automatic caption policy selected a different subtitle track." // i18n-ignore: English data: logged or sent to the server (D44)
         )
         return true
     }
@@ -10958,6 +11247,12 @@ class PlayerViewModel {
     /// interaction before auto-hiding while playing. Matches Infuse/Apple TV.
     /// Tests shorten it.
     @ObservationIgnored var autoHideDelay: Duration = .seconds(5)
+
+    /// How long after a tap brings the controls up another tap on the
+    /// background keeps them instead of hiding them. Tests shorten it.
+    @ObservationIgnored var controlsTapGrace: Duration = .milliseconds(1500)
+    /// When a tap last brought the controls up.
+    @ObservationIgnored private var controlsRevealedByTapAt: ContinuousClock.Instant?
 
     private func scheduleHideControls() {
         // The HUD pins its host visible (`pinControlsVisible` in `openHUD`).
@@ -11183,15 +11478,23 @@ extension PlayerViewModel {
         }
     }
 
+    /// The state sent to a phone's Remote Control. Its labels (tracks,
+    /// quality options) stay English in every language (D44): the phone
+    /// shows them as received.
     @MainActor
     func makeSiloControlPlaybackState(contentId: String?) -> SiloControlPlaybackState {
+        AppLanguage.inEnglish { siloControlPlaybackState(contentId: contentId) }
+    }
+
+    @MainActor
+    private func siloControlPlaybackState(contentId: String?) -> SiloControlPlaybackState {
         let liveContentId = lastLoadRequest?.contentId ?? contentId
         // Keep the outgoing timeline internally for its final progress save,
         // but don't publish it under a selection that hasn't been prepared.
         let hasPreparedContent = lastLoadRequest == nil
             || currentWatchDetail?.contentId == liveContentId
         let titleText = metadata.primaryTitle.isEmpty ? title : metadata.primaryTitle
-        let subtitleText = [metadata.seriesTitle, metadata.episodeTag]
+        let subtitleText = [metadata.seriesTitle, metadata.remoteEpisodeTag ?? metadata.episodeTag]
             .compactMap { value -> String? in
                 guard let value, !value.isEmpty else { return nil }
                 return value
@@ -11201,7 +11504,7 @@ extension PlayerViewModel {
         return SiloControlPlaybackState(
             contentId: liveContentId,
             sessionId: hasPreparedContent ? activePlaybackSessionId : nil,
-            title: titleText.isEmpty ? "Loading" : titleText,
+            title: titleText.isEmpty ? "Loading" : titleText, // i18n-ignore: Remote Control state sent to the phone (D44)
             subtitle: subtitleText.isEmpty ? nil : subtitleText,
             isPlaying: hasPreparedContent && isPlaying,
             isLoading: isLoading,
@@ -11226,8 +11529,8 @@ extension PlayerViewModel {
             volume: Double(userVolume),
             isMuted: userMuted,
             hasNextEpisode: nextUpEpisode != nil,
-            nextEpisodeTitle: nextUpEpisode?.title,
-            error: error
+            nextEpisodeTitle: nextUpEpisode?.remoteTitle,
+            error: error.map { $0 == displayedError?.shown ? displayedError?.english ?? $0 : $0 }
         )
     }
 
@@ -11248,7 +11551,7 @@ extension PlayerViewModel {
     private func makeSiloControlOption(_ option: ApplePlaybackQualityOption) -> SiloControlOption {
         SiloControlOption(
             id: option.id,
-            label: option.labelWithBitrate,
+            label: option.englishLabelWithBitrate,
             detail: option.subtitle
         )
     }
@@ -11474,6 +11777,8 @@ extension PlayerViewModel {
         syncBufferingQualitySignals()
     }
 
+    /// English: it travels as the engine failure's message, which recovery
+    /// sends to the server. `displayedPlaybackError(_:)` translates it.
     private static let startDeadlineMessage =
         "Playback didn't start within \(PlaybackStartDeadline.budgetMs / 1000) seconds."
 
@@ -11810,7 +12115,7 @@ extension PlayerViewModel {
               attemptProtocolV3Replan(
                   position: currentTime.isFinite ? max(0, currentTime) : 0,
                   classification: "quality_changed",
-                  message: "Playback kept buffering; requesting quality \(qualityId).",
+                  message: "Playback kept buffering; requesting quality \(qualityId).", // i18n-ignore: English data: logged or sent to the server (D44)
                   operation: PlaybackProtocolV3.ReplanOperation.qualityChange,
                   qualityPreference: qualityId,
                   // Auto keeps the saved cap for the connection.
@@ -12516,7 +12821,9 @@ private final class LiveSubtitleSinkAdapter: LiveSubtitleSink {
         diagCueLogBudget = 5
         let trackId = owner.installLiveSubtitleTrackRow(
             ordinal: ordinal,
-            label: label ?? "AI subtitles",
+            // The track title is saved in subtitle picks and sent to the
+            // phone, so it stays English (D44).
+            label: label ?? "AI subtitles", // i18n-ignore: English data (D44)
             language: language
         )
         installedTrackId = trackId

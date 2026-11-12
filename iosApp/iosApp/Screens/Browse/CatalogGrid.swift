@@ -5,6 +5,7 @@ import SwiftUI
 /// `AdaptiveColumns.widthFittedPosters`), 6 columns on tvOS. Cards
 /// handle their own focus lift on tvOS.
 struct CatalogGrid: View {
+    @Environment(\.locale) private var locale
     let items: [BrowseItem]
     let isLoading: Bool
     let hasMore: Bool
@@ -133,7 +134,8 @@ struct CatalogGrid: View {
                 imageIsEpisodeStill: item.posterIsEpisodeStill,
                 mediaType: item.type,
                 year: item.year,
-                subtitle: EpisodeCardCaption.line(for: item),
+                subtitle: EpisodeCardCaption.line(for: item, locale: locale)
+                    ?? CardYears.caption(for: item, locale: locale),
                 userState: item.userState,
                 overlayData: OverlayData.from(item),
                 action: { onItemTap(item) },
@@ -142,7 +144,7 @@ struct CatalogGrid: View {
                 seriesContext: SeriesDetailContext(item: SectionItem(browseItem: item)),
                 aspect: item.isAudiobook ? .square : .poster,
                 cardWidthOverride: widthOverride,
-                episodeAccessibilityLabel: EpisodeCardCaption.accessibilityLabel(for: item),
+                episodeAccessibilityLabel: EpisodeCardCaption.accessibilityLabel(for: item, locale: locale),
                 rowTitles: rowTitles
             )
         }

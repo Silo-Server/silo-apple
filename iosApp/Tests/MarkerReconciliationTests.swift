@@ -114,12 +114,50 @@ final class MarkerReconciliationTests: XCTestCase {
         XCTAssertEqual(player.recapRange, TimeRange(start: 0, end: 30))
     }
 
+    /// Nobody asked for an automatic skip, so it moves the playhead without
+    /// bringing up the controls.
+    func testAutomaticCreditsSkipKeepsHiddenControlsHidden() throws {
+        // The player reads the shared settings. Put them back as they were,
+        // down to a value that was never stored: the settings migration takes
+        // a stored one for this device's own choice.
+        let settings = PlayerSettings.shared
+        let defaults = UserDefaults.standard
+        let wasOn = settings.autoSkipCredits
+        let storedBefore = Set(defaults.dictionaryRepresentation().keys)
+        settings.adoptProfileAutoSkipCredits(true)
+        let newlyStored = Set(defaults.dictionaryRepresentation().keys).subtracting(storedBefore)
+        defer {
+            settings.adoptProfileAutoSkipCredits(wasOn)
+            newlyStored.forEach(defaults.removeObject(forKey:))
+        }
+
+        let player = PlayerViewModel()
+        player.bindMarkerReconciliationForTesting(
+            sessionId: "session-1",
+            detail: try detail(intro: nil, recap: nil),
+            version: try version(intro: nil, recap: nil)
+        )
+        player.isLoading = false
+        player.currentTime = 1_300
+
+        // Another file's markers arrive with the playhead inside its credits.
+        player.adoptReplannedVersion(
+            try version(fileId: 43, intro: nil, recap: nil, credits: TimeRange(start: 1_290, end: 1_350))
+        )
+
+        XCTAssertEqual(player.currentTime, 1_350)
+        XCTAssertFalse(player.showControls)
+    }
+
     // MARK: - Fixtures
 
-    private func version(fileId: Int = 42, intro: TimeRange?, recap: TimeRange?) throws -> FileVersion {
+    private func version(
+        fileId: Int = 42, intro: TimeRange?, recap: TimeRange?, credits: TimeRange? = nil
+    ) throws -> FileVersion {
         var json: [String: Any] = ["file_id": fileId]
         if let intro { json["intro"] = ["start": intro.start, "end": intro.end] }
         if let recap { json["recap"] = ["start": recap.start, "end": recap.end] }
+        if let credits { json["credits"] = ["start": credits.start, "end": credits.end] }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(FileVersion.self, from: JSONSerialization.data(withJSONObject: json))

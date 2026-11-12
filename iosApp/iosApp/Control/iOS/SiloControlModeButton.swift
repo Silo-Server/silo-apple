@@ -9,27 +9,27 @@ struct SiloControlModeButton: View {
         if controller.remotePlaybackEngaged {
             Menu {
                 Button { controller.showRemoteControl() } label: {
-                    Label("Remote Control", systemImage: "slider.horizontal.3")
+                    Label(.castPickerRemoteControl, systemImage: "slider.horizontal.3")
                 }
                 Button { onChooseTarget() } label: {
-                    Label("Choose TV", systemImage: "tv")
+                    Label(.remoteChooseTv, systemImage: "tv")
                 }
                 Divider()
                 Button(role: .destructive) { controller.disconnect() } label: {
-                    Label("Turn Off Control Mode", systemImage: "tv.slash")
+                    Label(.remoteTurnOffControlMode, systemImage: "tv.slash")
                 }
             } label: {
                 buttonLabel(isActive: true)
             }
             .menuStyle(.borderlessButton)
-            .accessibilityLabel("TV control mode")
-            .accessibilityValue("Active")
+            .accessibilityLabel(Text(.remoteControlMode))
+            .accessibilityValue(Text(.remoteControlModeActive))
         } else {
             Button(action: onChooseTarget) {
                 buttonLabel(isActive: false)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Remote Control")
+            .accessibilityLabel(Text(.castPickerRemoteControl))
         }
     }
 

@@ -14,13 +14,5 @@ struct AppleTVUserContext: Equatable, Sendable {
     )
 
     let shouldStorePreferencesForCurrentUser: Bool
-
-    var pairingDescription: String {
-        if shouldStorePreferencesForCurrentUser {
-            "Silo keeps a separate profile pairing for this Apple TV user. Switch users in Control Center to view or change the pairing available to another user."
-        } else {
-            "This Apple TV user context is not set to keep separate app preferences. Silo uses the profile pairing available to the current app context, and you can change it here at any time."
-        }
-    }
 }
 #endif

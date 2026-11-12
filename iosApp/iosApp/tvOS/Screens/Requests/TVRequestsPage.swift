@@ -20,6 +20,7 @@ enum TVRequestsPageMode {
 /// and restores the last card, and the sole directional interception is Up
 /// from the first row to the top bar.
 struct TVRequestsPage: View {
+    @Environment(\.locale) private var locale
     let mode: TVRequestsPageMode
     /// Shell hand-down token: claims the first card on tab entry.
     var focusRequest: Int = 0
@@ -102,7 +103,7 @@ struct TVRequestsPage: View {
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Loading requests",
+                    accessibilityLabel: AppLanguage.string(.requestsLoadingSpoken),
                     onMoveUp: onTopMenuFocusRequest
                 )
         } else if let error = loadError {
@@ -133,15 +134,15 @@ struct TVRequestsPage: View {
 
     private var emptyTitle: String {
         switch mode {
-        case .hub: "Nothing here yet"
-        case .mine: "No requests yet"
+        case .hub: AppLanguage.string(.requestsEmpty)
+        case .mine: AppLanguage.string(.requestsMineEmptyTitle)
         }
     }
 
     private var emptySubtitle: String {
         switch mode {
-        case .hub: "Use Search to find a movie or series to request"
-        case .mine: "Movies and series you request will show up here"
+        case .hub: AppLanguage.string(.requestsEmptyBody)
+        case .mine: AppLanguage.string(.requestsMineEmptyBody)
         }
     }
 
@@ -157,14 +158,14 @@ struct TVRequestsPage: View {
             if !hub.myRequests.isEmpty {
                 rows.append(TVRequestRow(
                     id: "mine",
-                    title: "Your requests",
+                    title: AppLanguage.string(.requestsYourRequests),
                     items: hub.myRequests.map { .record($0) }
                 ))
             }
             for (index, carousel) in hub.carousels.enumerated() {
                 rows.append(TVRequestRow(
                     id: "discover:\(carousel.id)",
-                    label: index == 0 ? "Discover" : nil,
+                    label: index == 0 ? AppLanguage.string(.requestsHubDiscover) : nil,
                     title: carousel.title,
                     items: carousel.results.map { .result($0) }
                 ))
@@ -173,8 +174,9 @@ struct TVRequestsPage: View {
         case .mine:
             return mine.buckets.map { entry in
                 TVRequestRow(
-                    id: "bucket:\(entry.bucket.title)",
-                    title: entry.bucket.title,
+                    // The id stays the same in every language.
+                    id: "bucket:\(entry.bucket)",
+                    title: AppLanguage.string(entry.bucket.title),
                     items: entry.requests.map { .record($0) }
                 )
             }
@@ -306,14 +308,14 @@ struct TVRequestsPage: View {
                         Button(role: .destructive) {
                             Task { await mine.cancel(record, refresh: actionRefresh) }
                         } label: {
-                            Label("Cancel Request", systemImage: "xmark.circle")
+                            Label(.requestsActionCancel, systemImage: "xmark.circle")
                         }
                     }
                     if mine.canRemove(record) {
                         Button(role: .destructive) {
                             pendingRemoval = record
                         } label: {
-                            Label("Remove Request", systemImage: "trash")
+                            Label(.requestsRowRemoveRequest, systemImage: "trash")
                         }
                     }
                 }
@@ -398,14 +400,14 @@ struct TVRequestsPage: View {
 
     static func marqueeContent(_ item: TVRequestItem, row: TVRequestRow) -> TVMarqueeContent {
         var meta: [String] = []
-        if let year = item.year, year > 0 { meta.append(String(year)) }
+        if let year = item.year, year > 0 { meta.append(LocaleFormat.integer(year)) }
         meta.append(item.mediaType.displayName)
         let progress: RequestProgress?
         let statusText: String?
         var rating: DisplayRating?
         switch item {
         case .record(let record):
-            meta.append("Requested \(record.createdAt.formatted(.dateTime.month(.abbreviated).day()))")
+            meta.append(AppLanguage.string(.requestsRequestedOn(record.createdAt.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale)))))
             let recordProgress = RequestProgress(record: record)
             progress = recordProgress
             statusText = RequestRowCopy.status(record, progress: recordProgress)
@@ -578,7 +580,7 @@ struct TVRequestsLoadingView: View {
                 ProgressView()
                     .controlSize(.regular)
                     .tint(.white)
-                Text("Loading Requests")
+                Text(.requestsLoading)
                     .font(.system(size: 20, weight: .medium))
                     .foregroundStyle(Color.siloOnSurface.opacity(0.72))
             }

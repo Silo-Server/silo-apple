@@ -225,10 +225,10 @@ enum DownloadRegistryError: LocalizedError, Equatable, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidRequest: return "The download request is not valid."
-        case .incompleteRegistry: return "The server returned an incomplete download list. Try again."
-        case .unexpectedReceipt: return "The server returned an unexpected download answer. Refresh downloads before trying again."
-        case .unusableManifest: return "The server returned download details this app can't use."
+        case .invalidRequest: return AppLanguage.string(.errorsAppleDownloadRegistryInvalidRequest)
+        case .incompleteRegistry: return AppLanguage.string(.errorsAppleDownloadRegistryIncompleteRegistry)
+        case .unexpectedReceipt: return AppLanguage.string(.errorsAppleDownloadRegistryUnexpectedReceipt)
+        case .unusableManifest: return AppLanguage.string(.errorsAppleDownloadRegistryUnusableManifest)
         }
     }
 }

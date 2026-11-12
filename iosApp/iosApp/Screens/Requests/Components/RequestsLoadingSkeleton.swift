@@ -174,7 +174,7 @@ struct RequestDetailSkeleton: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Loading")
+        .accessibilityLabel(.commonLoading)
     }
 }
 #endif

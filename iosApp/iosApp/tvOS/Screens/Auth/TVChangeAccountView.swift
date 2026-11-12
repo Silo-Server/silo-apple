@@ -33,6 +33,7 @@ struct TVChangeAccountView: View {
     @State private var paneEntry: PaneItem?
     @FocusState private var railFocus: RailItem?
     @FocusState private var paneFocus: PaneItem?
+    @Environment(\.locale) private var locale
 
     private enum RailItem: Hashable {
         case server(String)
@@ -105,12 +106,12 @@ struct TVChangeAccountView: View {
             SiloWordmarkView(width: 150)
                 .frame(height: 64)
                 .padding(.bottom, 30)
-            Text("Change account")
+            Text(.accountsHeadline)
                 .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))
                 .foregroundStyle(Color.siloOnSurface)
                 .accessibilityAddTraits(.isHeader)
                 .padding(.bottom, 22)
-            MarqueeTVBody("Choose a server, then the account to use on it.")
+            MarqueeTVBody(AppLanguage.string(.accountsBody))
         }
     }
 
@@ -132,7 +133,7 @@ struct TVChangeAccountView: View {
         Button {
             model.addServer(router: router)
         } label: {
-            railRowLabel("Add server") {
+            railRowLabel(AppLanguage.string(.accountsAddServer)) {
                 Image(systemName: "plus")
                     .font(.system(size: 28, weight: .regular))
                     .frame(width: Layout.railMark, height: Layout.railMark)
@@ -190,7 +191,7 @@ struct TVChangeAccountView: View {
         } label: {
             TVAccountCardLabel(
                 initial: row.initial,
-                title: row.username,
+                title: .verbatim(row.username),
                 detail: row.profileCount,
                 dimsMark: row.needsSignIn
             ) {
@@ -201,7 +202,7 @@ struct TVChangeAccountView: View {
                 }
             }
             .accessibilityElement(children: .combine)
-            .accessibilityHint(row.accessibilityHint)
+            .accessibilityHint(Text(row.accessibilityHint))
         }
         .buttonStyle(TVAccountCardStyle())
         .focused($paneFocus, equals: .account(row.id))
@@ -374,8 +375,8 @@ private struct TVAccountCardStyle: ButtonStyle {
 /// line, and what trails it.
 private struct TVAccountCardLabel<Trailing: View>: View {
     let initial: String
-    let title: String
-    let detail: String?
+    let title: LocalizedStringResource
+    let detail: LocalizedStringResource?
     var dimsMark = false
     @ViewBuilder let trailing: () -> Trailing
     @Environment(\.isFocused) private var isFocused
@@ -411,6 +412,7 @@ private struct TVAccountCardLabel<Trailing: View>: View {
 private struct TVChangeAccountBadge: View {
     let badge: ChangeAccountBadge
     @Environment(\.isFocused) private var isFocused
+    @Environment(\.locale) private var locale
 
     private var warning: Bool { badge == .signInAgain }
 
@@ -420,7 +422,7 @@ private struct TVChangeAccountBadge: View {
                 Image(systemName: "lock.open.fill")
                     .font(.system(size: 17, weight: .bold))
             }
-            Text(badge.title.uppercased())
+            Text(verbatim: AppLanguage.string(badge.title, locale: locale).uppercased(with: locale))
         }
         .font(.system(size: 18, weight: .semibold))
         .kerning(0.8)

@@ -148,7 +148,7 @@ final class AudioPlayerViewModel {
                 return
             }
             guard let context = AudiobookPlaybackContext(detail: detail) else {
-                throw APIError.unsupportedMedia("No playable audio track is available.")
+                throw APIError.unsupportedMedia(AppLanguage.string(.audiobookErrorNoPlayableTrack))
             }
             self.context = context
             duration = context.totalDurationSeconds
@@ -287,7 +287,7 @@ final class AudioPlayerViewModel {
                 contentId: closedContext.contentId,
                 position: position,
                 duration: total,
-                label: "final audiobook sync"
+                label: "final audiobook sync" // i18n-ignore: log label
             )
         }
         if let closedSession, let closedAuthority {
@@ -324,7 +324,7 @@ final class AudioPlayerViewModel {
         guard let context,
               let index = AudioPlaybackTimeline.trackIndex(at: globalTime, tracks: context.tracks),
               let track = context.tracks.first(where: { $0.index == index }) else {
-            throw APIError.unsupportedMedia("No playable audio track is available.")
+            throw APIError.unsupportedMedia(AppLanguage.string(.audiobookErrorNoPlayableTrack))
         }
         loadGeneration += 1
         let generation = loadGeneration
@@ -362,7 +362,7 @@ final class AudioPlayerViewModel {
                     session: started.session,
                     additionalHeaders: started.streamHeaders
                 ) else {
-                    throw APIError.unsupportedMedia("No playable audio track is available.")
+                    throw APIError.unsupportedMedia(AppLanguage.string(.audiobookErrorNoPlayableTrack))
                 }
                 try requireCurrentLoad(generation)
                 let engineEpoch = engine.beginLoad()
@@ -478,8 +478,9 @@ final class AudioPlayerViewModel {
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PlaybackV3TerminalFailure(
                 reason: "profile_required",
-                message: "Select a profile before starting playback.",
-                retryable: false
+                message: "Select a profile before starting playback.", // i18n-ignore: English data (D44)
+                retryable: false,
+                displayMessage: AppLanguage.string(.playerErrorSelectProfile)
             )
         }
 
@@ -541,8 +542,9 @@ final class AudioPlayerViewModel {
             }
             throw PlaybackV3TerminalFailure(
                 reason: "invalid_playback_plan",
-                message: "The server returned an incompatible protocol V3 playback plan.",
-                retryable: false
+                message: "The server returned an incompatible protocol V3 playback plan.", // i18n-ignore: English data (D44)
+                retryable: false,
+                displayMessage: AppLanguage.string(.playerErrorIncompatiblePlan)
             )
         case .playable(let plan, let sessionId):
             guard response.serverFeatures.contains(
@@ -551,8 +553,9 @@ final class AudioPlayerViewModel {
                 _ = try? await authority.stop(sessionId, finalSample: nil)
                 throw PlaybackV3TerminalFailure(
                     reason: "server_upgrade_required",
-                    message: "This server did not honor authenticated media transport for the playback plan.",
-                    retryable: false
+                    message: "This server did not honor authenticated media transport for the playback plan.", // i18n-ignore: English data (D44)
+                    retryable: false,
+                    displayMessage: AppLanguage.string(.playerErrorUnauthenticatedTransport)
                 )
             }
             let timeline: PlaybackTimelineMapper
@@ -569,8 +572,9 @@ final class AudioPlayerViewModel {
                 _ = try? await authority.stop(sessionId, finalSample: nil)
                 throw PlaybackV3TerminalFailure(
                     reason: "effective_file_unavailable",
-                    message: "The server selected an unavailable audiobook part.",
-                    retryable: false
+                    message: "The server selected an unavailable audiobook part.", // i18n-ignore: English data (D44)
+                    retryable: false,
+                    displayMessage: AppLanguage.string(.audiobookErrorUnavailablePart)
                 )
             }
             let session = ApplePlaybackV3PlanAdapter.playbackSession(
@@ -766,7 +770,7 @@ final class AudioPlayerViewModel {
             contentId: context.contentId,
             position: currentTime,
             duration: duration,
-            label: "audiobook progress sync"
+            label: "audiobook progress sync" // i18n-ignore: log label
         )
     }
 
@@ -825,7 +829,7 @@ final class AudioPlayerViewModel {
         nowPlaying.update(
             title: context.title,
             artist: context.subtitle,
-            albumTitle: "Audiobook",
+            albumTitle: AppLanguage.string(.audiobookPlayerLabel),
             duration: duration,
             position: currentTime,
             isPlaying: isPlaying,

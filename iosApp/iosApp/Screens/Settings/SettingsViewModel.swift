@@ -27,7 +27,7 @@ final class SettingsViewModel {
         #if os(tvOS)
         ServerRegistry.shared.activeServer?.displayName ?? ""
         #else
-        ServerRegistry.shared.activeServer?.displayName ?? "Not configured"
+        ServerRegistry.shared.activeServer?.displayName ?? AppLanguage.string(.settingsActiveServerNotConfigured)
         #endif
     }
 
@@ -44,7 +44,7 @@ final class SettingsViewModel {
     }
 
     /// The Maximum Bitrate picker's value.
-    var maxBitrateLabel: String {
+    var maxBitrateLabel: LocalizedStringResource {
         SiloQualityPresets.bitrateLabel(PlayerSettings.shared.maxBitrateKbps)
     }
 
@@ -57,11 +57,13 @@ final class SettingsViewModel {
     /// What the two quality pickers mean for playback.
     var qualityFooterText: String {
         let resolution = PlayerSettings.shared.preferredQualityResolution
-        var text = resolution == SiloQualityPresets.resolutionAuto
-            ? "Plays the original file whenever your device and connection can handle it."
-            : "Plays the original file up to \(SiloQualityPresets.resolutionLabel(resolution)). Larger files are converted."
+        var text = AppLanguage.string(
+            resolution == SiloQualityPresets.resolutionAuto
+                ? .settingsQualityFooterOriginal
+                : .settingsQualityFooterUpTo(SiloQualityPresets.resolutionLabel(resolution))
+        )
         if PlayerSettings.shared.maxBitrateKbps != nil {
-            text += " Files above this bitrate are converted to fit."
+            text += " " + AppLanguage.string(.settingsQualityFooterBitrate)
         }
         return text
     }
@@ -70,7 +72,7 @@ final class SettingsViewModel {
     /// covers; the picker then lists ``cellularQualityLabel`` on its own.
     var cellularQualityPresetId: String? { PlayerSettings.shared.currentCellularQualityPreset?.id }
     var cellularQualityLabel: String { PlayerSettings.shared.cellularQualityLabel }
-    static let cellularQualityFooterText = "Used on mobile data and metered networks, such as a phone hotspot."
+    static let cellularQualityFooterText: LocalizedStringResource = .settingsQualityCellularFooter
 
     var bufferingQualityMode: BufferingQualityMode {
         get { PlayerSettings.shared.bufferingQualityMode }
@@ -82,9 +84,8 @@ final class SettingsViewModel {
     var showsBufferingQualityMode: Bool { !PlayerSettings.shared.serverLacksBufferingQualityMode }
 
     /// The manifest's label and description for `playback.buffering_quality_mode`.
-    static let bufferingQualityTitle = "Lower quality when buffering"
-    static let bufferingQualityDescription =
-        "What Silo does on Auto when playback keeps buffering. Silo always asks before lowering a quality you picked."
+    static let bufferingQualityTitle: LocalizedStringResource = .settingsBufferingQualityTitle
+    static let bufferingQualityDescription: LocalizedStringResource = .settingsBufferingQualityDescription
 
     var preferredAudioLanguage: String {
         get { PlayerSettings.shared.audioLanguage }
@@ -97,8 +98,10 @@ final class SettingsViewModel {
     }
 
     /// (id, label) for every allowed threshold, shared by the iOS/macOS and tvOS rows.
-    static let stillWatchingChoices: [(id: String, label: String)] =
+    /// Computed so the counts follow the app language's digits.
+    static var stillWatchingChoices: [(id: String, label: LocalizedStringResource)] {
         PlayerSettings.stillWatchingThresholdRange.map { (String($0), stillWatchingLabel($0)) }
+    }
 
     /// The threshold as a picker tag.
     var stillWatchingSelection: String {
@@ -106,12 +109,8 @@ final class SettingsViewModel {
         set { if let threshold = Int(newValue) { stillWatchingThreshold = threshold } }
     }
 
-    static func stillWatchingLabel(_ count: Int) -> String {
-        switch count {
-        case 0: return "Never Ask"
-        case 1: return "1 Episode"
-        default: return "\(count) Episodes"
-        }
+    static func stillWatchingLabel(_ count: Int) -> LocalizedStringResource {
+        count == 0 ? .settingsOff : .detailEpisodeCount(count: count, LocaleFormat.integer(count))
     }
 
     /// Local: the streak it limits exists only on this device.
@@ -159,12 +158,11 @@ final class SettingsViewModel {
     /// Dolby Vision is never offered to the server while HDR is off.
     static var hdrFooterText: String {
         #if os(tvOS)
-        let original = " Videos that play from the original file can still play in HDR, and the TV can still switch to HDR for them."
+        let original = AppLanguage.string(.settingsPlaybackHdrFooterOriginalAppleTv)
         #else
-        let original = " Videos that play from the original file can still play in HDR."
+        let original = AppLanguage.string(.settingsPlaybackHdrFooterOriginal)
         #endif
-        return "With HDR off, videos the server converts for this device are sent in SDR, without Dolby Vision."
-            + original
+        return AppLanguage.string(.settingsPlaybackHdrFooter) + " " + original
     }
 
     /// Dolby Vision is only offered while HDR is on, so its row reads Off and
@@ -277,11 +275,11 @@ final class SettingsViewModel {
     }
 
     var accountSubtitle: String {
-        if isAdmin { return "Administrator" }
+        if isAdmin { return AppLanguage.string(.settingsAccountAdministrator) }
         if let username = userInfo?.username, !username.isEmpty {
             return username
         }
-        return "Signed in"
+        return AppLanguage.string(.settingsAccountSignedIn)
     }
 
     var profileAvatar: String? {
@@ -302,7 +300,7 @@ final class SettingsViewModel {
         if let username = userInfo?.username, !username.isEmpty {
             return username
         }
-        return "Switch Profile"
+        return AppLanguage.string(.settingsProfile)
     }
 
     /// Account card subtitle: the username when the title is not already
@@ -318,7 +316,7 @@ final class SettingsViewModel {
         case let (user?, _) where !user.isEmpty && user != displayName:
             return user
         default:
-            return "Tap to switch profile"
+            return AppLanguage.string(.settingsAccountTapToSwitch)
         }
     }
 
@@ -332,7 +330,9 @@ final class SettingsViewModel {
     /// The Subtitles row's value: the profile's subtitle language.
     var subtitleLanguageName: String {
         let tag = prefs.subtitleLanguage
-        if tag == PlaybackPrefSentinel.none || tag.isEmpty { return "None" }
+        if tag == PlaybackPrefSentinel.none || tag.isEmpty {
+            return AppLanguage.string(.settingsManifestPlaybackSubtitleLanguageUnsetLabel)
+        }
         return PlaybackLanguageOption.label(forCode: tag)
     }
 
@@ -442,8 +442,7 @@ final class SettingsViewModel {
     /// The server definitively refused a device playback change.
     var playbackChangeWasRejected: Bool { PlayerSettings.shared.rejectedDeviceSettingChange }
 
-    static let rejectedPlaybackChangeMessage =
-        "The server didn't accept a change to this device's playback settings, so it wasn't saved."
+    static let rejectedPlaybackChangeMessage: LocalizedStringResource = .settingsPlaybackRejectedChange
 
     /// The held keys a "Discard Held Change" could not discard because the
     /// server was unreachable. The footer says so only while exactly these
@@ -493,10 +492,10 @@ final class SettingsViewModel {
     private(set) var learnedConnectionLimit: APIv2PlaybackConnection.LearnedLimit?
 
     /// Set when Reset failed, until the next Reset or load.
-    private(set) var learnedLimitResetError: String?
+    private(set) var learnedLimitResetError: LocalizedStringResource?
     @ObservationIgnored private var connectionReadGeneration: UInt64 = 0
 
-    static let learnedLimitResetFailedMessage = "Couldn't reset the limit. Try again."
+    static let learnedLimitResetFailedMessage: LocalizedStringResource = .settingsLearnedLimitResetFailed
 
     /// Nil in `never`, whose starts ignore the limit.
     var learnedConnectionLimitText: String? {
@@ -509,12 +508,12 @@ final class SettingsViewModel {
     /// day in the viewer's locale.
     static func learnedLimitText(
         _ limit: APIv2PlaybackConnection.LearnedLimit,
-        locale: Locale = .autoupdatingCurrent,
+        locale: Locale = AppLanguage.displayedLocale,
         timeZone: TimeZone = .autoupdatingCurrent
     ) -> String {
         var style = Date.FormatStyle.dateTime.month(.abbreviated).day().locale(locale)
         style.timeZone = timeZone
-        return "Limited to \(connectionRateText(kbps: limit.kbps)) after buffering on \(limit.observedAt.formatted(style))"
+        return AppLanguage.string(.settingsLearnedLimit(connectionRateText(kbps: limit.kbps), limit.observedAt.formatted(style)))
     }
 
     /// Reads `GET /api/v2/playback/connection` for the learned-limit row and,
@@ -587,21 +586,21 @@ final class SettingsViewModel {
     private(set) var isTestingConnectionSpeed = false
     /// The answer to the last **Test speed**, until the next one. "Try again
     /// in N seconds" clears itself once the N seconds have passed.
-    private(set) var connectionSpeedMessage: String?
+    private(set) var connectionSpeedMessage: LocalizedStringResource?
     @ObservationIgnored private var connectionSpeedMessageExpiry: Task<Void, Never>?
     /// When the measurement the server didn't save was taken. Settings keeps
     /// showing the server's reading rather than that one.
     @ObservationIgnored private var unsavedMeasurementAt: Date?
 
-    static let connectionSectionTitle = "Connection"
-    static let connectionSpeedTitle = "Connection speed"
-    static let testSpeedAction = "Test speed"
-    static let testingSpeedLabel = "Testing…"
-    static let notMeasuredText = "Not measured yet"
-    static let stopPlaybackToTestMessage = "Stop playback before testing, then try again."
-    static let speedTestFailedMessage = "Couldn't measure the connection speed. Try again."
+    static let connectionSectionTitle: LocalizedStringResource = .settingsConnectionTitle
+    static let connectionSpeedTitle: LocalizedStringResource = .settingsConnectionSpeed
+    static let testSpeedAction: LocalizedStringResource = .settingsConnectionTest
+    static let testingSpeedLabel: LocalizedStringResource = .settingsConnectionTesting
+    static let notMeasuredText: LocalizedStringResource = .settingsConnectionNotMeasured
+    static let stopPlaybackToTestMessage: LocalizedStringResource = .settingsConnectionStopPlayback
+    static let speedTestFailedMessage: LocalizedStringResource = .settingsConnectionMeasureFailed
     /// The test measured, but the server did not store the result.
-    static let speedTestNotSavedMessage = "Couldn't save the speed test result. Try again."
+    static let speedTestNotSavedMessage: LocalizedStringResource = .settingsConnectionNotSaved
 
     /// The Connection speed row's line as of `now`: why speed tests are
     /// skipped on this network, which replaces the speed, or the speed.
@@ -634,7 +633,7 @@ final class SettingsViewModel {
         if let sample = connectionSample {
             return Self.playbackSampleText(kbps: sample.kbps, measuredAt: sample.measuredAt, now: now)
         }
-        return Self.notMeasuredText
+        return AppLanguage.string(Self.notMeasuredText)
     }
 
     /// Why speed tests are skipped on the network in use, or nil when they
@@ -654,7 +653,7 @@ final class SettingsViewModel {
     var autoBudgetText: String? {
         guard connectionSpeedSkippedText == nil, let autoBudgetKbps,
               bufferingQualityMode != .never || learnedConnectionLimit == nil else { return nil }
-        return "Auto plays videos up to \(Self.connectionRateText(kbps: autoBudgetKbps)) without converting them."
+        return AppLanguage.string(.settingsConnectionBudget(Self.connectionRateText(kbps: autoBudgetKbps)))
     }
 
     /// **Test speed**: runs the probe now, reports it, then reads the
@@ -686,13 +685,13 @@ final class SettingsViewModel {
     }
 
     /// "Try again in 12 seconds", "1 second" at one.
-    static func tryAgainMessage(seconds: Int) -> String {
-        "Try again in \(seconds) \(seconds == 1 ? "second" : "seconds")"
+    static func tryAgainMessage(seconds: Int) -> LocalizedStringResource {
+        .settingsConnectionRetry(seconds)
     }
 
     /// Shows `message`, for `lifetime` when one is given.
     @MainActor
-    private func setConnectionSpeedMessage(_ message: String?, for lifetime: Duration? = nil) {
+    private func setConnectionSpeedMessage(_ message: LocalizedStringResource?, for lifetime: Duration? = nil) {
         connectionSpeedMessageExpiry?.cancel()
         connectionSpeedMessageExpiry = nil
         connectionSpeedMessage = message
@@ -709,23 +708,27 @@ final class SettingsViewModel {
     static func connectionSpeedText(
         kbps: Int, lowerBound: Bool = false, measuredAt: Date, transport: String, now: Date = Date()
     ) -> String {
-        let network = switch transport {
-        case "wifi": "Wi-Fi"
-        case "ethernet": "Ethernet"
-        case "cellular": "cellular"
-        default: "this connection"
+        // `transport` is the server's wire value (D44); only the name shown is text.
+        let network: LocalizedStringResource = switch transport {
+        case "wifi": .settingsConnectionTransportWifi
+        case "ethernet": .settingsConnectionTransportEthernet
+        case "cellular": .settingsConnectionTransportCellular
+        default: .settingsConnectionTransportOtherNetwork
         }
-        return "\(speedText(kbps: kbps, lowerBound: lowerBound)) · measured \(ageText(since: measuredAt, now: now)) on \(network)"
+        let rate = connectionRateText(kbps: kbps)
+        let age = ageText(since: measuredAt, now: now)
+        let networkName = AppLanguage.string(network)
+        return AppLanguage.string(
+            lowerBound
+                ? .settingsConnectionLowerBound(rate, age, networkName)
+                : .settingsConnectionMeasured(rate, age, networkName)
+        )
     }
 
     /// "Faster than 51 Mbps · seen during playback 2 hours ago": a playback
     /// sample, always a lower bound.
     static func playbackSampleText(kbps: Int, measuredAt: Date, now: Date = Date()) -> String {
-        "\(speedText(kbps: kbps, lowerBound: true)) · seen during playback \(ageText(since: measuredAt, now: now))"
-    }
-
-    private static func speedText(kbps: Int, lowerBound: Bool) -> String {
-        lowerBound ? "Faster than \(connectionRateText(kbps: kbps))" : connectionRateText(kbps: kbps)
+        AppLanguage.string(.settingsConnectionDuringPlayback(connectionRateText(kbps: kbps), ageText(since: measuredAt, now: now)))
     }
 
     /// Under a minute is "just now"; then whole minutes, hours and days,
@@ -734,15 +737,13 @@ final class SettingsViewModel {
         let minutes = max(0, Int(now.timeIntervalSince(date) / 60))
         switch minutes {
         case ..<1:
-            return "just now"
+            return AppLanguage.string(.settingsConnectionAgeJustNow)
         case ..<60:
-            return "\(minutes) \(minutes == 1 ? "minute" : "minutes") ago"
+            return AppLanguage.string(.settingsConnectionAgeMinutes(minutes))
         case ..<(24 * 60):
-            let hours = minutes / 60
-            return "\(hours) \(hours == 1 ? "hour" : "hours") ago"
+            return AppLanguage.string(.settingsConnectionAgeHours(minutes / 60))
         default:
-            let days = minutes / (24 * 60)
-            return "\(days) \(days == 1 ? "day" : "days") ago"
+            return AppLanguage.string(.settingsConnectionAgeDays(minutes / (24 * 60)))
         }
     }
 
@@ -752,20 +753,27 @@ final class SettingsViewModel {
     /// 10, with no digit grouping.
     static func connectionRateText(kbps: Int) -> String {
         let kbps = max(kbps, 0)
-        if kbps < 1_000 { return "\(kbps) kbps" }
-        if kbps >= 10_000 { return "\(kbps / 1_000) Mbps" }
-        let tenths = kbps / 100
-        return tenths % 10 == 0 ? "\(tenths / 10) Mbps" : "\(tenths / 10).\(tenths % 10) Mbps"
+        let text: String
+        if kbps < 1_000 {
+            text = "\(kbps) kbps"
+        } else if kbps >= 10_000 {
+            text = "\(kbps / 1_000) Mbps"
+        } else {
+            let tenths = kbps / 100
+            text = tenths % 10 == 0 ? "\(tenths / 10) Mbps" : "\(tenths / 10).\(tenths % 10) Mbps"
+        }
+        // The locale's digits and decimal separator ("4,5 Mbps").
+        return LocaleFormat.localized(text)
     }
 
     static func connectionSpeedSkippedText(network: BandwidthProbeNetwork, cellularQualityApplies: Bool) -> String? {
         guard network.isConnected, network.isMetered else { return nil }
         if network.usesCellular {
-            return "Speed tests are skipped on cellular, and the Cellular Quality settings apply."
+            return AppLanguage.string(.settingsConnectionSkippedCellular)
         }
-        return cellularQualityApplies
-            ? "Speed tests are skipped on metered networks, and the Cellular Quality settings apply."
-            : "Speed tests are skipped on metered networks."
+        return AppLanguage.string(
+            cellularQualityApplies ? .settingsConnectionSkippedMeteredCellularQuality : .settingsConnectionSkippedMetered
+        )
     }
 
     // MARK: Device value or profile value
@@ -773,7 +781,7 @@ final class SettingsViewModel {
     /// Picker tag for "Use Profile Setting": selected while this device has
     /// no value of its own for the row, and choosing it clears that value.
     static let useProfileSettingTag = "__profile__"
-    static let useProfileSettingLabel = "Use Profile Setting"
+    static let useProfileSettingLabel: LocalizedStringResource = .settingsProfileSettingsUseRow
     /// Tag for a stored cellular pair no preset covers. Not a preset id, so
     /// selecting it is a no-op rather than a write.
     static let customQualityTag = "__custom__"
@@ -864,21 +872,21 @@ final class SettingsViewModel {
 
     // MARK: Use Profile Settings
 
-    static let useProfileSettingsTitle = "Use your profile's settings on this device?"
+    static let useProfileSettingsTitle: LocalizedStringResource = .settingsProfileSettingsConfirmTitle
 
     /// The confirmation's message. It says plainly that settings the profile
     /// has no value for — the device-only ones — go back to their defaults,
     /// since there is no profile setting for them to return to.
     var useProfileSettingsMessage: String {
         let count = PlayerSettings.shared.deviceChangedSettingCount
-        var message: String
-        switch count {
-        case 0: message = "This removes any settings changed on this device."
-        case 1: message = "This removes the setting changed on this device."
-        default: message = "This removes the \(count) settings changed on this device."
+        let removes: LocalizedStringResource = switch count {
+        case 0: .settingsProfileSettingsRemovesAny
+        case 1: .settingsProfileSettingsRemovesOne
+        default: .settingsProfileSettingsRemovesCount(count)
         }
+        var message = AppLanguage.string(removes)
         if count == 0 || PlayerSettings.shared.deviceChangesIncludeDeviceOnlySettings {
-            message += " Settings that only apply to this device, like Dolby Vision and Buffer Ahead, go back to their defaults."
+            message += " " + AppLanguage.string(.settingsProfileSettingsDeviceOnlyDefaults)
         }
         return message
     }

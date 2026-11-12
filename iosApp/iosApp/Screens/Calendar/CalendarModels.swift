@@ -11,11 +11,11 @@ enum CalendarFilter: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var displayLabel: String {
+    var displayLabel: LocalizedStringResource {
         switch self {
-        case .following: return "Following"
-        case .trending: return "Trending"
-        case .everything: return "All"
+        case .following: return .calendarFilterFollowing
+        case .trending: return .calendarFilterTrending
+        case .everything: return .calendarFilterAll
         }
     }
 
@@ -85,14 +85,14 @@ struct CalendarEvent: Codable, Identifiable {
     var isWatched: Bool { watched == true }
 
     /// "S5 · E14" for episodes, "Season 2" for season premieres.
-    var episodeSubtitle: String? {
+    func episodeSubtitle(locale: Locale) -> String? {
         switch type {
         case "episode":
             guard let season = seasonNumber, let episode = episodeNumber else { return nil }
-            return "S\(season) · E\(episode)"
+            return AppLanguage.string(.catalogEpisodeCaption(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)), locale: locale)
         case "season_premiere":
             guard let season = seasonNumber else { return nil }
-            return "Season \(season)"
+            return AppLanguage.string(.calendarSeason(LocaleFormat.integer(season, locale: locale)), locale: locale)
         default:
             return nil
         }
@@ -122,11 +122,11 @@ enum CalendarBadge: String {
     case seasonPremiere = "season_premiere"
     case finale
 
-    var label: String {
+    var label: LocalizedStringResource {
         switch self {
-        case .seriesPremiere: return "PREMIERE"
-        case .seasonPremiere: return "NEW SEASON"
-        case .finale: return "FINALE"
+        case .seriesPremiere: return .calendarBadgeSeriesPremiere
+        case .seasonPremiere: return .calendarBadgeSeasonPremiere
+        case .finale: return .calendarBadgeFinale
         }
     }
 }

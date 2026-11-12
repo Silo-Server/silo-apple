@@ -31,13 +31,13 @@ enum SeekIntervalSyncState: Equatable, Sendable {
     var userMessage: String? {
         switch self {
         case .checking:
-            return "Checking whether this server supports skip interval settings…"
+            return AppLanguage.string(.playerSeekIntervalChecking)
         case .supported:
             return nil
         case .serverUpgradeRequired:
-            return "Update this Silo server to choose skip intervals. Playback uses the built-in intervals."
+            return AppLanguage.string(.playerSeekIntervalServerUpgrade)
         case .unavailable:
-            return "Skip intervals can be changed once this server is reachable."
+            return AppLanguage.string(.playerSeekIntervalUnreachable)
         }
     }
 }
@@ -216,8 +216,8 @@ final class SeekIntervalPreferences {
                 clearServerValues(cacheKey: context.cacheKey)
             } else {
                 readErrorMessage = values == nil
-                    ? "Couldn't load skip intervals from the server."
-                    : "Couldn't refresh skip intervals. Showing the last saved values."
+                    ? AppLanguage.string(.playerSeekIntervalLoadFailed)
+                    : AppLanguage.string(.playerSeekIntervalRefreshFailed)
             }
         }
     }
@@ -404,15 +404,27 @@ final class SeekIntervalPreferences {
         direction: SeekDirection,
         error: Error
     ) -> String {
-        let setting = "\(media == .video ? "video" : "audiobook") \(direction == .backward ? "rewind" : "fast-forward") interval"
-        switch SettingsAPIError.from(error) {
-        case .transport:
-            return "Couldn't save the \(setting). Check the connection and try again."
-        case .serverUpgradeRequired, .unknownSetting:
-            return "This server can't save the \(setting)."
-        default:
-            return "The server didn't save the \(setting). Try again."
+        let failure = SettingsAPIError.from(error)
+        let message: LocalizedStringResource
+        switch (media, direction, failure) {
+        case (.video, .backward, .transport): message = .playerSeekIntervalSaveConnectionVideoRewind
+        case (.video, .forward, .transport): message = .playerSeekIntervalSaveConnectionVideoFastForward
+        case (_, .backward, .transport): message = .playerSeekIntervalSaveConnectionAudiobookRewind
+        case (_, .forward, .transport): message = .playerSeekIntervalSaveConnectionAudiobookFastForward
+        case (.video, .backward, .serverUpgradeRequired), (.video, .backward, .unknownSetting):
+            message = .playerSeekIntervalSaveUnsupportedVideoRewind
+        case (.video, .forward, .serverUpgradeRequired), (.video, .forward, .unknownSetting):
+            message = .playerSeekIntervalSaveUnsupportedVideoFastForward
+        case (_, .backward, .serverUpgradeRequired), (_, .backward, .unknownSetting):
+            message = .playerSeekIntervalSaveUnsupportedAudiobookRewind
+        case (_, .forward, .serverUpgradeRequired), (_, .forward, .unknownSetting):
+            message = .playerSeekIntervalSaveUnsupportedAudiobookFastForward
+        case (.video, .backward, _): message = .playerSeekIntervalSaveRejectedVideoRewind
+        case (.video, .forward, _): message = .playerSeekIntervalSaveRejectedVideoFastForward
+        case (_, .backward, _): message = .playerSeekIntervalSaveRejectedAudiobookRewind
+        case (_, .forward, _): message = .playerSeekIntervalSaveRejectedAudiobookFastForward
         }
+        return AppLanguage.string(message)
     }
 
     nonisolated static let cachePrefix = "silo.seekIntervals"

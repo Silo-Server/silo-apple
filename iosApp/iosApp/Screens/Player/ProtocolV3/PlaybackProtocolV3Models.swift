@@ -201,7 +201,13 @@ extension AppleDecodeCapabilities {
     /// model. Keeping this adapter beside the model lets shared capability code
     /// compile in extensions that do not carry the playback protocol.
     static func playbackV3VideoDecodeAttestation() -> [PlaybackV3VideoDecodeCapability] {
-        videoDecodeAttestation().map { capability in
+        playbackV3VideoDecode(videoDecodeAttestation())
+    }
+
+    static func playbackV3VideoDecode(
+        _ capabilities: [AppleVideoDecodeCapability]
+    ) -> [PlaybackV3VideoDecodeCapability] {
+        capabilities.map { capability in
             PlaybackV3VideoDecodeCapability(
                 codec: capability.codec,
                 decoderName: capability.decoderName,
@@ -844,7 +850,7 @@ extension PlaybackV3DecisionResponse {
         if outcome == "adaptation_unavailable" {
             return .terminal(terminal ?? PlaybackV3Terminal(
                 reason: "invalid_terminal_response",
-                message: "The server could not produce a playable Apple route.",
+                message: "The server could not produce a playable Apple route.", // i18n-ignore: English data: logged or sent to the server (D44)
                 retryable: false
             ))
         }

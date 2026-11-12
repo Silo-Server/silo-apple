@@ -30,15 +30,15 @@ enum NetworkSignIn {
     /// "Continue as <name>" with the device owner's name from discovery,
     /// else "Continue with <provider>".
     static func buttonTitle(for provider: APIv2AuthProvider) -> String {
-        if let name = provider.networkIdentity?.name { return "Continue as \(name)" }
-        return "Continue with \(SignInOptions.providerName(for: provider))"
+        if let name = provider.networkIdentity?.name { return AppLanguage.string(.tvSignInNetworkContinueAs(name)) }
+        return AppLanguage.string(.tvSignInNetworkContinueWith(SignInOptions.providerName(for: provider)))
     }
 
     /// The line under a "Continue as" button naming the provider ("via
     /// Tailscale"). Nil when the button already names it.
     static func viaLine(for provider: APIv2AuthProvider) -> String? {
         guard provider.networkIdentity?.name != nil else { return nil }
-        return "via \(SignInOptions.providerName(for: provider))"
+        return AppLanguage.string(.tvSignInNetworkVia(SignInOptions.providerName(for: provider)))
     }
 
     /// What VoiceOver reads for the button: its title and the provider.
@@ -49,7 +49,7 @@ enum NetworkSignIn {
     /// The provider does not vouch for this device (unknown, tagged, or left
     /// out by its policy).
     private static func deviceRefusedText(_ provider: APIv2AuthProvider) -> String {
-        "\(SignInOptions.providerName(for: provider)) doesn't allow this device to sign in to this server."
+        AppLanguage.string(.tvSignInErrorNetworkNotPermitted(SignInOptions.providerName(for: provider)))
     }
 
     /// Copy for a failed network sign-in; nil when it was canceled. The
@@ -66,12 +66,11 @@ enum NetworkSignIn {
             case "network_identity_required":
                 // The saved address is another one (the LAN address, say), or
                 // this device is not on the provider's network right now.
-                return "Open this server at its \(name) address to sign in this way."
+                return AppLanguage.string(.tvSignInErrorNetworkIdentityRequired(name))
             case "not_permitted":
                 return deviceRefusedText(provider)
             case "email_in_use":
-                return "An account with your email already exists. Sign in with your password, then connect "
-                    + "\(name) in Settings → Sign-in."
+                return AppLanguage.string(.signInErrorNetworkEmailInUse(name))
             case "permission_denied":
                 // The account the person resolved to is disabled.
                 return ExternalSignInError.reasonText("account_disabled")
@@ -99,7 +98,7 @@ enum NetworkSignIn {
         if case APIv2Error.problem(let problem) = error {
             switch problem.identifier {
             case "network_identity_required":
-                return "Open this server at its \(SignInOptions.providerName(for: provider)) address to connect it."
+                return AppLanguage.string(.signInNetworkConnectIdentityRequired(SignInOptions.providerName(for: provider)))
             case "not_permitted":
                 return deviceRefusedText(provider)
             default:

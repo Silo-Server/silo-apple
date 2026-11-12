@@ -111,14 +111,17 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
             videoCapabilityMode: .aetherDeclared
         )
         XCTAssertEqual(snapshot.capabilities.videoEvidence, PlaybackProtocolV3.Evidence.declared)
-        XCTAssertEqual(snapshot.capabilities.videoDecode, [])
+        XCTAssertEqual(
+            snapshot.capabilities.videoDecode,
+            AppleDecodeCapabilities.playbackV3VideoDecode(AppleDecodeCapabilities.declaredOnlineVideo.decode)
+        )
         XCTAssertEqual(
             snapshot.capabilities.codecsVideoHardware,
             AppleDecodeCapabilities.hardwareVideoCodecs
         )
         XCTAssertEqual(
             snapshot.capabilities.codecsVideo,
-            AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs
+            AppleDecodeCapabilities.declaredOnlineVideo.codecs
         )
         XCTAssertEqual(
             snapshot.capabilities.codecsAudio,
@@ -135,7 +138,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         )
         XCTAssertEqual(
             originalHTTP.videoCodecs,
-            AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs
+            AppleDecodeCapabilities.declaredOnlineVideo.codecs
         )
         XCTAssertEqual(
             originalHTTP.audioDecodeCodecs,
@@ -207,7 +210,48 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         )
     }
 
-    func testAetherDeclarationKeepsV3WireShapeWithoutDetailedPredictions() throws {
+    /// iPhone and iPad claim software-only codecs within their measured
+    /// envelopes; hardware AV1 stays unbounded and the simulator, which does
+    /// not play AV1 direct, claims none.
+    func testDeclaredOnlineVideoBoundsSoftwareOnlyCodecs() {
+        func policy(tvOS: Bool = false, hardwareAV1: Bool, simulator: Bool) -> (codecs: Set<String>, bounded: [String: [Int]]) {
+            let declared = AppleDecodeCapabilities.declaredOnlineVideo(
+                isTVOS: tvOS, hardwareAV1: hardwareAV1, isSimulator: simulator
+            )
+            XCTAssertTrue(declared.decode.allSatisfy { !$0.hardware })
+            return (Set(declared.codecs), Dictionary(uniqueKeysWithValues: declared.decode.map {
+                ($0.codec, [$0.bitDepths.first ?? 0, $0.maxWidth, $0.maxHeight, Int($0.maxFrameRate), $0.maxBitrateKbps])
+            }))
+        }
+        let mpeg2 = [8, 720, 480, 31, 7_000]
+        let dav1d = [10, 1_920, 1_080, 30, 3_000]
+
+        let hardware = policy(hardwareAV1: true, simulator: false)
+        XCTAssertTrue(hardware.codecs.contains("av1"))
+        XCTAssertEqual(hardware.bounded, ["mpeg2video": mpeg2])
+
+        let software = policy(hardwareAV1: false, simulator: false)
+        XCTAssertTrue(software.codecs.contains("av1"))
+        XCTAssertEqual(software.bounded, ["mpeg2video": mpeg2, "av1": dav1d])
+
+        let simulator = policy(hardwareAV1: false, simulator: true)
+        XCTAssertFalse(simulator.codecs.contains("av1"))
+        XCTAssertTrue(simulator.codecs.contains("mpeg2video"))
+        XCTAssertEqual(simulator.bounded, ["mpeg2video": mpeg2])
+
+        let appleTV = policy(tvOS: true, hardwareAV1: false, simulator: false)
+        XCTAssertEqual(appleTV.codecs, Set(AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs))
+        XCTAssertEqual(appleTV.bounded, [:])
+
+        for declared in [hardware, software, simulator] {
+            XCTAssertEqual(
+                declared.codecs.union(["av1"]), Set(AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs),
+                "only AV1 ever leaves the engine's list"
+            )
+        }
+    }
+
+    func testAetherDeclarationKeepsV3WireShape() throws {
         let capabilities = ApplePlaybackV3Capabilities.snapshot(
             videoCapabilityMode: .aetherDeclared
         ).capabilities
@@ -222,10 +266,15 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
             object["video_evidence"] as? String,
             PlaybackProtocolV3.Evidence.declared
         )
-        XCTAssertEqual((object["video_decode"] as? [[String: Any]])?.count, 0)
+        let decode = try XCTUnwrap(object["video_decode"] as? [[String: Any]])
+        #if os(tvOS)
+        XCTAssertTrue(decode.isEmpty, "Apple TV 4K keeps the unbounded declaration")
+        #else
+        XCTAssertTrue(decode.contains { $0["codec"] as? String == "mpeg2video" && $0["max_height"] as? Int == 480 })
+        #endif
         XCTAssertEqual(
             object["codecs_video"] as? [String],
-            AppleDecodeCapabilities.aetherOriginalHTTPVideoCodecs
+            AppleDecodeCapabilities.declaredOnlineVideo.codecs
         )
         XCTAssertNil(object["videoEvidence"])
         XCTAssertNil(object["videoDecode"])
@@ -303,7 +352,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
             XCTAssertTrue(original.audioDecodeCodecs.contains("eac3"))
             XCTAssertTrue(original.audioDecodeCodecs.contains("truehd"))
             XCTAssertEqual(snapshot.capabilities.videoEvidence, PlaybackProtocolV3.Evidence.declared)
-            XCTAssertTrue(snapshot.capabilities.videoDecode.isEmpty)
+            XCTAssertTrue(snapshot.capabilities.videoDecode.allSatisfy { !$0.hardware }, "only software envelopes bound the declaration")
 
             for delivery in [PlaybackProtocolV3.DeliveryClass.progressive, PlaybackProtocolV3.DeliveryClass.hls] {
                 let packaged = try XCTUnwrap(snapshot.context.deliveries[delivery])

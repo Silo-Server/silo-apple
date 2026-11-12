@@ -50,8 +50,8 @@ struct DiscoveredServer: Identifiable, Hashable, Sendable {
     var detail: String {
         let host = ServerBranding.hostLabel(url)
         switch route {
-        case .localNetwork: return "On this network · \(host)"
-        case .overlay: return "Private network · \(host)"
+        case .localNetwork: return AppLanguage.string(.setupDiscoveredLocalNetwork(host))
+        case .overlay: return AppLanguage.string(.setupDiscoveredPrivateNetwork(host))
         }
     }
 }

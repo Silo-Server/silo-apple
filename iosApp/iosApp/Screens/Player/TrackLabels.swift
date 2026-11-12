@@ -21,8 +21,8 @@ enum TrackLabels {
         return title
     }
 
-    /// English display name for a language tag ("eng", "fre", "pt-BR"), or nil
-    /// when it is missing or undetermined.
+    /// Display name in the app's language for a language tag ("eng", "fre",
+    /// "pt-BR"), or nil when it is missing or undetermined.
     static func languageName(_ value: String?) -> String? {
         guard let value = nonEmpty(value) else { return nil }
         let primary = value
@@ -42,6 +42,14 @@ enum TrackLabels {
             return SubtitleDisplayOrder.languageDisplayName(key)
         }
         return value.uppercased()
+    }
+
+    /// The language's name as shown, then in English when that differs: a
+    /// track title repeats the English name in any app language.
+    private static func languageNames(_ value: String?) -> [String] {
+        guard let shown = languageName(value) else { return [] }
+        let english = AppLanguage.inEnglish { languageName(value) }
+        return english == nil || english == shown ? [shown] : [shown, english!]
     }
 
     static func audioCodec(_ codec: String?) -> String? {
@@ -78,16 +86,16 @@ enum TrackLabels {
             if lowered.contains("atmos") { return "Atmos" }
             if lowered.contains("7.1") { return "7.1" }
             if lowered.contains("5.1") { return "5.1" }
-            if lowered.contains("stereo") { return "Stereo" }
-            if lowered.contains("mono") { return "Mono" }
+            if lowered.contains("stereo") { return AppLanguage.string(.detailStereo) }
+            if lowered.contains("mono") { return AppLanguage.string(.detailMono) }
             return layout
         }
         switch channels {
-        case 1: return "Mono"
-        case 2: return "Stereo"
+        case 1: return AppLanguage.string(.detailMono)
+        case 2: return AppLanguage.string(.detailStereo)
         case 6: return "5.1"
         case 8: return "7.1"
-        case let channels? where channels > 0: return "\(channels)ch"
+        case let channels? where channels > 0: return AppLanguage.string(.detailChannels(LocaleFormat.integer(channels)))
         default: return nil
         }
     }
@@ -103,12 +111,15 @@ enum TrackLabels {
         // E-AC-3 titles say Atmos as "JOC"; it goes when the title already says Atmos.
         let saysAtmos = remainder.range(of: "atmos", options: .caseInsensitive) != nil
         remainder = replacingMatches(of: jointObjectCoding, in: remainder, with: saysAtmos ? " " : "Atmos")
-        if let language = languageName(language) {
+        // Titles name the language in English ("English 5.1") whatever the
+        // app shows, so both names count.
+        let names = languageNames(language)
+        if !names.isEmpty {
             remainder = removingWords(from: remainder) { word in
                 // A code counts only when written as one ("ENG (eac3)"),
                 // so "por" or "It" in a title stays.
-                word.caseInsensitiveCompare(language) == .orderedSame
-                    || ((2...3).contains(word.count) && word == word.uppercased() && languageName(word) == language)
+                names.contains { word.caseInsensitiveCompare($0) == .orderedSame }
+                    || ((2...3).contains(word.count) && word == word.uppercased() && languageName(word) == names.first)
             }
         }
         remainder = replacingMatches(of: emptyBrackets, in: remainder)
@@ -220,7 +231,7 @@ enum TrackLabels {
         if showsHearingImpaired { flagNames.insert("hi") }
         if formatNames.contains(lowered) || flagNames.contains(lowered) { return nil }
         if lowered == "subtitle" || lowered == "subtitles" { return nil }
-        if let name = languageName(language)?.lowercased(), lowered == name { return nil }
+        if languageNames(language).contains(where: { $0.lowercased() == lowered }) { return nil }
         if let code = nonEmpty(language)?.lowercased(), lowered == code { return nil }
         if let codec = nonEmpty(codec)?.lowercased(),
            lowered == codec || lowered == subtitleCodec(codec)?.lowercased() {

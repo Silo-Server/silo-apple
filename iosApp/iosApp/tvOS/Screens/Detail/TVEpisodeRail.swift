@@ -515,6 +515,7 @@ private extension View {
 }
 
 struct TVEpisodeCard: View {
+    @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     var isCurrent: Bool = false
     var baseCardWidth: CGFloat = 480
@@ -601,20 +602,21 @@ struct TVEpisodeCard: View {
             title: episode.title,
             metadata: EpisodeCardCaption.railMetadata(for: episode),
             isCurrent: isCurrent,
-            isPlayed: isPlayed
+            isPlayed: isPlayed,
+            locale: locale
         )
     }
 
     @ViewBuilder
     private var contextActions: some View {
-        WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode")
+        WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode") // i18n-ignore: watch-party payload (D44)
         if let onPlay {
             Button {
                 onPlay(episode.contentId)
             } label: {
-                // Verbatim so year-numbered seasons don't render as "S2,021".
+                // String arguments so year-numbered seasons don't render as "S2,021".
                 Label {
-                    Text(verbatim: "Play S\(episode.seasonNumber):E\(episode.episodeNumber)")
+                    Text(.detailPlayEpisode(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber)))
                 } icon: {
                     Image(systemName: "play.fill")
                 }
@@ -625,7 +627,7 @@ struct TVEpisodeCard: View {
             isWatched: isPlayed,
             isFavorite: isFavorite,
             inWatchlist: inWatchlist,
-            watchedSubject: "Episode",
+            watchedSubject: "Episode", // i18n-ignore: fragment for MediaStateMenuItems (shared component, not in this group)
             isUpdating: actionFeedback.isUpdating,
             onToggleWatched: onSetWatched.map { update in
                 {
@@ -668,6 +670,7 @@ struct TVEpisodeCard: View {
 }
 
 private struct EpisodeCardLabel: View {
+    @Environment(\.locale) private var locale
     let episode: EpisodeListItem
     let isPlayed: Bool
     /// Spoiler protection: blur the still of an episode the profile has not
@@ -691,7 +694,7 @@ private struct EpisodeCardLabel: View {
             // episode's synopsis is already in the hero above the rail.
             VStack(alignment: .leading, spacing: TVEpisodeCardCaptionMetrics.lineSpacing) {
                 captionLine(
-                    EpisodeCardCaption.railTitle(for: episode),
+                    EpisodeCardCaption.railTitle(for: episode, locale: locale),
                     font: .system(size: usesAnchoredStyle ? 20 : 24, weight: .semibold),
                     height: usesAnchoredStyle
                         ? TVEpisodeCardCaptionMetrics.anchoredTitleHeight

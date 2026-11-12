@@ -15,11 +15,12 @@ enum TVLibraryPill: String, Hashable, CaseIterable {
     /// The full library, browsable as an A–Z grid.
     case browse
 
+    /// Resolved in the app language; `TVCascadeSelector` takes a `String`.
     var title: String {
         switch self {
-        case .recommended: return "Recommended"
-        case .collections: return "Collections"
-        case .browse: return "Browse"
+        case .recommended: return AppLanguage.string(.libraryRecommended)
+        case .collections: return AppLanguage.string(.libraryCollections)
+        case .browse: return AppLanguage.string(.libraryBrowse)
         }
     }
 

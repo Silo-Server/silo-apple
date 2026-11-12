@@ -13,6 +13,7 @@ import SwiftUI
 ///   side-rail (alphabet jumper etc.) eats horizontal space, or the
 ///   fixed `posterCardWidth` cards start overlapping each other.
 struct TVCatalogGrid: View {
+    @Environment(\.locale) private var locale
     let items: [BrowseItem]
     let isLoading: Bool
     let hasMore: Bool
@@ -77,7 +78,9 @@ struct TVCatalogGrid: View {
                             imageIsEpisodeStill: item.posterIsEpisodeStill,
                             mediaType: boxSet == nil ? item.type : "movie",
                             year: item.year,
-                            subtitle: boxSet?.cardCaption ?? EpisodeCardCaption.line(for: item),
+                            subtitle: boxSet?.cardCaption
+                                ?? EpisodeCardCaption.line(for: item, locale: locale)
+                                ?? CardYears.caption(for: item, locale: locale),
                             userState: boxSet == nil ? item.userState : nil,
                             overlayData: boxSet == nil ? OverlayData.from(item) : nil,
                             action: { open(item) },

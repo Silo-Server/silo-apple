@@ -79,8 +79,14 @@ extension ItemDetail {
         self.themes = value.themes
         self.videos = value.videos.map { $0.map { ItemVideo(catalog: $0) } }
         self.extras = try value.extras.map { try $0.map { try ItemExtra(catalog: $0) } }
-        self.userState = value.userState.map {
-            MediaItemUserState(played: $0.played, isFavorite: $0.isFavorite, inWatchlist: $0.inWatchlist)
+        self.userState = try value.userState.map {
+            MediaItemUserState(
+                played: $0.played,
+                isFavorite: $0.isFavorite,
+                inWatchlist: $0.inWatchlist,
+                watchedCount: try $0.watchedCount.map { try catalogLegacyInt($0) },
+                unplayedCount: try $0.unplayedCount.map { try catalogLegacyInt($0) }
+            )
         }
         self.posterIsEpisodeStill = value.posterIsEpisodeStill
         self.backdropIsEpisodeStill = value.backdropIsEpisodeStill

@@ -3,7 +3,7 @@ import SwiftUI
 #if os(iOS)
 /// `Stepper` with a trailing value label that commits on every step.
 private struct RangeSpinner<Value: Strideable>: View {
-    let title: String
+    let title: LocalizedStringResource
     @Binding var value: Value
     let range: ClosedRange<Value>
     let step: Value.Stride
@@ -40,6 +40,7 @@ struct PlayerSettingsSheet: View {
     var statsOverlayVisible: Binding<Bool>?
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
 
     var body: some View {
         NavigationStack {
@@ -49,11 +50,11 @@ struct PlayerSettingsSheet: View {
                 sessionSection
                 advancedSection
             }
-            .navigationTitle("Playback Settings")
+            .navigationTitle(Text(.playerSettingsSheetTitle))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                    Button { dismiss() } label: { Text(.commonDone) }
                 }
             }
         }
@@ -68,11 +69,15 @@ struct PlayerSettingsSheet: View {
                 NavigationLink {
                     qualityPage
                 } label: {
-                    LabeledContent("Quality", value: activeQualityLabel)
+                    LabeledContent {
+                        Text(activeQualityLabel)
+                    } label: {
+                        Text(.optionsQuality)
+                    }
                 }
             }
 
-            Picker("Aspect", selection: Binding(
+            Picker(selection: Binding(
                 get: { viewModel.settings.videoGravity },
                 set: { newValue in
                     viewModel.setVideoGravity(newValue)
@@ -81,9 +86,11 @@ struct PlayerSettingsSheet: View {
                 ForEach(VideoGravity.allCases, id: \.self) { gravity in
                     Text(gravity.label).tag(gravity)
                 }
+            } label: {
+                Text(.playerHudAspect)
             }
         } header: {
-            Text("Video")
+            Text(.optionsTabVideo)
         }
     }
 
@@ -124,7 +131,7 @@ struct PlayerSettingsSheet: View {
                 if viewModel.isQualitySwitching {
                     HStack(spacing: 8) {
                         ProgressView()
-                        Text("Switching quality…")
+                        Text(.playerQualitySwitching)
                     }
                 } else if let error = viewModel.qualitySwitchError {
                     Text(error)
@@ -132,7 +139,7 @@ struct PlayerSettingsSheet: View {
                 }
             }
         }
-        .navigationTitle("Quality")
+        .navigationTitle(Text(.optionsQuality))
         .navigationBarTitleDisplayMode(.inline)
     }
 
@@ -140,18 +147,22 @@ struct PlayerSettingsSheet: View {
     private var subtitlesSection: some View {
         if viewModel.backendCapabilities.supportsSubtitleStyling
             || viewModel.backendCapabilities.supportsSubtitleDelay {
-            Section("Subtitles") {
+            Section {
                 if viewModel.backendCapabilities.supportsSubtitleStyling {
                     NavigationLink {
                         subtitleAppearancePage
                     } label: {
-                        LabeledContent("Appearance", value: appearanceSummary)
+                        LabeledContent {
+                            Text(appearanceSummary)
+                        } label: {
+                            Text(.playerHudSubtitleAppearance)
+                        }
                     }
                 }
 
                 if viewModel.backendCapabilities.supportsSubtitleDelay {
                     RangeSpinner(
-                        title: "Subtitle Delay",
+                        title: .playerSettingsSubtitleDelayTitle,
                         value: Binding(
                             get: { viewModel.settings.subtitleSyncMs },
                             set: { viewModel.setSubtitleSyncMilliseconds($0) }
@@ -161,6 +172,8 @@ struct PlayerSettingsSheet: View {
                         display: { formatMs($0) }
                     )
                 }
+            } header: {
+                Text(.playerTracksSubtitles)
             }
         }
     }
@@ -168,7 +181,7 @@ struct PlayerSettingsSheet: View {
     /// "Large · Box · Bottom"-style value label for the Appearance row.
     private var appearanceSummary: String {
         if viewModel.settings.subtitleMatchesSystemAppearance {
-            return "Using Device"
+            return AppLanguage.string(.playerSubtitlesUsingDevice, locale: locale)
         }
         let appearance = viewModel.settings.subtitleAppearance
         return [
@@ -186,104 +199,130 @@ struct PlayerSettingsSheet: View {
                     .listRowInsets(EdgeInsets())
             } footer: {
                 if !matchesSystem && viewModel.settings.subtitleAppearance.isLowLegibilityRisk {
-                    Text("Low legibility — very transparent or dark text without a box or outline can be hard to read.")
+                    Text(.playerSubtitlesLowLegibility)
                 }
             }
 
             Section {
-                Toggle("Use device settings", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { viewModel.settings.subtitleMatchesSystemAppearance },
                     set: { enabled in
                         viewModel.setSubtitleMatchesSystemAppearance(enabled)
                     }
-                ))
+                )) {
+                    Text(.playerSubtitlesUseDeviceSettings)
+                }
                 .tint(.siloSwitchOn)
 
-                Toggle("Only on this device", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { viewModel.settings.subtitleUsesDeviceAppearanceOverride },
                     set: { enabled in
                         Task { await viewModel.setSubtitleDeviceOverrideEnabled(enabled) }
                     }
-                ))
+                )) {
+                    Text(.playerSubtitlesOnlyOnThisDevice)
+                }
                 .tint(.siloSwitchOn)
                 .disabled(matchesSystem)
             } footer: {
                 Text(matchesSystem
-                     ? "Following this device's caption language, behavior, CC/SDH preference, and complete style from Accessibility settings."
-                     : "Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
+                     ? LocalizedStringResource.playerSubtitlesDeviceStyleNote
+                     : .playerSubtitlesBuiltInStylingNote)
             }
 
-            Section("Text") {
-                Picker("Font size", selection: appearanceEnumBinding(\.fontSize, SubtitleFontSizePreset.self)) {
+            Section {
+                Picker(selection: appearanceEnumBinding(\.fontSize, SubtitleFontSizePreset.self)) {
                     ForEach(SubtitleFontSizePreset.allCases) { option in
                         Text(option.label).tag(option.rawValue)
                     }
+                } label: {
+                    Text(.playerSubtitlesStyleFontSize)
                 }
 
-                Picker("Font family", selection: appearanceEnumBinding(\.fontFamily, SubtitleFontFamilyPreset.self)) {
+                Picker(selection: appearanceEnumBinding(\.fontFamily, SubtitleFontFamilyPreset.self)) {
                     ForEach(SubtitleFontFamilyPreset.allCases) { option in
                         Text(option.label).tag(option.rawValue)
                     }
+                } label: {
+                    Text(.playerSubtitlesStyleFontFamily)
                 }
 
-                Picker("Font color", selection: appearanceStringBinding(\.fontColor)) {
+                Picker(selection: appearanceStringBinding(\.fontColor)) {
                     ForEach(SubtitleAppearance.fontColors, id: \.hex) { color in
                         Text(color.label).tag(color.hex)
                     }
+                } label: {
+                    Text(.playerSubtitlesStyleFontColor)
                 }
 
                 if viewModel.settings.offersSubtitleTextOpacity {
                     textOpacityRow
                 }
 
-                Toggle("Text outline", isOn: appearanceBoolBinding(\.textOutline))
-                    .tint(.siloSwitchOn)
+                Toggle(isOn: appearanceBoolBinding(\.textOutline)) {
+                    Text(.playerSubtitlesStyleTextOutline)
+                }
+                .tint(.siloSwitchOn)
 
-                Picker("Outline color", selection: appearanceStringBinding(\.textOutlineColor)) {
+                Picker(selection: appearanceStringBinding(\.textOutlineColor)) {
                     ForEach(SubtitleAppearance.outlineColors, id: \.hex) { color in
                         Text(color.label).tag(color.hex)
                     }
+                } label: {
+                    Text(.playerSubtitlesStyleOutlineColor)
                 }
                 .disabled(!viewModel.settings.subtitleAppearance.textOutline)
+            } header: {
+                Text(.playerSubtitlesStyleTextSection)
             }
             .disabled(matchesSystem)
 
-            Section("Background") {
-                Picker("Style", selection: appearanceBackgroundStyleBinding) {
+            Section {
+                Picker(selection: appearanceBackgroundStyleBinding) {
                     ForEach(SubtitleBackgroundStylePreset.selectableCases) { option in
                         Text(option.label).tag(option.rawValue)
                     }
+                } label: {
+                    Text(.playerSubtitlesStyleBackgroundStyle)
                 }
 
                 appearanceOpacityRow
                     .disabled(viewModel.settings.subtitleAppearance.backgroundStyle != .box)
 
-                Picker("Color", selection: appearanceStringBinding(\.backgroundColor)) {
+                Picker(selection: appearanceStringBinding(\.backgroundColor)) {
                     ForEach(SubtitleAppearance.backgroundColors, id: \.hex) { color in
                         Text(color.label).tag(color.hex)
                     }
+                } label: {
+                    Text(.playerSubtitlesStyleBackgroundColorShort)
                 }
                 .disabled(viewModel.settings.subtitleAppearance.backgroundStyle != .box)
+            } header: {
+                Text(.playerSubtitlesStyleBackground)
             }
             .disabled(matchesSystem)
 
-            Section("Layout") {
-                Picker("Position", selection: appearanceEnumBinding(\.position, SubtitlePositionPreset.self)) {
+            Section {
+                Picker(selection: appearanceEnumBinding(\.position, SubtitlePositionPreset.self)) {
                     ForEach(SubtitlePositionPreset.allCases) { option in
                         Text(option.label).tag(option.rawValue)
                     }
+                } label: {
+                    Text(.playerSubtitlesStylePosition)
                 }
+            } header: {
+                Text(.playerSubtitlesStyleLayoutSection)
             }
             .disabled(matchesSystem)
         }
-        .navigationTitle("Subtitle Appearance")
+        .navigationTitle(Text(.playerSubtitlesAppearanceTitle))
         .navigationBarTitleDisplayMode(.inline)
     }
 
     private var appearanceOpacityRow: some View {
         PercentField(
-            label: "Opacity",
-            accessibilityLabelText: "Background Opacity",
+            label: AppLanguage.string(.playerSubtitlesStyleOpacity, locale: locale),
+            accessibilityLabelText: AppLanguage.string(.playerSubtitlesStyleBackgroundOpacityLabel, locale: locale),
             min: 0,
             value: viewModel.settings.subtitleAppearance.backgroundOpacity
         ) { newValue in
@@ -294,8 +333,8 @@ struct PlayerSettingsSheet: View {
 
     private var textOpacityRow: some View {
         PercentField(
-            label: "Opacity",
-            accessibilityLabelText: "Text Opacity",
+            label: AppLanguage.string(.playerSubtitlesStyleOpacity, locale: locale),
+            accessibilityLabelText: AppLanguage.string(.playerSubtitlesStyleTextOpacityLabel, locale: locale),
             min: 1,
             value: viewModel.settings.subtitleAppearance.textOpacity
         ) { newValue in
@@ -307,35 +346,43 @@ struct PlayerSettingsSheet: View {
     private static let speedOptions: [Double] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0]
 
     private var sessionSection: some View {
-        Section("Session") {
+        Section {
             if !viewModel.isWatchPartyPlayback {
-                Picker("Speed", selection: Binding(
+                Picker(selection: Binding(
                     get: { Self.speedOptions.min(by: {
                         abs($0 - viewModel.settings.playbackSpeed) < abs($1 - viewModel.settings.playbackSpeed)
                     }) ?? 1.0 },
                     set: { viewModel.setPlaybackSpeed($0) }
                 )) {
                     ForEach(Self.speedOptions, id: \.self) { speed in
-                        Text(speed == 1.0 ? "1×" : String(format: "%g×", speed)).tag(speed)
+                        Text(verbatim: LocaleFormat.rate(speed)).tag(speed)
                     }
+                } label: {
+                    Text(.playerSettingsSpeed)
                 }
             }
             sleepTimerPicker
 
             if sleepTimer.isActive {
-                LabeledContent("Remaining") {
+                LabeledContent {
                     Text(PlayerTimeFormatter.formatHMS(Double(sleepTimer.remainingSeconds)))
                         .monospacedDigit()
+                } label: {
+                    Text(.playerSleepTimerRemaining)
                 }
             }
 
             if !viewModel.isWatchPartyPlayback {
-                Toggle("Auto-Play Next Episode", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { viewModel.settings.autoPlayNextEpisode },
                     set: { viewModel.settings.setAutoPlayNextEpisode($0) }
-                ))
+                )) {
+                    Text(.settingsControlAutoplay)
+                }
                 .tint(.siloSwitchOn)
             }
+        } header: {
+            Text(.playerSettingsSession)
         }
     }
 
@@ -344,8 +391,8 @@ struct PlayerSettingsSheet: View {
             if let statsOverlayVisible {
                 Toggle(isOn: statsOverlayVisible) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Stats")
-                        Text("Live overlay on the player")
+                        Text(.optionsTabStats)
+                        Text(.playerStatsOverlayNote)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -357,8 +404,8 @@ struct PlayerSettingsSheet: View {
                 advancedPage
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Advanced")
-                    Text("Route & playback diagnostics")
+                    Text(.playerSettingsSectionAdvanced)
+                    Text(.playerSettingsAdvancedNote)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -368,7 +415,7 @@ struct PlayerSettingsSheet: View {
 
     private var advancedPage: some View {
         List {
-            Section("Route") {
+            Section {
                 ForEach(viewModel.routeStatusRows) { row in
                     HStack(alignment: .firstTextBaseline) {
                         Text(row.label)
@@ -378,10 +425,12 @@ struct PlayerSettingsSheet: View {
                             .multilineTextAlignment(.trailing)
                     }
                 }
+            } header: {
+                Text(.playerHudRoute)
             }
 
             if viewModel.routeDecisionSummary != nil || !viewModel.routeWarnings.isEmpty {
-                Section("Diagnostics") {
+                Section {
                     if let summary = viewModel.routeDecisionSummary {
                         Text(summary)
                             .font(.caption)
@@ -393,17 +442,19 @@ struct PlayerSettingsSheet: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                } header: {
+                    Text(.playerSettingsDiagnostics)
                 }
             }
         }
-        .navigationTitle("Advanced")
+        .navigationTitle(Text(.playerSettingsSectionAdvanced))
         .navigationBarTitleDisplayMode(.inline)
     }
 
     // MARK: - Sleep timer
 
     private var sleepTimerPicker: some View {
-        Picker("Sleep Timer", selection: Binding<Int>(
+        Picker(selection: Binding<Int>(
             get: { sleepTimer.isActive ? sleepTimerMinutesOption(remaining: sleepTimer.remainingSeconds) : 0 },
             set: { newValue in
                 if newValue == 0 {
@@ -413,13 +464,15 @@ struct PlayerSettingsSheet: View {
                 }
             }
         )) {
-            Text("Off").tag(0)
-            Text("5 min").tag(5)
-            Text("15 min").tag(15)
-            Text("30 min").tag(30)
-            Text("45 min").tag(45)
-            Text("1 hour").tag(60)
-            Text("2 hours").tag(120)
+            Text(.playerSleepTimerOff).tag(0)
+            Text(.playerSleepTimerMinutesOption(5)).tag(5)
+            Text(.playerSleepTimerMinutesOption(15)).tag(15)
+            Text(.playerSleepTimerMinutesOption(30)).tag(30)
+            Text(.playerSleepTimerMinutesOption(45)).tag(45)
+            Text(.playerSleepTimerHours(1)).tag(60)
+            Text(.playerSleepTimerHours(2)).tag(120)
+        } label: {
+            Text(.playerSleepTimerPickerTitle)
         }
     }
 
@@ -477,9 +530,9 @@ struct PlayerSettingsSheet: View {
     // MARK: - Helpers
 
     private func formatMs(_ ms: Int) -> String {
-        if ms == 0 { return "0 ms" }
+        if ms == 0 { return LocaleFormat.integer(0) + " ms" }
         let sign = ms > 0 ? "+" : ""
-        return "\(sign)\(ms) ms"
+        return "\(sign)\(LocaleFormat.integer(ms)) ms"
     }
 
     /// Map the timer's remaining seconds back to the nearest whole-minute

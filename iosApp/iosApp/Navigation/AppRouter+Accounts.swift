@@ -41,13 +41,76 @@ struct AccountRemovalRequest: Identifiable, Equatable {
         }
     }
 
-    /// "This deletes 12 downloads (8.4 GB) from this iPhone." Nil without
-    /// downloads.
-    static func downloadsSentence(count: Int, bytes: Int64, lead: String = "This deletes") -> String? {
+    /// "This deletes 12 downloads (8.4 GB) from this iPhone.", or "It also
+    /// deletes …" after another sentence. Nil without downloads.
+    static func downloadsSentence(count: Int, bytes: Int64, also: Bool = false) -> String? {
         guard count > 0 else { return nil }
-        let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
-        let noun = count == 1 ? "download" : "downloads"
-        return "\(lead) \(count) \(noun) (\(size)) from this \(DeviceNoun.current)."
+        let size = LocaleFormat.bytes(bytes)
+        let device = DeviceNoun.current
+        return AppLanguage.string(also
+            ? LocalizedStringResource.accountRemovalDownloadsAlso(count: count, LocaleFormat.integer(count), size, device)
+            : .accountRemovalDownloads(count: count, LocaleFormat.integer(count), size, device))
+    }
+}
+
+/// Add Profile in the profile menu (spec §4.3): the new-profile form over
+/// the screen the menu was opened from, behind the primary profile's PIN
+/// when it has one.
+struct AddProfileRequest: Identifiable, Equatable {
+    /// One per time the row is chosen. A PIN check that outlives its prompt
+    /// names the request it belongs to, so it cannot close or unlock a
+    /// later one for the same profile.
+    let id = UUID()
+    /// The account's primary profile, which manages its profiles: with one
+    /// profile, the open one.
+    let primary: UserProfile
+    /// The server, account and profile the row was chosen under. What
+    /// follows a create belongs to that session only.
+    let session: AccountScope?
+
+    /// What choosing Add Profile does.
+    enum Start: Equatable {
+        /// The new-profile form, behind `primary`'s PIN when it has one.
+        case form(primary: UserProfile)
+        /// The account has several profiles after all (the row was drawn
+        /// from an older list): its picker, as Switch Profile opens it.
+        case picker
+        /// No profile list, or its only profile isn't the open one. The form
+        /// never opens for a profile that isn't open, so Add Profile cannot
+        /// change who is watching.
+        case unavailable
+    }
+
+    /// - Parameters:
+    ///   - profiles: the account's profiles, fresh when the server answered.
+    ///   - openProfileID: the profile that is open.
+    static func start(profiles: [UserProfile], openProfileID: String?) -> Start {
+        guard profiles.count <= 1 else { return .picker }
+        guard let only = profiles.first, only.id == openProfileID else { return .unavailable }
+        return .form(primary: only)
+    }
+
+    /// Whether the picker shows once the form has closed after a create that
+    /// succeeded or whose answer never arrived. Only a fresh list that holds
+    /// one profile shows nothing was added; a list that couldn't be read
+    /// doesn't.
+    static func showsPicker(afterCreateWith freshProfileCount: Int?) -> Bool {
+        freshProfileCount != 1
+    }
+
+    /// Whether a step that waited on the server may go on. The session it
+    /// started in must still be the one open: the same server, account and
+    /// profile, so a late answer never opens the form, the picker or an
+    /// alert over the account or profile that replaced it. Profile IDs
+    /// repeat across accounts on one server, so all three are compared.
+    /// And no Add Profile request may be on screen: one that came up while
+    /// the step waited is newer, and an older read must not replace it or
+    /// take it to the picker. False when no profile was open to begin with.
+    static func mayProceed(
+        startedIn started: AccountScope?, now current: AccountScope?, onScreen request: AddProfileRequest?
+    ) -> Bool {
+        guard request == nil, let started, started.profileId != nil else { return false }
+        return started == current
     }
 }
 
@@ -149,10 +212,117 @@ extension AppRouter {
         return account?.needsSignIn == true ? account?.username : nil
     }
 
+    // MARK: - Add Profile from the profile menu
+
+    /// Opens profile creation from the profile menu by the picker's rules:
+    /// the account's primary profile manages its profiles, and its PIN is
+    /// asked first when it has one.
+    func beginAddProfile() {
+        guard addProfileRequest == nil, authState == .authenticated else { return }
+        let session = AccountScope.current
+        Task { @MainActor in
+            // A fresh list, so a PIN set on another device is asked for; the
+            // cached one when the server can't be reached.
+            let cached: [UserProfile]? = ResponseCache.shared.get(CacheKey.profiles)
+            let profiles = (try? await StartupContentPrefetcher.fetchProfiles()) ?? cached ?? []
+            // The menu closed before the list was asked for, so the account
+            // or profile can have changed meanwhile. The list, and a cached
+            // one above all, then belongs to the session that was replaced.
+            // Add Profile can also have been chosen again and be on screen.
+            guard authState == .authenticated,
+                  AddProfileRequest.mayProceed(
+                      startedIn: session, now: AccountScope.current, onScreen: addProfileRequest
+                  ) else { return }
+            switch AddProfileRequest.start(profiles: profiles, openProfileID: session?.profileId) {
+            case .form(let primary):
+                addProfileRequest = AddProfileRequest(primary: primary, session: session)
+            case .picker:
+                switchProfile()
+            case .unavailable:
+                accountActionError = AppLanguage.string(.profilesErrorNoPrimaryCreate)
+            }
+        }
+    }
+
+    /// Whether `request` is the one on screen. False once its prompt was
+    /// closed, also when Add Profile was chosen again since.
+    func isPresenting(_ request: AddProfileRequest) -> Bool {
+        addProfileRequest?.id == request.id
+    }
+
+    /// Closes Add Profile for `request`, with `error` in the account alert
+    /// when there is one. Nothing happens once that request is gone: a PIN
+    /// check that finishes late must not close a newer prompt or form, or
+    /// report an error for a request the person already left.
+    func closeAddProfile(_ request: AddProfileRequest, reporting error: String? = nil) {
+        guard isPresenting(request) else { return }
+        addProfileRequest = nil
+        if let error { accountActionError = error }
+    }
+
+    /// `request`'s new-profile form closed after creating a profile, or
+    /// after a create whose answer never arrived: the account's picker
+    /// shows, as it does after adding from the picker. The screen underneath
+    /// stays when a fresh list shows that nothing was added.
+    ///
+    /// The form is closed while the list is read, so the account or profile
+    /// can change meanwhile, and a read that fails for that reason looks
+    /// like one that couldn't be made. The picker therefore shows only
+    /// while the session the request was made in is still the one open,
+    /// and not over an Add Profile request that came up meanwhile.
+    func finishAddProfile(_ request: AddProfileRequest) {
+        closeAddProfile(request)
+        Task { @MainActor in
+            let freshCount = (try? await StartupContentPrefetcher.fetchProfiles())?.count
+            guard authState == .authenticated,
+                  AddProfileRequest.mayProceed(
+                      startedIn: request.session, now: AccountScope.current, onScreen: addProfileRequest
+                  ),
+                  AddProfileRequest.showsPicker(afterCreateWith: freshCount) else { return }
+            switchProfile()
+        }
+    }
+
+    // MARK: - When Profile Selection asks for a choice
+
+    /// Every account saved on this device, across all servers, including
+    /// those that must sign in again.
+    private static func savedAccountCount() -> Int {
+        let directory = AccountDirectory.shared
+        directory.reload()
+        return directory.accounts.count
+    }
+
+    /// Commits the route a cold launch resolved. When Profile Selection
+    /// asks for a choice and several accounts are saved, the profile flow
+    /// starts at Change Account with no profile open, instead of the last
+    /// account's picker or its only profile (spec §4.2).
+    func commitLaunchRoute(_ state: AuthState) {
+        switch state {
+        case .needsProfile, .serverRecovery:
+            // A server that has to be recovered first still leads here.
+            choosesAccountFirst = ProfileLaunchPreferences.shared.state
+                .promptAtLaunch(savedAccountCount: Self.savedAccountCount()) == .changeAccount
+        case .loading, .needsServerSetup, .needsLogin, .needsPasswordChange, .authenticated:
+            choosesAccountFirst = false
+        }
+        authState = state
+    }
+
+    /// Profile Selection closed the open profile on a return from the
+    /// background: Change Account when several accounts are saved, otherwise
+    /// the open account's picker (spec §4.2).
+    func showProfileSelectionAfterReturn() {
+        let prompt = ProfileLaunchPreferences.shared.state
+            .promptAfterBackground(savedAccountCount: Self.savedAccountCount())
+        showProfileSelection(choosingAccountFirst: prompt == .changeAccount)
+    }
+
     // MARK: - Change Account
 
     /// Opens Change Account (spec §4.1): pushed over the picker or Home, or
-    /// the profile flow's root while no account is open.
+    /// the profile flow's root while no account is open or the person
+    /// chooses the account first.
     func showChangeAccount() {
         switch authState {
         case .needsProfile where showsChangeAccountRoot:
@@ -187,13 +357,25 @@ extension AppRouter {
         withTransaction(transaction, body)
     }
 
-    /// The open account chosen in Change Account: its picker again.
+    /// The open account chosen in Change Account: its picker again. Where
+    /// Change Account is the root because the person chooses the account
+    /// first, no profile is open and there is no picker underneath, so the
+    /// open account opens as any other does: its only profile without a PIN
+    /// directly, otherwise its picker.
     func showCurrentAccountPicker() {
-        if authState == .needsProfile {
-            popToRoot()
-        } else {
+        guard authState == .needsProfile else {
             switchProfile()
+            return
         }
+        guard showsChangeAccountRoot else {
+            popToRoot()
+            return
+        }
+        recordScreenBreadcrumb(target: "profileSelection", action: "changeAccount")
+        choosesAccountFirst = false
+        skipsSingleProfilePicker = true
+        pickerRequestedByPerson = false
+        withoutStackCrossfade { resetAfterServerResolution(to: .needsProfile) }
     }
 
     /// Makes another saved account the active one on its server (switching
@@ -207,6 +389,7 @@ extension AppRouter {
         try await AccountSessions.switchTo(account: localAccountId, onServer: serverId)
         MarqueeScene.shared.showActiveServer()
         recordScreenBreadcrumb(target: "profileSelection", action: "changeAccount")
+        choosesAccountFirst = false
         skipsSingleProfilePicker = true
         pickerRequestedByPerson = false
         // The server can refuse the account's session during the switch.
@@ -312,22 +495,23 @@ extension AppRouter {
               old.username?.lowercased() != signedIn.username?.lowercased() || old.username == nil
         else { return }
         skipsSingleProfilePicker = false
-        let serverName = ServerRegistry.shared.entry(with: request.serverId)?.displayName ?? "this server"
-        let oldName = old.username ?? "the old account"
-        let newName = signedIn.username ?? "this account"
+        let serverName = ServerRegistry.shared.entry(with: request.serverId)?.displayName
+            ?? AppLanguage.string(.accountFallbackThisServer)
+        let oldName = old.username ?? AppLanguage.string(.accountFallbackOldAccount)
+        let newName = signedIn.username ?? AppLanguage.string(.accountFallbackThisAccount)
         Task {
             let summary = await AccountSessions.downloadSummary(account: renewing, onServer: request.serverId)
             let downloads = summary.flatMap {
-                AccountRemovalRequest.downloadsSentence(count: $0.count, bytes: $0.bytes, lead: "It also deletes")
+                AccountRemovalRequest.downloadsSentence(count: $0.count, bytes: $0.bytes, also: true)
             }
             pendingRemoval = AccountRemovalRequest(
                 serverId: request.serverId,
                 action: .replace(localAccountId: renewing),
-                title: "Replace \(oldName) with \(newName)?",
-                message: ["You're now signed in to \(serverName) as \(newName). Replacing signs out of \(oldName).",
+                title: AppLanguage.string(.accountReplaceTitle(oldName, newName)),
+                message: [AppLanguage.string(.accountReplaceMessage(serverName, newName, oldName)),
                           downloads].compactMap { $0 }.joined(separator: " "),
-                confirmTitle: "Replace",
-                cancelTitle: "Keep Both"
+                confirmTitle: AppLanguage.string(.loginReplaceConfirm),
+                cancelTitle: AppLanguage.string(.accountReplaceKeepBoth)
             )
         }
     }
@@ -356,21 +540,24 @@ extension AppRouter {
         let directory = AccountDirectory.shared
         directory.reload()
         let account = directory.account(localAccountId)
-        let serverName = ServerRegistry.shared.entry(with: serverId)?.displayName ?? "this server"
+        let serverName = ServerRegistry.shared.entry(with: serverId)?.displayName
+            ?? AppLanguage.string(.accountFallbackThisServer)
         let summary = await AccountSessions.downloadSummary(account: localAccountId, onServer: serverId)
         let isOnlyAccount = Self.isLastAccount(localAccountId, onServer: serverId, in: directory)
         pendingRemoval = AccountRemovalRequest(
             serverId: serverId,
             action: .signOut(localAccountId: localAccountId),
-            title: "Sign out of \(account?.username ?? "this account") on \(serverName)?",
+            title: AppLanguage.string(.shellSignOutTitleNamed(
+                account?.username ?? AppLanguage.string(.accountFallbackThisAccount), serverName
+            )),
             message: Self.signOutMessage(
                 removingServer: isOnlyAccount ? serverName : nil,
                 downloads: summary.flatMap {
                     AccountRemovalRequest.downloadsSentence(count: $0.count, bytes: $0.bytes)
                 }
             ),
-            confirmTitle: "Sign Out",
-            cancelTitle: "Cancel"
+            confirmTitle: AppLanguage.string(.shellSignOutConfirm),
+            cancelTitle: AppLanguage.string(.commonCancel)
         )
     }
 
@@ -380,11 +567,11 @@ extension AppRouter {
     private static func signOutMessage(removingServer serverName: String?, downloads: String?) -> String? {
         let device = DeviceNoun.current
         #if os(tvOS)
-        let leaves = serverName.map {
-            "This account's profiles and settings leave this \(device), and \($0) will be removed from it."
-        } ?? "This account's profiles and settings leave this \(device). The server stays saved, so you can sign in again."
+        let leaves = AppLanguage.string(serverName.map {
+            LocalizedStringResource.accountSignOutLeavesRemovingServer(device, $0)
+        } ?? .accountSignOutLeaves(device))
         #else
-        let leaves = serverName.map { "\($0) will be removed from this \(device)." }
+        let leaves = serverName.map { AppLanguage.string(.accountSignOutRemovesServer($0, device)) }
         #endif
         let message = [leaves, downloads].compactMap { $0 }.joined(separator: " ")
         return message.isEmpty ? nil : message
@@ -393,7 +580,8 @@ extension AppRouter {
     /// Asks before removing a server, which signs out of every account on it.
     func confirmRemoveServer(_ serverId: String) async {
         let accounts = AccountDirectory.shared.accounts(onServer: serverId)
-        let serverName = ServerRegistry.shared.entry(with: serverId)?.displayName ?? "this server"
+        let serverName = ServerRegistry.shared.entry(with: serverId)?.displayName
+            ?? AppLanguage.string(.accountFallbackThisServer)
         var count = 0
         var bytes: Int64 = 0
         for account in accounts {
@@ -404,17 +592,19 @@ extension AppRouter {
         }
         let signsOut: String? = switch accounts.count {
         case 0: nil
-        case 1: "This signs out of \(accounts[0].username ?? "its account")."
-        default: "This signs out of its \(accounts.count) accounts."
+        case 1: AppLanguage.string(.accountRemoveServerSignsOutOne(
+            accounts[0].username ?? AppLanguage.string(.accountFallbackItsAccount)
+        ))
+        default: AppLanguage.string(.accountRemoveServerSignsOutMany(accounts.count))
         }
         pendingRemoval = AccountRemovalRequest(
             serverId: serverId,
             action: .removeServer,
-            title: "Remove \(serverName)?",
+            title: AppLanguage.string(.serversRemoveTitle(serverName)),
             message: [signsOut, AccountRemovalRequest.downloadsSentence(count: count, bytes: bytes)]
                 .compactMap { $0 }.joined(separator: " "),
-            confirmTitle: "Remove",
-            cancelTitle: "Cancel"
+            confirmTitle: AppLanguage.string(.serversRemoveConfirm),
+            cancelTitle: AppLanguage.string(.commonCancel)
         )
     }
 
@@ -462,12 +652,12 @@ extension AppRouter {
             let outcome = await AccountSessions.signOut(account: localAccountId, onServer: serverId)
             switch outcome {
             case .refused:
-                accountActionError = "Silo couldn't sign out of that account. Try again."
+                accountActionError = AppLanguage.string(.accountErrorSignOutRefused)
                 return
             case .localOnly:
-                accountActionError = "Silo couldn't clear the saved sign-in on this device. Please try signing out again."
+                accountActionError = AppLanguage.string(.tvSignInSignOutLocalFailed)
             case .diagnosticsCleanupFailed:
-                accountActionError = "You're signed out, but Silo couldn't erase local diagnostics. Remove this server in Settings > Accounts to retry cleanup."
+                accountActionError = AppLanguage.string(.accountErrorDiagnosticsCleanupFailed)
             case .completed:
                 break
             }
@@ -487,7 +677,7 @@ extension AppRouter {
         #if os(tvOS)
         if await TokenStore.shared.hasTemporaryScope() {
             guard await RemotePlaybackIdentityManager.shared.end() else {
-                accountActionError = "Couldn't end remote playback. Try signing out again."
+                accountActionError = AppLanguage.string(.tvSignInSignOutRemotePlaybackNotEnded)
                 return false
             }
         }
@@ -512,7 +702,7 @@ extension AppRouter {
                 signsOutAccountInUse = false
             }
             guard await AccountSessions.removeServer(serverId) else {
-                accountActionError = "Silo couldn't remove the saved server. Please try again."
+                accountActionError = AppLanguage.string(.accountErrorRemoveServerFailed)
                 return
             }
             #if !os(tvOS)

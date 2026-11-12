@@ -34,7 +34,7 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
 
     private static func sourceLabel(for url: URL?) -> String? {
         guard let url else { return nil }
-        if url.isFileURL { return "Offline file" }
+        if url.isFileURL { return AppLanguage.string(.playerStatsOfflineFile) }
         if let host = url.host, !host.isEmpty { return host }
         return url.scheme?.uppercased()
     }
@@ -42,10 +42,10 @@ struct AetherPlaybackStatsSourceMetadata: Equatable {
     private static func deliveryLabel(_ value: String?) -> String? {
         guard let value = normalized(value) else { return nil }
         switch value.lowercased() {
-        case PlaybackProtocolV3.PlanDelivery.originalHTTP: return "Original HTTP"
-        case PlaybackProtocolV3.PlanDelivery.remuxProgressive: return "Server Remux"
-        case PlaybackProtocolV3.PlanDelivery.remuxHLS: return "Server Remux HLS"
-        case PlaybackProtocolV3.PlanDelivery.transcodeHLS: return "Server Transcode HLS"
+        case PlaybackProtocolV3.PlanDelivery.originalHTTP: return AppLanguage.string(.playerStatsDeliveryOriginalHttp)
+        case PlaybackProtocolV3.PlanDelivery.remuxProgressive: return AppLanguage.string(.playerStatsDeliveryServerRemux)
+        case PlaybackProtocolV3.PlanDelivery.remuxHLS: return AppLanguage.string(.playerStatsDeliveryServerRemuxHls)
+        case PlaybackProtocolV3.PlanDelivery.transcodeHLS: return AppLanguage.string(.playerStatsDeliveryServerTranscodeHls)
         default:
             return value.replacingOccurrences(of: "_", with: " ")
         }
@@ -237,7 +237,7 @@ enum AetherPlaybackStatsProjection {
             pixelAspectRatio: snapshot.sourceVideoPixelAspectRatio
         )
         let frameRate = snapshot.sourceVideoFrameRate.flatMap { fps in
-            fps.isFinite && fps > 0 ? String(format: "%.3f fps", fps) : nil
+            fps.isFinite && fps > 0 ? LocaleFormat.decimal(fps, fractionDigits: 3) + " fps" : nil
         }
         let details = [dimensions, frameRate]
             .compactMap { $0 }
@@ -285,7 +285,9 @@ enum AetherPlaybackStatsProjection {
         secondaryLabel: String?
     ) -> String? {
         guard route != .none else { return nil }
-        guard active else { return secondaryActive ? "Secondary only" : "Off" }
+        guard active else {
+            return AppLanguage.string(secondaryActive ? .playerStatsSubtitlesSecondaryOnly : .playerTracksSubtitlesOff)
+        }
 
         var primaryParts: [String] = []
         if let track {
@@ -296,27 +298,26 @@ enum AetherPlaybackStatsProjection {
             }
             if !track.codec.isEmpty { primaryParts.append(track.codec.uppercased()) }
             if track.isForced, !containsToken("forced", in: primaryParts) {
-                primaryParts.append("Forced")
+                primaryParts.append(AppLanguage.string(.detailTrackForced))
             }
             if track.isHearingImpaired, !containsToken("sdh", in: primaryParts) {
-                primaryParts.append("SDH")
+                primaryParts.append(AppLanguage.string(.detailTrackSdh))
             }
         }
-        var label = primaryParts.isEmpty ? "On" : primaryParts.joined(separator: " · ")
-        if secondaryActive {
-            label += " + \(normalized(secondaryLabel) ?? "secondary")"
-        }
-        return label
+        let label = primaryParts.isEmpty ? AppLanguage.string(.optionsOn) : primaryParts.joined(separator: " · ")
+        guard secondaryActive else { return label }
+        let secondary = normalized(secondaryLabel) ?? AppLanguage.string(.playerStatsSubtitlesSecondary)
+        return AppLanguage.string(.playerStatsSubtitlesWithSecondary(label, secondary))
     }
 
     private static func dimensionLabel(width: Int32, height: Int32, pixelAspectRatio: Double) -> String? {
         guard width > 0, height > 0 else { return nil }
-        let coded = "\(width)×\(height)"
+        let coded = LocaleFormat.localized("\(width)×\(height)")
         guard pixelAspectRatio.isFinite,
               pixelAspectRatio > 0,
               abs(pixelAspectRatio - 1) > 0.001 else { return coded }
         let displayWidth = Int((Double(width) * pixelAspectRatio).rounded())
-        return "\(coded) (\(displayWidth)×\(height) display)"
+        return AppLanguage.string(.playerStatsDimensionsWithDisplay(coded, LocaleFormat.localized("\(displayWidth)×\(height)")))
     }
 
     private static func dynamicRangeLabel(
@@ -328,15 +329,15 @@ enum AetherPlaybackStatsProjection {
         let source = videoFormatLabel(snapshot.sourceVideoFormat, dvProfile: snapshot.sourceDVProfile)
         let unconfirmed = unconfirmedSentVideoFormat(snapshot)
         let outputFormat = unconfirmed ?? snapshot.outputVideoFormat
-        let suffix = unconfirmed == nil ? "" : " (unconfirmed)"
+        let label: String
         if outputFormat == .dolbyVision,
            snapshot.dolbyVisionConversion == .profile7ToProfile81 {
-            return "\(source) → Profile 8.1\(suffix)"
+            label = AppLanguage.string(.playerStatsDynamicRangeToProfile81(source))
+        } else {
+            let output = videoFormatLabel(outputFormat, dvProfile: nil)
+            label = snapshot.sourceVideoFormat == outputFormat ? source : "\(source) → \(output)"
         }
-        let output = videoFormatLabel(outputFormat, dvProfile: nil)
-        return snapshot.sourceVideoFormat == outputFormat
-            ? "\(source)\(suffix)"
-            : "\(source) → \(output)\(suffix)"
+        return unconfirmed == nil ? label : AppLanguage.string(.playerStatsDynamicRangeUnconfirmed(label))
     }
 
     /// The range Aether sent to an Apple TV when it can't confirm the TV's
@@ -402,7 +403,7 @@ enum AetherPlaybackStatsProjection {
         case "hdr10_plus", "hdr10+": return "HDR10+"
         case "hlg": return "HLG"
         case "dolby_vision":
-            return dvProfile.map { "Dolby Vision Profile \($0)" } ?? "Dolby Vision"
+            return dvProfile.map { AppLanguage.string(.playerStatsDolbyVisionProfile(String($0))) } ?? "Dolby Vision"
         default: return nil
         }
     }
@@ -413,7 +414,7 @@ enum AetherPlaybackStatsProjection {
         case .hdr10: return "HDR10"
         case .hdr10Plus: return "HDR10+"
         case .dolbyVision:
-            return dvProfile.map { "Dolby Vision Profile \($0)" } ?? "Dolby Vision"
+            return dvProfile.map { AppLanguage.string(.playerStatsDolbyVisionProfile(String($0))) } ?? "Dolby Vision"
         case .hlg: return "HLG"
         }
     }
@@ -421,34 +422,35 @@ enum AetherPlaybackStatsProjection {
     private static func routeLabel(_ route: VideoRoute) -> String? {
         switch route {
         case .none: return nil
-        case .remoteBypass: return "Aether remote HLS"
-        case .loopback: return "Aether loopback HLS"
-        case .software: return "Aether software video"
-        case .audio: return "Aether audio"
+        case .remoteBypass: return AppLanguage.string(.playerStatsRouteRemoteHls)
+        case .loopback: return AppLanguage.string(.playerStatsRouteLoopbackHls)
+        case .software: return AppLanguage.string(.playerStatsRouteSoftwareVideo)
+        case .audio: return AppLanguage.string(.playerStatsRouteAudio)
         }
     }
 
     private static func phaseLabel(_ phase: PlaybackPhase) -> String? {
         switch phase {
         case .idle: return nil
-        case .loading: return "Loading"
-        case .playing: return "Playing"
-        case .paused: return "Paused"
-        case .seeking: return "Seeking"
-        case .rebuffering: return "Rebuffering"
-        case .stalled(let reconnecting): return reconnecting ? "Reconnecting" : "Stalled"
-        case .ended: return "Ended"
-        case .error: return "Error"
+        case .loading: return AppLanguage.string(.commonLoading)
+        case .playing: return AppLanguage.string(.playerStatsPhasePlaying)
+        case .paused: return AppLanguage.string(.playerStatsPhasePaused)
+        case .seeking: return AppLanguage.string(.playerStatsPhaseSeeking)
+        case .rebuffering: return AppLanguage.string(.playerStatsPhaseRebuffering)
+        case .stalled(let reconnecting):
+            return AppLanguage.string(reconnecting ? .playerStatsPhaseReconnecting : .playerStatsPhaseStalled)
+        case .ended: return AppLanguage.string(.playerStatsPhaseEnded)
+        case .error: return AppLanguage.string(.playerStatsPhaseError)
         }
     }
 
     private static func channelLabel(_ channels: Int) -> String? {
         switch channels {
-        case 1: return "Mono"
-        case 2: return "Stereo"
+        case 1: return AppLanguage.string(.detailMono)
+        case 2: return AppLanguage.string(.detailStereo)
         case 6: return "5.1"
         case 8: return "7.1"
-        case let count where count > 0: return "\(count) channels"
+        case let count where count > 0: return AppLanguage.string(.playerStatsChannelCount(count))
         default: return nil
         }
     }

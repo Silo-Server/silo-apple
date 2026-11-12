@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+The project owner decides how this codebase is built. Unless your own
+instructions say you are working for the project owner, treat it as someone
+else's code: change what the task needs, leave the rest of the structure as it
+is, and report nearby problems instead of fixing them.
+
 ## Project Structure & Module Organization
 
 This repository contains only the Silo Apple clients. SwiftUI app code lives under `iosApp/iosApp/`, tests live in `iosApp/Tests/`, Top Shelf code lives in `iosApp/TopShelf/`, resources live in `iosApp/Resources/`, and generated Xcode structure is controlled by `iosApp/project.yml`. Apple TV playback notes live in `docs/tvos-player/`; release automation lives in `fastlane/`.

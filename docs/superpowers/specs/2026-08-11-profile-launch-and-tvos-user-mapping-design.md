@@ -34,6 +34,14 @@ tags:
 - Physical Apple TV validation remains required for switching between multiple real tvOS users;
   the simulator cannot establish that OS-level isolation boundary.
 
+## 2026-11-10 amendment: several saved accounts
+
+*Amended 2026-11-10 (owner decision).* Wherever this document shows “Who’s Watching?” because the
+Profile Selection setting requires a choice (Every Time at a cold launch and on a return from the
+background, or a lapsed After 1 Hour / After 12 Hours timer), a device with two or more saved
+accounts shows Change Account instead, with no profile open. With one saved account nothing
+changes. See §4.2 of `2026-11-02-multi-account-design.md`.
+
 ## 2026-08-12 follow-up: return timeout policy
 
 The device-local setting is now named **Profile Selection** and offers four choices:

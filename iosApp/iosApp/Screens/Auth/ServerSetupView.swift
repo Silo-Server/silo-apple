@@ -10,6 +10,7 @@ struct ServerSetupView: View {
     @State private var viewModel = ServerSetupViewModel()
     @State private var discovery = ServerDiscovery()
     @FocusState private var focusedField: Field?
+    @Environment(\.locale) private var locale
     /// Whether Continue was pressed with the keyboard up. Recents stay hidden
     /// for that attempt so they don't pop in as the screen fades to sign-in.
     @State private var submittedWithKeyboard = false
@@ -30,20 +31,28 @@ struct ServerSetupView: View {
                      onBack: router.canReturnToPicker && !viewModel.isLoading ? { router.returnToPicker() } : nil) {
             MarqueeTopBar {
                 if router.canReturnToPicker {
-                    MarqueeIconButton(systemImage: "chevron.left", accessibilityLabel: "Back") {
+                    MarqueeIconButton(systemImage: "chevron.backward", accessibilityLabel: AppLanguage.string(.commonBack)) {
                         router.returnToPicker()
                     }
                     .disabled(viewModel.isLoading)
                 } else {
                     SiloWordmarkView(width: 92)
                 }
-            } trailing: { EmptyView() }
+            } trailing: {
+                // Back and swipe-back wait for a connect; this stops it.
+                if viewModel.isLoading {
+                    Button(.commonCancel) { viewModel.cancelConnect() }
+                        .buttonStyle(.marquee(.plain, fullWidth: false))
+                        // The label, not the button's padding, meets the column's edge.
+                        .padding(.trailing, -MarqueeMetrics.buttonPadding)
+                }
+            }
         } content: {
-            MarqueeHeadline(title: "Connect to\nyour server", lead: "Type the address you use for Silo.")
+            MarqueeHeadline(title: AppLanguage.string(.setupConnectHeadline), lead: AppLanguage.string(.setupBody))
 
             MarqueeTextField(
                 systemImage: "globe",
-                placeholder: "media.example.com",
+                placeholder: AppLanguage.string(.setupPlaceholder),
                 text: $viewModel.host,
                 focus: $focusedField,
                 equals: .host,
@@ -78,7 +87,7 @@ struct ServerSetupView: View {
                     // A keyboard submit that failed earlier must not hide the
                     // lists while this connect runs.
                     submittedWithKeyboard = false
-                    Task { await viewModel.connect(to: server, router: router) }
+                    viewModel.begin { await viewModel.connect(to: server, router: router) }
                 }
                 .padding(.top, 22)
                 if let error = viewModel.discoveryError {
@@ -89,7 +98,7 @@ struct ServerSetupView: View {
             }
 
             if !recentServers.isEmpty, focusedField == nil, !(viewModel.isLoading && submittedWithKeyboard) {
-                Text("Recent")
+                Text(.setupRecent)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Color.siloOnSurface.opacity(0.62))
                     .padding(.top, 22)
@@ -100,7 +109,7 @@ struct ServerSetupView: View {
             }
 
             Button(action: connect) {
-                Text(viewModel.isLoading ? "Connecting…" : "Continue")
+                Text(viewModel.isLoading ? LocalizedStringResource.setupConnecting : .setupContinue)
             }
             .buttonStyle(.marquee(.primary, isLoading: viewModel.isLoading))
             .disabled(viewModel.isLoading)
@@ -122,7 +131,10 @@ struct ServerSetupView: View {
             // that server's address filled in.
             if let prefill = router.consumeServerSetupPrefill() { viewModel.host = prefill }
         }
-        .onDisappear { discovery.stop() }
+        .onDisappear {
+            discovery.stop()
+            viewModel.cancelConnect()
+        }
         .marqueeTransparentNavigation()
         .keepsSubmittedServerInputs(viewModel)
     }
@@ -133,7 +145,7 @@ struct ServerSetupView: View {
     private func connect() {
         guard !viewModel.isLoading else { return }
         submittedWithKeyboard = focusedField != nil
-        Task { await viewModel.connect(router: router) }
+        viewModel.begin { await viewModel.connect(router: router) }
     }
 
     // MARK: - Advanced options
@@ -145,7 +157,7 @@ struct ServerSetupView: View {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: "gearshape")
-                Text("Advanced options")
+                Text(.setupAdvancedShow)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 11, weight: .semibold))
                     .rotationEffect(.degrees(viewModel.showsAdvancedOptions ? 180 : 0))
@@ -157,17 +169,17 @@ struct ServerSetupView: View {
         }
         .buttonStyle(.marqueePressable)
         .disabled(viewModel.isLoading)
-        .accessibilityValue(viewModel.showsAdvancedOptions ? "Expanded" : "Collapsed")
+        .accessibilityValue(viewModel.showsAdvancedOptions ? LocalizedStringResource.setupAdvancedExpanded : .setupAdvancedCollapsed)
 
         if viewModel.showsAdvancedOptions {
             VStack(alignment: .leading, spacing: 8) {
                 VStack(spacing: 0) {
                     HStack {
-                        Text("Protocol")
+                        Text(.setupProtocolField)
                         Spacer()
-                        Picker("Protocol", selection: $viewModel.selectedScheme) {
+                        Picker(.setupProtocolField, selection: $viewModel.selectedScheme) {
                             ForEach(ServerSetupScheme.allCases) { scheme in
-                                Text(scheme.rawValue).tag(scheme)
+                                Text(scheme.label).tag(scheme)
                             }
                         }
                         .pickerStyle(.segmented)
@@ -178,9 +190,9 @@ struct ServerSetupView: View {
                     .frame(height: MarqueeMetrics.fieldHeight)
                     Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
                     HStack {
-                        Text("Port")
+                        Text(.setupPortField)
                         Spacer()
-                        TextField("Auto", text: $viewModel.port)
+                        TextField(text: $viewModel.port, prompt: Text(.setupPortAuto)) { Text(.setupPortAuto) }
                             .multilineTextAlignment(.trailing)
                             .focused($focusedField, equals: .port)
                             #if os(iOS)
@@ -201,7 +213,7 @@ struct ServerSetupView: View {
                                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
                         )
                 )
-                Text("Auto tries HTTPS first, then HTTP, then Silo's port 8090.")
+                Text(.setupAdvancedHint)
                     .font(.system(size: 12))
                     .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                     .padding(.leading, 4)

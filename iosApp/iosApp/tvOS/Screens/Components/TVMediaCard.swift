@@ -5,6 +5,7 @@ import SwiftUI
 /// card lift and outline; `.ring` uses a smaller scale to match the episode
 /// and cast rails. The caption below highlights on focus.
 struct TVMediaCard: View {
+    @Environment(\.locale) private var locale
     let title: String
     let posterUrl: String
     var posterThumbhash: String? = nil
@@ -212,9 +213,14 @@ struct TVMediaCard: View {
             .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
 
             if let overlayData, overlayStore.enabled {
-                CardOverlays(data: overlayData, prefs: overlayStore.prefs, variant: .poster)
-                    .frame(width: resolvedCardWidth, height: cardHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+                CardOverlays(
+                    data: overlayData,
+                    prefs: overlayStore.prefs,
+                    variant: .poster,
+                    images: overlayStore.images
+                )
+                .frame(width: resolvedCardWidth, height: cardHeight)
+                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
             if let boxSet {
@@ -228,10 +234,13 @@ struct TVMediaCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
             }
 
-            if isPlayed {
-                watchedBadge
-                    .padding(12)
-            }
+            // Shown whether or not badges are on.
+            CardWatchStatus(
+                played: isPlayed,
+                episodesLeft: personalState.episodesLeft(userState),
+                cardWidth: resolvedCardWidth
+            )
+            .frame(width: resolvedCardWidth, height: cardHeight)
 
             if marksCurrentFilm {
                 BoxSetCurrentFilmMarker(showsOutline: !isFocused)
@@ -253,7 +262,7 @@ struct TVMediaCard: View {
                 .tvCardTitleFocus(isFocused: isFocused)
                 .frame(width: resolvedCardWidth, alignment: .center)
 
-            if let secondLine = subtitle ?? year.map(String.init) {
+            if let secondLine = subtitle ?? year.map({ LocaleFormat.integer($0, locale: locale) }) {
                 Text(secondLine)
                     .font(.siloPosterMetadata)
                     .tvCardSubtitleFocus(isFocused: isFocused)
@@ -267,30 +276,18 @@ struct TVMediaCard: View {
         .frame(width: resolvedCardWidth, alignment: .center)
     }
 
-    private var watchedBadge: some View {
-        ZStack {
-            Circle()
-                .fill(Color.siloOnSurface)
-                .frame(width: 40, height: 40)
-                .shadow(color: .black.opacity(0.3), radius: 4)
-            Image(systemName: "checkmark")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundColor(Color.siloBackground)
-        }
-    }
-
     private var accessibilityDescription: String {
         if let boxSet { return boxSet.accessibilityLabel }
-        let secondLine = subtitle ?? year.map(String.init)
+        let secondLine = subtitle ?? year.map { LocaleFormat.integer($0, locale: locale) }
         var components = [title]
         if let secondLine {
             components.append(secondLine)
         }
         if isPlayed {
-            components.append("Watched")
+            components.append(AppLanguage.string(.shellCardWatched))
         }
         if marksCurrentFilm {
-            components.append("This film")
+            components.append(AppLanguage.string(.shellCardThisFilm))
         }
         return components.joined(separator: ", ")
     }

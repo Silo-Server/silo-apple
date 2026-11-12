@@ -126,7 +126,7 @@ struct OnboardingTourMacLayout: View {
                         .font(.system(size: 12))
                         .foregroundStyle(Color.requestRose)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button("Continue without saving") {
+                    Button(.firstRunTourContinueWithoutSaving) {
                         Task { await viewModel.continueWithoutSaving() }
                     }
                     .buttonStyle(MacTourButtonStyle(role: .secondary))
@@ -140,7 +140,7 @@ struct OnboardingTourMacLayout: View {
     @ViewBuilder
     private func settingControl(step: OnboardingStep, spec: OnboardingSettingSpec) -> some View {
         if spec.control == "toggle" {
-            Toggle(spec.label ?? step.title ?? "Enabled", isOn: Binding(
+            Toggle(spec.label ?? step.title ?? AppLanguage.string(.firstRunTourEnabled), isOn: Binding(
                 get: { viewModel.isToggleEnabled(for: step) },
                 set: { enabled in
                     Task { await viewModel.choose(step: step, value: enabled ? "true" : "false") }
@@ -179,7 +179,7 @@ struct OnboardingTourMacLayout: View {
 
     private func footer(finishes: Bool) -> some View {
         HStack(spacing: 10) {
-            Button("Skip tour") { Task { await viewModel.skip() } }
+            Button(.firstRunTourSkip) { Task { await viewModel.skip() } }
                 .buttonStyle(MacTourButtonStyle(role: .quiet))
                 .keyboardShortcut(.cancelAction)
                 .disabled(viewModel.isSaving)
@@ -187,7 +187,7 @@ struct OnboardingTourMacLayout: View {
             Spacer()
 
             if viewModel.currentIndex > 0 {
-                Button("Back") { viewModel.back() }
+                Button(.commonBack) { viewModel.back() }
                     .buttonStyle(MacTourButtonStyle(role: .secondary))
                     .keyboardShortcut("[", modifiers: .command)
                     .disabled(viewModel.isSaving)
@@ -209,16 +209,16 @@ struct OnboardingTourMacLayout: View {
             .keyboardShortcut(.defaultAction)
             .disabled(viewModel.isSaving)
         }
-        // The quiet button's own 4pt inset lines "Skip tour" up with the
+        // The quiet button's own 4pt inset lines the skip button up with the
         // text column; the primary button ends near the column's edge.
         .padding(.horizontal, 40)
         .padding(.vertical, 22)
     }
 
-    private func primaryLabel(finishes: Bool) -> String {
-        if viewModel.isSaving { return "Saving…" }
-        if finishes { return "Done" }
-        return viewModel.currentIndex == 0 ? "Show me" : "Next"
+    private func primaryLabel(finishes: Bool) -> LocalizedStringResource {
+        if viewModel.isSaving { return .firstRunTourSaving }
+        if finishes { return .commonDone }
+        return viewModel.currentIndex == 0 ? .firstRunTourShowMe : .firstRunTourNext
     }
 }
 
@@ -277,7 +277,7 @@ private struct OnboardingTourMacStage: View {
                             .position(curve.point(atLength: curve.progress(at: index, of: stepCount)))
                     }
 
-                    Text("\(currentIndex + 1) of \(stepCount)")
+                    Text(.companionStepPosition(currentIndex + 1, stepCount))
                         .font(.system(size: 12, weight: .medium))
                         .monospacedDigit()
                         .foregroundStyle(Color.auroraInk.opacity(0.5))
@@ -291,7 +291,7 @@ private struct OnboardingTourMacStage: View {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.45), value: currentIndex)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(stepCount > 0 ? "Step \(currentIndex + 1) of \(stepCount)" : "")
+        .accessibilityLabel(stepCount > 0 ? AppLanguage.string(.companionStepPosition(currentIndex + 1, stepCount)) : "")
     }
 
     @ViewBuilder

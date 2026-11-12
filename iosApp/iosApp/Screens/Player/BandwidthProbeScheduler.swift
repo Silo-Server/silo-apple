@@ -485,7 +485,7 @@ final class BandwidthProbeScheduler {
             let network = BandwidthProbeNetwork(path)
             Task { @MainActor in self?.networkChanged(network) }
         }
-        monitor.start(queue: DispatchQueue(label: "org.siloserver.silo.bandwidth-probe-path"))
+        monitor.start(queue: DispatchQueue(label: "org.siloserver.silo.bandwidth-probe-path")) // i18n-ignore: queue label
         pathMonitor = monitor
     }
 

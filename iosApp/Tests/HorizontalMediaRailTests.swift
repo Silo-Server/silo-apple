@@ -77,8 +77,8 @@ final class HorizontalMediaRailTests: XCTestCase {
 
     func testContinueWatchingKeepsEqualCardHeightsWithMissingProgress() async throws {
         let items = try items()
-        XCTAssertNotNil(HomeFeedMeta.resumeCaption(for: items[0]))
-        XCTAssertNil(HomeFeedMeta.resumeCaption(for: items[1]))
+        XCTAssertNotNil(HomeFeedMeta.resumeCaption(for: items[0], locale: Locale(identifier: "en")))
+        XCTAssertNil(HomeFeedMeta.resumeCaption(for: items[1], locale: Locale(identifier: "en")))
         for typeSize in [DynamicTypeSize.large, .accessibility1] {
             let frames = Frames()
             let content = HStack(alignment: HorizontalMediaRailLayout.cardAlignment, spacing: 10) {
@@ -125,7 +125,7 @@ final class HorizontalMediaRailTests: XCTestCase {
             try await settle(window)
             let ordinary = try XCTUnwrap(frames.cards["ordinary"])
             let resume = try XCTUnwrap(frames.cards["resume"])
-            if HomeFeedMeta.resumeCaption(for: item) == nil {
+            if HomeFeedMeta.resumeCaption(for: item, locale: Locale(identifier: "en")) == nil {
                 XCTAssertGreaterThan(resume.height, ordinary.height + 5,
                                      "Next Up must not reserve an invisible Continue Watching caption")
             } else {

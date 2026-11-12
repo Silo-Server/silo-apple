@@ -127,7 +127,7 @@ enum ServerRegistryError: LocalizedError {
     case persistenceFailed
 
     var errorDescription: String? {
-        "Silo couldn't save the server list. Please try again."
+        AppLanguage.string(.errorsAppleServersPersistenceFailed)
     }
 }
 
@@ -191,6 +191,10 @@ final class ServerRegistry {
     /// False when the stored server list could not be read at launch, so an
     /// empty list is not evidence that no session needs migrating.
     private var serverListIsComplete = true
+    /// False until `init` finishes. A breadcrumb reads
+    /// `activeServerIDSnapshot`, which is `shared`, so one recorded while
+    /// `shared` is still being built re-enters its initializer and traps.
+    @ObservationIgnored private var initialized = false
     private let tokenStore: TokenStore
     private let httpClient: HTTPClient
     private let persistenceOverride: (([ServerEntry], String?) -> Bool)?
@@ -237,6 +241,7 @@ final class ServerRegistry {
         activeServerSnapshot.withLock { $0 = initialActiveServerId }
         observeForegroundForDuplicateServerProof()
         scheduleDuplicateServerProof()
+        initialized = true
     }
 
     // MARK: - Sync accessors (SwiftUI-safe)
@@ -1147,6 +1152,8 @@ final class ServerRegistry {
     /// a licence — these lines carry only the transition and its outcome.
     private func recordRegistryEvent(phase: String, outcome: String, reason: String) {
         #if os(iOS) || os(tvOS)
+        // Skipped for the duplicate merge `init` runs; see `initialized`.
+        guard initialized else { return }
         DiagTrace.breadcrumb(
             .essential,
             category: .lifecycle,

@@ -2692,24 +2692,24 @@ enum HTTPError: LocalizedError, CustomStringConvertible {
     var errorDescription: String? {
         switch self {
         case .serverUrlNotConfigured:
-            return "Server URL is not configured."
+            return AppLanguage.string(.errorsAppleHttpServerUrlNotConfigured)
         case .requestIdentityChanged:
-            return "The active server or profile changed before the request could start."
+            return AppLanguage.string(.errorsAppleRequestOwnerChangedBeforeStart)
         case .authorityChanged:
-            return "The account or profile changed while the request was in flight."
+            return AppLanguage.string(.errorsAppleHttpAuthorityChanged)
         case .invalidURL(let url):
-            return "Invalid URL: \(url)"
+            return AppLanguage.string(.errorsAppleHttpInvalidUrl(url))
         case .invalidResponse:
-            return "Invalid server response."
+            return AppLanguage.string(.errorsAppleHttpInvalidResponse)
         case .network(let error):
-            return "Network error: \(error.localizedDescription)"
+            return AppLanguage.string(.errorsAppleHttpNetwork(error.localizedDescription))
         case .decodingFailed(let type, let error):
-            return "Failed to decode \(type): \(error.localizedDescription)"
+            return AppLanguage.string(.errorsAppleHttpDecodingFailed(type, error.localizedDescription))
         case .http(let statusCode, let body):
             if UpdateRequirement.isClientUpgradeRequired(statusCode: statusCode, body: body) {
                 return UpdateRequirement.appMessage
             }
-            return "Server returned status \(statusCode)"
+            return AppLanguage.string(.errorsAppleHttpStatus("\(statusCode)"))
         }
     }
 

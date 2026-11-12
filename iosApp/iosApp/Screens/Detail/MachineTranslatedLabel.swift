@@ -4,7 +4,7 @@ import SwiftUI
 /// (`machine_translated_fields` on a detail, season, episode or card).
 enum MachineTranslation {
     /// Shown and spoken wherever machine-translated text appears.
-    static let label = "Translated by AI"
+    static let label: LocalizedStringResource = .detailTranslationTranslated
     static let symbol = "translate"
 
     /// Whether the overview shown was machine-translated. Every surface in
@@ -24,11 +24,16 @@ enum DescriptionTranslationStatus: Equatable {
     /// The description shown was machine-translated by AI.
     case machineTranslated
 
-    var text: String {
+    var resource: LocalizedStringResource {
         switch self {
-        case .translating: "Translating…"
+        case .translating: .detailTranslationTranslating
         case .machineTranslated: MachineTranslation.label
         }
+    }
+
+    /// ``resource`` resolved in the app language, for text built outside a view.
+    var text: String {
+        AppLanguage.string(resource)
     }
 
     /// The status for an overview: a running translation wins over the
@@ -64,16 +69,16 @@ struct DescriptionTranslationStatusLabel: View {
             Image(systemName: MachineTranslation.symbol)
                 .font(font)
                 .foregroundStyle(Color.siloSecondaryText.opacity(0.8))
-                .accessibilityLabel(status.text)
+                .accessibilityLabel(Text(status.resource))
                 #if !os(tvOS)
-                .help(status.text)
+                .help(Text(status.resource))
                 #endif
         } else {
             HStack(spacing: 6) {
                 Image(systemName: MachineTranslation.symbol)
                     .symbolEffect(.pulse, isActive: status == .translating)
                     .accessibilityHidden(true)
-                Text(status.text)
+                Text(status.resource)
             }
             .font(font)
             .foregroundStyle(Color.siloSecondaryText)

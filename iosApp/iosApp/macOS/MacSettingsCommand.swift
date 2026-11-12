@@ -10,17 +10,25 @@ extension Notification.Name {
 }
 
 /// The standard "Settings…" item in the app menu, with its ⌘, shortcut.
+/// Menu commands sit outside the root view's `\.locale`, so their titles
+/// resolve through `AppLanguage`; reading the observable language makes the
+/// menu rebuild when it changes.
 struct MacSettingsCommands: Commands {
+    @MainActor private func title(_ resource: LocalizedStringResource) -> String {
+        _ = AppLanguagePreferences.shared.displayed
+        return AppLanguage.string(resource)
+    }
+
     var body: some Commands {
         CommandGroup(replacing: .appSettings) {
-            Button("Settings…") {
+            Button(title(.menuMacSettings)) {
                 NotificationCenter.default.post(name: .siloOpenSettings, object: nil)
             }
             .keyboardShortcut(",", modifiers: .command)
         }
         // A menu command, so the shortcut works with the sidebar hidden.
         CommandGroup(after: .sidebar) {
-            Button("Search") {
+            Button(title(.menuMacSearch)) {
                 NotificationCenter.default.post(name: .siloOpenSearch, object: nil)
             }
             .keyboardShortcut("k", modifiers: .command)

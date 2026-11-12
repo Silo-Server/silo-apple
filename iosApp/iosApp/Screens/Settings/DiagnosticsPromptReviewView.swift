@@ -12,22 +12,22 @@ struct DiagnosticsPromptReviewView: View {
             }
 
             Section {
-                Button("Send", systemImage: "paperplane.fill") {
+                Button(.diagnosticsConsentConfirm, systemImage: "paperplane.fill") {
                     Task { await model.sendPrompt(always: false) }
                 }
                 .disabled(model.isWorking)
 
                 DiagnosticsAlwaysSendButton(
                     model: model,
-                    message: "These reports and future crash reports for this server account will be sent automatically."
+                    message: .diagnosticsAlwaysSendPromptMessageMany
                 )
 
-                Button("Don't Send", role: .cancel, action: model.declinePrompt)
+                Button(.diagnosticsPromptDontSendButton, role: .cancel, action: model.declinePrompt)
                     .disabled(model.isWorking)
             }
         }
         .siloGroupedListStyle()
-        .navigationTitle("Report Summary")
+        .navigationTitle(Text(.diagnosticsSummaryTitle))
     }
 }
 #endif

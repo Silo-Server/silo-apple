@@ -46,6 +46,9 @@ struct SiloApp: App {
         #if os(macOS)
         BandwidthProbeScheduler.shared.followMacVisibility()
         #endif
+        // Before the first view, so the root starts in the language on screen
+        // and every request names it.
+        _ = AppLanguagePreferences.shared
     }
 
     var body: some Scene {
@@ -69,6 +72,7 @@ struct SiloApp: App {
                 // Tall enough for the sign-in screens without scrolling.
                 .frame(minWidth: 900, minHeight: 640)
                 #endif
+                .modifier(AppLanguageEnvironment())
         }
         #if os(macOS)
         // First launch only; after that MacWindowPlacement restores the
@@ -76,6 +80,32 @@ struct SiloApp: App {
         .defaultSize(width: 1280, height: 800)
         .commands { MacSettingsCommands() }
         #endif
+    }
+}
+
+/// The app language at the root, live: every view's text, plurals and
+/// formatting follow `\.locale`, and layout follows its direction.
+private struct AppLanguageEnvironment: ViewModifier {
+    @State private var language = AppLanguagePreferences.shared
+
+    func body(content: Content) -> some View {
+        let direction: LayoutDirection = language.isRightToLeft ? .rightToLeft : .leftToRight
+        content
+            .environment(\.locale, language.locale)
+            .environment(\.layoutDirection, direction)
+            #if os(iOS) || os(tvOS)
+            // Sheets and full-screen covers get a new hosting controller that
+            // takes its direction from UIKit traits, not from this
+            // environment, so a live switch would leave them in the launch
+            // direction. The scene override reaches every presented page.
+            // App-wide UIKit direction (`userInterfaceLayoutDirection`) still
+            // follows `AppleLanguages`, so it changes at the next launch.
+            .onChange(of: direction, initial: true) { _, direction in
+                for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
+                    scene.traitOverrides.layoutDirection = UITraitEnvironmentLayoutDirection(direction)
+                }
+            }
+            #endif
     }
 }
 
