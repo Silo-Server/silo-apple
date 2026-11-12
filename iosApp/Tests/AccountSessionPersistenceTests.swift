@@ -308,6 +308,35 @@ final class AccountSessionPersistenceTests: XCTestCase {
         XCTAssertEqual(access, "setup")
     }
 
+    /// The profile limit read with a profile list is kept with the account,
+    /// so the profile menu knows it after a restart, before any list is
+    /// read again.
+    func testProfileLimitIsSavedWithTheCachedProfileList() async throws {
+        let (store, keys, defaults, _) = try await harness()
+        try await store.installAccountSession(accessToken: "one", refreshToken: "refresh-one", accountID: "12")
+        let identityValue = await store.refreshAccountIdentity()
+        let identity = try XCTUnwrap(identityValue)
+        let only = AccountProfile(
+            id: "p-owner", name: "Owner", avatarEmoji: nil, avatarImageUrl: nil, hasPin: false, isChild: false
+        )
+
+        let saved = await store.updateCachedProfiles([only], maxProfiles: 1, expected: identity)
+        XCTAssertTrue(saved)
+        let unchanged = await store.updateCachedProfiles([only], maxProfiles: 1, expected: identity)
+        XCTAssertFalse(unchanged)
+
+        let afterRestart = try XCTUnwrap(
+            AccountStore(keychain: keys, defaults: defaults).accounts(onServer: "server").first
+        )
+        XCTAssertEqual(afterRestart.cachedProfiles, [only])
+        XCTAssertEqual(afterRestart.maxProfiles, 1)
+
+        // A later list that omits the limit means it is unknown again.
+        let cleared = await store.updateCachedProfiles([only], maxProfiles: nil, expected: identity)
+        XCTAssertTrue(cleared)
+        XCTAssertNil(try AccountStore(keychain: keys, defaults: defaults).accounts(onServer: "server").first?.maxProfiles)
+    }
+
     func testInstallRestartReloginAndOriginBinding() async throws {
         let (store, keys, defaults, _) = try await harness()
         try await store.installAccountSession(accessToken: "one", refreshToken: "refresh-one", accountID: "12")

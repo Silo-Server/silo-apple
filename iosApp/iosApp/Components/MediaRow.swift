@@ -518,7 +518,8 @@ struct MediaRow: View {
                 imageIsEpisodeStill: item.posterIsEpisodeStill,
                 mediaType: item.type,
                 year: item.year,
-                subtitle: EpisodeCardCaption.line(for: item, locale: locale),
+                subtitle: EpisodeCardCaption.line(for: item, locale: locale)
+                    ?? CardYears.caption(for: item, locale: locale),
                 progress: progressValue(for: item),
                 userState: item.userState,
                 overlayData: OverlayData.from(item),

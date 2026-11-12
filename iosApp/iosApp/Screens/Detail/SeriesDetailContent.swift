@@ -290,6 +290,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                         // The version the page shows, including an automatic pick.
                         episodeFileId: nextUpEpisode.flatMap(playbackFileId(for:)) ?? effectiveNextUpVersion?.fileId
                     )
+                } else if DownloadManager.shared.downloadsRestricted {
+                    DownloadUnavailableButton()
                 }
                 PhoneLabeledMenu(label: AppLanguage.string(.detailMore, locale: locale)) {
                     overflowMenuItems

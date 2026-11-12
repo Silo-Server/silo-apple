@@ -97,6 +97,28 @@ final class SettingsViewModel {
         set { PlayerSettings.shared.setAutoPlayNextEpisode(newValue) }
     }
 
+    /// (id, label) for every allowed threshold, shared by the iOS/macOS and tvOS rows.
+    /// Computed so the counts follow the app language's digits.
+    static var stillWatchingChoices: [(id: String, label: LocalizedStringResource)] {
+        PlayerSettings.stillWatchingThresholdRange.map { (String($0), stillWatchingLabel($0)) }
+    }
+
+    /// The threshold as a picker tag.
+    var stillWatchingSelection: String {
+        get { String(stillWatchingThreshold) }
+        set { if let threshold = Int(newValue) { stillWatchingThreshold = threshold } }
+    }
+
+    static func stillWatchingLabel(_ count: Int) -> LocalizedStringResource {
+        count == 0 ? .settingsOff : .detailEpisodeCount(count: count, LocaleFormat.integer(count))
+    }
+
+    /// Local: the streak it limits exists only on this device.
+    var stillWatchingThreshold: Int {
+        get { PlayerSettings.shared.stillWatchingThreshold }
+        set { PlayerSettings.shared.setStillWatchingThreshold(newValue) }
+    }
+
     var nextUpPromptSeconds: Int {
         get { PlayerSettings.shared.nextUpPromptSeconds }
         set { PlayerSettings.shared.setNextUpPromptSeconds(newValue) }

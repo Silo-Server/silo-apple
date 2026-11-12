@@ -508,7 +508,12 @@ class PlayerViewModel {
     static let connectionLostMessage =
         "Connection lost\nSilo couldn't reconnect to the server. Check your connection, then try again to continue where you left off."
     var remoteDismissToken: UUID?
-    var audioTracks: [PlayerTrack] = []
+    var audioTracks: [PlayerTrack] = [] {
+        didSet { audioTracksFileId = currentSelectedVersion?.fileId }
+    }
+    /// The file `audioTracks` lists. A replan can adopt another file before
+    /// that file's tracks are published.
+    @ObservationIgnored private var audioTracksFileId: Int?
     var subtitleTracks: [PlayerTrack] = [] {
         didSet { updateSubtitleSyncActiveTrack() }
     }
@@ -630,7 +635,9 @@ class PlayerViewModel {
     /// Resigning active keeps the plan's running summary; quitting ends it.
     @ObservationIgnored private var macBufferingSummaryObservers: [NSObjectProtocol] = []
     #endif
-    var selectedAudioId: Int64?
+    var selectedAudioId: Int64? {
+        didSet { refreshStreamBadges() }
+    }
     var selectedSubtitleId: Int64? {
         didSet {
             guard selectedSubtitleId != oldValue else { return }
@@ -777,8 +784,9 @@ class PlayerViewModel {
     var segmentSkipLabel: String { AppLanguage.string(showRecapSkip ? .markerSkipRecap : .markerSkipCredits) }
 
     func skipCurrentSegment() {
+        stillWatchingGuard.recordViewerAction()
         if showRecapSkip, let recapRange {
-            seekTo(seconds: recapRange.end)
+            seekTo(seconds: recapRange.end, revealingControls: false)
         } else if showCreditsSkip {
             skipCredits()
         }
@@ -1095,6 +1103,10 @@ class PlayerViewModel {
     /// would otherwise have no idea why it was abandoned.
     @ObservationIgnored
     private var lastAetherAudioTrackSwitchFailure: PlaybackErrorInfo?
+    /// The opening of the plan being loaded, while ``loadAether`` bounds it,
+    /// and the timer that ticks it.
+    @ObservationIgnored private var activeOpeningBudget: PlaybackOpeningBudget?
+    @ObservationIgnored private var openingBudgetTimer: PlayerPromptTimer?
     /// Serializes every Protocol V3 source replacement, including a same-plan
     /// reload whose only change is a refreshed bearer. Reusing this gate keeps
     /// credential recovery from racing route replans, seeks, or track changes.
@@ -1300,7 +1312,9 @@ class PlayerViewModel {
     private var deferredAutoSubtitlePick: SubtitleAutoSelection?
     private var resolvedServerUrl: String = ""
     private var currentWatchDetail: WatchDetail?
-    private var currentSelectedVersion: FileVersion?
+    private var currentSelectedVersion: FileVersion? {
+        didSet { refreshStreamBadges() }
+    }
     private var activePreparedProtocolV3: PreparedPlaybackV3?
     private var activePlaybackSessionId: String?
     var watchPartyAdapter: WatchPartyPlaybackAdapter?
@@ -1320,6 +1334,9 @@ class PlayerViewModel {
     var canRequestPlayPause: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canPlayPause == true }
     var canRequestSeek: Bool { !isWatchPartyPlayback || watchPartyAdapter?.canSeek == true }
     var effectivePlaybackSpeed: Double { isWatchPartyPlayback ? watchPartyCorrectionRate : settings.playbackSpeed }
+    /// The speed to quote to the viewer. A party plays at 1x, so its momentary
+    /// drift corrections never move a displayed finish time.
+    var nominalPlaybackSpeed: Double { isWatchPartyPlayback ? 1 : settings.playbackSpeed }
     /// Credits occurrences already skipped in this session, by marker key.
     private var autoSkippedCreditsKeys: Set<String> = []
     /// Recaps already skipped for the current content, by marker key.
@@ -1531,6 +1548,7 @@ class PlayerViewModel {
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
     private var nextUpAutoplayCancelled = false
+    private var stillWatchingGuard = PlayerStillWatchingGuard()
     /// Set when the user taps Keep Watching; suppresses re-presenting the
     /// pre-end Next Up prompt while the playhead stays inside the prompt
     /// window. Cleared when the playhead leaves the window (seek back) or a
@@ -3975,6 +3993,7 @@ class PlayerViewModel {
     func showNextUpNow() {
         guard !isWatchPartyPlayback else { return }
         guard canShowNextUpScreen else { return }
+        stillWatchingGuard.recordViewerAction()
         beginNextUpPostroll(videoEnded: false, source: .hud)
     }
 
@@ -4003,7 +4022,7 @@ class PlayerViewModel {
            nextUpPickAutoPlays,
            !isPickingAnotherShufflePick,
            !nextUpAutoplayCancelled {
-            playNextEpisodeNow()
+            playNextEpisodeNow(unattended: true)
             return
         }
         startNextUpCountdownIfNeeded()
@@ -4014,6 +4033,10 @@ class PlayerViewModel {
     /// into, so it waits for Play Now.
     private var nextUpPickAutoPlays: Bool {
         guard settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
+        #if !os(macOS)
+        // The Mac player has no Next Up screen to wait on, so it never gates.
+        guard !stillWatchingGuard.shouldGate(threshold: settings.stillWatchingThreshold) else { return false }
+        #endif
         return !pick.isFromOnDeck
     }
 
@@ -4044,7 +4067,7 @@ class PlayerViewModel {
                 self.nextUpCountdownSeconds = remaining
             }
             guard !Task.isCancelled, !self.isDisposed else { return }
-            self.playNextEpisodeNow()
+            self.playNextEpisodeNow(unattended: true)
         }
     }
 
@@ -4076,7 +4099,7 @@ class PlayerViewModel {
             : max(1, settings.nextUpPromptSeconds)
         nextUpCountdownSeconds = max(0, Int(ceil(remaining)))
         if remaining <= 0.35 {
-            playNextEpisodeNow()
+            playNextEpisodeNow(unattended: true)
         }
     }
 
@@ -4103,6 +4126,7 @@ class PlayerViewModel {
     @discardableResult
     func keepWatchingCurrentEpisode() -> Bool {
         guard !isWatchPartyPlayback else { return false }
+        stillWatchingGuard.recordViewerAction()
         // Staying on this item wins over a shuffle advance still in flight;
         // its late answer must not switch playback. If the server already
         // moved on, the next Play Now replays that pick.
@@ -4140,6 +4164,7 @@ class PlayerViewModel {
     }
 
     func setNextUpAutoPlayEnabled(_ enabled: Bool) {
+        stillWatchingGuard.recordViewerAction()
         settings.setAutoPlayNextEpisode(enabled)
         if enabled {
             nextUpAutoplayCancelled = false
@@ -4149,9 +4174,14 @@ class PlayerViewModel {
         }
     }
 
-    func playNextEpisodeNow() {
+    func playNextEpisodeNow(unattended: Bool = false) {
         guard !isWatchPartyPlayback else { return }
+        // Play Now counts even when it lands on an advance already in flight.
+        if !unattended { stillWatchingGuard.recordViewerAction() }
         if shuffleState != nil {
+            // A repeat call while the advance is in flight is dropped below
+            // and must not count again.
+            if unattended, !isStartingNextUp { stillWatchingGuard.recordAutoAdvance() }
             playNextShufflePick()
             return
         }
@@ -4175,6 +4205,7 @@ class PlayerViewModel {
         case .load(let id):
             contentId = id
         }
+        if unattended { stillWatchingGuard.recordAutoAdvance() }
         var request = LoadRequest(
             contentId: contentId,
             preferredFileId: nil,
@@ -4383,6 +4414,7 @@ class PlayerViewModel {
     func pickAnotherShufflePick() {
         guard let shuffleState, canPickAnotherShufflePick,
               !isPickingAnotherShufflePick else { return }
+        stillWatchingGuard.recordViewerAction()
         let shuffleId = shuffleState.id
         let nextContentId = shuffleState.shuffle.next.contentId
         cancelShuffleOperations()
@@ -4556,21 +4588,118 @@ class PlayerViewModel {
         // From here the outgoing plan's source is being replaced: its waits
         // are a source reload, not stalls.
         bufferingSourceSwapGeneration = expectedStreamLoadGeneration
+        // A plan's source opens within the start budget or fails, so the
+        // server can offer another route. AetherEngine bounds server HLS
+        // itself; nothing else bounds direct play or the software route
+        // until the plan is adopted (`armStartDeadline`). A download has no
+        // server to replan against. Each address gets its own budget.
+        let boundsOpening = Self.boundsOpening(prepared)
+        let localBudget = boundsOpening ? beginOpeningBudget() : nil
         do {
+            defer { if let localBudget { endOpeningBudget(localBudget) } }
             try await loadAetherSource(
                 prepared: prepared, streamRequest: streamRequest,
                 expectedStreamLoadGeneration: expectedStreamLoadGeneration,
                 resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
-                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true)
+                shouldPlayWhenReady: shouldPlayWhenReady, takesLocalRoute: true, openingBudget: localBudget)
         } catch {
-            guard let route = streamLocalRoute, !Task.isCancelled, Self.isLocalRouteLoadFailure(error) else { throw error }
-            LocalRouteController.reportFailure(of: route)
+            // The saved address gets a budget of its own before the plan
+            // counts as failed.
+            let outcome = Self.localRouteOpeningOutcome(
+                error,
+                budgetRanOut: localBudget?.hasRunOut == true,
+                sourceAnswered: localBudget?.sourceAnsweredWhenRunOut
+            )
+            guard let route = streamLocalRoute, !Task.isCancelled, outcome.retriesSavedAddress else { throw error }
+            if outcome.reportsRouteFailed { LocalRouteController.reportFailure(of: route) }
+            let savedAddressBudget = boundsOpening ? beginOpeningBudget() : nil
+            defer { if let savedAddressBudget { endOpeningBudget(savedAddressBudget) } }
             try await loadAetherSource(
                 prepared: prepared, streamRequest: streamRequest,
                 expectedStreamLoadGeneration: expectedStreamLoadGeneration,
                 resumeSourcePosition: resumeSourcePosition, reselectsPlanSubtitle: reselectsPlanSubtitle,
-                shouldPlayWhenReady: abandonedLoadPlayIntent ?? shouldPlayWhenReady, takesLocalRoute: false)
+                shouldPlayWhenReady: abandonedLoadPlayIntent ?? shouldPlayWhenReady, takesLocalRoute: false,
+                openingBudget: savedAddressBudget)
         }
+    }
+
+    /// Whether opening `prepared` runs under the start budget: a Protocol V3
+    /// plan on any route but server HLS.
+    static func boundsOpening(_ prepared: PreparedPlayback) -> Bool {
+        guard let delivery = prepared.protocolV3?.plan.delivery else { return false }
+        return delivery != PlaybackProtocolV3.PlanDelivery.remuxHLS
+            && delivery != PlaybackProtocolV3.PlanDelivery.transcodeHLS
+    }
+
+    private func beginOpeningBudget() -> PlaybackOpeningBudget {
+        let budget = PlaybackOpeningBudget()
+        activeOpeningBudget = budget
+        tickOpeningBudget(budget)
+        return budget
+    }
+
+    /// Ends `budget`'s ticks unless a newer opening replaced it.
+    private func endOpeningBudget(_ budget: PlaybackOpeningBudget) {
+        guard activeOpeningBudget === budget else { return }
+        activeOpeningBudget = nil
+        openingBudgetTimer?.cancel()
+        openingBudgetTimer = nil
+    }
+
+    /// Ticks once a second while `budget` is the opening in progress. It
+    /// holds through an outage as the start deadline does: an outage never
+    /// ends playback by itself, and a lost connection is not a failed route
+    /// (§6.2). Here the outage is the player's reconnect, or the device or
+    /// server being unreachable; the start deadline's reader and request
+    /// signals belong to an adopted plan and have not begun.
+    private func tickOpeningBudget(_ budget: PlaybackOpeningBudget) {
+        guard activeOpeningBudget === budget, !isDisposed else { return }
+        let monitor = ConnectionMonitor.shared
+        let outage = connectionState != .connected || !monitor.isDeviceOnline || monitor.serverStatus == .unreachable
+        if budget.tick(outage: outage, sourceAnswered: openingSourceAnswered, atMs: bufferingClock.elapsedMs) {
+            Self.logger.warning("[CMP-BUFFERING] start budget ran out while the source was opening: failing the load")
+            return
+        }
+        openingBudgetTimer = bufferingClock.schedule(after: 1) { [weak self] in
+            self?.tickOpeningBudget(budget)
+        }
+    }
+
+    /// While the engine is loading a source it has not yet started, whether
+    /// that source answered: AetherEngine records `sourceOpened` once the
+    /// connection is made and the first bytes arrive. Nil outside such a
+    /// load, as during the probe before it, which records no progress.
+    private var openingSourceAnswered: Bool? {
+        guard let epoch = activeAetherLoadEpoch, establishedAetherLoadEpoch != epoch,
+              aetherPlaybackController.activeLoadEpoch == epoch else { return nil }
+        guard let progress = aetherPlaybackController.engine.startupProgress else { return false }
+        return progress.checkpoint >= .sourceOpened
+    }
+
+    /// What a failed opening on the local route means. This start always
+    /// tries the saved address after a failure that says nothing about what
+    /// the server sent. The route itself is reported failed, which demotes it
+    /// for every request until its next check, only on evidence its address
+    /// did not answer: a connection failure, or a budget that ran out while
+    /// the engine was still connecting. A source that answered and then did
+    /// not open, such as a file this device cannot play, or a probe that
+    /// cannot tell, leaves the route alone.
+    static func localRouteOpeningOutcome(
+        _ error: Error,
+        budgetRanOut: Bool,
+        sourceAnswered: Bool?
+    ) -> (retriesSavedAddress: Bool, reportsRouteFailed: Bool) {
+        if budgetRanOut { return (true, sourceAnswered == false) }
+        let unreachable = isLocalRouteLoadFailure(error)
+        return (unreachable, unreachable)
+    }
+
+    /// The failure an opening that ran out of budget reports.
+    private static func openingBudgetFailure(_ underlying: Error) -> AetherPlaybackController.LoadFailure {
+        AetherPlaybackController.LoadFailure(
+            failure: PlaybackErrorInfo(kind: .noPlayableTrackWithinBudget, message: startDeadlineMessage),
+            underlying: underlying
+        )
     }
 
     /// Whether a load failed to reach its source, as one over a local route
@@ -4592,7 +4721,8 @@ class PlayerViewModel {
         resumeSourcePosition: Double?,
         reselectsPlanSubtitle: Bool,
         shouldPlayWhenReady: Bool,
-        takesLocalRoute: Bool
+        takesLocalRoute: Bool,
+        openingBudget: PlaybackOpeningBudget?
     ) async throws {
         try requireCurrentStreamLoad(expectedStreamLoadGeneration)
         streamLocalRoute = nil
@@ -4670,12 +4800,23 @@ class PlayerViewModel {
                 // and depends on a fragile post-load pipeline rebuild.
                 let sourceURL = streamRequest.url
                 let sourceHeaders = streamRequest.headers
-                let probe = try await Task.detached(priority: .userInitiated) {
-                    try AetherEngine.probe(
-                        url: sourceURL,
-                        options: LoadOptions(httpHeaders: sourceHeaders)
-                    )
-                }.value
+                // Part of the opening: the budget interrupts its I/O.
+                let cancellation = openingBudget.map { _ in ProbeCancellation() }
+                openingBudget?.stepBegan { cancellation?.cancel() }
+                let probe: SourceProbe
+                do {
+                    defer { openingBudget?.stepEnded() }
+                    probe = try await Task.detached(priority: .userInitiated) {
+                        try AetherEngine.probe(
+                            url: sourceURL,
+                            options: LoadOptions(httpHeaders: sourceHeaders),
+                            cancellation: cancellation
+                        )
+                    }.value
+                } catch {
+                    if openingBudget?.hasRunOut == true { throw Self.openingBudgetFailure(error) }
+                    throw error
+                }
                 try requireCurrentStreamLoad(expectedStreamLoadGeneration)
                 guard probe.audioTracks.indices.contains(selectedAudioOrdinal),
                       let exactStreamIndex = Int32(exactly: probe.audioTracks[selectedAudioOrdinal].id) else {
@@ -4847,12 +4988,13 @@ class PlayerViewModel {
         committedProtocolV3LoadEpoch = nil
         pendingProtocolV3FirstFrameEpoch = nil
         do {
-            try await aetherPlaybackController.finishLoad(loadEpoch)
+            try await finishAetherLoad(loadEpoch, within: openingBudget)
         } catch {
             let resolved = resolveAbandonedAetherLoad(
                 error,
                 epoch: loadEpoch,
-                expectedStreamLoadGeneration: expectedStreamLoadGeneration
+                expectedStreamLoadGeneration: expectedStreamLoadGeneration,
+                openingBudgetRanOut: openingBudget?.hasRunOut == true
             )
             if activeAetherLoadEpoch == loadEpoch {
                 activeAetherLoadEpoch = nil
@@ -4906,8 +5048,34 @@ class PlayerViewModel {
         activeAetherLoadEpoch != nil && establishedAetherLoadEpoch == activeAetherLoadEpoch
     }
 
+    /// Awaits the engine's load of `epoch`. Under an opening budget, a load
+    /// still opening when it runs out is cancelled, which ends AetherEngine's
+    /// load generation, and ``resolveAbandonedAetherLoad`` reports it as
+    /// `noPlayableTrackWithinBudget`: the load's own catch then asks the
+    /// server for the next route, as for any other load that fails to open.
+    /// The controller keeps the viewer's play intent for that route.
+    private func finishAetherLoad(
+        _ epoch: AetherPlaybackController.LoadEpoch,
+        within openingBudget: PlaybackOpeningBudget?
+    ) async throws {
+        guard let openingBudget else {
+            try await aetherPlaybackController.finishLoad(epoch)
+            return
+        }
+        let controller = aetherPlaybackController
+        let load = Task { @MainActor in try await controller.finishLoad(epoch) }
+        openingBudget.stepBegan { load.cancel() }
+        defer { openingBudget.stepEnded() }
+        try await withTaskCancellationHandler {
+            try await load.value
+        } onCancel: {
+            load.cancel()
+        }
+    }
+
     /// Distinguishes "the app abandoned this load" from "the engine abandoned
-    /// it under us".
+    /// it under us", or from the player failing a load that missed its start
+    /// budget.
     ///
     /// `AetherEngine.load` unwinds as a cancellation whenever a newer engine
     /// generation supersedes it — including when the *engine itself* started
@@ -4920,7 +5088,8 @@ class PlayerViewModel {
     private func resolveAbandonedAetherLoad(
         _ error: Error,
         epoch: AetherPlaybackController.LoadEpoch,
-        expectedStreamLoadGeneration: UInt64
+        expectedStreamLoadGeneration: UInt64,
+        openingBudgetRanOut: Bool
     ) -> Error {
         guard error is CancellationError,
               !Task.isCancelled,
@@ -4928,6 +5097,10 @@ class PlayerViewModel {
               expectedStreamLoadGeneration == streamLoadGeneration,
               activeAetherLoadEpoch == epoch else {
             return error
+        }
+        if openingBudgetRanOut {
+            Self.logger.error("Opening ran out of start budget; treating as a load failure")
+            return Self.openingBudgetFailure(error)
         }
         let failure = lastAetherAudioTrackSwitchFailure
             ?? aetherPlaybackController.engine.errorInfo
@@ -5317,6 +5490,7 @@ class PlayerViewModel {
     func beginHoldFastForward(rate: Double = 2.0) {
         guard !isWatchPartyPlayback else { return }
         guard !isHoldFastForwarding, isPlaying else { return }
+        stillWatchingGuard.recordViewerAction()
         isHoldFastForwarding = true
         aetherPlaybackController.setSpeed(rate)
     }
@@ -5543,6 +5717,14 @@ class PlayerViewModel {
         } else if duration.isFinite, duration > 0 {
             currentTime = duration
         }
+        // Solo playback refuses the viewer's seeks from here on. A scrub left
+        // open could never be finished, and a seek session or a skip still
+        // in its debounce would seek the ended item anyway. End them now
+        // that `currentTime`, which the timeline returns to, is settled.
+        if refusesSeekAtEndOfFile {
+            cancelHoldSeek()
+            cancelScrub()
+        }
         isLoading = false
         isBuffering = false
         isLoadingSubtitles = false
@@ -5659,7 +5841,11 @@ class PlayerViewModel {
             },
             // Remote-position events use the source axis published above and
             // must pass through the VM so a bounded V3 transport can replan.
-            seek:        { [weak self] t in self?.seekTo(seconds: t) },
+            // A system seek comes from the viewer, so it counts as still watching.
+            seek:        { [weak self] t in
+                self?.stillWatchingGuard.recordViewerAction()
+                self?.seekTo(seconds: t)
+            },
             // A command answered `.success` while the controller has no load
             // reports work the system will never observe.
             hasActiveLoad: { [weak self] in
@@ -5692,7 +5878,9 @@ class PlayerViewModel {
         )
     }
 
+    /// Play from the viewer: Now Playing, SiloControl, or the end of a scrub.
     private func handleNowPlayingPlay() {
+        stillWatchingGuard.recordViewerAction()
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(.play) == true { return }
         noteViewerTransportCommand(play: true)
@@ -5704,7 +5892,9 @@ class PlayerViewModel {
         #endif
     }
 
+    /// Pause from the viewer: Now Playing or SiloControl.
     private func handleNowPlayingPause() {
+        stillWatchingGuard.recordViewerAction()
         if watchPartyAdapter?.request(.pause) == true { return }
         noteViewerTransportCommand(play: false)
         if !holdPlayIntentForFreshLoad(false) {
@@ -6021,6 +6211,11 @@ class PlayerViewModel {
         viewerQualityChange: Bool = false
     ) {
         guard !isDisposed else { return }
+        // Picking another title is a deliberate start. Reloads of the same
+        // title (quality, track, recovery) say nothing about the viewer.
+        if origin == .userInitiated, request.contentId != lastLoadRequest?.contentId {
+            stillWatchingGuard.recordViewerAction()
+        }
         // A renewal still waiting on its progress sync belongs to the load
         // this one replaces. Left pending, it would reload its own captured
         // request over the item that is starting now.
@@ -7148,6 +7343,9 @@ class PlayerViewModel {
     /// fresh session — simpler than retrying just the stream load, and
     /// tolerates stale server-side sessions that may have been reaped.
     func retry() {
+        // Only the Retry button calls this; it reloads the same title, which
+        // the load's own different-title check would not count.
+        stillWatchingGuard.recordViewerAction()
         if connectionState == .lost {
             // Try again after a lost connection: a fresh reconnect at the
             // saved position, with the viewer's tracks and play intent.
@@ -7171,6 +7369,7 @@ class PlayerViewModel {
     }
 
     func togglePlayPause() {
+        stillWatchingGuard.recordViewerAction()
         // Nothing can play until the reconnect hands over a new transport.
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(isPlaying ? .pause : .play) == true { return }
@@ -7462,6 +7661,7 @@ class PlayerViewModel {
     @discardableResult
     func skipForward(_ seconds: Double? = nil, revealingControls: Bool = true) -> Bool {
         guard !refusesSeekAtEndOfFile else { return false }
+        stillWatchingGuard.recordViewerAction()
         let seconds = seconds ?? Double(skipIntervals.forward)
         Self.logger.info(
             "[CMP-SEEK] skip forward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -7478,6 +7678,7 @@ class PlayerViewModel {
     @discardableResult
     func skipBackward(_ seconds: Double? = nil, revealingControls: Bool = true) -> Bool {
         guard !refusesSeekAtEndOfFile else { return false }
+        stillWatchingGuard.recordViewerAction()
         let seconds = seconds ?? Double(skipIntervals.backward)
         Self.logger.info(
             "[CMP-SEEK] skip backward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -7493,6 +7694,7 @@ class PlayerViewModel {
     /// for `always`'s undo. Either way the intro is decided and the pill goes.
     func selectIntroSkipPrompt() {
         guard let target = withoutAnimation({ introSkipPrompt.select() }) else { return }
+        stillWatchingGuard.recordViewerAction()
         Self.logger.info(
             "[CMP-MARKERS] intro prompt selected target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
@@ -7607,6 +7809,7 @@ class PlayerViewModel {
     /// the scrubber before it fades.
     func commitHoldSeek() {
         guard isHoldSeeking else { return }
+        stillWatchingGuard.recordViewerAction()
         Self.logger.info(
             "[CMP-SEEK] hold seek commit target=\(self.scrubPreviewTime, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
@@ -7889,8 +8092,11 @@ class PlayerViewModel {
     }
 
     /// Seek to a specific timestamp. Used by the chapter sheet and the tvOS
-    /// progress-bar scrubber.
-    func seekTo(seconds: Double) {
+    /// progress-bar scrubber. Brings up the controls unless
+    /// `revealingControls` is false, as it is for a recap or credits skip:
+    /// hidden controls then stay hidden, and controls that are showing get a
+    /// fresh auto-hide.
+    func seekTo(seconds: Double, revealingControls: Bool = true) {
         guard !refusesSeekAtEndOfFile else { return }
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
@@ -7898,7 +8104,9 @@ class PlayerViewModel {
             "[CMP-SEEK] absolute seek requested seconds=\(seconds, privacy: .public)"
         )
         commitSeek(to: max(0, seconds), source: "absolute")
-        scheduleHideControls()
+        if revealingControls || showControls {
+            scheduleHideControls()
+        }
     }
 
     private func applyMarkerTimeline(_ timeline: PlayerMarkerTimeline) {
@@ -8013,8 +8221,8 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-MARKERS] auto-skip intro target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
-        // Not `seekTo`: that reveals the transport, and nobody touched the
-        // remote. The undo pill is the feedback for this seek.
+        // Not `seekTo`: by default that reveals the transport, and nobody
+        // touched the remote. The undo pill is the feedback for this seek.
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
         commitSeek(to: target, source: "introAutoSkip")
@@ -8084,7 +8292,7 @@ class PlayerViewModel {
         Self.logger.info(
             "[CMP-MARKERS] auto-skip recap target=\(target, privacy: .public) current=\(time, privacy: .public)"
         )
-        seekTo(seconds: target)
+        seekTo(seconds: target, revealingControls: false)
     }
 
     private func performCreditsSkip(to target: Double) {
@@ -8101,7 +8309,7 @@ class PlayerViewModel {
             handleEndOfFile(sourceEnded: false)
             return
         }
-        seekTo(seconds: target)
+        seekTo(seconds: target, revealingControls: false)
     }
 
     /// Credits that run to the end of the file leave nothing to seek to.
@@ -8189,6 +8397,7 @@ class PlayerViewModel {
     func endScrub(resumePlayback: Bool = false, shouldSeek: Bool = true) {
         guard !refusesSeekAtEndOfFile else { return }
         guard isScrubbing else { return }
+        stillWatchingGuard.recordViewerAction()
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
         let reloadsPlaybackPipeline: Bool
@@ -9330,8 +9539,15 @@ class PlayerViewModel {
         }
     }
 
+    /// A chapter the viewer picked from a chapter list.
+    func jumpToChapter(at seconds: Double) {
+        stillWatchingGuard.recordViewerAction()
+        seekTo(seconds: seconds)
+    }
+
     func seekToAdjacentChapter(forward: Bool) {
         guard !chapters.isEmpty else { return }
+        stillWatchingGuard.recordViewerAction()
         let sorted = chapters.sorted { $0.time < $1.time }
         let target: PlayerChapterInfo?
         if forward {
@@ -9345,8 +9561,19 @@ class PlayerViewModel {
     }
 
     func toggleControls() {
+        // A tap aimed at a button can land beside it. Just after a tap brought
+        // the controls up, another keeps them and restarts the auto-hide,
+        // unless a scrub or an open sheet has suspended it.
+        if showControls, let revealedAt = controlsRevealedByTapAt,
+           ContinuousClock.now - revealedAt < controlsTapGrace {
+            if hideControlsTask?.isCancelled == false {
+                scheduleHideControls()
+            }
+            return
+        }
         showControls.toggle()
         if showControls {
+            controlsRevealedByTapAt = .now
             scheduleHideControls()
         }
     }
@@ -10045,6 +10272,27 @@ class PlayerViewModel {
 
     private func audioSelectionIndex(for track: PlayerTrack) -> Int? {
         track.srcId ?? track.ffIndex
+    }
+
+    /// Rewrites the stream badges for the file and the audio track playing
+    /// now. Between items no file is loaded and the outgoing badges stand.
+    private func refreshStreamBadges() {
+        guard let version = currentSelectedVersion else { return }
+        let badges = PlayerMetadata.streamBadges(version: version, audioCodec: selectedAudioCodec(in: version))
+        if metadata.badges != badges { metadata.badges = badges }
+    }
+
+    /// The catalog's codec for the selected audio track: the engine names a
+    /// track by its decoder (`dca` for DTS). Nil when the published tracks do
+    /// not line up with the file's, so its own audio codec stands in.
+    private func selectedAudioCodec(in version: FileVersion) -> String? {
+        guard audioTracksFileId == version.fileId,
+              let catalogTracks = version.audioTracks, catalogTracks.count == audioTracks.count,
+              let ordinal = audioTracks.first(where: { $0.trackId == selectedAudioId })?.srcId,
+              catalogTracks.indices.contains(ordinal) else {
+            return nil
+        }
+        return catalogTracks[ordinal].codec
     }
 
     /// Re-registers session-created sidecars (finished AI jobs, downloaded
@@ -11002,6 +11250,12 @@ class PlayerViewModel {
     /// Tests shorten it.
     @ObservationIgnored var autoHideDelay: Duration = .seconds(5)
 
+    /// How long after a tap brings the controls up another tap on the
+    /// background keeps them instead of hiding them. Tests shorten it.
+    @ObservationIgnored var controlsTapGrace: Duration = .milliseconds(1500)
+    /// When a tap last brought the controls up.
+    @ObservationIgnored private var controlsRevealedByTapAt: ContinuousClock.Instant?
+
     private func scheduleHideControls() {
         // The HUD pins its host visible (`pinControlsVisible` in `openHUD`).
         // Actions taken from inside it — track selection, remote play/pause —
@@ -11153,6 +11407,8 @@ extension PlayerViewModel {
             guard let seconds = command.seconds else {
                 throw SiloControlPlayerError.missingSeekPosition
             }
+            // SiloRemote's skip buttons and scrubber: the viewer's seek.
+            stillWatchingGuard.recordViewerAction()
             seekTo(seconds: seconds)
         case .stop:
             if isWatchPartyPlayback { cleanup() }

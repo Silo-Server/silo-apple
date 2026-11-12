@@ -204,6 +204,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
                         selectedVersionFileId: selectedVersionFileId,
                         showOptions: $showDownloadOptions
                     )
+                } else if showsUnavailableDownload {
+                    DownloadUnavailableButton()
                 }
                 if hasOverflowMenu {
                     PhoneLabeledMenu(label: AppLanguage.string(.detailMore, locale: locale)) {
@@ -261,6 +263,13 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// server advertises the capability for this profile.
     private var showsDownloadButton: Bool {
         DownloadManager.shared.downloadsEnabled
+            && detail.type == "movie"
+    }
+
+    /// The server offers downloads but this account may not use them:
+    /// Download stays in its place, unavailable, and says why when tapped.
+    private var showsUnavailableDownload: Bool {
+        DownloadManager.shared.downloadsRestricted
             && detail.type == "movie"
     }
 

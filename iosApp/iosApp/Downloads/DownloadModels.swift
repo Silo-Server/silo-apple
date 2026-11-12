@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Capability (GET /api/v2/capabilities/downloads)
 
 /// Server-advertised download feature gate, cached in the scope's store.
-/// Fetched at login + profile switch; the UI is hidden unless `isUsable`.
+/// Fetched at login + profile switch; `access` decides what the UI offers.
 struct DownloadCapability: Codable, Hashable, Sendable {
     /// The capability's support state (`available`, `disabled`,
     /// `not_configured` or `unsupported`).
@@ -33,9 +33,31 @@ struct DownloadCapability: Codable, Hashable, Sendable {
     /// copy, then the entry. Without it revoked files stay playable.
     let revokedRemovesLocal: Bool
 
+    /// What the app offers for downloads.
+    enum Access: Equatable {
+        /// Downloads work for this account.
+        case usable
+        /// The server offers downloads, and this account's policy denies
+        /// them. Title pages show Download as unavailable and say why.
+        case restricted
+        /// Nothing is shown: the server has no downloads, has them switched
+        /// off, or refuses them for a reason the account's admin can't lift.
+        case hidden
+    }
+
+    /// The one mapping from the server's fields to what the app offers.
+    /// `allowed` is also false in demo mode for an account whose policy
+    /// allows downloads; that stays hidden, because asking the admin for
+    /// access would not help.
+    var access: Access {
+        guard state == "available", enabled else { return .hidden }
+        guard downloadAllowed else { return .restricted }
+        return allowed ? .usable : .hidden
+    }
+
     /// Downloads are usable only when the capability is available and this
     /// principal may use it.
-    var isUsable: Bool { state == "available" && allowed && enabled && downloadAllowed }
+    var isUsable: Bool { access == .usable }
 
     /// The label for a preset, with the server's resolution ceiling when it
     /// reports one: "10 Mbps · up to 1080p".

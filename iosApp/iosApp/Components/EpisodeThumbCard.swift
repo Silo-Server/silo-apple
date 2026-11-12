@@ -190,7 +190,8 @@ struct EpisodeThumbCard: View {
                 CardOverlays(
                     data: resolvedOverlayData,
                     prefs: overlayStore.prefs,
-                    variant: .wide
+                    variant: .wide,
+                    images: overlayStore.images
                 )
                 .frame(width: cardWidth, height: cardHeight)
                 .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
@@ -270,7 +271,8 @@ struct EpisodeThumbCard: View {
         item.seriesTitle ?? item.title
     }
 
-    /// Secondary line — "S01E02 · Pilot" for episodes, otherwise year.
+    /// Secondary line — "S01E02 · Pilot" for episodes, otherwise the year,
+    /// or the years a series ran.
     private var subtitleLine: String? {
         if let episodeLine = EpisodeCardCaption.line(for: item, locale: locale) {
             return episodeLine
@@ -278,10 +280,7 @@ struct EpisodeThumbCard: View {
         if item.seriesTitle != nil {
             return item.title
         }
-        if let year = item.year {
-            return LocaleFormat.integer(year, locale: locale)
-        }
-        return nil
+        return CardYears.caption(for: item, locale: locale)
     }
 
     private var accessibilityDescription: String {

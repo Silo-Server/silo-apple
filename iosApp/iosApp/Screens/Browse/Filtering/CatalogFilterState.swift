@@ -339,4 +339,10 @@ struct CatalogFilterState: Equatable, Codable, Hashable {
         if let w = watchStatus { parts.append("ws=\(encode(w.rawValue))") }
         return parts.joined(separator: "|")
     }
+
+    /// Whether a cache key built from `cacheKeyFragment` is for a letter's
+    /// page. Values are percent-encoded, so only the prefix part reads `|p=`.
+    static func isLetterPage(cacheKey: String) -> Bool {
+        cacheKey.contains("|p=")
+    }
 }

@@ -17,7 +17,12 @@ enum ResponseSnapshotStore {
         if key == CacheKey.homeSections || key == CacheKey.recommendations { return SectionsResponse.self }
         if key == CacheKey.userLibraries { return LibrariesResponse.self }
         if key.hasPrefix("library:"), key.hasSuffix(":sections") { return SectionsResponse.self }
-        if key.hasPrefix("browse:") || key.hasPrefix("tvlibrary:") { return CatalogResponse.self }
+        if key.hasPrefix("browse:") || key.hasPrefix("tvlibrary:") {
+            // A letter's page is a jump made during a visit, never a screen
+            // the app opens on. Saving one per letter would push the first
+            // screens out of the snapshots kept per scope.
+            return CatalogFilterState.isLetterPage(cacheKey: key) ? nil : CatalogResponse.self
+        }
         return nil
     }
 

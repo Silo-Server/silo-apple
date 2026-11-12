@@ -275,6 +275,25 @@ actor SiloAPI {
         return page
     }
 
+    /// The letter index of the title-ordered list `query` pages, or nil from
+    /// a server that has none (it answers the route with 404, or 501 when its
+    /// store cannot count by letter).
+    func catalogLetters(_ query: APIv2CatalogQuery) async throws -> APIv2CatalogLetters? {
+        let auth = try await detailReadAuth()
+        let letters: APIv2CatalogLetters
+        do {
+            letters = try await apiV2Client.catalogLetters(APIv2CatalogLettersQuery(query), auth: auth)
+        } catch let error as APIv2Error {
+            switch error {
+            case .serverUpdateRequired, .httpStatus(404), .httpStatus(405), .httpStatus(501): return nil
+            case .problem(let problem) where [404, 405, 501].contains(problem.status): return nil
+            default: throw error
+            }
+        }
+        try await requireCurrentOwner(auth)
+        return letters
+    }
+
     func itemDetail(contentId: String, libraryId: Int? = nil) async throws -> ItemDetail {
         let auth = try await detailReadAuth()
         let item = try await apiV2Client.catalogItem(

@@ -625,6 +625,7 @@ enum TVSettingsDetailFocus: Hashable {
     case playbackBufferAhead
     case playbackDeinterlaceMode
     case playbackDeinterlaceFieldRate
+    case playbackStillWatching
     case playbackNextUpPrompt
     case playbackIntroSkipMode
     case playbackAutoPlayNext

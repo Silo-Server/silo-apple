@@ -2,9 +2,9 @@ import SwiftUI
 
 /// The shared right-hand action cluster used at the top of tab-root screens:
 /// Search, the iOS TV remote control, and a profile-avatar menu with
-/// Settings / Switch Profile / Sign Out. Every root page renders the same
-/// three controls so the header reads identically across Home, Libraries,
-/// For You, and Calendar.
+/// Settings / Switch Profile or Add Profile / Change Account / Sign Out.
+/// Every root page renders the same three controls so the header reads
+/// identically across Home, Libraries, For You, and Calendar.
 ///
 /// Each tab renders its own leading content (e.g. library selector on the
 /// Libraries tab, the wordmark on Home) and places this view on the
@@ -115,9 +115,11 @@ private struct TopBarIconButton: View {
 }
 
 /// Profile avatar opening the account menu (Requests, Watch Party, Settings,
-/// Switch Profile, Change Account, Sign Out). Switch Profile opens the open
-/// account's picker; Change Account, in Switch Server's place, lists every
-/// saved account by server (spec §4.3).
+/// the profile row, Change Account, Sign Out). The profile row is Switch
+/// Profile, which opens the open account's picker, or Add Profile while the
+/// account has one profile and room for another, or absent when it has
+/// neither (`ProfileMenuRow`). Change Account, in Switch Server's place,
+/// lists every saved account by server (spec §4.3).
 ///
 /// On iPhone and iPad the menu is a panel (``ProfileMenuPanel``) headed by the
 /// profile picture, the profile name in bold and the server underneath,
@@ -179,10 +181,12 @@ struct ProfileAvatarMenu: View {
         } label: {
             Label(.menuSettings, systemImage: "gearshape")
         }
-        Button {
-            onSwitchProfile()
-        } label: {
-            Label(.menuSwitchProfile, systemImage: "person.2")
+        if let profileRow {
+            Button {
+                choose(profileRow)
+            } label: {
+                Label(profileRow.title, systemImage: profileRow.systemImage)
+            }
         }
         Button {
             router.showChangeAccount()
@@ -191,6 +195,19 @@ struct ProfileAvatarMenu: View {
         }
     }
     #endif
+
+    /// Switch Profile, Add Profile, or no row, by the open account's profile
+    /// count and limit.
+    private var profileRow: ProfileMenuRow? {
+        ProfileMenuRow.row(for: directory.openAccount)
+    }
+
+    private func choose(_ row: ProfileMenuRow) {
+        switch row {
+        case .switchProfile: onSwitchProfile()
+        case .addProfile: router.beginAddProfile()
+        }
+    }
 
     private var avatarSize: CGFloat {
         #if os(macOS)
@@ -262,6 +279,8 @@ struct ProfileAvatarMenu: View {
                 }
             )
             .presentationCompactAdaptation(.popover)
+            // Profiles added or removed elsewhere change the profile row.
+            .task { _ = try? await StartupContentPrefetcher.fetchProfiles() }
             // The panel disappears once the popover has finished closing;
             // isPanelPresented turns false when it starts to.
             .onDisappear {
@@ -347,17 +366,20 @@ struct ProfileAvatarMenu: View {
                 pushesScreen: true
             ) { router.navigate(to: .watchParty) })
         }
+        var account: [ProfileMenuPanel.Row] = [
+            .init(title: .menuSettings, systemImage: "gearshape", pushesScreen: true, action: onOpenSettings),
+        ]
+        if let profileRow {
+            account.append(.init(title: profileRow.title, systemImage: profileRow.systemImage) { choose(profileRow) })
+        }
+        account.append(.init(
+            title: .menuChangeAccount,
+            systemImage: "person.crop.circle.badge.checkmark",
+            action: { router.showChangeAccount() }
+        ))
         return [
             features,
-            [
-                .init(title: .menuSettings, systemImage: "gearshape", pushesScreen: true, action: onOpenSettings),
-                .init(title: .menuSwitchProfile, systemImage: "person.2", action: onSwitchProfile),
-                .init(
-                    title: .menuChangeAccount,
-                    systemImage: "person.crop.circle.badge.checkmark",
-                    action: { router.showChangeAccount() }
-                ),
-            ],
+            account,
             [
                 .init(
                     title: .menuSignOut,

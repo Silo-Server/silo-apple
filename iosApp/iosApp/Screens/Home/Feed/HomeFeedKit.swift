@@ -91,10 +91,10 @@ enum HomeFeedMeta {
     }
 
     /// Secondary caption line under a card title: "S01E02 · Pilot" for
-    /// episodes, otherwise the year. One line, so every card in a row keeps
-    /// the same height.
+    /// episodes, otherwise the year, or the years a series ran. One line, so
+    /// every card in a row keeps the same height.
     static func cardSecondLine(for item: SectionItem, locale: Locale) -> String? {
-        EpisodeCardCaption.line(for: item, locale: locale) ?? item.year.map { LocaleFormat.integer($0, locale: locale) }
+        EpisodeCardCaption.line(for: item, locale: locale) ?? CardYears.caption(for: item, locale: locale)
     }
 
     /// Caption under a resume still — "23m left".
@@ -261,7 +261,8 @@ private struct HomeCardMenu: ViewModifier {
 
 // MARK: - Watched check
 
-/// Top-trailing watched indicator shared by both Home cards.
+/// Top-trailing watched indicator on the Home still card. The poster card
+/// draws `CardWatchStatus` instead.
 private struct HomeWatchedCheck: View {
     var body: some View {
         Image(systemName: "checkmark")
@@ -360,13 +361,15 @@ struct HomePosterCard: View {
         .overlay {
             // Home uses the same renderer and resolved profile preferences as
             // Browse, For You, Watchlist, and Favorites. Keep this below the
-            // progress and watched affordances so those controls retain their
-            // established corner priority.
+            // progress rail and the watch status, which owns the top-right
+            // corner.
             if overlayStore.enabled {
                 CardOverlays(
                     data: OverlayData.from(item),
                     prefs: overlayStore.prefs,
-                    variant: .poster
+                    variant: .poster,
+                    images: overlayStore.images,
+                    hasProgressBar: showsProgress && HomeFeedMeta.progress(for: item) != nil
                 )
                 .frame(width: width, height: height)
                 .clipShape(
@@ -377,11 +380,13 @@ struct HomePosterCard: View {
                 )
             }
         }
-        .overlay(alignment: .topTrailing) {
-            if isPlayed {
-                HomeWatchedCheck()
-                    .padding(6)
-            }
+        .overlay {
+            // Shown whether or not badges are on.
+            CardWatchStatus(
+                played: isPlayed,
+                episodesLeft: personalState.episodesLeft(item.userState),
+                cardWidth: width
+            )
         }
         .overlay(alignment: .bottom) {
             if showsProgress, let progress = HomeFeedMeta.progress(for: item) {
@@ -423,8 +428,8 @@ struct HomePosterCard: View {
         var components = [HomeFeedMeta.cardTitle(for: item)]
         if let episodeAccessibilityLabel {
             components.append(episodeAccessibilityLabel)
-        } else if let year = item.year {
-            components.append(LocaleFormat.integer(year, locale: locale))
+        } else if let years = CardYears.caption(for: item, locale: locale) {
+            components.append(years)
         }
         if isPlayed {
             components.append(AppLanguage.string(.homeWatched, locale: locale))
@@ -534,7 +539,8 @@ struct HomeStillCard: View {
                 CardOverlays(
                     data: OverlayData.from(item),
                     prefs: overlayStore.prefs,
-                    variant: .wide
+                    variant: .wide,
+                    images: overlayStore.images
                 )
                 .frame(width: width, height: height)
                 .clipShape(
@@ -665,8 +671,8 @@ struct HomeStillCard: View {
         var components = [HomeFeedMeta.cardTitle(for: item)]
         if let episodeLabel = EpisodeCardCaption.accessibilityLabel(for: item, locale: locale) {
             components.append(episodeLabel)
-        } else if let year = item.year {
-            components.append(LocaleFormat.integer(year, locale: locale))
+        } else if let years = CardYears.caption(for: item, locale: locale) {
+            components.append(years)
         }
         if let resumeCaption = HomeFeedMeta.resumeCaption(for: item, locale: locale) {
             components.append(resumeCaption)

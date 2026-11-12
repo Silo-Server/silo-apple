@@ -224,6 +224,9 @@ enum APIv2CatalogRead {
         let inWatchlist: Bool
         let isFavorite: Bool
         let played: Bool
+        /// Present on a series or season the profile has not finished.
+        let unplayedCount: Int64?
+        let watchedCount: Int64?
     }
 
     struct CrewCredit: Decodable {

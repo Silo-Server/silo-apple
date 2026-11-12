@@ -56,10 +56,8 @@ struct PlayerView: View {
     @Environment(\.layoutDirection) private var layoutDirection
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
     @State private var isTimelinePreviewVisible = false
-    @State private var timelineTimeDisplayMode: TVPlayerTimeDisplayMode = .elapsedRemaining
     @State private var timelineSelectionRequest: UUID?
     @State private var timelinePreviewHideTask: Task<Void, Never>?
-    @State private var timelinePreviewContactCanToggle = false
     /// The buffering pill's buttons. Owned here because the pill is drawn at
     /// the notice position; `TVPlayerControls` applies its focus rules.
     @FocusState private var focusedBufferingAction: TVBufferingQualityPill.Action?
@@ -177,10 +175,11 @@ struct PlayerView: View {
                         //     the signed ladder, Tap Select = commit + exit,
                         //     Menu = cancel + exit (handled in onExitCommand).
                         //     Taps against Up/Down are ignored; holds are no-ops.
-                        // While a buffering or intro-skip pill is up the sink
-                        // stays mounted and Select acts on the pill (the spec's
-                        // root-level Select), so every other press keeps its
-                        // playback meaning and the pill's timer runs on regardless.
+                        // While a buffering, intro-skip or recap/credits pill
+                        // is up the sink stays mounted and Select acts on the
+                        // pill (the spec's root-level Select), so every other
+                        // press keeps its playback meaning and a timed pill's
+                        // timer runs on regardless.
                         // The buffering prompt is the exception: it has two
                         // buttons, so Left and Right move between them instead
                         // of skipping.
@@ -189,7 +188,6 @@ struct PlayerView: View {
                         // (docs/tvos-focus.md), and the sink's Down handler
                         // force-switches the HUD tab underneath the user.
                         if !viewModel.isStartingPlayback && !viewModel.isHUDPresented &&
-                            (!viewModel.showSegmentSkip || viewModel.isHoldSeeking) &&
                             (!viewModel.showControls || viewModel.isHoldSeeking) {
                             TVPressCaptureView(
                                 onArrowTap: { direction in
@@ -218,17 +216,14 @@ struct PlayerView: View {
                                     case .up, .down: break
                                     }
                                 },
-                                onDirectionalPressBegan: {
-                                    timelinePreviewContactCanToggle = false
-                                },
                                 onTouchSurfaceContactBegan: {
                                     handleTimelinePreviewContactBegan()
                                 },
                                 onTouchSurfaceContactEnded: {
-                                    handleTimelinePreviewContactEnded()
+                                    scheduleTimelinePreviewHide()
                                 },
                                 onTouchSurfaceContactCancelled: {
-                                    handleTimelinePreviewContactCancelled()
+                                    scheduleTimelinePreviewHide()
                                 },
                                 onSelect: {
                                     if viewModel.isHoldSeeking {
@@ -239,8 +234,11 @@ struct PlayerView: View {
                                         selectBufferingTarget()
                                     } else if viewModel.showIntroSkip {
                                         viewModel.selectIntroSkipPrompt()
+                                    } else if viewModel.showSegmentSkip {
+                                        // After the intro pill, which the
+                                        // recap/credits pill waits for.
+                                        viewModel.skipCurrentSegment()
                                     } else if viewModel.isPlaying {
-                                        timelinePreviewContactCanToggle = false
                                         hideTimelinePreview(immediately: true)
                                         viewModel.pauseForTimelineSelection()
                                         timelineSelectionRequest = UUID()
@@ -277,15 +275,9 @@ struct PlayerView: View {
                             TVPlayerControls(
                                 viewModel: viewModel,
                                 showsTimelinePreview: isTimelinePreviewVisible,
-                                timeDisplayMode: timelineTimeDisplayMode,
                                 timelineSelectionRequest: timelineSelectionRequest,
                                 bufferingPillFocus: $focusedBufferingAction,
                                 showsCornerCapsule: showsWatchPartySyncCapsule,
-                                onToggleTimeDisplayMode: {
-                                    withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
-                                        timelineTimeDisplayMode.toggle()
-                                    }
-                                },
                                 onTimelineScrubbingChange: { isTimelineScrubbing = $0 },
                                 onDismiss: { dismissPlayer() }
                             )
@@ -491,8 +483,6 @@ struct PlayerView: View {
         .onChange(of: viewModel.showControls) { _, visible in
             if visible {
                 hideTimelinePreview()
-            } else {
-                timelineTimeDisplayMode = .elapsedRemaining
             }
         }
         .onChange(of: viewModel.bufferingPill?.kind) { _, _ in
@@ -702,28 +692,11 @@ struct PlayerView: View {
 
         timelinePreviewHideTask?.cancel()
         timelinePreviewHideTask = nil
-        timelinePreviewContactCanToggle = isTimelinePreviewVisible
         withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
             if !isTimelinePreviewVisible {
                 isTimelinePreviewVisible = true
             }
         }
-    }
-
-    private func handleTimelinePreviewContactEnded() {
-        guard isTimelinePreviewVisible else { return }
-        if timelinePreviewContactCanToggle {
-            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
-                timelineTimeDisplayMode.toggle()
-            }
-        }
-        timelinePreviewContactCanToggle = false
-        scheduleTimelinePreviewHide()
-    }
-
-    private func handleTimelinePreviewContactCancelled() {
-        timelinePreviewContactCanToggle = false
-        scheduleTimelinePreviewHide()
     }
 
     private func scheduleTimelinePreviewHide() {
@@ -739,7 +712,6 @@ struct PlayerView: View {
     private func hideTimelinePreview(immediately: Bool = false) {
         timelinePreviewHideTask?.cancel()
         timelinePreviewHideTask = nil
-        timelinePreviewContactCanToggle = false
         guard isTimelinePreviewVisible else { return }
         if immediately {
             isTimelinePreviewVisible = false
@@ -747,10 +719,6 @@ struct PlayerView: View {
             withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                 isTimelinePreviewVisible = false
             }
-            // A dismissed quick preview always starts fresh in duration mode
-            // on the next light touch. The immediate Select-to-HUD handoff
-            // intentionally preserves the current display mode instead.
-            timelineTimeDisplayMode = .elapsedRemaining
         }
     }
     #endif
@@ -867,7 +835,7 @@ struct PlayerView: View {
     private var bufferingPillIsSelectTarget: Bool {
         if capturesSelectForBufferingPillWhileLoading { return true }
         return !viewModel.isStartingPlayback && !viewModel.isHUDPresented && !viewModel.showControls &&
-            !viewModel.showSegmentSkip && !viewModel.isHoldSeeking
+            !viewModel.isHoldSeeking
     }
 
     /// One focus owner at a time (docs/tvos-focus.md), as for the intro pill.
