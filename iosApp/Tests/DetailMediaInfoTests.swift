@@ -152,7 +152,7 @@ final class DetailMediaInfoTests: XCTestCase {
             // The profile's pick is not a fact about the file.
             effectiveAudioTrackIndex: 1
         )
-        let facts = DetailMediaInfo.audioFacts(file)
+        let facts = AppLanguage.inEnglish { DetailMediaInfo.audioFacts(file) }
 
         XCTAssertEqual(facts.map(\.label), ["English", "French"])
         XCTAssertEqual(facts.map(\.value), ["TrueHD · 7.1 · Default", "AC3 · 5.1"])
@@ -168,7 +168,7 @@ final class DetailMediaInfoTests: XCTestCase {
             // Nothing is known about this one, but the file has it.
             audioTrack(nil, codec: "", layout: ""),
         ])
-        let facts = DetailMediaInfo.audioFacts(file)
+        let facts = AppLanguage.inEnglish { DetailMediaInfo.audioFacts(file) }
 
         XCTAssertEqual(facts.map(\.label), ["English", "Track 2", "Track 3", "Track 4"])
         XCTAssertEqual(facts.map(\.value), ["Commentary · AC3 · Stereo", "Commentary · AC3 · Stereo", "AAC · Stereo", ""])
