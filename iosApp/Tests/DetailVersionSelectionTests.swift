@@ -408,7 +408,8 @@ final class DetailVersionSelectionTests: XCTestCase {
         ]
         """)
 
-        XCTAssertFalse(DetailPlaybackFormatting.shouldEnableVersionSelector(
+        // A one-file edition still opens Versions, so Auto stays reachable.
+        XCTAssertTrue(DetailPlaybackFormatting.shouldEnableVersionSelector(
             versions: versions,
             currentVersion: versions[0]
         ))

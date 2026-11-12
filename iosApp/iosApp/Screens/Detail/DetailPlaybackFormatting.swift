@@ -96,11 +96,14 @@ enum DetailPlaybackFormatting {
         return versions
     }
 
+    /// With editions, Versions always opens: its Auto row is a real choice
+    /// there, the way back from an edition pick, even for a one-file edition.
     static func shouldEnableVersionSelector(
         versions: [FileVersion],
         currentVersion: FileVersion?
     ) -> Bool {
-        versionSelectorVersions(versions: versions, currentVersion: currentVersion).count > 1
+        PlaybackEditions.editions(from: versions).count > 1
+            || versionSelectorVersions(versions: versions, currentVersion: currentVersion).count > 1
     }
 
     static func shouldShowAudioValue(version: FileVersion?) -> Bool {
