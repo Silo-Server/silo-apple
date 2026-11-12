@@ -10,15 +10,16 @@ struct PhoneDetailFactsSection: View {
     let detail: ItemDetail
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.locale) private var locale
     /// The label column grows with its text so "FIRST AIRED" and "NARRATORS"
     /// keep their default line breaks at larger text sizes.
     @ScaledMetric(relativeTo: .caption2) private var labelWidth: CGFloat = 100
 
     var body: some View {
-        let facts = DetailFacts(detail: detail).assembleFacts()
+        let facts = DetailFacts(detail: detail).assembleFacts(locale: locale)
         if !facts.isEmpty {
             VStack(spacing: 0) {
-                ForEach(Array(facts.enumerated()), id: \.element.label) { index, fact in
+                ForEach(Array(facts.enumerated()), id: \.offset) { index, fact in
                     if index > 0 {
                         Rectangle()
                             .fill(Color.white.opacity(0.08))
@@ -52,7 +53,7 @@ struct PhoneDetailFactsSection: View {
     }
 
     private func label(_ fact: DetailFacts.Fact) -> some View {
-        Text(fact.label.uppercased())
+        Text(fact.label.uppercased(with: locale))
             .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
             .tracking(1.2)
             .foregroundColor(.siloOnSurface.opacity(0.5))
@@ -76,68 +77,76 @@ struct DetailFacts {
         let value: String
     }
 
-    func assembleFacts() -> [Fact] {
+    /// Labels come out in the language `locale` shows; a view passes its `\.locale`.
+    func assembleFacts(locale: Locale = AppLanguage.displayedLocale) -> [Fact] {
         if let audiobook = detail.audiobook {
-            return audiobookFacts(audiobook)
+            return audiobookFacts(audiobook, locale: locale)
+        }
+        func label(_ resource: LocalizedStringResource) -> String {
+            AppLanguage.string(resource, locale: locale)
         }
         var facts: [Fact] = []
 
+        // Crew jobs are matched against the server's English job names.
         if let directors = creditNames(forJobs: ["Director"]), !directors.isEmpty {
-            facts.append(Fact(label: "Director", value: directors))
+            facts.append(Fact(label: label(.detailDirector), value: directors))
         }
         if let writers = creditNames(forJobs: ["Writer", "Screenplay", "Story"]), !writers.isEmpty {
-            facts.append(Fact(label: writerLabel, value: writers))
+            facts.append(Fact(label: label(writerLabel), value: writers))
         }
         if let studios = detail.studios, !studios.isEmpty {
-            facts.append(Fact(label: "Studio", value: studios.prefix(3).joined(separator: ", ")))
+            facts.append(Fact(label: label(.detailStudio), value: studios.prefix(3).joined(separator: ", ")))
         }
         if let networks = detail.networks, !networks.isEmpty {
-            facts.append(Fact(label: "Network", value: networks.prefix(3).joined(separator: ", ")))
+            facts.append(Fact(label: label(.detailNetwork), value: networks.prefix(3).joined(separator: ", ")))
         }
         if let countries = detail.countries, !countries.isEmpty {
-            facts.append(Fact(label: "Country", value: countries.prefix(3).joined(separator: ", ")))
+            facts.append(Fact(label: label(.detailCountry), value: countries.prefix(3).joined(separator: ", ")))
         }
         if let airDate = DetailDateFormatting.longDate(detail.airDate) {
-            facts.append(Fact(label: "Aired", value: airDate))
+            facts.append(Fact(label: label(.detailAired), value: airDate))
         }
         if let releaseDate = DetailDateFormatting.longDate(detail.releaseDate) {
-            facts.append(Fact(label: "Released", value: releaseDate))
+            facts.append(Fact(label: label(.detailReleased), value: releaseDate))
         }
         if let firstAired = DetailDateFormatting.longDate(detail.firstAirDate) {
-            facts.append(Fact(label: "First Aired", value: firstAired))
+            facts.append(Fact(label: label(.detailFirstAired), value: firstAired))
         }
         if let lastAired = DetailDateFormatting.longDate(detail.lastAirDate) {
-            facts.append(Fact(label: "Last Aired", value: lastAired))
+            facts.append(Fact(label: label(.detailLastAired), value: lastAired))
         }
         return facts
     }
 
     /// Book facts replace the film credits: who wrote and read it, who
     /// published it, how long it runs, and the file format.
-    private func audiobookFacts(_ audiobook: AudiobookDetail) -> [Fact] {
+    private func audiobookFacts(_ audiobook: AudiobookDetail, locale: Locale) -> [Fact] {
+        func label(_ resource: LocalizedStringResource) -> String {
+            AppLanguage.string(resource, locale: locale)
+        }
         var facts: [Fact] = []
         let authors = audiobook.authors.map(\.name)
         if let names = AudiobookDetailFormatting.peopleSummary(authors, visible: maxCreditNames) {
-            facts.append(Fact(label: personCount(authors) > 1 ? "Authors" : "Author", value: names))
+            facts.append(Fact(label: label(.detailFactsAuthor(count: personCount(authors))), value: names))
         }
         let narrators = audiobook.narrators.map(\.name)
         if let names = AudiobookDetailFormatting.peopleSummary(narrators, visible: maxCreditNames) {
-            facts.append(Fact(label: personCount(narrators) > 1 ? "Narrators" : "Narrator", value: names))
+            facts.append(Fact(label: label(.detailFactsNarrator(count: personCount(narrators))), value: names))
         }
         if let publisher = audiobook.publisher?.trimmingCharacters(in: .whitespaces), !publisher.isEmpty {
-            facts.append(Fact(label: "Publisher", value: publisher))
+            facts.append(Fact(label: label(.detailFactsPublisher), value: publisher))
         }
         if let releaseDate = DetailDateFormatting.longDate(detail.releaseDate) {
-            facts.append(Fact(label: "Released", value: releaseDate))
+            facts.append(Fact(label: label(.detailReleased), value: releaseDate))
         } else if let year = detail.year, year > 0 {
-            facts.append(Fact(label: "Released", value: String(year)))
+            facts.append(Fact(label: label(.detailReleased), value: LocaleFormat.integer(year, locale: locale)))
         }
         let length = PlayerTimeFormatter.formatRuntime(BookDetailPresentation.totalDurationSeconds(of: detail))
         if !length.isEmpty {
-            facts.append(Fact(label: "Length", value: length))
+            facts.append(Fact(label: label(.detailFactsLength), value: length))
         }
-        if let format = audiobookFormat {
-            facts.append(Fact(label: "Format", value: format))
+        if let format = audiobookFormat(locale: locale) {
+            facts.append(Fact(label: label(.detailFactsFormat), value: format))
         }
         return facts
     }
@@ -152,7 +161,7 @@ struct DetailFacts {
     }
 
     /// "AAC · M4B · 3 parts", from the first part's codec and container.
-    private var audiobookFormat: String? {
+    private func audiobookFormat(locale: Locale) -> String? {
         let parts = AudiobookPlaybackContext.audioParts(of: detail)
         guard let primary = parts.first else { return nil }
         var tokens: [String] = []
@@ -163,14 +172,14 @@ struct DetailFacts {
             tokens.append(container.uppercased())
         }
         if parts.count > 1 {
-            tokens.append("\(parts.count) parts")
+            tokens.append(AppLanguage.string(.detailAudiobookPartCount(count: parts.count, LocaleFormat.integer(parts.count, locale: locale)), locale: locale))
         }
         return tokens.isEmpty ? nil : tokens.joined(separator: " · ")
     }
 
-    private var writerLabel: String {
+    private var writerLabel: LocalizedStringResource {
         let hasScreenplay = detail.crew?.contains { $0.job?.lowercased() == "screenplay" } ?? false
-        return hasScreenplay ? "Writer" : "Written by"
+        return hasScreenplay ? .detailWriter : .detailWrittenBy
     }
 
     private func creditNames(forJobs jobs: [String]) -> String? {

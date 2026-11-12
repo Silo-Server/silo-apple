@@ -147,7 +147,7 @@ enum DownloadGroupBuilder {
 
         let title = records.compactMap(\.seriesTitle).first
             ?? seriesTitle
-            ?? records.first?.title
+            ?? records.first?.shownTitle()
             ?? seriesId
 
         return DownloadSeriesGroup(
@@ -187,11 +187,11 @@ enum DownloadSortOption: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    var displayName: String {
+    var displayName: LocalizedStringResource {
         switch self {
-        case .largestFirst: return "Largest first"
-        case .recentlyAdded: return "Recently added"
-        case .alphabetical: return "Name (A–Z)"
+        case .largestFirst: return .downloadsSortLargestFirst
+        case .recentlyAdded: return .downloadsSortRecentlyAdded
+        case .alphabetical: return .downloadsSortAlphabetical
         }
     }
 

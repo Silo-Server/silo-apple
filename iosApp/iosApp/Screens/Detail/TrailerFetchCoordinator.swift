@@ -65,17 +65,21 @@ final class TrailerFetchCoordinator {
     /// detail has been handed back — at that point the new rail is the
     /// feedback.
     var statusMessage: String? {
+        statusResource.map { AppLanguage.string($0) }
+    }
+
+    private var statusResource: LocalizedStringResource? {
         switch phase {
         case .idle, .found: return nil
-        case .requesting, .polling: return "Finding trailers…"
-        case .cooldown: return "Trailers were checked recently"
-        case .disabled: return "Trailers are disabled for this library"
-        case .foundUnplayable: return "No playable trailers here"
-        case .exhausted: return "No trailers found"
+        case .requesting, .polling: return .detailTrailerFetchFinding
+        case .cooldown: return .detailTrailerFetchCooldown
+        case .disabled: return .detailTrailerFetchDisabled
+        case .foundUnplayable: return .detailTrailerFetchUnplayable
+        case .exhausted: return .detailTrailerFetchNotFound
         case .requestFailed(let rateLimited):
             return rateLimited
-                ? "Please wait a moment and try again"
-                : "Couldn't reach the server — try again"
+                ? .detailTrailerFetchRateLimited
+                : .detailTrailerFetchFailed
         }
     }
 

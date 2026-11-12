@@ -112,9 +112,11 @@ struct LibraryVideoScopePicker: View {
     @Binding var selection: LibraryVideoScope
 
     var body: some View {
-        Picker("Media type", selection: $selection) {
-            Text("Movies").tag(LibraryVideoScope.movie)
-            Text("Series").tag(LibraryVideoScope.series)
+        Picker(selection: $selection) {
+            Text(.filtersValueMovie).tag(LibraryVideoScope.movie)
+            Text(.filtersValueSeries).tag(LibraryVideoScope.series)
+        } label: {
+            Text(.libraryMediaTypePicker)
         }
         .pickerStyle(.segmented)
         .padding(.horizontal, SiloTheme.padding)
@@ -156,6 +158,7 @@ struct LibrariesTabView: View {
     @State private var appliedScopeID: String?
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
     #if os(iOS)
     @Environment(\.statusColumn) private var statusColumn
     #endif
@@ -184,8 +187,8 @@ struct LibrariesTabView: View {
             } else {
                 EmptyStateView(
                     icon: "square.stack.3d.up",
-                    title: "No libraries available",
-                    subtitle: "Libraries visible to this profile will appear here."
+                    title: AppLanguage.string(.libraryNoLibraries, locale: locale),
+                    subtitle: AppLanguage.string(.libraryNoLibrariesVisibleBody, locale: locale)
                 )
             }
         }
@@ -491,13 +494,14 @@ private struct LibrarySelectorButton: View {
         .disabled(!canSwitch)
     }
 
-    private var typeLabel: String {
-        if library.isAudiobookLibrary { return "Audiobooks" }
-        if library.isMixedLibrary { return "Movies & Series" }
-        if library.isSeriesLibrary { return "Series" }
-        if library.type == "movies" { return "Movies" }
-        if library.type == "music" { return "Music" }
-        return "Library"
+    // `library.type` is the server's library kind (data).
+    private var typeLabel: LocalizedStringResource {
+        if library.isAudiobookLibrary { return .libraryKindAudiobooks }
+        if library.isMixedLibrary { return .libraryKindMixed }
+        if library.isSeriesLibrary { return .libraryKindSeries }
+        if library.type == "movies" { return .libraryKindMovies }
+        if library.type == "music" { return .libraryKindMusic }
+        return .libraryTypeGeneric
     }
 }
 
@@ -524,11 +528,11 @@ private struct LibraryPickerSheet: View {
                 .toolbar {
                     #if os(macOS)
                     ToolbarItem {
-                        Button("Done") { dismiss() }
+                        Button(.commonDone) { dismiss() }
                     }
                     #else
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done") { dismiss() }
+                        Button(.commonDone) { dismiss() }
                     }
                     #endif
                 }
@@ -556,7 +560,7 @@ private struct LibraryPickerSheet: View {
             .padding(.vertical, SiloTheme.padding)
         }
         .siloSheetBackground()
-        .navigationTitle("Libraries")
+        .navigationTitle(Text(.libraryLibraries))
     }
 }
 
@@ -623,13 +627,13 @@ private struct LibraryPickerRow: View {
     /// Nil when the caption would just repeat the media-type scope the picker
     /// opened under — every non-mixed library there shares that type. Mixed
     /// libraries keep their caption since they stand out from the scope.
-    private var typeLabel: String? {
+    private var typeLabel: LocalizedStringResource? {
         if scopedCategory != nil && !library.isMixedLibrary { return nil }
-        if library.isAudiobookLibrary { return "Audiobooks library" }
-        if library.isMixedLibrary { return "Movies & Series library" }
-        if library.isSeriesLibrary { return "TV library" }
-        if library.type == "movies" { return "Movies library" }
-        if library.type == "music" { return "Music library" }
-        return "Library"
+        if library.isAudiobookLibrary { return .libraryTypeAudiobooks }
+        if library.isMixedLibrary { return .libraryTypeMixed }
+        if library.isSeriesLibrary { return .libraryTypeTv }
+        if library.type == "movies" { return .libraryTypeMovies }
+        if library.type == "music" { return .libraryTypeMusic }
+        return .libraryTypeGeneric
     }
 }

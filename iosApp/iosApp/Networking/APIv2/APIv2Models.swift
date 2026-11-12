@@ -227,6 +227,10 @@ struct APIv2ProfileCollection: Decodable {
     /// The server accepts and enforces `requests_allowed`. Absent on a server
     /// that predates the per-profile requests switch.
     let requestsAllowedSupported: Bool?
+    /// How many profiles the account may have. Absent on a remote-playback
+    /// handoff session, when the server could not read the limit, and on a
+    /// server that predates it.
+    let maxProfiles: Int?
 
     func completeItems() throws -> [APIv2Profile] {
         try APIv2CatalogReadCollection(items: items, page: page).completeItems()
@@ -343,6 +347,21 @@ struct APIv2Problem: Decodable, Hashable, Sendable {
     /// (`.../problems/validation_failed` → `validation_failed`).
     var identifier: String {
         type.split(separator: "/").last.map(String.init) ?? type
+    }
+
+    /// The server's `text` for this problem in the language on screen (D33).
+    /// English shows `text` as sent. Another language shows `field`'s
+    /// `error.field.<code>` (the first field error unless the caller shows
+    /// another), then `error.<identifier>`, when the catalog translates it,
+    /// else `text`.
+    func localized(
+        _ text: String,
+        field: APIv2ProblemError? = nil,
+        language: String = AppLanguage.displayedLanguage
+    ) -> String {
+        let byType = AppLanguage.serverText(text, key: "error.\(identifier)", language: language)
+        let fieldCode = (field ?? errors?.first)?.code
+        return AppLanguage.serverText(byType, key: fieldCode.map { "error.field.\($0)" }, language: language)
     }
 }
 

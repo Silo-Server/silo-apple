@@ -11,6 +11,7 @@ struct PasswordChangeView: View {
     /// Counts failed attempts so the fields shake on each one.
     @State private var failures = 0
     @FocusState private var focusedField: Field?
+    @Environment(\.locale) private var locale
 
     private enum Field: Hashable { case current, new, confirmation }
 
@@ -39,12 +40,12 @@ struct PasswordChangeView: View {
 
     @ViewBuilder
     private var form: some View {
-        MarqueeHeadline(title: "Choose a new password", lead: model.lead)
+        MarqueeHeadline(title: AppLanguage.string(.signInPasswordChangeTitle), lead: model.lead)
         VStack(spacing: 0) {
             MarqueeFieldGroup(isError: model.error != nil) {
                 MarqueeTextField(
                     systemImage: "key",
-                    placeholder: "Temporary password",
+                    placeholder: AppLanguage.string(.signInPasswordChangeTemporary),
                     text: $model.currentPassword,
                     focus: $focusedField,
                     equals: .current,
@@ -56,7 +57,7 @@ struct PasswordChangeView: View {
                 )
                 MarqueeTextField(
                     systemImage: "lock",
-                    placeholder: "New password",
+                    placeholder: AppLanguage.string(.signInPasswordChangeNew),
                     text: $model.newPassword,
                     focus: $focusedField,
                     equals: .new,
@@ -68,7 +69,7 @@ struct PasswordChangeView: View {
                 )
                 MarqueeTextField(
                     systemImage: "lock",
-                    placeholder: "Confirm new password",
+                    placeholder: AppLanguage.string(.signInPasswordChangeConfirm),
                     text: $model.confirmation,
                     focus: $focusedField,
                     equals: .confirmation,
@@ -97,7 +98,7 @@ struct PasswordChangeView: View {
             }
 
             Button(action: save) {
-                Text(model.isBusy ? "Saving…" : "Save password")
+                Text(model.isBusy ? LocalizedStringResource.signInPasswordChangeSaving : .signInPasswordChangeSave)
             }
             .buttonStyle(.marquee(.primary, isLoading: model.isBusy))
             .keyboardShortcut(.defaultAction)
@@ -116,14 +117,14 @@ struct PasswordChangeView: View {
     @ViewBuilder
     private func refreshFailed(retrying: Bool) -> some View {
         MarqueeHeadline(
-            title: "Password changed",
-            lead: "Your new password is saved, but signing you in didn't finish."
+            title: AppLanguage.string(.signInPasswordChangeChangedTitle),
+            lead: AppLanguage.string(.signInPasswordChangeChangedLead)
         )
         VStack(spacing: 0) {
             Button {
                 Task { await model.retryRefresh(router: router) }
             } label: {
-                Text(retrying ? "Trying again…" : "Try again")
+                Text(retrying ? LocalizedStringResource.signInPasswordChangeTryingAgain : .commonTryAgain)
             }
             .buttonStyle(.marquee(.primary, isLoading: retrying))
             .disabled(retrying)
@@ -139,14 +140,14 @@ struct PasswordChangeView: View {
     @ViewBuilder
     private func unconfirmed(checking: Bool) -> some View {
         MarqueeHeadline(
-            title: "Password not confirmed",
-            lead: "Silo couldn't check whether your new password was saved. Try again in a moment."
+            title: AppLanguage.string(.signInPasswordChangeUnconfirmedTitle),
+            lead: AppLanguage.string(.signInPasswordChangeUnconfirmedLead)
         )
         VStack(spacing: 0) {
             Button {
                 Task { await model.confirmChange(router: router) }
             } label: {
-                Text(checking ? "Checking…" : "Try again")
+                Text(checking ? LocalizedStringResource.signInPasswordChangeChecking : .commonTryAgain)
             }
             .buttonStyle(.marquee(.primary, isLoading: checking))
             .disabled(checking)
@@ -159,7 +160,7 @@ struct PasswordChangeView: View {
     }
 
     private var signOutButton: some View {
-        Button("Sign out") { router.signOutAndReset() }
+        Button(.commonSignOut) { router.signOutAndReset() }
             .buttonStyle(.marqueePlain)
             .disabled(model.isBusy)
             .accessibilityIdentifier("passwordChange.signOut")

@@ -246,7 +246,7 @@ final class BandwidthProbeDownload: NSObject, URLSessionDataDelegate, @unchecked
     /// Milliseconds on a monotonic clock.
     private let clock: @Sendable () -> Int
     /// Everything below is confined to this queue.
-    private let queue = DispatchQueue(label: "org.siloserver.silo.bandwidth-probe")
+    private let queue = DispatchQueue(label: "org.siloserver.silo.bandwidth-probe") // i18n-ignore: queue label
     private var meter: BandwidthProbeMeter
     private var firstByteAt: Int?
     private var tick: DispatchSourceTimer?

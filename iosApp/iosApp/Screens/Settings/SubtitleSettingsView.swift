@@ -7,6 +7,8 @@ import SwiftUI
 /// keeps its own ("Only on This Device").
 struct SubtitleSettingsView: View {
     let viewModel: SettingsViewModel
+    /// The app language, so a switch re-renders the labels.
+    @Environment(\.locale) private var locale
 
     var body: some View {
         List {
@@ -23,7 +25,7 @@ struct SubtitleSettingsView: View {
             appearanceSection
         }
         .settingsListChrome()
-        .navigationTitle("Subtitles")
+        .navigationTitle(Text(.settingsSubtitles))
         .siloNavigationTitleDisplayMode(.inline)
         .siloToolbarColorSchemeDark()
     }
@@ -34,27 +36,28 @@ struct SubtitleSettingsView: View {
     private var metadataLanguageSection: some View {
         Section {
             Picker(
-                "Metadata Language",
+                .settingsControlMetadataLanguage,
                 selection: Binding(
                     get: { viewModel.prefs.preferredMetadataLanguage },
                     set: { value in Task { await viewModel.prefs.setPreferredMetadataLanguage(value) } }
                 )
             ) {
-                Text(
-                    SettingPresentationMetadata.definitions[.catalogMetadataLanguage]?.unsetLabel
-                        ?? "Library default"
+                Text(verbatim:
+                    SettingPresentationMetadata.unsetLabel(
+                        for: .catalogMetadataLanguage, fallback: "Library default", language: AppLanguage.language(of: locale)
+                    )
                 ).tag(PlaybackPrefSentinel.none)
                 ForEach(viewModel.metadataLanguageOptions) { option in
-                    Text(option.label).tag(option.code)
+                    Text(verbatim: option.label).tag(option.code)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
         } header: {
-            Text("Metadata")
+            Text(.settingsSectionMetadata)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
-            Text("Translates descriptions and taglines into your preferred language when available. Titles are never translated.")
+            Text(.settingsMetadataLanguageNote)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .disabled(viewModel.prefs.serverUpgradeRequired)
@@ -67,39 +70,40 @@ struct SubtitleSettingsView: View {
     private var profileBackedSection: some View {
         Section {
             Picker(
-                "Language",
+                .settingsControlLanguage,
                 selection: Binding(
                     get: { viewModel.prefs.subtitleLanguage },
                     set: { value in Task { await viewModel.prefs.setSubtitleLanguage(value) } }
                 )
             ) {
-                Text(
-                    SettingPresentationMetadata.definitions[.playbackSubtitleLanguage]?.unsetLabel
-                        ?? "None"
+                Text(verbatim:
+                    SettingPresentationMetadata.unsetLabel(
+                        for: .playbackSubtitleLanguage, fallback: "None", language: AppLanguage.language(of: locale)
+                    )
                 ).tag(PlaybackPrefSentinel.none)
                 ForEach(viewModel.subtitleLanguageOptions) { option in
-                    Text(option.label).tag(option.code)
+                    Text(verbatim: option.label).tag(option.code)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
 
             Picker(
-                "Behavior",
+                .settingsControlBehavior,
                 selection: Binding(
                     get: { viewModel.prefs.subtitleMode },
                     set: { value in Task { await viewModel.prefs.setSubtitleMode(value) } }
                 )
             ) {
                 ForEach(SubtitleMode.allCases, id: \.rawValue) { mode in
-                    Text(mode.displayLabel).tag(mode.rawValue)
+                    Text(verbatim: mode.displayLabel).tag(mode.rawValue)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
 
             Toggle(
-                "Show Forced Subtitles",
+                .settingsControlForced,
                 isOn: Binding(
                     get: { viewModel.prefs.showForcedSubtitles == "on" },
                     set: { isOn in Task { await viewModel.prefs.setShowForcedSubtitles(isOn) } }
@@ -108,19 +112,19 @@ struct SubtitleSettingsView: View {
             .foregroundStyle(Color.siloOnSurface)
             .tint(.siloSwitchOn)
         } header: {
-            Text("Profile")
+            Text(.settingsSubtitlesProfile)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if viewModel.subtitleMatchesSystemAppearance {
-                    Text("Language, display behavior, forced captions, and CC/SDH preference follow this device's Accessibility settings.")
+                    Text(.settingsSubtitlesFollowsDevicePrefs)
                 } else if viewModel.prefs.serverUpgradeRequired {
                     Text(ProfilePrefsEditor.serverUpgradeMessage)
                         .foregroundStyle(Color.siloError)
                 } else {
-                    Text("Used to pick a matching track when one is available. Forced subtitles cover foreign-language dialogue even when subtitles are off or set to auto.")
+                    Text(.settingsSubtitlesLanguageFooter)
                     if let overrideMessage = viewModel.prefs.subtitleProfileOverrideMessage {
-                        Text("Override active — \(overrideMessage)")
+                        Text(.settingsSubtitlesOverrideActive(AppLanguage.string(overrideMessage, locale: locale)))
                             .foregroundStyle(Color.siloWarning)
                     }
                 }
@@ -147,11 +151,11 @@ struct SubtitleSettingsView: View {
             SubtitleAppearancePreview(appearance: viewModel.effectiveSubtitleAppearance)
                 .listRowInsets(EdgeInsets())
         } header: {
-            Text("Appearance")
+            Text(.settingsSubtitlesAppearance)
                 .foregroundStyle(Color.siloSecondaryText)
         } footer: {
             if !manualEditingDisabled && viewModel.subtitleAppearance.isLowLegibilityRisk {
-                Text("Low legibility — very transparent or dark text without a box or outline can be hard to read.")
+                Text(.settingsSubtitlesLowLegibility)
                     .foregroundStyle(Color.siloError)
             }
         }
@@ -159,7 +163,7 @@ struct SubtitleSettingsView: View {
 
         Section {
             Toggle(
-                "Use Device Settings",
+                .settingsSubtitlesUseDeviceSettings,
                 isOn: Binding(
                     get: { viewModel.subtitleMatchesSystemAppearance },
                     set: { viewModel.setSubtitleMatchesSystemAppearance($0) }
@@ -169,7 +173,7 @@ struct SubtitleSettingsView: View {
             .tint(.siloSwitchOn)
 
             Toggle(
-                "Only on This Device",
+                .settingsSubtitlesOnlyOnThisDevice,
                 isOn: Binding(
                     get: { viewModel.subtitleUsesDeviceAppearanceOverride },
                     set: { enabled in
@@ -183,16 +187,16 @@ struct SubtitleSettingsView: View {
         } footer: {
             VStack(alignment: .leading, spacing: 6) {
                 if viewModel.subtitleMatchesSystemAppearance {
-                    Text("Following this device's caption language, display behavior, CC/SDH preference, font, colors, opacity, edges, size, and caption window from Accessibility → Subtitles & Captioning.")
+                    Text(.settingsSubtitlesFollowsSystemAppearance)
                 } else if viewModel.subtitleUsesDeviceAppearanceOverride {
-                    Text("Saved only on this device. Other devices use the profile's settings.")
+                    Text(.settingsSubtitlesScopeDeviceOnly)
                 } else {
-                    Text("Saved for this profile on all devices.")
+                    Text(.settingsSubtitlesScopeProfile)
                 }
                 if viewModel.subtitleMatchesSystemAppearance {
-                    Text("Subtitles with built-in styling follow each device caption option's Video Overrides Style choice.")
+                    Text(.settingsSubtitlesAuthoredStyleSystem)
                 } else {
-                    Text("Subtitles with their own built-in styling keep their original appearance; image-based subtitles keep their authored fonts and colors but follow the size, position, and background settings.")
+                    Text(.settingsSubtitlesAuthoredStyle)
                 }
             }
             .foregroundStyle(Color.siloSecondaryText)
@@ -200,32 +204,32 @@ struct SubtitleSettingsView: View {
         .listRowBackground(Color.siloGroupedCell)
 
         Section {
-            Picker("Font Size", selection: appearanceBinding(\.fontSize)) {
+            Picker(.settingsSubtitlesFontSize, selection: appearanceBinding(\.fontSize)) {
                 ForEach(SubtitleFontSizePreset.allCases) { option in
-                    Text(option.label).tag(option)
+                    Text(verbatim: option.label).tag(option)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
 
-            Picker("Font Family", selection: appearanceBinding(\.fontFamily)) {
+            Picker(.settingsSubtitlesFontFamily, selection: appearanceBinding(\.fontFamily)) {
                 ForEach(SubtitleFontFamilyPreset.allCases) { option in
-                    Text(option.label).tag(option)
+                    Text(verbatim: option.label).tag(option)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
 
             ColorChoicePicker(
-                title: "Font Color",
+                title: .settingsSubtitlesFontColor,
                 colors: SubtitleAppearance.fontColors,
                 selection: appearanceBinding(\.fontColor)
             )
 
             if viewModel.offersSubtitleTextOpacity {
                 PercentField(
-                    label: "Opacity",
-                    accessibilityLabelText: "Text Opacity",
+                    label: AppLanguage.string(.settingsSubtitlesOpacity, locale: locale),
+                    accessibilityLabelText: AppLanguage.string(.settingsSubtitlesTextOpacity, locale: locale),
                     min: 1,
                     value: viewModel.subtitleAppearance.textOpacity
                 ) { newValue in
@@ -237,19 +241,19 @@ struct SubtitleSettingsView: View {
                 .foregroundStyle(Color.siloOnSurface)
             }
 
-            Toggle("Text Outline", isOn: appearanceBinding(\.textOutline))
+            Toggle(.settingsSubtitlesTextOutline, isOn: appearanceBinding(\.textOutline))
                 .foregroundStyle(Color.siloOnSurface)
                 .tint(.siloSwitchOn)
 
             ColorChoicePicker(
-                title: "Outline Color",
+                title: .settingsSubtitlesOutlineColor,
                 colors: SubtitleAppearance.outlineColors,
                 selection: appearanceBinding(\.textOutlineColor)
             )
             .disabled(!viewModel.subtitleAppearance.textOutline)
             .opacity(viewModel.subtitleAppearance.textOutline ? 1 : 0.45)
         } header: {
-            Text("Text")
+            Text(.settingsSubtitlesText)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -257,9 +261,9 @@ struct SubtitleSettingsView: View {
         .opacity(manualEditingDisabled ? 0.45 : 1)
 
         Section {
-            Picker("Style", selection: backgroundStyleBinding) {
+            Picker(.settingsSubtitlesBackgroundStyleShort, selection: backgroundStyleBinding) {
                 ForEach(SubtitleBackgroundStylePreset.selectableCases) { option in
-                    Text(option.label).tag(option)
+                    Text(verbatim: option.label).tag(option)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
@@ -270,14 +274,14 @@ struct SubtitleSettingsView: View {
                 .opacity(viewModel.subtitleAppearance.backgroundStyle == .box ? 1 : 0.45)
 
             ColorChoicePicker(
-                title: "Color",
+                title: .settingsSubtitlesBackgroundColorShort,
                 colors: SubtitleAppearance.backgroundColors,
                 selection: appearanceBinding(\.backgroundColor)
             )
             .disabled(viewModel.subtitleAppearance.backgroundStyle != .box)
             .opacity(viewModel.subtitleAppearance.backgroundStyle == .box ? 1 : 0.45)
         } header: {
-            Text("Background")
+            Text(.settingsSubtitlesBackground)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -285,15 +289,15 @@ struct SubtitleSettingsView: View {
         .opacity(manualEditingDisabled ? 0.45 : 1)
 
         Section {
-            Picker("Position", selection: appearanceBinding(\.position)) {
+            Picker(.settingsSubtitlesPosition, selection: appearanceBinding(\.position)) {
                 ForEach(SubtitlePositionPreset.allCases) { option in
-                    Text(option.label).tag(option)
+                    Text(verbatim: option.label).tag(option)
                 }
             }
             .foregroundStyle(Color.siloOnSurface)
             .settingsPickerStyle()
         } header: {
-            Text("Layout")
+            Text(.settingsSubtitlesLayout)
                 .foregroundStyle(Color.siloSecondaryText)
         }
         .listRowBackground(Color.siloGroupedCell)
@@ -320,8 +324,8 @@ struct SubtitleSettingsView: View {
 
     private var opacityRow: some View {
         PercentField(
-            label: "Opacity",
-            accessibilityLabelText: "Background Opacity",
+            label: AppLanguage.string(.settingsSubtitlesOpacity, locale: locale),
+            accessibilityLabelText: AppLanguage.string(.settingsSubtitlesBackgroundOpacity, locale: locale),
             min: 0,
             value: viewModel.subtitleAppearance.backgroundOpacity
         ) { newValue in
@@ -351,17 +355,17 @@ struct SubtitleSettingsView: View {
     private func saveStateView(_ state: ProfilePrefsEditor.PrefSaveState) -> some View {
         switch state {
         case .saving:
-            Text("Saving…")
+            Text(.settingsSaving)
         case .saved:
-            Text("Saved")
+            Text(.settingsSubtitlesSaved)
         case .failed(let message):
-            Text("Couldn't save: \(message)")
+            Text(.settingsSubtitlesSaveFailed(AppLanguage.string(message, locale: locale)))
                 .foregroundStyle(Color.siloError)
         case .serverUpgradeRequired:
             Text(ProfilePrefsEditor.serverUpgradeMessage)
                 .foregroundStyle(Color.siloError)
         case .held:
-            Text("Not saved. Try again or discard the change below.")
+            Text(.settingsSubtitlesHeldNotice)
                 .foregroundStyle(Color.siloWarning)
         }
     }
@@ -372,7 +376,7 @@ struct SubtitleSettingsView: View {
 /// A named-color picker rendered as a standard row so every option gets a
 /// full-size tap target.
 private struct ColorChoicePicker: View {
-    let title: String
+    let title: LocalizedStringResource
     let colors: [(hex: String, label: String)]
     @Binding var selection: String
 
@@ -387,7 +391,7 @@ private struct ColorChoicePicker: View {
                             Circle()
                                 .stroke(Color.siloSecondaryText.opacity(0.35), lineWidth: 1)
                         )
-                    Text(color.label)
+                    Text(verbatim: color.label)
                 }
                 .tag(color.hex)
             }

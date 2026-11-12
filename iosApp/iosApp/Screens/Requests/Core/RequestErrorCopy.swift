@@ -8,11 +8,13 @@ enum RequestErrorCopy {
     /// Local reason for a create whose outcome is not known yet; the detail
     /// page shows it on the held primary action.
     static let unconfirmedToken = "request_unconfirmed"
-    static let unconfirmedSubmitMessage = "We couldn't confirm the request. Check My Requests before trying again."
-    static let unconfirmedCancelMessage = "We couldn't confirm the cancellation. Reopen My Requests to check it."
-    static let removedNotice = "Request removed"
-    static let unconfirmedRemoveMessage = "We couldn't confirm the removal. Reopen My Requests to check it."
-    static let removeConflictMessage = "This request changed since the list loaded, so it wasn't removed."
+    // Resolved on each read so they follow the app language. Callers compare
+    // a shown message with these to tell which one it is.
+    static var unconfirmedSubmitMessage: String { AppLanguage.string(.requestsNoticeUnconfirmedCreate) }
+    static var unconfirmedCancelMessage: String { AppLanguage.string(.requestsNoticeUnconfirmedCancel) }
+    static var removedNotice: String { AppLanguage.string(.requestsNoticeRemoved) }
+    static var unconfirmedRemoveMessage: String { AppLanguage.string(.requestsNoticeUnconfirmedRemove) }
+    static var removeConflictMessage: String { AppLanguage.string(.requestsNoticeRemoveConflict) }
 
     static func message(forToken token: String?) -> String? {
         guard let token, !token.isEmpty else { return nil }
@@ -21,15 +23,15 @@ enum RequestErrorCopy {
 
     private static func copy(forToken token: String) -> String {
         switch token {
-        case "already_requested": return "Already requested"
-        case "already_available": return "Already in your library"
-        case "quota_exceeded", "limit_reached": return "Request limit reached"
-        case "requests_disabled": return "Requests are turned off"
-        case "requesting_blocked", "blocked": return "You can't request media right now"
-        case "validation_failed": return "That request couldn't be submitted"
-        case "invalid_state": return "This request can no longer be changed"
-        case "not_found": return "This title is no longer available"
-        case unconfirmedToken: return "Not confirmed yet"
+        case "already_requested": return AppLanguage.string(.requestsReasonAlreadyRequested)
+        case "already_available": return AppLanguage.string(.requestsReasonAlreadyAvailable)
+        case "quota_exceeded", "limit_reached": return AppLanguage.string(.requestsReasonQuotaExceeded)
+        case "requests_disabled": return AppLanguage.string(.requestsReasonRequestsDisabled)
+        case "requesting_blocked", "blocked": return AppLanguage.string(.requestsReasonBlocked)
+        case "validation_failed": return AppLanguage.string(.requestsReasonValidationFailed)
+        case "invalid_state": return AppLanguage.string(.requestsReasonInvalidState)
+        case "not_found": return AppLanguage.string(.requestsReasonNotFound)
+        case unconfirmedToken: return AppLanguage.string(.requestsReasonRequestUnconfirmed)
         default: return humanize(token)
         }
     }
@@ -46,7 +48,7 @@ enum RequestErrorCopy {
             case "capability_disabled", "capability_not_configured", "capability_unsupported":
                 return copy(forToken: "requests_disabled")
             default:
-                if !problem.detail.isEmpty { return problem.detail }
+                if !problem.detail.isEmpty { return problem.localized(problem.detail) }
             }
         }
         return ErrorState(error).message

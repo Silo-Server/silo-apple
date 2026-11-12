@@ -43,6 +43,7 @@ struct TVLoginView: View {
     /// Where focus goes once the system keyboard closes after Done.
     @State private var focusAfterKeyboard: Field?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.locale) private var locale
 
     private enum Field: Hashable {
         case networkSignIn
@@ -160,14 +161,14 @@ struct TVLoginView: View {
             if let provider = networkProvider {
                 networkSignInButton(provider)
                     .padding(.top, 32)
-                Text("Or sign in with your phone")
+                Text(.tvSignInNetworkOrPhone)
                     .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                     .padding(.top, 30)
             }
             MarqueeTVBody(codeLead)
                 .padding(.top, networkProvider == nil ? 26 : 12)
-            Label(TVSignInPresentation.nearbyHint, systemImage: "iphone.gen3")
+            Label(.tvSignInNearbyHint, systemImage: "iphone.gen3")
                 .font(.system(size: 22))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                 .fixedSize(horizontal: false, vertical: true)
@@ -211,7 +212,7 @@ struct TVLoginView: View {
             Button {
                 Task { await qrVM.retry() }
             } label: {
-                Label(action == .tryAgain ? "Try again" : "Show a new code", systemImage: "arrow.clockwise")
+                Label(action == .tryAgain ? LocalizedStringResource.commonTryAgain : .tvSignInActionNewCode, systemImage: "arrow.clockwise")
             }
             .buttonStyle(.marquee(.primary, fullWidth: false))
             .focused($focusedField, equals: .stateAction)
@@ -222,7 +223,7 @@ struct TVLoginView: View {
                 showPasswordForm = true
                 focusedField = .username
             } label: {
-                Label("Sign in with a password", systemImage: "key")
+                Label(.tvSignInActionPassword, systemImage: "key")
             }
             .buttonStyle(.marquee(.glass, fullWidth: false))
             .focused($focusedField, equals: .usePassword)
@@ -252,12 +253,12 @@ struct TVLoginView: View {
                 QRCodeView(content: session.verificationUriComplete, size: Self.qrSize)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(
-                Text("\(TVSignInPresentation.qrAccessibilityPrefix(typedURL: typedURL ?? ""))\(Self.spelledOut(session.userCode))")
-            )
+            .accessibilityLabel(DeviceUserCode.spokenLabel(session.userCode) {
+                TVSignInPresentation.qrAccessibilityLabel(typedURL: typedURL ?? "", spokenCode: $0)
+            })
             MarqueeCodeTiles(code: DeviceUserCode.display(session.userCode))
                 .padding(.top, 34)
-                .accessibilityLabel(Text("Code: \(Self.spelledOut(session.userCode))"))
+                .accessibilityLabel(DeviceUserCode.spokenLabel(session.userCode) { AppLanguage.string(.shellMarqueeCodeSpoken($0)) })
             // A long host wraps rather than shrinking past legibility.
             Text(typedURL ?? "")
                 .font(.system(size: 24))
@@ -320,11 +321,11 @@ struct TVLoginView: View {
         MarqueeTVScreen {
             sessionExpiredChip
             serverCard
-            headline("Sign in with\na password")
+            headline(AppLanguage.string(.signInHeadline))
                 .padding(.top, 44)
             MarqueeTVBody(qrVM.status == .noDeviceSignIn && networkProvider == nil
-                ? "This server only supports password sign-in."
-                : "Use your \(server.serverName) username and password.")
+                ? AppLanguage.string(.tvSignInPasswordOnly)
+                : AppLanguage.string(.signInBody(server.serverName)))
                 .padding(.top, 22)
 
             // A server without device sign-in lands here directly, so the
@@ -337,7 +338,7 @@ struct TVLoginView: View {
             VStack(spacing: 20) {
                 MarqueeTVField(
                     systemImage: "person",
-                    placeholder: "Username",
+                    placeholder: AppLanguage.string(.tvSignInFormUsernamePlaceholder),
                     text: $loginVM.username,
                     focus: $focusedField,
                     equals: .username,
@@ -350,7 +351,7 @@ struct TVLoginView: View {
                 HStack(spacing: 16) {
                     MarqueeTVField(
                         systemImage: "lock",
-                        placeholder: "Password",
+                        placeholder: AppLanguage.string(.tvSignInFormPasswordPlaceholder),
                         text: $loginVM.password,
                         focus: $focusedField,
                         equals: .password,
@@ -370,7 +371,7 @@ struct TVLoginView: View {
                     .buttonStyle(.marquee(.glass, fullWidth: false))
                     .focused($focusedField, equals: .togglePassword)
                     .disabled(!canFocusPasswordToggle)
-                    .accessibilityLabel(showPassword ? "Hide password" : "Show password")
+                    .accessibilityLabel(showPassword ? LocalizedStringResource.signInHidePassword : .signInShowPassword)
                 }
             }
             .frame(width: 760)
@@ -399,7 +400,7 @@ struct TVLoginView: View {
                 Button {
                     submitPassword()
                 } label: {
-                    Text(isSigningIn ? "Signing in…" : "Sign in")
+                    Text(isSigningIn ? LocalizedStringResource.tvSignInFormSubmitting : .tvSignInFormSubmit)
                 }
                 .buttonStyle(.marquee(.primary, fullWidth: false, isLoading: isSigningIn))
                 .focused($focusedField, equals: .signIn)
@@ -408,7 +409,7 @@ struct TVLoginView: View {
                     Button {
                         returnToCodeScreen()
                     } label: {
-                        Label("Use your phone instead", systemImage: "qrcode")
+                        Label(.tvSignInFormUsePhone, systemImage: "qrcode")
                     }
                     .buttonStyle(.marquee(.plain, fullWidth: false))
                     .focused($focusedField, equals: .backToPhone)
@@ -470,14 +471,14 @@ struct TVLoginView: View {
                 continueWithNetworkIdentity(provider)
             } label: {
                 if inFlight {
-                    Text("Signing in…")
+                    Text(.tvSignInFormSubmitting)
                 } else {
                     MarqueeNetworkSignInLabel(provider: provider, serverURL: server.serverURL)
                 }
             }
             .buttonStyle(.marquee(.primary, fullWidth: false, isLoading: inFlight))
             .focused($focusedField, equals: .networkSignIn)
-            .accessibilityLabel(inFlight ? "Signing in…" : NetworkSignIn.accessibilityLabel(for: provider))
+            .accessibilityLabel(inFlight ? AppLanguage.string(.tvSignInFormSubmitting) : NetworkSignIn.accessibilityLabel(for: provider))
 
             if let error = loginVM.networkSignInError?.message {
                 MarqueeErrorText(error)
@@ -507,10 +508,11 @@ struct TVLoginView: View {
         } card: {
             MarqueeTVCard {
                 MarqueeTVCardSymbol(systemImage: "network")
-                Text("No code needed")
+                Text(.tvSignInNetworkNoCodeTitle)
                     .font(.system(size: 40, weight: .bold))
                     .padding(.top, 34)
-                Text("This Apple TV reached \(server.serverName) through \(networkProvider.map { SignInOptions.providerName(for: $0) } ?? "its network"), which knows who it belongs to.")
+                Text(networkProvider.map { LocalizedStringResource.tvSignInAppleTvNoCodeBody(server.serverName, SignInOptions.providerName(for: $0)) }
+                    ?? .tvSignInAppleTvNoCodeBodyGeneric(server.serverName))
                     .font(.system(size: 24))
                     .foregroundStyle(Color.siloOnSurface.opacity(0.62))
                     .padding(.top, 14)
@@ -539,7 +541,9 @@ struct TVLoginView: View {
             name: server.serverName,
             address: server.hostLabel,
             markURL: server.branding?.markURL,
-            badge: server.isSecure ? .init(text: "Secure", systemImage: "lock") : .init(text: "HTTP", systemImage: "lock.open", tone: .warning)
+            badge: server.isSecure
+                ? .init(text: AppLanguage.string(.firstRunBadgeSecure), systemImage: "lock")
+                : .init(text: AppLanguage.string(.firstRunBadgeHttp), systemImage: "lock.open", tone: .warning)
         )
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -548,9 +552,9 @@ struct TVLoginView: View {
     /// there; otherwise "Sign in to Home".
     private var signInHeadline: String {
         if let request = router.accountSignIn, request.renewingAccountId == nil {
-            return "Add an account on \(server.serverName)"
+            return AppLanguage.string(.tvSignInAddAccountTitle(server.serverName))
         }
-        return "Sign in to \(server.serverName)"
+        return AppLanguage.string(.tvSignInTitle(server.serverName))
     }
 
     /// Back to Change Account when the sign-in started there, else to the
@@ -558,9 +562,9 @@ struct TVLoginView: View {
     /// Account while other accounts or servers are saved; otherwise to
     /// server setup, as on a first sign-in.
     private var leaveTitle: String {
-        if router.accountSignIn?.returnsToChangeAccount == true { return "Back to accounts" }
-        if router.canReturnToPicker { return "Back to profiles" }
-        return router.signInLeavesForChangeAccount ? "Change account" : "Change server"
+        if router.accountSignIn?.returnsToChangeAccount == true { return AppLanguage.string(.tvSignInBackToAccounts) }
+        if router.canReturnToPicker { return AppLanguage.string(.signInBackToProfiles) }
+        return AppLanguage.string(router.signInLeavesForChangeAccount ? LocalizedStringResource.signInChangeAccount : .commonChangeServer)
     }
 
     private func headline(_ text: String) -> some View {
@@ -685,11 +689,6 @@ struct TVLoginView: View {
         focusedField == .password || focusedField == .togglePassword
     }
 
-    /// The code as one element VoiceOver reads character by character.
-    private static func spelledOut(_ code: String) -> Text {
-        Text(DeviceUserCode.spokenCharacters(code)).speechSpellsOutCharacters()
-    }
-
     // MARK: - Constants
 
     /// At least a third of the 1080-point screen height.
@@ -700,7 +699,7 @@ struct TVLoginView: View {
 
     private static var deviceName: String {
         let name = UIDevice.current.name
-        return name.isEmpty ? "Apple TV" : name
+        return name.isEmpty ? "Apple TV" : name // D44: a device name, not translated
     }
 }
 
@@ -710,10 +709,10 @@ struct TVTypeOnPhoneCard: View {
     var body: some View {
         MarqueeTVCard {
             MarqueeTVCardSymbol(systemImage: "iphone")
-            Text("Type on your phone")
+            Text(.firstRunHelpTitle)
                 .font(.system(size: 40, weight: .bold))
                 .padding(.top, 34)
-            Text("When you select a field, a keyboard notification appears on nearby iPhones and iPads. Type there instead of with the remote.")
+            Text(.tvSignInAppleTvTypeOnPhoneBody)
                 .font(.system(size: 24))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.62))
                 .padding(.top, 14)
@@ -721,4 +720,16 @@ struct TVTypeOnPhoneCard: View {
     }
 }
 
+extension DeviceUserCode {
+    /// A VoiceOver label built by `label` around the code's spoken
+    /// characters, with only the code spelled out one character at a time.
+    static func spokenLabel(_ code: String, in label: (String) -> String) -> Text {
+        let spoken = spokenCharacters(code)
+        let whole = label(spoken)
+        guard !spoken.isEmpty, let range = whole.range(of: spoken) else { return Text(verbatim: whole) }
+        let before = Text(verbatim: String(whole[..<range.lowerBound]))
+        let after = Text(verbatim: String(whole[range.upperBound...]))
+        return Text("\(before)\(Text(verbatim: spoken).speechSpellsOutCharacters())\(after)")
+    }
+}
 #endif

@@ -92,7 +92,7 @@ struct MarqueeTextField<F: Hashable>: View {
                         .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                 }
                 .buttonStyle(.marqueePressable)
-                .accessibilityLabel(reveal ? "Hide password" : "Show password")
+                .accessibilityLabel(reveal ? LocalizedStringResource.signInHidePassword : .signInShowPassword)
             } else if showsClearButton, !text.isEmpty, !isDisabled {
                 Button {
                     text = ""
@@ -101,7 +101,7 @@ struct MarqueeTextField<F: Hashable>: View {
                         .foregroundStyle(Color.siloOnSurface.opacity(0.3))
                 }
                 .buttonStyle(.marqueePressable)
-                .accessibilityLabel("Clear")
+                .accessibilityLabel(.shellFieldClear)
             }
         }
         .font(.system(size: MarqueeMetrics.fieldFont))

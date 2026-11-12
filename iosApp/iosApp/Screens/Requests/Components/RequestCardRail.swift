@@ -83,7 +83,7 @@ struct RequestsSectionHeader: View {
                 Button(action: action) {
                     HStack(spacing: 3) {
                         Text(trailing)
-                        Image(systemName: "chevron.right")
+                        Image(systemName: "chevron.forward")
                             .font(.system(size: trailingSize * 0.8, weight: .semibold))
                     }
                     .font(.system(size: trailingSize, weight: .medium))

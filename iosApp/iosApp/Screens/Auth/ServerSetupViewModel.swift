@@ -3,11 +3,20 @@ import OSLog
 import SwiftUI
 
 enum ServerSetupScheme: String, CaseIterable, Identifiable {
+    // D44: the raw values are identifiers; `label` is what the screen shows.
     case auto = "Auto"
     case https = "HTTPS"
     case http = "HTTP"
 
     var id: String { rawValue }
+
+    var label: LocalizedStringResource {
+        switch self {
+        case .auto: .setupSchemeAuto
+        case .https: .setupSchemeHttps
+        case .http: .setupSchemeHttp
+        }
+    }
 
     var urlScheme: String? {
         switch self {
@@ -26,6 +35,8 @@ class ServerSetupViewModel {
     var port: String = ""
     /// What a running connect is for. Set while `isLoading`.
     @ObservationIgnored private var submitted: (host: String, scheme: ServerSetupScheme, port: String)?
+    /// The running connect, kept so `cancelConnect` can stop it.
+    @ObservationIgnored private var connectTask: Task<Void, Never>?
     var showsAdvancedOptions: Bool = false
     var isLoading: Bool = false
     /// A failure for the typed address; the address field shows it.
@@ -89,11 +100,29 @@ class ServerSetupViewModel {
 
     private(set) var insecurePrompt: InsecurePrompt?
 
+    /// Runs a connect that `cancelConnect` can stop. Ignored while one is
+    /// already running.
+    func begin(_ attempt: @escaping @MainActor () async -> Void) {
+        guard connectTask == nil else { return }
+        connectTask = Task {
+            await attempt()
+            connectTask = nil
+        }
+    }
+
+    /// Stops the running connect. It ends without an error, and the address,
+    /// protocol and port stay as typed. `isLoading` stays true until it has
+    /// ended, so the screen's ways back keep waiting for it. A server that
+    /// has already answered still opens (see `AuthService.checkServer`).
+    func cancelConnect() {
+        connectTask?.cancel()
+    }
+
     /// Validate the server URL and determine whether setup or login is needed.
     @MainActor
     func connect(router: AppRouter) async {
         guard !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            error = FormError("Please enter a server host.")
+            error = FormError(AppLanguage.string(.setupErrorEmpty))
             return
         }
 
@@ -177,7 +206,7 @@ class ServerSetupViewModel {
         let source = (prompt ?? insecurePrompt)?.source
         insecurePrompt = nil
         if case .typed = source {
-            error = FormError("Could not reach a Silo server at that address over HTTPS.")
+            error = FormError(AppLanguage.string(.setupErrorHttpsOnly))
         }
     }
 
@@ -210,6 +239,9 @@ class ServerSetupViewModel {
         var lookedUpBareName = false
         var index = 0
         while index < candidates.count {
+            // A cancelled connect stops before the next address, and before
+            // asking about plain HTTP.
+            guard !Task.isCancelled else { return }
             let candidate = candidates[index]
             if !allowInsecure, candidate.lowercased().hasPrefix("http://") {
                 // A secure address already proved a version mismatch; asking to
@@ -225,8 +257,10 @@ class ServerSetupViewModel {
                     lookedUpBareName = true
                     if let origin = await resolveBareName(bareName), !attempted.contains(origin) {
                         candidates.insert(origin, at: index)
-                        continue
                     }
+                    // Back to the top either way, where a cancel during the
+                    // lookup is seen before this address is asked about.
+                    continue
                 }
                 insecurePrompt = InsecurePrompt(
                     address: ServerBranding.hostLabel(candidate),
@@ -240,6 +274,8 @@ class ServerSetupViewModel {
             attempted.append(candidate)
             do {
                 let status = try await checkServer(candidate)
+                // The server is active now, even if a cancel arrived while it
+                // was being saved, so the app goes on to it.
                 connected = true
                 // This view is also pushed onto the login stack (Change
                 // Server, then Add Server) while `authState` is already
@@ -266,10 +302,11 @@ class ServerSetupViewModel {
             }
         }
 
+        guard !Task.isCancelled else { return }
         Self.logger.error(
             "Server autodiscovery failed candidates=\(attempted.joined(separator: ", "), privacy: .public) lastError=\(String(describing: lastError), privacy: .public)"
         )
-        fail(FormError(updateRequirement?.message ?? "Could not reach a Silo server at that address."), source: source)
+        fail(FormError(updateRequirement?.message ?? AppLanguage.string(.setupErrorUnreachable)), source: source)
     }
 
     private func fail(_ failure: FormError, source: Source) {
@@ -397,11 +434,11 @@ private enum ServerSetupValidationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingHost:
-            return "Please enter a server host."
+            return AppLanguage.string(.setupErrorEmpty)
         case .invalidHost:
-            return "Please enter a valid server host."
+            return AppLanguage.string(.setupErrorInvalidAddress)
         case .invalidPort:
-            return "Port must be a number between 1 and 65535."
+            return AppLanguage.string(.setupErrorInvalidPort)
         }
     }
 }
@@ -419,7 +456,7 @@ extension View {
     /// Asks before a connect continues over plain HTTP (`insecurePrompt`).
     func serverInsecurePromptAlert(_ model: ServerSetupViewModel, router: AppRouter) -> some View {
         alert(
-            "Connect without encryption?",
+            Text(.setupCleartextTitle),
             isPresented: Binding(
                 get: { model.insecurePrompt != nil },
                 set: { if !$0 { model.dismissInsecurePrompt() } }
@@ -429,18 +466,18 @@ extension View {
             // tvOS lists alert buttons in declaration order and focuses the
             // first; it has always offered Connect there.
             #if os(tvOS)
-            Button("Connect") {
-                Task { await model.confirmInsecure(prompt, router: router) }
+            Button(.setupCleartextConnect) {
+                model.begin { await model.confirmInsecure(prompt, router: router) }
             }
-            Button("Cancel", role: .cancel) { model.cancelInsecure(prompt) }
+            Button(.commonCancel, role: .cancel) { model.cancelInsecure(prompt) }
             #else
-            Button("Cancel", role: .cancel) { model.cancelInsecure(prompt) }
-            Button("Connect") {
-                Task { await model.confirmInsecure(prompt, router: router) }
+            Button(.commonCancel, role: .cancel) { model.cancelInsecure(prompt) }
+            Button(.setupCleartextConnect) {
+                model.begin { await model.confirmInsecure(prompt, router: router) }
             }
             #endif
         } message: { prompt in
-            Text("Your password and what you watch will be sent unencrypted to \(prompt.address). Only do this on a network you trust.")
+            Text(.setupCleartextBody(prompt.address))
         }
     }
 }

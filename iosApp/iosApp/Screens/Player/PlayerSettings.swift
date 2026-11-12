@@ -31,9 +31,9 @@ enum VideoGravity: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .fit:     return "Fit"
-        case .fill:    return "Fill"
-        case .stretch: return "Stretch"
+        case .fit:     return AppLanguage.string(.playerAspectFit)
+        case .fill:    return AppLanguage.string(.playerAspectFill)
+        case .stretch: return AppLanguage.string(.playerAspectStretch)
         }
     }
 }
@@ -73,10 +73,10 @@ enum BufferAheadMode: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .automatic: return "Automatic"
-        case .standard:  return "Standard (40 seconds)"
-        case .extended:  return "Extended (5 minutes)"
-        case .unlimited: return "Unlimited"
+        case .automatic: return AppLanguage.string(.playerSettingsAutomatic)
+        case .standard:  return AppLanguage.string(.playerSettingsBufferAheadStandard(40))
+        case .extended:  return AppLanguage.string(.playerSettingsBufferAheadExtended(5))
+        case .unlimited: return AppLanguage.string(.playerSettingsBufferAheadUnlimited)
         }
     }
 }
@@ -100,8 +100,8 @@ enum DeinterlacePreference: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .automatic: return "Automatic"
-        case .software:  return "Software"
+        case .automatic: return AppLanguage.string(.playerSettingsAutomatic)
+        case .software:  return AppLanguage.string(.playerSettingsDeinterlaceSoftware)
         }
     }
 }
@@ -121,8 +121,8 @@ enum DeinterlaceFieldRatePreference: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .fullMotion: return "Full Motion"
-        case .film:       return "Film"
+        case .fullMotion: return AppLanguage.string(.playerSettingsDeinterlaceFullMotion)
+        case .film:       return AppLanguage.string(.playerSettingsDeinterlaceFilm)
         }
     }
 }
@@ -666,6 +666,15 @@ final class PlayerSettings {
         }
     }
 
+    /// Episodes that may auto-play in a row before Next Up waits for the
+    /// viewer. Client-local in the settings contract; 0 never waits.
+    private(set) var stillWatchingThreshold: Int {
+        didSet {
+            guard !isLoadingCache else { return }
+            defaults.set(stillWatchingThreshold, forKey: Self.cacheKey(Keys.stillWatchingThreshold))
+        }
+    }
+
     /// Synced keys this device holds its own `profile_device` value for.
     ///
     /// Read from each resolved row's scope, and kept current by the setters
@@ -790,6 +799,9 @@ final class PlayerSettings {
         )
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
+        )
+        stillWatchingThreshold = Self.clampStillWatchingThreshold(
+            Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: Self.defaultStillWatchingThreshold)
         )
         deviceOverriddenKeys = Self.cachedOverriddenKeys(defaults)
 
@@ -1083,6 +1095,10 @@ final class PlayerSettings {
         enqueueDeviceValue(.autoPlayNext, value: .bool(enabled))
     }
 
+    func setStillWatchingThreshold(_ threshold: Int) {
+        stillWatchingThreshold = Self.clampStillWatchingThreshold(threshold)
+    }
+
     func setNextUpPromptSeconds(_ seconds: Int) {
         let normalized = Self.clampNextUpPromptSeconds(seconds)
         nextUpPromptSeconds = normalized
@@ -1347,6 +1363,7 @@ final class PlayerSettings {
             deinterlaceFieldRate != .fullMotion,
             // A build without the object-audio components hides this setting.
             AetherObjectAudioPolicy.isAvailable && !trueHDAtmosEnabled,
+            stillWatchingThreshold != Self.defaultStillWatchingThreshold,
         ].filter { $0 }.count
     }
 
@@ -1494,6 +1511,7 @@ final class PlayerSettings {
         deinterlaceMode = .automatic
         deinterlaceFieldRate = .fullMotion
         trueHDAtmosEnabled = true
+        stillWatchingThreshold = Self.defaultStillWatchingThreshold
     }
 
     /// Keep showing this device's own values for keys whose change has not
@@ -1878,6 +1896,9 @@ final class PlayerSettings {
         )
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
+        )
+        stillWatchingThreshold = Self.clampStillWatchingThreshold(
+            Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: Self.defaultStillWatchingThreshold)
         )
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
         dolbyVisionEnabled = Self.cachedBool(defaults, key: Keys.dolbyVisionEnabled, defaultValue: true)
@@ -2463,6 +2484,13 @@ final class PlayerSettings {
         return defaults.integer(forKey: scopedKey)
     }
 
+    static let stillWatchingThresholdRange = 0...20
+    static let defaultStillWatchingThreshold = 3
+
+    private static func clampStillWatchingThreshold(_ threshold: Int) -> Int {
+        min(max(threshold, stillWatchingThresholdRange.lowerBound), stillWatchingThresholdRange.upperBound)
+    }
+
     private static func clampNextUpPromptSeconds(_ seconds: Int) -> Int {
         max(0, min(seconds, 120))
     }
@@ -2516,6 +2544,7 @@ final class PlayerSettings {
         static let autoPlayNextEpisode = "autoPlayNext"
         static let legacyAutoPlayNextEpisode = "player.autoPlayNextEpisode"
         static let nextUpPromptSeconds = "player.nextUpPromptSeconds"
+        static let stillWatchingThreshold = "player.passoutThreshold"
         static let deviceOverriddenKeys = "player.deviceOverriddenKeys"
     }
 }

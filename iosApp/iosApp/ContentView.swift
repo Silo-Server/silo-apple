@@ -125,15 +125,16 @@ struct ContentView: View {
         #endif
         .environmentObject(overlayPrefs)
         .preferredColorScheme(.dark)
-        .alert("Account Update", isPresented: Binding(
+        .alert(.accountAlertTitle, isPresented: Binding(
             get: { router.accountActionError != nil },
             set: { if !$0 { router.accountActionError = nil } }
         )) {
-            Button("OK", role: .cancel) { router.accountActionError = nil }
+            Button(.shellNoticeOk, role: .cancel) { router.accountActionError = nil }
         } message: {
             Text(router.accountActionError ?? "")
         }
         .modifier(AccountRemovalConfirmationModifier(router: router))
+        .modifier(AddProfileFromMenuModifier(router: router))
         #if !os(tvOS)
         .alert(LegacyDownloadStorage.noticeMessage, isPresented: Binding(
             get: {
@@ -141,7 +142,7 @@ struct ContentView: View {
             },
             set: { if !$0 { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() } }
         )) {
-            Button("OK", role: .cancel) { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() }
+            Button(.shellNoticeOk, role: .cancel) { DownloadManager.shared.acknowledgeLegacyDownloadsNotice() }
         }
         #endif
         #if os(tvOS) && DEBUG
@@ -247,6 +248,11 @@ struct ContentView: View {
             router.presentedPlayer = nil
             audioStore.dismissFullPlayer()
             Task { await audioStore.player.close() }
+            // The picker stays up even with one profile left. Opening that
+            // profile at once would move the person to it unasked, and
+            // returns to Home fast enough that the previous profile's
+            // screens are kept.
+            router.pickerRequestedByPerson = true
             router.showProfileSelection()
         }
         .onChange(of: serverRegistry.activeServerId) { previousServerID, activeServerID in
@@ -454,6 +460,7 @@ struct ContentView: View {
                 // answer meanwhile, so it need not hold up overlay hydration.
                 Task { await TitleArtPreferences.shared.refresh() }
                 Task { await ThemeMusicPreferences.shared.refresh() }
+                Task { await AppLanguagePreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 await EpisodeSpoilerPreferences.shared.refresh()
@@ -484,6 +491,7 @@ struct ContentView: View {
             if router.authState == .authenticated {
                 Task { await TitleArtPreferences.shared.refresh() }
                 Task { await ThemeMusicPreferences.shared.refresh() }
+                Task { await AppLanguagePreferences.shared.refresh() }
                 await uiCustomization.refresh()
                 await SeekIntervalPreferences.shared.refresh()
                 await EpisodeSpoilerPreferences.shared.refresh()
@@ -651,8 +659,9 @@ struct ContentView: View {
         async let titleArt: Void = TitleArtPreferences.shared.refresh()
         async let spoilers: Void = EpisodeSpoilerPreferences.shared.refresh()
         async let themeMusic: Void = ThemeMusicPreferences.shared.refresh()
+        async let appLanguage: Void = AppLanguagePreferences.shared.refresh()
         _ = await (overlay, ai, imageSize, requests, shuffle, subtitles, sectionItemLimit, profile, customization, seek,
-                   titleArt, spoilers, themeMusic)
+                   titleArt, spoilers, themeMusic, appLanguage)
     }
 
     @MainActor
@@ -739,7 +748,8 @@ struct ContentView: View {
 
     /// Turn an expired away interval into the same durable identity boundary
     /// as an explicit profile switch. The account and remembered-profile hint
-    /// remain available to Who's Watching.
+    /// remain available to Who's Watching, or to Change Account, which shows
+    /// in its place when several accounts are saved.
     @MainActor
     private func applyProfileReturnPolicy() async {
         guard !isApplyingProfileReturnPolicy,
@@ -790,7 +800,7 @@ struct ContentView: View {
         }
         #endif
         guard deactivated else { return }
-        router.showProfileSelection()
+        router.showProfileSelectionAfterReturn()
     }
 
     #if os(iOS) || os(tvOS)
@@ -878,7 +888,8 @@ struct ContentView: View {
     }
 
     /// The open account's "Who's watching?", or Change Account while no
-    /// account is open and another can be chosen (spec §4.1).
+    /// account is open and another can be chosen (spec §4.1), or while the
+    /// person chooses the account first (spec §4.2).
     @ViewBuilder
     private var profileFlowRoot: some View {
         if router.authState == .needsProfile, router.showsChangeAccountRoot {
@@ -1229,7 +1240,7 @@ struct ContentView: View {
         LaunchTimeline.recordInitialStateResolved(state: state.diagnosticsState)
         #endif
         StartupContentPrefetcher.prefetchForInitialRoute(state)
-        router.authState = state
+        router.commitLaunchRoute(state)
     }
 
     /// Saved servers' push registrations still need renewing while no
@@ -1279,6 +1290,10 @@ struct ContentView: View {
         // instead of every foreground paying for a request.
         AdvisoryAgePreferenceStore.shared.markStale()
         Task { await refreshSessionStores(overlayPhase: "foreground_refresh") }
+        // The account's profiles and profile limit, which the profile menu
+        // draws its profile row from; a cold launch reads them in
+        // `StartupContentPrefetcher.prefetchForInitialRoute`.
+        StartupContentPrefetcher.prefetchProfiles()
         #if os(iOS)
         Task {
             await ApplePushRegistrationCoordinator.shared.prepareForAuthenticatedProfile()
@@ -1413,7 +1428,7 @@ struct ContentView: View {
         }
         await diagnosticsModel.handleForeground()
         await diagnosticsModel.createAndSendManualReport()
-        print("[DebugDiagnostics] \(diagnosticsModel.notice?.message ?? "No upload result.")")
+        print("[DebugDiagnostics] \(diagnosticsModel.notice?.text(in: Locale(identifier: "en")) ?? "No upload result.")")
     }
     #endif
 
@@ -1518,7 +1533,7 @@ struct ContentView: View {
             // auth-state change clears `router.path` first, so reaching this
             // is a bug.
             let _ = assertionFailure("No signed-out destination for \(route)")
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloPageBackground()
         }
     }
@@ -1559,7 +1574,7 @@ struct ContentView: View {
             ServerNeedsSetupView(router: router)
             #endif
         default:
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloPageBackground()
         }
     }
@@ -2153,12 +2168,13 @@ private struct RemotePlaybackRoutingModifier: ViewModifier {
                     return (
                         title: state.title,
                         contentId: contentId,
-                        targetName: siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "the TV"
+                        targetName: siloControl.activeTarget?.name ?? siloControl.lastTarget?.name
+                            ?? AppLanguage.string(.shellRemotePlaybackFallbackTarget)
                     )
                 }
             }
             .confirmationDialog(
-                "Replace what's playing?",
+                Text(.remoteReplaceTitle),
                 isPresented: Binding(
                     get: { router.pendingReplaceRemotePlayback != nil },
                     set: { if !$0 { router.pendingReplaceRemotePlayback = nil } }
@@ -2166,28 +2182,29 @@ private struct RemotePlaybackRoutingModifier: ViewModifier {
                 titleVisibility: .visible,
                 presenting: router.pendingReplaceRemotePlayback
             ) { choice in
-                Button("Play on \(choice.targetName)") { router.confirmReplaceRemotePlayback() }
-                Button("Cancel", role: .cancel) { router.pendingReplaceRemotePlayback = nil }
+                Button(.shellRemotePlaybackPlayOn(choice.targetName)) { router.confirmReplaceRemotePlayback() }
+                Button(.commonCancel, role: .cancel) { router.pendingReplaceRemotePlayback = nil }
             } message: { choice in
-                Text("\(choice.targetName) is playing \(choice.currentTitle). Playing this will stop it.")
+                Text(.shellRemotePlaybackReplaceMessage(choice.targetName, choice.currentTitle))
             }
             .confirmationDialog(
-                "A TV is connected",
+                Text(.shellRemotePlaybackTvConnected),
                 isPresented: Binding(
                     get: { router.pendingOfflinePlayChoice != nil },
                     set: { if !$0 { router.pendingOfflinePlayChoice = nil } }
                 ),
                 titleVisibility: .visible
             ) {
-                Button("Play on \(siloControl.activeTarget?.name ?? siloControl.lastTarget?.name ?? "TV")") {
+                Button((siloControl.activeTarget?.name ?? siloControl.lastTarget?.name)
+                    .map { LocalizedStringResource.shellRemotePlaybackPlayOn($0) } ?? .shellRemotePlaybackPlayOnTv) {
                     router.sendPendingOfflinePlayToTV()
                 }
-                Button("Play on this \(UIDevice.current.model)") {
+                Button(.shellRemotePlaybackPlayOnThisDevice(UIDevice.current.model)) {
                     router.confirmOfflinePlayHere()
                 }
-                Button("Cancel", role: .cancel) { router.pendingOfflinePlayChoice = nil }
+                Button(.commonCancel, role: .cancel) { router.pendingOfflinePlayChoice = nil }
             } message: {
-                Text("Downloads only play on this device. The TV can stream the same title from your server.")
+                Text(.shellRemotePlaybackDownloadsPlayHere)
             }
 
     }
@@ -2271,7 +2288,7 @@ struct MainTabDestination: Identifiable, Equatable {
     let selectedIcon: String
 
     static func app(_ tab: AppTab) -> MainTabDestination {
-        .init(id: .app(tab), title: tab.rawValue, icon: tab.icon, selectedIcon: tab.selectedIcon)
+        .init(id: .app(tab), title: tab.title, icon: tab.icon, selectedIcon: tab.selectedIcon)
     }
 
     static func library(
@@ -2381,6 +2398,9 @@ struct MainTabView: View {
     @State private var iPadColumnVisibility: NavigationSplitViewVisibility = .detailOnly
     @Environment(AudioPlaybackStore.self) private var audioStore
     @Environment(\.scenePhase) private var scenePhase
+    /// Tab and sidebar labels resolve through `AppLanguage.string`; reading
+    /// the locale redraws them when the app language changes.
+    @Environment(\.locale) private var locale
     #if os(iOS)
     @Environment(SiloControlClient.self) private var siloControl
     /// For You is normally constructed lazily by TabView. Own its model at the
@@ -2889,7 +2909,7 @@ struct MainTabView: View {
                 .frame(maxWidth: .infinity, alignment: .center)
 
             Button(action: dismissSidebar) {
-                Image(systemName: "arrow.left")
+                Image(systemName: "arrow.backward")
                     .font(.body.weight(.semibold))
                     .frame(
                         width: SiloTheme.topBarIconHitSize,
@@ -2898,7 +2918,7 @@ struct MainTabView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Close sidebar")
+            .accessibilityLabel(.shellSidebarClose)
         }
         .padding(.horizontal, 20)
         .padding(.top, 24)
@@ -3273,7 +3293,7 @@ struct MainTabView: View {
         case .autoDownloads:
             AutoDownloadsView()
         default:
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloPageBackground()
         }
     }

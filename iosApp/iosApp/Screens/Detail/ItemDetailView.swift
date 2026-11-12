@@ -107,6 +107,7 @@ struct PhoneDetailTopChrome: View {
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.locale) private var locale
     /// The chrome spans the detail page, so its width is the hero's width.
     @State private var pageWidth: CGFloat = 0
     #if os(iOS)
@@ -142,11 +143,11 @@ struct PhoneDetailTopChrome: View {
                     Button(action: onLeadingTap) {
                         controlIcon(
                             systemName: leadingSystemName,
-                            size: leadingSystemName == "chevron.left" ? 17 : 16
+                            size: leadingSystemName == "chevron.backward" ? 17 : 16
                         )
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(leadingAccessibilityLabel ?? "Back")
+                    .accessibilityLabel(leadingAccessibilityLabel ?? AppLanguage.string(.commonBack, locale: locale))
                 }
 
                 Spacer(minLength: 20)
@@ -180,7 +181,7 @@ struct PhoneDetailTopChrome: View {
                     Button(action: onLeadingTap) {
                         Image(systemName: "xmark")
                     }
-                    .accessibilityLabel(leadingAccessibilityLabel ?? "Close")
+                    .accessibilityLabel(leadingAccessibilityLabel ?? AppLanguage.string(.rowPageClose, locale: locale))
                 }
             }
         }
@@ -215,7 +216,7 @@ struct PhoneDetailTopChrome: View {
                 controlIcon(systemName: trailingSystemName, size: 16)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Remote Control")
+            .accessibilityLabel(Text(.detailRemoteControl))
         }
     }
 
@@ -443,6 +444,7 @@ private struct ItemDetailPhoneContent: View {
     /// Whether a movie or series page lays out as a split; see `supportsScrollGlassChrome`.
     @State private var isSplitPage = false
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.locale) private var locale
     #if os(iOS)
     /// The iPhone Duo's status column beside the page, where the TV remote
     /// covers the window and the Remote button moves into the column.
@@ -599,7 +601,7 @@ private struct ItemDetailPhoneContent: View {
             Task { await applySeriesPlaybackReturn(playback) }
         }
         .alert(
-            "Downloaded on This Device",
+            Text(.detailOfflineChoiceTitle),
             isPresented: Binding(
                 get: { offlinePlayChoice != nil },
                 set: { if !$0 { offlinePlayChoice = nil } }
@@ -615,7 +617,7 @@ private struct ItemDetailPhoneContent: View {
                     resumePosition: choice.resumePosition
                 )
             }
-            Button("Stream from Server") {
+            Button(.detailOfflineChoiceStream) {
                 presentStreamingPlayer(
                     contentId: choice.contentId,
                     fileId: choice.fileId,
@@ -626,13 +628,13 @@ private struct ItemDetailPhoneContent: View {
                     resumePosition: choice.resumePosition
                 )
             }
-            Button("Cancel", role: .cancel) {}
+            Button(.commonCancel, role: .cancel) {}
         } message: { _ in
-            Text("Play the copy saved on this device, or stream from the server.")
+            Text(.detailOfflineChoiceBody)
         }
         .personalStateNoticeAlert($viewModel.personalStateNotice)
         .alert(
-            "Can't Reach Server",
+            Text(.detailUnreachableTitle),
             isPresented: Binding(
                 get: { unreachablePlayRequest != nil },
                 set: { if !$0 { unreachablePlayRequest = nil } }
@@ -641,7 +643,7 @@ private struct ItemDetailPhoneContent: View {
         ) { request in
             // Reachability state can be stale (e.g. the server just came
             // back), so always leave an escape hatch to attempt the stream.
-            Button("Try Anyway") {
+            Button(.detailUnreachableTryAnyway) {
                 Task { await ConnectionMonitor.shared.probeServer() }
                 presentStreamingPlayer(
                     contentId: request.contentId,
@@ -653,11 +655,11 @@ private struct ItemDetailPhoneContent: View {
                     resumePosition: request.resumePosition
                 )
             }
-            Button("Cancel", role: .cancel) {}
+            Button(.commonCancel, role: .cancel) {}
         } message: { _ in
             Text(ConnectionMonitor.shared.isDeviceOnline
-                ? "Streaming needs a connection to your server, which isn't responding right now. Downloaded titles can still be played."
-                : "You're offline. Connect to a network to stream, or play a downloaded title.")
+                ? LocalizedStringResource.detailUnreachableServerDown
+                : .detailUnreachableOffline)
         }
         #if os(iOS)
         // The card draws its own floating controls, which also decide when
@@ -711,8 +713,10 @@ private struct ItemDetailPhoneContent: View {
             title: scrollTitle,
             isScrollGlassEnabled: supportsScrollGlassChrome,
             scrollState: detailScrollState,
-            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
-            leadingAccessibilityLabel: showsClose ? "Close details" : (showsBack ? "Back" : nil),
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.backward" : nil),
+            leadingAccessibilityLabel: showsClose
+                ? AppLanguage.string(.detailCloseDetails, locale: locale)
+                : (showsBack ? AppLanguage.string(.commonBack, locale: locale) : nil),
             onLeadingTap: {
                 if let onClose {
                     onClose()
@@ -764,7 +768,7 @@ private struct ItemDetailPhoneContent: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Remote Control")
+        .accessibilityLabel(Text(.detailRemoteControl))
         .statusColumnCentered(layout)
         .padding(.bottom, StatusColumnBar.bottomMargin)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: layout.edge == .leading ? .bottomLeading : .bottomTrailing)
@@ -1429,7 +1433,7 @@ private struct ItemDetailPhoneContent: View {
             offlinePlayChoice = OfflinePlayChoice(
                 downloadId: record.id,
                 leafContentId: record.leafMediaItemId,
-                downloadedLabel: Self.downloadedOptionLabel(for: record),
+                downloadedLabel: Self.downloadedOptionLabel(for: record, locale: locale),
                 contentId: contentId,
                 fileId: fileId,
                 pinsVersion: pinsVersion,
@@ -1499,18 +1503,21 @@ private struct ItemDetailPhoneContent: View {
 
     /// Dialog label for the local copy, annotated with its stored quality
     /// and size so the choice against the stream is an informed one.
-    private static func downloadedOptionLabel(for record: DownloadRecord) -> String {
+    private static func downloadedOptionLabel(for record: DownloadRecord, locale: Locale) -> String {
         var parts: [String] = []
         let quality = record.effectiveQuality ?? record.format
         if !quality.isEmpty {
             parts.append(DownloadFormat(rawValue: quality)?.displayName ?? quality.capitalized)
         }
         if record.fileSize > 0 {
-            parts.append(ByteCountFormatter.string(fromByteCount: record.fileSize, countStyle: .file))
+            parts.append(LocaleFormat.bytes(record.fileSize, locale: locale))
         }
-        return parts.isEmpty
-            ? "Play Downloaded"
-            : "Play Downloaded (\(parts.joined(separator: " · ")))"
+        return AppLanguage.string(
+            parts.isEmpty
+                ? .detailPlayDownloaded
+                : .detailPlayDownloadedDetails(parts.joined(separator: " · ")),
+            locale: locale
+        )
     }
 }
 #endif

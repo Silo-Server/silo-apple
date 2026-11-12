@@ -6,12 +6,12 @@ enum DiagnosticsDestinationChoice: String, Codable, CaseIterable, Sendable {
     case hosted
     case selfHosted = "self_hosted"
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
         case .hosted:
-            return "Silo Diagnostics"
+            return .diagnosticsDestinationHosted
         case .selfHosted:
-            return "My Silo Server"
+            return .diagnosticsDestinationMyServer
         }
     }
 }

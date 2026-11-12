@@ -68,11 +68,11 @@ struct SignInTVView: View {
                     entryForm
                 }
             }
-            .navigationTitle("Sign in a TV")
+            .navigationTitle(.signInTvTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
+                    Button(.commonCancel) {
                         model?.stop()
                         onClose()
                     }
@@ -93,31 +93,31 @@ struct SignInTVView: View {
                     .font(.system(size: 34, weight: .semibold, design: .monospaced))
                     .multilineTextAlignment(.center)
                     .focused($codeFocused)
-                    .accessibilityLabel("TV code")
+                    .accessibilityLabel(.tvPairEntryCodeLabel)
             } header: {
-                Text("Code")
+                Text(.tvPairDetailCode)
             } footer: {
-                Text("Enter the code on your TV's sign-in screen.")
+                Text(.signInTvSubtitle)
             }
 
             if servers.count > 1 {
                 Section {
-                    Picker("Server", selection: $selectedServerId) {
+                    Picker(.signInTvServerLabel, selection: $selectedServerId) {
                         ForEach(servers) { server in
                             Text(server.displayName).tag(Optional(server.id))
                         }
                     }
                 } footer: {
-                    Text("Choose the server named at the top of the TV's screen.")
+                    Text(.tvPairEntryServerFooter)
                 }
             } else if loadedServers && servers.isEmpty {
                 Section {
-                    Text("Sign in to a server on this device first.").foregroundStyle(.secondary)
+                    Text(.tvPairEntryNoServers).foregroundStyle(.secondary)
                 }
             }
 
             Section {
-                Button("Continue") {
+                Button(.signInTvContinue) {
                     guard let server = servers.first(where: { $0.id == selectedServerId }) else { return }
                     lookUp(on: server)
                 }
@@ -170,6 +170,7 @@ struct SignInTVView: View {
 /// finds the saved server with that verified identity, or offers to add it
 /// from the link's address, then shows the approval card.
 struct DeviceLinkApprovalView: View {
+    @Environment(\.locale) private var locale
     let link: DeviceApprovalLink
     /// Add the server (prefilled) and come back to the link after signing in.
     var onAddServer: (String) -> Void
@@ -195,9 +196,9 @@ struct DeviceLinkApprovalView: View {
             switch resolution {
             case .resolving:
                 NavigationStack {
-                    ProgressView("Finding the TV's server…")
+                    ProgressView(.tvPairLinkResolving)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onClose) } }
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button(.commonCancel, action: onClose) } }
                 }
             case .saved(let server):
                 SignInTVView(initialCode: link.code, initialServerId: server.id, onAddAccount: onAddAccount,
@@ -205,14 +206,14 @@ struct DeviceLinkApprovalView: View {
             case .signedOut(let server):
                 NavigationStack {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Sign in to \(server.displayName)").font(.siloTitle)
-                        Text("The TV's code belongs to \(server.displayName), and this device isn't signed in to it. Sign in, then approve the TV.")
+                        Text(.tvSignInTitle(server.displayName)).font(.siloTitle)
+                        Text(.tvPairLinkSignedOutBody(server.displayName))
                             .font(.siloBody)
                             .fixedSize(horizontal: false, vertical: true)
                         Button {
                             onSignIn(server, DeviceApprovalLink(server: server, code: link.code))
                         } label: {
-                            Text("Sign in").font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
+                            Text(.signInTvSignInFirst).font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.siloOnSurface)
@@ -220,19 +221,19 @@ struct DeviceLinkApprovalView: View {
                         Spacer()
                     }
                     .padding(20)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onClose) } }
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(.commonCancel, action: onClose) } }
                 }
             case .addServer(let url):
                 NavigationStack {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Add this server?").font(.siloTitle)
-                        Text("The TV's code belongs to \(TVSignInPresentation.host(of: url)), which isn't on this device yet. Add it and sign in, then approve the TV.")
+                        Text(.tvPairLinkAddServerTitle).font(.siloTitle)
+                        Text(.tvPairLinkAddServerBody(TVSignInPresentation.host(of: url)))
                             .font(.siloBody)
                             .fixedSize(horizontal: false, vertical: true)
                         Button {
                             onAddServer(url)
                         } label: {
-                            Text("Add server").font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
+                            Text(.companionUnknownServerAdd).font(.siloHeadline).frame(maxWidth: .infinity).padding(.vertical, 6)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(.siloOnSurface)
@@ -240,7 +241,7 @@ struct DeviceLinkApprovalView: View {
                         Spacer()
                     }
                     .padding(20)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onClose) } }
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(.commonCancel, action: onClose) } }
                 }
             case .failed(let message):
                 NavigationStack {
@@ -249,7 +250,7 @@ struct DeviceLinkApprovalView: View {
                         Text(message).font(.siloBody).multilineTextAlignment(.center)
                     }
                     .padding(24)
-                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close", action: onClose) } }
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button(.companionClose, action: onClose) } }
                 }
             }
         }
@@ -276,9 +277,9 @@ struct DeviceLinkApprovalView: View {
         case .addServer(let url):
             return .addServer(url: url)
         case .unreachable(let url):
-            return .failed("Couldn't reach \(TVSignInPresentation.host(of: url)). Check this device's connection and open the link again.")
+            return .failed(AppLanguage.string(.tvPairLinkUnreachable(TVSignInPresentation.host(of: url))))
         case .mismatch:
-            return .failed("That link names a server this device can't confirm. Enter the TV's code in Settings > Sign in a TV instead.")
+            return .failed(AppLanguage.string(.tvPairLinkMismatch))
         }
     }
 

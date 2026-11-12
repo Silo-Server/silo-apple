@@ -15,12 +15,12 @@ struct MacSidebarSection: Identifiable, Equatable {
     let items: [MainTabDestination]
 
     /// Home sits above the groups without a heading.
-    var title: String? {
+    var title: LocalizedStringResource? {
         switch id {
         case .home: return nil
-        case .libraries: return "Libraries"
-        case .discover: return "Discover"
-        case .yourStuff: return "Your Stuff"
+        case .libraries: return .shellSidebarSectionLibraries
+        case .discover: return .shellSidebarSectionDiscover
+        case .yourStuff: return .shellSidebarSectionYourStuff
         }
     }
 }

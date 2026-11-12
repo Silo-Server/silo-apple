@@ -28,9 +28,18 @@ struct PreparedPlayback {
 
     var displayTitle: String {
         if watchDetail.type == "episode" {
-            let season = watchDetail.seasonNumber.map { "S\($0)" } ?? nil
-            let episode = watchDetail.episodeNumber.map { "E\($0)" } ?? nil
-            let episodeTag = [season, episode].compactMap { $0 }.joined()
+            let episodeTag: String = {
+                switch (watchDetail.seasonNumber, watchDetail.episodeNumber) {
+                case let (season?, episode?):
+                    return AppLanguage.string(.catalogEpisodeTag(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
+                case let (season?, nil):
+                    return AppLanguage.string(.calendarSeasonShort(LocaleFormat.codeNumber(season)))
+                case let (nil, episode?):
+                    return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.codeNumber(episode)))
+                case (nil, nil):
+                    return ""
+                }
+            }()
 
             if let seriesTitle = watchDetail.seriesTitle, !seriesTitle.isEmpty, !episodeTag.isEmpty {
                 return "\(seriesTitle) • \(episodeTag) • \(watchDetail.title)"
@@ -44,39 +53,30 @@ struct PreparedPlayback {
     /// everything off the already-fetched `WatchDetail` + `FileVersion` so
     /// the overlay doesn't need a second API call — we only transform the
     /// shapes the server already gave us into display strings.
-    func playerMetadata(primaryAudioLayout: String? = nil) -> PlayerMetadata {
+    func playerMetadata() -> PlayerMetadata {
         let isEpisode = watchDetail.type == "episode"
-        let episodeTag: String? = {
+        let episodeTag: () -> String? = {
             guard isEpisode else { return nil }
-            let s = watchDetail.seasonNumber.map { "S\($0)" }
-            let e = watchDetail.episodeNumber.map { "E\($0)" }
-            let joined = [s, e].compactMap { $0 }.joined(separator: " · ")
-            return joined.isEmpty ? nil : joined
-        }()
-
-        var badges: [String] = []
-        if let resolution = selectedVersion.resolution, !resolution.isEmpty {
-            badges.append(PlayerMetadata.badgeLabel(forResolution: resolution))
-        }
-        if selectedVersion.hdr == true {
-            badges.append("HDR")
-        }
-        if let codec = selectedVersion.codecVideo?.uppercased(), !codec.isEmpty {
-            badges.append(codec)
-        }
-        if let layout = primaryAudioLayout?.uppercased(), !layout.isEmpty {
-            badges.append(layout)
-        } else if let audioCodec = selectedVersion.codecAudio?.uppercased(), !audioCodec.isEmpty {
-            badges.append(audioCodec)
+            switch (watchDetail.seasonNumber, watchDetail.episodeNumber) {
+            case let (season?, episode?):
+                return AppLanguage.string(.catalogEpisodeCaption(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
+            case let (season?, nil):
+                return AppLanguage.string(.calendarSeasonShort(LocaleFormat.codeNumber(season)))
+            case let (nil, episode?):
+                return AppLanguage.string(.calendarEpisodeShort(LocaleFormat.codeNumber(episode)))
+            case (nil, nil):
+                return nil
+            }
         }
 
         return PlayerMetadata(
             seriesTitle: isEpisode ? watchDetail.seriesTitle : nil,
-            episodeTag: episodeTag,
+            episodeTag: episodeTag(),
+            remoteEpisodeTag: AppLanguage.inEnglish(episodeTag),
             primaryTitle: watchDetail.title,
             year: isEpisode ? nil : watchDetail.year,
             overview: watchDetail.overview,
-            badges: badges
+            badges: PlayerMetadata.streamBadges(version: selectedVersion, audioCodec: nil)
         )
     }
 }
@@ -92,13 +92,25 @@ enum PlaybackProgressReportResult: Equatable {
 
 struct PlaybackV3TerminalFailure: LocalizedError, Equatable {
     let reason: String
+    /// English: reported to the server, logged and matched (D44).
     let message: String
     /// Whether starting playback again can help. False only when a fresh
     /// session would fail the same way: the server's terminal outcome says
     /// so, or the server or profile cannot play at all until it changes.
     let retryable: Bool
+    /// The text the player shows, in the app's language, for a failure the
+    /// app itself wrote. Nil for the server's own text, which shows as sent.
+    var displayMessage: String? = nil
 
-    var errorDescription: String? { message }
+    var errorDescription: String? { displayMessage ?? message }
+}
+
+extension PlaybackV3TerminalFailure: CustomStringConvertible {
+    /// What logs print (`MediaLogRedactor.sanitize(error)`): the English
+    /// fields only, as before `displayMessage` existed (D44).
+    var description: String {
+        "PlaybackV3TerminalFailure(reason: \(String(reflecting: reason)), message: \(String(reflecting: message)), retryable: \(retryable))"
+    }
 }
 
 /// The server refused a subtitle switch: it has no route for the requested
@@ -113,14 +125,18 @@ struct PlaybackV3SubtitleRefusal: LocalizedError, Equatable {
 
 /// Secondary metadata shown in the tvOS player overlay's hero strip.
 /// Populated from the playback session at load time via
-/// `PreparedPlayback.playerMetadata(primaryAudioLayout:)` — everything here
+/// `PreparedPlayback.playerMetadata()` — everything here
 /// is already fetched as part of `/api/v2/watch/{id}`, so no extra API
-/// calls are needed.
+/// calls are needed. The player then keeps `badges` on the audio track and
+/// the file that are playing.
 struct PlayerMetadata: Equatable {
     /// For episodes: series title, e.g. "Foundation".
     var seriesTitle: String?
     /// For episodes: "S2 · E3" or similar compact tag.
     var episodeTag: String?
+    /// The same tag in English, for the Remote Control state sent to the
+    /// phone (D44: sent text stays English).
+    var remoteEpisodeTag: String? = nil
     /// Episode display title when the container is a series episode.
     /// For movies, this is the only title and is shown as the hero title.
     var primaryTitle: String
@@ -140,6 +156,28 @@ struct PlayerMetadata: Equatable {
         overview: nil,
         badges: []
     )
+
+    /// The pills for `version`: resolution, HDR, video codec, then audio
+    /// codec. `audioCodec` names the audio track that is playing; without it
+    /// the file's own audio codec stands in.
+    static func streamBadges(version: FileVersion, audioCodec: String?) -> [String] {
+        var badges: [String] = []
+        if let resolution = version.resolution, !resolution.isEmpty {
+            badges.append(badgeLabel(forResolution: resolution))
+        }
+        if version.hdr == true {
+            badges.append("HDR")
+        }
+        if let codec = version.codecVideo?.uppercased(), !codec.isEmpty {
+            badges.append(codec)
+        }
+        if let audioCodec = audioCodec?.uppercased(), !audioCodec.isEmpty {
+            badges.append(audioCodec)
+        } else if let audioCodec = version.codecAudio?.uppercased(), !audioCodec.isEmpty {
+            badges.append(audioCodec)
+        }
+        return badges
+    }
 
     /// Map raw resolution strings ("1920x1080", "1080p", "2160p") to the
     /// short marketing label shown in the overlay ("4K" / "FHD" / "HD" / "SD").
@@ -313,7 +351,8 @@ actor PlaybackV3CapabilityGate {
         switch error {
         case APIv2Error.serverUpdateRequired:
             return PlaybackV3TerminalFailure(reason: "server_upgrade_required",
-                message: UpdateRequirement.serverMessage, retryable: false)
+                message: AppLanguage.inEnglish { UpdateRequirement.serverMessage }, retryable: false,
+                displayMessage: UpdateRequirement.serverMessage)
         case APIv2Error.problem(let problem) where problem.status == 409 && problem.identifier == "capability_not_configured":
             return APIv2PlaybackCapabilities.notConfigured
         default:
@@ -446,8 +485,9 @@ actor PlaybackSessionBridge {
     nonisolated static func fixedSourceFailure() -> PlaybackV3TerminalFailure {
         PlaybackV3TerminalFailure(
             reason: "room_source_unavailable",
-            message: "The Watch Party's selected media version is unavailable.",
-            retryable: false
+            message: "The Watch Party's selected media version is unavailable.", // i18n-ignore: English data: logged or sent to the server (D44)
+            retryable: false,
+            displayMessage: AppLanguage.string(.watchPartyPlayerVersionUnavailable)
         )
     }
 
@@ -796,7 +836,7 @@ actor PlaybackSessionBridge {
         DiagnosticsCoordinator.recordBreadcrumb(
             category: .playback,
             tag: "PlaybackSession",
-            message: "playback session adopted",
+            message: "playback session adopted", // i18n-ignore: English data: logged or sent to the server (D44)
             attrs: [
                 "session_id": .string(session.sessionId),
                 "play_method": .string(session.playMethod),
@@ -929,8 +969,9 @@ actor PlaybackSessionBridge {
               !profileId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PlaybackV3TerminalFailure(
                 reason: "profile_required",
-                message: "Select a profile before starting playback.",
-                retryable: false
+                message: "Select a profile before starting playback.", // i18n-ignore: English data: logged or sent to the server (D44)
+                retryable: false,
+                displayMessage: AppLanguage.string(.playerErrorSelectProfile)
             )
         }
         // Protocol v3 is the only playback contract. There is no legacy start
@@ -1267,8 +1308,9 @@ actor PlaybackSessionBridge {
             }
             throw PlaybackV3TerminalFailure(
                 reason: "invalid_playback_plan",
-                message: "The server returned an incompatible protocol V3 playback plan.",
-                retryable: false
+                message: "The server returned an incompatible protocol V3 playback plan.", // i18n-ignore: English data: logged or sent to the server (D44)
+                retryable: false,
+                displayMessage: AppLanguage.string(.playerErrorIncompatiblePlan)
             )
         case .playable(let plan, let resolvedSessionId):
             if fixedSource, plan.effectiveMediaFileId != selectedVersion.fileId {
@@ -1285,8 +1327,9 @@ actor PlaybackSessionBridge {
                 )
                 throw PlaybackV3TerminalFailure(
                     reason: "server_upgrade_required",
-                    message: "This server did not honor authenticated media transport for the playback plan.",
-                    retryable: false
+                    message: "This server did not honor authenticated media transport for the playback plan.", // i18n-ignore: English data: logged or sent to the server (D44)
+                    retryable: false,
+                    displayMessage: AppLanguage.string(.playerErrorUnauthenticatedTransport)
                 )
             }
             do {
@@ -1309,8 +1352,9 @@ actor PlaybackSessionBridge {
                 )
                 throw PlaybackV3TerminalFailure(
                     reason: "effective_file_unavailable",
-                    message: "The server selected a media version that is not present in the item response.",
-                    retryable: false
+                    message: "The server selected a media version that is not present in the item response.", // i18n-ignore: English data: logged or sent to the server (D44)
+                    retryable: false,
+                    displayMessage: AppLanguage.string(.playerErrorVersionNotInItem)
                 )
             }
             let session = ApplePlaybackV3PlanAdapter.playbackSession(
@@ -1577,7 +1621,8 @@ actor PlaybackSessionBridge {
                 active: active,
                 sessionId: currentSessionId,
                 reason: "attempt_limit_reached",
-                message: "Playback recovery exhausted the protocol V3 route ladder."
+                message: "Playback recovery exhausted the protocol V3 route ladder.", // i18n-ignore: English data: logged or sent to the server (D44)
+                displayMessage: AppLanguage.string(.playerErrorRouteLadderExhausted)
             )
         }
 
@@ -1653,7 +1698,7 @@ actor PlaybackSessionBridge {
             .essential,
             category: .playback,
             tag: "PlaybackSession",
-            message: "protocol v3 replan requested",
+            message: "protocol v3 replan requested", // i18n-ignore: English data: logged or sent to the server (D44)
             attrs: [
                 "session_id": .string(currentSessionId),
                 "reason": .string(classification),
@@ -1764,7 +1809,8 @@ actor PlaybackSessionBridge {
                 active: active,
                 sessionId: currentSessionId,
                 reason: "invalid_replan",
-                message: "The server returned an incompatible protocol V3 replacement plan.",
+                message: "The server returned an incompatible protocol V3 replacement plan.", // i18n-ignore: English data: logged or sent to the server (D44)
+                displayMessage: AppLanguage.string(.playerErrorIncompatibleReplacementPlan),
                 retiring: allocatedSessionId.map { (sessionId: $0, reason: "incompatible_replan_response") }
             )
         case .playable(let nextPlan, let nextSessionId):
@@ -1775,6 +1821,7 @@ actor PlaybackSessionBridge {
                     sessionId: currentSessionId,
                     reason: failure.reason,
                     message: failure.message,
+                    displayMessage: failure.displayMessage,
                     retiring: (sessionId: nextSessionId, reason: "room_source_changed")
                 )
             }
@@ -1785,7 +1832,8 @@ actor PlaybackSessionBridge {
                     active: active,
                     sessionId: currentSessionId,
                     reason: "server_upgrade_required",
-                    message: "The server did not preserve authenticated media transport during replanning.",
+                    message: "The server did not preserve authenticated media transport during replanning.", // i18n-ignore: English data: logged or sent to the server (D44)
+                    displayMessage: AppLanguage.string(.playerErrorReplanUnauthenticatedTransport),
                     retiring: (sessionId: nextSessionId, reason: "replan_without_header_authenticated_media")
                 )
             }
@@ -1807,7 +1855,8 @@ actor PlaybackSessionBridge {
                     active: active,
                     sessionId: currentSessionId,
                     reason: "replan_loop_detected",
-                    message: "The server returned a protocol V3 plan that already failed on this output route.",
+                    message: "The server returned a protocol V3 plan that already failed on this output route.", // i18n-ignore: English data: logged or sent to the server (D44)
+                    displayMessage: AppLanguage.string(.playerErrorReplanLoop),
                     retiring: (sessionId: nextSessionId, reason: "replan_loop_detected")
                 )
             }
@@ -1818,7 +1867,8 @@ actor PlaybackSessionBridge {
                     active: active,
                     sessionId: currentSessionId,
                     reason: "effective_file_unavailable",
-                    message: "The replacement plan selected an unavailable media version.",
+                    message: "The replacement plan selected an unavailable media version.", // i18n-ignore: English data: logged or sent to the server (D44)
+                    displayMessage: AppLanguage.string(.playerErrorReplacementVersionUnavailable),
                     retiring: (sessionId: nextSessionId, reason: "replan_effective_file_unavailable")
                 )
             }
@@ -1842,7 +1892,8 @@ actor PlaybackSessionBridge {
                         active: active,
                         sessionId: currentSessionId,
                         reason: "invalid_seek_reanchor_response",
-                        message: "The server changed the route or playback intent during a V3 seek re-anchor."
+                        message: "The server changed the route or playback intent during a V3 seek re-anchor.", // i18n-ignore: English data: logged or sent to the server (D44)
+                        displayMessage: AppLanguage.string(.playerErrorSeekReanchorChanged)
                     )
                 }
             } else {
@@ -1896,6 +1947,7 @@ actor PlaybackSessionBridge {
         sessionId currentSessionId: String,
         reason: String,
         message: String,
+        displayMessage: String? = nil,
         retiring abandoned: (sessionId: String, reason: String)? = nil
     ) async -> PlaybackV3TerminalFailure {
         if let abandoned, abandoned.sessionId != currentSessionId {
@@ -1907,7 +1959,7 @@ actor PlaybackSessionBridge {
             reason: reason,
             message: message
         )
-        return Self.replanDeadEnd(reason: reason, message: message)
+        return Self.replanDeadEnd(reason: reason, message: message, displayMessage: displayMessage)
     }
 
     /// The failure for a replan dead end. An exhausted attempt ladder, a
@@ -1916,11 +1968,14 @@ actor PlaybackSessionBridge {
     /// fresh ladder. A refusal the start path makes too
     /// (`replanRefusalsThatFailAFreshStart`) is not, because a fresh session
     /// would fail the same way.
-    nonisolated static func replanDeadEnd(reason: String, message: String) -> PlaybackV3TerminalFailure {
+    nonisolated static func replanDeadEnd(
+        reason: String, message: String, displayMessage: String? = nil
+    ) -> PlaybackV3TerminalFailure {
         PlaybackV3TerminalFailure(
             reason: reason,
             message: message,
-            retryable: !replanRefusalsThatFailAFreshStart.contains(reason)
+            retryable: !replanRefusalsThatFailAFreshStart.contains(reason),
+            displayMessage: displayMessage
         )
     }
 
@@ -2068,7 +2123,7 @@ actor PlaybackSessionBridge {
             level: .error,
             category: .playback,
             tag: "PlaybackSession",
-            message: "protocol v3 route exhausted",
+            message: "protocol v3 route exhausted", // i18n-ignore: English data: logged or sent to the server (D44)
             attrs: [
                 "session_id": .string(sessionId),
                 "reason": .string(reason),
@@ -2266,7 +2321,7 @@ actor PlaybackSessionBridge {
         DiagnosticsCoordinator.recordBreadcrumb(
             category: .playback,
             tag: "PlaybackSession",
-            message: "playback session stopped",
+            message: "playback session stopped", // i18n-ignore: English data: logged or sent to the server (D44)
             attrs: [
                 "session_id": .string(sid),
                 // The attribute registry has no float type, so playback

@@ -74,6 +74,70 @@ final class ServerIdentityMatchingTests: XCTestCase {
         XCTAssertNil(registry.entry(verifiedServerId: "other"))
     }
 
+    /// Issue #1088: `ServerRegistry.shared` merging a proven duplicate in its
+    /// own `init` recorded a breadcrumb, whose capture gate reads
+    /// `activeServerIDSnapshot` (`shared`) and trapped on the re-entered
+    /// initializer. Building a registry must merge without reaching the gate.
+    func testLaunchMergeOfAProvenDuplicateDoesNotReachTheDiagnosticsGate() throws {
+        let name = "ServerIdentityMatchingTests.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: name))
+        let defaults = SharedDefaults(suite: suite, standard: suite)
+        let keychain = SharedKeychain(service: name, accessGroup: nil)
+        let accounts = AccountStore(keychain: keychain, defaults: defaults)
+        let dropped = ServerEntry(id: ServerRegistry.serverId(for: "http://a.example"), url: "http://a.example",
+                                  fetchedName: nil, lastUsedAt: Date(), verifiedServerId: identity)
+        let survivor = ServerEntry(id: ServerRegistry.serverId(for: "https://b.example"), url: "https://b.example",
+                                   fetchedName: nil, lastUsedAt: Date(), verifiedServerId: identity)
+        let account = try accounts.saveSignIn(serverId: dropped.id, origin: dropped.url, serverUserId: "user",
+                                              username: nil, accessToken: "access", refreshToken: nil,
+                                              replacingOtherAccounts: false).account
+        let stored = keychain.withAudience(.userIndependent)
+        addTeardownBlock {
+            _ = stored.delete(SharedStorage.accountIndexAccount)
+            _ = stored.delete(SharedStorage.accountIndexBackupAccount)
+            for server in [dropped.id, survivor.id] {
+                _ = stored.delete(SharedStorage.accountRecordAccount(serverID: server, localAccountID: account.localAccountId))
+            }
+            UserDefaults().removePersistentDomain(forName: name)
+        }
+        defaults.set(true, forKey: ServerRegistry.migratedKey)
+        defaults.set(try JSONEncoder().encode(SavedRegistry(activeServerId: survivor.id, entries: [dropped, survivor])),
+                     forKey: ServerRegistry.defaultsKey)
+        // The stored login-session proof that lets `init` merge offline.
+        let proofsKey = "serverMerge.proofs.v1"
+        let previousProofs = SharedDefaults.shared.data(forKey: proofsKey)
+        addTeardownBlock {
+            if let previousProofs {
+                SharedDefaults.shared.set(previousProofs, forKey: proofsKey)
+            } else {
+                SharedDefaults.shared.removeObject(forKey: proofsKey)
+            }
+        }
+        let epoch = try XCTUnwrap(account.epoch).uuidString
+        let pair = ServerMerge.pairKey(dropped.id, survivor.id)
+        SharedDefaults.shared.set(Data(#"{"\#(pair)":{"outcome":"proven","epochs":{"\#(account.localAccountId)":"\#(epoch)"},"provenAt":0}}"#.utf8),
+                                  forKey: proofsKey)
+        // Cold-boot gate state, so a breadcrumb would evaluate the gate.
+        let decisionWasInEffect = DiagnosticsCoordinator.breadcrumbDecisionInEffectForTests
+        DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(false)
+        DiagnosticsCoordinator.resetCaptureGateCacheForTests()
+        addTeardownBlock {
+            DiagnosticsCoordinator.installBreadcrumbDecisionInEffectForTests(decisionWasInEffect)
+            DiagnosticsCoordinator.resetCaptureGateCacheForTests()
+        }
+
+        let registry = ServerRegistry(
+            defaults: defaults,
+            keychain: keychain,
+            accounts: accounts,
+            launchPreferences: ProfileLaunchPreferences(defaults: defaults),
+            persistenceOverride: { _, _ in true }
+        )
+
+        XCTAssertEqual(registry.entries.map(\.id), [survivor.id], "the proven duplicate merged in init")
+        XCTAssertEqual(DiagnosticsCoordinator.captureGateAuthoritativeEvaluationCountForTests, 0)
+    }
+
     func testConnectionsDocumentOffersOnlyAddressesWithURLs() throws {
         let json = #"""
         {"revision":"r","state":"available","allowed":true,"server_id":"S",
@@ -122,4 +186,10 @@ final class ServerIdentityMatchingTests: XCTestCase {
             ["https://a.example"]
         )
     }
+}
+
+/// The registry's saved shape.
+private struct SavedRegistry: Encodable {
+    var activeServerId: String?
+    var entries: [ServerEntry]
 }

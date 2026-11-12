@@ -25,6 +25,7 @@ struct TVLibraryCollectionsView: View {
     @State private var contentFocusToken = 0
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
     @Namespace private var collectionsFocusNamespace
 
     var body: some View {
@@ -142,8 +143,8 @@ struct TVLibraryCollectionsView: View {
             } else {
                 EmptyStateView(
                     icon: "square.stack",
-                    title: "No collections yet",
-                    subtitle: "Collections created on the server will appear here."
+                    title: AppLanguage.string(.collectionsEmpty, locale: locale),
+                    subtitle: AppLanguage.string(.collectionsEmptyBody, locale: locale)
                 )
             }
         }
@@ -151,7 +152,7 @@ struct TVLibraryCollectionsView: View {
         .tvPageFocusOwner(
             focusRequest: focusRequest,
             isTopMenuFocused: isTopMenuFocused,
-            accessibilityLabel: isLoadingCollections ? "Loading collections" : "No collections yet",
+            accessibilityLabel: AppLanguage.string(isLoadingCollections ? .libraryLoadingCollections : .collectionsEmpty, locale: locale),
             onMoveUp: onMoveUp
         )
     }

@@ -75,4 +75,17 @@ struct APIv2OverlayConfig: Decodable, Hashable, Sendable {
     let quickActionsEnabled: Bool
     /// Default quick-action mode, one of the `ui.card_quick_actions` values.
     let quickActionsDefault: String
+    /// Images administrators uploaded for badges; card overlay documents
+    /// name them by `ref`. Absent on a server without the image library.
+    let images: [APIv2OverlayImage]?
+}
+
+/// One uploaded badge image, as `getOverlayConfig` lists it. The bytes are
+/// public and content-addressed, so `url` never changes meaning.
+struct APIv2OverlayImage: Decodable, Hashable, Sendable {
+    let ref: String
+    /// Server-relative in the reply; resolved against the server while decoding.
+    @RequiredArtworkURL var url: String
+    let width: Int
+    let height: Int
 }

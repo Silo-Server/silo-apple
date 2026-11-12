@@ -33,6 +33,7 @@ struct DownloadOptionsSheet: View {
     let onStart: (DownloadRequestOptions) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     private var manager: DownloadManager { DownloadManager.shared }
 
     @State private var fileId: Int?
@@ -95,7 +96,7 @@ struct DownloadOptionsSheet: View {
                 Section {
                     summaryRow
                 } header: {
-                    Text("Download")
+                    Text(.downloadsOptionsSummaryHeader)
                 }
 
                 if editions.count > 1 {
@@ -109,7 +110,7 @@ struct DownloadOptionsSheet: View {
                 qualitySection
                 mediaSummarySection
             }
-            .navigationTitle("Download Options")
+            .navigationTitle(Text(.downloadsOptionsTitle))
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -117,10 +118,10 @@ struct DownloadOptionsSheet: View {
             .siloSheetBackground()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(.commonCancel) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Download") {
+                    Button(.audiobookDetailDownload) {
                         // Auto sends the version this sheet summarizes, not
                         // nil, so the server can't substitute another file.
                         onStart(DownloadRequestOptions(fileId: effectiveVersion?.fileId, quality: quality))
@@ -161,7 +162,7 @@ struct DownloadOptionsSheet: View {
     private var summaryDetail: String {
         let qualityLabel = DownloadFormat(rawValue: quality).map(label(for:)) ?? quality
         let versionLabel = effectiveVersion.map(DetailPlaybackFormatting.versionPrimaryText)
-            ?? (fileId == nil ? "Auto version" : "Selected version")
+            ?? AppLanguage.string(fileId == nil ? .downloadsOptionsAutoVersion : .downloadsOptionsSelectedVersion, locale: locale)
         var parts = [versionLabel, qualityLabel]
         if let estimate = selectionEstimate {
             parts.append(estimate.sizeLabel)
@@ -183,11 +184,14 @@ struct DownloadOptionsSheet: View {
     }
 
     private var editionSection: some View {
-        Section("Edition") {
+        Section {
             ForEach(editions) { edition in
                 optionButton(
                     title: edition.label,
-                    detail: "\(edition.versions.count) version\(edition.versions.count == 1 ? "" : "s")",
+                    detail: AppLanguage.string(
+                        .downloadsOptionsVersionCount(count: edition.versions.count, LocaleFormat.integer(edition.versions.count)),
+                        locale: locale
+                    ),
                     isSelected: currentEdition?.id == edition.id
                 ) {
                     let best = DetailVersionSelection.displayVersion(
@@ -199,13 +203,15 @@ struct DownloadOptionsSheet: View {
                     fileId = best?.fileId
                 }
             }
+        } header: {
+            Text(.downloadsOptionsEdition)
         }
     }
 
     private var versionSection: some View {
         Section {
             optionButton(
-                title: "Auto",
+                title: AppLanguage.string(.playerVersionsAuto, locale: locale),
                 detail: autoVersionDetail,
                 isSelected: fileId == nil
             ) {
@@ -221,7 +227,7 @@ struct DownloadOptionsSheet: View {
                 }
             }
         } header: {
-            Text("Version")
+            Text(.detailVersion)
         } footer: {
             if let selectionSizeWarning {
                 Text(selectionSizeWarning)
@@ -265,7 +271,7 @@ struct DownloadOptionsSheet: View {
            !fragment.isEmpty {
             return fragment
         }
-        return "File \(version.fileId)"
+        return AppLanguage.string(.downloadsOptionsFileFallback("\(version.fileId)"), locale: locale)
     }
 
     /// Names the version Auto resolves to, the one the detail screen shows,
@@ -277,7 +283,7 @@ struct DownloadOptionsSheet: View {
             lastFileId: lastVersionFileId,
             preferredQualityId: PlayerSettings.shared.preferredQuality
         ) else {
-            return "Let the server choose the file"
+            return AppLanguage.string(.downloadsOptionsServerChooses, locale: locale)
         }
         let label = DetailPlaybackFormatting.versionPrimaryText(autoVersion)
         guard let estimate = DownloadSizeEstimate.estimate(versions: versions, fileId: autoVersion.fileId) else {
@@ -307,9 +313,9 @@ struct DownloadOptionsSheet: View {
                 ) {}
             }
         } header: {
-            Text("Quality")
+            Text(.optionsQuality)
         } footer: {
-            Text("This starts from your global Downloads default. Changing it here applies only to this download.")
+            Text(.downloadsOptionsQualityFooter)
         }
     }
 
@@ -320,9 +326,9 @@ struct DownloadOptionsSheet: View {
     private func qualityDetail(for format: DownloadFormat) -> String {
         switch format {
         case .original:
-            return "Source quality, with compatibility fallback if needed"
+            return AppLanguage.string(.downloadsOptionsQualityOriginalDetail, locale: locale)
         case .twentyMbps, .tenMbps, .fiveMbps, .twoMbps, .oneMbps:
-            return "Prepared on the server when the original is larger"
+            return AppLanguage.string(.downloadsOptionsQualityPreparedDetail, locale: locale)
         }
     }
 
@@ -337,24 +343,30 @@ struct DownloadOptionsSheet: View {
         Section {
             if let effectiveVersion {
                 readOnlyRow(
-                    title: "Audio",
+                    title: .playerTracksAudio,
                     detail: DetailPlaybackFormatting.audioValueLabel(
                         version: effectiveVersion,
                         selectedAudioTrackIndex: nil
                     )
                 )
                 readOnlyRow(
-                    title: "Subtitles",
+                    title: .playerTracksSubtitles,
                     detail: subtitleSummary(for: effectiveVersion)
                 )
             } else {
-                readOnlyRow(title: "Audio", detail: "File default")
-                readOnlyRow(title: "Subtitles", detail: "Available tracks")
+                readOnlyRow(
+                    title: .playerTracksAudio,
+                    detail: AppLanguage.string(.downloadsOptionsAudioFileDefault, locale: locale)
+                )
+                readOnlyRow(
+                    title: .playerTracksSubtitles,
+                    detail: AppLanguage.string(.downloadsOptionsSubtitlesAvailable, locale: locale)
+                )
             }
         } header: {
-            Text("Included Media")
+            Text(.downloadsOptionsIncludedMedia)
         } footer: {
-            Text("Audio and subtitles are chosen automatically for the selected file. Available subtitles are saved for offline playback.")
+            Text(.downloadsOptionsIncludedMediaFooter)
         }
     }
 
@@ -364,16 +376,17 @@ struct DownloadOptionsSheet: View {
 
     private func subtitleSummary(for version: FileVersion) -> String {
         let tracks = version.subtitleTracks ?? []
-        guard !tracks.isEmpty else { return "None" }
+        guard !tracks.isEmpty else { return AppLanguage.string(.detailNone, locale: locale) }
         let languages = tracks
             .compactMap { languageDisplayName($0.language) }
             .uniqued()
         if languages.isEmpty {
-            return "\(tracks.count) track\(tracks.count == 1 ? "" : "s")"
+            return AppLanguage.string(.downloadsOptionsTrackCount(count: tracks.count, LocaleFormat.integer(tracks.count, locale: locale)), locale: locale)
         }
         let shown = languages.prefix(Self.subtitleLanguageDisplayCap).joined(separator: ", ")
         let remainder = languages.count - Self.subtitleLanguageDisplayCap
-        return remainder > 0 ? "\(shown) +\(remainder) more" : shown
+        guard remainder > 0 else { return shown }
+        return AppLanguage.string(.downloadsOptionsLanguagesMore(count: remainder, shown, LocaleFormat.integer(remainder, locale: locale)), locale: locale)
     }
 
     private func languageDisplayName(_ value: String?) -> String? {
@@ -382,13 +395,12 @@ struct DownloadOptionsSheet: View {
             return nil
         }
         if value.count <= 3 {
-            let locale = Locale.current
             return locale.localizedString(forLanguageCode: value.lowercased()) ?? value.uppercased()
         }
         return value
     }
 
-    private func readOnlyRow(title: String, detail: String) -> some View {
+    private func readOnlyRow(title: LocalizedStringResource, detail: String) -> some View {
         HStack {
             Text(title)
             Spacer(minLength: 12)

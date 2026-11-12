@@ -62,6 +62,8 @@ struct SectionRow: View {
     @Environment(\.browseLibraryId) private var playbackLibraryId
     @Environment(AppRouter.self) private var router
     #endif
+    /// The app language, so a switch re-renders the title.
+    @Environment(\.locale) private var locale
     @Environment(\.allowsDirectPlayback) private var allowsDirectPlayback
 
     private var isContinueWatching: Bool {
@@ -151,7 +153,7 @@ struct SectionRow: View {
 
     private var mediaRow: some View {
         MediaRow(
-            title: section.title,
+            title: section.displayTitle(in: locale),
             items: section.items,
             onItemTap: selectItem,
             onItemPlay: allowsDirectPlayback ? playItem : nil,

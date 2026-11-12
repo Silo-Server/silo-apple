@@ -195,9 +195,9 @@ private enum ProfileManagementError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .primaryProfileUnavailable:
-            return "Couldn't find the primary profile needed to manage household profiles."
+            return AppLanguage.string(.profilesErrorNoPrimaryManage)
         case .temporaryContextCleanupFailed:
-            return "Silo couldn't finish creating the profile. Please try selecting it again."
+            return AppLanguage.string(.profilesErrorCreateUnfinished)
         }
     }
 }

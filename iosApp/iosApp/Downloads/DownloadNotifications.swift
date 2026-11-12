@@ -20,14 +20,14 @@ enum DownloadNotifier {
     static func downloadCompleted(_ record: DownloadRecord) {
         post(
             id: "download-completed-\(record.id)",
-            body: "\(displayName(for: record)) is ready to watch offline"
+            body: AppLanguage.string(.downloadsNotificationCompleted(displayName(for: record)))
         )
     }
 
     static func downloadFailed(_ record: DownloadRecord) {
         post(
             id: "download-failed-\(record.id)",
-            body: "\(displayName(for: record)) didn't download: \(record.failureReason)"
+            body: AppLanguage.string(.downloadsNotificationFailed(displayName(for: record), record.failureReason))
         )
     }
 
@@ -36,13 +36,11 @@ enum DownloadNotifier {
     /// multi-series batch falls back to a count-only summary.
     static func newEpisodesQueued(count: Int, seriesTitles: Set<String>) {
         guard count > 0 else { return }
-        let noun = count == 1 ? "episode" : "episodes"
-        let verb = count == 1 ? "is" : "are"
         let body: String
         if seriesTitles.count == 1, let title = seriesTitles.first {
-            body = "\(count) new \(noun) of \(title) \(verb) downloading"
+            body = AppLanguage.string(.downloadsNotificationNewEpisodesOfSeries(count: count, LocaleFormat.integer(count), title))
         } else {
-            body = "\(count) new \(noun) \(verb) downloading"
+            body = AppLanguage.string(.downloadsNotificationNewEpisodes(count: count, LocaleFormat.integer(count)))
         }
         post(id: "downloads-monitoring-\(UUID().uuidString)", body: body)
     }
@@ -51,9 +49,9 @@ enum DownloadNotifier {
     /// title is preferred for episodes because the S/E marker already
     /// disambiguates which entry finished.
     private static func displayName(for record: DownloadRecord) -> String {
-        let base = record.seriesTitle ?? record.title ?? "Download"
+        let base = record.seriesTitle ?? record.shownTitle() ?? AppLanguage.string(.downloadsNotificationDefaultTitle)
         if let season = record.seasonNumber, let episode = record.episodeNumber {
-            return "\(base) (S\(season)E\(episode))"
+            return AppLanguage.string(.downloadsNotificationEpisodeName(base, LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
         }
         return base
     }

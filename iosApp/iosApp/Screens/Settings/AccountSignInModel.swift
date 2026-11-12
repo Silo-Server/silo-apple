@@ -46,7 +46,7 @@ final class AccountSignInModel {
     /// The identity or provider an action is running for.
     private(set) var busyID: String?
     var errorMessage: String?
-    var resultMessage: String?
+    var resultMessage: LocalizedStringResource?
 
     private let api: APIv2Client
     private let tokenStore: TokenStore
@@ -143,19 +143,25 @@ final class AccountSignInModel {
     /// The Connect sheet's note under the Silo password: what connecting
     /// `item` changes about signing in. OIDC and LDAP links replace the
     /// password; a network link keeps it when the server says so.
-    nonisolated static func connectFooter(for item: Connectable, networkLinkKeepsPassword: Bool) -> String {
+    nonisolated static func connectFooter(for item: Connectable, networkLinkKeepsPassword: Bool) -> LocalizedStringResource {
         switch item.method {
         case .directory:
-            return "Enter your Silo password to confirm. After connecting, you sign in with your \(item.name) username and password instead."
+            return .settingsSignInConnectFooterDirectory(item.name)
         case .network:
-            let who = item.provider.networkIdentity?.name.map { "\($0), " } ?? ""
-            let confirm = "Enter your Silo password to confirm. This connects \(who)the \(item.name) account this device belongs to."
-            if networkLinkKeepsPassword {
-                return "\(confirm) You can then sign in with \(item.name) or your password. \(item.name) sign-in works only when you open this server at its \(item.name) address."
+            // Whole sentences for each case, so a translation can place the
+            // owner's name and the provider freely.
+            switch (item.provider.networkIdentity?.name, networkLinkKeepsPassword) {
+            case (let owner?, true):
+                return .settingsSignInConnectFooterNetworkOwnerKeepsPassword(owner, item.name)
+            case (let owner?, false):
+                return .settingsSignInConnectFooterNetworkOwner(owner, item.name)
+            case (nil, true):
+                return .settingsSignInConnectFooterNetworkKeepsPassword(item.name)
+            case (nil, false):
+                return .settingsSignInConnectFooterNetwork(item.name)
             }
-            return "\(confirm) After connecting, you sign in with \(item.name) instead of your password, and only when you open this server at its \(item.name) address."
         case .browser:
-            return "Confirm your Silo password, then sign in with \(item.name). After connecting, you sign in with \(item.name) instead of your password."
+            return .settingsSignInConnectFooterBrowser(item.name)
         }
     }
 
@@ -168,13 +174,13 @@ final class AccountSignInModel {
                  directory: DirectoryCredentials? = nil) async -> Bool {
         guard !isBusy else { return false }
         guard !password.isEmpty else {
-            errorMessage = "Enter your Silo password."
+            errorMessage = AppLanguage.string(.settingsSignInEnterSiloPassword)
             return false
         }
         if provider.isCredentials {
             guard let directory, !directory.username.trimmingCharacters(in: .whitespaces).isEmpty,
                   !directory.password.isEmpty else {
-                errorMessage = "Enter your \(SignInOptions.providerName(for: provider)) username and password."
+                errorMessage = AppLanguage.string(.settingsSignInEnterDirectoryCredentials(AppLanguage.isolated(SignInOptions.providerName(for: provider))))
                 return false
             }
         }
@@ -190,7 +196,7 @@ final class AccountSignInModel {
             } else {
                 try await link(provider, password)
             }
-            resultMessage = "Connected to \(SignInOptions.providerName(for: provider))."
+            resultMessage = .settingsSignInConnectedTo(SignInOptions.providerName(for: provider))
             await load()
             return true
         } catch ExternalSignInError.canceled {
@@ -239,8 +245,9 @@ final class AccountSignInModel {
         defer { busyID = nil }
         do {
             try await api.deleteAccountIdentity(id: identity.id, expectedAccount: account)
-            let name = identity.providerName.isEmpty ? "the sign-in provider" : identity.providerName
-            resultMessage = "Disconnected from \(name)."
+            resultMessage = identity.providerName.isEmpty
+                ? .settingsSignInDisconnectedFromUnnamed
+                : .settingsSignInDisconnectedFrom(identity.providerName)
             await load()
             return true
         } catch {
@@ -253,13 +260,15 @@ final class AccountSignInModel {
 
     /// Why an identity can't be disconnected: the server's refusal, and the
     /// account screen's note when the server says so up front (`can_unlink`).
-    nonisolated static let onlySignInMethodMessage = "This is your only way to sign in, so it can't be disconnected. Ask an administrator to set a password for your account first."
+    nonisolated static var onlySignInMethodMessage: String { AppLanguage.string(.settingsSignInOnlySignInMethodAdministrator) }
 
     /// The provider is not (or no longer) an enabled provider of its kind.
-    nonisolated static let providerGoneMessage = "The sign-in provider is no longer available on this server."
+    nonisolated static var providerGoneMessage: String { AppLanguage.string(.settingsSignInProviderGone) }
 
     /// Copy for a failed action. Problem identifiers name the server's
-    /// refusals; the problem's own text is never shown for these.
+    /// refusals; the problem's own text is never shown for these. A
+    /// `String`, because the auth layer's messages it passes on are, and
+    /// `NetworkSignIn` shows it; resolved in the app language when made.
     nonisolated static func message(for error: Error, action: Action) -> String {
         if let external = error as? ExternalSignInError { return external.message }
         if let requirement = UpdateRequirement(error) { return requirement.message }
@@ -269,36 +278,36 @@ final class AccountSignInModel {
             case (.disconnect, "last_sign_in_method", _):
                 return onlySignInMethodMessage
             case (.connect, "validation_failed", 422) where location == "body.directory_password":
-                return "The directory didn't accept that username and password."
+                return AppLanguage.string(.settingsSignInDirectoryRefusedGeneric)
             case (.connect, "validation_failed", 422) where location == "body.password":
-                return "That Silo password is incorrect."
+                return AppLanguage.string(.settingsSignInWrongSiloPassword)
             case (.connect, "validation_failed", 422):
-                return "Check what you entered, then try again."
+                return AppLanguage.string(.settingsSignInCheckEntries)
             case (.connect, "not_permitted", _), (.connect, "identity_linked_elsewhere", _),
                  (.connect, "account_disabled", _), (.connect, "already_linked", _),
                  (.connect, "password_expired", _):
                 return ExternalSignInError.reasonText(problem.identifier)
             case (.connect, "local_password_required", _), (.connect, "conflict", 409):
                 // The link ticket answers a plain conflict for the same case.
-                return "Your account has no Silo password to confirm with. Ask an administrator to connect the provider."
+                return AppLanguage.string(.settingsSignInNoLocalPasswordAdministrator)
             case (.connect, _, 404):
                 return providerGoneMessage
             case (.disconnect, _, 404):
-                return "That connection no longer exists."
+                return AppLanguage.string(.settingsSignInConnectionGone)
             case (_, "provider_unavailable", _), (_, _, 503):
                 return ExternalSignInError.reasonText("provider_unavailable")
             case (_, _, 429):
-                return "Too many attempts. Wait a moment, then try again."
+                return AppLanguage.string(.tvSignInErrorRateLimited)
             case (_, _, 403):
-                return "This session can't change how the account signs in. Sign in with your own account and try again."
+                return AppLanguage.string(.settingsSignInSessionCannotChange)
             default:
                 break
             }
         }
         switch action {
-        case .load: return "Couldn't load your sign-in settings. Try again."
-        case .connect: return "Couldn't connect the sign-in provider. Try again."
-        case .disconnect: return "Couldn't disconnect the sign-in provider. Try again."
+        case .load: return AppLanguage.string(.settingsSignInLoadFailed)
+        case .connect: return AppLanguage.string(.settingsSignInConnectFailedGeneric)
+        case .disconnect: return AppLanguage.string(.settingsSignInDisconnectFailedGeneric)
         }
     }
 }

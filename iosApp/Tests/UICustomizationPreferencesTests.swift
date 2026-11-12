@@ -107,7 +107,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             badges: ["series_premiere", "finale"]
         )
         XCTAssertEqual(
-            calendarEventAccessibilityLabel(event),
+            calendarEventAccessibilityLabel(event, locale: Locale(identifier: "en")),
             "The Show, S1 · E8, Finale, PREMIERE, FINALE, Watched"
         )
 
@@ -118,12 +118,13 @@ final class UICustomizationPreferencesTests: XCTestCase {
             itemCount: 12
         )
         XCTAssertEqual(
-            libraryCollectionAccessibilityLabel(collection),
+            libraryCollectionAccessibilityLabel(collection, locale: Locale(identifier: "en")),
             "Favorites, Movies, 12 items"
         )
         XCTAssertEqual(
             libraryCollectionAccessibilityLabel(
-                LibraryCollection(id: "empty", name: "Empty", itemCount: 0)
+                LibraryCollection(id: "empty", name: "Empty", itemCount: 0),
+                locale: Locale(identifier: "en")
             ),
             "Empty, Collection, 0 items"
         )
@@ -158,7 +159,7 @@ final class UICustomizationPreferencesTests: XCTestCase {
             watched: false,
             badges: nil
         )
-        XCTAssertEqual(calendarEventAccessibilityLabel(movie), "The Movie, Movie")
+        XCTAssertEqual(calendarEventAccessibilityLabel(movie, locale: Locale(identifier: "en")), "The Movie, Movie")
     }
 
     func testCustomizationModelsUseTheExactSettingsContractShape() throws {

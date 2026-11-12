@@ -14,6 +14,7 @@ import SwiftUI
 /// request → submitting → pending. Its label keeps the same accessibility
 /// shape across states too (see `primaryLabel`).
 struct RequestDetailView: View {
+    @Environment(\.locale) private var locale
     @State private var viewModel: RequestDetailViewModel
     @Environment(AppRouter.self) private var router
     /// Closes the whole detail card; set when this page is the card's root.
@@ -155,8 +156,10 @@ struct RequestDetailView: View {
             title: viewModel.detail?.title ?? "",
             isScrollGlassEnabled: viewModel.detail != nil,
             scrollState: scrollState,
-            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
-            leadingAccessibilityLabel: showsClose ? "Close details" : (showsBack ? "Back" : nil),
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.backward" : nil),
+            leadingAccessibilityLabel: showsClose
+                ? AppLanguage.string(.requestsDetailClose)
+                : (showsBack ? AppLanguage.string(.commonBack) : nil),
             onLeadingTap: {
                 if let onClose {
                     onClose()
@@ -183,7 +186,7 @@ struct RequestDetailView: View {
                     .foregroundColor(.siloSecondaryText)
                     .frame(maxWidth: .infinity, alignment: .center)
             } else if case .request = viewModel.primaryAction, viewModel.endedRequest == nil {
-                Text("Not in your library yet. Your server admin reviews requests.")
+                Text(.requestsDetailHint)
                     .font(.caption)
                     .foregroundColor(.siloSecondaryText)
                     .multilineTextAlignment(.center)
@@ -202,7 +205,7 @@ struct RequestDetailView: View {
                 Button(role: .destructive) {
                     Task { await viewModel.cancel() }
                 } label: {
-                    Text("Cancel Request")
+                    Text(.requestsActionCancel)
                         .font(.subheadline.weight(.semibold))
                         .foregroundColor(.requestRose)
                         .frame(maxWidth: .infinity, minHeight: 44)
@@ -227,7 +230,7 @@ struct RequestDetailView: View {
             }
             .buttonStyle(.plain)
             .disabled(viewModel.isTogglingFollow)
-            .accessibilityValue(viewModel.isFollowing ? "On" : "Off")
+            .accessibilityValue(viewModel.isFollowing ? LocalizedStringResource.requestsFollowOn : .requestsFollowOff)
 
             if let notice = viewModel.followNotice {
                 Text(notice)
@@ -240,7 +243,7 @@ struct RequestDetailView: View {
     #endif
 
     private var followTitle: String {
-        viewModel.isFollowing ? "Stop Notifying Me" : "Notify Me"
+        viewModel.isFollowing ? AppLanguage.string(.requestsActionStopNotify) : AppLanguage.string(.requestsActionNotify)
     }
 
     private var followIcon: String {
@@ -304,7 +307,7 @@ struct RequestDetailView: View {
             }
 
             if viewModel.canCancel {
-                TVSecondaryPillButton(icon: "xmark", title: "Cancel Request") {
+                TVSecondaryPillButton(icon: "xmark", title: AppLanguage.string(.requestsActionCancel)) {
                     Task { await viewModel.cancel() }
                 }
             }
@@ -337,12 +340,12 @@ struct RequestDetailView: View {
         if showsStatusStrip, let progress = viewModel.progress {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .top, spacing: 8) {
-                    summaryField("STATUS", value: progress.longLabel, tint: progress.tint)
+                    summaryField(.requestsStripStatus, value: progress.longLabel, tint: progress.tint)
                     if let record = viewModel.displayedRecord {
-                        summaryField("REQUESTED", value: record.createdAt.formatted(.dateTime.month(.abbreviated).day()))
+                        summaryField(.requestsStripRequested, value: record.createdAt.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale)))
                         if let quality = RequestTargetSummary.text(for: record.targets)
                             ?? RequestTargetSummary.qualities(for: record.targets) {
-                            summaryField("QUALITY", value: quality)
+                            summaryField(.requestsStripQuality, value: quality)
                         }
                     }
                 }
@@ -353,7 +356,7 @@ struct RequestDetailView: View {
         }
     }
 
-    private func summaryField(_ label: String, value: String, tint: RequestStatusTint? = nil) -> some View {
+    private func summaryField(_ label: LocalizedStringResource, value: String, tint: RequestStatusTint? = nil) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label)
                 .font(.system(size: 13, weight: .bold))
@@ -461,7 +464,7 @@ struct RequestDetailView: View {
                 .controlSize(.small)
                 .tint(.siloSecondaryText)
         case .openInLibrary:
-            Image(systemName: "arrow.up.right")
+            Image(systemName: "arrow.up.forward")
         case .status(let state):
             Circle()
                 .fill(state.tint.color)
@@ -474,9 +477,9 @@ struct RequestDetailView: View {
     private func buttonTitle(for action: RequestPrimaryAction) -> String {
         switch action {
         case .loading: ""
-        case .request: viewModel.endedRequest == nil ? "Request" : "Request Again"
-        case .submitting: "Requesting…"
-        case .openInLibrary: "Open in Library"
+        case .request: viewModel.endedRequest == nil ? AppLanguage.string(.requestsActionRequest) : AppLanguage.string(.requestsActionRequestAgain)
+        case .submitting: AppLanguage.string(.requestsActionRequesting)
+        case .openInLibrary: AppLanguage.string(.requestsActionOpenInLibrary)
         case .status(let state):
             viewModel.progress.map { state == $0.display && state != .pending ? $0.longLabel : state.detailTitle }
                 ?? state.detailTitle
@@ -498,7 +501,7 @@ struct RequestDetailView: View {
         let recommendations = viewModel.recommendations
         if !recommendations.isEmpty {
             VStack(alignment: .leading, spacing: RequestsUI.headerSpacing) {
-                RequestsSectionHeader(title: "More like this")
+                RequestsSectionHeader(title: AppLanguage.string(.requestsMoreLikeThis))
 
                 RequestCardRail(items: recommendations) { result in
                     RequestMediaCard(result: result, onTap: { router.openRequestResult(result) })
@@ -515,8 +518,8 @@ struct RequestDetailView: View {
     /// Where the title stands, in the slot a library title uses for its
     /// editorial eyebrow.
     private var eyebrow: String? {
-        guard let display = viewModel.progress?.display else { return "Not in your library" }
-        return display == .inLibrary ? nil : "Requested"
+        guard let display = viewModel.progress?.display else { return AppLanguage.string(.requestsDetailEyebrowNotInLibrary) }
+        return display == .inLibrary ? nil : AppLanguage.string(.requestsDetailEyebrowRequested)
     }
 
     private func sourceTokens(_ detail: RequestMediaDetail) -> [String] {
@@ -525,10 +528,10 @@ struct RequestDetailView: View {
 
     private func factTokens(_ detail: RequestMediaDetail) -> [String] {
         var parts: [String] = []
-        if let year = detail.year, year > 0 { parts.append(String(year)) }
+        if let year = detail.year, year > 0 { parts.append(LocaleFormat.integer(year, locale: locale)) }
         if detail.mediaType == .series {
             if let seasons = detail.numberOfSeasons, seasons > 0 {
-                parts.append("\(seasons) season\(seasons == 1 ? "" : "s")")
+                parts.append(AppLanguage.string(.requestsDetailSeasons(seasons)))
             }
         } else if let runtime = MediaTextFormatting.runtime(minutes: detail.runtime) {
             parts.append(runtime)
@@ -545,10 +548,10 @@ struct RequestDetailView: View {
 
     private func creditText(_ detail: RequestMediaDetail) -> String? {
         if let director = detail.director, !director.isEmpty {
-            return "Directed by \(director)"
+            return AppLanguage.string(.detailDirectedBy(director))
         }
         if let creators = detail.creators, !creators.isEmpty {
-            return "Created by \(creators.prefix(2).joined(separator: ", "))"
+            return AppLanguage.string(.requestsCreatedBy(creators.prefix(2).joined(separator: ", ")))
         }
         return nil
     }
@@ -558,12 +561,13 @@ struct RequestDetailView: View {
 
 /// The four request steps with their timestamps, under the primary action.
 struct RequestStatusCard: View {
+    @Environment(\.locale) private var locale
     let progress: RequestProgress
     let record: MediaRequest?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("REQUEST STATUS")
+            Text(.requestsDetailStatusHeading)
                 .font(.system(size: 11, weight: .bold))
                 .tracking(1.6)
                 .foregroundColor(.siloOnSurface.opacity(0.55))
@@ -657,7 +661,7 @@ struct RequestStatusCard: View {
                 if case .needsAttention(_, let reason) = progress.display {
                     return RequestErrorCopy.message(forToken: reason)
                 }
-                return "Waiting for your server admin"
+                return AppLanguage.string(.requestsStepWaitingForAdmin)
             }
             return nil
         case .download:
@@ -667,12 +671,12 @@ struct RequestStatusCard: View {
             }
             return RequestTargetSummary.text(for: record?.targets)
         case .library:
-            return isCurrent ? "Your library is picking it up" : nil
+            return isCurrent ? AppLanguage.string(.requestsStepLibraryPickingUp) : nil
         }
     }
 
     private static func timestamp(_ date: Date) -> String {
-        date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+        date.formatted(.dateTime.month(.abbreviated).day().hour().minute().locale(AppLanguage.formattingLocale))
     }
 }
 

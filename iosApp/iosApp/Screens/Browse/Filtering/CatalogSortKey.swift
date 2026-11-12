@@ -71,32 +71,33 @@ enum CatalogSortKey: String, CaseIterable, Codable, Hashable {
         }
     }
 
-    var label: String {
+    /// Shown label. The raw value is the server sort field (data, D44).
+    var label: LocalizedStringResource {
         switch self {
-        case .title: return "Title"
-        case .addedAt: return "Date Added"
-        case .releaseDate: return "Release Date"
-        case .year: return "Year"
-        case .ratingImdb: return "Rating"
-        case .runtime: return "Runtime"
-        case .resolution: return "Resolution"
-        case .author: return "Author"
-        case .narrator: return "Narrator"
-        case .series: return "Series"
+        case .title: return .catalogSortTitle
+        case .addedAt: return .catalogSortAdded
+        case .releaseDate: return .catalogSortReleased
+        case .year: return .catalogSortYear
+        case .ratingImdb: return .catalogSortRating
+        case .runtime: return .catalogSortRuntime
+        case .resolution: return .catalogSortResolution
+        case .author: return .catalogSortAuthor
+        case .narrator: return .catalogSortNarrator
+        case .series: return .catalogSortSeries
         }
     }
 
     /// Short hint for the active direction, shown next to the active key.
-    func directionLabel(for order: CatalogSortOrder) -> String {
+    func directionLabel(for order: CatalogSortOrder) -> LocalizedStringResource {
         switch self {
         case .title, .author, .narrator, .series:
-            return order == .asc ? "A–Z" : "Z–A"
+            return order == .asc ? .libraryDirectionAz : .libraryDirectionZa
         case .releaseDate, .year, .addedAt:
-            return order == .asc ? "Oldest" : "Newest"
+            return order == .asc ? .libraryDirectionOldest : .libraryDirectionNewest
         case .runtime:
-            return order == .asc ? "Shortest" : "Longest"
+            return order == .asc ? .libraryDirectionShortest : .libraryDirectionLongest
         case .ratingImdb, .resolution:
-            return order == .asc ? "Lowest" : "Highest"
+            return order == .asc ? .libraryDirectionLowest : .libraryDirectionHighest
         }
     }
 

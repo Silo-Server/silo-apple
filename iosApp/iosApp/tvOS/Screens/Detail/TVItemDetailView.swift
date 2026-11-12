@@ -53,6 +53,9 @@ struct TVItemDetailView: View {
     @State private var allowRemoteTrailers = false
     @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
+    /// The trailer status and series errors are resolved from the models when
+    /// read; reading the locale re-renders them after a language change.
+    @Environment(\.locale) private var locale
     private static let focusLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",
         category: "TVFocus"
@@ -70,6 +73,7 @@ struct TVItemDetailView: View {
     }
 
     var body: some View {
+        let _ = locale
         Group {
             // A resolved series entry shows the loading view until its task
             // seeds the season. Otherwise cached detail paints at once while

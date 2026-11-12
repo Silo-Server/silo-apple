@@ -77,6 +77,10 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case playbackPreferredQuality = "playback.preferred_quality"
     /// Show forced subtitles
     case playbackShowForcedSubtitles = "playback.show_forced_subtitles"
+    /// Show marker confidence
+    case playbackShowMarkerConfidence = "playback.show_marker_confidence"
+    /// Show marker source
+    case playbackShowMarkerSource = "playback.show_marker_source"
     /// Subtitle appearance
     case playbackSubtitleAppearance = "playback.subtitle_appearance"
     /// Preferred subtitle language
@@ -125,6 +129,8 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case searchMediaScope = "search.media_scope"
     /// Match device caption settings
     case subtitleMatchesDevice = "subtitle.matches_device"
+    /// App language
+    case uiAppLanguage = "ui.app_language"
     /// Poster badges
     case uiCardOverlays = "ui.card_overlays"
     /// Card overlays enabled
@@ -171,10 +177,12 @@ public enum SettingKey: String, CaseIterable, Sendable {
     case uiTimeFormat = "ui.time_format"
     /// Show title art
     case uiTitleArt = "ui.title_art"
+    /// Watch Party playback controls
+    case watchPartyGuestControlPolicy = "watch_party.guest_control_policy"
 }
 
 public extension SettingKey {
-    static let revision = 24
+    static let revision = 28
 
     /// Keys the server stores. The rest never leave the device.
     static let remote: [SettingKey] = [
@@ -200,6 +208,8 @@ public extension SettingKey {
         .playbackNextUpPromptSeconds,
         .playbackPreferredQuality,
         .playbackShowForcedSubtitles,
+        .playbackShowMarkerConfidence,
+        .playbackShowMarkerSource,
         .playbackSubtitleAppearance,
         .playbackSubtitleLanguage,
         .playbackSubtitleMode,
@@ -220,6 +230,7 @@ public extension SettingKey {
         .playerVideoSkipForwardSeconds,
         .requestsWatchlistAutoRequest,
         .searchMediaScope,
+        .uiAppLanguage,
         .uiCardOverlays,
         .uiCardOverlaysEnabled,
         .uiCardPresentation,
@@ -243,6 +254,7 @@ public extension SettingKey {
         .uiThemeMusicLoop,
         .uiTimeFormat,
         .uiTitleArt,
+        .watchPartyGuestControlPolicy,
     ]
 
     static let clientLocal: [SettingKey] = [
@@ -269,6 +281,19 @@ public extension SettingKey {
 
 public enum SettingPresentationMetadata {
     public static let optionSets: [String: SettingOptionSet] = [
+        "app_languages": SettingOptionSet(
+            type: "language_tag",
+            options: [
+                SettingSuggestedOption(value: "en", introducedIn: 28),
+                SettingSuggestedOption(value: "es", introducedIn: 28),
+                SettingSuggestedOption(value: "de", introducedIn: 28),
+                SettingSuggestedOption(value: "fr", introducedIn: 28),
+                SettingSuggestedOption(value: "pt-BR", introducedIn: 28),
+                SettingSuggestedOption(value: "ja", introducedIn: 28),
+                SettingSuggestedOption(value: "zh-Hans", introducedIn: 28),
+                SettingSuggestedOption(value: "ar", introducedIn: 28),
+            ]
+        ),
         "catalog_metadata_languages": SettingOptionSet(
             type: "language_tag",
             options: [
@@ -436,6 +461,10 @@ public enum SettingPresentationMetadata {
         .playbackSubtitleLanguage: SettingPresentation(
             suggestedOptions: "playback_subtitle_languages",
             unsetLabel: "None"
+        ),
+        .uiAppLanguage: SettingPresentation(
+            suggestedOptions: "app_languages",
+            unsetLabel: "Match device"
         ),
     ]
 

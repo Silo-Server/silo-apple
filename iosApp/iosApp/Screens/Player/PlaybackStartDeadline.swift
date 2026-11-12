@@ -44,3 +44,47 @@ struct PlaybackStartDeadline {
         dueAtMs.map { now >= $0 } ?? false
     }
 }
+
+/// The same budget for opening a plan's source, before the plan is adopted:
+/// the probe that resolves its audio stream and the engine load. Nothing
+/// else bounds that wait on direct play or the software route. It runs
+/// whatever the viewer's play intent, since opening does not wait for it,
+/// and holds through an outage as the start deadline does. Once it runs out
+/// it cancels the step in flight, and every later step at once, so the
+/// opening fails and the server can offer another route.
+///
+/// Bookkeeping only; the player ticks it on its clock.
+@MainActor
+final class PlaybackOpeningBudget {
+    private var deadline = PlaybackStartDeadline()
+    private var cancelStepInFlight: (() -> Void)?
+    private(set) var hasRunOut = false
+    /// Whether the source had answered when the budget ran out: true once
+    /// the engine's load had its first bytes, false if it was still
+    /// connecting, nil when the step in flight could not tell.
+    private(set) var sourceAnsweredWhenRunOut: Bool?
+
+    /// A step of the opening begins; `cancel` stops it if the budget runs out
+    /// before ``stepEnded()``.
+    func stepBegan(cancel: @escaping () -> Void) {
+        cancelStepInFlight = cancel
+        if hasRunOut { cancel() }
+    }
+
+    func stepEnded() {
+        cancelStepInFlight = nil
+    }
+
+    /// Spends the budget unless an outage holds it. True on the tick that
+    /// runs it out, which records `sourceAnswered` and cancels the step in
+    /// flight.
+    func tick(outage: Bool, sourceAnswered: Bool? = nil, atMs now: Int) -> Bool {
+        guard !hasRunOut else { return false }
+        deadline.update(viewerWantsToPlay: true, outage: outage, atMs: now)
+        guard deadline.hasPassed(atMs: now) else { return false }
+        hasRunOut = true
+        sourceAnsweredWhenRunOut = sourceAnswered
+        cancelStepInFlight?()
+        return true
+    }
+}

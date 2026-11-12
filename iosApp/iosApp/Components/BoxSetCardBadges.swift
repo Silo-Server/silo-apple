@@ -9,7 +9,7 @@ struct BoxSetCardBadges: View {
 
     var body: some View {
         ZStack {
-            Text("Box set")
+            Text(.boxSetsEyebrow)
                 .textCase(.uppercase)
                 .font(.system(size: labelSize, weight: .semibold))
                 .tracking(labelSize * 0.14)
@@ -21,7 +21,7 @@ struct BoxSetCardBadges: View {
                 .padding(inset)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            Text(boxSet.filmCountText)
+            Text(.boxSetsFilm(boxSet.movieCount))
                 .font(.system(size: countSize, weight: .bold))
                 .foregroundStyle(Color.white)
                 .padding(.horizontal, countSize * 0.6)
@@ -114,7 +114,7 @@ struct BoxSetCurrentFilmMarker: View {
         ZStack(alignment: .bottomLeading) {
             RoundedRectangle(cornerRadius: SiloTheme.cornerRadius)
                 .strokeBorder(Color.white.opacity(showsOutline ? 0.8 : 0), lineWidth: lineWidth)
-            Text("This film")
+            Text(.boxSetsThisFilmTag)
                 .textCase(.uppercase)
                 .font(.system(size: labelSize, weight: .heavy))
                 .tracking(labelSize * 0.08)
