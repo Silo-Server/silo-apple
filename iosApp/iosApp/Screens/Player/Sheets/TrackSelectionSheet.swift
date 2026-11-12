@@ -13,6 +13,7 @@ struct TrackSelectionSheet: View {
     @State private var showAITranslateMenu = false
     @State private var translateDetent: PresentationDetent = .medium
     @State private var showSubtitleSearchMenu = false
+    @Environment(\.locale) private var locale
 
     private var aiSubtitlesAvailable: Bool {
         SubtitleTranslateMenu.hasActionableSource(viewModel)
@@ -22,18 +23,22 @@ struct TrackSelectionSheet: View {
         NavigationStack {
             List {
                 if !viewModel.audioTracks.isEmpty {
-                    Section("Audio") { audioRows }
+                    Section { audioRows } header: { Text(.playerTracksAudio) }
                 }
 
                 if !viewModel.subtitleTracks.isEmpty {
-                    Section("Subtitles") { subtitleRows(isSecondary: false) }
+                    Section { subtitleRows(isSecondary: false) } header: { Text(.playerTracksSubtitles) }
 
                     timingSection
 
                     if viewModel.supportsSecondarySubtitles,
                        viewModel.selectedSubtitleId != nil,
                        !viewModel.availableSecondarySubtitleTracks.isEmpty {
-                        Section("Secondary Subtitles") { subtitleRows(isSecondary: true) }
+                        Section {
+                            subtitleRows(isSecondary: true)
+                        } header: {
+                            Text(.playerTracksSecondarySubtitles)
+                        }
                     }
                 }
 
@@ -46,11 +51,11 @@ struct TrackSelectionSheet: View {
                 viewModel.refreshSubtitleSync()
                 viewModel.refreshSubtitleProviders()
             }
-            .navigationTitle("Audio & Subtitles")
+            .navigationTitle(Text(.playerTracksTitle))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { onDismiss() }
+                    Button { onDismiss() } label: { Text(.commonDone) }
                 }
             }
         }
@@ -109,7 +114,7 @@ struct TrackSelectionSheet: View {
             : viewModel.selectedSubtitleId == nil
 
         TrackSelectionRow(
-            name: "Off",
+            name: AppLanguage.string(.playerTracksSubtitlesOff, locale: locale),
             isSelected: isOffSelected
         ) {
             if isSecondary {
@@ -168,7 +173,13 @@ struct TrackSelectionSheet: View {
                         Button {
                             Task { await sync.requestSync(key: key) }
                         } label: {
-                            Label(entry.isInProgress ? "Syncing…" : "Sync to Audio", systemImage: "waveform")
+                            Label {
+                                Text(entry.isInProgress
+                                     ? LocalizedStringResource.playerTracksSyncing
+                                     : .playerTracksSyncToAudioButton)
+                            } icon: {
+                                Image(systemName: "waveform")
+                            }
                         }
                         .disabled(entry.isBusy || entry.isInProgress)
                     }
@@ -176,7 +187,11 @@ struct TrackSelectionSheet: View {
                         Button {
                             Task { await sync.resetTiming(key: key) }
                         } label: {
-                            Label("Reset Timing", systemImage: "arrow.uturn.backward")
+                            Label {
+                                Text(.playerTracksResetTimingButton)
+                            } icon: {
+                                Image(systemName: "arrow.uturn.backward")
+                            }
                         }
                         .disabled(entry.isBusy || entry.isInProgress)
                     }
@@ -208,7 +223,7 @@ struct TrackSelectionSheet: View {
                         .foregroundStyle(.red)
                 }
             } header: {
-                Text("Timing")
+                Text(.playerTracksTiming)
             } footer: {
                 if !entry.isForbidden, sync.canSync(entry), !entry.isInProgress, entry.result == nil {
                     Text(entry.actionNote)
@@ -223,7 +238,11 @@ struct TrackSelectionSheet: View {
                 Button {
                     showAITranslateMenu = true
                 } label: {
-                    Label("AI Subtitles…", systemImage: "sparkles")
+                    Label {
+                        Text(.playerAiTranslateOpenMenu)
+                    } icon: {
+                        Image(systemName: "sparkles")
+                    }
                 }
             }
 
@@ -231,7 +250,11 @@ struct TrackSelectionSheet: View {
                 Button {
                     showSubtitleSearchMenu = true
                 } label: {
-                    Label("Search Subtitles…", systemImage: "magnifyingglass")
+                    Label {
+                        Text(.optionsSearchSubtitles)
+                    } icon: {
+                        Image(systemName: "magnifyingglass")
+                    }
                 }
             }
         }

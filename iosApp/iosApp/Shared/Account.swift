@@ -37,6 +37,10 @@ struct Account: Codable, Equatable, Sendable, Identifiable {
     /// bound to it, so they never carry over to a later sign-in.
     var epoch: UUID?
     var cachedProfiles: [AccountProfile]
+    /// How many profiles the account may have, as the server said with the
+    /// list `cachedProfiles` came from. Nil when it didn't say, and in
+    /// records saved before the limit was kept.
+    var maxProfiles: Int?
     let addedAt: Date
     var lastUsedAt: Date
     /// The server rejected the account's credentials. The account and its
@@ -55,6 +59,7 @@ struct Account: Codable, Equatable, Sendable, Identifiable {
         refreshToken: String?,
         epoch: UUID?,
         cachedProfiles: [AccountProfile] = [],
+        maxProfiles: Int? = nil,
         addedAt: Date = Date(),
         lastUsedAt: Date = Date(),
         needsSignIn: Bool = false
@@ -69,6 +74,7 @@ struct Account: Codable, Equatable, Sendable, Identifiable {
         self.refreshToken = refreshToken
         self.epoch = epoch
         self.cachedProfiles = cachedProfiles
+        self.maxProfiles = maxProfiles
         self.addedAt = addedAt
         self.lastUsedAt = lastUsedAt
         self.needsSignIn = needsSignIn

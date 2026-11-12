@@ -60,6 +60,9 @@ struct TVPlayerControls: View {
     /// any other reason (intro skip, HUD) so direction moves into the row
     /// keep working from elsewhere.
     @State private var trapsTransportFocus = false
+    /// Bumped each time the controls hide, which replaces the recap/credits
+    /// pill's view (see `segmentSkipLayer`).
+    @State private var segmentSkipPillGeneration = 0
 
     // Focus states. SwiftUI's focus engine only holds focus on one
     // focusable at a time, so selecting one of these implicitly clears the
@@ -75,6 +78,24 @@ struct TVPlayerControls: View {
     @FocusState private var isSegmentSkipFocused: Bool
 
     private var isHUDPresented: Bool { viewModel.isHUDPresented }
+
+    /// The recap/credits pill waits for the intro pill: the two share a
+    /// corner, and Select at the player root goes to the intro pill first.
+    private var showsSegmentSkipPill: Bool {
+        viewModel.showSegmentSkip && !viewModel.showIntroSkip
+    }
+
+    private var hidesSegmentSkipPillForScrub: Bool {
+        viewModel.showControls && isTimelineScrubbing
+    }
+
+    /// Where the skip pills sit above the bottom edge. While the controls
+    /// show it sits just above the scrubber, level with the title on the
+    /// other side, so a pill never covers the end of the timeline or the
+    /// remaining-time label; it drops toward the corner when they hide.
+    private var skipPillBottomInset: CGFloat {
+        viewModel.showControls && !isHUDPresented ? 240 : 96
+    }
 
     var body: some View {
         ZStack {
@@ -92,7 +113,7 @@ struct TVPlayerControls: View {
             }
             introSkipLayer
                 .transition(.opacity)
-            if viewModel.showSegmentSkip {
+            if showsSegmentSkipPill {
                 segmentSkipLayer
                     .transition(.opacity)
             }
@@ -139,11 +160,12 @@ struct TVPlayerControls: View {
                 // Hand focus back to the transport when the pill disappears
                 // while controls are still up, instead of leaving nothing
                 // focused. A viewer who already moved onto the transport keeps
-                // their place. A buffering pill that was waiting on this one
-                // shows in the same update and takes the hand-off itself.
+                // their place. A buffering or recap/credits pill that was
+                // waiting on this one shows in the same update and takes the
+                // hand-off itself.
                 if viewModel.showControls && !isHUDPresented &&
                     focusedTransportButton == nil && !isScrubberFocused &&
-                    !viewModel.showBufferingPill {
+                    !viewModel.showBufferingPill && !showsSegmentSkipPill {
                     isScrubberFocused = true
                 }
             }
@@ -170,22 +192,26 @@ struct TVPlayerControls: View {
                 }
             }
         }
-        .onChange(of: viewModel.showSegmentSkip) { _, visible in
+        .onChange(of: showsSegmentSkipPill) { _, visible in
             if visible {
                 // Like the intro pill, never take focus from an active scrub:
-                // losing focus cancels the scrub preview.
-                if !isHUDPresented && !isTimelineScrubbing && !viewModel.isScrubbing {
+                // losing focus cancels the scrub preview. With the controls
+                // hidden the press capture owns focus and already routes
+                // Select to the pill.
+                if viewModel.showControls && !isHUDPresented &&
+                    !isTimelineScrubbing && !viewModel.isScrubbing {
                     isSegmentSkipFocused = true
                 }
             } else {
                 isSegmentSkipFocused = false
-                // A recap ends where the intro pill often appears. Keep the
-                // viewer on the intro pill or a transport button they moved to.
-                // A buffering pill held back by this one shows in the same
-                // update and takes the hand-off itself.
+                // Keep the viewer on a transport button they moved to. A
+                // recap ends where the intro pill often appears: an intro
+                // pill that follows or displaces this one, or a buffering
+                // pill held back by it, shows in the same update and takes
+                // the hand-off itself.
                 if viewModel.showControls && !isHUDPresented &&
-                    focusedTransportButton == nil && !isIntroSkipFocused &&
-                    !viewModel.showBufferingPill {
+                    focusedTransportButton == nil &&
+                    !viewModel.showIntroSkip && !viewModel.showBufferingPill {
                     isScrubberFocused = true
                 }
             }
@@ -201,6 +227,9 @@ struct TVPlayerControls: View {
             // path, immediately after pausing the backend.
             resumePlaybackAfterTimelineSelection = true
             enterTimelineSelection()
+        }
+        .onChange(of: viewModel.showControls) { _, shown in
+            if !shown { segmentSkipPillGeneration += 1 }
         }
         .onChange(of: isTimelineScrubbing) { _, scrubbing in
             onTimelineScrubbingChange(scrubbing)
@@ -270,7 +299,7 @@ struct TVPlayerControls: View {
                 }
             } else if viewModel.showIntroSkip && !isTimelineScrubbing && !isIntroSkipFocused {
                 isIntroSkipFocused = true
-            } else if viewModel.showSegmentSkip && !isTimelineScrubbing && !isSegmentSkipFocused {
+            } else if showsSegmentSkipPill && !isTimelineScrubbing && !isSegmentSkipFocused {
                 isSegmentSkipFocused = true
             } else if focusedTransportButton == nil && !isScrubberFocused {
                 isScrubberFocused = true
@@ -292,6 +321,7 @@ struct TVPlayerControls: View {
                 TVPassiveTimelineBar(viewModel: viewModel)
                 TVPlayerTimeRow(viewModel: viewModel)
             }
+            .mediaLayoutDirection()
             .padding(.horizontal, Self.transportHorizontalInset)
             .padding(.bottom, 48)
         }
@@ -327,7 +357,10 @@ struct TVPlayerControls: View {
             } else if viewModel.showIntroSkip {
                 isScrubberFocused = false
                 isIntroSkipFocused = true
-            } else if viewModel.showSegmentSkip {
+            } else if showsSegmentSkipPill && !viewModel.isScrubbing {
+                // Not while a quick skip that brought the controls up is
+                // still in flight: that viewer is working the timeline, and
+                // from the scrubber the next Left or Right skips again.
                 isScrubberFocused = false
                 isSegmentSkipFocused = true
             } else {
@@ -397,15 +430,17 @@ struct TVPlayerControls: View {
             // transport below.
             .focusSection()
             .padding(.horizontal, 80)
-            // Clears the whole transport stack — title, scrubber, time row and
-            // buttons — while it shows, so the pill never covers the end of
-            // the timeline or the remaining-time label.
-            .padding(.bottom, viewModel.showControls && !isHUDPresented ? 400 : 96)
+            .padding(.bottom, skipPillBottomInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             .animation(.easeOut(duration: 0.22), value: viewModel.showControls)
         }
     }
 
+    /// The Skip Recap / Skip Credits pill, up for as long as the playhead is
+    /// inside the marker. It follows the intro pill's position and focus
+    /// rules (see `introSkipLayer`): the press capture's Select target while
+    /// the controls are hidden, an ordinary button above the transport while
+    /// they show.
     private var segmentSkipLayer: some View {
         Button {
             viewModel.skipCurrentSegment()
@@ -416,14 +451,34 @@ struct TVPlayerControls: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .frame(width: 220)
         }
-        .buttonStyle(TVPillButtonStyle(kind: .primary, focusTreatment: .compact))
-        .disabled(isTimelineScrubbing)
+        .buttonStyle(TVPillButtonStyle(
+            kind: .primary,
+            focusTreatment: .compact,
+            isSelectTarget: !viewModel.showControls && !isHUDPresented
+        ))
+        .disabled(!viewModel.showControls || isTimelineScrubbing)
         .focused($isSegmentSkipFocused)
         .accessibilityLabel(viewModel.segmentSkipLabel)
-        .padding(.horizontal, 80)
-        .padding(.bottom, viewModel.showControls && !isHUDPresented ? 156 : 96)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        // Sized to the pill, like the intro pill's: a section spanning the
+        // screen holds every direction inside it, so focus could not leave
+        // the pill for the transport.
         .focusSection()
+        // Gone for a timeline scrub, where it is disabled anyway: at this
+        // height it would cover the scrub preview card when the scrub starts
+        // in the credits. Only while the controls show, so the press
+        // capture's Select target is never invisible.
+        .opacity(hidesSegmentSkipPillForScrub ? 0 : 1)
+        .accessibilityHidden(hidesSegmentSkipPillForScrub)
+        // A new view each time the controls hide. This pill outlives the
+        // controls, and hiding them disables it where it stands: a disabled
+        // view keeps focus and swallows presses until the next move.
+        // Replacing it drops focus at once, so focus falls to the shell's
+        // press capture as it does when the transport leaves.
+        .id(segmentSkipPillGeneration)
+        .padding(.horizontal, 80)
+        .padding(.bottom, skipPillBottomInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .animation(.easeOut(duration: 0.22), value: viewModel.showControls)
     }
 
     // MARK: - Transport stack
@@ -464,7 +519,9 @@ struct TVPlayerControls: View {
                 resumePlaybackAfterTimelineSelection: $resumePlaybackAfterTimelineSelection,
                 cancelOnBlur: cancelPendingScrub
             )
+            .mediaLayoutDirection()
             TVPlayerTimeRow(viewModel: viewModel)
+                .mediaLayoutDirection()
             TVPlayerTransportCluster(
                 viewModel: viewModel,
                 onOpenHUD: { openHUD() },
@@ -482,6 +539,7 @@ struct TVPlayerControls: View {
                 allowsFocus: !isTimelineScrubbing && !trapsTransportFocus,
                 focusedButton: $focusedTransportButton
             )
+            .mediaLayoutDirection()
         }
     }
 

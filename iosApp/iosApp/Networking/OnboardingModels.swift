@@ -67,9 +67,9 @@ enum OnboardingProgressError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .tourChanged:
-            return "The server replaced this tour with a newer one."
+            return AppLanguage.string(.errorsAppleOnboardingTourChanged)
         case .unexpectedReceipt:
-            return "The server's reply did not confirm your tour progress. Try again."
+            return AppLanguage.string(.errorsAppleOnboardingUnexpectedReceipt)
         }
     }
 }

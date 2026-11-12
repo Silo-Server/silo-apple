@@ -22,7 +22,9 @@ enum SectionRowLimit {
                 totalCount: section.totalCount,
                 isCustom: section.isCustom,
                 customized: section.customized,
-                items: Array(section.items.prefix(cards))
+                items: Array(section.items.prefix(cards)),
+                titleKey: section.titleKey,
+                titleArgs: section.titleArgs
             )
         })
     }

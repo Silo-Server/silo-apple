@@ -33,14 +33,14 @@ struct CatalogBoxSet: Codable, Hashable, Identifiable {
     var yearsText: String? {
         let first = firstYear.flatMap { $0 > 0 ? $0 : nil }
         let last = lastYear.flatMap { $0 > 0 ? $0 : nil }
-        if let first, let last, first != last { return "\(first) – \(last)" }
-        return (first ?? last).map(String.init)
+        if let first, let last, first != last { return "\(LocaleFormat.integer(first)) – \(LocaleFormat.integer(last))" }
+        return (first ?? last).map { LocaleFormat.integer($0) }
     }
 
     var filmCountText: String { Self.filmCount(movieCount) }
 
     static func filmCount(_ count: Int) -> String {
-        "\(count) \(count == 1 ? "film" : "films")"
+        "\(LocaleFormat.integer(count)) \(count == 1 ? "film" : "films")"
     }
 
     /// Watched share for the card's progress bar; nil before the first film.
@@ -52,14 +52,14 @@ struct CatalogBoxSet: Codable, Hashable, Identifiable {
     /// A card's second line: watched progress once started, else the years,
     /// else the film count.
     var cardCaption: String {
-        if playedCount > 0 { return "\(playedCount) / \(movieCount) watched" }
+        if playedCount > 0 { return "\(LocaleFormat.integer(playedCount)) / \(LocaleFormat.integer(movieCount)) watched" }
         return yearsText ?? filmCountText
     }
 
     var accessibilityLabel: String {
         var parts = [title, "Box set of \(filmCountText)"]
         if let yearsText { parts.append(yearsText) }
-        if playedCount > 0 { parts.append("\(playedCount) of \(movieCount) watched") }
+        if playedCount > 0 { parts.append("\(LocaleFormat.integer(playedCount)) of \(LocaleFormat.integer(movieCount)) watched") }
         return parts.joined(separator: ", ")
     }
 }
@@ -107,7 +107,7 @@ struct CatalogBoxSetDetail: Decodable {
         var tokens = [boxSet.filmCountText]
         if let years = boxSet.yearsText { tokens.append(years) }
         if boxSet.playedCount > 0 {
-            tokens.append("\(boxSet.playedCount) of \(boxSet.movieCount) watched")
+            tokens.append("\(LocaleFormat.integer(boxSet.playedCount)) of \(LocaleFormat.integer(boxSet.movieCount)) watched")
         }
         return tokens
     }

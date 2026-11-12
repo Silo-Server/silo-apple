@@ -48,7 +48,7 @@ final class BoxSetDetailViewModel {
         guard state.isNotFound else { return state }
         return ErrorState(
             statusCode: 404,
-            message: "This box set isn't available. Box sets may be turned off for this library, or too few of its movies are here."
+            message: AppLanguage.string(.boxSetsUnavailableMessage)
         )
     }
 }

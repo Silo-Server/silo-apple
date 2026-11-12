@@ -22,7 +22,6 @@ private struct OnboardingTourGateModifier: ViewModifier {
                     resumeStepId: model.resumeStepId,
                     onDismiss: model.dismiss
                 )
-                    .frame(minWidth: 560, minHeight: 640)
             }
     }
 }
@@ -31,7 +30,5 @@ extension View {
     func onboardingTourGate(router: AppRouter) -> some View {
         modifier(OnboardingTourGateModifier(router: router))
     }
-
-    func onboardingPageStyle() -> some View { self }
 }
 #endif

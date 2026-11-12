@@ -39,8 +39,8 @@ struct CalendarWeekStrip: View {
     /// the card chrome above this (assembled by `CalendarView`).
     private var phoneBody: some View {
         HStack(spacing: 6) {
-            phoneNavButton(systemImage: "chevron.left", action: onPreviousWeek)
-                .accessibilityLabel("Previous week")
+            phoneNavButton(systemImage: "chevron.backward", action: onPreviousWeek)
+                .accessibilityLabel(Text(.calendarPreviousWeek))
 
             HStack(spacing: 0) {
                 ForEach(week.days, id: \.self) { date in
@@ -55,8 +55,8 @@ struct CalendarWeekStrip: View {
                 }
             }
 
-            phoneNavButton(systemImage: "chevron.right", action: onNextWeek)
-                .accessibilityLabel("Next week")
+            phoneNavButton(systemImage: "chevron.forward", action: onNextWeek)
+                .accessibilityLabel(Text(.calendarNextWeek))
         }
         .animation(SiloTheme.springAnimation, value: selectedDay)
     }
@@ -82,8 +82,8 @@ struct CalendarWeekStrip: View {
     #if os(tvOS)
     private var tvBody: some View {
         HStack(spacing: stripSpacing) {
-            chevronButton(systemImage: "chevron.left", control: .previous, action: onPreviousWeek)
-                .accessibilityLabel("Previous week")
+            chevronButton(systemImage: "chevron.backward", control: .previous, action: onPreviousWeek)
+                .accessibilityLabel(Text(.calendarPreviousWeek))
 
             HStack(spacing: dayButtonSpacing) {
                 ForEach(week.days, id: \.self) { date in
@@ -99,11 +99,11 @@ struct CalendarWeekStrip: View {
                 }
             }
 
-            chevronButton(systemImage: "chevron.right", control: .next, action: onNextWeek)
-                .accessibilityLabel("Next week")
+            chevronButton(systemImage: "chevron.forward", control: .next, action: onNextWeek)
+                .accessibilityLabel(Text(.calendarNextWeek))
 
             if !isCurrentWeek {
-                Button("Today", action: onToday)
+                Button(.calendarToday, action: onToday)
                     .font(todayFont)
                     .foregroundColor(isFocused(.today) ? .siloBackground : .siloOnSurface)
                     .buttonStyle(.siloFlat)
@@ -118,7 +118,7 @@ struct CalendarWeekStrip: View {
                     )
                     .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
                     .applyStripFocus(self, control: .today)
-                    .accessibilityLabel("Jump to today")
+                    .accessibilityLabel(Text(.calendarJumpToToday))
             }
 
             Spacer(minLength: 0)
@@ -223,6 +223,7 @@ private struct CalendarRichDayCell: View {
     let isToday: Bool
     let eventCount: Int
     let action: () -> Void
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Button(action: action) {
@@ -275,17 +276,17 @@ private struct CalendarRichDayCell: View {
     }
 
     private var weekdayLabel: String {
-        date.formatted(.dateTime.weekday(.abbreviated))
+        date.formatted(.dateTime.weekday(.abbreviated).locale(locale))
     }
 
     private var dayNumber: String {
-        date.formatted(.dateTime.day())
+        date.formatted(.dateTime.day().locale(locale))
     }
 
     private var accessibilityDescription: String {
-        let base = date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+        let base = date.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(locale))
         guard eventCount > 0 else { return base }
-        return base + ", \(eventCount) event\(eventCount == 1 ? "" : "s")"
+        return AppLanguage.string(.calendarDayEventCount(eventCount, base), locale: locale)
     }
 }
 #endif
@@ -300,6 +301,7 @@ private struct CalendarDayButton: View {
     let hasEvents: Bool
     let isFocused: Bool
     let action: () -> Void
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Button(action: action) {
@@ -340,16 +342,16 @@ private struct CalendarDayButton: View {
     }
 
     private var weekdayLabel: String {
-        date.formatted(.dateTime.weekday(.abbreviated))
+        date.formatted(.dateTime.weekday(.abbreviated).locale(locale))
     }
 
     private var dayNumber: String {
-        date.formatted(.dateTime.day())
+        date.formatted(.dateTime.day().locale(locale))
     }
 
     private var accessibilityDescription: String {
-        date.formatted(.dateTime.weekday(.wide).month(.wide).day())
-            + (hasEvents ? ", has events" : "")
+        let day = date.formatted(.dateTime.weekday(.wide).month(.wide).day().locale(locale))
+        return hasEvents ? AppLanguage.string(.calendarDayHasEvents(day), locale: locale) : day
     }
 
     private var inverted: Bool { isSelected || isFocused }

@@ -112,7 +112,7 @@ final class ReceiverPairingCoordinator {
             if let provider = pushedProvider {
                 return provider.unreachableHelp(serverName: displayName)
             }
-            return "This Apple TV can't reach \(displayName) at \(ServerRegistry.normalize(url: serverURL)). Check its network connection and try again."
+            return AppLanguage.string(.tvPairingUnreachablePublicAppleTv(displayName, ServerRegistry.normalize(url: serverURL)))
         }
     }
 
@@ -599,7 +599,7 @@ final class ReceiverPairingCoordinator {
             switch self {
             case .unreachable: return push.unreachableHelp()
             case .updateRequired(let requirement): return requirement.message
-            case .phoneUpdateRequired: return "Update Silo on your phone or tablet to sign in this Apple TV."
+            case .phoneUpdateRequired: return AppLanguage.string(.tvPairingFailedPhoneUpdateAppleTv)
             case .identityMismatch, .denied, .expired, .saveFailed, .reported: return nil
             }
         }

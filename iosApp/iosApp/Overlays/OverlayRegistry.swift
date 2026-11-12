@@ -1,7 +1,7 @@
 import Foundation
 
 /// Single source of truth for which overlays exist. Order within the
-/// array determines the default render order within each corner. The
+/// array determines the default render order within each position. The
 /// entries here mirror `web/src/lib/overlays/registry/*.ts` and the
 /// contract's `card-overlays.json` id enum — adding/removing one here
 /// MUST be mirrored there, and in the `OverlayId` enum, or stored
@@ -29,7 +29,7 @@ enum OverlayRegistry {
         combinedBadges.contains { $0.covers.contains(id) && prefs.items[$0.combined]?.enabled == true }
     }
 
-    /// Enabled overlays for a corner, in the user's chosen order. Any
+    /// Enabled overlays for a position, in the user's chosen order. Any
     /// overlay not listed in `prefs.order` keeps registry order (`sorted`
     /// is stable).
     ///
@@ -89,16 +89,27 @@ private extension OverlayRegistry {
 
     static func audioIcon(_ value: String?) -> OverlayIconId? {
         guard let value, !value.isEmpty else { return nil }
-        // `contains` instead of equality so "TrueHD Atmos" / "Dolby
-        // TrueHD Atmos" (Blu-ray remux labelling) still picks the brand
-        // mark. The server normalizes most strings to plain "Atmos",
-        // but some passthrough surfaces preserve the upstream label.
-        return value.lowercased().contains("atmos") ? .atmos : .volume
+        // Mirrors web's `audioIcon`: the ATMOS wordmark only for a value it
+        // fully expresses, so "TrueHD Atmos" keeps its whole label beside
+        // the plain audio icon on every client.
+        return value.lowercased() == "atmos" ? .atmos : .volume
     }
 
     static func videoCodecIcon(_ value: String?) -> OverlayIconId? {
         guard let value, !value.isEmpty else { return nil }
         return value == "AV1" ? .av1 : .film
+    }
+
+    /// A value key: the value as the API sent it, or `nil` when it sent none.
+    static func nonEmpty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+
+    /// The parts the item has, joined by a space; `nil` when it has none.
+    static func joinedKey(_ parts: [String?]) -> String? {
+        let key = parts.compactMap(nonEmpty).joined(separator: " ")
+        return key.isEmpty ? nil : key
     }
 
     static let tech: [OverlayDef] = [
@@ -110,7 +121,8 @@ private extension OverlayRegistry {
             iconCapable: true,
             // `MediaTextFormatting.resolution`, not raw uppercase: web renders
             // "4K" for a `2160p` payload and the standalone badge must match it.
-            getValue: { MediaTextFormatting.resolution($0.resolution) }
+            getValue: { MediaTextFormatting.resolution($0.resolution) },
+            getValueKey: { nonEmpty($0.resolution) }
         ),
         OverlayDef(
             id: .hdr,
@@ -118,7 +130,8 @@ private extension OverlayRegistry {
             defaultEnabled: true,
             iconCapable: true,
             getValue: { $0.hdr },
-            getIcon: { hdrIcon($0.hdr) }
+            getIcon: { hdrIcon($0.hdr) },
+            getValueKey: { nonEmpty($0.hdr) }
         ),
         OverlayDef(
             id: .resolutionHdr,
@@ -130,7 +143,13 @@ private extension OverlayRegistry {
                 if let hdr = compactHdrSuffix(data.hdr) { return "\(res) \(hdr)" }
                 return res
             },
-            getIcon: { resolutionHdrIcon($0.hdr) }
+            getIcon: { resolutionHdrIcon($0.hdr) },
+            // The resolution and dynamic range as the API returns them,
+            // joined by a space: "2160p DV HDR10", or "1080p" without HDR.
+            getValueKey: { data in
+                guard let resolution = nonEmpty(data.resolution) else { return nil }
+                return joinedKey([resolution, data.hdr])
+            }
         ),
         OverlayDef(
             id: .resolutionHdrAudio,
@@ -147,7 +166,10 @@ private extension OverlayRegistry {
                 return label.isEmpty ? nil : label
             },
             // An Atmos or HDR10 mark would repeat words already in the label.
-            getIcon: { resolutionHdrIcon($0.hdr) }
+            getIcon: { resolutionHdrIcon($0.hdr) },
+            // The API's resolution, dynamic range and audio values joined by
+            // a space: "2160p DV HDR10 Atmos", or only the parts the file has.
+            getValueKey: { joinedKey([$0.resolution, $0.hdr, $0.audio]) }
         ),
         OverlayDef(
             id: .audio,
@@ -155,7 +177,8 @@ private extension OverlayRegistry {
             defaultEnabled: true,
             iconCapable: true,
             getValue: { $0.audio },
-            getIcon: { audioIcon($0.audio) }
+            getIcon: { audioIcon($0.audio) },
+            getValueKey: { nonEmpty($0.audio) }
         ),
         OverlayDef(
             id: .audioChannels,
@@ -163,7 +186,8 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .volume,
             iconCapable: true,
-            getValue: { $0.audioChannels }
+            getValue: { $0.audioChannels },
+            getValueKey: { nonEmpty($0.audioChannels) }
         ),
         OverlayDef(
             id: .videoCodec,
@@ -172,14 +196,16 @@ private extension OverlayRegistry {
             iconId: .film,
             iconCapable: true,
             getValue: { $0.videoCodec },
-            getIcon: { videoCodecIcon($0.videoCodec) }
+            getIcon: { videoCodecIcon($0.videoCodec) },
+            getValueKey: { nonEmpty($0.videoCodec) }
         ),
         OverlayDef(
             id: .container,
             defaultPosition: .bottomLeft,
             defaultEnabled: false,
             iconCapable: false,
-            getValue: { $0.container }
+            getValue: { $0.container },
+            getValueKey: { nonEmpty($0.container) }
         ),
         OverlayDef(
             id: .aspectRatio,
@@ -187,21 +213,24 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .layout,
             iconCapable: true,
-            getValue: { $0.aspectRatio }
+            getValue: { $0.aspectRatio },
+            getValueKey: { nonEmpty($0.aspectRatio) }
         ),
         OverlayDef(
             id: .releaseType,
             defaultPosition: .bottomLeft,
             defaultEnabled: true,
             iconCapable: false,
-            getValue: { $0.releaseType }
+            getValue: { $0.releaseType },
+            getValueKey: { nonEmpty($0.releaseType) }
         ),
         OverlayDef(
             id: .edition,
             defaultPosition: .bottomLeft,
             defaultEnabled: false,
             iconCapable: false,
-            getValue: { $0.edition }
+            getValue: { $0.edition },
+            getValueKey: { nonEmpty($0.edition) }
         ),
         OverlayDef(
             id: .multiAudio,
@@ -209,7 +238,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .languages,
             iconCapable: true,
-            getValue: { ($0.multiAudio == true) ? "Multi-Audio" : nil }
+            getValue: { ($0.multiAudio == true) ? AppLanguage.string(.overlaysMultiAudio) : nil }
         ),
         OverlayDef(
             id: .multiSub,
@@ -217,7 +246,7 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .subtitles,
             iconCapable: true,
-            getValue: { ($0.multiSub == true) ? "CC" : nil }
+            getValue: { ($0.multiSub == true) ? AppLanguage.string(.overlaysSubtitles) : nil }
         ),
     ]
 }
@@ -231,54 +260,51 @@ private extension OverlayRegistry {
     // shows without its source. Badges draw no source artwork, so they are
     // not icon-capable and the per-badge icon toggle does not apply. (TMDB's
     // logo is too wide for a badge; title pages use it instead.)
-    static func ratingLabel(_ mark: String, _ value: Double?) -> String? {
-        value.map { "\(mark) \(DisplayRating.oneDecimal($0))" }
+    static func ratingScore(_ value: Double?) -> String? {
+        value.map(DisplayRating.oneDecimal)
     }
 
-    static func ratingLabel(_ mark: String, _ value: Int?) -> String? {
-        value.map { "\(mark) \($0)%" }
+    static func ratingScore(_ value: Int?) -> String? {
+        value.map { "\($0)%" }
+    }
+
+    static func ratingLabel(_ mark: String, _ score: String?) -> String? {
+        score.map { "\(mark) \($0)" }
+    }
+
+    /// A rating badge. Ratings default to the left-edge rail: the top-right
+    /// corner they once shared shows watch status.
+    static func rating(
+        _ id: OverlayId,
+        mark: String,
+        accent: String,
+        score: @escaping (OverlayData) -> String?
+    ) -> OverlayDef {
+        OverlayDef(
+            id: id,
+            defaultPosition: .leftEdge,
+            defaultEnabled: false,
+            defaultAccent: accent,
+            iconCapable: false,
+            getValue: { ratingLabel(mark, score($0)) },
+            sourceMark: mark,
+            getScore: score
+        )
     }
 
     static let ratings: [OverlayDef] = [
-        OverlayDef(
-            id: .ratingImdb,
-            defaultPosition: .topRight,
-            defaultEnabled: false,
-            defaultAccent: "#f5c518",
-            iconCapable: false,
-            getValue: { ratingLabel("IMDb", $0.ratingImdb) }
-        ),
-        OverlayDef(
-            id: .ratingTmdb,
-            defaultPosition: .topRight,
-            defaultEnabled: false,
-            defaultAccent: "#01b4e4",
-            iconCapable: false,
-            getValue: { ratingLabel("TMDB", $0.ratingTmdb) }
-        ),
-        OverlayDef(
-            id: .ratingRt,
-            defaultPosition: .topRight,
-            defaultEnabled: false,
-            defaultAccent: "#fa320a",
-            iconCapable: false,
-            getValue: { ratingLabel("RT", $0.ratingRtCritic) }
-        ),
-        OverlayDef(
-            id: .ratingRtAudience,
-            defaultPosition: .topRight,
-            defaultEnabled: false,
-            defaultAccent: "#fa6400",
-            iconCapable: false,
-            getValue: { ratingLabel("RT Audience", $0.ratingRtAudience) }
-        ),
+        rating(.ratingImdb, mark: "IMDb", accent: "#f5c518") { ratingScore($0.ratingImdb) },
+        rating(.ratingTmdb, mark: "TMDB", accent: "#01b4e4") { ratingScore($0.ratingTmdb) },
+        rating(.ratingRt, mark: "RT", accent: "#fa320a") { ratingScore($0.ratingRtCritic) },
+        rating(.ratingRtAudience, mark: "RT Audience", accent: "#fa6400") { ratingScore($0.ratingRtAudience) },
         OverlayDef(
             id: .contentRating,
             defaultPosition: .bottomRight,
             defaultEnabled: false,
             iconId: .shield,
             iconCapable: true,
-            getValue: { $0.contentRating }
+            getValue: { $0.contentRating },
+            getValueKey: { nonEmpty($0.contentRating) }
         ),
         OverlayDef(
             id: .advisoryAge,
@@ -298,20 +324,15 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    private static let english = Locale(identifier: "en")
-
-    /// English display name for a language tag, matching web's
-    /// `formatLanguage` (English CLDR names, so "en" → "English" not
-    /// "EN"). A tag CLDR can't name falls back to the uppercased code
-    /// rather than web's "Unknown language (…)" sentence, which doesn't
-    /// fit a badge.
+    /// Display name for a language tag in the app's language, matching
+    /// web's `formatLanguage` (CLDR names, so "en" → "English" not "EN").
+    /// A tag CLDR can't name falls back to the uppercased code rather than
+    /// web's "Unknown language (…)" sentence, which doesn't fit a badge.
     static func formatLanguageName(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let name = english.localizedString(forIdentifier: trimmed)
-            ?? english.localizedString(forLanguageCode: trimmed)
-        return name?.capitalized ?? trimmed.uppercased()
+        return LocaleFormat.languageName(trimmed) ?? trimmed.uppercased()
     }
 
     static let metadata: [OverlayDef] = [
@@ -322,7 +343,7 @@ private extension OverlayRegistry {
             iconCapable: false,
             getValue: { data in
                 guard let year = data.year, year > 0 else { return nil }
-                return String(year)
+                return LocaleFormat.integer(year)
             }
         ),
         OverlayDef(
@@ -339,7 +360,8 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .globe,
             iconCapable: true,
-            getValue: { formatLanguageName($0.originalLanguage) }
+            getValue: { formatLanguageName($0.originalLanguage) },
+            getValueKey: { nonEmpty($0.originalLanguage) }
         ),
         OverlayDef(
             id: .studio,
@@ -347,7 +369,8 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .building,
             iconCapable: true,
-            getValue: { $0.studio }
+            getValue: { $0.studio },
+            getValueKey: { nonEmpty($0.studio) }
         ),
         OverlayDef(
             id: .network,
@@ -355,7 +378,8 @@ private extension OverlayRegistry {
             defaultEnabled: false,
             iconId: .tv,
             iconCapable: true,
-            getValue: { $0.network }
+            getValue: { $0.network },
+            getValueKey: { nonEmpty($0.network) }
         ),
     ]
 }
@@ -364,37 +388,64 @@ private extension OverlayRegistry {
 
 private extension OverlayRegistry {
 
-    /// Mirrors web's `formatShowStatus` — the recognized spellings and
-    /// the pass-through default must stay identical or the same library
-    /// renders different ribbons per platform.
+    /// The statuses every client recognizes, as web's `formatShowStatus`
+    /// groups their spellings.
+    enum ShowStatus: String {
+        case returning = "Returning"
+        case ended = "Ended"
+        case cancelled = "Cancelled"
+        case upcoming = "Upcoming"
+
+        init?(_ value: String) {
+            switch value.lowercased() {
+            case "returning", "returning series", "continuing", "in_production", "in production":
+                self = .returning
+            case "ended":
+                self = .ended
+            case "cancelled", "canceled":
+                self = .cancelled
+            case "upcoming", "planned":
+                self = .upcoming
+            default:
+                return nil
+            }
+        }
+    }
+
+    /// The badge's label in the app language. The recognized spellings and
+    /// the pass-through default must stay identical to web's or the same
+    /// library renders different ribbons per platform.
     static func formatShowStatus(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
-        switch value.lowercased() {
-        case "returning", "returning series", "continuing", "in_production", "in production":
-            return "Returning"
-        case "ended":
-            return "Ended"
-        case "cancelled", "canceled":
-            return "Cancelled"
-        case "upcoming", "planned":
-            return "Upcoming"
-        default:
-            return value
+        switch ShowStatus(value) {
+        case .returning: return AppLanguage.string(.overlaysReturning)
+        case .ended: return AppLanguage.string(.overlaysEnded)
+        case .cancelled: return AppLanguage.string(.overlaysCancelled)
+        case .upcoming: return AppLanguage.string(.overlaysUpcoming)
+        case nil: return value
         }
+    }
+
+    /// The value key: the normalized English status, whatever the app
+    /// language, so every client matches the same per-value images.
+    static func showStatusKey(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return ShowStatus(value)?.rawValue ?? value
     }
 
     static let ribbons: [OverlayDef] = [
         OverlayDef(
             id: .showStatus,
-            defaultPosition: .topRight,
+            defaultPosition: .rightEdge,
             defaultEnabled: false,
             iconId: .tv,
             iconCapable: true,
-            getValue: { formatShowStatus($0.showStatus) }
+            getValue: { formatShowStatus($0.showStatus) },
+            getValueKey: { showStatusKey($0.showStatus) }
         ),
         OverlayDef(
             id: .imdbTop250,
-            defaultPosition: .topRight,
+            defaultPosition: .rightEdge,
             defaultEnabled: false,
             iconId: .ribbon,
             defaultAccent: "#f5c518",
@@ -406,7 +457,7 @@ private extension OverlayRegistry {
         ),
         OverlayDef(
             id: .rtCertifiedFresh,
-            defaultPosition: .topRight,
+            defaultPosition: .rightEdge,
             defaultEnabled: false,
             defaultAccent: "#fa320a",
             // Same rule as the rating badges: the source's text mark, no artwork.

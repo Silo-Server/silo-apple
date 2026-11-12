@@ -8,6 +8,7 @@ struct TVGeneralSettingsPane: View {
     @State private var preferences = UICustomizationPreferences.shared
     @State private var titleArt = TitleArtPreferences.shared
     @State private var themeMusic = ThemeMusicPreferences.shared
+    @State private var appLanguage = AppLanguagePreferences.shared
     @State private var launchPreferences = ProfileLaunchPreferences.shared
     @State private var navPrefs = AppNavPreferences.shared
     @State private var activePicker: PickerKind?
@@ -21,10 +22,10 @@ struct TVGeneralSettingsPane: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TVSettingsSectionHeader("APPLE TV USER")
+            TVSettingsSectionHeader(.settingsGeneralAppleTvUserHeaderTv)
 
             TVSettingsPickerRow(
-                title: "Paired Silo Profile",
+                title: .settingsGeneralPairedProfile,
                 value: pairedProfileName,
                 action: changePairedProfile
             )
@@ -32,16 +33,20 @@ struct TVGeneralSettingsPane: View {
 
             TVSettingsFooter(pairingDescription)
 
-            TVSettingsSectionHeader("PROFILE AT LAUNCH")
+            TVSettingsSectionHeader(.settingsGeneralProfileAtLaunchHeaderTv)
 
             TVSettingsPickerRow(
-                title: "Profile Selection",
+                title: .settingsControlProfileSelection,
                 value: launchPreferences.behavior.title
             ) { activePicker = .profileLaunch }
             .focused(detailFocus, equals: .generalProfileLaunch)
-            .accessibilityHint(launchPreferences.behavior.tvDescription)
+            .accessibilityHint(Text(launchPreferences.behavior.tvDescription))
 
             TVSettingsFooter(launchPreferences.behavior.tvDescription)
+
+            if appLanguage.currentChoice != nil {
+                languageGroup
+            }
 
             if titleArt.isOffered {
                 titleArtGroup
@@ -52,26 +57,26 @@ struct TVGeneralSettingsPane: View {
             }
 
             if let message = preferences.capabilityMessage {
-                TVSettingsSectionHeader("SERVER SUPPORT")
-                TVSettingsFooter(message)
+                TVSettingsSectionHeader(.settingsGeneralServerSupportHeaderTv)
+                TVSettingsFooter(.verbatim(message))
             }
 
             if preferences.hasDeviceOverrides {
-                TVSettingsSectionHeader("SYNC SOURCE")
+                TVSettingsSectionHeader(.settingsGeneralSyncSourceHeaderTv)
                 if preferences.cardPresentationUsesDeviceOverride {
                     familySettingsButton
                         .focused(detailFocus, equals: .generalPosterSize)
                 } else {
                     familySettingsButton
                 }
-                TVSettingsFooter("This Apple TV has older device-specific settings. Clear them to use the TV-family choices shared by this profile.")
+                TVSettingsFooter(.settingsGeneralDeviceOverrideFooterTv)
             }
 
-            TVSettingsSectionHeader("CARDS & POSTERS")
+            TVSettingsSectionHeader(.settingsGeneralCardsHeaderTv)
 
             if advisoryAgePreference.isSupported {
                 TVSettingsToggleRow(
-                    title: "Show Advisory Age",
+                    title: .settingsGeneralShowAdvisoryAge,
                     isOn: advisoryAgePreference.showsAdvisoryAge
                 ) {
                     Task {
@@ -83,28 +88,28 @@ struct TVGeneralSettingsPane: View {
                 .focused(detailFocus, equals: .generalAdvisoryAge)
                 .disabled(advisoryAgePreference.isSaving)
 
-                TVSettingsFooter("Show a suggested minimum viewer age, such as Common Sense Media’s, on movie and show details. This does not change what the profile may watch.")
+                TVSettingsFooter(.settingsGeneralShowAdvisoryAgeFooter)
                 if let writeError = advisoryAgePreference.writeError {
-                    TVSettingsFooter(writeError)
+                    TVSettingsFooter(.verbatim(writeError))
                 }
             }
 
             posterSizeRow
 
             if preferences.cardPresentationUsesFamilyOverride {
-                Button("Use Profile Default") {
+                Button(.settingsCardsUseProfileDefault) {
                     preferences.resetCardPresentationToInherited()
                 }
                 .buttonStyle(TVSettingsPaneRowStyle())
                 .disabled(preferences.isSaving || !preferences.allowsEditing)
             }
 
-            TVSettingsFooter("Poster size syncs with other TV-family devices on this profile.")
+            TVSettingsFooter(.settingsGeneralPosterSizeSyncsTv)
 
             if let message = preferences.syncErrorMessage,
                message != preferences.capabilityMessage,
                message != HeldSettingChange.message {
-                TVSettingsFooter(message)
+                TVSettingsFooter(.verbatim(message))
             }
             if preferences.hasHeldChanges {
                 TVHeldSettingChangesRows(
@@ -113,17 +118,17 @@ struct TVGeneralSettingsPane: View {
                 )
             }
 
-            TVSettingsSectionHeader("TOP MENU")
+            TVSettingsSectionHeader(.settingsGeneralTopMenuHeaderTv)
 
             TVSettingsToggleRow(
-                title: "Show Audiobooks",
+                title: .settingsExperimentalShowAudiobooks,
                 isOn: navPrefs.showAudiobooks
             ) {
                 navPrefs.setShowAudiobooks(!navPrefs.showAudiobooks)
             }
             .focused(detailFocus, equals: .generalTopMenu)
 
-            TVSettingsFooter("Adds an Audiobooks tab when an audiobook library is available.")
+            TVSettingsFooter(.settingsGeneralTopMenuFooterTv)
         }
         .fullScreenCover(item: $activePicker) { picker in
             pickerSheet(for: picker)
@@ -133,7 +138,8 @@ struct TVGeneralSettingsPane: View {
             async let titleArtRefresh: Void = titleArt.refresh()
             async let advisoryRefresh: Void = advisoryAgePreference.refresh()
             async let themeMusicRefresh: Void = themeMusic.refresh()
-            _ = await (preferencesRefresh, titleArtRefresh, advisoryRefresh, themeMusicRefresh)
+            async let languageRefresh: Void = appLanguage.refresh()
+            _ = await (preferencesRefresh, titleArtRefresh, advisoryRefresh, themeMusicRefresh, languageRefresh)
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -141,7 +147,8 @@ struct TVGeneralSettingsPane: View {
                 async let preferencesRefresh: Void = preferences.refresh()
                 async let titleArtRefresh: Void = titleArt.refresh()
                 async let themeMusicRefresh: Void = themeMusic.refresh()
-                _ = await (preferencesRefresh, titleArtRefresh, themeMusicRefresh)
+                async let languageRefresh: Void = appLanguage.refresh()
+                _ = await (preferencesRefresh, titleArtRefresh, themeMusicRefresh, languageRefresh)
             }
         }
     }
@@ -150,32 +157,52 @@ struct TVGeneralSettingsPane: View {
     /// See `TitleArtPreferences` for the scopes each row writes.
     @ViewBuilder
     private var titleArtGroup: some View {
-        TVSettingsSectionHeader("TITLE PAGES")
+        TVSettingsSectionHeader(.settingsGeneralTitlePagesHeaderTv)
 
         TVSettingsToggleRow(
-            title: "Show Title Art",
+            title: .settingsControlTitleArt,
             isOn: titleArt.showsTitleArt
         ) {
             titleArt.setShowTitleArt(!titleArt.showsTitleArt)
         }
-        .accessibilityHint("Use logo artwork as the title when available.")
+        .accessibilityHint(Text(.settingsTitleArtFooter))
         .disabled(!titleArt.allowsEditing)
 
         TVSettingsToggleRow(
-            title: "Apply to All Devices",
+            title: .settingsInterfaceApplyToAllDevices,
             isOn: titleArt.appliesToAllDevices
         ) {
             titleArt.setAppliesToAllDevices(!titleArt.appliesToAllDevices)
         }
-        .accessibilityHint("Use this choice everywhere on this profile.")
+        .accessibilityHint(Text(.settingsInterfaceApplyToAllDevicesSubtitle))
         .disabled(!titleArt.allowsEditing)
 
         if titleArt.appliesToAllDevices {
-            TVSettingsFooter("Title art is \(titleArt.showsTitleArt ? "on" : "off") on every device signed into this profile. Changing it here changes it everywhere. Turn off Apply to All Devices to choose for this Apple TV only.")
+            TVSettingsFooter(
+                titleArt.showsTitleArt
+                    ? .settingsGeneralTitleArtAllOnTv
+                    : .settingsGeneralTitleArtAllOffTv
+            )
         } else {
-            TVSettingsFooter("Use logo artwork as the title when available. Only affects this Apple TV. Your other devices keep their own setting.")
+            TVSettingsFooter(.settingsGeneralTitleArtThisAppleTv)
         }
         if let message = titleArt.errorMessage ?? titleArt.readErrorMessage {
+            TVSettingsFooter(.verbatim(message))
+        }
+    }
+
+    /// The profile's app language. See `AppLanguagePreferences`.
+    @ViewBuilder
+    private var languageGroup: some View {
+        TVSettingsSectionHeader(.settingsAppLanguageHeaderTv)
+
+        TVSettingsPickerRow(
+            title: .settingsAppLanguageTitle,
+            value: appLanguage.selectedLabel
+        ) { activePicker = .appLanguage }
+
+        TVSettingsFooter(appLanguage.footer)
+        if let message = appLanguage.errorMessage {
             TVSettingsFooter(message)
         }
     }
@@ -184,56 +211,60 @@ struct TVGeneralSettingsPane: View {
     /// `ThemeMusicPreferences`.
     @ViewBuilder
     private var themeMusicGroup: some View {
-        TVSettingsSectionHeader("THEME MUSIC")
+        TVSettingsSectionHeader(.settingsGeneralThemeMusicHeaderTv)
 
         TVSettingsToggleRow(
-            title: "Play Theme Music",
+            title: .settingsControlThemeMusic,
             isOn: themeMusic.playsThemeMusic
         ) {
             themeMusic.setEnabled(!themeMusic.playsThemeMusic)
         }
-        .accessibilityHint("Play a title's theme song from your library while its page is open.")
+        .accessibilityHint(Text(.settingsInterfacePlayThemeMusicSubtitle))
         .disabled(!themeMusic.allowsEditing)
 
         TVSettingsToggleRow(
-            title: "Loop Theme Music",
+            title: .settingsControlThemeMusicLoop,
             isOn: themeMusic.loops
         ) {
             themeMusic.setLoop(!themeMusic.loops)
         }
-        .accessibilityHint("Repeat the theme while the page stays open.")
+        .accessibilityHint(Text(.settingsInterfaceLoopThemeMusicSubtitle))
         .disabled(!themeMusic.allowsEditing || !themeMusic.playsThemeMusic)
 
-        TVSettingsFooter("Play a title's theme song from your library while its page is open. Only affects this Apple TV.")
+        TVSettingsFooter(.settingsGeneralThemeMusicFooterTv)
         if let message = themeMusic.errorMessage {
-            TVSettingsFooter(message)
+            TVSettingsFooter(.verbatim(message))
         }
     }
 
-    private var pairedProfileName: String {
+    private var pairedProfileName: LocalizedStringResource {
         guard registry.activeServerId != nil,
               let remembered = launchPreferences.rememberedProfile(
                   forAccount: AccountScope.current?.localAccountId
               ) else {
-            return "Not paired"
+            return .settingsGeneralNotPaired
         }
         guard let activeProfile,
               activeProfile.id == remembered.profileID else {
-            return "Saved profile"
+            return .settingsGeneralSavedProfile
         }
-        return activeProfile.name
+        return .verbatim(activeProfile.name)
     }
 
-    private var pairingDescription: String {
-        let base = appleTVUserContext.pairingDescription
-        guard launchPreferences.behavior == .askEveryLaunch else { return base }
-        return "\(base) Ask Every Time is on, so Silo will still show Who's Watching at launch."
+    /// How profile pairing works for this Apple TV user, with the Ask Every
+    /// Time note, as one whole sentence each.
+    private var pairingDescription: LocalizedStringResource {
+        let asksEveryLaunch = launchPreferences.behavior == .askEveryLaunch
+        if appleTVUserContext.shouldStorePreferencesForCurrentUser {
+            return asksEveryLaunch ? .settingsGeneralPairingSeparateAskEveryTime : .settingsGeneralPairingSeparate
+        }
+        return asksEveryLaunch ? .settingsGeneralPairingSharedAskEveryTime : .settingsGeneralPairingShared
     }
 
     @ViewBuilder
     private var posterSizeRow: some View {
         let row = TVSettingsPickerRow(
-            title: "Poster Size",
+            title: .settingsCardsPosterSize,
             value: preferences.cardPresentation.posterSize.title
         ) { activePicker = .posterSize }
 
@@ -245,7 +276,7 @@ struct TVGeneralSettingsPane: View {
     }
 
     private var familySettingsButton: some View {
-        Button("Use Synced TV Settings") {
+        Button(.settingsGeneralUseSyncedTvSettings) {
             preferences.useFamilySettings()
         }
         .buttonStyle(TVSettingsPaneRowStyle())
@@ -257,13 +288,24 @@ struct TVGeneralSettingsPane: View {
         switch picker {
         case .profileLaunch:
             TVSettingsPickerSheet(
-                title: "Profile Selection",
+                title: .settingsControlProfileSelection,
                 options: TVSettingsOptions.profileLaunch,
                 selection: $launchPreferences.behaviorID
             )
+        case .appLanguage:
+            TVSettingsPickerSheet(
+                title: .settingsAppLanguageTitle,
+                options: appLanguage.options.map { TVSettingsOption(id: $0.id, label: $0.label) },
+                selection: Binding(
+                    get: { appLanguage.currentChoice?.tag ?? "" },
+                    set: { id in Task { await appLanguage.select(id.isEmpty ? nil : id) } }
+                ),
+                allowsSelection: !appLanguage.isBusy,
+                disabledMessage: appLanguage.isBusy ? .settingsAppLanguageSaving : nil
+            )
         case .posterSize:
             TVSettingsPickerSheet(
-                title: "Poster Size",
+                title: .settingsCardsPosterSize,
                 options: CardPosterSize.allCases.map {
                     TVSettingsOption(id: $0.rawValue, label: $0.title)
                 },
@@ -275,13 +317,14 @@ struct TVGeneralSettingsPane: View {
                     }
                 ),
                 allowsSelection: preferences.allowsEditing,
-                disabledMessage: preferences.capabilityMessage
+                disabledMessage: preferences.capabilityMessage.map { .verbatim($0) }
             )
         }
     }
 
     private enum PickerKind: String, Identifiable {
         case profileLaunch
+        case appLanguage
         case posterSize
         var id: String { rawValue }
     }

@@ -53,7 +53,7 @@ struct PlaybackStatsPanel: View {
         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 4) {
             ForEach(stats.compactRows, id: \.0) { row in
                 GridRow {
-                    Text("\(row.0):")
+                    Text(verbatim: "\(row.0):")
                         .foregroundStyle(.white.opacity(0.58))
                         .gridColumnAlignment(.leading)
                     Text(row.1)
@@ -67,16 +67,16 @@ struct PlaybackStatsPanel: View {
 
     private var leftSections: [StatsSection] {
         [
-            .init(id: Self.sourceSectionID, title: "Source", rows: stats.sourceRows),
-            .init(id: Self.mediaSectionID, title: "Media", rows: stats.mediaRows)
+            .init(id: Self.sourceSectionID, title: .playerStatsSectionSource, rows: stats.sourceRows),
+            .init(id: Self.mediaSectionID, title: .playerStatsSectionMedia, rows: stats.mediaRows)
         ]
     }
 
     private var rightSections: [StatsSection] {
         [
-            .init(id: Self.bufferSectionID, title: "Buffer", rows: stats.bufferRows),
-            .init(id: Self.networkSectionID, title: "Network", rows: stats.networkRows),
-            .init(id: Self.engineSectionID, title: "Engine", rows: stats.engineRows)
+            .init(id: Self.bufferSectionID, title: .playerStatsSectionBuffer, rows: stats.bufferRows),
+            .init(id: Self.networkSectionID, title: .playerStatsSectionNetwork, rows: stats.networkRows),
+            .init(id: Self.engineSectionID, title: .playerStatsSectionEngine, rows: stats.engineRows)
         ]
     }
 
@@ -104,7 +104,8 @@ struct PlaybackStatsPanel: View {
     private func rows(for section: StatsSection) -> some View {
         if !section.rows.isEmpty {
             GridRow {
-                Text(section.title.uppercased())
+                Text(section.title)
+                    .textCase(.uppercase)
                     .font(headerFont)
                     .foregroundStyle(.white.opacity(0.52))
                     .gridColumnAlignment(.trailing)
@@ -148,7 +149,7 @@ struct PlaybackStatsPanel: View {
 
     private struct StatsSection: Identifiable {
         let id: String
-        let title: String
+        let title: LocalizedStringResource
         let rows: [(String, String)]
     }
 }

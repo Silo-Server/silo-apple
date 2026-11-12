@@ -10,6 +10,7 @@ import SwiftUI
 /// left, form on the right). On iOS it renders as a sheet-friendly
 /// single-column scroll view.
 struct CreateProfileView: View {
+    @Environment(\.locale) private var locale
     let onCreated: () -> Void
 
     @State private var name: String = ""
@@ -44,12 +45,11 @@ struct CreateProfileView: View {
 
     /// Shown under the PIN field while it holds a partial PIN, which also
     /// keeps Create Profile disabled.
-    private static let requestsAllowedTitle = "Allow requests"
-    private static let requestsAllowedHelp =
-        "Lets this profile browse titles that are not in the library and request them. The content rating limits those titles by their US rating only, and the advisory-age limit does not apply to them."
+    private static let requestsAllowedTitle: LocalizedStringResource = .newProfileRequestsAllowed
+    private static let requestsAllowedHelp: LocalizedStringResource = .newProfileRequestsAllowedHelp
 
-    private static let incompletePINHint =
-        "Enter all \(ProfilePIN.length) digits, or clear the field for no PIN."
+    /// The catalog text says 4, `ProfilePIN.length`.
+    private static let incompletePINHint: LocalizedStringResource = .newProfilePinHint
 
     /// Whether the assignable libraries are known yet. A failed read is kept
     /// apart from an empty list so the form never claims there is nothing to
@@ -105,7 +105,7 @@ struct CreateProfileView: View {
             ),
             presenting: formError
         ) { err in
-            Button("OK", role: .cancel) {
+            Button(.newProfileOk, role: .cancel) {
                 formError = nil
                 // The server may already have the profile: close the form so
                 // the refreshed list shows whether it exists before any retry.
@@ -180,11 +180,11 @@ struct CreateProfileView: View {
     private var tvOSHeader: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("New Profile")
+                Text(.newProfileTitle)
                     .font(.system(size: 48, weight: .semibold))
                     .tracking(-0.4)
                     .foregroundStyle(.white)
-                Text("Pick a look and give it a name.")
+                Text(.newProfilePickLook)
                     .font(.system(size: 20))
                     .foregroundStyle(.white.opacity(0.55))
             }
@@ -193,7 +193,7 @@ struct CreateProfileView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "xmark")
                         .font(.system(size: 15, weight: .semibold))
-                    Text("Cancel")
+                    Text(.commonCancel)
                         .font(.system(size: 18, weight: .medium))
                 }
             }
@@ -208,7 +208,7 @@ struct CreateProfileView: View {
                 .disabled(true)
 
             if name.trimmingCharacters(in: .whitespaces).isEmpty {
-                Text("Your tile will look like this.")
+                Text(.newProfilePreview)
                     .font(.system(size: 17))
                     .foregroundStyle(.white.opacity(0.45))
                     .padding(.top, 8)
@@ -220,7 +220,7 @@ struct CreateProfileView: View {
 
     private var pickerColumn: some View {
         VStack(alignment: .leading, spacing: 32) {
-            section(title: "Style") {
+            section(title: .profilesFormStyle) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 14) {
                         ForEach(ProfileAvatarPresets.styles) { style in
@@ -239,14 +239,14 @@ struct CreateProfileView: View {
             }
 
             if isInitialsStyle {
-                section(title: "Avatar") {
+                section(title: .profilesFormAvatar) {
                     initialsHint
                 }
             } else {
                 // Built once per grid: each access rebuilds the batch.
                 let batch = presets
                 let activeSeed = activePreset?.seed
-                section(title: "Avatar", trailing: { shuffleButton }) {
+                section(title: .profilesFormAvatar, trailing: { shuffleButton }) {
                     LazyVGrid(
                         columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 6),
                         spacing: 14
@@ -262,8 +262,8 @@ struct CreateProfileView: View {
                 }
             }
 
-            section(title: "Name") {
-                TextField("Profile name", text: $name)
+            section(title: .newProfileName) {
+                TextField(text: $name, prompt: Text(.newProfileNamePlaceholder)) { Text(.newProfileNamePlaceholder) }
                     .textFieldStyle(SiloTextFieldStyle())
                     .focused($focusedField, equals: .name)
                     .autocorrectionDisabled()
@@ -273,8 +273,8 @@ struct CreateProfileView: View {
                     .submitLabel(.next)
             }
 
-            section(title: "PIN (optional)") {
-                TextField("4-digit PIN", text: $pin)
+            section(title: .newProfilePin) {
+                TextField(text: $pin, prompt: Text(.newProfilePinPlaceholder)) { Text(.newProfilePinPlaceholder) }
                     .textFieldStyle(SiloTextFieldStyle())
                     .focused($focusedField, equals: .pin)
                     .autocorrectionDisabled()
@@ -291,8 +291,8 @@ struct CreateProfileView: View {
             }
 
             ProfileSwitchRow(
-                title: "Child Profile",
-                subtitle: "Restricts content to kid-friendly ratings",
+                title: .newProfileChild,
+                subtitle: .newProfileChildDetail,
                 isOn: $isChild
             )
 
@@ -308,7 +308,7 @@ struct CreateProfileView: View {
                 )
             }
 
-            Button("Create Profile") {
+            Button(.newProfileCreate) {
                 guard !isLoading else { return }
                 Task { await createProfile() }
             }
@@ -322,13 +322,14 @@ struct CreateProfileView: View {
     }
 
     private func section<Trailing: View, Content: View>(
-        title: String,
+        title: LocalizedStringResource,
         @ViewBuilder trailing: () -> Trailing = { EmptyView() },
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center) {
-                Text(title.uppercased())
+                Text(title)
+                    .textCase(.uppercase)
                     .font(.system(size: 13, weight: .semibold))
                     .tracking(1.6)
                     .foregroundStyle(.white.opacity(0.5))
@@ -361,7 +362,7 @@ struct CreateProfileView: View {
                         } else {
                             VStack(alignment: .leading, spacing: 10) {
                                 HStack {
-                                    Text("Avatar")
+                                    Text(.profilesFormAvatar)
                                         .font(.siloCaption)
                                         .foregroundColor(.siloSecondaryText)
                                     Spacer()
@@ -372,10 +373,10 @@ struct CreateProfileView: View {
                         }
 
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Name")
+                            Text(.newProfileName)
                                 .font(.siloCaption)
                                 .foregroundColor(.siloSecondaryText)
-                            TextField("Profile name", text: $name)
+                            TextField(text: $name, prompt: Text(.newProfileNamePlaceholder)) { Text(.newProfileNamePlaceholder) }
                                 .textFieldStyle(SiloTextFieldStyle())
                                 .focused($focusedField, equals: .name)
                                 .autocorrectionDisabled()
@@ -385,10 +386,10 @@ struct CreateProfileView: View {
                         }
 
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("PIN (optional)")
+                            Text(.newProfilePin)
                                 .font(.siloCaption)
                                 .foregroundColor(.siloSecondaryText)
-                            TextField("4-digit PIN", text: $pin)
+                            TextField(text: $pin, prompt: Text(.newProfilePinPlaceholder)) { Text(.newProfilePinPlaceholder) }
                                 .textFieldStyle(SiloTextFieldStyle())
                                 .focused($focusedField, equals: .pin)
                                 #if !os(macOS)
@@ -407,10 +408,10 @@ struct CreateProfileView: View {
 
                         Toggle(isOn: $isChild) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Child Profile")
+                                Text(.newProfileChild)
                                     .font(.siloBody)
                                     .foregroundColor(.siloOnSurface)
-                                Text("Restricts content to kid-friendly ratings")
+                                Text(.newProfileChildDetail)
                                     .font(.siloCaption)
                                     .foregroundColor(.siloSecondaryText)
                             }
@@ -436,7 +437,7 @@ struct CreateProfileView: View {
                             .tint(.siloSwitchOn)
                         }
 
-                        Button("Create Profile") {
+                        Button(.newProfileCreate) {
                             Task { await createProfile() }
                         }
                         .siloPrimaryButton(isLoading: isLoading)
@@ -452,11 +453,11 @@ struct CreateProfileView: View {
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(.commonCancel) { dismiss() }
                         .foregroundColor(.siloPrimary)
                 }
             }
-            .navigationTitle("New Profile")
+            .navigationTitle(.newProfileTitle)
             .siloNavigationTitleDisplayMode(.inline)
             .siloToolbarColorSchemeDark()
         }
@@ -464,7 +465,7 @@ struct CreateProfileView: View {
 
     private var stylePickerRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Style")
+            Text(.profilesFormStyle)
                 .font(.siloCaption)
                 .foregroundColor(.siloSecondaryText)
             ScrollView(.horizontal, showsIndicators: false) {
@@ -506,20 +507,21 @@ struct CreateProfileView: View {
 
     // MARK: - Shared bits
 
-    private static let contentRatings: [(value: String, label: String)] = [
-        ("G", "G / TV-G"),
-        ("PG", "PG / TV-PG / TV-Y7"),
-        ("PG-13", "PG-13 / TV-14"),
-        ("R", "R / TV-MA / NC-17"),
+    /// `value` is sent to the server; only `label` is shown.
+    private static let contentRatings: [(value: String, label: LocalizedStringResource)] = [
+        ("G", .newProfileRatingG),
+        ("PG", .newProfileRatingPg),
+        ("PG-13", .newProfileRatingPg13),
+        ("R", .newProfileRatingR),
     ]
 
     private var childAccessControls: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 7) {
-                Text("Maximum content rating")
+                Text(.newProfileRating)
                     .font(.siloCaption)
                     .foregroundStyle(Color.siloSecondaryText)
-                Picker("Maximum content rating", selection: $maxContentRating) {
+                Picker(.newProfileRating, selection: $maxContentRating) {
                     ForEach(Self.contentRatings, id: \.value) { option in
                         Text(option.label).tag(option.value)
                     }
@@ -527,16 +529,16 @@ struct CreateProfileView: View {
                 .pickerStyle(.menu)
             }
 
-            Toggle("Restrict libraries", isOn: $libraryRestrictionsEnabled)
+            Toggle(.newProfileRestrict, isOn: $libraryRestrictionsEnabled)
                 .tint(.siloSwitchOn)
 
             if libraryRestrictionsEnabled {
                 if case .loading = libraryLoad {
-                    ProgressView("Loading libraries…")
+                    ProgressView(.newProfileLibrariesLoading)
                         .font(.siloCaption)
                 } else if case .failed(let message) = libraryLoad {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Couldn't load libraries. \(message)")
+                        Text(.newProfileLibrariesFailedDetail(message))
                             .font(.siloCaption)
                             .foregroundStyle(Color.siloSecondaryText)
                         // Not `.disabled` while retrying: that would move focus
@@ -550,19 +552,19 @@ struct CreateProfileView: View {
                                     ProgressView()
                                         .controlSize(.small)
                                 }
-                                Text("Try Again")
+                                Text(.profilesAccessRetry)
                             }
                         }
                         .buttonStyle(GhostChipButtonStyle())
-                        .accessibilityValue(isRetryingLibraries ? "Loading" : "")
+                        .accessibilityValue(isRetryingLibraries ? AppLanguage.string(.commonLoading) : "")
                     }
                 } else if libraries.isEmpty {
-                    Text("No libraries are available to assign.")
+                    Text(.newProfileLibrariesEmpty)
                         .font(.siloCaption)
                         .foregroundStyle(Color.siloSecondaryText)
                 } else {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Allowed libraries")
+                        Text(.newProfileAllowed)
                             .font(.siloCaption)
                             .foregroundStyle(Color.siloSecondaryText)
                         ForEach(libraries) { library in
@@ -607,7 +609,7 @@ struct CreateProfileView: View {
     private var previewProfile: UserProfile {
         UserProfile(
             id: "preview-\(selectedStyleId)",
-            name: name.isEmpty ? "Your Name" : name,
+            name: name.isEmpty ? AppLanguage.string(.newProfilePreviewName) : name,
             avatarEmoji: activePreset?.ref,
             hasPin: !pin.isEmpty,
             isChild: isChild
@@ -624,10 +626,10 @@ struct CreateProfileView: View {
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(.white.opacity(0.5))
             VStack(alignment: .leading, spacing: 4) {
-                Text("Uses your profile name")
+                Text(.profilesFormInitialsTitle)
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(.white.opacity(0.85))
-                Text("The first letters of the name below appear on your tile.")
+                Text(.profilesFormInitialsDetail)
                     .font(.system(size: 13))
                     .foregroundStyle(.white.opacity(0.5))
             }
@@ -651,7 +653,7 @@ struct CreateProfileView: View {
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.triangle.2.circlepath")
-                Text("Shuffle")
+                Text(.profilesFormShuffle)
             }
             #if os(tvOS)
             .font(.system(size: 18, weight: .medium))
@@ -660,7 +662,7 @@ struct CreateProfileView: View {
             #endif
         }
         .buttonStyle(GhostChipButtonStyle())
-        .accessibilityLabel("Shuffle avatars")
+        .accessibilityLabel(.profilesFormShuffleAvatars)
     }
 
     /// Selecting a new style resets the seed so the preview jumps to the
@@ -715,26 +717,30 @@ struct CreateProfileView: View {
         }
         guard let requestsAllowedSupported else {
             formError = CreateProfileFailure(
-                message: "Couldn't reach the server to check this profile's request settings. Try again."
+                message: AppLanguage.string(.newProfileErrorRequestsSupport)
             )
             return
         }
 
         guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
-            formError = CreateProfileFailure(title: "Name Required", message: "Please enter a name.")
+            formError = CreateProfileFailure(
+                title: AppLanguage.string(.newProfileErrorNameTitle),
+                message: AppLanguage.string(.newProfileErrorName)
+            )
             return
         }
         guard ProfilePIN.isAcceptableForCreate(pin) else {
             formError = CreateProfileFailure(
-                title: "PIN Too Short",
-                message: "Enter all \(ProfilePIN.length) digits, or leave the PIN empty for no PIN."
+                // The catalog text says 4, `ProfilePIN.length`.
+                title: AppLanguage.string(.newProfileErrorPinTitle),
+                message: AppLanguage.string(.newProfileErrorPin)
             )
             return
         }
         guard !libraryRestrictionsEnabled || !allowedLibraryIds.isEmpty else {
             formError = CreateProfileFailure(
-                title: "Choose a Library",
-                message: "Select at least one library for this child profile."
+                title: AppLanguage.string(.newProfileErrorLibraryTitle),
+                message: AppLanguage.string(.newProfileErrorLibrary)
             )
             return
         }
@@ -775,7 +781,7 @@ struct CreateProfileFailure: Equatable {
     /// Close the form and reload the profile list when the alert is dismissed.
     let closesForm: Bool
 
-    init(title: String = "Couldn't Create Profile", message: String, closesForm: Bool = false) {
+    init(title: String = AppLanguage.string(.newProfileErrorTitle), message: String, closesForm: Bool = false) {
         self.title = title
         self.message = message
         self.closesForm = closesForm
@@ -785,8 +791,8 @@ struct CreateProfileFailure: Equatable {
         switch MutationDelivery(error) {
         case .unconfirmed:
             self.init(
-                title: "Profile May Have Been Created",
-                message: "Silo didn't get an answer from the server. Check the profile list before trying again.",
+                title: AppLanguage.string(.newProfileUnconfirmedTitle),
+                message: AppLanguage.string(.newProfileUnconfirmedBody),
                 closesForm: true
             )
             return
@@ -794,8 +800,8 @@ struct CreateProfileFailure: Equatable {
             // The fence can fire after the server already answered 201, so
             // the profile may exist. Closing is safe either way.
             self.init(
-                title: "Profile May Have Been Created",
-                message: "The server or account changed while creating the profile. Check the profile list before trying again.",
+                title: AppLanguage.string(.newProfileUnconfirmedTitle),
+                message: AppLanguage.string(.newProfileUnconfirmedOwnerChanged),
                 closesForm: true
             )
             return
@@ -809,9 +815,10 @@ struct CreateProfileFailure: Equatable {
         if case APIv2Error.problem(let problem) = error,
            UpdateRequirement(error) == nil,
            [403, 409, 422].contains(problem.status) {
-            let reason = problem.errors?.first(where: { !$0.detail.isEmpty })?.detail ?? problem.detail
-            self.init(title: "Can't Create Profile",
-                      message: reason.isEmpty ? ErrorState(error).message : reason)
+            let field = problem.errors?.first(where: { !$0.detail.isEmpty })
+            let reason = field?.detail ?? problem.detail
+            self.init(title: AppLanguage.string(.newProfileRefusedTitle),
+                      message: reason.isEmpty ? ErrorState(error).message : problem.localized(reason, field: field))
             return
         }
         self.init(message: ErrorState(error).message)
@@ -932,7 +939,7 @@ private struct PresetCell: View {
             #endif
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isFocused)
             .animation(.easeOut(duration: SiloTheme.fastDuration), value: isSelected)
-            .accessibilityLabel("Avatar \(preset.seed)")
+            .accessibilityLabel(.profilesAvatarPreset(preset.seed))
             .accessibilityAddTraits(.isButton)
     }
 }
@@ -948,8 +955,8 @@ private struct PresetCell: View {
 /// keeps the row readable at all times, with focus signalled by a soft
 /// highlight + a prominent switch puck.
 private struct ProfileSwitchRow: View {
-    let title: String
-    let subtitle: String
+    let title: LocalizedStringResource
+    let subtitle: LocalizedStringResource
     @Binding var isOn: Bool
 
     @FocusState private var isFocused: Bool
@@ -998,7 +1005,7 @@ private struct ProfileSwitchRow: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel(title)
         .accessibilityHint(subtitle)
-        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityValue(isOn ? LocalizedStringResource.newProfileOn : .newProfileOff)
     }
 
     private var switchView: some View {

@@ -61,6 +61,12 @@ extension SettingKey {
             return Self.cellularQualityRevision
         case .playbackBufferingQualityMode:
             return 23
+        case .playbackShowMarkerConfidence, .playbackShowMarkerSource:
+            return 24
+        case .watchPartyGuestControlPolicy:
+            return 27
+        case .uiAppLanguage:
+            return 28
         case .catalogMetadataLanguage, .downloadsDefaultQuality, .downloadsKeepWatched,
              .downloadsWifiOnly, .navShowAudiobooks, .playbackAudioLanguage,
              .playbackAutoPlayNext, .playbackAutoPlayNextPreview, .playbackAutoSkipCredits,

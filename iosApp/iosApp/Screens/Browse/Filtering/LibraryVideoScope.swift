@@ -19,7 +19,8 @@ enum LibraryVideoScope: String, Hashable {
     func section(_ original: ResolvedSection, items: [SectionItem]) -> ResolvedSection {
         ResolvedSection(id: original.id, sectionType: original.sectionType, title: original.title,
                         featured: original.featured, itemLimit: original.itemLimit, totalCount: nil,
-                        isCustom: original.isCustom, customized: original.customized, items: items)
+                        isCustom: original.isCustom, customized: original.customized, items: items,
+                        titleKey: original.titleKey, titleArgs: original.titleArgs)
     }
 
     /// Overlap at most three shelves, preserving layout order and each shelf's cursor chain.

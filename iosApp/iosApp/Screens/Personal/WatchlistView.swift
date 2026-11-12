@@ -17,6 +17,7 @@ struct WatchlistView: View {
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.locale) private var locale
 
     #if os(tvOS)
     @FocusState private var focusedContentId: String?
@@ -64,28 +65,28 @@ struct WatchlistView: View {
                     .tvPageFocusOwner(
                         focusRequest: focusRequest,
                         isTopMenuFocused: isTopMenuFocused,
-                        accessibilityLabel: "Loading watchlist",
+                        accessibilityLabel: AppLanguage.string(.personalWatchlistLoading, locale: locale),
                         onMoveUp: onTopMenuFocusRequest
                     )
                 #endif
             } else {
                 EmptyStateView(
                     icon: "bookmark",
-                    title: "Watchlist is empty",
-                    subtitle: "Tap the bookmark icon on any item to add it here"
+                    title: AppLanguage.string(.personalWatchlistEmpty, locale: locale),
+                    subtitle: AppLanguage.string(.personalWatchlistEmptyTapHint, locale: locale)
                 )
                 #if os(tvOS)
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "Watchlist is empty",
+                    accessibilityLabel: AppLanguage.string(.personalWatchlistEmpty, locale: locale),
                     onMoveUp: onTopMenuFocusRequest
                 )
                 #endif
             }
         }
         .siloPageBackground()
-        .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? "Watchlist" : nil))
+        .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? .personalWatchlistTitle : nil))
         .task {
             await loadWatchlist()
         }
@@ -161,7 +162,7 @@ struct WatchlistView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 40) {
                 if usesTVTopMenu {
-                    Text("Watchlist")
+                    Text(.personalWatchlistTitle)
                         .font(.system(size: 64, weight: .bold))
                         .foregroundStyle(Color.siloOnSurface)
                 }
@@ -232,12 +233,16 @@ struct WatchlistView: View {
     }
 
     private var iosSelectedSectionEmptyState: some View {
-        ContentUnavailableView(
-            "No Watchlist \(selectedSection.rawValue)",
-            systemImage: selectedSection == .movies ? "film" : "tv",
-            description: Text("Add titles from a detail page and they will appear here.")
-        )
+        ContentUnavailableView {
+            Label(iosEmptyTitle, systemImage: selectedSection == .movies ? "film" : "tv")
+        } description: {
+            Text(.personalWatchlistEmptyBody)
+        }
         .frame(maxWidth: .infinity, minHeight: 360)
+    }
+
+    private var iosEmptyTitle: LocalizedStringResource {
+        selectedSection == .movies ? .personalWatchlistEmptyMoviesTitle : .personalWatchlistEmptyTvShowsTitle
     }
     #endif
 

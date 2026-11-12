@@ -24,7 +24,7 @@ enum ShuffleAvailability {
 @Observable
 final class ShuffleLauncher {
     private(set) var isStarting = false
-    var failureMessage: String?
+    var failureMessage: LocalizedStringResource?
 
     private let api: SiloAPI
 
@@ -58,11 +58,11 @@ final class ShuffleLauncher {
         }
     }
 
-    nonisolated static func failureMessage(for error: Error) -> String {
+    nonisolated static func failureMessage(for error: Error) -> LocalizedStringResource {
         switch ShuffleError.classify(error) {
-        case .nothingToPlay: return "Nothing here can be played."
-        case .notFound: return "This is no longer available to shuffle."
-        case nil: return "Couldn't start the shuffle. Try again."
+        case .nothingToPlay: return .shuffleNothingToPlay
+        case .notFound: return .shuffleNotFound
+        case nil: return .shuffleFailed
         }
     }
 }
@@ -72,15 +72,17 @@ private struct ShuffleFailureAlert: ViewModifier {
 
     func body(content: Content) -> some View {
         content.alert(
-            "Couldn't Shuffle",
+            Text(.shuffleFailedTitle),
             isPresented: Binding(
                 get: { launcher.failureMessage != nil },
                 set: { if !$0 { launcher.failureMessage = nil } }
             )
         ) {
-            Button("OK", role: .cancel) {}
+            Button(.shuffleOk, role: .cancel) {}
         } message: {
-            Text(launcher.failureMessage ?? "")
+            if let message = launcher.failureMessage {
+                Text(message)
+            }
         }
     }
 }
@@ -98,7 +100,7 @@ struct ShuffleButton: View {
 
     var body: some View {
         Button(action: action) {
-            Label("Shuffle", systemImage: "shuffle")
+            Label(.libraryShufflePill, systemImage: "shuffle")
         }
         #if os(tvOS)
         .buttonStyle(TVBrowseControlPillStyle())

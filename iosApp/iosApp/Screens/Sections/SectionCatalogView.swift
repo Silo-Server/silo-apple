@@ -9,6 +9,8 @@ struct SectionCatalogView: View {
 
     @State private var viewModel = SectionCatalogViewModel()
     @Environment(AppRouter.self) private var router
+    /// The app language, so a switch re-renders the title.
+    @Environment(\.locale) private var locale
 
     private var libraryId: Int? {
         if case .library(let id) = target.scope { return id }
@@ -22,8 +24,8 @@ struct SectionCatalogView: View {
             } else if viewModel.isUnavailable {
                 placeholder(
                     icon: "rectangle.stack.badge.minus",
-                    title: "Row unavailable",
-                    subtitle: "This row is no longer available."
+                    title: .rowPageUnavailable,
+                    subtitle: .rowPageUnavailableBody
                 )
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await load(reset: true) } })
@@ -32,19 +34,20 @@ struct SectionCatalogView: View {
                 #if os(tvOS)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .tvPageFocusOwner(focusRequest: 1, isTopMenuFocused: false,
-                                      accessibilityLabel: "Loading \(target.title)", onMoveUp: nil)
+                                      accessibilityLabel: AppLanguage.string(.rowPageLoading(target.displayTitle(in: locale)), locale: locale),
+                                      onMoveUp: nil)
                 #endif
             } else {
                 placeholder(
                     icon: "square.stack.3d.up.fill",
-                    title: "Nothing here yet",
-                    subtitle: "This row does not have any items right now."
+                    title: .rowPageEmpty,
+                    subtitle: .rowPageEmptyBody
                 )
             }
         }
         .siloPageBackground()
         .environment(\.browseLibraryId, libraryId)
-        .navigationTitle(target.title)
+        .navigationTitle(target.displayTitle(in: locale))
         .siloNavigationTitleDisplayMode(.large)
         #if os(iOS)
         .toolbar {
@@ -53,7 +56,7 @@ struct SectionCatalogView: View {
                     Button(action: onClose) {
                         Image(systemName: "xmark")
                     }
-                    .accessibilityLabel("Close")
+                    .accessibilityLabel(Text(.rowPageClose))
                 }
             }
         }
@@ -96,17 +99,18 @@ struct SectionCatalogView: View {
     }
 
     /// Shown once the whole row is loaded or the server knows its size.
-    private var countLabel: String? {
+    private var countLabel: LocalizedStringResource? {
         let count = viewModel.totalItems ?? (viewModel.hasMore ? nil : viewModel.items.count)
-        return count.map { "\($0.formatted()) item\($0 == 1 ? "" : "s")" }
+        return count.map { LocalizedStringResource.rowPageItemCount(count: $0, $0.formatted(.number.locale(locale))) }
     }
 
     @ViewBuilder
-    private func placeholder(icon: String, title: String, subtitle: String) -> some View {
-        let state = EmptyStateView(icon: icon, title: title, subtitle: subtitle)
+    private func placeholder(icon: String, title: LocalizedStringResource, subtitle: LocalizedStringResource) -> some View {
+        let titleText = AppLanguage.string(title, locale: locale)
+        let state = EmptyStateView(icon: icon, title: titleText, subtitle: AppLanguage.string(subtitle, locale: locale))
         #if os(tvOS)
         // A pushed page with nothing focusable would leave Menu/Back dead.
-        state.tvPageFocusOwner(focusRequest: 1, isTopMenuFocused: false, accessibilityLabel: title, onMoveUp: nil)
+        state.tvPageFocusOwner(focusRequest: 1, isTopMenuFocused: false, accessibilityLabel: titleText, onMoveUp: nil)
         #else
         state
         #endif

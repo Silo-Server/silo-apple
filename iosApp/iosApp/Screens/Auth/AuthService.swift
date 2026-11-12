@@ -178,6 +178,10 @@ final class AuthService: @unchecked Sendable {
     /// its name completed with a domain (an overlay provider's bare name), is
     /// committed as that HTTPS origin: the redirect answers reads only, so
     /// saving the typed URL would fail sign-in.
+    ///
+    /// Cancelling the calling task stops the probes and throws with nothing
+    /// saved. Once setup status has answered it is too late: the check goes
+    /// on to save the server and make it active, as if nobody had cancelled.
     func checkServer(url: String) async throws -> APIv2SetupStatus {
         var normalized = ServerRegistry.normalize(url: url)
         if normalized.lowercased().hasPrefix("http://"),
@@ -209,20 +213,29 @@ final class AuthService: @unchecked Sendable {
             lastUsedAt: Date(),
             verifiedServerId: verifiedServerId
         )
-        // A saved entry for the same origin keeps its own id.
-        guard let saved = serverRegistry.addOrUpdate(entry) else {
-            throw ServerRegistryError.persistenceFailed
-        }
-        if serverRegistry.activeServerId != saved.id {
-            guard await serverRegistry.switchTo(serverId: saved.id) else {
+        // The candidate has answered, so a cancellation from here on is too
+        // late: saving it and making it active run in a task of their own and
+        // finish as they would for a check nobody cancelled. A switch that
+        // stopped partway would leave the server saved but not active.
+        let saved = try await Task {
+            // A saved entry for the same origin keeps its own id.
+            guard let saved = serverRegistry.addOrUpdate(entry) else {
                 throw ServerRegistryError.persistenceFailed
             }
-        }
+            if serverRegistry.activeServerId != saved.id {
+                guard await serverRegistry.switchTo(serverId: saved.id) else {
+                    throw ServerRegistryError.persistenceFailed
+                }
+            }
+            return saved
+        }.value
         // Now that the candidate is the active server, establish the v2
         // contract verdict the pilot gate reads. Recorded after the switch so
         // a candidate that is not committed never touches the active verdict.
+        // A cancelled caller cuts this read short and still hears that the
+        // server is active; the app reads the verdict again when it reacts
+        // to the new active server (`refreshActiveServerName`).
         await recordContractVerdict(serverId: saved.id, serverURL: saved.url)
-        try Task.checkCancellation()
 
         return status
     }
@@ -426,14 +439,19 @@ final class AuthService: @unchecked Sendable {
     // MARK: - Profiles
 
     /// The active account's profiles. Each fresh list is also cached on the
-    /// account, so the profile picker can draw it offline.
+    /// account with its profile limit, so the profile picker can draw it
+    /// offline and the profile menu knows whether another profile fits.
     func getProfiles() async throws -> [UserProfile] {
         let expectedAccount = await tokenStore.refreshAccountIdentity()
-        let profiles = try await SiloAPI.shared.listProfiles()
-        if let expectedAccount {
-            await tokenStore.updateCachedProfiles(profiles.map(AccountProfile.init), expected: expectedAccount)
+        let list = try await SiloAPI.shared.householdProfileList()
+        if let expectedAccount,
+           await tokenStore.updateCachedProfiles(
+               list.profiles.map(AccountProfile.init), maxProfiles: list.maxProfiles, expected: expectedAccount
+           ) {
+            // The profile menu draws its profile row from the saved account.
+            await AccountDirectory.shared.reload()
         }
-        return profiles
+        return list.profiles
     }
 
     // MARK: - Temporary password
@@ -515,9 +533,58 @@ final class AuthService: @unchecked Sendable {
         }
     }
 
+    /// Checks the open profile's PIN and replaces its stored proof with the
+    /// one the server returns for it, for an action that PIN gates while the
+    /// profile stays open (Add Profile in the profile menu). The same server
+    /// check `selectProfile` makes, without its reset of profile-scoped
+    /// state: the identity is unchanged, only its proof, which goes stale
+    /// when the PIN is set or changed on another device after the profile
+    /// was opened. Nothing remembered changes.
+    ///
+    /// The profile can be closed or replaced while the server checks the PIN
+    /// (Every Time on a return from the background). The token store commits
+    /// the proof only if that profile is still the open one, so a late
+    /// answer never puts it back.
+    ///
+    /// - Parameter verify: the server's check of the PIN, returning the
+    ///   profile's new proof. Tests replace it.
+    func renewOpenProfileProof(
+        profileId: String,
+        pin: String,
+        verify: @Sendable (_ profileId: String, _ pin: String) async throws -> String? = {
+            try await SiloAPI.shared.verifyProfileSelection(profileId: $0, pin: $1)
+        }
+    ) async throws {
+        guard let expectedAccount = await tokenStore.refreshAccountIdentity() else {
+            throw ProfileTransitionError.noActiveAccount
+        }
+        guard !(await tokenStore.hasTemporaryScope()) else {
+            throw ProfileTransitionError.temporaryIdentityActive
+        }
+        // No PIN is sent for a profile that isn't open. Whether it still is
+        // when the answer arrives is the token store's check.
+        guard await tokenStore.getProfileId() == profileId else {
+            throw ProfileTransitionError.identityChanged
+        }
+        let answer: String?
+        do {
+            answer = try await verify(profileId, pin)
+        } catch HTTPError.authorityChanged, HTTPError.requestIdentityChanged {
+            // The request's owner fence saw the profile change first.
+            throw ProfileTransitionError.identityChanged
+        }
+        guard let proof = answer else {
+            throw ProfileTransitionError.missingPINProof
+        }
+        guard await tokenStore.renewProfileProof(proof, forProfile: profileId, expectedAccount: expectedAccount) else {
+            throw ProfileTransitionError.identityChanged
+        }
+    }
+
     /// Resolve the active server's launch policy. Returns `true` only when a
     /// complete remembered identity was restored; callers otherwise present
-    /// Who's Watching while retaining the account session.
+    /// Who's Watching, or Change Account at a cold launch that requires a
+    /// choice while several accounts are saved, retaining the account session.
     func resolveActiveProfileForSession() async -> Bool {
         guard let transitionLease = await HTTPClient.shared.beginIdentityTransition() else {
             return false

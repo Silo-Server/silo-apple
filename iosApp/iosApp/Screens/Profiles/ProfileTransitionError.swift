@@ -16,28 +16,28 @@ enum ProfileTransitionError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noActiveAccount:
-            return "Sign in before selecting a profile."
+            return AppLanguage.string(.profilesErrorSignInFirst)
         case .temporaryIdentityActive:
-            return "End remote playback before switching profiles."
+            return AppLanguage.string(.profilesErrorRemotePlayback)
         case .missingPINProof:
-            return "Silo couldn't verify that profile's PIN. Please try again."
+            return AppLanguage.string(.pinErrorMissingProof)
         case .incorrectPIN:
-            return "That PIN is incorrect. Try again."
+            return AppLanguage.string(.pinErrorIncorrectTryAgain)
         case .pinLockedOut(let retryAfter):
             // The header is server input: "inf" and "1e300" parse as numbers
             // and would trap in the Int conversion. A day is far past any
             // real lockout.
             guard let retryAfter, retryAfter > 0, retryAfter <= 86_400 else {
-                return "Too many incorrect PINs. Try again later."
+                return AppLanguage.string(.pinLockoutLater)
             }
             let minutes = Int((retryAfter / 60).rounded(.up))
-            return "Too many incorrect PINs. Try again in \(minutes) \(minutes == 1 ? "minute" : "minutes")."
+            return AppLanguage.string(.pinLockoutMinutes(count: minutes, LocaleFormat.integer(minutes)))
         case .noActiveServer:
-            return "Choose a server before selecting a profile."
+            return AppLanguage.string(.profilesErrorChooseServer)
         case .identityChanged:
-            return "The active account changed while selecting the profile. Please try again."
+            return AppLanguage.string(.profilesErrorAccountChanged)
         case .accountEpochUnavailable:
-            return "Silo couldn't securely remember this profile. Please try again."
+            return AppLanguage.string(.profilesErrorRememberFailed)
         }
     }
 }

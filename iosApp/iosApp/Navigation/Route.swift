@@ -104,11 +104,22 @@ struct SectionCatalogTarget: Hashable {
     let title: String
     /// A mixed library's Movies or Series view keeps that type on the page.
     var mediaScope: LibraryVideoScope? = nil
+    /// The section's title key, so the page shows its title in the language
+    /// on screen when it appears and after a switch.
+    var titleKey: String? = nil
+    var titleArgs: [String: String]? = nil
+
+    func displayTitle(in locale: Locale) -> String {
+        AppLanguage.serverText(title, key: titleKey, args: titleArgs, language: AppLanguage.language(of: locale))
+    }
 }
 
 extension SectionCatalogTarget {
     init(_ section: ResolvedSection, scope: Scope, mediaScope: LibraryVideoScope? = nil) {
-        self.init(scope: scope, sectionId: section.id, title: section.title, mediaScope: mediaScope)
+        self.init(
+            scope: scope, sectionId: section.id, title: section.title, mediaScope: mediaScope,
+            titleKey: section.titleKey, titleArgs: section.titleArgs
+        )
     }
 }
 

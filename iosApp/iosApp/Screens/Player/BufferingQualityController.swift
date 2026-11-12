@@ -76,13 +76,14 @@ final class BufferingQualityController {
 
     // MARK: - Copy
 
-    nonisolated static let promptTitle = "Playback keeps buffering"
-    nonisolated static let lowerAction = "Lower quality"
-    nonisolated static let keepAction = "Keep quality"
-    nonisolated static let undoCaption = "Quality lowered to stop buffering"
-    nonisolated static let undoAction = "Restore quality"
-    nonisolated static let loweredNotice = "Quality lowered to stop buffering"
-    nonisolated static let cantLowerNotice = "Can't lower quality for this video"
+    // The spec's copy, in the app's language.
+    nonisolated static var promptTitle: String { AppLanguage.string(.bufferingQualityPromptTitle) }
+    nonisolated static var lowerAction: String { AppLanguage.string(.bufferingQualityPromptLower) }
+    nonisolated static var keepAction: String { AppLanguage.string(.bufferingQualityPromptKeep) }
+    nonisolated static var undoCaption: String { AppLanguage.string(.bufferingUndoCaption) }
+    nonisolated static var undoAction: String { AppLanguage.string(.bufferingQualityRestore) }
+    nonisolated static var loweredNotice: String { AppLanguage.string(.bufferingQualityLowered) }
+    nonisolated static var cantLowerNotice: String { AppLanguage.string(.bufferingQualityCantLower) }
 
     /// The `quality_preference` / plan quality for Auto.
     nonisolated static let autoQuality = "auto"

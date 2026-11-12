@@ -674,3 +674,20 @@ private extension Result {
         return nil
     }
 }
+
+final class ApplePushDisplayLanguageTests: XCTestCase {
+    func testDisplayRequestNamesTheAppLanguage() throws {
+        XCTAssertEqual(ApplePushDisplayLanguage.displayedTagKey, AppLanguage.displayedTagKey)
+        let suite = "ApplePushDisplayLanguageTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var request = URLRequest(url: URL(string: "https://example.com/push")!)
+
+        ApplePushDisplayLanguage.apply(to: &request, defaults: defaults)
+        XCTAssertNil(request.value(forHTTPHeaderField: "Accept-Language"))
+
+        defaults.set("ar", forKey: AppLanguage.displayedTagKey)
+        ApplePushDisplayLanguage.apply(to: &request, defaults: defaults)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept-Language"), "ar")
+    }
+}

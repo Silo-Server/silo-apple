@@ -1,0 +1,72 @@
+# Apple paths whose interface text all comes from the string catalog. Checked by
+# scripts/ci/check-catalog-text.py. Add a path once all of its text is converted;
+# `mappings` also checks sentences returned or mapped outside a call (docs/i18n.md).
+iosApp/DownloadsActivity
+iosApp/iosApp/Components/AccountRemovalConfirmation.swift
+iosApp/iosApp/Components/BoxSetCardBadges.swift  mappings
+iosApp/iosApp/Components/CardYears.swift  mappings
+iosApp/iosApp/Components/EpisodeCardCaption.swift  mappings
+iosApp/iosApp/Components/EpisodeThumbCard.swift  mappings
+iosApp/iosApp/Components/MediaCard.swift  mappings
+iosApp/iosApp/Components/PosterSkeletons.swift  mappings
+iosApp/iosApp/Components/SectionExploreAllCard.swift  mappings
+iosApp/iosApp/ContentView.swift
+iosApp/iosApp/Control
+iosApp/iosApp/DesignSystem
+iosApp/iosApp/Downloads
+iosApp/iosApp/iOS
+iosApp/iosApp/macOS/OnboardingTourMacLayout.swift  mappings
+iosApp/iosApp/macOS/MacSettingsCommand.swift
+# Navigation/UICustomizationPreferences.swift still returns English status messages (follow-up).
+iosApp/iosApp/Navigation/AppNavPreferences.swift
+iosApp/iosApp/Navigation/AppRouter+Accounts.swift
+iosApp/iosApp/Navigation/AppRouter.swift
+iosApp/iosApp/Navigation/MacSidebarSections.swift
+iosApp/iosApp/Navigation/RequestsRouteVisibility.swift
+iosApp/iosApp/Navigation/Route.swift
+iosApp/iosApp/Navigation/SeriesDetailContext.swift
+iosApp/iosApp/Navigation/SiloDeepLinkCoordinator.swift
+iosApp/iosApp/Navigation/StatusColumnBar.swift
+iosApp/iosApp/Navigation/TabRouter.swift
+iosApp/iosApp/Notifications
+iosApp/iosApp/Overlays
+iosApp/iosApp/Pairing
+iosApp/iosApp/Screens/Accounts
+iosApp/iosApp/Screens/Audio
+iosApp/iosApp/Screens/Auth
+iosApp/iosApp/Screens/BoxSets  mappings
+iosApp/iosApp/Screens/Browse  mappings
+iosApp/iosApp/Screens/Calendar  mappings
+iosApp/iosApp/Screens/Collections  mappings
+iosApp/iosApp/Screens/Detail  mappings
+iosApp/iosApp/Screens/Home  mappings
+iosApp/iosApp/Screens/Onboarding
+iosApp/iosApp/Screens/People  mappings
+iosApp/iosApp/Screens/Personal  mappings
+iosApp/iosApp/Screens/Player
+iosApp/iosApp/Screens/Profiles
+iosApp/iosApp/Screens/Recommendations  mappings
+iosApp/iosApp/Screens/Requests
+iosApp/iosApp/Screens/Search  mappings
+iosApp/iosApp/Screens/Sections  mappings
+iosApp/iosApp/Screens/Servers
+iosApp/iosApp/Screens/Settings
+iosApp/iosApp/Screens/Shuffle  mappings
+iosApp/iosApp/Screens/WatchParty
+iosApp/iosApp/Shared/Diagnostics
+iosApp/iosApp/Shared/ProfileLaunchBehavior.swift
+iosApp/iosApp/Siri
+iosApp/iosApp/Startup
+iosApp/iosApp/tvOS/Components  mappings
+iosApp/iosApp/tvOS/Navigation
+iosApp/iosApp/tvOS/OnboardingTourPresentation+tvOS.swift
+iosApp/iosApp/tvOS/Profiles
+iosApp/iosApp/tvOS/Screens/Auth
+iosApp/iosApp/tvOS/Screens/Components
+iosApp/iosApp/tvOS/Screens/Components/TVCollectionPosterCard.swift  mappings
+iosApp/iosApp/tvOS/Screens/Detail  mappings
+iosApp/iosApp/tvOS/Screens/Libraries  mappings
+iosApp/iosApp/tvOS/Screens/Requests
+iosApp/iosApp/tvOS/Screens/Settings
+iosApp/iosApp/WatchParty
+iosApp/TopShelf

@@ -80,7 +80,11 @@ extension OverlayData {
         data.multiSub       = summary.multiSub
     }
 
+    /// The first name with something in it, trimmed, as web's
+    /// `firstNonEmpty` does: the trimmed name is also the badge's value key.
     private static func firstNonEmpty(_ values: [String]?) -> String? {
-        values?.first { !$0.isEmpty }
+        values?.lazy
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
     }
 }

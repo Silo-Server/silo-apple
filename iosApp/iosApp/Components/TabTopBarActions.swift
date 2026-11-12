@@ -2,9 +2,9 @@ import SwiftUI
 
 /// The shared right-hand action cluster used at the top of tab-root screens:
 /// Search, the iOS TV remote control, and a profile-avatar menu with
-/// Settings / Switch Profile / Sign Out. Every root page renders the same
-/// three controls so the header reads identically across Home, Libraries,
-/// For You, and Calendar.
+/// Settings / Switch Profile or Add Profile / Change Account / Sign Out.
+/// Every root page renders the same three controls so the header reads
+/// identically across Home, Libraries, For You, and Calendar.
 ///
 /// Each tab renders its own leading content (e.g. library selector on the
 /// Libraries tab, the wordmark on Home) and places this view on the
@@ -65,7 +65,7 @@ struct TabTopBarActions: View {
         return layout {
             TopBarIconButton(
                 systemImage: "magnifyingglass",
-                accessibilityLabel: "Search",
+                accessibilityLabel: .topBarSearch,
                 action: onSearch
             )
             #if os(iOS)
@@ -98,7 +98,7 @@ struct TabTopBarActions: View {
 /// stays small and chrome-free.
 private struct TopBarIconButton: View {
     let systemImage: String
-    let accessibilityLabel: String
+    let accessibilityLabel: LocalizedStringResource
     let action: () -> Void
 
     var body: some View {
@@ -115,9 +115,11 @@ private struct TopBarIconButton: View {
 }
 
 /// Profile avatar opening the account menu (Requests, Watch Party, Settings,
-/// Switch Profile, Change Account, Sign Out). Switch Profile opens the open
-/// account's picker; Change Account, in Switch Server's place, lists every
-/// saved account by server (spec §4.3).
+/// the profile row, Change Account, Sign Out). The profile row is Switch
+/// Profile, which opens the open account's picker, or Add Profile while the
+/// account has one profile and room for another, or absent when it has
+/// neither (`ProfileMenuRow`). Change Account, in Switch Server's place,
+/// lists every saved account by server (spec §4.3).
 ///
 /// On iPhone and iPad the menu is a panel (``ProfileMenuPanel``) headed by the
 /// profile picture, the profile name in bold and the server underneath,
@@ -162,12 +164,12 @@ struct ProfileAvatarMenu: View {
             Button {
                 onOpenRequests()
             } label: {
-                Label("Requests", systemImage: "sparkles")
+                Label(.menuRequests, systemImage: "sparkles")
             }
         }
         #if os(tvOS)
         if showsWatchParty {
-            Button(WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party", systemImage: "person.3") { router.navigate(to: .watchParty) }
+            Button(WatchPartySession.shared.isEngaged ? LocalizedStringResource.watchPartyMenuReturn : .watchPartyMenuOpen, systemImage: "person.3") { router.navigate(to: .watchParty) }
         }
         #endif
     }
@@ -177,20 +179,35 @@ struct ProfileAvatarMenu: View {
         Button {
             onOpenSettings()
         } label: {
-            Label("Settings", systemImage: "gearshape")
+            Label(.menuSettings, systemImage: "gearshape")
         }
-        Button {
-            onSwitchProfile()
-        } label: {
-            Label("Switch Profile", systemImage: "person.2")
+        if let profileRow {
+            Button {
+                choose(profileRow)
+            } label: {
+                Label(profileRow.title, systemImage: profileRow.systemImage)
+            }
         }
         Button {
             router.showChangeAccount()
         } label: {
-            Label("Change Account", systemImage: "person.crop.circle.badge.checkmark")
+            Label(.menuChangeAccount, systemImage: "person.crop.circle.badge.checkmark")
         }
     }
     #endif
+
+    /// Switch Profile, Add Profile, or no row, by the open account's profile
+    /// count and limit.
+    private var profileRow: ProfileMenuRow? {
+        ProfileMenuRow.row(for: directory.openAccount)
+    }
+
+    private func choose(_ row: ProfileMenuRow) {
+        switch row {
+        case .switchProfile: onSwitchProfile()
+        case .addProfile: router.beginAddProfile()
+        }
+    }
 
     private var avatarSize: CGFloat {
         #if os(macOS)
@@ -262,6 +279,8 @@ struct ProfileAvatarMenu: View {
                 }
             )
             .presentationCompactAdaptation(.popover)
+            // Profiles added or removed elsewhere change the profile row.
+            .task { _ = try? await StartupContentPrefetcher.fetchProfiles() }
             // The panel disappears once the popover has finished closing;
             // isPanelPresented turns false when it starts to.
             .onDisappear {
@@ -270,7 +289,7 @@ struct ProfileAvatarMenu: View {
                 action()
             }
         }
-        .accessibilityLabel("Profile menu")
+        .accessibilityLabel(.menuProfileMenuLabel)
         #else
         // Same order as Android's phone menu: Requests and Watch Party, then
         // the account actions, then Sign Out on its own. The header titles
@@ -286,7 +305,7 @@ struct ProfileAvatarMenu: View {
                 Button(role: .destructive) {
                     onSignOut()
                 } label: {
-                    Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                    Label(.menuSignOut, systemImage: "rectangle.portrait.and.arrow.forward")
                 }
             }
         } label: {
@@ -300,7 +319,7 @@ struct ProfileAvatarMenu: View {
         #else
         .menuStyle(.borderlessButton)
         #endif
-        .accessibilityLabel("Profile menu")
+        .accessibilityLabel(.menuProfileMenuLabel)
         #endif
     }
 
@@ -334,7 +353,7 @@ struct ProfileAvatarMenu: View {
         var features: [ProfileMenuPanel.Row] = []
         if requestsEnabled {
             features.append(.init(
-                title: "Requests",
+                title: .menuRequests,
                 systemImage: "sparkles",
                 pushesScreen: true,
                 action: onOpenRequests
@@ -342,26 +361,29 @@ struct ProfileAvatarMenu: View {
         }
         if showsWatchParty {
             features.append(.init(
-                title: WatchPartySession.shared.isEngaged ? "Return to Watch Party" : "Watch Party",
+                title: WatchPartySession.shared.isEngaged ? LocalizedStringResource.watchPartyMenuReturn : .watchPartyMenuOpen,
                 systemImage: "person.3",
                 pushesScreen: true
             ) { router.navigate(to: .watchParty) })
         }
+        var account: [ProfileMenuPanel.Row] = [
+            .init(title: .menuSettings, systemImage: "gearshape", pushesScreen: true, action: onOpenSettings),
+        ]
+        if let profileRow {
+            account.append(.init(title: profileRow.title, systemImage: profileRow.systemImage) { choose(profileRow) })
+        }
+        account.append(.init(
+            title: .menuChangeAccount,
+            systemImage: "person.crop.circle.badge.checkmark",
+            action: { router.showChangeAccount() }
+        ))
         return [
             features,
-            [
-                .init(title: "Settings", systemImage: "gearshape", pushesScreen: true, action: onOpenSettings),
-                .init(title: "Switch Profile", systemImage: "person.2", action: onSwitchProfile),
-                .init(
-                    title: "Change Account",
-                    systemImage: "person.crop.circle.badge.checkmark",
-                    action: { router.showChangeAccount() }
-                ),
-            ],
+            account,
             [
                 .init(
-                    title: "Sign Out",
-                    systemImage: "rectangle.portrait.and.arrow.right",
+                    title: .menuSignOut,
+                    systemImage: "rectangle.portrait.and.arrow.forward",
                     isDestructive: true,
                     action: onSignOut
                 ),
@@ -375,8 +397,9 @@ struct ProfileAvatarMenu: View {
 /// The account menu on iPhone and iPad: the profile picture beside a bold
 /// profile name with the server underneath, as on Apple TV, then the actions.
 struct ProfileMenuPanel: View {
+    @Environment(\.locale) private var locale
     struct Row: Identifiable {
-        let title: String
+        let title: LocalizedStringResource
         let systemImage: String
         var isDestructive = false
         /// The action pushes a screen, so it runs as the panel starts to
@@ -384,7 +407,7 @@ struct ProfileMenuPanel: View {
         var pushesScreen = false
         let action: () -> Void
 
-        var id: String { title }
+        var id: String { systemImage }
     }
 
     let profile: UserProfile?
@@ -445,7 +468,7 @@ struct ProfileMenuPanel: View {
             )
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(profile?.name ?? "Profile")
+                Text(profile?.name ?? AppLanguage.string(.topBarProfileFallback))
                     .font(.headline)
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)

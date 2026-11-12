@@ -9,12 +9,12 @@ enum SearchMediaType: String, CaseIterable, Identifiable {
 
     var id: Self { self }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .all: "All"
-        case .movie: "Movies"
-        case .series: "Series"
-        case .audiobook: "Audiobooks"
+        case .all: .searchFilterAll
+        case .movie: .searchFilterMovies
+        case .series: .searchFilterSeries
+        case .audiobook: .searchFilterAudiobooks
         }
     }
 

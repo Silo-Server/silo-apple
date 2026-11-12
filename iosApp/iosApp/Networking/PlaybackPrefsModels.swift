@@ -98,6 +98,23 @@ struct AudioTrackSignature: Codable, Hashable, Sendable {
 
 // MARK: - Settings UI constants
 
+extension SettingPresentationMetadata {
+    /// A setting's "not set" label from the manifest, in the language on
+    /// screen (`settingsManifest.<key>.unsetLabel`), else the manifest's
+    /// English, else `fallback` for a manifest without one.
+    static func unsetLabel(
+        for key: SettingKey,
+        fallback: String,
+        language: String = AppLanguage.displayedLanguage
+    ) -> String {
+        AppLanguage.serverText(
+            definitions[key]?.unsetLabel ?? fallback,
+            key: "settingsManifest.\(key.rawValue).unsetLabel",
+            language: language
+        )
+    }
+}
+
 /// Sentinel used by the library-prefs editor to mean "no override —
 /// fall through to the profile / global default". Mirrors the web
 /// frontend's `INHERIT_VALUE` so the same vocabulary works everywhere.
@@ -111,14 +128,15 @@ enum PlaybackPrefSentinel {
 
 /// One language row in a settings picker. Values come from the generated
 /// contract catalog, deployment-observed suggestions, and the current stored
-/// value. Labels are localized by Foundation rather than shipped as a second
-/// English-only registry.
+/// value. Labels are localized by Foundation, in the app's language, rather
+/// than shipped as a second English-only registry.
 struct PlaybackLanguageOption: Identifiable, Hashable {
     let code: String
     let label: String
     var id: String { code }
 
-    static let all = options(for: .playbackSubtitleLanguage)
+    /// Built on each read, so the labels follow the app's language.
+    static var all: [PlaybackLanguageOption] { options(for: .playbackSubtitleLanguage) }
 
     /// ISO 639-2/B spellings whose terminology form differs. Foundation
     /// canonicalizes most of these through CLDR, but not every supported
@@ -165,12 +183,13 @@ struct PlaybackLanguageOption: Identifiable, Hashable {
         return values.map { .init(code: $0, label: label(forCode: $0)) }
     }
 
-    static func label(forCode code: String) -> String {
+    static func label(forCode code: String, locale: Locale = AppLanguage.formattingLocale) -> String {
         if code.caseInsensitiveCompare(PlaybackPrefSentinel.originalLanguage) == .orderedSame
             || code.caseInsensitiveCompare("original") == .orderedSame { return "Original Language" }
         let identifier = code.replacingOccurrences(of: "_", with: "-")
-        return Locale.current.localizedString(forIdentifier: identifier)?.capitalized
-            ?? Locale.current.localizedString(forLanguageCode: identifier.split(separator: "-").first.map(String.init) ?? identifier)?.capitalized
+        let primary = identifier.split(separator: "-").first.map(String.init) ?? identifier
+        return (locale.localizedString(forIdentifier: identifier) ?? locale.localizedString(forLanguageCode: primary))
+            .map { LocaleFormat.capitalizedName($0, locale: locale) }
             ?? code.uppercased()
     }
 

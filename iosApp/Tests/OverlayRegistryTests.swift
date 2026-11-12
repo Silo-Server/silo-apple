@@ -53,6 +53,57 @@ final class OverlayRegistryTests: XCTestCase {
         XCTAssertNil(badge.getIcon?(OverlayData(hdr: "HDR10", audio: "Atmos")))
     }
 
+    func testNoBadgeDefaultsToTheWatchStatusCorner() throws {
+        // Ratings sit on the left rail and ribbons on the right, as on web;
+        // a stored `top-right` reads as the right rail.
+        XCTAssertEqual(try def("rating_imdb").defaultPosition, .leftEdge)
+        XCTAssertEqual(try def("rating_rt_audience").defaultPosition, .leftEdge)
+        XCTAssertEqual(try def("show_status").defaultPosition, .rightEdge)
+        XCTAssertEqual(OverlayPosition(stored: "top-right"), .rightEdge)
+        XCTAssertNil(OverlayPosition(stored: "middle"))
+    }
+
+    func testValueKeysAreTheApiValuesNotTheLabels() throws {
+        let data = OverlayData(resolution: "2160p", hdr: "DV HDR10", audio: "Atmos", showStatus: "Returning Series")
+        XCTAssertEqual(try def("resolution").getValueKey?(data), "2160p")
+        XCTAssertEqual(try def("resolution_hdr").getValueKey?(data), "2160p DV HDR10")
+        XCTAssertEqual(try def("resolution_hdr_audio").getValueKey?(data), "2160p DV HDR10 Atmos")
+        XCTAssertEqual(try def("resolution_hdr_audio").getValueKey?(OverlayData(resolution: "1080p", audio: "TrueHD")), "1080p TrueHD")
+        XCTAssertNil(try def("resolution_hdr").getValueKey?(OverlayData(hdr: "HDR10")))
+        XCTAssertEqual(try def("show_status").getValueKey?(data), "Returning")
+        // Scores are continuous, so a rating takes no per-value image.
+        XCTAssertNil(try def("rating_imdb").getValueKey)
+    }
+
+    func testRatingBadgeCarriesItsSourceMarkAndBareScore() throws {
+        let imdb = try def("rating_imdb")
+        let data = OverlayData(ratingImdb: 9.24, ratingRtCritic: 89)
+        XCTAssertEqual(imdb.getValue(data), "IMDb 9.2")
+        XCTAssertEqual(imdb.sourceMark, "IMDb")
+        XCTAssertEqual(imdb.getScore?(data), "9.2")
+        XCTAssertEqual(try def("rating_rt").getScore?(data), "89%")
+        XCTAssertNil(imdb.getValue(OverlayData()))
+    }
+
+    func testAtmosMarkNeedsAnExactAtmosValue() throws {
+        let audio = try def("audio")
+        XCTAssertEqual(audio.getIcon?(OverlayData(audio: "Atmos")), .atmos)
+        XCTAssertEqual(audio.getIcon?(OverlayData(audio: "ATMOS")), .atmos)
+        // The mark would not say "TrueHD", so the label stays whole beside the plain icon.
+        XCTAssertEqual(audio.getIcon?(OverlayData(audio: "TrueHD Atmos")), .volume)
+    }
+
+    func testStudioAndNetworkAreTheFirstNameWithTextTrimmed() throws {
+        let item = try HTTPClient.makeJSONDecoder().decode(
+            BrowseItem.self,
+            from: Data(#"{"content_id":"movie:a","type":"movie","title":"A","studios":[" ","  A24 "],"networks":[]}"#.utf8)
+        )
+        let data = OverlayData.from(item)
+        XCTAssertEqual(data.studio, "A24")
+        XCTAssertEqual(try def("studio").getValueKey?(data), "A24")
+        XCTAssertNil(data.network)
+    }
+
     func testResolutionHdrNamesHdr10Plus() throws {
         XCTAssertEqual(try def("resolution_hdr").getValue(OverlayData(resolution: "2160p", hdr: "HDR10+")), "4K HDR10+")
     }

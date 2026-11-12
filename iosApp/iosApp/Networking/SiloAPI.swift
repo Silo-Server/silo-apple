@@ -207,7 +207,9 @@ actor SiloAPI {
                 totalCount: row.items.count,
                 isCustom: false,
                 customized: false,
-                items: row.items
+                items: row.items,
+                titleKey: row.titleKey,
+                titleArgs: row.titleArgs
             )
         }
         let response = SectionsResponse(sections: resolved)
@@ -774,7 +776,7 @@ enum APIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .httpError(let code):
-            return "Server returned status \(code)"
+            return AppLanguage.string(.errorsAppleHttpStatus("\(code)"))
         case .unsupportedMedia(let message):
             return message
         }

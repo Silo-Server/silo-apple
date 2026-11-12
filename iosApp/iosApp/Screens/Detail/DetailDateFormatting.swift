@@ -1,12 +1,12 @@
 import Foundation
 
 enum DetailDateFormatting {
-    static func longDate(_ raw: String?) -> String? {
-        formattedDate(raw, formatter: longDisplayFormatter)
+    static func longDate(_ raw: String?, locale: Locale = AppLanguage.formattingLocale) -> String? {
+        formattedDate(raw, formatter: LocaleFormat.dateFormatter(dateStyle: .long, locale: locale))
     }
 
-    static func abbreviatedDate(_ raw: String?) -> String? {
-        formattedDate(raw, formatter: abbreviatedDisplayFormatter)
+    static func abbreviatedDate(_ raw: String?, locale: Locale = AppLanguage.formattingLocale) -> String? {
+        formattedDate(raw, formatter: LocaleFormat.dateFormatter(dateStyle: .medium, locale: locale))
     }
 
     /// Internal rather than private so tests can pass a formatter pinned to a
@@ -65,19 +65,5 @@ enum DetailDateFormatting {
         let parser = ISO8601DateFormatter()
         parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return parser
-    }()
-
-    private static let longDisplayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .long
-        formatter.timeStyle = .none
-        return formatter
-    }()
-
-    private static let abbreviatedDisplayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter
     }()
 }

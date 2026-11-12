@@ -31,9 +31,9 @@ enum VideoGravity: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .fit:     return "Fit"
-        case .fill:    return "Fill"
-        case .stretch: return "Stretch"
+        case .fit:     return AppLanguage.string(.playerAspectFit)
+        case .fill:    return AppLanguage.string(.playerAspectFill)
+        case .stretch: return AppLanguage.string(.playerAspectStretch)
         }
     }
 }
@@ -73,10 +73,10 @@ enum BufferAheadMode: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .automatic: return "Automatic"
-        case .standard:  return "Standard (40 seconds)"
-        case .extended:  return "Extended (5 minutes)"
-        case .unlimited: return "Unlimited"
+        case .automatic: return AppLanguage.string(.playerSettingsAutomatic)
+        case .standard:  return AppLanguage.string(.playerSettingsBufferAheadStandard(40))
+        case .extended:  return AppLanguage.string(.playerSettingsBufferAheadExtended(5))
+        case .unlimited: return AppLanguage.string(.playerSettingsBufferAheadUnlimited)
         }
     }
 }
@@ -100,8 +100,8 @@ enum DeinterlacePreference: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .automatic: return "Automatic"
-        case .software:  return "Software"
+        case .automatic: return AppLanguage.string(.playerSettingsAutomatic)
+        case .software:  return AppLanguage.string(.playerSettingsDeinterlaceSoftware)
         }
     }
 }
@@ -121,8 +121,8 @@ enum DeinterlaceFieldRatePreference: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .fullMotion: return "Full Motion"
-        case .film:       return "Film"
+        case .fullMotion: return AppLanguage.string(.playerSettingsDeinterlaceFullMotion)
+        case .film:       return AppLanguage.string(.playerSettingsDeinterlaceFilm)
         }
     }
 }

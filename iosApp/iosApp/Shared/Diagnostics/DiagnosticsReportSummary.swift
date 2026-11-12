@@ -10,28 +10,45 @@ struct DiagnosticsReportSummary: Identifiable, Equatable {
     let deviceIdentity: String
     let categories: [DiagnosticsLogCategory]
     let lineCount: Int
-    let destinationServerName: String
+    let destinationServerName: LocalizedStringResource
 
     var id: UUID { reportID }
 
-    var typeTitle: String {
+    var typeTitle: LocalizedStringResource {
         switch type {
         case .crash, .nativeCrash:
-            return "Crash"
+            return .diagnosticsReportTypeCrash
         case .hang, .anr:
-            return "Not responding"
+            return .diagnosticsSummaryTypeNotResponding
         case .abnormalExit:
-            return "Unclean shutdown"
+            return .diagnosticsSummaryTypeUncleanShutdown
         case .manual:
-            return "Manual report"
+            return .diagnosticsSummaryTypeManual
         }
     }
 
-    var categoriesDescription: String {
+    /// The log categories by their identifiers, which stay as written.
+    var categoriesDescription: LocalizedStringResource {
         guard !categories.isEmpty else {
-            return "Basic diagnostic logs"
+            return .diagnosticsSummaryBasicLogs
         }
-        return categories.map(\.rawValue).joined(separator: ", ")
+        return .verbatim(categories.map(\.rawValue).joined(separator: ", "))
+    }
+}
+
+extension ReportType {
+    /// The report's title in Settings lists and report details.
+    var listTitle: LocalizedStringResource {
+        switch self {
+        case .crash, .nativeCrash:
+            return .diagnosticsReportTypeCrash
+        case .hang, .anr:
+            return .diagnosticsReportTypeNotResponding
+        case .abnormalExit:
+            return .diagnosticsReportTypeUncleanShutdown
+        case .manual:
+            return .diagnosticsReportTypeManual
+        }
     }
 }
 #endif

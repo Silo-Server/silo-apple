@@ -176,7 +176,7 @@ enum ApplePlaybackV3Capabilities {
         let videoCapabilityMode = requestedMode ?? AppleDecodeCapabilities.streamingVideoCapabilityMode
         let usesAetherDeclaration = videoCapabilityMode == .aetherDeclared
         let videoDecode = usesAetherDeclaration
-            ? []
+            ? AppleDecodeCapabilities.playbackV3VideoDecode(AppleDecodeCapabilities.declaredOnlineVideo.decode)
             : AppleDecodeCapabilities.playbackV3VideoDecodeAttestation()
         let videoCodecs = AppleDecodeCapabilities.streamingVideoCodecs(for: videoCapabilityMode)
         let hardwareVideoCodecs = AppleDecodeCapabilities.hardwareVideoCodecs

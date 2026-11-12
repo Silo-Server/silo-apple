@@ -56,10 +56,10 @@ enum DownloadSubscriptionError: LocalizedError, Equatable, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidRequest: return "The monitoring request is not valid."
-        case .incompleteList: return "The server returned an incomplete list of monitored series. Try again."
-        case .unexpectedReceipt: return "The server returned an unexpected monitoring answer."
-        case .incompleteSync: return "The server did not finish checking a monitored series for new episodes."
+        case .invalidRequest: return AppLanguage.string(.errorsAppleDownloadMonitorInvalidRequest)
+        case .incompleteList: return AppLanguage.string(.errorsAppleDownloadMonitorIncompleteList)
+        case .unexpectedReceipt: return AppLanguage.string(.errorsAppleDownloadMonitorUnexpectedReceipt)
+        case .incompleteSync: return AppLanguage.string(.errorsAppleDownloadMonitorIncompleteSync)
         }
     }
 }

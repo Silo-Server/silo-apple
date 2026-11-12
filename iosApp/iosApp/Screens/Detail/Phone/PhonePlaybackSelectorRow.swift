@@ -9,12 +9,22 @@ enum PhonePlaybackSelectorKind: String, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
+    var title: LocalizedStringResource {
         switch self {
-        case .edition: return "Edition"
-        case .version: return "Version"
-        case .audio: return "Audio"
-        case .subtitles: return "Subtitles"
+        case .edition: return .detailEdition
+        case .version: return .detailVersion
+        case .audio: return .detailAudio
+        case .subtitles: return .detailSubtitles
+        }
+    }
+
+    /// The row's spoken label: its title, then the current `value`.
+    func spokenLabel(_ value: String) -> LocalizedStringResource {
+        switch self {
+        case .edition: return .detailEditionSpoken(value)
+        case .version: return .detailVersionSpoken(value)
+        case .audio: return .detailAudioSpoken(value)
+        case .subtitles: return .detailSubtitlesSpoken(value)
         }
     }
 
@@ -104,7 +114,7 @@ struct PhonePlaybackSelectorSkeleton: View {
                 Text(kind.title)
                     .siloScaledFont(size: 14, weight: .medium, relativeTo: .subheadline)
             }
-            Text("Loading")
+            Text(.commonLoading)
                 .siloScaledFont(size: 14, weight: .semibold, relativeTo: .subheadline)
         }
         .foregroundStyle(Color.white.opacity(0.16))
@@ -163,6 +173,9 @@ struct PhonePlaybackSelectorRow: View {
     @Environment(\.detailSelectorPopover) private var selectorPopover
     #endif
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    /// The values come from `DetailPlaybackFormatting` as strings in the app
+    /// language; reading the locale re-renders them when it changes.
+    @Environment(\.locale) private var locale
     @ScaledMetric(relativeTo: .subheadline) private var rowHeight = PhonePlaybackSelectorMetrics.rowHeight
     @ScaledMetric(relativeTo: .footnote) private var iconWidth = PhonePlaybackSelectorMetrics.iconWidth
     @State private var activeSelector: PhonePlaybackSelectorKind?
@@ -172,6 +185,7 @@ struct PhonePlaybackSelectorRow: View {
     }
 
     var body: some View {
+        let _ = locale
         if currentVersion != nil, !selectorKinds.isEmpty {
             #if os(iOS)
             if usesPopoverLayout {
@@ -332,7 +346,7 @@ struct PhonePlaybackSelectorRow: View {
     #if os(macOS)
     private static let chevronSymbol = "chevron.down"
     #else
-    private static let chevronSymbol = "chevron.right"
+    private static let chevronSymbol = "chevron.forward"
     #endif
 
     @ViewBuilder
@@ -354,7 +368,7 @@ struct PhonePlaybackSelectorRow: View {
         if isInteractive(kind) {
             Button { activeSelector = kind } label: { content() }
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(kind.title), \(value(for: kind))")
+                .accessibilityLabel(Text(kind.spokenLabel(value(for: kind))))
                 #if os(macOS)
                 .popover(isPresented: dropDownBinding(for: kind), arrowEdge: .bottom) {
                     selectorPresentation(for: kind)
@@ -363,7 +377,7 @@ struct PhonePlaybackSelectorRow: View {
         } else {
             content()
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(kind.title), \(value(for: kind))")
+                .accessibilityLabel(Text(kind.spokenLabel(value(for: kind))))
         }
     }
 
@@ -443,10 +457,11 @@ struct PhonePlaybackSelectorRow: View {
     private func value(for kind: PhonePlaybackSelectorKind) -> String {
         switch kind {
         case .edition:
-            return DetailPlaybackFormatting.currentEdition(
+            let label = DetailPlaybackFormatting.currentEdition(
                 versions: versions,
                 currentVersion: currentVersion
-            )?.label ?? currentVersion?.editionDisplayLabel ?? "Standard"
+            )?.label ?? currentVersion?.editionDisplayLabel ?? PlaybackEditions.standardLabel
+            return PlaybackEditions.displayLabel(label, locale: locale)
         case .version:
             return DetailPlaybackFormatting.versionShortLabel(currentVersion)
         case .audio:
@@ -477,6 +492,7 @@ private struct PhonePlaybackSelectorSheet: View {
     let onSelectSubtitleTrack: (Int?) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     @State private var preferredSubtitleLanguage: String?
     #if os(macOS)
     /// Height of the Mac drop-down's rows; nil until first measured.
@@ -579,11 +595,11 @@ private struct PhonePlaybackSelectorSheet: View {
             .scrollContentBackground(.hidden)
             .siloSheetBackground(legacyColor: .siloBackground)
             .task { await loadPreferredSubtitleLanguage() }
-            .navigationTitle(kind.title)
+            .navigationTitle(Text(kind.title))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                    Button { dismiss() } label: { Text(.commonDone) }
                         .tint(.siloOnSurface)
                 }
             }
@@ -618,12 +634,17 @@ private struct PhonePlaybackSelectorSheet: View {
     private var editionOptions: some View {
         Section {
             if editions.isEmpty {
-                optionButton(title: "Standard", detail: nil, isSelected: true, isEnabled: false) {}
+                optionButton(
+                    title: AppLanguage.string(.detailEditionStandard, locale: locale),
+                    detail: nil,
+                    isSelected: true,
+                    isEnabled: false
+                ) {}
             } else {
                 ForEach(editions) { edition in
                     optionButton(
-                        title: edition.label,
-                        detail: "\(edition.versions.count) version\(edition.versions.count == 1 ? "" : "s")",
+                        title: PlaybackEditions.displayLabel(edition.label, locale: locale),
+                        detail: AppLanguage.string(.detailEditionVersionCount(edition.versions.count), locale: locale),
                         isSelected: currentEdition?.id == edition.id
                     ) {
                         let best = DetailVersionSelection.displayVersion(
@@ -644,8 +665,8 @@ private struct PhonePlaybackSelectorSheet: View {
     private var versionOptions: some View {
         Section {
             optionButton(
-                title: "Auto",
-                detail: "Best match for this device",
+                title: AppLanguage.string(.detailAuto, locale: locale),
+                detail: AppLanguage.string(.detailAutoVersion, locale: locale),
                 isSelected: selectedVersionFileId == nil
             ) {
                 onSelectVersion(nil)
@@ -675,8 +696,8 @@ private struct PhonePlaybackSelectorSheet: View {
     private var audioOptions: some View {
         Section {
             optionButton(
-                title: "Auto",
-                detail: "Use the file default track",
+                title: AppLanguage.string(.detailAuto, locale: locale),
+                detail: AppLanguage.string(.detailPickerFileDefaultTrack, locale: locale),
                 isSelected: selectedAudioTrackIndex == nil
             ) {
                 onSelectAudioTrack(nil)
@@ -687,7 +708,12 @@ private struct PhonePlaybackSelectorSheet: View {
                 selectedAudioTrackIndex: selectedAudioTrackIndex
             )
             if options.isEmpty {
-                optionButton(title: "Unknown", detail: "No audio metadata", isSelected: false, isEnabled: false) {}
+                optionButton(
+                    title: AppLanguage.string(.detailUnknown, locale: locale),
+                    detail: AppLanguage.string(.detailNoAudioMetadata, locale: locale),
+                    isSelected: false,
+                    isEnabled: false
+                ) {}
             } else {
                 ForEach(options) { option in
                     optionButton(
@@ -707,16 +733,16 @@ private struct PhonePlaybackSelectorSheet: View {
     private var subtitleOptions: some View {
         Section {
             optionButton(
-                title: "Auto",
-                detail: "Use your subtitle preferences",
+                title: AppLanguage.string(.detailAuto, locale: locale),
+                detail: AppLanguage.string(.detailAutoSubtitles, locale: locale),
                 isSelected: selectedSubtitleTrackIndex == nil
             ) {
                 onSelectSubtitleTrack(nil)
                 dismiss()
             }
             optionButton(
-                title: "Off",
-                detail: "Start without subtitles",
+                title: AppLanguage.string(.detailOff, locale: locale),
+                detail: AppLanguage.string(.detailOffDetail, locale: locale),
                 isSelected: selectedSubtitleTrackIndex == -1
             ) {
                 onSelectSubtitleTrack(-1)

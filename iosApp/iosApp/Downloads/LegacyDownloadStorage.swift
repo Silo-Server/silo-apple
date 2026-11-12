@@ -41,7 +41,7 @@ struct LegacyDownloadStorage: Sendable {
     }
 
     static let markerFileName = ".legacy-downloads-removed"
-    static let noticeMessage = "Downloads from earlier versions were removed. Download them again to watch offline."
+    static var noticeMessage: String { AppLanguage.string(.downloadsLegacyRemovedNotice) }
 
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "org.siloserver.silo",

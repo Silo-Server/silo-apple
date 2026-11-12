@@ -27,19 +27,21 @@ struct TVControlStandbyView: View {
                     }
 
                 VStack(spacing: 12) {
-                    Text("Ready for \(state.controllerLabel)")
+                    Text(state.heading)
                         .font(.system(size: 52, weight: .semibold))
                         .foregroundStyle(Color.siloOnSurface)
                         .multilineTextAlignment(.center)
 
-                    Text(state.serverName ?? "Remote control active")
+                    (state.serverName.map { Text($0) } ?? Text(.castStandbyActive))
                         .font(.title3)
                         .foregroundStyle(Color.siloSecondaryText)
                         .multilineTextAlignment(.center)
                 }
 
-                Button("Disconnect Remote", systemImage: "tv.slash") {
+                Button {
                     receiver.disconnectRemoteControl()
+                } label: {
+                    Label(.castStandbyDisconnect, systemImage: "tv.slash")
                 }
                 .buttonStyle(.borderedProminent)
                 .foregroundStyle(Color.siloBackground)

@@ -25,11 +25,11 @@ struct SiloControlTargetPickerView: View {
             }
             .siloSheetBackground()
             .statusColumnSheetWidth()
-            .navigationTitle("Remote Control")
+            .navigationTitle(Text(.castPickerRemoteControl))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
+                    Button(.commonDone) { dismiss() }
                 }
             }
             .task {
@@ -46,7 +46,7 @@ struct SiloControlTargetPickerView: View {
     private var searchingState: some View {
         VStack(spacing: 16) {
             ProgressView()
-            Text("Searching for Silo TVs…")
+            Text(.castPickerSearching)
                 .font(.headline)
                 .foregroundStyle(Color.siloSecondaryText)
         }
@@ -54,20 +54,19 @@ struct SiloControlTargetPickerView: View {
     }
 
     private var emptyState: some View {
-        ContentUnavailableView(
-            "No Silo TVs Found",
-            systemImage: "tv",
-            description: Text(missingRokuHint
-                ?? "TVs on this server appear here while Silo is open on them. On a Roku, open Silo with the Roku remote.")
-        )
+        ContentUnavailableView {
+            Label(.castPickerNoneFound, systemImage: "tv")
+        } description: {
+            Text(missingRokuHint ?? LocalizedStringResource.remotePickerNoneFoundHint)
+        }
     }
 
     /// The phone can't open Silo on a Roku, so when the Roku it last
     /// controlled hasn't turned up by the end of the search, the picker says
     /// how to bring it back.
-    private var missingRokuHint: String? {
+    private var missingRokuHint: LocalizedStringResource? {
         guard searchTimedOut, let roku = rememberedRoku, !browser.found.contains(where: { $0.id == roku.id }) else { return nil }
-        return "Don't see \(roku.name)? Open Silo on your Roku."
+        return .remotePickerRokuMissing(roku.name)
     }
 
     private var foundList: some View {
@@ -92,21 +91,21 @@ struct SiloControlTargetPickerView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(target.name).font(.headline)
                         if target.transport == .sealed, pairingKeys.key(for: target) == nil {
-                            Text("Scan this Roku's pairing code to connect")
+                            Text(.remotePickerScanPairing)
                                 .font(.subheadline)
                                 .foregroundStyle(Color.siloSecondaryText)
                         } else if request != nil, target.protocolVersion < 2 {
-                            Text("Update Silo on this TV to use your profile")
+                            Text(.castPickerUpdateTv)
                                 .font(.subheadline)
                                 .foregroundStyle(Color.siloSecondaryText)
                         } else if target.isPlaying {
-                            Text("Playing now")
+                            Text(.castPickerPlayingNow)
                                 .font(.subheadline)
                                 .foregroundStyle(Color.siloPrimary)
                         } else if let serverName = target.serverName {
-                            Text(target.targetsActiveServer
-                                 ? serverName
-                                 : "Will temporarily use your server")
+                            (target.targetsActiveServer
+                             ? Text(serverName)
+                             : Text(.castPickerTemporaryServer))
                                 .font(.subheadline)
                                 .foregroundStyle(Color.siloSecondaryText)
                         }
@@ -115,7 +114,7 @@ struct SiloControlTargetPickerView: View {
                     Spacer()
 
                     if controller.isConnecting && controller.activeTarget?.id == target.id {
-                        ProgressView().accessibilityLabel("Connecting")
+                        ProgressView().accessibilityLabel(Text(.remotePickerConnecting))
                     }
                 }
                 .contentShape(Rectangle())

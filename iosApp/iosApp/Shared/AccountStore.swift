@@ -407,11 +407,16 @@ final class AccountStore: @unchecked Sendable {
         }
     }
 
-    /// Refreshes the profiles cached for the picker. A no-op when nothing
+    /// Refreshes the profiles cached for the picker, and the account's
+    /// profile limit as their list reported it. A no-op when nothing
     /// changed, so callers can pass every fetched list.
-    func updateCachedProfiles(_ profiles: [AccountProfile], for localAccountId: String, onServer serverId: String) throws {
+    func updateCachedProfiles(
+        _ profiles: [AccountProfile], maxProfiles: Int?,
+        for localAccountId: String, onServer serverId: String
+    ) throws {
         _ = try update(localAccountId, onServer: serverId) { account in
             account.cachedProfiles = profiles
+            account.maxProfiles = maxProfiles
         }
     }
 
@@ -566,6 +571,7 @@ final class AccountStore: @unchecked Sendable {
                     refreshToken: account.refreshToken,
                     epoch: account.epoch,
                     cachedProfiles: account.cachedProfiles,
+                    maxProfiles: account.maxProfiles,
                     addedAt: account.addedAt,
                     lastUsedAt: account.lastUsedAt,
                     needsSignIn: account.needsSignIn
@@ -826,11 +832,11 @@ extension AccountStoreError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .writeFailed:
-            return "Sign-in could not be saved on this device. Try again."
+            return AppLanguage.string(.errorsAppleAccountStoreWriteFailed)
         case .unsupportedVersion, .corrupt, .keyMismatch:
-            return "The sign-in saved on this device is unreadable. Sign in again."
+            return AppLanguage.string(.errorsAppleAccountStoreUnreadable)
         case .invalidIdentity, .notFound, .credentialsChanged:
-            return "The active server changed before sign-in could be saved."
+            return AppLanguage.string(.errorsAppleAccountStoreOwnerChanged)
         }
     }
 }

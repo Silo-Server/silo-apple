@@ -43,6 +43,7 @@ struct TVLibraryGridView: View {
     @State private var shuffleLauncher = ShuffleLauncher()
 
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
 
     init(
         libraryId: Int,
@@ -120,9 +121,7 @@ struct TVLibraryGridView: View {
         .animation(.easeOut(duration: 0.18), value: openPanel)
         .siloBackground()
         .task {
-            if viewModel.items.isEmpty {
-                await viewModel.loadInitial()
-            }
+            await viewModel.loadInitial()
             await viewModel.loadFacetsIfNeeded()
         }
         .onDisappear { viewModel.cancelPosterPrefetch() }
@@ -263,21 +262,21 @@ struct TVLibraryGridView: View {
         case .libraryEmpty:
             EmptyStateView(
                 icon: emptyGridIcon,
-                title: "This library is empty",
-                subtitle: "There is nothing in this library yet."
+                title: AppLanguage.string(.libraryEmpty, locale: locale),
+                subtitle: AppLanguage.string(.libraryEmptyBody, locale: locale)
             )
         case .noFilterMatches:
             VStack(spacing: 32) {
                 EmptyStateView(
                     icon: "line.3.horizontal.decrease.circle",
-                    title: "No titles match your filters"
+                    title: AppLanguage.string(.libraryNoMatches, locale: locale)
                 )
                 .fixedSize(horizontal: false, vertical: true)
 
                 Button(action: clearFilters) {
                     HStack(spacing: 10) {
                         Image(systemName: "xmark.circle")
-                        Text("Clear filters")
+                        Text(.libraryClearFilters)
                     }
                     .font(.system(size: 24, weight: .medium))
                 }
@@ -309,7 +308,8 @@ struct TVLibraryGridView: View {
                 .foregroundColor(.siloOnSurface)
 
             if let prefix = selectedPrefix {
-                Text(prefix == "#" ? "Titles starting with a number or symbol" : "Titles starting with \(prefix)")
+                // "#" is the rail's number-or-symbol prefix (data).
+                Text(prefix == "#" ? LocalizedStringResource.libraryStartsWithSymbol : .libraryStartsWithLetter(prefix))
                     .font(.siloHeadline)
                     .foregroundColor(.siloSecondaryText)
             } else if let subtitle {
@@ -324,11 +324,12 @@ struct TVLibraryGridView: View {
         }
     }
 
-    private var totalLabel: String? {
+    private var totalLabel: LocalizedStringResource? {
         guard !viewModel.items.isEmpty else { return nil }
+        let count = viewModel.items.count
         return viewModel.hasMore
-            ? "\(viewModel.items.count)+ titles"
-            : "\(viewModel.items.count) titles"
+            ? .libraryTitleCountMore(count: count, LocaleFormat.integer(count))
+            : .libraryTitleCount(count: count, LocaleFormat.integer(count))
     }
 }
 #endif

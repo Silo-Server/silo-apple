@@ -18,6 +18,7 @@ struct MyRequestsView: View {
 
 #if !os(tvOS)
 private struct PhoneMyRequestsView: View {
+    @Environment(\.locale) private var locale
     @State private var viewModel = MyRequestsViewModel()
     @State private var filter: MyRequestsBucket?
     /// The failed request waiting on the remove confirmation.
@@ -35,7 +36,7 @@ private struct PhoneMyRequestsView: View {
         #endif
         .scrollContentBackground(.hidden)
         .siloPageBackground()
-        .navigationTitle("My Requests")
+        .navigationTitle(.requestsMyRequests)
         .siloNavigationTitleDisplayMode(.large)
         .siloToolbarColorSchemeDark()
         .toolbar {
@@ -89,11 +90,14 @@ private struct PhoneMyRequestsView: View {
     /// the section headers. The icon fills while a filter is on.
     private var filterMenu: some View {
         Menu {
-            Picker("Show", selection: $filter) {
-                Label("All Requests", systemImage: "tray.full")
+            Picker(.requestsFilterShow, selection: $filter) {
+                Label(.requestsFilterAll, systemImage: "tray.full")
                     .tag(MyRequestsBucket?.none)
                 ForEach(viewModel.buckets, id: \.bucket) { entry in
-                    Label("\(entry.bucket.title) (\(entry.requests.count))", systemImage: entry.bucket.systemImage)
+                    Label(
+                        .requestsFilterOption(AppLanguage.string(entry.bucket.title), LocaleFormat.integer(entry.requests.count)),
+                        systemImage: entry.bucket.systemImage
+                    )
                         .tag(Optional(entry.bucket))
                 }
             }
@@ -102,7 +106,7 @@ private struct PhoneMyRequestsView: View {
                 ? "line.3.horizontal.decrease.circle"
                 : "line.3.horizontal.decrease.circle.fill")
         }
-        .accessibilityLabel(filter.map { "Filter: \($0.title)" } ?? "Filter")
+        .accessibilityLabel(filter.map { LocalizedStringResource.requestsFilterActive(AppLanguage.string($0.title)) } ?? .requestsFilterButton)
         .sensoryFeedback(.selection, trigger: filter)
     }
 
@@ -118,8 +122,8 @@ private struct PhoneMyRequestsView: View {
             fullRow {
                 EmptyStateView(
                     icon: "tray",
-                    title: "No requests yet",
-                    subtitle: "Movies and series you request will show up here"
+                    title: AppLanguage.string(.requestsMineEmptyTitle),
+                    subtitle: AppLanguage.string(.requestsMineEmptyBody)
                 )
                 .padding(.top, 80)
             }
@@ -152,14 +156,14 @@ private struct PhoneMyRequestsView: View {
                                 Button(role: .destructive) {
                                     Task { await viewModel.cancel(record) }
                                 } label: {
-                                    Label("Cancel", systemImage: "xmark")
+                                    Label(.requestsRowSwipeCancel, systemImage: "xmark")
                                 }
                             }
                             if viewModel.canRemove(record) {
                                 Button(role: .destructive) {
                                     pendingRemoval = record
                                 } label: {
-                                    Label("Remove", systemImage: "trash")
+                                    Label(.requestsRowRemove, systemImage: "trash")
                                 }
                             }
                         }
@@ -168,14 +172,14 @@ private struct PhoneMyRequestsView: View {
                                 Button(role: .destructive) {
                                     Task { await viewModel.cancel(record) }
                                 } label: {
-                                    Label("Cancel Request", systemImage: "xmark.circle")
+                                    Label(.requestsActionCancel, systemImage: "xmark.circle")
                                 }
                             }
                             if viewModel.canRemove(record) {
                                 Button(role: .destructive) {
                                     pendingRemoval = record
                                 } label: {
-                                    Label("Remove Request", systemImage: "trash")
+                                    Label(.requestsRowRemoveRequest, systemImage: "trash")
                                 }
                             }
                         }
@@ -201,7 +205,7 @@ private struct PhoneMyRequestsView: View {
             .listRowSeparator(.hidden)
     }
 
-    private func sectionHeader(_ title: String, count: Int) -> some View {
+    private func sectionHeader(_ title: LocalizedStringResource, count: Int) -> some View {
         HStack {
             Text(title)
             Spacer()
@@ -273,9 +277,9 @@ struct MyRequestRow: View {
     @ViewBuilder
     private func trailing(progress: RequestProgress) -> some View {
         if let onOpenInLibrary, progress.display == .inLibrary {
-            RequestRowCapsuleButton(title: "Open", systemImage: "arrow.up.right", action: onOpenInLibrary)
+            RequestRowCapsuleButton(title: .requestsRowOpen, systemImage: "arrow.up.forward", action: onOpenInLibrary)
         } else {
-            Image(systemName: "chevron.right")
+            Image(systemName: "chevron.forward")
                 .font(.footnote.weight(.semibold))
                 .foregroundColor(.siloSecondaryText.opacity(0.7))
         }
@@ -299,7 +303,7 @@ private struct RequestRowPoster: View {
 }
 
 private struct RequestRowCapsuleButton: View {
-    let title: String
+    let title: LocalizedStringResource
     let systemImage: String
     let action: () -> Void
 
@@ -326,17 +330,17 @@ extension View {
         onConfirm: @escaping (MediaRequest) -> Void
     ) -> some View {
         alert(
-            "Remove this request?",
+            Text(.requestsRemoveTitle),
             isPresented: Binding(
                 get: { pending.wrappedValue != nil },
                 set: { if !$0 { pending.wrappedValue = nil } }
             ),
             presenting: pending.wrappedValue
         ) { record in
-            Button("Remove request", role: .destructive) { onConfirm(record) }
-            Button("Keep request", role: .cancel) {}
+            Button(.requestsRemoveConfirm, role: .destructive) { onConfirm(record) }
+            Button(.requestsRemoveKeep, role: .cancel) {}
         } message: { record in
-            Text("Your failed request for \u{201C}\(record.title)\u{201D} will be deleted. You can request the title again later.")
+            Text(.requestsRemoveBody(record.title))
         }
     }
 }
@@ -347,9 +351,11 @@ enum RequestRowCopy {
     static func meta(_ record: MediaRequest, progress: RequestProgress) -> String {
         let kind = record.mediaType.displayName
         if progress.display == .inLibrary, let completed = record.completedAt {
-            return "\(kind) · Added \(completed.formatted(.dateTime.month(.abbreviated).day()))"
+            let added = AppLanguage.string(.requestsAddedOn(completed.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale))))
+            return "\(kind) · \(added)"
         }
-        return "\(kind) · Requested \(record.createdAt.formatted(.dateTime.month(.abbreviated).day()))"
+        let requested = AppLanguage.string(.requestsRequestedOn(record.createdAt.formatted(.dateTime.month(.abbreviated).day().locale(AppLanguage.formattingLocale))))
+        return "\(kind) · \(requested)"
     }
 
     /// The status line under the stage track: the long label, plus the

@@ -36,6 +36,7 @@ struct SeriesDownloadSheet: View {
     }
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     private var manager: DownloadManager { DownloadManager.shared }
     private var schedule: AutoDownloadSchedule { AutoDownloadSchedule.shared }
 
@@ -64,17 +65,19 @@ struct SeriesDownloadSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Picker("Download", selection: $kind) {
-                        Text("One Time").tag(Kind.oneTime)
+                    Picker(selection: $kind) {
+                        Text(.downloadsSeriesSheetOneTime).tag(Kind.oneTime)
                         if canShowMonitor {
-                            Text("Monitor").tag(Kind.monitor)
+                            Text(.downloadsSeriesSheetMonitor).tag(Kind.monitor)
                         }
+                    } label: {
+                        Text(.audiobookDetailDownload)
                     }
                     .pickerStyle(.segmented)
 
                     Text(kind == .oneTime
-                         ? "Download now. Nothing else downloads later."
-                         : "Keep new episodes coming to this \(Self.deviceName) as they air.")
+                         ? .downloadsSeriesSheetOneTimeHint
+                         : LocalizedStringResource.downloadsSeriesSheetMonitorHint(Self.deviceName))
                         .font(.footnote)
                         .foregroundColor(.siloSecondaryText)
                         .padding(.horizontal, 4)
@@ -94,7 +97,7 @@ struct SeriesDownloadSheet: View {
                         })
                         settingsCard
                         if existing != nil {
-                            Button("Stop Monitoring", role: .destructive) { confirmingStop = true }
+                            Button(role: .destructive) { confirmingStop = true } label: { Text(.downloadsSeriesSheetStopMonitoring) }
                                 .font(.system(size: 15.5, weight: .semibold))
                                 .frame(maxWidth: .infinity)
                                 .padding(.top, 2)
@@ -124,7 +127,7 @@ struct SeriesDownloadSheet: View {
             .siloSheetBackground()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(.commonCancel) { dismiss() }
                 }
             }
         }
@@ -139,21 +142,21 @@ struct SeriesDownloadSheet: View {
             await schedule.refresh(evenWithoutMonitors: true)
         }
         .alert(
-            kind == .oneTime ? "Download Failed" : "Couldn't Save Monitoring",
+            kind == .oneTime ? Text(.downloadsSeriesSheetDownloadFailed) : Text(.downloadsSeriesSheetSaveFailed),
             isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
             )
         ) {
-            Button("OK", role: .cancel) {}
+            Button(role: .cancel) {} label: { Text(.downloadsSeriesSheetOk) }
         } message: {
-            Text(errorMessage ?? "")
+            Text(verbatim: errorMessage ?? "")
         }
-        .alert("Stop monitoring \(seriesTitle)?", isPresented: $confirmingStop) {
-            Button("Stop", role: .destructive, action: stopMonitoring)
-            Button("Keep", role: .cancel) {}
+        .alert(Text(.downloadsSeriesSheetStopTitle(seriesTitle)), isPresented: $confirmingStop) {
+            Button(role: .destructive, action: stopMonitoring) { Text(.downloadsSeriesSheetStop) }
+            Button(role: .cancel) {} label: { Text(.downloadsManagerKeep) }
         } message: {
-            Text("Episodes already on this \(Self.deviceName) stay until you delete them.")
+            Text(.downloadsSeriesSheetStopMessage(Self.deviceName))
         }
     }
 
@@ -240,7 +243,7 @@ struct SeriesDownloadSheet: View {
         let isMenu = !locked && choices.count > 1
         return HStack {
             // The menu carries its own "Quality" label for VoiceOver.
-            Text("Quality")
+            Text(.downloadsSettingsQuality)
                 .foregroundColor(.siloOnSurface)
                 .accessibilityHidden(isMenu)
             Spacer()
@@ -250,10 +253,12 @@ struct SeriesDownloadSheet: View {
                     .padding(.trailing, 10)
                     .padding(.vertical, 7)
             } else {
-                Picker("Quality", selection: selection) {
+                Picker(selection: selection) {
                     ForEach(choices, id: \.self) { format in
                         Text(qualityLabel(format.rawValue)).tag(format.rawValue)
                     }
+                } label: {
+                    Text(.downloadsSettingsQuality)
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
@@ -274,7 +279,7 @@ struct SeriesDownloadSheet: View {
             qualityRow(selection: $monitorQuality, locked: !manager.canChooseMonitorQuality,
                        keeping: existing.map { $0.quality ?? DownloadFormat.original.rawValue })
             Divider().overlay(Color.siloDivider).padding(.leading, 16)
-            Toggle("Delete after watching", isOn: $deleteWatched)
+            Toggle(isOn: $deleteWatched) { Text(.downloadsSettingsDeleteWatched) }
                 .tint(.siloSwitchOn)
                 .foregroundColor(.siloOnSurface)
                 .padding(.horizontal, 16)
@@ -282,14 +287,17 @@ struct SeriesDownloadSheet: View {
             Divider().overlay(Color.siloDivider).padding(.leading, 16)
             HStack {
                 // The menu carries its own "Storage limit" label for VoiceOver.
-                Text("Storage limit")
+                Text(.downloadsSeriesSheetStorageLimit)
                     .foregroundColor(.siloOnSurface)
                     .accessibilityHidden(true)
                 Spacer()
-                Picker("Storage limit", selection: $maxStorageBytes) {
+                Picker(selection: $maxStorageBytes) {
                     ForEach(storageLimitOptions, id: \.self) { bytes in
-                        Text(bytes == 0 ? "None" : AutoDownloadRules.limitText(bytes)).tag(bytes)
+                        (bytes == 0 ? Text(.downloadsSeriesSheetStorageLimitNone) : Text(AutoDownloadRules.limitText(bytes)))
+                            .tag(bytes)
                     }
+                } label: {
+                    Text(.downloadsSeriesSheetStorageLimit)
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
@@ -372,27 +380,38 @@ struct SeriesDownloadSheet: View {
         }
     }
 
+    private func text(_ resource: LocalizedStringResource) -> String {
+        AppLanguage.string(resource, locale: locale)
+    }
+
     private func title(for row: OneTime) -> String {
         switch row {
         case .episode:
-            guard let episode else { return "This Episode" }
-            return "S\(episode.seasonNumber) · E\(episode.episodeNumber) · \(episode.title ?? "Episode \(episode.episodeNumber)")"
-        case .season: return oneTimeSeason?.downloadDisplayName ?? "Season"
-        case .all: return "All Episodes"
+            guard let episode else { return text(.downloadsSeriesSheetThisEpisode) }
+            let name = episode.title ?? text(.detailEpisode(LocaleFormat.integer(episode.episodeNumber, locale: locale)))
+            let code = text(.catalogEpisodeCaption(
+                LocaleFormat.codeNumber(episode.seasonNumber),
+                LocaleFormat.codeNumber(episode.episodeNumber)
+            ))
+            return EpisodeCardCaption.titled(code: code, title: name, locale: locale)
+        case .season: return oneTimeSeason?.displayName(locale: locale) ?? text(.downloadsSeriesSheetSeason)
+        case .all: return text(.downloadsSeriesSheetAllEpisodes)
         }
     }
 
     private func detail(for row: OneTime) -> String {
         switch row {
         case .episode:
-            if let episode, manager.isDownloaded(contentId: episode.contentId) { return "On this \(Self.deviceName)" }
-            if episodeDownloaded { return "Downloading" }
-            return "This episode only"
+            if let episode, manager.isDownloaded(contentId: episode.contentId) {
+                return text(.downloadsSeriesSheetOnDevice(Self.deviceName))
+            }
+            if episodeDownloaded { return text(.downloadsStatusDownloading) }
+            return text(.downloadsSeriesSheetThisEpisodeOnly)
         case .season:
             let count = oneTimeSeason?.episodeCount ?? 0
-            return "\(count) episode\(count == 1 ? "" : "s")"
+            return text(.downloadsSeriesRowEpisodes(count: count, LocaleFormat.integer(count)))
         case .all:
-            return "Every season"
+            return text(.downloadsSeriesSheetEverySeason)
         }
     }
 
@@ -414,8 +433,11 @@ struct SeriesDownloadSheet: View {
                     try await manager.downloadEpisode(
                         seriesId: seriesId,
                         episodeId: episode.contentId,
-                        displayTitle: episode.title ?? "Episode \(episode.episodeNumber)",
-                        displaySubtitle: "S\(episode.seasonNumber) · E\(episode.episodeNumber)",
+                        // Stored English (D44); rows show it in the app language.
+                        displayTitle: episode.title ?? DownloadRecord.storedEpisodeName(episode.episodeNumber),
+                        displaySubtitle: "S\(episode.seasonNumber) · E\(episode.episodeNumber)", // i18n-ignore: stored English (D44)
+                        seasonNumber: episode.seasonNumber,
+                        episodeNumber: episode.episodeNumber,
                         posterThumbhash: posterThumbhash,
                         fileId: episodeFileId,
                         quality: oneTimeQuality
@@ -467,16 +489,17 @@ struct SeriesDownloadSheet: View {
     private func title(for row: Rule) -> String {
         switch row {
         case .mode(let mode): return mode.displayName
-        case .custom: return "Custom"
+        case .custom: return text(.downloadsSeriesSheetCustom)
         }
     }
 
     private func detail(for row: Rule) -> String {
         switch row {
-        case .mode(.all): return "Download every episode now, then new ones as they air"
-        case .mode(.future): return "Only episodes that air from now on"
+        case .mode(.all): return text(.downloadsSeriesSheetRuleAll)
+        case .mode(.future): return text(.downloadsSeriesSheetRuleFuture)
         case .mode(.latestSeason):
-            return latestSeasonNumber.map { "Season \($0) and anything newer" } ?? "The latest season and anything newer"
+            guard let latestSeasonNumber else { return text(.downloadsSeriesSheetRuleLatest) }
+            return text(.downloadsSeriesSheetRuleLatestFrom(LocaleFormat.integer(latestSeasonNumber)))
         case .mode(.specificSeasons), .custom:
             return AutoDownloadRules.seasonList(existing?.seasonNumbers ?? [])
         }
@@ -567,8 +590,8 @@ struct SeriesDownloadSheet: View {
 
     private var primaryTitle: String {
         switch kind {
-        case .oneTime: return "Download"
-        case .monitor: return isMonitoring ? "Save" : "Start Monitoring"
+        case .oneTime: return text(.audiobookDetailDownload)
+        case .monitor: return text(isMonitoring ? .commonSave : .downloadsSeriesSheetStartMonitoring)
         }
     }
 
@@ -577,9 +600,9 @@ struct SeriesDownloadSheet: View {
         switch kind {
         case .oneTime:
             if oneTime == .episode { return "" }
-            if oneTimeQualityLocked { return "This server downloads seasons in original quality." }
+            if oneTimeQualityLocked { return text(.downloadsSeriesSheetBatchOriginal) }
             return oneTimeQuality == DownloadFormat.original.rawValue
-                ? "" : "Episodes the server can't convert to this quality are skipped."
+                ? "" : text(.downloadsSeriesSheetSkipUnconvertible)
         case .monitor:
             let mode: SubscriptionMode
             switch rule {
@@ -588,8 +611,8 @@ struct SeriesDownloadSheet: View {
             }
             let quality = manager.canChooseMonitorQuality ? monitorQuality : DownloadFormat.original.rawValue
             var sentence = quality == DownloadFormat.original.rawValue
-                ? "Monitored episodes download in original quality."
-                : "Monitored episodes download at \(DownloadFormat(rawValue: quality)?.displayName ?? quality)."
+                ? text(.downloadsSeriesSheetMonitorOriginal)
+                : text(.downloadsSeriesSheetMonitorQuality(DownloadFormat(rawValue: quality)?.displayName ?? quality))
             if let next = AutoDownloadRules.nextEpisode(
                 mode: mode,
                 targetSeason: mode == .latestSeason ? latestSeasonNumber : nil,
