@@ -784,6 +784,7 @@ class PlayerViewModel {
     var segmentSkipLabel: String { AppLanguage.string(showRecapSkip ? .markerSkipRecap : .markerSkipCredits) }
 
     func skipCurrentSegment() {
+        stillWatchingGuard.recordViewerAction()
         if showRecapSkip, let recapRange {
             seekTo(seconds: recapRange.end, revealingControls: false)
         } else if showCreditsSkip {
@@ -1544,6 +1545,7 @@ class PlayerViewModel {
     private static let nextUpHUDCountdownThresholdSeconds: Double = 100
     private static let nearEndPlaybackErrorThresholdSeconds: Double = 8
     private var nextUpAutoplayCancelled = false
+    private var stillWatchingGuard = PlayerStillWatchingGuard()
     /// Set when the user taps Keep Watching; suppresses re-presenting the
     /// pre-end Next Up prompt while the playhead stays inside the prompt
     /// window. Cleared when the playhead leaves the window (seek back) or a
@@ -3988,6 +3990,7 @@ class PlayerViewModel {
     func showNextUpNow() {
         guard !isWatchPartyPlayback else { return }
         guard canShowNextUpScreen else { return }
+        stillWatchingGuard.recordViewerAction()
         beginNextUpPostroll(videoEnded: false, source: .hud)
     }
 
@@ -4016,7 +4019,7 @@ class PlayerViewModel {
            nextUpPickAutoPlays,
            !isPickingAnotherShufflePick,
            !nextUpAutoplayCancelled {
-            playNextEpisodeNow()
+            playNextEpisodeNow(unattended: true)
             return
         }
         startNextUpCountdownIfNeeded()
@@ -4027,6 +4030,10 @@ class PlayerViewModel {
     /// into, so it waits for Play Now.
     private var nextUpPickAutoPlays: Bool {
         guard settings.autoPlayNextEpisode, let pick = nextUpEpisode else { return false }
+        #if !os(macOS)
+        // The Mac player has no Next Up screen to wait on, so it never gates.
+        guard !stillWatchingGuard.shouldGate(threshold: settings.stillWatchingThreshold) else { return false }
+        #endif
         return !pick.isFromOnDeck
     }
 
@@ -4057,7 +4064,7 @@ class PlayerViewModel {
                 self.nextUpCountdownSeconds = remaining
             }
             guard !Task.isCancelled, !self.isDisposed else { return }
-            self.playNextEpisodeNow()
+            self.playNextEpisodeNow(unattended: true)
         }
     }
 
@@ -4089,7 +4096,7 @@ class PlayerViewModel {
             : max(1, settings.nextUpPromptSeconds)
         nextUpCountdownSeconds = max(0, Int(ceil(remaining)))
         if remaining <= 0.35 {
-            playNextEpisodeNow()
+            playNextEpisodeNow(unattended: true)
         }
     }
 
@@ -4116,6 +4123,7 @@ class PlayerViewModel {
     @discardableResult
     func keepWatchingCurrentEpisode() -> Bool {
         guard !isWatchPartyPlayback else { return false }
+        stillWatchingGuard.recordViewerAction()
         // Staying on this item wins over a shuffle advance still in flight;
         // its late answer must not switch playback. If the server already
         // moved on, the next Play Now replays that pick.
@@ -4153,6 +4161,7 @@ class PlayerViewModel {
     }
 
     func setNextUpAutoPlayEnabled(_ enabled: Bool) {
+        stillWatchingGuard.recordViewerAction()
         settings.setAutoPlayNextEpisode(enabled)
         if enabled {
             nextUpAutoplayCancelled = false
@@ -4162,9 +4171,14 @@ class PlayerViewModel {
         }
     }
 
-    func playNextEpisodeNow() {
+    func playNextEpisodeNow(unattended: Bool = false) {
         guard !isWatchPartyPlayback else { return }
+        // Play Now counts even when it lands on an advance already in flight.
+        if !unattended { stillWatchingGuard.recordViewerAction() }
         if shuffleState != nil {
+            // A repeat call while the advance is in flight is dropped below
+            // and must not count again.
+            if unattended, !isStartingNextUp { stillWatchingGuard.recordAutoAdvance() }
             playNextShufflePick()
             return
         }
@@ -4188,6 +4202,7 @@ class PlayerViewModel {
         case .load(let id):
             contentId = id
         }
+        if unattended { stillWatchingGuard.recordAutoAdvance() }
         var request = LoadRequest(
             contentId: contentId,
             preferredFileId: nil,
@@ -4396,6 +4411,7 @@ class PlayerViewModel {
     func pickAnotherShufflePick() {
         guard let shuffleState, canPickAnotherShufflePick,
               !isPickingAnotherShufflePick else { return }
+        stillWatchingGuard.recordViewerAction()
         let shuffleId = shuffleState.id
         let nextContentId = shuffleState.shuffle.next.contentId
         cancelShuffleOperations()
@@ -5471,6 +5487,7 @@ class PlayerViewModel {
     func beginHoldFastForward(rate: Double = 2.0) {
         guard !isWatchPartyPlayback else { return }
         guard !isHoldFastForwarding, isPlaying else { return }
+        stillWatchingGuard.recordViewerAction()
         isHoldFastForwarding = true
         aetherPlaybackController.setSpeed(rate)
     }
@@ -5821,7 +5838,11 @@ class PlayerViewModel {
             },
             // Remote-position events use the source axis published above and
             // must pass through the VM so a bounded V3 transport can replan.
-            seek:        { [weak self] t in self?.seekTo(seconds: t) },
+            // A system seek comes from the viewer, so it counts as still watching.
+            seek:        { [weak self] t in
+                self?.stillWatchingGuard.recordViewerAction()
+                self?.seekTo(seconds: t)
+            },
             // A command answered `.success` while the controller has no load
             // reports work the system will never observe.
             hasActiveLoad: { [weak self] in
@@ -5854,7 +5875,9 @@ class PlayerViewModel {
         )
     }
 
+    /// Play from the viewer: Now Playing, SiloControl, or the end of a scrub.
     private func handleNowPlayingPlay() {
+        stillWatchingGuard.recordViewerAction()
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(.play) == true { return }
         noteViewerTransportCommand(play: true)
@@ -5866,7 +5889,9 @@ class PlayerViewModel {
         #endif
     }
 
+    /// Pause from the viewer: Now Playing or SiloControl.
     private func handleNowPlayingPause() {
+        stillWatchingGuard.recordViewerAction()
         if watchPartyAdapter?.request(.pause) == true { return }
         noteViewerTransportCommand(play: false)
         if !holdPlayIntentForFreshLoad(false) {
@@ -6183,6 +6208,11 @@ class PlayerViewModel {
         viewerQualityChange: Bool = false
     ) {
         guard !isDisposed else { return }
+        // Picking another title is a deliberate start. Reloads of the same
+        // title (quality, track, recovery) say nothing about the viewer.
+        if origin == .userInitiated, request.contentId != lastLoadRequest?.contentId {
+            stillWatchingGuard.recordViewerAction()
+        }
         // A renewal still waiting on its progress sync belongs to the load
         // this one replaces. Left pending, it would reload its own captured
         // request over the item that is starting now.
@@ -7310,6 +7340,9 @@ class PlayerViewModel {
     /// fresh session — simpler than retrying just the stream load, and
     /// tolerates stale server-side sessions that may have been reaped.
     func retry() {
+        // Only the Retry button calls this; it reloads the same title, which
+        // the load's own different-title check would not count.
+        stillWatchingGuard.recordViewerAction()
         if connectionState == .lost {
             // Try again after a lost connection: a fresh reconnect at the
             // saved position, with the viewer's tracks and play intent.
@@ -7333,6 +7366,7 @@ class PlayerViewModel {
     }
 
     func togglePlayPause() {
+        stillWatchingGuard.recordViewerAction()
         // Nothing can play until the reconnect hands over a new transport.
         guard !isReconnecting else { return }
         if watchPartyAdapter?.request(isPlaying ? .pause : .play) == true { return }
@@ -7624,6 +7658,7 @@ class PlayerViewModel {
     @discardableResult
     func skipForward(_ seconds: Double? = nil, revealingControls: Bool = true) -> Bool {
         guard !refusesSeekAtEndOfFile else { return false }
+        stillWatchingGuard.recordViewerAction()
         let seconds = seconds ?? Double(skipIntervals.forward)
         Self.logger.info(
             "[CMP-SEEK] skip forward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -7640,6 +7675,7 @@ class PlayerViewModel {
     @discardableResult
     func skipBackward(_ seconds: Double? = nil, revealingControls: Bool = true) -> Bool {
         guard !refusesSeekAtEndOfFile else { return false }
+        stillWatchingGuard.recordViewerAction()
         let seconds = seconds ?? Double(skipIntervals.backward)
         Self.logger.info(
             "[CMP-SEEK] skip backward requested seconds=\(seconds, privacy: .public) current=\(self.currentTime, privacy: .public) preview=\(self.scrubPreviewTime, privacy: .public) isScrubbing=\(self.isScrubbing, privacy: .public)"
@@ -7655,6 +7691,7 @@ class PlayerViewModel {
     /// for `always`'s undo. Either way the intro is decided and the pill goes.
     func selectIntroSkipPrompt() {
         guard let target = withoutAnimation({ introSkipPrompt.select() }) else { return }
+        stillWatchingGuard.recordViewerAction()
         Self.logger.info(
             "[CMP-MARKERS] intro prompt selected target=\(target, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
@@ -7769,6 +7806,7 @@ class PlayerViewModel {
     /// the scrubber before it fades.
     func commitHoldSeek() {
         guard isHoldSeeking else { return }
+        stillWatchingGuard.recordViewerAction()
         Self.logger.info(
             "[CMP-SEEK] hold seek commit target=\(self.scrubPreviewTime, privacy: .public) current=\(self.currentTime, privacy: .public)"
         )
@@ -8356,6 +8394,7 @@ class PlayerViewModel {
     func endScrub(resumePlayback: Bool = false, shouldSeek: Bool = true) {
         guard !refusesSeekAtEndOfFile else { return }
         guard isScrubbing else { return }
+        stillWatchingGuard.recordViewerAction()
         skipDebounceTask?.cancel()
         skipDebounceTask = nil
         let reloadsPlaybackPipeline: Bool
@@ -9497,8 +9536,15 @@ class PlayerViewModel {
         }
     }
 
+    /// A chapter the viewer picked from a chapter list.
+    func jumpToChapter(at seconds: Double) {
+        stillWatchingGuard.recordViewerAction()
+        seekTo(seconds: seconds)
+    }
+
     func seekToAdjacentChapter(forward: Bool) {
         guard !chapters.isEmpty else { return }
+        stillWatchingGuard.recordViewerAction()
         let sorted = chapters.sorted { $0.time < $1.time }
         let target: PlayerChapterInfo?
         if forward {
@@ -11358,6 +11404,8 @@ extension PlayerViewModel {
             guard let seconds = command.seconds else {
                 throw SiloControlPlayerError.missingSeekPosition
             }
+            // SiloRemote's skip buttons and scrubber: the viewer's seek.
+            stillWatchingGuard.recordViewerAction()
             seekTo(seconds: seconds)
         case .stop:
             if isWatchPartyPlayback { cleanup() }
