@@ -1,5 +1,6 @@
 #if os(iOS)
 import CoreGraphics
+import Foundation
 
 /// How fast the playhead follows the finger along the scrub bar. Like the
 /// native player, sliding up off the bar slows the scrub one step per
@@ -26,12 +27,12 @@ enum MobileScrubSpeed: CaseIterable {
     }
 
     /// Shown in the scrub bubble; nil at full speed, which needs no label.
-    var label: String? {
+    var label: LocalizedStringResource? {
         switch self {
         case .full: nil
-        case .half: "Half-Speed Scrubbing"
-        case .quarter: "Quarter-Speed Scrubbing"
-        case .fine: "Fine Scrubbing"
+        case .half: .playerScrubberHalfSpeed
+        case .quarter: .playerScrubberQuarterSpeed
+        case .fine: .playerScrubberFineSpeed
         }
     }
 }

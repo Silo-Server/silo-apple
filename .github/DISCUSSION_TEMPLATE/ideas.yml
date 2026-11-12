@@ -1,12 +1,12 @@
-name: Feature request
-description: Suggest an improvement to the iOS, tvOS, or macOS app
-title: "[feature] "
-labels: ["enhancement", "feature-request"]
 body:
   - type: markdown
     attributes:
       value: |
-        A request is most useful when it explains the problem you hit, with a concrete example, rather than prescribing a solution. One request per issue. Requests that need new server behavior belong in [silo-server](https://github.com/Silo-Server/silo-server/issues/new/choose).
+        An idea is most useful when it explains the problem you hit, with a concrete example, rather than prescribing a solution. One idea per discussion. If someone already posted it, upvote it and add your case there instead.
+
+        Maintainers turn ideas they plan to build into issues. An idea here is not a commitment, and a pull request for a feature needs an issue a maintainer has labeled `accepted`.
+
+        Ideas that need new server or web app behavior belong in [silo-server's Ideas](https://github.com/Silo-Server/silo-server/discussions/categories/ideas). Ideas for the other apps belong in [Android](https://github.com/Silo-Server/silo-android/discussions/categories/ideas) or [Roku](https://github.com/Silo-Server/silo-roku/discussions/categories/ideas) Ideas.
 
         Silo will not accept Live TV, OTA/DVB tuners, IPTV, EPG/XMLTV guides, DVR, or `.strm` remote-stream files; [Project non-goals](https://github.com/Silo-Server/silo-server/blob/main/docs/non-goals.md) explains why.
   - type: textarea
@@ -83,7 +83,7 @@ body:
     id: ai-review
     attributes:
       label: Independent or adversarial review
-      description: Summarize the scope, method, findings, and resolutions, or enter "n/a" when this issue does not require independent or adversarial review.
+      description: Summarize the scope, method, findings, and resolutions, or enter "n/a" when this idea does not require independent or adversarial review.
     validations:
       required: true
   - type: checkboxes
@@ -91,7 +91,7 @@ body:
     attributes:
       label: Confirmations
       options:
-        - label: I searched open and closed issues, including ones closed as not planned, and this is not already requested
+        - label: I searched Ideas and the issue tracker, including issues closed as not planned, and this is not already proposed
           required: true
         - label: This is not one of Silo's non-goals
           required: true

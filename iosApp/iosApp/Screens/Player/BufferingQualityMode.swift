@@ -25,9 +25,9 @@ enum BufferingQualityMode: String, CaseIterable, Identifiable, Sendable {
     /// The contract's option labels, shared with web and Android.
     var label: String {
         switch self {
-        case .never: return "Never"
-        case .ask: return "Ask first"
-        case .always: return "Automatically"
+        case .never: return AppLanguage.string(.settingsBufferingQualityNever)
+        case .ask: return AppLanguage.string(.settingsBufferingQualityAsk)
+        case .always: return AppLanguage.string(.settingsBufferingQualityAlways)
         }
     }
 

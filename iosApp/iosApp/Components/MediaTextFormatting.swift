@@ -31,12 +31,11 @@ enum MediaTextFormatting {
         }
     }
 
-    /// "45m", "1h 0m" or "2h 15m" for a runtime in minutes. Returns nil for
-    /// nil, zero or negative input so callers can skip the token.
-    static func runtime(minutes: Int?) -> String? {
+    /// "45m", "1h 0m" or "2h 15m" for a runtime in minutes, in the app's
+    /// language ("2h 15min" in German). Returns nil for nil, zero or
+    /// negative input so callers can skip the token.
+    static func runtime(minutes: Int?, locale: Locale = AppLanguage.formattingLocale) -> String? {
         guard let minutes, minutes > 0 else { return nil }
-        let hours = minutes / 60
-        let rest = minutes % 60
-        return hours > 0 ? "\(hours)h \(rest)m" : "\(rest)m"
+        return LocaleFormat.duration(minutes: minutes, showZeroMinutes: true, locale: locale)
     }
 }

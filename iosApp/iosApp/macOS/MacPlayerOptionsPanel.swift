@@ -119,7 +119,7 @@ struct MacPlayerOptionsPanel: View {
                             detail: PlayerTimeFormatter.formatHMS(chapter.time),
                             selected: chapter.index == currentChapterIndex
                         ) {
-                            viewModel.seekTo(seconds: chapter.time)
+                            viewModel.jumpToChapter(at: chapter.time)
                         }
                     }
                 }
@@ -371,7 +371,7 @@ struct MacPlayerOptionsPanel: View {
 
     private func speedLabel(_ speed: Double) -> String {
         if abs(speed - 1.0) < 0.01 { return "Normal" }
-        return String(format: "%.2gx", speed)
+        return LocaleFormat.localized(String(format: "%.2gx", speed))
     }
 }
 #endif

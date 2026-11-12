@@ -142,11 +142,35 @@ opens directly; otherwise its "Who's watching?" shows.
 
 ### 4.2 When the picker appears
 
-The existing **Profile Selection** setting (Automatic, Every Time, After 1 Hour, After 12 Hours)
-is unchanged and now applies to the account and profile:
-- **Automatic** restores the last account and profile. If that profile no longer exists, Silo
-  shows that account's picker.
-- If the open account has a single profile without a PIN, the picker never appears.
+*Amended 2026-11-10 (owner decision).* On a device several accounts share, each with one profile,
+Every Time used to open the last account's only profile without asking. Selection now starts at
+Change Account there.
+
+The existing **Profile Selection** setting (Automatic, Every Time, After 1 Hour, After 12 Hours),
+its labels and its detail lines are unchanged. It applies to the account and profile:
+- **Automatic** restores the last account and profile with no screen, however many accounts are
+  saved. If that profile no longer exists, Silo shows that account's picker.
+- **Selection is required** by Every Time at a cold launch and on a return from the background,
+  and by After 1 Hour or After 12 Hours once the timer has lapsed. What shows then depends on how
+  many accounts are saved on the device, across all servers and counting accounts that must sign
+  in again:
+  - **Two or more accounts:** Change Account shows where the picker would have shown or the only
+    profile would have opened. No profile is open while it shows. It opens as it does from the
+    menu: the last-used account is marked Current, its server is selected, and on TV its card has
+    focus. Choosing an account, the Current one included, opens it as §4.1 describes: a single
+    profile without a PIN opens directly, otherwise its picker waits for a choice, and an account
+    that must sign in again opens sign-in with the username filled in. Change Account is the root
+    screen here, with no way back to content: Back and Menu do what they do on the launch picker.
+    Backing out of a sign-in or a server setup started from it returns to it.
+  - **One account:** unchanged. A single profile without a PIN opens directly, whatever Profile
+    Selection says; otherwise the picker shows. In the single-profile case the picker is never
+    drawn, not even for a frame: the loading state shows until the profile opens.
+- **Switch Profile** in the menu always opens the open account's picker, never Change Account.
+- Whatever takes precedence over the picker keeps that precedence over Change Account: the
+  profile paired with the Apple TV user, a remote-playback handoff session, a required password
+  change, and playback that keeps the profile in use in the background. A pending deep link or
+  Watch Party invitation continues after a profile opens. The TV's first-run offer to remember a
+  profile still appears after the first profile is opened.
 
 ### 4.3 Switching
 
@@ -160,6 +184,48 @@ changes as follows:
 - **Sign Out** signs out of the current account (§4.4).
 
 Because #981/#982 aligned this menu across platforms, both platforms change it in the same release.
+
+*Amended 2026-11-10 (owner decision).* The menu always showed Switch Profile, even when the account
+had one profile and nothing to switch to, and on TV Change Account sat five rows away from it,
+beside Sign Out. The profile row now depends on the open account's cached profile list and its
+profile limit (`max_profiles` on the profile list):
+
+| Profiles | Limit | Row | Action |
+|---|---|---|---|
+| Two or more | any | **Switch Profile** | Opens the open account's "Who's watching?", which stays open |
+| One | more than one, or unknown | **Add Profile** | Opens profile creation directly, after the primary profile's PIN when it has one |
+| One | one | no row | |
+| No list read yet | any | **Switch Profile** | As before |
+
+- **Add Profile** uses the picker's profile-creation flow and its primary-profile and PIN rules.
+  After a profile is created the picker shows; cancelling returns to the screen the menu was
+  opened from. Its icon is `person.badge.plus` (`person.fill.badge.plus` on Apple TV).
+- The row follows the list without a restart. The profile list is read in the background at a
+  cold launch and on a return from the background, and when the menu opens on iPhone, iPad and
+  Apple TV, so an account that never sees its picker still learns its limit. The limit is kept
+  with the account's cached profile list across restarts. It is unknown only when the server
+  does not send it or no list has been read.
+- A remote-playback handoff session can neither switch nor add a profile, so the Apple TV hides
+  the row while one is active. The phone, tablet and Mac never hold one.
+- **Change Account** is always shown. It is where accounts and servers are added.
+- **Order.** Phone, tablet and Mac are unchanged: Settings, the profile row, Change Account, then
+  Sign Out. *Amended 2026-11-11 (owner decision), replacing the 2026-11-10 order that put the
+  profile row and Change Account first.* On TV the profile row moves down to sit directly above
+  Change Account, in the second group between Settings and Sign Out, the same order as the
+  phones:
+
+  ```
+  History
+  Requests            (while the server offers Requests)
+  Watch Party         (while the server offers one)
+  ─────────
+  Settings
+  Switch Profile | Add Profile      (or absent)
+  Change Account
+  Sign Out
+  ```
+
+  The TV menu opens focused on its first row, History.
 
 ### 4.4 Signing out and removing
 

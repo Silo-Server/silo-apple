@@ -12,8 +12,8 @@ enum TVBrowsePanel: Hashable {
 /// Sort + Filter pills above the grid. A single `.focusSection()` so the grid
 /// below it is reachable with d-pad Down and the top bar with Up.
 struct TVBrowseControlRow: View {
-    let sortLabel: String
-    let sortDirection: String
+    let sortLabel: LocalizedStringResource
+    let sortDirection: LocalizedStringResource
     let filterCount: Int
     var focusRequest: Int = 0
     var onMoveUp: (() -> Void)? = nil
@@ -26,13 +26,14 @@ struct TVBrowseControlRow: View {
 
     @FocusState private var focusedControl: TVBrowseControlFocus?
     @State private var lastAppliedFocusRequest = 0
+    @Environment(\.locale) private var locale
 
     var body: some View {
         HStack(spacing: 16) {
             Button(action: onSort) {
                 HStack(spacing: 10) {
                     Image(systemName: "arrow.up.arrow.down")
-                    Text("Sort · \(sortLabel)")
+                    Text(.librarySortPill(AppLanguage.string(sortLabel, locale: locale)))
                     Text(sortDirection)
                         .foregroundColor(.siloSecondaryText)
                 }
@@ -44,7 +45,7 @@ struct TVBrowseControlRow: View {
             Button(action: onFilter) {
                 HStack(spacing: 10) {
                     Image(systemName: "line.3.horizontal.decrease")
-                    Text("Filter")
+                    Text(.libraryFilterPill)
                     if filterCount > 0 {
                         Text("\(filterCount)")
                             .font(.system(size: 18, weight: .bold, design: .monospaced))
@@ -64,7 +65,7 @@ struct TVBrowseControlRow: View {
                 Button(action: onShuffle) {
                     HStack(spacing: 10) {
                         Image(systemName: "shuffle")
-                        Text("Shuffle")
+                        Text(.libraryShufflePill)
                     }
                     .opacity(isShuffleStarting ? 0.6 : 1)
                 }
@@ -115,12 +116,13 @@ struct TVBrowseSortPanel: View {
     let onClose: () -> Void
 
     @Environment(\.resetFocus) private var resetFocus
+    @Environment(\.locale) private var locale
     @Namespace private var sortFocusScope
     @FocusState private var focusedSort: CatalogSortKey?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("SORT BY")
+            Text(AppLanguage.string(.librarySortBy, locale: locale).uppercased(with: locale))
                 .font(.system(size: 18, weight: .semibold, design: .monospaced))
                 .tracking(2)
                 .foregroundColor(.siloSecondaryText)
@@ -175,6 +177,8 @@ struct TVBrowseSortPanel: View {
 // MARK: - Filter panel (list → values)
 
 struct TVBrowseFilterPanel: View {
+    /// Back to the filter list is a press toward the leading side.
+    @Environment(\.layoutDirection) private var layoutDirection
     let facets: CatalogFacets
     let onApply: (CatalogFilterState) -> Void
     let onPreserveChange: (Bool) -> Void
@@ -198,6 +202,7 @@ struct TVBrowseFilterPanel: View {
     }
 
     @Environment(\.resetFocus) private var resetFocus
+    @Environment(\.locale) private var locale
     @Namespace private var panelFocusScope
 
     @State private var draft: CatalogFilterState
@@ -220,7 +225,7 @@ struct TVBrowseFilterPanel: View {
         self.onPreserveChange = onPreserveChange
         self.onClose = onClose
         let visible = CatalogFacet.available(for: mediaType)
-            .filter { !facets.optionPairs(for: $0, hasProfile: Self.hasProfile).isEmpty }
+            .filter { !facets.optionValues(for: $0, hasProfile: Self.hasProfile).isEmpty }
         self.availableFacets = visible
         _draft = State(initialValue: initial)
         _preserve = State(initialValue: preserveEnabled)
@@ -256,7 +261,7 @@ struct TVBrowseFilterPanel: View {
         .focusSection()
         .onExitCommand(perform: handleExit)
         .onMoveCommand { direction in
-            if direction == .left, case .values = screen {
+            if direction.inLayout(layoutDirection) == .left, case .values = screen {
                 showFilterList()
             }
         }
@@ -283,15 +288,17 @@ struct TVBrowseFilterPanel: View {
     }
 
     private var headerEyebrow: String {
+        let eyebrow: LocalizedStringResource
         switch screen {
-        case .filters: return "FILTER BY"
-        case .values: return "FILTER"
+        case .filters: eyebrow = .filtersEyebrowList
+        case .values: eyebrow = .filtersEyebrowValues
         }
+        return AppLanguage.string(eyebrow, locale: locale).uppercased(with: locale)
     }
 
-    private var headerTitle: String {
+    private var headerTitle: LocalizedStringResource {
         switch screen {
-        case .filters: return "Filters"
+        case .filters: return .filtersTitle
         case .values(let facet): return facet.title
         }
     }
@@ -301,7 +308,7 @@ struct TVBrowseFilterPanel: View {
     @ViewBuilder
     private var filterList: some View {
         if availableFacets.isEmpty {
-            Text("No filters available")
+            Text(.filtersNone)
                 .font(.system(size: 24))
                 .foregroundColor(.siloSecondaryText)
                 .padding(.horizontal, 16)
@@ -312,15 +319,15 @@ struct TVBrowseFilterPanel: View {
             }
         }
 
-        sectionHeader("MATCH")
-        matchRow(title: "All selected filters", isSelected: draft.matchAll, focus: .matchAll) {
+        sectionHeader(.filtersMatch)
+        matchRow(title: .filtersMatchAll, isSelected: draft.matchAll, focus: .matchAll) {
             draft.matchAll = true
         }
-        matchRow(title: "Any selected filter", isSelected: !draft.matchAll, focus: .matchAny) {
+        matchRow(title: .filtersMatchAny, isSelected: !draft.matchAll, focus: .matchAny) {
             draft.matchAll = false
         }
 
-        sectionHeader("OPTIONS")
+        sectionHeader(.filtersOptions)
         preserveRow
         resetRow
         doneRow
@@ -339,7 +346,7 @@ struct TVBrowseFilterPanel: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
 
-                Image(systemName: "chevron.right")
+                Image(systemName: "chevron.forward")
                     .font(.system(size: 18, weight: .semibold))
                     .opacity(0.55)
             }
@@ -349,7 +356,7 @@ struct TVBrowseFilterPanel: View {
         .focused($focusedTarget, equals: .facet(facet))
     }
 
-    private func matchRow(title: String, isSelected: Bool, focus: FocusTarget, action: @escaping () -> Void) -> some View {
+    private func matchRow(title: LocalizedStringResource, isSelected: Bool, focus: FocusTarget, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 14) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
@@ -372,7 +379,7 @@ struct TVBrowseFilterPanel: View {
             HStack(spacing: 14) {
                 Image(systemName: preserve ? "checkmark.square.fill" : "square")
                     .font(.system(size: 22, weight: .semibold))
-                Text("Preserve sort & filters")
+                Text(.filtersPreserve)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
@@ -390,7 +397,7 @@ struct TVBrowseFilterPanel: View {
             HStack(spacing: 14) {
                 Image(systemName: "arrow.counterclockwise")
                     .font(.system(size: 22, weight: .semibold))
-                Text("Reset filters")
+                Text(.filtersReset)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
@@ -407,7 +414,7 @@ struct TVBrowseFilterPanel: View {
             HStack(spacing: 14) {
                 Image(systemName: "checkmark")
                     .font(.system(size: 22, weight: .semibold))
-                Text("Done")
+                Text(.filtersDone)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
@@ -423,9 +430,9 @@ struct TVBrowseFilterPanel: View {
     private func valueList(for facet: CatalogFacet) -> some View {
         Button(action: showFilterList) {
             HStack(spacing: 14) {
-                Image(systemName: "chevron.left")
+                Image(systemName: "chevron.backward")
                     .font(.system(size: 20, weight: .semibold))
-                Text("All filters")
+                Text(.filtersAllFilters)
                 Spacer(minLength: 0)
             }
             .font(.system(size: 24))
@@ -450,7 +457,7 @@ struct TVBrowseFilterPanel: View {
             HStack(spacing: 14) {
                 Image(systemName: "xmark.circle")
                     .font(.system(size: 22, weight: .semibold))
-                Text("Clear \(facet.title)")
+                Text(.filtersClearFacet(AppLanguage.string(facet.title, locale: locale)))
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
@@ -480,8 +487,9 @@ struct TVBrowseFilterPanel: View {
         .focused($focusedTarget, equals: .value(facet, option.value))
     }
 
-    private func sectionHeader(_ title: String) -> some View {
-        Text(title)
+    /// Uppercased like the other panel eyebrows.
+    private func sectionHeader(_ title: LocalizedStringResource) -> some View {
+        Text(AppLanguage.string(title, locale: locale).uppercased(with: locale))
             .font(.system(size: 15, weight: .semibold, design: .monospaced))
             .tracking(2)
             .foregroundColor(.siloSecondaryText)
@@ -494,15 +502,15 @@ struct TVBrowseFilterPanel: View {
 
     private func facetSummary(_ facet: CatalogFacet) -> String {
         let values = draft.selectedValues(facet)
-        guard !values.isEmpty else { return "Any" }
+        guard !values.isEmpty else { return AppLanguage.string(.filtersAny, locale: locale) }
         if values.count == 1, let only = values.first {
-            return CatalogFilterState.chipLabel(facet: facet, value: only)
+            return CatalogFilterState.chipLabel(facet: facet, value: only, locale: locale)
         }
-        return "\(values.count) selected"
+        return AppLanguage.string(.filtersSelected(values.count), locale: locale)
     }
 
     private func valueOptions(for facet: CatalogFacet) -> [(value: String, label: String)] {
-        facets.optionPairs(for: facet, hasProfile: Self.hasProfile)
+        facets.optionPairs(for: facet, hasProfile: Self.hasProfile, locale: locale)
     }
 
     private var defaultFocusTarget: FocusTarget? {

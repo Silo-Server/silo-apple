@@ -12,6 +12,9 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     let type: String
     let title: String
     let subtitle: String?
+    /// D44: the subtitle a suggestion sends to the server, which stays English.
+    /// `subtitle` is the lobby's own wording.
+    let suggestionSubtitle: String?
     /// Episodes arrive with their landscape still here; the session swaps in
     /// the season or series poster so the lobby's 2:3 slot gets portrait art.
     var posterUrl: String?
@@ -33,8 +36,13 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         type = item.type
         title = item.title
         if let season = item.seasonNumber, let episode = item.episodeNumber {
-            subtitle = [item.seriesTitle, "S\(season):E\(episode)"].compactMap { $0 }.joined(separator: " · ")
-        } else { subtitle = item.seriesTitle }
+            let code = AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.codeNumber(season), LocaleFormat.codeNumber(episode)))
+            subtitle = [item.seriesTitle.map { AppLanguage.isolated($0) }, code].compactMap { $0 }.joined(separator: " · ")
+            suggestionSubtitle = [item.seriesTitle, "S\(season):E\(episode)"].compactMap { $0 }.joined(separator: " · ")
+        } else {
+            subtitle = item.seriesTitle
+            suggestionSubtitle = item.seriesTitle
+        }
         if let showPoster = item.episodeShowPoster {
             posterUrl = showPoster.url
             posterThumbhash = showPoster.thumbhash
@@ -69,7 +77,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     /// What the caller already knows about a title it is about to select.
     /// The lobby lays out from this while the room and catalog reads run.
     init(previewContentId contentId: String, type: String, title: String, subtitle: String? = nil,
-         posterUrl: String?, posterThumbhash: String? = nil, backdropUrl: String?, backdropThumbhash: String? = nil,
+         suggestionSubtitle: String? = nil, posterUrl: String?, posterThumbhash: String? = nil, backdropUrl: String?, backdropThumbhash: String? = nil,
          year: Int? = nil, runtimeMinutes: Int? = nil, overview: String? = nil,
          posterIsEpisodeStill: Bool? = nil, backdropIsEpisodeStill: Bool? = nil,
          episodeWatchState: EpisodeWatchState? = nil) {
@@ -77,6 +85,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
         self.type = type
         self.title = title
         self.subtitle = subtitle
+        self.suggestionSubtitle = suggestionSubtitle
         self.posterUrl = posterUrl
         self.posterThumbhash = posterThumbhash
         self.posterIsEpisodeStill = posterIsEpisodeStill
@@ -116,7 +125,7 @@ struct WatchPartySelectedItem: Equatable, Sendable {
     /// "2024 · 2h 46m" style facts for the hero.
     var factsLine: [String] {
         var facts: [String] = []
-        if let year, year > 0 { facts.append(String(year)) }
+        if let year, year > 0 { facts.append(LocaleFormat.integer(year)) }
         if let runtime = MediaTextFormatting.runtime(minutes: runtimeMinutes) { facts.append(runtime) }
         return facts
     }
@@ -139,8 +148,10 @@ extension WatchPartySelectedItem {
         let season = seasons.first { $0.seasonNumber == episode.seasonNumber }
         let seasonPoster = season?.posterUrl?.nilIfEmpty
         self.init(previewContentId: episode.contentId, type: "episode",
-                  title: episode.title ?? "Episode \(episode.episodeNumber)",
-                  subtitle: "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)",
+                  title: episode.title ?? AppLanguage.string(.detailEpisode(LocaleFormat.integer(episode.episodeNumber))),
+                  subtitle: "\(AppLanguage.isolated(series.title)) · "
+                      + AppLanguage.string(.watchPartyFactsEpisodeCode(LocaleFormat.codeNumber(episode.seasonNumber), LocaleFormat.codeNumber(episode.episodeNumber))),
+                  suggestionSubtitle: "\(series.title) · S\(episode.seasonNumber):E\(episode.episodeNumber)",
                   posterUrl: seasonPoster ?? series.posterUrl,
                   posterThumbhash: seasonPoster != nil ? season?.posterThumbhash : series.posterThumbhash,
                   backdropUrl: series.backdropUrl, backdropThumbhash: series.backdropThumbhash,
@@ -256,13 +267,15 @@ enum WatchPartyLobbyPolicy {
     /// Short trailing summary for the seats row: "2 of 3 ready".
     static func presenceSummary(members: [WatchPartyMember], phase: WatchPartyPhase) -> String {
         let here = members.filter(\.connected)
-        if here.count <= 1 { return here.count == 1 ? "only you so far" : "nobody connected" }
+        if here.count <= 1 {
+            return AppLanguage.string(here.count == 1 ? .watchPartyPresenceOnlyYou : .watchPartyPresenceNobody)
+        }
         if phase == .lobby {
             let ready = here.filter { seatState($0, phase: phase) == .ready }.count
-            return "\(ready) of \(here.count) ready"
+            return AppLanguage.string(.watchPartyPresenceReady(LocaleFormat.integer(ready), here.count))
         }
         let watching = here.filter { seatState($0, phase: phase) == .watching }.count
-        return "\(watching) of \(here.count) watching"
+        return AppLanguage.string(.watchPartyPresenceWatching(LocaleFormat.integer(watching), here.count))
     }
 
     /// Connected guests who have not marked ready, for the host's advisory hint.

@@ -18,6 +18,7 @@ struct PhoneSimilarRail: View {
     @State private var items: [SimilarPosterItem] = []
     @State private var isLoading = true
     @State private var loadedFor: String? = nil
+    @Environment(\.locale) private var locale
     private var uiCustomization: UICustomizationPreferences { .shared }
 
     var body: some View {
@@ -33,7 +34,7 @@ struct PhoneSimilarRail: View {
 
     private func section(@ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "More Like This")
+            PhoneSectionHeader(title: AppLanguage.string(.detailMoreLikeThis, locale: locale))
                 .padding(.horizontal, SiloTheme.safePadding)
             content()
         }
@@ -183,7 +184,7 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.year = card.year
         self.subtitle = nil
         self.placeholderSymbol = ArtworkPlaceholderSymbol.forMediaType(card.type)
-        self.accessibilityDescription = [card.title, card.year.map(String.init)]
+        self.accessibilityDescription = [card.title, card.year.map { LocaleFormat.integer($0) }]
             .compactMap { $0 }
             .joined(separator: ", ")
     }
@@ -194,7 +195,7 @@ struct SimilarPosterItem: Identifiable, Hashable {
         self.posterUrl = item.posterUrl
         self.posterThumbhash = nil
         self.year = item.year
-        self.subtitle = item.seriesIndex.map { "Book \($0)" }
+        self.subtitle = item.seriesIndex.map { AppLanguage.string(.detailAudiobookBookNumber($0)) }
         self.placeholderSymbol = nil
         self.accessibilityDescription = audiobookRelatedItemAccessibilityLabel(item)
     }
@@ -207,6 +208,7 @@ private struct PhonePosterCard: View {
     let aspectRatio: CGFloat
     let placeholderSymbol: String
     private var uiCustomization: UICustomizationPreferences { .shared }
+    @Environment(\.locale) private var locale
 
     private var cardWidth: CGFloat {
         SiloTheme.posterCardWidth * uiCustomization.cardPresentation.posterSize.scale
@@ -223,7 +225,7 @@ private struct PhonePosterCard: View {
                 .foregroundStyle(Color.siloOnSurface)
                 .lineLimit(2, reservesSpace: true)
                 .multilineTextAlignment(.leading)
-            if let caption = item.subtitle ?? item.year.map(String.init) {
+            if let caption = item.subtitle ?? item.year.map({ LocaleFormat.integer($0, locale: locale) }) {
                 Text(caption)
                     .font(.siloCaption)
                     .foregroundColor(.siloSecondaryText)

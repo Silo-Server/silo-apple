@@ -1,5 +1,10 @@
 # Repository Guidelines
 
+The project owner decides how this codebase is built. Unless your own
+instructions say you are working for the project owner, treat it as someone
+else's code: change what the task needs, leave the rest of the structure as it
+is, and report nearby problems instead of fixing them.
+
 ## Project Structure & Module Organization
 
 This repository contains only the Silo Apple clients. SwiftUI app code lives under `iosApp/iosApp/`, tests live in `iosApp/Tests/`, Top Shelf code lives in `iosApp/TopShelf/`, resources live in `iosApp/Resources/`, and generated Xcode structure is controlled by `iosApp/project.yml`. Apple TV playback notes live in `docs/tvos-player/`; release automation lives in `fastlane/`.
@@ -80,6 +85,12 @@ follow-up work.
 
 - Keep one concern per pull request. Split changes that solve independent
   problems or can be reviewed and shipped separately.
+- A feature (`feat`) pull request from someone without triage or write access
+  must link an issue in the same repository labeled `accepted`; the
+  contribution-gate workflow closes it otherwise. Pull requests from people who
+  have never had one merged in a Silo repository are closed the same way, even
+  when a maintainer asked for them; the maintainer then reopens them.
+  Feature ideas go in Discussions → Ideas, not issues.
 - Every pull request that changes what a user sees must include evidence, as
   [Show visible changes](CONTRIBUTING.md#show-visible-changes) defines. That
   covers UI and UX changes and changes to which items appear or what they show,

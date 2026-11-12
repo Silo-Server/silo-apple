@@ -114,7 +114,7 @@ struct ErrorState: Equatable {
     private static func forbiddenMessage(for problem: APIv2Problem) -> String {
         let detail = problem.detail.trimmingCharacters(in: .whitespacesAndNewlines)
         if problem.identifier == "permission_denied", !detail.isEmpty {
-            return detail
+            return problem.localized(detail)
         }
         if problem.identifier == PasswordChangeModel.requiredProblem {
             return passwordChangeRequiredMessage
@@ -125,27 +125,29 @@ struct ErrorState: Equatable {
     /// Apple TV has no password change, so it sends the person to the mobile
     /// app or the web.
     #if os(tvOS)
-    static let passwordChangeRequiredMessage =
-        "Your password needs to be reset. Use the Silo mobile app or website to set a new one, then come back."
+    static var passwordChangeRequiredMessage: String {
+        AppLanguage.string(.profilesErrorPasswordReset)
+    }
     #else
-    static let passwordChangeRequiredMessage =
-        "An admin set a temporary password for this account. Sign out, then sign in again to choose your own."
+    static var passwordChangeRequiredMessage: String {
+        AppLanguage.string(.shellErrorTemporaryPassword)
+    }
     #endif
 
     private static func humanize(httpError: HTTPError) -> String {
         switch httpError {
         case .serverUrlNotConfigured:
-            return "No server is configured."
+            return AppLanguage.string(.shellErrorNoServer)
         case .requestIdentityChanged, .authorityChanged:
-            return "The active server or profile changed. Try again."
+            return AppLanguage.string(.shellErrorIdentityChanged)
         case .invalidURL:
-            return "The request URL was invalid."
+            return AppLanguage.string(.shellErrorInvalidUrl)
         case .invalidResponse:
-            return "The server returned an unexpected response."
+            return AppLanguage.string(.shellErrorInvalidResponse)
         case .network:
-            return "Can't reach the server. Check your connection and try again."
+            return AppLanguage.string(.requestsErrorNetwork)
         case .decodingFailed:
-            return "The server response was in an unexpected format."
+            return AppLanguage.string(.shellErrorDecodingFailed)
         case .http(let code, _):
             return humanize(statusCode: code)
         }
@@ -154,19 +156,19 @@ struct ErrorState: Equatable {
     private static func humanize(statusCode code: Int) -> String {
         switch code {
         case 401:
-            return "Your session has expired. Sign in again to continue."
+            return AppLanguage.string(.shellErrorSessionExpired)
         case 403:
-            return "You don't have permission to do this. Ask your server admin if you need access."
+            return AppLanguage.string(.requestsErrorPermission)
         case 404:
-            return "We couldn't find what you were looking for. It may have been removed or moved."
+            return AppLanguage.string(.shellErrorNotFound)
         case 408, 504:
-            return "The server took too long to respond. Try again in a moment."
+            return AppLanguage.string(.shellErrorTimeout)
         case 429:
-            return "Too many requests. Please wait a moment and try again."
+            return AppLanguage.string(.shellErrorTooManyRequests)
         case 500...599:
-            return "The server ran into a problem. Try again in a moment."
+            return AppLanguage.string(.shellErrorServerProblem)
         default:
-            return "Something went wrong while talking to the server."
+            return AppLanguage.string(.shellErrorGeneric)
         }
     }
 }

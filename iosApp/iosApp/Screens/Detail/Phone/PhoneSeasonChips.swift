@@ -13,6 +13,7 @@ struct PhoneSeasonChips: View {
     var isUpdatingWatched = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.locale) private var locale
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -79,10 +80,11 @@ struct PhoneSeasonChips: View {
             Button {
                 onSetWatched(season, !(season.userData?.played ?? false))
             } label: {
-                Label(
-                    season.userData?.played == true ? "Mark Season Unwatched" : "Mark Season Watched",
-                    systemImage: season.userData?.played == true ? "circle" : "checkmark.circle"
-                )
+                Label {
+                    Text(season.userData?.played == true ? .detailMoreMarkSeasonUnwatched : .detailMoreMarkSeasonWatched)
+                } icon: {
+                    Image(systemName: season.userData?.played == true ? "circle" : "checkmark.circle")
+                }
             }
             .disabled(isUpdatingWatched || season.episodeCount == 0)
         }
@@ -138,7 +140,7 @@ struct PhoneSeasonChips: View {
                     .font(.siloCardTitle)
                     .foregroundStyle(Color.siloOnSurface)
                     .lineLimit(1)
-                Text(season.episodeCount == 1 ? "1 episode" : "\(season.episodeCount) episodes")
+                Text(.detailEpisodeCount(count: season.episodeCount, LocaleFormat.integer(season.episodeCount)))
                     .font(.siloCardMetadata)
                     .foregroundStyle(Color.siloSecondaryText)
                     .lineLimit(1)
@@ -149,7 +151,7 @@ struct PhoneSeasonChips: View {
         }
         .buttonStyle(.siloFlat)
         .accessibilityLabel(label(for: season))
-        .accessibilityValue(season.userData?.played == true ? "Watched" : "")
+        .accessibilityValue(season.userData?.played == true ? Text(.detailWatched) : Text(verbatim: ""))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .contextMenu { watchedMenu(for: season) }
     }
@@ -189,8 +191,8 @@ struct PhoneSeasonChips: View {
 
     private func label(for season: Season) -> String {
         if let title = season.title, !title.isEmpty { return title }
-        if season.seasonNumber == 0 { return "Specials" }
-        return "Season \(season.seasonNumber)"
+        if season.seasonNumber == 0 { return AppLanguage.string(.detailSpecials, locale: locale) }
+        return AppLanguage.string(.detailSeason(LocaleFormat.integer(season.seasonNumber, locale: locale)), locale: locale)
     }
 }
 #endif

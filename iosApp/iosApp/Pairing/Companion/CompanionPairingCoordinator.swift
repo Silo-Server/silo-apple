@@ -80,12 +80,6 @@ final class CompanionPairingCoordinator {
             guard let username else { return server.displayName }
             return "\(server.displayName) — \(username)"
         }
-
-        /// "sam on Home", or "Home".
-        var progressName: String {
-            guard let username else { return server.displayName }
-            return "\(username) on \(server.displayName)"
-        }
     }
 
     /// One line per server, in sending order: "Home — alex, sam".
@@ -106,7 +100,9 @@ final class CompanionPairingCoordinator {
         return order.compactMap { id in
             guard let server = servers[id] else { return nil }
             let accounts = names[id] ?? []
-            return accounts.isEmpty ? server.displayName : "\(server.displayName) — \(accounts.joined(separator: ", "))"
+            return accounts.isEmpty
+                ? server.displayName
+                : AppLanguage.string(.pairingSummarySignedIn(server.displayName, accounts.joined(separator: ", ")))
         }
     }
 
@@ -120,24 +116,24 @@ final class CompanionPairingCoordinator {
         /// What to tell the phone user. The TV shows the detailed recovery
         /// (provider setup, alternate address); the phone summarises it.
         var summary: String {
-            if let message { return "\(name): \(message)" }
+            if let message { return AppLanguage.string(.pairingSummaryFailed(name, message)) }
             switch code {
             case .unreachable:
-                return "\(name): the TV couldn't reach this address. Follow the steps on the TV, or set the TV up with the server's public address."
+                return AppLanguage.string(.pairingSummaryUnreachable(name))
             case .identityMismatch:
-                return "\(name): the address answered as a different server."
+                return AppLanguage.string(.pairingSummaryIdentityMismatch(name))
             case .denied:
-                return "\(name): the sign-in was declined."
+                return AppLanguage.string(.pairingSummaryDenied(name))
             case .expired:
-                return "\(name): the code expired before it was approved."
+                return AppLanguage.string(.pairingSummaryExpired(name))
             case .updateRequired:
-                return "\(name): the server or Silo needs to be updated first."
+                return AppLanguage.string(.pairingSummaryUpdateRequired(name))
             case .saveFailed:
-                return "\(name): the TV approved the sign-in but couldn't save it. Try again."
+                return AppLanguage.string(.pairingSummarySaveFailed(name))
             case .limitReached:
-                return "\(name): the TV can't keep any more accounts."
+                return AppLanguage.string(.pairingSummaryLimitReached(name))
             case .authFailed:
-                return "\(name): the TV couldn't finish signing in."
+                return AppLanguage.string(.pairingSummaryAuthFailed(name))
             }
         }
     }
@@ -275,7 +271,7 @@ final class CompanionPairingCoordinator {
     /// reader for the coordinator's whole life.
     func start() {
         guard runTask == nil else { return }
-        armWatchdog(Timeouts.hello, "Couldn’t reach \(tvName). Make sure it’s still on its setup or sign-in screen, then try again.")
+        armWatchdog(Timeouts.hello, stage: "hello", AppLanguage.string(.pairingErrorCouldntReachTv(tvName)))
         runTask = Task { await run() }
     }
 
@@ -297,7 +293,7 @@ final class CompanionPairingCoordinator {
         if let error {
             Self.logger.error("session error: \(String(describing: error), privacy: .public)")
         }
-        state = .error("Connection to \(tvName) was lost.")
+        state = .error(AppLanguage.string(.pairingErrorConnectionLostShort(tvName)))
     }
 
     // MARK: - Inbound messages
@@ -309,13 +305,13 @@ final class CompanionPairingCoordinator {
             disarmWatchdog()
             tvName = name
             guard supported.contains(PairingProtocol.version) else {
-                await conclude(.error("Update Silo on both devices to continue."), goodbye: .cancel(reason: "version_unsupported"))
+                await conclude(.error(AppLanguage.string(.pairingErrorUpdateBoth)), goodbye: .cancel(reason: "version_unsupported"))
                 return
             }
             if let fixedServer {
                 // A sign-in TV: push only the server it asked for.
                 guard receiverState == .login else {
-                    await conclude(.error("\(tvName) is no longer on its sign-in screen."), goodbye: .cancel(reason: "state_changed"))
+                    await conclude(.error(AppLanguage.string(.pairingErrorLeftSignIn(tvName))), goodbye: .cancel(reason: "state_changed"))
                     return
                 }
                 // One account per sign-in screen (decision D3).
@@ -332,7 +328,7 @@ final class CompanionPairingCoordinator {
             }
             guard !concluded else { return }
             guard sections.contains(where: { $0.accounts.contains { !$0.needsSignIn } }) else {
-                await conclude(.error("Sign in to a server on this \(deviceModel) first."), goodbye: .cancel(reason: "no_servers"))
+                await conclude(.error(AppLanguage.string(.pairingErrorSignInFirstOn(deviceModel))), goodbye: .cancel(reason: "no_servers"))
                 return
             }
             self.sections = sections
@@ -352,7 +348,10 @@ final class CompanionPairingCoordinator {
             recordResult(target, signedInOK: status == .signedIn, code: PairingFailureCode(wire: error))
             await pushNext()
         case .cancel:
-            await conclude(.error("\(isSignIn ? "Sign-in" : "Setup") was cancelled on \(tvName)."), goodbye: nil)
+            let message = AppLanguage.string(isSignIn
+                ? LocalizedStringResource.pairingErrorSignInCancelledOn(tvName)
+                : .pairingErrorSetupCancelledOn(tvName))
+            await conclude(.error(message), goodbye: nil)
         case .pushServer, .done:
             break // phone → TV kinds; a conforming TV never sends these
         }
@@ -446,9 +445,14 @@ final class CompanionPairingCoordinator {
 
     /// "2 of 4" while several targets are sent, nil for one.
     private var stepLabel: String? {
+        guard let position = stepPosition else { return nil }
+        return AppLanguage.string(.companionStepPosition(position, targetCount))
+    }
+
+    /// The current target's place in the queue while several are sent.
+    private var stepPosition: Int? {
         guard targetCount > 1 else { return nil }
-        let position = targetCount - queue.count + 1
-        return "\(position) of \(targetCount)"
+        return targetCount - queue.count + 1
     }
 
     private func bearer(for target: PairingTarget) async -> ApproverBearer {
@@ -471,8 +475,8 @@ final class CompanionPairingCoordinator {
     func declineMatch() async {
         let isLaterTarget = targetCount - queue.count > 0
         let message = isLaterTarget
-            ? "The codes didn’t match, so setup stopped. Accounts already signed in stay on the TV."
-            : "The codes didn’t match, so \(isSignIn ? "sign-in" : "setup") was cancelled."
+            ? AppLanguage.string(.pairingErrorCodesStopped)
+            : AppLanguage.string(isSignIn ? LocalizedStringResource.pairingErrorCodesDifferSignIn : .pairingErrorCodesDifferSetup)
         await conclude(.error(message), goodbye: .cancel(reason: "match_declined"))
     }
 
@@ -500,7 +504,9 @@ final class CompanionPairingCoordinator {
         let firstPush = isFirstPush
         isFirstPush = false
         if firstPush {
-            state = .working(progress: "Continue on \(tvName): allow this \(deviceModel) to \(isSignIn ? "sign it in" : "set it up").")
+            state = .working(progress: AppLanguage.string(isSignIn
+                ? LocalizedStringResource.companionProgressAllowSignIn(tvName, deviceModel)
+                : .companionProgressAllowSetup(tvName, deviceModel)))
         } else {
             state = .working(progress: progressText(for: target))
         }
@@ -521,9 +527,10 @@ final class CompanionPairingCoordinator {
             firstPush
                 ? (offersAlternates ? Timeouts.firstDeviceStartedWithEndpoints : Timeouts.firstDeviceStarted)
                 : (offersAlternates ? Timeouts.deviceStartedWithEndpoints : Timeouts.deviceStarted),
+            stage: "device_started",
             firstPush
-                ? "\(tvName) didn’t respond. Make sure you allowed the request on the TV, then try again."
-                : "\(tvName) stopped responding."
+                ? AppLanguage.string(.pairingErrorNoResponse(tvName))
+                : AppLanguage.string(.pairingErrorStoppedRespondingShort(tvName))
         )
         do {
             try await channel.send(.pushServer(
@@ -534,14 +541,16 @@ final class CompanionPairingCoordinator {
                 accountName: target.username
             ))
         } catch {
-            await conclude(.error("Connection to \(tvName) was lost."), goodbye: nil)
+            await conclude(.error(AppLanguage.string(.pairingErrorConnectionLostShort(tvName))), goodbye: nil)
         }
     }
 
     /// "Signing in sam on Home… (2 of 4)".
     private func progressText(for target: PairingTarget) -> String {
-        let base = "Signing in \(target.progressName)…"
-        return stepLabel.map { "\(base) (\($0))" } ?? base
+        let base = AppLanguage.string(target.username.map { LocalizedStringResource.companionProgressSigningInAccount($0, target.server.displayName) }
+            ?? .companionProgressSigningIn(target.server.displayName))
+        guard let position = stepPosition else { return base }
+        return AppLanguage.string(.companionProgressPosition(base, position, targetCount))
     }
 
     private func approveCurrent(_ target: PairingTarget) async {
@@ -558,7 +567,7 @@ final class CompanionPairingCoordinator {
         // Armed before the suspending approve call (same reasoning as
         // `pushNext`): the TV reports back once its poll mints tokens, and
         // the window covers the HTTP round-trip plus that report.
-        armWatchdog(Timeouts.serverResult, "\(tvName) stopped responding while finishing sign-in.")
+        armWatchdog(Timeouts.serverResult, stage: "server_result", AppLanguage.string(.pairingErrorStoppedRespondingFinishing(tvName)))
         do {
             try await api.approve(serverURL: server.url, bearer: token, userCode: pendingUserCode ?? "")
         } catch {
@@ -593,9 +602,9 @@ final class CompanionPairingCoordinator {
         case .providerUnavailable:
             return ExternalSignInError.reasonText("provider_unavailable")
         case .unreachable:
-            return "Couldn’t reach \(server.displayName) to approve the sign-in. Check this \(deviceModel)’s connection and try again."
+            return AppLanguage.string(.pairingErrorUnreachableApprove(server.displayName, deviceModel))
         case .token, .rejected:
-            return "Sign in to \(server.displayName) on this \(deviceModel) again, then try again."
+            return AppLanguage.string(.pairingErrorSignInAgainOn(server.displayName, deviceModel))
         }
     }
 
@@ -621,7 +630,7 @@ final class CompanionPairingCoordinator {
     /// `message`, plus a note that earlier sign-ins are kept once any
     /// target has signed in.
     private func stoppedMessage(_ message: String) -> String {
-        signedIn.isEmpty ? message : "\(message) Accounts already signed in stay on the TV."
+        signedIn.isEmpty ? message : AppLanguage.string(.pairingErrorStoppedKept(message))
     }
 
     /// What to tell the user when the approval failed. A 409 means the
@@ -632,15 +641,15 @@ final class CompanionPairingCoordinator {
         case APIv2Error.problem(let problem) where problem.identifier == "provider_unavailable":
             return ExternalSignInError.reasonText("provider_unavailable")
         case APIv2Error.problem(let problem) where problem.status == 401:
-            return "Sign in to \(server.displayName) on this \(deviceModel) again, then try again."
+            return AppLanguage.string(.pairingErrorSignInAgainOn(server.displayName, deviceModel))
         case APIv2Error.problem(let problem) where problem.status == 409:
-            return "This sign-in request was already approved or declined. Start again on \(tvName)."
+            return AppLanguage.string(.pairingErrorAlreadyDecided(tvName))
         case APIv2Error.problem(let problem) where problem.status == 410 || problem.status == 404:
-            return "The code expired before it was approved. Start again on \(tvName)."
+            return AppLanguage.string(.pairingErrorCodeExpired(tvName))
         case is URLError:
-            return "Couldn’t reach \(server.displayName) to approve the sign-in. Check this \(deviceModel)’s connection and try again."
+            return AppLanguage.string(.pairingErrorUnreachableApprove(server.displayName, deviceModel))
         default:
-            return "\(server.displayName) couldn’t approve the sign-in. Try again."
+            return AppLanguage.string(.pairingErrorApproveRefused(server.displayName))
         }
     }
 
@@ -680,12 +689,14 @@ final class CompanionPairingCoordinator {
 
     // MARK: - Watchdog
 
-    private func armWatchdog(_ timeout: Duration, _ message: String) {
+    /// `stage` names the wait in the log; `message` is what the screen shows,
+    /// in the app language, so it stays out of the log.
+    private func armWatchdog(_ timeout: Duration, stage: StaticString, _ message: String) {
         watchdog?.cancel()
         watchdog = Task { [weak self] in
             try? await Task.sleep(for: timeout)
             guard !Task.isCancelled else { return }
-            await self?.timedOut(message)
+            await self?.timedOut(stage: stage, message)
         }
     }
 
@@ -694,9 +705,9 @@ final class CompanionPairingCoordinator {
         watchdog = nil
     }
 
-    private func timedOut(_ message: String) async {
+    private func timedOut(stage: StaticString, _ message: String) async {
         guard !concluded else { return }
-        Self.logger.error("pairing wait timed out: \(message, privacy: .public)")
+        Self.logger.error("pairing wait timed out: \(String(describing: stage), privacy: .public)")
         await conclude(.error(message), goodbye: .cancel(reason: "timeout"))
     }
 

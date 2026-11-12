@@ -348,7 +348,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
                 ref,
                 statusCode: statusCode,
                 resumeData: nil,
-                message: "HTTP \(statusCode)",
+                message: "HTTP \(statusCode)", // i18n-ignore: English data: logged or sent to the server (D44)
                 cause: .other
             ))
             return
@@ -375,7 +375,7 @@ final class DownloadSessionDelegate: NSObject, URLSessionDownloadDelegate, @unch
                 ref,
                 statusCode: statusCode,
                 resumeData: nil,
-                message: "stage_failed",
+                message: "stage_failed", // i18n-ignore: English data: logged or sent to the server (D44)
                 cause: Self.isOutOfSpace(error) ? .storageFull : .other
             ))
         }

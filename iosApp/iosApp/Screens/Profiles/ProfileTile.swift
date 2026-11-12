@@ -54,6 +54,7 @@ struct ProfileTile: View {
     /// How far a focused tile's name drops to clear the enlarged avatar.
     static let focusedNameDrop: CGFloat = 18
 
+    @Environment(\.locale) private var locale
     let profile: UserProfile
     var isRemembered: Bool = false
     /// Avatar diameter. The picker sizes avatars to the household; badges
@@ -194,7 +195,7 @@ struct ProfileTile: View {
 
     private var kidsBadge: some View {
         let kidsFont = kidsFont * scale
-        return Text("KIDS")
+        return Text(.profilesKids)
             .font(.system(size: kidsFont, weight: .heavy))
             .kerning(0.4)
             .foregroundStyle(.black)
@@ -208,24 +209,24 @@ struct ProfileTile: View {
     private var accessibilityValue: String {
         var values: [String] = []
         if isRemembered { values.append(rememberedAccessibilityValue) }
-        if profile.hasPin { values.append("PIN protected") }
-        if profile.isChild { values.append("Kids profile") }
+        if profile.hasPin { values.append(AppLanguage.string(.profilesPinProtected)) }
+        if profile.isChild { values.append(AppLanguage.string(.profilesKidsProfile)) }
         return values.joined(separator: ", ")
     }
 
-    private var rememberedBadgeLabel: String {
+    private var rememberedBadgeLabel: LocalizedStringResource {
         #if os(tvOS)
-        "Apple TV user"
+        .profilesTileAppleTvUser
         #else
-        "Last used"
+        .profilesTileLastUsed
         #endif
     }
 
     private var rememberedAccessibilityValue: String {
         #if os(tvOS)
-        "Paired with this Apple TV user"
+        AppLanguage.string(.profilesTilePairedAppleTvUser)
         #else
-        "Last used"
+        AppLanguage.string(.profilesTileLastUsed)
         #endif
     }
 }
@@ -266,7 +267,7 @@ private func scaledNameSize(_ size: CGFloat) -> CGFloat {
 
 struct AddProfileTile: View {
     var size: CGFloat = tileSize
-    var title: String = "Add profile"
+    let title: LocalizedStringResource
     let action: () -> Void
 
     @FocusState private var isFocused: Bool

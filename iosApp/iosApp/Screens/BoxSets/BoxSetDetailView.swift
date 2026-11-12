@@ -9,6 +9,7 @@ import SwiftUI
 struct BoxSetDetailView: View {
     @State private var viewModel: BoxSetDetailViewModel
     @Environment(AppRouter.self) private var router
+    @Environment(\.locale) private var locale
     /// Closes the whole detail card; set when this page is the card's root.
     private let onClose: (() -> Void)?
     #if !os(tvOS)
@@ -91,6 +92,20 @@ struct BoxSetDetailView: View {
         return router.path.isEmpty ? nil : { router.goBack() }
     }
 
+    /// Hero facts: film count, year range, and watched progress once started.
+    private func factTokens(_ detail: CatalogBoxSetDetail) -> [String] {
+        let boxSet = detail.boxSet
+        var tokens = [AppLanguage.string(.boxSetsFilm(boxSet.movieCount), locale: locale)]
+        if let years = boxSet.yearsText { tokens.append(years) }
+        if boxSet.playedCount > 0 {
+            tokens.append(AppLanguage.string(
+                .boxSetsWatchedFact(LocaleFormat.integer(boxSet.playedCount), boxSet.movieCount),
+                locale: locale
+            ))
+        }
+        return tokens
+    }
+
     // MARK: - iOS / macOS
 
     #if !os(tvOS)
@@ -134,9 +149,9 @@ struct BoxSetDetailView: View {
             // every layout, so the label rides there.
             eyebrow: nil,
             sourceTokens: [],
-            ratingChip: "BOX SET",
+            ratingChip: AppLanguage.string(.boxSetsLabel, locale: locale),
             overview: detail.boxSet.overview,
-            factsLine: detail.factTokens.map { PhoneHeroFactToken.text($0) },
+            factsLine: factTokens(detail).map { PhoneHeroFactToken.text($0) },
             overlayData: nil,
             enablesArtworkParallax: true,
             pane: pane,
@@ -145,10 +160,13 @@ struct BoxSetDetailView: View {
             compactArtworkHeightFactor: 0.62,
             fitsRegularHeroToContent: true,
             actions: {
-                if let movie = detail.nextMovie, let label = detail.playLabel {
+                if let movie = detail.nextMovie {
                     PhonePrimaryPillButton(
                         icon: "play.fill",
-                        title: label,
+                        title: AppLanguage.string(
+                            detail.isStarted ? .boxSetsContinue(movie.title) : .boxSetsPlay(movie.title),
+                            locale: locale
+                        ),
                         action: { play(movie) },
                         fullWidth: true
                     )
@@ -160,7 +178,7 @@ struct BoxSetDetailView: View {
 
     private func phoneMovies(_ detail: CatalogBoxSetDetail) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            PhoneSectionHeader(title: "Movies")
+            PhoneSectionHeader(title: AppLanguage.string(.boxSetsMovies, locale: locale))
             CatalogGrid(
                 items: detail.items,
                 isLoading: false,
@@ -181,8 +199,10 @@ struct BoxSetDetailView: View {
             title: viewModel.detail?.boxSet.title ?? "",
             isScrollGlassEnabled: viewModel.detail != nil,
             scrollState: scrollState,
-            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.left" : nil),
-            leadingAccessibilityLabel: showsClose ? "Close details" : (showsBack ? "Back" : nil),
+            leadingSystemName: showsClose ? "xmark" : (showsBack ? "chevron.backward" : nil),
+            leadingAccessibilityLabel: showsClose
+                ? AppLanguage.string(.detailCloseDetails, locale: locale)
+                : (showsBack ? AppLanguage.string(.commonBack, locale: locale) : nil),
             onLeadingTap: { goBackAction?() },
             trailingSystemName: nil,
             onTrailingTap: nil
@@ -202,11 +222,11 @@ struct BoxSetDetailView: View {
                         logoUrl: nil,
                         backdropUrl: detail.boxSet.backdropUrl,
                         backdropThumbhash: detail.boxSet.backdropThumbhash,
-                        eyebrow: "Box set",
+                        eyebrow: AppLanguage.string(.boxSetsEyebrow, locale: locale),
                         sourceTokens: [],
                         ratingChip: nil,
                         overview: detail.boxSet.overview,
-                        factsLine: detail.factTokens.map { TVHeroFactToken.text($0) },
+                        factsLine: factTokens(detail).map { TVHeroFactToken.text($0) },
                         starringText: nil,
                         playbackSummary: TVPlaybackSelectionSummary(version: nil, audio: nil, subtitles: nil),
                         showsPlaybackSummary: false,
@@ -215,7 +235,7 @@ struct BoxSetDetailView: View {
                     )
 
                     VStack(alignment: .leading, spacing: TVDetailLayout.sectionHeaderSpacing) {
-                        TVSectionHeader(title: "Movies")
+                        TVSectionHeader(title: AppLanguage.string(.boxSetsMovies, locale: locale))
                         TVCatalogGrid(
                             items: detail.items,
                             isLoading: false,
@@ -242,7 +262,7 @@ struct BoxSetDetailView: View {
             HStack(spacing: 18) {
                 TVPrimaryPillButton(
                     icon: "play.fill",
-                    title: detail.playVerb,
+                    title: AppLanguage.string(detail.isStarted ? .boxSetsContinueButton : .commonPlay, locale: locale),
                     subtitle: movie.title,
                     stabilizesFocusMotion: true,
                     action: { play(movie) },

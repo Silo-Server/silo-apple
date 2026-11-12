@@ -1,6 +1,6 @@
 repository=https://github.com/Silo-Server/silo-server
 path=contracts/settings/v1
-manifest_revision=24
+manifest_revision=28
 fixture_version=1
 
 Both files are byte-identical copies of the server's canonical settings
@@ -14,14 +14,17 @@ vendored manifest's revision, and the generated SettingKey.revision stop
 agreeing, which is the whole point of carrying the pair rather than the
 fixture alone.
 
-conformance.json commit=fc9d53792b0d7a13a4500d3ab0178710b0542748
-manifest.json    commit=fc9d53792b0d7a13a4500d3ab0178710b0542748
-copied from      commit=fc9d53792b0d7a13a4500d3ab0178710b0542748 (branch retire-card-caption)
-generated with   commit=fc9d53792b0d7a13a4500d3ab0178710b0542748 (cmd/settingsgen -lang swift)
+conformance.json commit=f5d61bb2b0dc33fedd2e1b6752a9827b838ecae8
+manifest.json    commit=f5d61bb2b0dc33fedd2e1b6752a9827b838ecae8
+copied from      commit=f5d61bb2b0dc33fedd2e1b6752a9827b838ecae8 (Silo-Server/silo-server#3723)
+generated with   commit=f5d61bb2b0dc33fedd2e1b6752a9827b838ecae8 (cmd/settingsgen -lang swift)
 
-Revision 24 retires the ui.card_presentation caption choice: caption stays
-required on the wire, current clients write title_metadata and ignore the
-stored member.
+Revision 28 adds ui.app_language (nullable language_tag, profile and
+profile_device scopes, null follows the device) and the advisory
+app_languages option set. Revision 27 added
+watch_party.guest_control_policy, which the Apple apps don't read yet. This copy also picks up
+playback.show_marker_source and playback.show_marker_confidence, which
+the server added after the previous copy was taken.
 
 manifest.json is vendored whole, including the maintainer `notes` the server
 strips before serving /api/v1/settings/contract. Keeping it byte-identical is
@@ -36,4 +39,4 @@ contract rather than by a hand-copied table.
 
 Android vendors the same pair at
 shared/src/commonTest/resources/settings/v1/ in silo-android; the two SOURCE
-notes are meant to stay in step. This copy is revision 24.
+notes are meant to stay in step. This copy is revision 28.

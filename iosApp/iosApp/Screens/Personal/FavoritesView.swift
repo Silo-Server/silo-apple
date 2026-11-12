@@ -2,11 +2,18 @@ import SwiftUI
 
 /// Movies / TV Shows split for the saved-list screens (Favorites and
 /// Watchlist on iOS, Favorites on tvOS).
-enum PersonalMediaSection: String, CaseIterable, Identifiable {
-    case movies = "Movies"
-    case tvShows = "TV Shows"
+enum PersonalMediaSection: CaseIterable, Identifiable {
+    case movies
+    case tvShows
 
     var id: Self { self }
+
+    var label: LocalizedStringResource {
+        switch self {
+        case .movies: .personalFilterMovies
+        case .tvShows: .personalFilterTvShows
+        }
+    }
 
     func includes(_ item: BrowseItem) -> Bool {
         switch self {
@@ -27,14 +34,16 @@ struct IOSPersonalMediaSectionPicker: View {
     @Binding var selection: PersonalMediaSection
 
     var body: some View {
-        Picker("Media type", selection: $selection) {
+        Picker(selection: $selection) {
             ForEach(PersonalMediaSection.allCases) { section in
-                Text(section.rawValue).tag(section)
+                Text(section.label).tag(section)
             }
+        } label: {
+            Text(.personalMediaType)
         }
         .pickerStyle(.segmented)
         .tint(.white)
-        .accessibilityLabel("Saved media type")
+        .accessibilityLabel(Text(.personalMediaTypeAccessibility))
     }
 }
 
@@ -189,6 +198,7 @@ struct FavoritesView: View {
     #endif
     @Environment(AppRouter.self) private var router
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.locale) private var locale
     #if os(iOS)
     @State private var selectedSection: PersonalMediaSection = .movies
     #endif
@@ -249,12 +259,16 @@ struct FavoritesView: View {
     }
 
     private var iosSelectedSectionEmptyState: some View {
-        ContentUnavailableView(
-            "No Favorite \(selectedSection.rawValue)",
-            systemImage: selectedSection == .movies ? "film" : "tv",
-            description: Text("Add favorites from a detail page and they will appear here.")
-        )
+        ContentUnavailableView {
+            Label(iosEmptyTitle, systemImage: selectedSection == .movies ? "film" : "tv")
+        } description: {
+            Text(.personalFavoritesEmptyBody)
+        }
         .frame(maxWidth: .infinity, minHeight: 360)
+    }
+
+    private var iosEmptyTitle: LocalizedStringResource {
+        selectedSection == .movies ? .personalFavoritesEmptyMoviesTitle : .personalFavoritesEmptyTvShowsTitle
     }
     #endif
 
@@ -275,28 +289,28 @@ struct FavoritesView: View {
                     .tvPageFocusOwner(
                         focusRequest: focusRequest,
                         isTopMenuFocused: isTopMenuFocused,
-                        accessibilityLabel: "Loading favorites",
+                        accessibilityLabel: AppLanguage.string(.personalFavoritesLoading, locale: locale),
                         onMoveUp: onTopMenuFocusRequest
                     )
                 #endif
             } else {
                 EmptyStateView(
                     icon: "heart",
-                    title: "No favorites",
-                    subtitle: "Tap the heart icon on any item to add it here"
+                    title: AppLanguage.string(.personalFavoritesEmpty, locale: locale),
+                    subtitle: AppLanguage.string(.personalFavoritesEmptyTapHint, locale: locale)
                 )
                 #if os(tvOS)
                 .tvPageFocusOwner(
                     focusRequest: focusRequest,
                     isTopMenuFocused: isTopMenuFocused,
-                    accessibilityLabel: "No favorites",
+                    accessibilityLabel: AppLanguage.string(.personalFavoritesEmpty, locale: locale),
                     onMoveUp: onTopMenuFocusRequest
                 )
                 #endif
             }
         }
         .siloPageBackground()
-        .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? "Favorites" : nil))
+        .modifier(PersonalListNavigationChrome(title: showsNavigationTitle ? .personalFavoritesTitle : nil))
         .task {
             await loadFavorites()
         }
@@ -357,7 +371,7 @@ struct FavoritesView: View {
             VStack(alignment: .leading, spacing: 40) {
                 let visibleItems = filteredItems
                 if usesTVTopMenu {
-                    Text("Favorites")
+                    Text(.personalFavoritesTitle)
                         .font(.system(size: 64, weight: .bold))
                         .foregroundStyle(Color.siloOnSurface)
                 }
@@ -395,7 +409,7 @@ struct FavoritesView: View {
                         selectedSection = section
                     }
                 } label: {
-                    Text(section.rawValue)
+                    Text(section.label)
                         .font(.system(size: 24, weight: .semibold))
                         .lineLimit(1)
                 }
@@ -414,17 +428,21 @@ struct FavoritesView: View {
         }
     }
 
+    private var tvEmptyTitle: LocalizedStringResource {
+        selectedSection == .movies ? .personalFavoritesNoMovies : .personalFavoritesNoTvShows
+    }
+
     private var selectedSectionEmptyState: some View {
         VStack(spacing: 16) {
             Image(systemName: selectedSection == .movies ? "film" : "tv")
                 .font(.system(size: 54, weight: .light))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.34))
 
-            Text("No favorite \(selectedSection.rawValue.lowercased())")
+            Text(tvEmptyTitle)
                 .font(.system(size: 30, weight: .semibold))
                 .foregroundStyle(Color.siloOnSurface)
 
-            Text("Add favorites from any detail page and they will appear here.")
+            Text(.personalFavoritesEmptyAnyBody)
                 .font(.system(size: 22))
                 .foregroundStyle(Color.siloSecondaryText)
         }

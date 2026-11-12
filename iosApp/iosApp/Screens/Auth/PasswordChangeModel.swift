@@ -25,10 +25,12 @@ struct PasswordRequirements: Equatable, Sendable {
 
     /// Why `password` and its `confirmation` can't be submitted, or nil.
     func problem(password: String, confirmation: String) -> String? {
-        if password.isEmpty { return "Enter a new password." }
-        if password != confirmation { return "The new passwords don't match." }
-        if password.unicodeScalars.count < minimumLength { return "Use at least \(minimumLength) characters." }
-        if password.utf8.count > maximumBytes { return "That password is too long. Use a shorter one." }
+        if password.isEmpty { return AppLanguage.string(.signInPasswordChangeErrorNewRequired) }
+        if password != confirmation { return AppLanguage.string(.signInPasswordChangeErrorMismatch) }
+        if password.unicodeScalars.count < minimumLength {
+            return AppLanguage.string(.signInPasswordChangeErrorTooShort(minimumLength))
+        }
+        if password.utf8.count > maximumBytes { return AppLanguage.string(.signInPasswordChangeErrorTooLong) }
         return nil
     }
 }
@@ -79,11 +81,13 @@ final class PasswordChangeModel {
 
     /// The screen's lead line, naming the account once it is known.
     var lead: String {
-        let account = accountName.flatMap { $0.isEmpty ? nil : $0 } ?? "your account"
-        return "An admin set a temporary password for \(account). Choose your own to continue."
+        guard let account = accountName, !account.isEmpty else {
+            return AppLanguage.string(.signInPasswordChangeLeadUnnamed)
+        }
+        return AppLanguage.string(.signInPasswordChangeLead(account))
     }
 
-    var requirementsHint: String { "At least \(requirements.minimumLength) characters" }
+    var requirementsHint: String { AppLanguage.string(.signInPasswordChangeRequirement(requirements.minimumLength)) }
 
     /// Reads the account and the server's password limits; both are allowed
     /// while the password is temporary. An account that no longer holds a
@@ -109,7 +113,7 @@ final class PasswordChangeModel {
     func save(router: AppRouter) async -> Bool {
         guard phase == .editing else { return false }
         if currentPassword.isEmpty {
-            error = FormError("Enter the temporary password.")
+            error = FormError(AppLanguage.string(.signInPasswordChangeErrorTemporaryRequired))
             return false
         }
         if let problem = requirements.problem(password: newPassword, confirmation: confirmation) {
@@ -148,7 +152,7 @@ final class PasswordChangeModel {
         switch await temporaryPasswordRemains() {
         case true?:
             phase = .editing
-            error = FormError("Your password wasn't changed. Try again.")
+            error = FormError(AppLanguage.string(.signInPasswordChangeErrorNotChanged))
         case nil:
             phase = .unconfirmed(checking: false)
         case false?:
@@ -209,16 +213,16 @@ final class PasswordChangeModel {
             let rejected = problem.errors?.first
             switch (problem.identifier, problem.status) {
             case ("validation_failed", 422) where rejected?.location == "body.current_password":
-                return "That temporary password is incorrect."
+                return AppLanguage.string(.signInPasswordChangeErrorTemporaryIncorrect)
             case ("validation_failed", 422):
                 if let detail = rejected?.detail, !detail.isEmpty { return detail }
-                return "Choose a different password, then try again."
+                return AppLanguage.string(.signInPasswordChangeErrorRejected)
             case (_, 429):
-                return "Too many attempts. Wait a moment, then try again."
+                return AppLanguage.string(.tvSignInErrorRateLimited)
             case (_, 409):
-                return "This account doesn't sign in with a Silo password. Ask your server admin for help."
+                return AppLanguage.string(.signInPasswordChangeErrorNoSiloPassword)
             case (_, 403):
-                return "This session can't change the password. Sign in with your own account and try again."
+                return AppLanguage.string(.signInPasswordChangeErrorSessionCannotChange)
             default:
                 break
             }

@@ -8,6 +8,8 @@ struct TVPlaybackSettingsPane: View {
     @Bindable var viewModel: SettingsViewModel
     let detailFocus: FocusState<TVSettingsDetailFocus?>.Binding
     let presentPicker: (TVSettingsPickerRequest) -> Void
+    /// The app language, so a switch re-renders the labels.
+    @Environment(\.locale) private var locale
     @State private var seekIntervals = SeekIntervalPreferences.shared
     @State private var spoilers = EpisodeSpoilerPreferences.shared
     @State private var showUseProfileSettingsConfirmation = false
@@ -43,15 +45,15 @@ struct TVPlaybackSettingsPane: View {
         // Reloads on another network, whose speed and limit differ.
         .task(id: BandwidthProbeScheduler.shared.connectionRevision) { await viewModel.loadPlaybackConnection() }
         .alert(
-            SettingsViewModel.useProfileSettingsTitle,
+            Text(SettingsViewModel.useProfileSettingsTitle),
             isPresented: $showUseProfileSettingsConfirmation
         ) {
-            Button("Use Profile Settings", role: .destructive) {
+            Button(.settingsProfileSettingsUseAll, role: .destructive) {
                 Task { await viewModel.resetPlaybackDeviceSettings() }
             }
-            Button("Cancel", role: .cancel) {}
+            Button(.commonCancel, role: .cancel) {}
         } message: {
-            Text(viewModel.useProfileSettingsMessage)
+            Text(verbatim: viewModel.useProfileSettingsMessage)
         }
     }
 
@@ -62,16 +64,16 @@ struct TVPlaybackSettingsPane: View {
     /// 4K one. Each writes and clears only its own setting, as on the web.
     @ViewBuilder
     private var qualitySection: some View {
-        TVSettingsSectionHeader("QUALITY")
+        TVSettingsSectionHeader(.settingsPlaybackTvHeaderQuality)
 
         TVSettingsPickerRow(
-            title: "Resolution",
-            value: viewModel.qualityResolutionLabel
+            title: .settingsControlResolution,
+            value: .verbatim(viewModel.qualityResolutionLabel)
         ) { showPicker(.resolution) }
         .focused(detailFocus, equals: .top)
 
         TVSettingsPickerRow(
-            title: "Maximum Bitrate",
+            title: .settingsControlBitrate,
             value: viewModel.maxBitrateLabel
         ) { showPicker(.maxBitrate) }
         .focused(detailFocus, equals: .playbackMaxBitrate)
@@ -79,7 +81,7 @@ struct TVPlaybackSettingsPane: View {
         if viewModel.showsBufferingQualityMode {
             TVSettingsPickerRow(
                 title: SettingsViewModel.bufferingQualityTitle,
-                value: viewModel.bufferingQualityMode.label
+                value: .verbatim(viewModel.bufferingQualityMode.label)
             ) { showPicker(.bufferingQualityMode) }
             .focused(detailFocus, equals: .playbackBufferingQualityMode)
         }
@@ -89,12 +91,12 @@ struct TVPlaybackSettingsPane: View {
                 Task { await resetLearnedLimit() }
             } label: {
                 HStack(spacing: 16) {
-                    Text(limit)
+                    Text(verbatim: limit)
                         .font(.system(size: 26))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                     Spacer(minLength: 16)
-                    Text("Reset")
+                    Text(.settingsLearnedLimitReset)
                         .font(.system(size: 24, weight: .semibold))
                 }
             }
@@ -102,11 +104,11 @@ struct TVPlaybackSettingsPane: View {
             .focused(detailFocus, equals: .playbackLearnedLimitReset)
         }
 
-        TVSettingsFooter(
+        TVSettingsFooter(.verbatim(
             viewModel.showsBufferingQualityMode
-                ? "\(viewModel.qualityFooterText) \(SettingsViewModel.bufferingQualityDescription)"
+                ? "\(viewModel.qualityFooterText) \(AppLanguage.string(SettingsViewModel.bufferingQualityDescription, locale: locale))"
                 : viewModel.qualityFooterText
-        )
+        ))
         if let error = viewModel.learnedLimitResetError {
             TVSettingsWarningFooter(error)
         }
@@ -130,7 +132,7 @@ struct TVPlaybackSettingsPane: View {
     /// metered.
     @ViewBuilder
     private var connectionSection: some View {
-        TVSettingsSectionHeader(SettingsViewModel.connectionSectionTitle.uppercased())
+        TVSettingsSectionHeader(.settingsPlaybackTvHeaderConnection)
 
         Button {
             Task { await viewModel.testConnectionSpeed() }
@@ -141,7 +143,7 @@ struct TVPlaybackSettingsPane: View {
                         .font(.system(size: 26))
                     // "measured 3 minutes ago" moves on while the page is open.
                     TimelineView(.everyMinute) { context in
-                        Text(viewModel.connectionSpeedLine(at: context.date))
+                        Text(verbatim: viewModel.connectionSpeedLine(at: context.date))
                             .font(.system(size: 22))
                             .opacity(0.7)
                             .lineLimit(1)
@@ -162,7 +164,7 @@ struct TVPlaybackSettingsPane: View {
         .focused(detailFocus, equals: .playbackConnectionSpeedTest)
 
         if let budget = viewModel.autoBudgetText {
-            TVSettingsFooter(budget)
+            TVSettingsFooter(.verbatim(budget))
         }
         if let message = viewModel.connectionSpeedMessage {
             TVSettingsWarningFooter(message)
@@ -171,19 +173,19 @@ struct TVPlaybackSettingsPane: View {
 
     @ViewBuilder
     private var streamingSection: some View {
-        TVSettingsSectionHeader("STREAMING")
+        TVSettingsSectionHeader(.settingsPlaybackTvHeaderStreaming)
 
         TVSettingsPickerRow(
-            title: "Audio Language",
+            title: .settingsControlAudioLanguage,
             value: TVSettingsOptions.label(
                 for: viewModel.preferredAudioLanguage,
-                in: TVSettingsOptions.audioLanguage(viewModel.audioLanguageOptions)
+                in: TVSettingsOptions.audioLanguage(viewModel.audioLanguageOptions, language: AppLanguage.language(of: locale))
             )
         ) { showPicker(.audioLanguage) }
         .focused(detailFocus, equals: .playbackAudioLanguage)
 
         TVSettingsToggleRow(
-            title: "HDR",
+            title: .settingsManifestPlayerHdrEnabledLabel,
             isOn: viewModel.hdrEnabled
         ) {
             let value = !viewModel.hdrEnabled
@@ -191,7 +193,7 @@ struct TVPlaybackSettingsPane: View {
         }
 
         TVSettingsToggleRow(
-            title: "Dolby Vision",
+            title: .settingsManifestPlayerDolbyVisionEnabledLabel,
             isOn: viewModel.dolbyVisionEnabled
         ) {
             let value = !viewModel.dolbyVisionEnabled
@@ -202,7 +204,7 @@ struct TVPlaybackSettingsPane: View {
         .disabled(!viewModel.hdrEnabled)
 
         TVSettingsToggleRow(
-            title: "Seek Cache",
+            title: .settingsPlaybackSeekCache,
             isOn: viewModel.seekCacheEnabled
         ) {
             let value = !viewModel.seekCacheEnabled
@@ -210,13 +212,13 @@ struct TVPlaybackSettingsPane: View {
         }
 
         TVSettingsPickerRow(
-            title: "Buffer Ahead",
-            value: viewModel.bufferAhead.label
+            title: .settingsPlaybackBufferAhead,
+            value: .verbatim(viewModel.bufferAhead.label)
         ) { showPicker(.bufferAhead) }
         .focused(detailFocus, equals: .playbackBufferAhead)
 
         TVSettingsToggleRow(
-            title: "Lossless Multichannel Audio",
+            title: .settingsPlaybackLosslessAudio,
             isOn: viewModel.losslessAudioEnabled
         ) {
             let value = !viewModel.losslessAudioEnabled
@@ -225,7 +227,7 @@ struct TVPlaybackSettingsPane: View {
 
         if AetherObjectAudioPolicy.isAvailable {
             TVSettingsToggleRow(
-                title: "TrueHD Atmos and DTS:X",
+                title: .settingsPlaybackTrueHdAtmos,
                 isOn: viewModel.trueHDAtmosEnabled
             ) {
                 let value = !viewModel.trueHDAtmosEnabled
@@ -234,57 +236,63 @@ struct TVPlaybackSettingsPane: View {
         }
 
         TVSettingsPickerRow(
-            title: "Deinterlacing",
-            value: viewModel.deinterlaceMode.label
+            title: .settingsPlaybackDeinterlacing,
+            value: .verbatim(viewModel.deinterlaceMode.label)
         ) { showPicker(.deinterlaceMode) }
         .focused(detailFocus, equals: .playbackDeinterlaceMode)
 
         TVSettingsPickerRow(
-            title: "Deinterlacing Field Rate",
-            value: viewModel.deinterlaceFieldRate.label
+            title: .settingsPlaybackDeinterlacingFieldRate,
+            value: .verbatim(viewModel.deinterlaceFieldRate.label)
         ) { showPicker(.deinterlaceFieldRate) }
         .focused(detailFocus, equals: .playbackDeinterlaceFieldRate)
 
-        TVSettingsFooter(streamingFooterText)
+        TVSettingsFooter(.verbatim(streamingFooterText))
     }
 
     private var streamingFooterText: String {
         var text = SettingsViewModel.hdrFooterText
-        text += " If surround plays as stereo, turn off Lossless Multichannel Audio."
+        text += " " + AppLanguage.string(.settingsPlaybackSurroundFooter, locale: locale)
         if AetherObjectAudioPolicy.isAvailable {
-            text += " With TrueHD Atmos and DTS:X on, those tracks keep their height channels but play as compressed audio."
-            text += " Turn it off if your receiver or soundbar doesn't support Dolby Atmos."
+            text += " " + AppLanguage.string(.settingsPlaybackAtmosFooter, locale: locale)
+            text += " " + AppLanguage.string(.settingsPlaybackAtmosReceiverFooter, locale: locale)
         }
         return text
     }
 
     @ViewBuilder
     private var episodesSection: some View {
-        TVSettingsSectionHeader("EPISODES")
+        TVSettingsSectionHeader(.settingsPlaybackTvHeaderEpisodes)
 
         // A picker rather than a one-press toggle: a toggle has no third
         // position for going back to the profile's choice.
         TVSettingsPickerRow(
-            title: "Auto-Play Next Episode",
-            value: viewModel.autoPlayNext ? "On" : "Off"
+            title: .settingsControlAutoplay,
+            value: viewModel.autoPlayNext ? .settingsOn : .settingsOff
         ) { showPicker(.autoPlayNext) }
         .focused(detailFocus, equals: .playbackAutoPlayNext)
 
         TVSettingsPickerRow(
-            title: "Show Next Up",
+            title: .settingsManifestPlayerPassoutThresholdLabel,
+            value: SettingsViewModel.stillWatchingLabel(viewModel.stillWatchingThreshold)
+        ) { showPicker(.stillWatching) }
+        .focused(detailFocus, equals: .playbackStillWatching)
+
+        TVSettingsPickerRow(
+            title: .settingsNextUpTitle,
             value: TVSettingsOptions.label(for: String(viewModel.nextUpPromptSeconds), in: TVSettingsOptions.nextUpPrompt)
         ) { showPicker(.nextUpPrompt) }
         .focused(detailFocus, equals: .playbackNextUpPrompt)
 
         TVSettingsPickerRow(
-            title: "Skip Intros",
-            value: viewModel.introSkipMode.label
+            title: .settingsControlIntros,
+            value: .verbatim(viewModel.introSkipMode.label)
         ) { showPicker(.introSkipMode) }
         .focused(detailFocus, equals: .playbackIntroSkipMode)
 
         TVSettingsPickerRow(
-            title: "Skip Credits",
-            value: viewModel.skipCredits ? "On" : "Off"
+            title: .settingsControlCredits,
+            value: viewModel.skipCredits ? .settingsOn : .settingsOff
         ) { showPicker(.skipCredits) }
         .focused(detailFocus, equals: .playbackSkipCredits)
     }
@@ -293,13 +301,13 @@ struct TVPlaybackSettingsPane: View {
     /// footer carries both descriptions and the scope note.
     @ViewBuilder
     private var spoilersSection: some View {
-        TVSettingsSectionHeader("SPOILERS")
+        TVSettingsSectionHeader(.settingsPlaybackTvHeaderSpoilers)
 
         ForEach(EpisodeSpoilerSetting.allCases, id: \.self) { setting in
             TVSettingsToggleRow(
                 title: setting == .images
-                    ? "Blur unwatched episode images"
-                    : "Hide unwatched episode descriptions",
+                    ? .settingsManifestCatalogHideUnwatchedEpisodeImagesLabel
+                    : .settingsManifestCatalogHideUnwatchedEpisodeOverviewsLabel,
                 isOn: spoilers.settings[setting]
             ) {
                 spoilers.set(setting, to: !spoilers.settings[setting])
@@ -307,15 +315,15 @@ struct TVPlaybackSettingsPane: View {
             .disabled(!spoilers.allowsEditing)
         }
 
-        TVSettingsFooter(spoilersFooter)
+        TVSettingsFooter(.verbatim(spoilersFooter))
     }
 
     private var spoilersFooter: String {
         var lines = [
-            "Blur an episode's thumbnail until you start watching it, so the image does not give away the story.",
-            "Hide an episode's description until you start watching it.",
-            "Applies to episodes you have not started, on every device that uses this profile.",
-        ]
+            LocalizedStringResource.settingsManifestCatalogHideUnwatchedEpisodeImagesDescription,
+            .settingsManifestCatalogHideUnwatchedEpisodeOverviewsDescription,
+            .settingsSpoilersFooter,
+        ].map { AppLanguage.string($0, locale: locale) }
         if let status = spoilers.statusMessage {
             lines.append(status)
         }
@@ -332,27 +340,28 @@ struct TVPlaybackSettingsPane: View {
     /// cannot store them, and show the interval playback uses instead.
     @ViewBuilder
     private func skipIntervalSection(media: SeekMedia) -> some View {
-        TVSettingsSectionHeader(media == .video ? "VIDEO" : "AUDIOBOOKS")
+        TVSettingsSectionHeader(media == .video ? .settingsPlaybackTvHeaderVideo : .settingsPlaybackTvHeaderAudiobooks)
 
         ForEach(SeekDirection.allCases, id: \.self) { direction in
             TVSettingsPickerRow(
-                title: direction == .backward ? "Skip Back" : "Skip Forward",
-                value: SeekIntervalLabel.choiceLabel(
+                title: direction == .backward ? .settingsControlSkipBack : .settingsControlSkipForward,
+                value: .verbatim(SeekIntervalLabel.choiceLabel(
                     seekIntervals.seconds(direction, for: Self.surface(media))
-                )
+                ))
             ) { showPicker(.skipInterval(media, direction)) }
             .focused(detailFocus, equals: Self.focus(media, direction))
             .disabled(!seekIntervals.allowsEditing)
         }
 
-        TVSettingsFooter(skipIntervalFooter(media: media))
+        TVSettingsFooter(.verbatim(skipIntervalFooter(media: media)))
     }
 
     private func skipIntervalFooter(media: SeekMedia) -> String {
         var lines = [
-            media == .video
-                ? "Used by clicks and swipes on the Siri Remote and the on-screen skip buttons. Applies to every device signed in to this profile."
-                : "Used by the audiobook player's skip buttons. Applies to every device signed in to this profile.",
+            AppLanguage.string(
+                media == .video ? .settingsSkipIntervalsFooterVideoAppleTv : .settingsSkipIntervalsFooterAudiobook,
+                locale: locale
+            ),
         ]
         if let status = seekIntervals.statusMessage {
             lines.append(status)
@@ -369,6 +378,15 @@ struct TVPlaybackSettingsPane: View {
         media == .video ? .videoPlayer : .audiobook
     }
 
+    private static func skipIntervalPickerTitle(_ media: SeekMedia, _ direction: SeekDirection) -> LocalizedStringResource {
+        switch (media, direction) {
+        case (.video, .backward): return .settingsSkipIntervalsPickerVideoBack
+        case (.video, .forward): return .settingsSkipIntervalsPickerVideoForward
+        case (.audiobook, .backward): return .settingsSkipIntervalsPickerAudiobookBackApple
+        case (.audiobook, .forward): return .settingsSkipIntervalsPickerAudiobookForwardApple
+        }
+    }
+
     private static func focus(_ media: SeekMedia, _ direction: SeekDirection) -> TVSettingsDetailFocus {
         switch (media, direction) {
         case (.video, .backward): return .playbackVideoSkipBack
@@ -380,13 +398,13 @@ struct TVPlaybackSettingsPane: View {
 
     @ViewBuilder
     private var rejectedChangeRows: some View {
-        TVSettingsSectionHeader("NOT SAVED")
+        TVSettingsSectionHeader(.settingsHeldChangeHeaderTv)
 
         Button {
             Task { await viewModel.acknowledgeRejectedPlaybackChange() }
         } label: {
             HStack(spacing: 16) {
-                Text("OK")
+                Text(.settingsPlaybackRejectedOk)
                     .font(.system(size: 26))
                 Spacer(minLength: 0)
             }
@@ -398,7 +416,7 @@ struct TVPlaybackSettingsPane: View {
 
     @ViewBuilder
     private var resetSection: some View {
-        TVSettingsSectionHeader("RESET")
+        TVSettingsSectionHeader(.settingsPlaybackTvHeaderReset)
 
         Button {
             showUseProfileSettingsConfirmation = true
@@ -406,14 +424,14 @@ struct TVPlaybackSettingsPane: View {
             HStack(spacing: 16) {
                 Image(systemName: "arrow.counterclockwise")
                     .font(.system(size: 22, weight: .medium))
-                Text("Use Profile Settings")
+                Text(.settingsProfileSettingsUseAll)
                     .font(.system(size: 26))
                 Spacer(minLength: 0)
             }
         }
         .buttonStyle(TVSettingsPaneRowStyle(isDestructive: true))
 
-        TVSettingsFooter("Removes the settings changed on this Apple TV, so it uses your profile's settings again.")
+        TVSettingsFooter(.settingsProfileSettingsResetFooterAppleTv)
     }
 
     // MARK: - Pickers
@@ -426,14 +444,14 @@ struct TVPlaybackSettingsPane: View {
         switch kind {
         case .resolution:
             TVSettingsPickerRequest(
-                title: "Resolution",
+                title: .settingsControlResolution,
                 options: [TVSettingsOptions.useProfileSetting] + TVSettingsOptions.resolution,
                 selection: selection(.resolution),
                 returnFocus: .top
             )
         case .maxBitrate:
             TVSettingsPickerRequest(
-                title: "Maximum Bitrate",
+                title: .settingsControlBitrate,
                 // A stored cap no choice covers is listed in its place, so
                 // the sheet highlights what is actually stored.
                 options: [TVSettingsOptions.useProfileSetting]
@@ -450,17 +468,18 @@ struct TVPlaybackSettingsPane: View {
             )
         case .audioLanguage:
             TVSettingsPickerRequest(
-                title: "Audio Language",
+                title: .settingsControlAudioLanguage,
                 options: TVSettingsOptions.deviceAudioLanguage(
                     viewModel.audioLanguageOptions,
-                    includingNoPreference: viewModel.hasStoredNoAudioLanguagePreference
+                    includingNoPreference: viewModel.hasStoredNoAudioLanguagePreference,
+                    language: AppLanguage.language(of: locale)
                 ),
                 selection: selection(.audioLanguage),
                 returnFocus: .playbackAudioLanguage
             )
         case .bufferAhead:
             TVSettingsPickerRequest(
-                title: "Buffer Ahead",
+                title: .settingsPlaybackBufferAhead,
                 options: TVSettingsOptions.bufferAhead,
                 selection: Binding(
                     get: { viewModel.bufferAhead.rawValue },
@@ -473,7 +492,7 @@ struct TVPlaybackSettingsPane: View {
             )
         case .deinterlaceMode:
             TVSettingsPickerRequest(
-                title: "Deinterlacing",
+                title: .settingsPlaybackDeinterlacing,
                 options: TVSettingsOptions.deinterlaceMode,
                 selection: Binding(
                     get: { viewModel.deinterlaceMode.rawValue },
@@ -486,7 +505,7 @@ struct TVPlaybackSettingsPane: View {
             )
         case .deinterlaceFieldRate:
             TVSettingsPickerRequest(
-                title: "Deinterlacing Field Rate",
+                title: .settingsPlaybackDeinterlacingFieldRate,
                 options: TVSettingsOptions.deinterlaceFieldRate,
                 selection: Binding(
                     get: { viewModel.deinterlaceFieldRate.rawValue },
@@ -499,39 +518,46 @@ struct TVPlaybackSettingsPane: View {
                 ),
                 returnFocus: .playbackDeinterlaceFieldRate
             )
+        case .stillWatching:
+            TVSettingsPickerRequest(
+                title: .settingsManifestPlayerPassoutThresholdLabel,
+                options: SettingsViewModel.stillWatchingChoices.map { TVSettingsOption(id: $0.id, label: $0.label) },
+                selection: $viewModel.stillWatchingSelection,
+                returnFocus: .playbackStillWatching
+            )
         case .nextUpPrompt:
             TVSettingsPickerRequest(
-                title: "Show Next Up",
+                title: .settingsNextUpTitle,
                 options: [TVSettingsOptions.useProfileSetting] + TVSettingsOptions.nextUpPrompt,
                 selection: selection(.nextUpPrompt),
                 returnFocus: .playbackNextUpPrompt
             )
         case .introSkipMode:
             TVSettingsPickerRequest(
-                title: "Skip Intros",
+                title: .settingsControlIntros,
                 options: [TVSettingsOptions.useProfileSetting] + TVSettingsOptions.introSkipMode,
                 selection: selection(.introSkipMode),
                 returnFocus: .playbackIntroSkipMode
             )
         case .autoPlayNext:
             TVSettingsPickerRequest(
-                title: "Auto-Play Next Episode",
+                title: .settingsControlAutoplay,
                 options: [TVSettingsOptions.useProfileSetting] + TVSettingsOptions.onOff,
                 selection: selection(.autoPlayNext),
                 returnFocus: .playbackAutoPlayNext
             )
         case .skipCredits:
             TVSettingsPickerRequest(
-                title: "Skip Credits",
+                title: .settingsControlCredits,
                 options: [TVSettingsOptions.useProfileSetting] + TVSettingsOptions.onOff,
                 selection: selection(.autoSkipCredits),
                 returnFocus: .playbackSkipCredits
             )
         case .skipInterval(let media, let direction):
             TVSettingsPickerRequest(
-                title: "\(media == .video ? "Video" : "Audiobook") \(direction == .backward ? "Skip Back" : "Skip Forward")",
+                title: Self.skipIntervalPickerTitle(media, direction),
                 options: SeekIntervalContract.choices.map {
-                    TVSettingsOption(id: String($0), label: SeekIntervalLabel.choiceLabel($0))
+                    TVSettingsOption(id: String($0), label: .verbatim(SeekIntervalLabel.choiceLabel($0)))
                 },
                 selection: Binding(
                     get: { String(seekIntervals.seconds(direction, for: Self.surface(media))) },
@@ -562,6 +588,7 @@ struct TVPlaybackSettingsPane: View {
         case bufferAhead
         case deinterlaceMode
         case deinterlaceFieldRate
+        case stillWatching
         case nextUpPrompt
         case introSkipMode
         case skipInterval(SeekMedia, SeekDirection)

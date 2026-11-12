@@ -728,5 +728,5 @@ class QRLoginViewModel: NearbySignInCodeSource {
 
     // MARK: - Messages
 
-    nonisolated static let serverChangedMessage = "The active server changed during sign-in. Please try again."
+    nonisolated static var serverChangedMessage: String { AppLanguage.string(.tvSignInErrorServerChanged) }
 }

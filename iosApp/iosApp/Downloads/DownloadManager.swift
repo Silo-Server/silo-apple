@@ -20,17 +20,17 @@ enum DownloadError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unavailable: return "Downloads aren't available for this profile."
-        case .fileURLUnavailable: return "Could not resolve the download URL."
-        case .emptyRegistrationResponse: return "The server didn't create a download."
-        case .registrationAlreadyInFlight: return "This download is already being prepared."
-        case .scopeChangedDuringRegistration: return "The active profile changed before the download could start."
-        case .registryChanged: return "This download changed on the server. Try again."
-        case .registrationUncertain: return "Silo couldn't confirm the download started. It will appear in Downloads if the server created it."
-        case .monitoringScopeChanged: return "The active profile changed before monitoring could be saved."
-        case .monitorChanged: return "Monitoring for this series changed on the server. Try again."
-        case .monitorRemoved: return "This series is no longer monitored."
-        case .monitoringUncertain: return "Silo couldn't confirm the monitoring change. Check this series again once you're back online."
+        case .unavailable: return AppLanguage.string(.downloadsErrorUnavailable)
+        case .fileURLUnavailable: return AppLanguage.string(.downloadsErrorFileUrlUnavailable)
+        case .emptyRegistrationResponse: return AppLanguage.string(.downloadsErrorNotCreated)
+        case .registrationAlreadyInFlight: return AppLanguage.string(.downloadsErrorAlreadyPreparing)
+        case .scopeChangedDuringRegistration: return AppLanguage.string(.downloadsErrorProfileChangedDownload)
+        case .registryChanged: return AppLanguage.string(.downloadsErrorChangedOnServer)
+        case .registrationUncertain: return AppLanguage.string(.downloadsErrorRegistrationUncertain)
+        case .monitoringScopeChanged: return AppLanguage.string(.downloadsErrorProfileChangedMonitoring)
+        case .monitorChanged: return AppLanguage.string(.downloadsErrorMonitorChanged)
+        case .monitorRemoved: return AppLanguage.string(.downloadsErrorMonitorRemoved)
+        case .monitoringUncertain: return AppLanguage.string(.downloadsErrorMonitoringUncertain)
         }
     }
 }
@@ -62,8 +62,11 @@ final class DownloadManager {
     private(set) var file: DownloadStoreFile = .empty {
         didSet {
             rebuildDownloadedIndex()
-            let enabled = file.capability?.isUsable == true
+            let access = file.capability?.access
+            let enabled = access == .usable
             if enabled != downloadsEnabled { downloadsEnabled = enabled }
+            let restricted = access == .restricted
+            if restricted != downloadsRestricted { downloadsRestricted = restricted }
             syncLiveActivity()
         }
     }
@@ -280,6 +283,10 @@ final class DownloadManager {
     /// whole `file` blob — reassigned on every transfer progress tick — as
     /// their observed state.
     private(set) var downloadsEnabled: Bool = false
+    /// Stored mirror of `capability?.access == .restricted`, kept the same
+    /// way: the server offers downloads and this account's policy denies
+    /// them, so title pages show Download as unavailable.
+    private(set) var downloadsRestricted: Bool = false
     /// Leaf ids currently waiting for POST /downloads to return. This belongs
     /// to the manager (rather than one button) so a detail rebuild cannot make
     /// the preparing indicator disappear during registration. Each pending id
@@ -1362,11 +1369,16 @@ final class DownloadManager {
         )
     }
 
+    /// `seasonNumber` and `episodeNumber` let the row show its season and
+    /// episode in the app language before the manifest arrives;
+    /// `displaySubtitle` is stored as is.
     func downloadEpisode(
         seriesId: String,
         episodeId: String,
         displayTitle: String?,
         displaySubtitle: String?,
+        seasonNumber: Int? = nil,
+        episodeNumber: Int? = nil,
         posterThumbhash: String?,
         fileId: Int? = nil,
         quality: String? = nil
@@ -1380,6 +1392,7 @@ final class DownloadManager {
             seriesId: seriesId,
             displayTitle: displayTitle,
             displaySubtitle: displaySubtitle,
+            displayNumbers: (seasonNumber, episodeNumber),
             posterThumbhash: posterThumbhash
         )
     }
@@ -1406,6 +1419,7 @@ final class DownloadManager {
         seriesId: String? = nil,
         displayTitle: String? = nil,
         displaySubtitle: String? = nil,
+        displayNumbers: (season: Int?, episode: Int?) = (nil, nil),
         posterThumbhash: String? = nil
     ) async throws {
         guard downloadsEnabled else { throw DownloadError.unavailable }
@@ -1468,6 +1482,7 @@ final class DownloadManager {
                     created.items,
                     displayTitle: displayTitle,
                     displaySubtitle: displaySubtitle,
+                    displayNumbers: displayNumbers,
                     type: type,
                     seriesId: seriesId,
                     posterThumbhash: posterThumbhash
@@ -1529,6 +1544,7 @@ final class DownloadManager {
         _ entries: [APIv2DownloadEntry],
         displayTitle: String?,
         displaySubtitle: String?,
+        displayNumbers: (season: Int?, episode: Int?) = (nil, nil),
         type: String?,
         seriesId: String?,
         posterThumbhash: String?
@@ -1547,6 +1563,7 @@ final class DownloadManager {
                 into: &records,
                 displayTitle: entries.count == 1 ? displayTitle : nil,
                 displaySubtitle: entries.count == 1 ? displaySubtitle : nil,
+                displayNumbers: entries.count == 1 ? displayNumbers : (nil, nil),
                 type: type,
                 seriesId: seriesId,
                 posterThumbhash: entries.count == 1 ? posterThumbhash : nil
@@ -1674,7 +1691,7 @@ final class DownloadManager {
     /// unreadable, or was never produced.
     func resumeDownload(id: String) {
         guard var record = file.records[id], record.localStatus == .paused else { return }
-        beginContinuedProcessing(title: record.title)
+        beginContinuedProcessing(title: record.shownTitle())
         // The pause's resume-data capture is still in flight — flag the
         // intent and let `finishPause` re-queue with the data instead of
         // discarding the partial transfer.
@@ -1729,7 +1746,7 @@ final class DownloadManager {
 
     func retryDownload(id: String) {
         guard var record = file.records[id], record.localStatus == .failed else { return }
-        beginContinuedProcessing(title: record.title)
+        beginContinuedProcessing(title: record.shownTitle())
         record.localStatus = .queued
         record.retryCount = 0
         record.lastError = nil
@@ -1964,6 +1981,7 @@ final class DownloadManager {
         record.episodeNumber = record.episodeNumber ?? manifest.episodeNumber
         if record.subtitle == nil {
             if manifest.type == "episode" {
+                // Stored English (D44); rows show `displaySubtitle(locale:)`.
                 let season = manifest.seasonNumber.map { "S\($0)" }
                 let episode = manifest.episodeNumber.map { "E\($0)" }
                 record.subtitle = [season, episode].compactMap { $0 }.joined(separator: " · ")
@@ -2261,7 +2279,8 @@ final class DownloadManager {
             return false
         } else {
             record.localStatus = .failed
-            record.lastError = error.localizedDescription
+            // Stored, so English (D44); failureReason shows it in the app's language.
+            record.lastError = AppLanguage.inEnglish { error.localizedDescription }
         }
         file.records[recordId] = record
         persist()
@@ -2341,7 +2360,7 @@ final class DownloadManager {
     func currentWaitingReason() -> String? {
         if let wait = networkWait() { return wait.label }
         if activeRecords.contains(where: { $0.localStatus == .preparing || $0.localStatus == .registering }) {
-            return "Preparing on server"
+            return AppLanguage.string(.downloadsProgressPreparingOnServer)
         }
         return nil
     }
@@ -2359,7 +2378,7 @@ final class DownloadManager {
     /// only from the user's tap.
     func showProgressOnLockScreen() {
         let headline = DownloadLiveActivityController.headline(of: activeRecords)
-        DownloadContinuedProcessing.shared.begin(title: headline?.title ?? "Downloads")
+        DownloadContinuedProcessing.shared.begin(title: headline?.title ?? AppLanguage.string(.downloadsProgressTitle))
         syncLiveActivity()
     }
     #endif
@@ -2385,9 +2404,9 @@ final class DownloadManager {
 
         var label: String {
             switch self {
-            case .connection: return "Waiting for a connection"
-            case .wifi: return "Waiting for Wi-Fi"
-            case .storageLimit: return "Series storage limit reached"
+            case .connection: return AppLanguage.string(.downloadsWaitConnection)
+            case .wifi: return AppLanguage.string(.downloadsWaitWifi)
+            case .storageLimit: return AppLanguage.string(.downloadsWaitStorageLimit)
             }
         }
     }
@@ -2415,7 +2434,7 @@ final class DownloadManager {
     /// just started (iOS 26 and later). Call only from the user's action.
     private func beginContinuedProcessing(title: String?) {
         #if os(iOS)
-        DownloadContinuedProcessing.shared.begin(title: title ?? "Downloads")
+        DownloadContinuedProcessing.shared.begin(title: title ?? AppLanguage.string(.downloadsProgressTitle))
         #endif
     }
 
@@ -4434,6 +4453,7 @@ final class DownloadManager {
         into records: inout [String: DownloadRecord],
         displayTitle: String?,
         displaySubtitle: String?,
+        displayNumbers: (season: Int?, episode: Int?),
         type: String?,
         seriesId: String?,
         posterThumbhash: String?
@@ -4451,6 +4471,8 @@ final class DownloadManager {
         var record = makeRecord(from: row, type: type)
         record.title = displayTitle
         record.subtitle = displaySubtitle
+        record.requestSeasonNumber = displayNumbers.season
+        record.requestEpisodeNumber = displayNumbers.episode
         record.seriesId = seriesId ?? record.seriesId
         record.posterThumbhash = posterThumbhash
         records[row.id] = record

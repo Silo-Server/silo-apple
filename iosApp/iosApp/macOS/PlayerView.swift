@@ -76,6 +76,15 @@ private struct MacPlayerScreen: View {
     @State private var selectedOptionsTab: MacPlayerOptionsPanel.Tab = .audio
     /// The loading spinner is up, on its show delay and minimum time.
     @State private var showsLoadingSpinner = false
+    /// The window is in, or entering, full screen.
+    @State private var isFullScreen = false
+    /// The pointer is over the player.
+    @State private var isPointerOver = false
+    /// Last pointer position on screen. Hiding the title bar shifts the
+    /// player, which re-reports the pointer at a new local point; comparing
+    /// screen positions keeps that from counting as a move and bringing the
+    /// controls straight back.
+    @State private var lastPointerLocation: CGPoint?
 
     var body: some View {
         ZStack {
@@ -86,9 +95,19 @@ private struct MacPlayerScreen: View {
             } else {
                 playerSurface
 
+                // Clicks on the picture land here; the controls above it take
+                // their own. A click brings the controls up, a double click
+                // toggles full screen.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .ignoresSafeArea()
+                    .onTapGesture(count: 2) { toggleFullScreen() }
+                    .simultaneousGesture(TapGesture().onEnded { viewModel.revealControls() })
+
                 if shouldShowControls {
                     MacPlayerControls(
                         viewModel: viewModel,
+                        isFullScreen: isFullScreen,
                         isOptionsPresented: $isOptionsPresented,
                         selectedOptionsTab: $selectedOptionsTab
                     )
@@ -170,9 +189,26 @@ private struct MacPlayerScreen: View {
             .ignoresSafeArea()
         }
         .playerLoadingSpinnerVisibility(isActive: viewModel.isWaitingToPlay, isVisible: $showsLoadingSpinner)
-        .onHover { hovering in
-            if hovering {
+        // Every mouse move brings the controls up; `onHover` only reports
+        // the pointer entering the window.
+        .onContinuousHover { phase in
+            switch phase {
+            case .active:
+                let location = NSEvent.mouseLocation
+                isPointerOver = true
+                guard location != lastPointerLocation else { return }
+                lastPointerLocation = location
                 viewModel.revealControls()
+            case .ended:
+                // Keep the last position: hiding the title bar ends and
+                // restarts the hover without the pointer moving.
+                isPointerOver = false
+            }
+        }
+        .onChange(of: shouldShowControls) { _, showing in
+            // The pointer goes with the controls and comes back on the next move.
+            if !showing, isPointerOver {
+                NSCursor.setHiddenUntilMouseMoves(true)
             }
         }
         .onChange(of: viewModel.hasTrackSelectionOptions) { _, hasOptions in
@@ -202,6 +238,9 @@ private struct MacPlayerScreen: View {
         }
         // Pills and notices wait while this window can't be seen.
         .background(MacWindowVisibilityReader { viewModel.playerWindowVisibilityChanged($0) })
+        // In full screen the title bar comes and goes with the controls, so
+        // the picture has the screen to itself while they're hidden.
+        .background(MacPlayerFullScreenBridge(hidesToolbar: !shouldShowControls) { isFullScreen = $0 })
         .preferredColorScheme(.dark)
         // One header: the window's title bar carries what is playing and its
         // format beside the back button.
@@ -262,6 +301,10 @@ private struct MacPlayerScreen: View {
             } else if viewModel.dismissIntroSkipPrompt() {
                 // The intro pill takes Escape before the window does; the next
                 // Escape closes the player as usual.
+            } else if isFullScreen {
+                // Leave full screen first, as other Mac players do; the next
+                // Escape closes the player.
+                toggleFullScreen()
             } else {
                 dismiss()
             }
@@ -280,6 +323,10 @@ private struct MacPlayerScreen: View {
         case .normalSpeed:
             viewModel.setPlaybackSpeed(1.0)
         }
+    }
+
+    private func toggleFullScreen() {
+        NSApp.keyWindow?.toggleFullScreen(nil)
     }
 
     private func nextSpeed(offset: Int) -> Double {

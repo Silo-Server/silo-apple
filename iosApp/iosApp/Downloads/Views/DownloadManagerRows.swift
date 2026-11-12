@@ -25,6 +25,7 @@ struct DownloadActiveRow: View {
     var onCancel: () -> Void = {}
 
     @State private var confirmingCancel = false
+    @Environment(\.locale) private var locale
 
     var body: some View {
         if selecting {
@@ -37,7 +38,7 @@ struct DownloadActiveRow: View {
     }
 
     private var actionableCard: some View {
-        DownloadSwipeRevealContainer(actionLabel: "Cancel") {
+        DownloadSwipeRevealContainer(actionLabel: .downloadsActiveRowCancel) {
             confirmingCancel = true
         } content: {
             card
@@ -45,12 +46,12 @@ struct DownloadActiveRow: View {
         .downloadGroupSlice(groupPosition)
         .contextMenu { menuItems }
         .confirmationDialog(
-            cancelPrompt,
+            Text(cancelPrompt),
             isPresented: $confirmingCancel,
             titleVisibility: .visible
         ) {
-            Button("Discard Download", role: .destructive, action: onCancel)
-            Button("Keep Download", role: .cancel) {}
+            Button(role: .destructive, action: onCancel) { Text(.downloadsActionDiscard) }
+            Button(role: .cancel) {} label: { Text(.downloadsActionKeep) }
         }
     }
 
@@ -87,32 +88,32 @@ struct DownloadActiveRow: View {
     @ViewBuilder private var menuItems: some View {
         if record.localStatus == .downloading {
             Button(action: onPauseResume) {
-                Label("Pause", systemImage: "pause")
+                Label(.downloadsActionPause, systemImage: "pause")
             }
         } else if record.localStatus == .paused {
             Button(action: onPauseResume) {
-                Label("Resume", systemImage: "play")
+                Label(.downloadsActionResume, systemImage: "play")
             }
         }
         Button(role: .destructive) { confirmingCancel = true } label: {
-            Label("Cancel Download", systemImage: "xmark.circle")
+            Label(.audiobookDetailCancelDownload, systemImage: "xmark.circle")
         }
     }
 
     /// States what a destructive cancel throws away; bytes are omitted when
     /// nothing has transferred yet.
-    private var cancelPrompt: String {
+    private var cancelPrompt: LocalizedStringResource {
         if record.bytesDownloaded > 0 {
-            return "Discard \(DownloadFormatting.bytes(record.bytesDownloaded)) of downloaded data?"
+            return .downloadsCancelPromptDiscard(DownloadFormatting.bytes(record.bytesDownloaded))
         }
-        return "Cancel this download?"
+        return .downloadsCancelPrompt
     }
 
     private var displayTitle: String {
-        if record.type == "episode", let sub = record.subtitle, !sub.isEmpty {
-            return "\(record.title ?? record.contentId) · \(sub)"
+        if record.type == "episode", let sub = record.displaySubtitle(locale: locale), !sub.isEmpty {
+            return "\(AppLanguage.isolated(record.displayTitle(locale: locale), language: AppLanguage.language(of: locale))) · \(sub)"
         }
-        return record.title ?? record.contentId
+        return record.displayTitle(locale: locale)
     }
 
     private var statusLine: String {
@@ -123,29 +124,36 @@ struct DownloadActiveRow: View {
                     return record.bytesDownloaded > 0 ? "\(waitText) · \(percentText)" : waitText
                 }
                 // Handed to iOS, which hasn't started the transfer yet.
-                if record.bytesDownloaded == 0 { return "Waiting…" }
+                if record.bytesDownloaded == 0 { return text(.downloadsActiveRowWaiting) }
             }
             return ([percentText, sizeText] + rateParts).joined(separator: " · ")
         case .paused:
-            return "Paused · \(percentText) · \(sizeText)"
-        case .registering, .queued: return waitText ?? "Queued"
-        case .preparing: return record.preparation?.statusLine ?? "Preparing on server…"
+            return [text(.downloadsActiveRowPaused), percentText, sizeText].joined(separator: " · ")
+        case .registering, .queued: return waitText ?? text(.downloadsStatusQueued)
+        case .preparing: return record.preparation?.statusLine ?? text(.downloadsStatusPreparingOnServer)
         // Fetching the manifest, before the transfer starts.
-        case .fetchingAssets: return waitText ?? "Starting…"
+        case .fetchingAssets: return waitText ?? text(.downloadsActiveRowStarting)
         case .completed: return DownloadFormatting.bytes(record.fileSize)
-        case .failed: return "Failed"
-        case .revoked: return "No longer available"
+        case .failed: return text(.downloadsStatusFailed)
+        case .revoked: return text(.downloadsActiveRowNoLongerAvailable)
         }
+    }
+
+    private func text(_ resource: LocalizedStringResource) -> String {
+        AppLanguage.string(resource, locale: locale)
     }
 
     private var waitText: String? { wait?.label }
 
     private var percentText: String {
-        "\(Int((record.progressFraction * 100).rounded()))%"
+        LocaleFormat.percent(Int((record.progressFraction * 100).rounded()))
     }
 
     private var sizeText: String {
-        "\(DownloadFormatting.bytes(record.bytesDownloaded)) of \(DownloadFormatting.bytes(record.fileSize))"
+        text(.downloadsActivityBytes(
+            DownloadFormatting.bytes(record.bytesDownloaded),
+            DownloadFormatting.bytes(record.fileSize)
+        ))
     }
 
     /// "12 MB/s · 3 min left" once the manager has a smoothed rate; omitted
@@ -155,16 +163,16 @@ struct DownloadActiveRow: View {
         var parts = ["\(DownloadFormatting.bytes(Int64(bytesPerSecond)))/s"]
         let remaining = record.fileSize - record.bytesDownloaded
         if remaining > 0 {
-            parts.append(Self.remainingText(seconds: Double(remaining) / bytesPerSecond))
+            parts.append(text(Self.remainingText(seconds: Double(remaining) / bytesPerSecond)))
         }
         return parts
     }
 
-    private static func remainingText(seconds: Double) -> String {
+    private static func remainingText(seconds: Double) -> LocalizedStringResource {
         let minutes = Int((seconds / 60).rounded())
-        if minutes < 1 { return "under 1 min left" }
-        if minutes < 60 { return "\(minutes) min left" }
-        return "\(minutes / 60) hr \(minutes % 60) min left"
+        if minutes < 1 { return .downloadsActiveRowUnderMinuteLeft }
+        if minutes < 60 { return .downloadsActiveRowMinutesLeft(minutes) }
+        return .downloadsActiveRowHoursMinutesLeft(minutes / 60, minutes % 60)
     }
 
     @ViewBuilder private var progressRing: some View {
@@ -188,7 +196,7 @@ struct DownloadActiveRow: View {
                 .frame(width: 36, height: 36)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(paused ? "Resume download" : "Pause download")
+            .accessibilityLabel(paused ? Text(.downloadsActiveRowResumeDownload) : Text(.downloadsActiveRowPauseDownload))
         case .preparing where record.preparation?.progress != nil:
             // The server's encode, not a transfer: nothing to pause.
             ZStack {
@@ -212,7 +220,7 @@ struct DownloadActiveRow: View {
 /// (`.swipeActions` only functions inside a `List`). The drag activates
 /// only when clearly horizontal so it doesn't fight the scroll view.
 struct DownloadSwipeRevealContainer<Content: View>: View {
-    let actionLabel: String
+    let actionLabel: LocalizedStringResource
     let action: () -> Void
     @ViewBuilder let content: () -> Content
 
@@ -286,6 +294,7 @@ struct DownloadSwipeRevealContainer<Content: View>: View {
 
 /// A failed download surfaced for retry or removal so it isn't silently lost.
 struct DownloadAttentionRow: View {
+    @Environment(\.locale) private var locale
     let record: DownloadRecord
     var onRetry: () -> Void = {}
     var onDelete: () -> Void = {}
@@ -298,7 +307,7 @@ struct DownloadAttentionRow: View {
                 width: 40
             )
             VStack(alignment: .leading, spacing: 4) {
-                Text(record.title ?? record.contentId)
+                Text(record.displayTitle(locale: locale))
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(.siloOnSurface)
                     .lineLimit(1)
@@ -336,6 +345,7 @@ struct DownloadMovieRow: View {
     var selecting: Bool = false
     var selected: Bool = false
     var onTap: () -> Void = {}
+    @Environment(\.locale) private var locale
 
     var body: some View {
         Button(action: onTap) {
@@ -347,7 +357,7 @@ struct DownloadMovieRow: View {
                     width: 40
                 )
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(record.title ?? record.contentId)
+                    Text(record.displayTitle(locale: locale))
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.siloOnSurface)
                         .lineLimit(1)
@@ -367,9 +377,9 @@ struct DownloadMovieRow: View {
 
     private var meta: String {
         var parts: [String] = []
-        if let sub = record.subtitle, !sub.isEmpty { parts.append(sub) }
+        if let sub = record.displaySubtitle(locale: locale), !sub.isEmpty { parts.append(sub) }
         parts.append(DownloadFormatting.bytes(record.fileSize))
-        if watched { parts.append("watched") }
+        if watched { parts.append(AppLanguage.string(.downloadsRowWatchedLower, locale: locale)) }
         return parts.joined(separator: " · ")
     }
 }
@@ -388,6 +398,7 @@ struct DownloadSeriesRow: View {
     var onDeleteEpisode: (DownloadRecord) -> Void = { _ in }
 
     @State private var expanded = false
+    @Environment(\.locale) private var locale
 
     var body: some View {
         VStack(spacing: 0) {
@@ -402,7 +413,7 @@ struct DownloadSeriesRow: View {
                         }
                         .contextMenu {
                             Button(role: .destructive) { onDeleteEpisode(record) } label: {
-                                Label("Delete Download", systemImage: "trash")
+                                Label(.downloadsManagerDeleteDownload, systemImage: "trash")
                             }
                         }
                     }
@@ -441,7 +452,7 @@ struct DownloadSeriesRow: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(expanded ? "Collapse episodes" : "Expand episodes")
+                .accessibilityLabel(expanded ? Text(.downloadsSeriesRowCollapse) : Text(.downloadsSeriesRowExpand))
             }
         }
         .padding(.leading, 16)
@@ -486,32 +497,41 @@ struct DownloadSeriesRow: View {
         Image(systemName: "antenna.radiowaves.left.and.right")
             .font(.footnote.weight(.semibold))
             .foregroundColor(.siloSecondaryText)
-            .accessibilityLabel("Monitored")
+            .accessibilityLabel(Text(.downloadsSeriesRowMonitored))
     }
 
     private var subtitleLine: String {
         let seasons = group.seasonCount
-        let seasonPart = seasons > 1
-            ? "\(seasons) seasons"
-            : (group.seasons.first.map { $0.isSpecials ? "Specials" : "Season \($0.seasonNumber)" } ?? "")
-        var line = "\(group.episodeCount) episode\(group.episodeCount == 1 ? "" : "s")"
-        if !seasonPart.isEmpty { line += " · \(seasonPart)" }
-        line += " · \(DownloadFormatting.bytes(group.totalBytes))"
-        if group.allWatched {
-            line += " · all watched"
-        } else if group.watchedCount > 0 {
-            line += " · \(group.watchedCount) watched"
+        let seasonPart: LocalizedStringResource?
+        if seasons > 1 {
+            seasonPart = LocalizedStringResource.downloadsSeriesRowSeasons(seasons)
+        } else if let first = group.seasons.first {
+            seasonPart = first.isSpecials ? LocalizedStringResource.detailSpecials : .downloadsEntrySeason(LocaleFormat.integer(first.seasonNumber))
+        } else {
+            seasonPart = nil
         }
-        return line
+        var parts = [text(.downloadsSeriesRowEpisodes(count: group.episodeCount, LocaleFormat.integer(group.episodeCount)))]
+        if let seasonPart { parts.append(text(seasonPart)) }
+        parts.append(DownloadFormatting.bytes(group.totalBytes))
+        if group.allWatched {
+            parts.append(text(.downloadsSeriesRowAllWatched))
+        } else if group.watchedCount > 0 {
+            parts.append(text(.downloadsSeriesRowWatchedCount(count: group.watchedCount, LocaleFormat.integer(group.watchedCount))))
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func text(_ resource: LocalizedStringResource) -> String {
+        AppLanguage.string(resource, locale: locale)
     }
 
     private func seasonHeader(_ season: DownloadSeasonGroup) -> some View {
         HStack {
-            Text(season.isSpecials ? "Specials" : "Season \(season.seasonNumber)")
+            Text(season.isSpecials ? .detailSpecials : LocalizedStringResource.downloadsEntrySeason(LocaleFormat.integer(season.seasonNumber)))
                 .font(.system(size: 12.5, weight: .semibold))
                 .foregroundColor(.siloOnSurface)
             Spacer()
-            Text("\(season.episodeCount) ep\(season.episodeCount == 1 ? "" : "s") · \(DownloadFormatting.bytes(season.totalBytes))")
+            Text(.downloadsSeriesRowSeasonEpisodes(count: season.episodeCount, LocaleFormat.integer(season.episodeCount), DownloadFormatting.bytes(season.totalBytes)))
                 .font(.system(size: 11.5))
                 .foregroundColor(.siloSecondaryText)
         }
@@ -527,6 +547,7 @@ struct DownloadEpisodeRow: View {
     let record: DownloadRecord
     let watched: Bool
     var onPlay: () -> Void = {}
+    @Environment(\.locale) private var locale
 
     /// An episode's saved poster is its still. Only this device's progress is
     /// known offline, so an episode without any reads as untouched.
@@ -580,14 +601,15 @@ struct DownloadEpisodeRow: View {
 
     private var title: String {
         if let episode = record.episodeNumber {
-            return "E\(episode) · \(record.title ?? record.contentId)"
+            let code = AppLanguage.string(.calendarEpisodeShort(LocaleFormat.codeNumber(episode)), locale: locale)
+            return EpisodeCardCaption.titled(code: code, title: record.displayTitle(locale: locale), locale: locale)
         }
-        return record.title ?? record.contentId
+        return record.displayTitle(locale: locale)
     }
 
     private var meta: String {
         let size = DownloadFormatting.bytes(record.fileSize)
-        return watched ? "Watched · \(size)" : size
+        return watched ? [AppLanguage.string(.downloadsRowWatched, locale: locale), size].joined(separator: " · ") : size
     }
 }
 #endif

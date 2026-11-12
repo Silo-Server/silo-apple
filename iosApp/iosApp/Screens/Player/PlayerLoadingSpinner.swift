@@ -22,7 +22,7 @@ struct PlayerLoadingSpinner: View {
             #endif
             .shadow(color: .black.opacity(0.5), radius: 12)
             .allowsHitTesting(false)
-            .accessibilityLabel("Loading")
+            .accessibilityLabel(Text(.commonLoading))
     }
 }
 

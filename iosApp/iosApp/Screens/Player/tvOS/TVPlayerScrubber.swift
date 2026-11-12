@@ -12,7 +12,6 @@ import SwiftUI
 struct TVPlayerScrubber: View {
     let viewModel: PlayerViewModel
     @FocusState.Binding var isFocused: Bool
-    let onSelectInteraction: () -> Void
     let onMoveToTransport: () -> Void
     let onExitWhenIdle: () -> Void
 
@@ -167,6 +166,11 @@ struct TVPlayerScrubber: View {
                     holdPausedPendingResume = false
                 }
             }
+            // A hold keeps playback running, so the item can end and the
+            // end-of-playback screen replace the controls mid-hold. The
+            // hold's timer is this view's own: left running, it would keep
+            // moving the preview under every later skip.
+            .onDisappear { stopTimelineAutoSeek() }
             .onMoveCommand(perform: handleMove)
             .onExitCommand {
                 if isTimelineScrubbing || viewModel.isScrubbing {
@@ -175,7 +179,7 @@ struct TVPlayerScrubber: View {
                     onExitWhenIdle()
                 }
             }
-            .accessibilityLabel("Scrubber")
+            .accessibilityLabel(Text(.playerControlsScrubber))
             .accessibilityValue(Text(PlayerTimeFormatter.formatHMS(displayTime)))
     }
 
@@ -291,7 +295,7 @@ struct TVPlayerScrubber: View {
         HStack(spacing: 7) {
             Image(systemName: timelineAutoSeekRate < 0 ? "backward.fill" : "forward.fill")
                 .font(.system(size: 13, weight: .bold))
-            Text("\(abs(timelineAutoSeekRate))x")
+            Text(verbatim: LocaleFormat.localized("\(abs(timelineAutoSeekRate))") + "x")
                 .font(.system(size: 18, weight: .bold, design: .rounded))
                 .monospacedDigit()
         }
@@ -422,7 +426,6 @@ struct TVPlayerScrubber: View {
     /// Select on an in-flight scrub commits the preview immediately instead
     /// of waiting for the debounce to fire.
     private func commitScrub() {
-        onSelectInteraction()
         if isTimelineScrubbing || viewModel.isScrubbing {
             let resumesPlayback = isTimelineScrubbing && resumePlaybackAfterTimelineSelection
             let shouldSeek = !isTimelineScrubbing || hasTimelineSelectionMoved

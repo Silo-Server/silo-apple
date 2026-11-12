@@ -7,8 +7,8 @@ import Foundation
 @Observable
 @MainActor
 final class ServerNeedsSetupRetryModel {
-    static let stillNeedsSetupMessage = "This server still needs administrator setup."
-    static let unreachableMessage = "Couldn't reach the server. Check it's running and try again."
+    static var stillNeedsSetupMessage: String { AppLanguage.string(.notReadyStill) }
+    static var unreachableMessage: String { AppLanguage.string(.notReadyUnreachable) }
 
     private(set) var isChecking = false
     private(set) var error: String?

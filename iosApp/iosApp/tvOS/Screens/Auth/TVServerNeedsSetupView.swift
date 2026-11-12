@@ -8,6 +8,7 @@ struct TVServerNeedsSetupView: View {
     var router: AppRouter
 
     @State private var retryModel = ServerNeedsSetupRetryModel()
+    @Environment(\.locale) private var locale
     @FocusState private var focusedAction: Action?
 
     private enum Action: Hashable {
@@ -21,16 +22,16 @@ struct TVServerNeedsSetupView: View {
                 name: hostLabel,
                 address: AuthService.shared.serverUrl,
                 showsInitial: false,
-                badge: .init(text: "Setup needed", systemImage: "clock", tone: .warning)
+                badge: .init(text: AppLanguage.string(.notReadyBadge), systemImage: "clock", tone: .warning)
             )
             .fixedSize(horizontal: true, vertical: false)
-            Text("This server\nisn't ready")
+            Text(.notReadyHeadline)
                 .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))
                 .kerning(-2)
                 .foregroundStyle(Color.siloOnSurface)
                 .padding(.top, 52)
                 .accessibilityAddTraits(.isHeader)
-            MarqueeTVBody("Ask the server administrator to finish setup. When it is ready, check again.")
+            MarqueeTVBody(AppLanguage.string(.notReadyBody))
                 .padding(.top, 26)
 
             if let error = retryModel.error {
@@ -40,14 +41,14 @@ struct TVServerNeedsSetupView: View {
 
             HStack(spacing: 22) {
                 Button(action: retry) {
-                    Label(retryModel.isChecking ? "Checking…" : "Check again", systemImage: "arrow.clockwise")
+                    Label(retryModel.isChecking ? LocalizedStringResource.notReadyChecking : .notReadyCheck, systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.marquee(.primary, fullWidth: false, isLoading: retryModel.isChecking))
                 .focused($focusedAction, equals: .retry)
                 // Not disabled while checking: a disabled button loses focus,
                 // so it would land on Change server. `retry` ignores repeats.
 
-                Button("Change server", action: changeServer)
+                Button(.commonChangeServer, action: changeServer)
                     .buttonStyle(.marquee(.plain, fullWidth: false))
                     .focused($focusedAction, equals: .changeServer)
             }

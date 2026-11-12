@@ -48,6 +48,9 @@ final class RequestDetailViewModel {
     /// Inline banner near the CTA for a failed create (already requested,
     /// quota, …) — informational, never a blocking alert.
     private(set) var actionErrorMessage: String?
+    /// The unconfirmed-cancel notice as it was shown, cleared once a read
+    /// settles the cancel.
+    private var unconfirmedCancelText: String?
     /// Bumped when the server accepts a new request, for the success haptic.
     private(set) var submittedCount = 0
     /// A follow or unfollow is in flight. The button stays enabled and
@@ -197,8 +200,8 @@ final class RequestDetailViewModel {
 
     var isFollowing: Bool { detail?.request.following == true }
 
-    static let followedNotice = "We'll let you know when it's available."
-    static let unfollowedNotice = "Notification turned off."
+    static var followedNotice: String { AppLanguage.string(.requestsNoticeFollowing) }
+    static var unfollowedNotice: String { AppLanguage.string(.requestsNoticeUnfollowed) }
 
     /// Follows or unfollows the title. Both are naturally idempotent, so a
     /// failure leaves the button as it was for another try. An uncertain
@@ -331,7 +334,8 @@ final class RequestDetailViewModel {
         // The list now shows what the held cancel did.
         if isCancelUnconfirmed {
             isCancelUnconfirmed = false
-            if actionErrorMessage == RequestErrorCopy.unconfirmedCancelMessage { actionErrorMessage = nil }
+            if let shown = unconfirmedCancelText, actionErrorMessage == shown { actionErrorMessage = nil }
+            unconfirmedCancelText = nil
         }
         return RequestDetailCache.currentRecord(among: mine.filter { $0.mediaType == mediaType && $0.tmdbId == tmdbId })
     }
@@ -347,7 +351,9 @@ final class RequestDetailViewModel {
         } catch where RequestMutationFailure.isUncertain(error) {
             // Never resend: hold Cancel until a fresh read shows the result.
             isCancelUnconfirmed = true
-            actionErrorMessage = RequestErrorCopy.unconfirmedCancelMessage
+            // Kept as shown, so a language switch meanwhile still matches it.
+            unconfirmedCancelText = RequestErrorCopy.unconfirmedCancelMessage
+            actionErrorMessage = unconfirmedCancelText
             if !RequestMutationFailure.isOwnerChanged(error) { await load() }
         } catch {
             actionErrorMessage = RequestErrorCopy.message(for: error)

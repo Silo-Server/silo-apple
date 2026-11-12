@@ -419,6 +419,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.locale) private var locale
     #if os(iOS)
     @Environment(\.statusColumn) private var statusColumn
     #endif
@@ -602,7 +603,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
     private var expandedText: some View {
         VStack(alignment: .leading, spacing: 15) {
             if let eyebrow, !eyebrow.isEmpty {
-                Text(eyebrow.uppercased())
+                Text(eyebrow.uppercased(with: locale))
                     .siloScaledFont(size: 11, weight: .bold, relativeTo: .caption2)
                     .tracking(1.2)
                     .foregroundStyle(Color.siloOnSurface.opacity(0.7))
@@ -724,7 +725,7 @@ struct PhoneDetailHero<Actions: View, BelowOverview: View>: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 if let eyebrow, !eyebrow.isEmpty {
-                    Text(eyebrow.uppercased())
+                    Text(eyebrow.uppercased(with: locale))
                         .font(.siloCaption.weight(.bold))
                         .tracking(SiloTheme.macSidebarHeadingTracking)
                         .foregroundStyle(Color.siloOnSurface.opacity(0.7))
@@ -1167,7 +1168,7 @@ private struct PhoneDetailOverview: View {
                 isExpanded = true
             }
         } label: {
-            Text("MORE")
+            Text(.detailOverviewMore)
                 .siloScaledFont(size: 10, weight: .heavy, relativeTo: .caption2)
                 .tracking(0.6)
                 .foregroundStyle(Color.siloOnSurface)

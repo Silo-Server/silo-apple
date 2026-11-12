@@ -5,6 +5,7 @@ import SwiftUI
 
 struct MacPlayerControls: View {
     let viewModel: PlayerViewModel
+    let isFullScreen: Bool
     @Binding var isOptionsPresented: Bool
     @Binding var selectedOptionsTab: MacPlayerOptionsPanel.Tab
 
@@ -21,6 +22,7 @@ struct MacPlayerControls: View {
     private var bottomControls: some View {
         VStack(spacing: 12) {
             MacPlayerTimeline(viewModel: viewModel)
+                .mediaLayoutDirection()
 
             // Transport sits in the middle of the bar; options stay on the
             // leading side and speed and full screen on the trailing side.
@@ -53,7 +55,10 @@ struct MacPlayerControls: View {
                         .foregroundStyle(.white.opacity(0.70))
                         .monospacedDigit()
 
-                    iconButton("arrow.up.left.and.arrow.down.right", help: "Fullscreen") {
+                    iconButton(
+                        isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+                        help: isFullScreen ? "Exit Full Screen" : "Full Screen"
+                    ) {
                         NSApp.keyWindow?.toggleFullScreen(nil)
                     }
                 }
@@ -88,6 +93,7 @@ struct MacPlayerControls: View {
                         viewModel.skipForward()
                     }
                 }
+                .mediaLayoutDirection()
             }
         }
         .padding(14)
@@ -169,8 +175,8 @@ struct MacPlayerControls: View {
 
     private var speedLabel: String {
         let speed = viewModel.settings.playbackSpeed
-        if abs(speed - 1.0) < 0.01 { return "1x" }
-        return String(format: "%.2gx", speed)
+        if abs(speed - 1.0) < 0.01 { return LocaleFormat.localized("1x") }
+        return LocaleFormat.localized(String(format: "%.2gx", speed))
     }
 }
 #endif

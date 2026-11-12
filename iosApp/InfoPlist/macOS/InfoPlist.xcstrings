@@ -1,0 +1,60 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSLocalNetworkUsageDescription" : {
+      "comment" : "macOS permission prompt text the system shows when Silo first asks for this access. Keep it in step with iosApp/macOS-Info.plist.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "ar" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "يستخدم Silo شبكتك المحلية للعثور على خوادم Silo."
+          }
+        },
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo verwendet dein lokales Netzwerk, um Silo-Server zu finden."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo uses your local network to find Silo servers."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo usa tu red local para encontrar servidores de Silo."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo utilise votre réseau local pour trouver des serveurs Silo."
+          }
+        },
+        "ja" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Siloはローカルネットワークを使用して、Siloサーバーを検出します。"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "O Silo usa sua rede local para encontrar servidores Silo."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Silo使用你的本地网络查找Silo服务器。"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

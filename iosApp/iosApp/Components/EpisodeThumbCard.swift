@@ -36,6 +36,7 @@ struct EpisodeThumbCard: View {
     var baseCardWidth: CGFloat? = nil
 
     @Environment(\.browseLibraryId) private var browseLibraryId
+    @Environment(\.locale) private var locale
     @State private var personalState = MediaCardPersonalState()
     @EnvironmentObject private var overlayStore: OverlayPrefsStore
     #if os(tvOS)
@@ -189,7 +190,8 @@ struct EpisodeThumbCard: View {
                 CardOverlays(
                     data: resolvedOverlayData,
                     prefs: overlayStore.prefs,
-                    variant: .wide
+                    variant: .wide,
+                    images: overlayStore.images
                 )
                 .frame(width: cardWidth, height: cardHeight)
                 .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
@@ -269,18 +271,16 @@ struct EpisodeThumbCard: View {
         item.seriesTitle ?? item.title
     }
 
-    /// Secondary line — "S01E02 · Pilot" for episodes, otherwise year.
+    /// Secondary line — "S01E02 · Pilot" for episodes, otherwise the year,
+    /// or the years a series ran.
     private var subtitleLine: String? {
-        if let episodeLine = EpisodeCardCaption.line(for: item) {
+        if let episodeLine = EpisodeCardCaption.line(for: item, locale: locale) {
             return episodeLine
         }
         if item.seriesTitle != nil {
             return item.title
         }
-        if let year = item.year {
-            return String(year)
-        }
-        return nil
+        return CardYears.caption(for: item, locale: locale)
     }
 
     private var accessibilityDescription: String {
@@ -291,13 +291,13 @@ struct EpisodeThumbCard: View {
             components.append(subtitleLine)
         }
         if isPlayed {
-            components.append("Watched")
+            components.append(AppLanguage.string(.shellCardWatched, locale: locale))
         }
         return components.joined(separator: ", ")
     }
 
     private var episodeAccessibilityLabel: String? {
-        EpisodeCardCaption.accessibilityLabel(for: item)
+        EpisodeCardCaption.accessibilityLabel(for: item, locale: locale)
     }
 
     private var progressValue: Double? {

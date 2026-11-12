@@ -314,6 +314,8 @@ struct TopShelfHTTPClient {
         _ request: URLRequest,
         session: URLSession
     ) async throws -> (Data, HTTPURLResponse) {
+        var request = request
+        AppLanguage.applyHeader(to: &request)
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw Error.unexpectedStatus(0)

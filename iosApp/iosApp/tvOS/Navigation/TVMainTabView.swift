@@ -20,6 +20,7 @@ import SwiftUI
 private enum TVPersonalRootDestination: Hashable {
     case watchlist
     case favorites
+    case requests
 }
 
 /// Root tvOS shell. Owns a custom Skyline top bar instead of relying on
@@ -30,10 +31,12 @@ private enum TVPersonalRootDestination: Hashable {
 /// Music · Audiobooks · For You · Calendar`, where each library-type tab
 /// appears only if the profile can see at least one library of that type.
 struct TVMainTabView: View {
+    @Environment(\.locale) private var locale
     @Bindable var router: AppRouter
     @State private var selectedRoot: TVRootDestination = .home
-    /// Watchlist and Favorites are root-shell pages rather than pushed
-    /// destinations, so the Skyline bar and profile controls remain present.
+    /// Watchlist, Favorites, and Requests are root-shell pages rather than
+    /// pushed destinations, so the Skyline bar and profile controls remain
+    /// present.
     /// The previously selected content root stays underneath and is restored
     /// when the user backs out of the personal page.
     @State private var personalRoot: TVPersonalRootDestination?
@@ -49,6 +52,9 @@ struct TVMainTabView: View {
     /// Sign Out was chosen in the profile menu and its confirmation is up,
     /// so cancelling it returns focus to the avatar.
     @State private var isConfirmingMenuSignOut = false
+    /// Add Profile was chosen in the profile menu and its form is up, so
+    /// closing it without a new profile returns focus to the avatar.
+    @State private var isAddingProfileFromMenu = false
     @State private var accountDirectory = AccountDirectory.shared
     @State private var librariesStaleSinceBackground = false
     @State private var registry = ServerRegistry.shared
@@ -204,6 +210,14 @@ struct TVMainTabView: View {
                 focusTopMenuIfVisible(focusing: .profile)
             }
         }
+        .onChange(of: router.addProfileRequest == nil) { _, dismissed in
+            guard dismissed, isAddingProfileFromMenu else { return }
+            isAddingProfileFromMenu = false
+            Task { @MainActor in
+                await Task.yield()
+                focusTopMenuIfVisible(focusing: .profile)
+            }
+        }
         .ignoresSafeArea(edges: [.top, .horizontal])
         .tint(.siloOnSurface)
         .fullScreenCover(isPresented: Binding(
@@ -259,6 +273,13 @@ struct TVMainTabView: View {
         }
         .task(id: currentLibraryAuthority) {
             await loadLibraries(for: currentLibraryAuthority)
+        }
+        .onChange(of: closesRequestsRoot, initial: true) { _, close in
+            guard close else { return }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: SiloTheme.normalDuration)) {
+                personalRoot = nil
+            }
+            contentFocusRequest += 1
         }
         .onChange(of: router.path.isEmpty) { _, isEmpty in
             // Returning from a pushed route (Search, detail, settings)
@@ -435,6 +456,16 @@ struct TVMainTabView: View {
         }
     }
 
+    /// The server answered that requests are unavailable while the Requests
+    /// page is the root page. `AppRouter.closeRequestsScreens` closes pushed
+    /// Requests pages; this closes the root one once nothing covers it, the
+    /// way a pushed Requests page closes when it is back in view.
+    private var closesRequestsRoot: Bool {
+        personalRoot == .requests
+            && router.path.isEmpty
+            && RequestsFeatureStore.shared.isKnownUnavailable
+    }
+
     /// The bar and an entered panel both own chrome focus. Native bar-focus
     /// telemetry can be false during those handoffs, so use shell ownership.
     private var menuOwnsFocus: Bool {
@@ -495,6 +526,13 @@ struct TVMainTabView: View {
             FavoritesView(
                 showsNavigationTitle: false,
                 usesTVTopMenu: true,
+                focusRequest: contentFocusRequest,
+                isTopMenuFocused: menuOwnsFocus,
+                onTopMenuFocusRequest: { focusTopMenuIfVisible() }
+            )
+        case .requests:
+            TVRequestsPage(
+                mode: .hub,
                 focusRequest: contentFocusRequest,
                 isTopMenuFocused: menuOwnsFocus,
                 onTopMenuFocusRequest: { focusTopMenuIfVisible() }
@@ -703,7 +741,7 @@ struct TVMainTabView: View {
 
     private func profilePanel(isActive: Bool) -> some View {
         TVProfileDropdown(
-            profileName: currentProfile?.name ?? "Profile",
+            profileName: currentProfile?.name ?? AppLanguage.string(.topBarProfileFallback),
             avatar: currentProfile?.avatarEmoji,
             avatarImageUrl: currentProfile?.avatarImageUrl,
             serverHost: profileMenuServerLine,
@@ -712,7 +750,14 @@ struct TVMainTabView: View {
             onPanelFocusChanged: { handlePanelFocusChanged($0) },
             showsRequests: RequestsFeatureStore.shared.isEnabled,
             showsWatchParty: WatchPartyEntry.isAvailable,
+            profileRow: profileMenuRow,
             onSwitchProfile: { closePanel(then: switchProfile) },
+            onAddProfile: {
+                closePanel(then: {
+                    isAddingProfileFromMenu = true
+                    router.beginAddProfile()
+                })
+            },
             onHistory: { closePanel(then: { navigateFromBar(.history) }) },
             onRequests: { closePanel(then: { navigateFromBar(.requestsHub) }) },
             onWatchParty: { closePanel(then: { navigateFromBar(.watchParty) }) },
@@ -724,6 +769,22 @@ struct TVMainTabView: View {
                     router.signOutAndReset()
                 })
             }
+        )
+        // Profiles added or removed elsewhere change the profile row. A
+        // phone's remote playback lists its own profile, not the account's.
+        .task(id: isActive) {
+            guard isActive, RemotePlaybackIdentityManager.shared.activeIdentity == nil else { return }
+            _ = try? await StartupContentPrefetcher.fetchProfiles()
+        }
+    }
+
+    /// Switch Profile, Add Profile, or no row (spec §4.3). A phone's remote
+    /// playback borrows this TV's identity; its session can neither switch
+    /// nor add a profile, so the row is hidden while it lasts.
+    private var profileMenuRow: ProfileMenuRow? {
+        ProfileMenuRow.row(
+            for: accountDirectory.openAccount,
+            isHandoffSession: RemotePlaybackIdentityManager.shared.activeIdentity != nil
         )
     }
 
@@ -1219,6 +1280,9 @@ struct TVMainTabView: View {
         case .favorites:
             showPersonalRoot(.favorites)
             return
+        case .requestsHub:
+            showPersonalRoot(.requests)
+            return
         default:
             break
         }
@@ -1364,8 +1428,9 @@ struct TVMainTabView: View {
             EmptyView()
             #endif
         case .requestsHub:
-            // A Skyline page that was a root tab: it lays out its own insets,
-            // as the root content does, now that the profile menu pushes it.
+            // The profile menu shows Requests as a root page under the bar
+            // (`navigateFromBar`); nothing on tvOS pushes this route. A pushed
+            // copy would lay out its own insets as the root content does.
             RequestsHubView()
                 .ignoresSafeArea(edges: [.top, .horizontal])
         case .requestDetail(let mediaType, let tmdbId):
@@ -1394,7 +1459,7 @@ struct TVMainTabView: View {
             // `.needsLogin` and replaces this view tree.
             TVServerSetupView(router: router)
         default:
-            EmptyStateView(icon: "questionmark.circle", title: "Unknown", subtitle: nil)
+            EmptyStateView(icon: "questionmark.circle", title: AppLanguage.string(.shellRouteUnknown), subtitle: nil)
                 .siloBackground()
         }
     }

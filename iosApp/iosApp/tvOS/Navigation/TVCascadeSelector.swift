@@ -29,6 +29,9 @@ import SwiftUI
 /// The component itself owns no scope state; every outcome is a callback so
 /// persistence and the page swap stay in the host.
 struct TVCascadeSelector: View {
+    @Environment(\.locale) private var locale
+    /// The flyout opens on the trailing side, so its left/right swap in RTL.
+    @Environment(\.layoutDirection) private var layoutDirection
     let type: TVLibraryTabType
     /// Libraries of `type`, already ordered by sort order.
     let libraries: [Library]
@@ -196,7 +199,7 @@ struct TVCascadeSelector: View {
 
     private var librariesPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
-            panelHeader(type.librariesHeader)
+            panelHeader(AppLanguage.string(type.librariesHeader))
 
             libraryRows
         }
@@ -206,7 +209,7 @@ struct TVCascadeSelector: View {
             cornerRadius: SiloTheme.Skyline.dropdownCornerRadius
         ))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(type.title) libraries")
+        .accessibilityLabel(type.librariesSpoken)
     }
 
     @ViewBuilder
@@ -241,7 +244,7 @@ struct TVCascadeSelector: View {
         let label = TVCascadeLibraryRowLabel(
             title: library.name,
             systemImage: library.isMixedLibrary ? "square.stack.3d.up" : type.systemImage,
-            trailingGlyph: isCurrent ? "checkmark" : "chevron.right",
+            trailingGlyph: isCurrent ? "checkmark" : "chevron.forward",
             isFocused: isFocused
         )
 
@@ -284,7 +287,7 @@ struct TVCascadeSelector: View {
         ))
         .fixedSize()
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(library.name) sections")
+        .accessibilityLabel(.menuCascadeSectionsSpoken(library.name))
     }
 
     // MARK: - Flyout (level 2)
@@ -320,7 +323,7 @@ struct TVCascadeSelector: View {
             .id(anchorId)
             .transition(.opacity)
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("\(library.name) sections")
+            .accessibilityLabel(.menuCascadeSectionsSpoken(library.name))
         }
     }
 
@@ -343,7 +346,7 @@ struct TVCascadeSelector: View {
         )
 
         label
-            .accessibilityLabel("\(pill.title), section")
+            .accessibilityLabel(.menuCascadeSectionSpoken(pill.title))
     }
 
     // MARK: - Shared chrome
@@ -437,15 +440,13 @@ struct TVCascadeSelector: View {
     }
 
     private func accessibilityLabel(for library: Library, isCurrent: Bool) -> String {
-        var label = library.name
-        if isCurrent { label += ", current library" }
-        return label
+        isCurrent ? AppLanguage.string(.menuCascadeCurrentLibrarySpoken(library.name)) : library.name
     }
 
     private func handleMoveCommand(_ direction: MoveCommandDirection) {
         guard entersPanel, panelFocused, let focus else { return }
 
-        switch (focus, direction) {
+        switch (focus, direction.inLayout(layoutDirection)) {
         case (.library(let libraryId), .up):
             moveLibrary(from: libraryId, by: -1)
         case (.library(let libraryId), .down):

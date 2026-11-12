@@ -13,7 +13,9 @@ struct DiagnosticsPromptReportSummaryView: View {
                 DiagnosticsReportSummarySections(summary: summary)
             } else {
                 Section {
-                    ProgressView("Building report summary…")
+                    ProgressView {
+                        Text(.diagnosticsSummaryBuilding)
+                    }
                 }
             }
         }

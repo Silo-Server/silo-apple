@@ -25,6 +25,7 @@ struct TVServerSetupView: View {
     /// the auto-advance can't both run it.
     @State private var hasAdvanced = false
     @FocusState private var focusedField: Field?
+    @Environment(\.locale) private var locale
     /// Where focus goes once the system keyboard closes after Done.
     @State private var focusAfterKeyboard: Field?
 
@@ -47,7 +48,7 @@ struct TVServerSetupView: View {
 
     private static var tvName: String {
         let name = UIDevice.current.name
-        return name.isEmpty ? "Apple TV" : name
+        return name.isEmpty ? "Apple TV" : name // D44: a device name, not translated
     }
 
     var body: some View {
@@ -82,6 +83,7 @@ struct TVServerSetupView: View {
         .onDisappear {
             router.isReceivingCompanionSetup = false
             discovery.stop()
+            viewModel.cancelConnect()
             advertiser.stop()
             Task { await coordinator.cancel() }
         }
@@ -128,16 +130,16 @@ struct TVServerSetupView: View {
         MarqueeTVScreen {
             MarqueeTVStatusChip(text: Self.tvName, systemImage: "appletv")
         } copy: {
-            MarqueeTVStatusChip(text: "Looking for a phone or tablet…", showsSpinner: true)
+            MarqueeTVStatusChip(text: AppLanguage.string(.setupPhoneChip), showsSpinner: true)
                 .padding(.bottom, 36)
-            Text("Set up with\nyour phone")
+            Text(.setupPhoneHeadline)
                 .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))
                 .kerning(-2)
                 .foregroundStyle(Color.siloOnSurface)
                 .accessibilityAddTraits(.isHeader)
-            MarqueeTVBody("It's the easiest way. There's nothing to type with the remote.", size: 32)
+            MarqueeTVBody(AppLanguage.string(.setupPhoneBody), size: 32)
                 .padding(.top, 28)
-            Text("No phone nearby?")
+            Text(.setupPhoneAside)
                 .font(.system(size: 26))
                 .foregroundStyle(Color.siloOnSurface.opacity(0.4))
                 .padding(.top, 64)
@@ -148,7 +150,7 @@ struct TVServerSetupView: View {
                 isConnecting: viewModel.isLoading,
                 connectingID: viewModel.connectingServerID
             ) { server in
-                Task { await viewModel.connect(to: server, router: router) }
+                viewModel.begin { await viewModel.connect(to: server, router: router) }
             }
             .padding(.top, 18)
             if let error = viewModel.discoveryError?.message {
@@ -164,13 +166,13 @@ struct TVServerSetupView: View {
                     viewModel.clearError()
                     isEnteringAddress = true
                 } label: {
-                    Label("Enter server address", systemImage: "globe")
+                    Label(.setupPhoneEnterAddress, systemImage: "globe")
                 }
                 .buttonStyle(.marquee(.glass, fullWidth: false))
                 .focused($focusedField, equals: .enterAddress)
 
                 if canReturnToPicker {
-                    Button("Back to profiles") { returnToPicker() }
+                    Button(.signInBackToProfiles) { returnToPicker() }
                         .buttonStyle(.marquee(.plain, fullWidth: false))
                         .focused($focusedField, equals: .backToProfiles)
                 }
@@ -181,7 +183,7 @@ struct TVServerSetupView: View {
         }
         .defaultFocus($focusedField, .enterAddress, priority: .userInitiated)
         .marqueeTVSeedFocus($focusedField, .enterAddress)
-        .onExitCommand(perform: canReturnToPicker ? returnToPicker : nil)
+        .onExitCommand(perform: phoneFirstExit)
         .animation(.easeOut(duration: 0.32), value: discovery.servers)
         .animation(.easeInOut(duration: 0.2), value: viewModel.discoveryError)
     }
@@ -192,17 +194,17 @@ struct TVServerSetupView: View {
         MarqueeTVScreen {
             MarqueeTVStatusChip(text: Self.tvName, systemImage: "appletv")
         } copy: {
-            Text("Enter your\nserver address")
+            Text(.setupHeadline)
                 .font(.system(size: MarqueeMetrics.heroFont, weight: .heavy))
                 .kerning(-2)
                 .foregroundStyle(Color.siloOnSurface)
                 .accessibilityAddTraits(.isHeader)
-            MarqueeTVBody("Type the address you use for Silo.")
+            MarqueeTVBody(AppLanguage.string(.setupBody))
                 .padding(.top, 22)
 
             MarqueeTVField(
                 systemImage: "globe",
-                placeholder: "media.example.com",
+                placeholder: AppLanguage.string(.setupPlaceholder),
                 text: $viewModel.host,
                 focus: $focusedField,
                 equals: .host,
@@ -222,7 +224,7 @@ struct TVServerSetupView: View {
             Button {
                 viewModel.showsAdvancedOptions.toggle()
             } label: {
-                Label(viewModel.showsAdvancedOptions ? "Hide advanced options" : "Advanced options", systemImage: "gearshape")
+                Label(viewModel.showsAdvancedOptions ? LocalizedStringResource.setupAdvancedHide : .setupAdvancedShow, systemImage: "gearshape")
             }
             .buttonStyle(.marquee(.plain, fullWidth: false, compact: true))
             .focused($focusedField, equals: .advanced)
@@ -242,7 +244,7 @@ struct TVServerSetupView: View {
                                 if viewModel.selectedScheme == scheme {
                                     Image(systemName: "checkmark")
                                 }
-                                Text(scheme.rawValue)
+                                Text(scheme.label)
                             }
                         }
                         .buttonStyle(.marquee(.glass, fullWidth: false, compact: true))
@@ -250,7 +252,7 @@ struct TVServerSetupView: View {
                     }
                     MarqueeTVField(
                         systemImage: "number",
-                        placeholder: "Port: auto",
+                        placeholder: AppLanguage.string(.setupPortPlaceholder),
                         text: $viewModel.port,
                         focus: $focusedField,
                         equals: .port,
@@ -271,20 +273,16 @@ struct TVServerSetupView: View {
                 Button {
                     connect()
                 } label: {
-                    Text(viewModel.isLoading ? "Connecting…" : "Connect")
+                    Text(viewModel.isLoading ? LocalizedStringResource.setupConnecting : .setupConnect)
                 }
                 .buttonStyle(.marquee(.primary, fullWidth: false, isLoading: viewModel.isLoading))
                 .focused($focusedField, equals: .connect)
 
-                Button {
-                    viewModel.clearError()
-                    isEnteringAddress = false
-                } label: {
-                    Text("Back")
+                Button(action: leaveManualEntry) {
+                    Text(viewModel.isLoading ? LocalizedStringResource.commonCancel : .commonBack)
                 }
                 .buttonStyle(.marquee(.plain, fullWidth: false))
                 .focused($focusedField, equals: .back)
-                .disabled(viewModel.isLoading)
             }
             // Full width, so Down from the port field at the far end of the
             // row above still reaches the row; entering it lands on Connect.
@@ -297,13 +295,7 @@ struct TVServerSetupView: View {
         }
         .defaultFocus($focusedField, .host, priority: .userInitiated)
         .marqueeTVFocusAfterKeyboard($focusedField, pending: $focusAfterKeyboard)
-        // Leaving mid-probe would let a late connect pull the app on, so
-        // the way back waits for it.
-        .onExitCommand {
-            guard !viewModel.isLoading else { return }
-            viewModel.clearError()
-            isEnteringAddress = false
-        }
+        .onExitCommand(perform: leaveManualEntry)
         .animation(SiloTheme.springAnimation, value: viewModel.showsAdvancedOptions)
         .animation(.easeInOut(duration: 0.2), value: viewModel.error)
         .keepsSubmittedServerInputs(viewModel)
@@ -322,9 +314,28 @@ struct TVServerSetupView: View {
         router.returnToPicker()
     }
 
+    /// Menu on the phone-first page: it stops a found server's connect, and
+    /// is otherwise the way back, or the system's when this page has none.
+    private var phoneFirstExit: (() -> Void)? {
+        if viewModel.isLoading { return { viewModel.cancelConnect() } }
+        return canReturnToPicker ? returnToPicker : nil
+    }
+
+    /// Back and Menu on manual entry. Leaving mid-probe would let a late
+    /// connect pull the app on, so while one runs they stop it and stay; the
+    /// way back opens once it has ended.
+    private func leaveManualEntry() {
+        guard !viewModel.isLoading else {
+            viewModel.cancelConnect()
+            return
+        }
+        viewModel.clearError()
+        isEnteringAddress = false
+    }
+
     private func connect() {
         guard !viewModel.isLoading else { return }
-        Task { await viewModel.connect(router: router) }
+        viewModel.begin { await viewModel.connect(router: router) }
     }
 
     // MARK: - Advertiser lifecycle

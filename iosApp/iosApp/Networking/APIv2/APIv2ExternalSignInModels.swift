@@ -125,7 +125,8 @@ struct APIv2AccountIdentity: Decodable, Hashable, Sendable, Identifiable {
 struct APIv2AccountIdentities: Decodable, Sendable {
     let items: [APIv2AccountIdentity]
     /// Whether `deleteAccountIdentity` would disconnect an identity now: the
-    /// account has another identity, or its local password still signs in.
+    /// account has another identity, or its local password still signs in,
+    /// and the server lets the profile that asked disconnect it.
     /// Absent from servers that predate it; the server still refuses the
     /// last way to sign in either way.
     var canUnlink: Bool? = nil

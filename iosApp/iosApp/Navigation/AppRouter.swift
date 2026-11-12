@@ -105,12 +105,19 @@ final class AppRouter {
             // commit `.authenticated` over `.authenticated` under a new owner.
             authenticatedOwner = authState == .authenticated ? sessionOwner() : nil
             if authState != .needsPasswordChange { passwordChangeAccount = nil }
+            // Add Profile's PIN prompt and form belong to the profile that
+            // was open when the menu row was chosen. Any route change, even
+            // to Home again under another account or profile, closes them.
+            if addProfileRequest != nil { addProfileRequest = nil }
             if authState == .needsProfile {
-                // With no account open, the profile flow starts at Change
-                // Account (spec §4.1); otherwise a fresh picker for the open
+                // With no account open, or while the person has yet to
+                // choose one, the profile flow starts at Change Account
+                // (spec §4.1, §4.2); otherwise a fresh picker for the open
                 // account, which may have just changed.
-                showsChangeAccountRoot = AuthService.shared.openAccount == nil
+                showsChangeAccountRoot = AuthService.shared.openAccount == nil || choosesAccountFirst
                 profileFlowRevision &+= 1
+            } else if authState == .authenticated {
+                choosesAccountFirst = false
             }
             guard oldValue != authState else { return }
             recordAuthStateBreadcrumb(from: oldValue, to: authState, reason: reason)
@@ -171,12 +178,21 @@ final class AppRouter {
     /// A sign-out, server removal, or replacement waiting for the person to
     /// confirm it (`AccountRemovalConfirmationModifier`).
     var pendingRemoval: AccountRemovalRequest?
+    /// Add Profile was chosen in the profile menu and its new-profile form
+    /// is up (`AddProfileFromMenuModifier`).
+    var addProfileRequest: AddProfileRequest?
     /// The person asked for the picker (Switch Profile), so it shows even
     /// when there is only one profile to choose.
     var pickerRequestedByPerson = false
-    /// No account is open (after a sign-out or an expiry) while another can
-    /// be chosen: the profile flow's root is Change Account, not the picker.
-    /// Set with each `.needsProfile`.
+    /// Profile Selection asked for a choice while several accounts are saved
+    /// (spec §4.2): the person chooses the account before a profile. Stays
+    /// set through a sign-in or server setup started from Change Account, so
+    /// backing out returns to it as the root, until an account is chosen or
+    /// signs in.
+    @ObservationIgnored var choosesAccountFirst = false
+    /// The profile flow's root is Change Account, not the picker: no account
+    /// is open (after a sign-out or an expiry) while another can be chosen,
+    /// or the person chooses the account first. Set with each `.needsProfile`.
     private(set) var showsChangeAccountRoot = false
     /// Changes with each `.needsProfile`, so the picker is rebuilt for the
     /// account that is open now.
@@ -1020,7 +1036,7 @@ final class AppRouter {
         /// The line the sign-in screen shows for this notice.
         func message(serverName: String) -> String {
             switch self {
-            case .sessionExpired: "You were signed out of \(serverName). Sign in again."
+            case .sessionExpired: AppLanguage.string(.signInExpired(serverName))
             }
         }
     }
@@ -1049,7 +1065,9 @@ final class AppRouter {
     }
 
     /// Transition to profile selection after successful login.
-    func showProfileSelection() {
+    /// `choosingAccountFirst` starts it at Change Account instead of the
+    /// open account's picker.
+    func showProfileSelection(choosingAccountFirst: Bool = false) {
         if let request = accountSignIn {
             accountSignIn = nil
             finishAccountSignIn(request)
@@ -1064,6 +1082,7 @@ final class AppRouter {
         loginNotice = nil
         recordScreenBreadcrumb(target: "profileSelection", action: "reset")
         path = NavigationPath()
+        choosesAccountFirst = choosingAccountFirst
         setAuthState(.needsProfile, reason: "showProfileSelection")
     }
 
@@ -1189,7 +1208,7 @@ final class AppRouter {
             if ServerRegistry.shared.activeServerId != server.id {
                 guard await ServerRegistry.shared.switchTo(serverId: server.id, resolveDestinationProfile: true) else {
                     pendingDeviceApproval = nil
-                    accountActionError = "Couldn't switch to that server. Try again."
+                    accountActionError = AppLanguage.string(.accountErrorSwitchServerFailed)
                     return
                 }
             }

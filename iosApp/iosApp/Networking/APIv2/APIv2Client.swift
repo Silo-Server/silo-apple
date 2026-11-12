@@ -4,7 +4,7 @@ import Foundation
 /// reached the URL session. Nothing was sent.
 struct APIv2OwnerChangedBeforeDispatch: LocalizedError, Sendable {
     var errorDescription: String? {
-        "The active server or profile changed before the request could start."
+        AppLanguage.string(.errorsAppleRequestOwnerChangedBeforeStart)
     }
 }
 
@@ -38,36 +38,36 @@ enum APIv2Error: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidSubtitleResponse: return "The subtitle response cannot be used by this player."
-        case .invalidNotificationContinuation: return "The notification sync could not be continued. Try again."
-        case .incompleteAuthResponse: return "The server returned an incomplete sign-in response. Start sign-in again."
+        case .invalidSubtitleResponse: return AppLanguage.string(.errorsAppleV2InvalidSubtitleResponse)
+        case .invalidNotificationContinuation: return AppLanguage.string(.errorsAppleV2InvalidNotificationContinuation)
+        case .incompleteAuthResponse: return AppLanguage.string(.errorsAppleV2IncompleteAuthResponse)
         case .invalidPersonalListContinuation:
-            return "The personal list could not be continued. Reload to start again."
+            return AppLanguage.string(.errorsAppleV2InvalidPersonalListContinuation)
         case .incompletePersonalList:
-            return "The list could not be loaded completely. Reload to try again."
+            return AppLanguage.string(.errorsAppleV2IncompletePersonalList)
         case .unsupportedCatalogReadValue:
-            return "This item uses a value this client cannot support. Please update the client."
+            return AppLanguage.string(.errorsAppleV2UnsupportedCatalogReadValue)
         case .incompleteCatalogRead:
-            return "The server returned an incomplete catalog list. Reload to try again."
+            return AppLanguage.string(.errorsAppleV2IncompleteCatalogRead)
         case .unexpectedSettingReceipt:
-            return "The server's reply to a settings change did not match the change."
+            return AppLanguage.string(.errorsAppleV2UnexpectedSettingReceipt)
         case .invalidCatalogQuery:
-            return "The catalog query is not valid."
+            return AppLanguage.string(.errorsAppleV2InvalidCatalogQuery)
         case .invalidCatalogContinuation:
-            return "The catalog page could not be continued. Reload to start again."
+            return AppLanguage.string(.errorsAppleV2InvalidCatalogContinuation)
         case .incompleteCollection:
-            return "The collection could not be loaded completely. Reload to try again."
+            return AppLanguage.string(.errorsAppleV2IncompleteCollection)
         case .missingEntityTag:
-            return "The server did not provide a version tag. Reload before saving."
+            return AppLanguage.string(.errorsAppleV2MissingEntityTag)
         case .incompleteRequestList:
-            return "The request list could not be loaded completely. Please reload."
+            return AppLanguage.string(.errorsAppleV2IncompleteRequestList)
         case .serverUpdateRequired:
             return UpdateRequirement.serverMessage
         case .problem(let problem):
             if UpdateRequirement.isClientUpgradeRequired(problem) { return UpdateRequirement.appMessage }
-            return problem.detail.isEmpty ? problem.title : problem.detail
+            return problem.localized(problem.detail.isEmpty ? problem.title : problem.detail)
         case .httpStatus(let status):
-            return "The server returned HTTP \(status)."
+            return AppLanguage.string(.errorsAppleV2HttpStatus("\(status)"))
         }
     }
 }
@@ -194,6 +194,17 @@ struct APIv2Client: Sendable {
 
     func settingsRead(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
                       expectedIdentity: HTTPRequestIdentity? = nil, profileRequired: Bool = false) async throws -> Data {
+        try await settingsResponse(
+            path, query: query, profileID: profileID,
+            expectedIdentity: expectedIdentity, profileRequired: profileRequired
+        ).data
+    }
+
+    /// `settingsRead` with the response's URL, for a reply whose
+    /// server-relative paths are resolved while decoding.
+    func settingsResponse(_ path: String, query: [URLQueryItem] = [], profileID: String? = nil,
+                          expectedIdentity: HTTPRequestIdentity? = nil,
+                          profileRequired: Bool = false) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
         if profileRequired && auth.profileId == nil { throw SettingsAPIError.profileRequired }
@@ -208,7 +219,7 @@ struct APIv2Client: Sendable {
             }
         }
         guard response.statusCode == 200 else { throw APIv2Error.incompleteCatalogRead }
-        return response.data
+        return response
     }
 
     /// The settings value writes (`APIv2Client+Settings.swift`), under the same
@@ -349,21 +360,25 @@ struct APIv2Client: Sendable {
     }
 
     private func householdRequest<T: Decodable>(_ method: String, path: String, query: [String: String] = [:],
-                                                body: Data? = nil, status: Int) async throws -> T {
-        let response = try await householdResponse(method, path: path, query: query, body: body)
+                                                body: Data? = nil, status: Int, namesProfile: Bool = true) async throws -> T {
+        let response = try await householdResponse(method, path: path, query: query, body: body, namesProfile: namesProfile)
         guard response.statusCode == status else { throw APIv2Error.httpStatus(response.statusCode) }
         return try HTTPClient.makeJSONDecoder(artworkServerURL: response.url).decode(T.self, from: response.data)
     }
 
+    /// `namesProfile: false` sends an empty `X-Profile-Id` even while a
+    /// profile is active, as the profile picker does before one is chosen.
+    /// The profile's PIN proof stays attached: on a playback handoff the
+    /// server declares the bound profile itself and checks that proof.
     private func householdResponse(_ method: String, path: String, query: [String: String] = [:], body: Data? = nil,
-                                   acceptedStatuses: Set<Int> = []) async throws -> HTTPRawResponse {
+                                   acceptedStatuses: Set<Int> = [], namesProfile: Bool = true) async throws -> HTTPRawResponse {
         try await gate()
         guard let auth = await tokenStore.captureOrdinaryRequestAuth() else { throw HTTPError.requestIdentityChanged }
-        let identity = auth.profileId.map { Self.requestIdentity(auth, profile: $0) }
+        let identity = namesProfile ? auth.profileId.map { Self.requestIdentity(auth, profile: $0) } : nil
         return try await tokenStore.withOwnerFence(auth) {
             try await mapErrors {
                 try await http.requestData(method: method, path: path, query: query, body: body,
-                    headers: auth.profileId == nil ? ["X-Profile-Id": ""] : [:],
+                    headers: identity == nil ? ["X-Profile-Id": ""] : [:],
                     requestIdentity: identity, acceptedStatuses: acceptedStatuses,
                     expectedAccount: auth.account, expectedAuth: auth)
             }
@@ -375,13 +390,17 @@ struct APIv2Client: Sendable {
     }
 
     /// The household's profiles together with the optional profile members
-    /// this server accepts on create and update.
+    /// this server accepts on create and update. The list belongs to the
+    /// account, and the server answers 404 when a request names a deleted
+    /// profile, so this read sends no profile ID.
     func householdProfileList() async throws -> HouseholdProfileList {
-        let collection: APIv2ProfileCollection = try await householdRequest("GET", path: "/api/v2/profiles", status: 200)
+        let collection: APIv2ProfileCollection = try await householdRequest("GET", path: "/api/v2/profiles", status: 200,
+            namesProfile: false)
         let rows = try collection.completeItems()
         guard Set(rows.map(\.id)).count == rows.count else { throw APIv2Error.incompleteCollection }
         return HouseholdProfileList(profiles: rows.map(\.asUserProfile),
-            requestsAllowedSupported: collection.requestsAllowedSupported == true)
+            requestsAllowedSupported: collection.requestsAllowedSupported == true,
+            maxProfiles: collection.maxProfiles)
     }
 
     func createHouseholdProfile(_ body: CreateProfileRequestBody) async throws -> UserProfile {
@@ -584,6 +603,30 @@ struct APIv2Client: Sendable {
             throw APIv2Error.invalidCatalogContinuation
         }
         return APIv2CatalogResult(auth: auth, value: page, continuation: continuation)
+    }
+
+    /// The letter index of a title-ordered browse, bound to the caller's
+    /// captured owner like the pages it positions.
+    func catalogLetters(_ query: APIv2CatalogLettersQuery, auth: CapturedOrdinaryRequestAuth) async throws -> APIv2CatalogLetters {
+        try await gate()
+        guard let profile = auth.profileId, !profile.isEmpty,
+              await tokenStore.currentOrdinaryRequestAuth(matchingIdentityOf: auth) != nil else {
+            throw HTTPError.requestIdentityChanged
+        }
+        try Task.checkCancellation()
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let body = try encoder.encode(query)
+        let identity = Self.requestIdentity(auth, profile: profile)
+        let raw = try await tokenStore.withOwnerFence(auth) {
+            try await mapErrors {
+                try await http.requestData(method: "POST", path: "/api/v2/catalog/letters", body: body,
+                    requestIdentity: identity, expectedAccount: auth.account, expectedAuth: auth)
+            }
+        }
+        try Task.checkCancellation()
+        guard raw.statusCode == 200 else { throw APIv2Error.httpStatus(raw.statusCode) }
+        return try HTTPClient.makeJSONDecoder().decode(APIv2CatalogLetters.self, from: raw.data)
     }
 
     /// Facets depend on the viewer's library access, so the read is bound to

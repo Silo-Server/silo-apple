@@ -23,7 +23,7 @@ struct TVItemDetailLoadingView: View {
         }
         .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
+        .accessibilityLabel(Text(accessibilityLabel))
     }
 
     // MARK: - Movie / series / episode
@@ -174,14 +174,14 @@ struct TVItemDetailLoadingView: View {
 
     private var loadingPlaybackSummary: some View {
         HStack(alignment: .top, spacing: 8) {
-            playbackPlaceholder(label: "VERSION", width: 245, barWidth: 100)
-            playbackPlaceholder(label: "AUDIO", width: 285, barWidth: 130)
-            playbackPlaceholder(label: "SUBTITLES", width: 264, barWidth: 60)
+            playbackPlaceholder(label: .detailReadoutVersion, width: 245, barWidth: 100)
+            playbackPlaceholder(label: .detailReadoutAudio, width: 285, barWidth: 130)
+            playbackPlaceholder(label: .detailReadoutSubtitles, width: 264, barWidth: 60)
         }
     }
 
     private func playbackPlaceholder(
-        label: String,
+        label: LocalizedStringResource,
         width: CGFloat,
         barWidth: CGFloat
     ) -> some View {
@@ -304,7 +304,7 @@ struct TVItemDetailLoadingView: View {
             HStack(spacing: 12) {
                 placeholder(width: 250, height: 22, cornerRadius: 6)
                 if let year = seed?.year {
-                    Text(String(year))
+                    Text(LocaleFormat.integer(year))
                         .font(.system(size: 22, weight: .semibold))
                         .foregroundStyle(Color.white.opacity(0.64))
                 }
@@ -341,7 +341,7 @@ struct TVItemDetailLoadingView: View {
         guard let seed else { return [] }
         var values: [String] = []
         if let year = seed.year, year > 0 {
-            values.append(String(year))
+            values.append(LocaleFormat.integer(year))
         }
         if let genre = nonEmpty(seed.genre) {
             values.append(genre)
@@ -373,11 +373,11 @@ struct TVItemDetailLoadingView: View {
     private var railCardCount: Int { usesLandscapeRail ? 4 : 6 }
     private var railSpacing: CGFloat { usesLandscapeRail ? 34 : 44 }
 
-    private var accessibilityLabel: String {
+    private var accessibilityLabel: LocalizedStringResource {
         if let title = nonEmpty(seed?.title) {
-            return "Loading details for \(title)"
+            return .detailLoadingDetailsFor(title)
         }
-        return "Loading details"
+        return .detailLoadingDetails
     }
 
     private func nonEmpty(_ value: String?) -> String? {
