@@ -634,6 +634,10 @@ struct TVMainTabView: View {
                 anchor: UnitPoint(x: anchorX, y: 0)
             )
             .allowsHitTesting(isActive)
+            // A closed panel stays mounted but invisible. Left enabled, the
+            // focus engine treats the page controls under it as covered and
+            // skips them, such as the top rows of a library's Sort panel.
+            .disabled(!isActive)
             .accessibilityHidden(!isActive)
             .animation(
                 reduceMotion ? nil : .easeOut(duration: SiloTheme.Skyline.topMenuPanelOpenDuration),

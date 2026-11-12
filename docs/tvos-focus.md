@@ -173,6 +173,11 @@ the panel closes. Only publish it for a panel that reliably claims focus when it
 opens: with the bar disabled, a failed claim leaves nothing focused until that
 last-resort repair, about ten seconds later.
 
+The bar's own menus stay mounted when closed, so dwell-opening one does not
+mount a new panel subtree. A closed menu is invisible but still covers the page, and
+while it stays enabled the focus engine treats page controls under it as
+covered and skips them. Disable a closed menu as well as hiding it.
+
 The top menu has three conceptual states:
 
 - `closed`: no panel is visible; focus belongs to content or the bar.
