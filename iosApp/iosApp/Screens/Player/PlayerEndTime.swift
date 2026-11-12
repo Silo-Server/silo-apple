@@ -9,7 +9,7 @@ enum PlayerEndTime {
         now: Date,
         remaining: Double,
         speed: Double,
-        style: Date.FormatStyle = Date.FormatStyle(date: .omitted, time: .shortened)
+        style: Date.FormatStyle = Date.FormatStyle(date: .omitted, time: .shortened, locale: AppLanguage.formattingLocale)
     ) -> String? {
         guard remaining.isFinite, remaining > 0 else { return nil }
         let rate = speed.isFinite && speed > 0 ? speed : 1
