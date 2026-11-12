@@ -4,10 +4,9 @@
 > The most helpful way to contribute to Silo right now is a clear, accurate
 > issue. Feature ideas go in
 > [Discussions → Ideas](https://github.com/Silo-Server/silo-apple/discussions/categories/ideas),
-> not issues. Pull requests are welcome from contributors who've had one merged
-> in a Silo repository, or when a maintainer asks for one; a feature pull request
-> also needs an issue a maintainer has labeled `accepted`. Every pull request
-> needs evidence. Other pull requests, drafts, and pull requests still without
+> not issues. Pull requests from outside the team are for bug fixes; anything
+> else needs a maintainer to ask for it. Every pull request needs evidence.
+> Pull requests that break these rules, drafts, and pull requests still without
 > evidence a day after they open are closed automatically without review.
 
 ## Why we're asking for issues
@@ -64,40 +63,55 @@ help building it.
 
 ## Pull requests
 
-Pull requests are welcome from contributors who've had a pull request merged in
-a Silo repository, and from anyone a maintainer has asked for one, usually in
-an issue comment. A feature pull request (a `feat` title) from someone without
-triage or write access must also link, in its description, an issue in this
-repository that a maintainer has labeled `accepted`. The rest of this guide applies to those pull requests.
+These rules apply to every pull request from someone without triage or write
+access. A pull request that follows them can still be closed; we don't owe a
+review or a merge.
 
-A workflow closes other pull requests without review when they open. That isn't
-a judgment of the work. If the problem still matters, open an issue for it, or
+- **Fix a bug.** Give the pull request a `fix` or `perf` title. A crash, a
+  regression, wrong behavior, and a real performance problem are bugs; a change
+  to how Silo behaves is a feature, even when the pull request calls it a fix.
+  Anything else, including features, refactors, and test or documentation
+  changes, needs a maintainer to ask for it by labeling an issue in this
+  repository `accepted`; link that issue in the description. A pull request of
+  yours that merged before doesn't change this.
+- **Open it ready for review.** Drafts are closed, both when they open and when
+  they are converted to drafts.
+- **Keep three or fewer open.** A fourth open pull request of yours in the same
+  repository is closed when it opens. Get one merged or closed first.
+- **Show evidence.** Every pull request needs evidence, as
+  [Show visible changes](#show-visible-changes) describes. A pull request whose `Evidence` check still asks for
+  evidence 24 hours after it opens, or after a maintainer reopens it, is closed
+  without review. Publish or attach evidence soon after you open it.
+
+A workflow applies these rules when a pull request opens. Closing isn't a
+judgment of the work. If the problem still matters, open an issue for it, or
 post a feature idea in Ideas, and link the closed pull request; we may use the
-code as a reference. Once a feature's issue is labeled `accepted`, link it in
-a new pull request, or ask a maintainer to reopen the closed one. If a
-maintainer asked you for a pull request and you haven't had one merged yet, the
-workflow still closes it when it opens; the maintainer reopens it, and the
-check leaves it alone from then on.
-
-Two more rules apply to pull requests from anyone without triage or write
-access, including invited ones:
-
-- Open the pull request ready for review. The workflow closes drafts, both when
-  they open and when they are converted to drafts.
-- Every pull request needs evidence, as [Show visible changes](#show-visible-changes)
-  describes. A pull request whose `Evidence` check still asks for evidence 24
-  hours after it opens, or after a maintainer reopens it, is closed without
-  review. Publish or attach evidence soon after you open it.
+code as a reference. A maintainer who wants a closed pull request reopens it,
+and the workflow leaves it alone from then on, apart from the evidence deadline.
 
 The [Silo contribution guide](https://github.com/Silo-Server/.github/blob/main/CONTRIBUTING.md)
 covers project-wide coordination, focused changes, evidence, AI disclosure, and
 pull request expectations. Those requirements apply here; this guide adds the
 Apple-specific workflow.
 
+### Help us close things
+
+Finding what can be closed helps more than another pull request:
+
+- **Duplicates:** comment on the newer issue or pull request with a link to the
+  original.
+- **Fixed bugs:** if an open issue no longer happens on the latest build, say so
+  and give the build.
+- **Dead pull requests:** if a pull request was superseded or abandoned, link
+  what replaced it.
+
+If an open pull request already covers your bug, test it and comment with what
+you saw instead of opening another.
+
 ## Before you start
 
-A feature needs an issue labeled `accepted` before you implement it; start
-with an idea in Ideas. Open an
+Anything but a bug fix needs an issue labeled `accepted` before you implement
+it; start with an idea in Ideas. Open an
 [issue](https://github.com/Silo-Server/silo-apple/issues) before implementing a
 navigation or behavior change, large refactor, or work that changes the shared
 server contract. Documentation, narrow fixes, and
