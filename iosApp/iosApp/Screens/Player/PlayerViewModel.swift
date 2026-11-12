@@ -3990,6 +3990,7 @@ class PlayerViewModel {
     func showNextUpNow() {
         guard !isWatchPartyPlayback else { return }
         guard canShowNextUpScreen else { return }
+        stillWatchingGuard.recordViewerAction()
         beginNextUpPostroll(videoEnded: false, source: .hud)
     }
 
@@ -4160,6 +4161,7 @@ class PlayerViewModel {
     }
 
     func setNextUpAutoPlayEnabled(_ enabled: Bool) {
+        stillWatchingGuard.recordViewerAction()
         settings.setAutoPlayNextEpisode(enabled)
         if enabled {
             nextUpAutoplayCancelled = false
@@ -4169,20 +4171,14 @@ class PlayerViewModel {
         }
     }
 
-    private func recordNextUpStart(unattended: Bool) {
-        if unattended {
-            stillWatchingGuard.recordAutoAdvance()
-        } else {
-            stillWatchingGuard.recordViewerAction()
-        }
-    }
-
     func playNextEpisodeNow(unattended: Bool = false) {
         guard !isWatchPartyPlayback else { return }
+        // Play Now counts even when it lands on an advance already in flight.
+        if !unattended { stillWatchingGuard.recordViewerAction() }
         if shuffleState != nil {
             // A repeat call while the advance is in flight is dropped below
             // and must not count again.
-            if !isStartingNextUp { recordNextUpStart(unattended: unattended) }
+            if unattended, !isStartingNextUp { stillWatchingGuard.recordAutoAdvance() }
             playNextShufflePick()
             return
         }
@@ -4197,7 +4193,6 @@ class PlayerViewModel {
         case .expand:
             // Presentation only: no prepare, load, seek, or play command.
             // Preserve a preview that is already playing, paused or buffering.
-            if !unattended { stillWatchingGuard.recordViewerAction() }
             cancelNextUpCountdown()
             nextUpAutoplayCancelled = true
             nextUpPromptDismissed = true
@@ -4207,7 +4202,7 @@ class PlayerViewModel {
         case .load(let id):
             contentId = id
         }
-        recordNextUpStart(unattended: unattended)
+        if unattended { stillWatchingGuard.recordAutoAdvance() }
         var request = LoadRequest(
             contentId: contentId,
             preferredFileId: nil,
@@ -4416,6 +4411,7 @@ class PlayerViewModel {
     func pickAnotherShufflePick() {
         guard let shuffleState, canPickAnotherShufflePick,
               !isPickingAnotherShufflePick else { return }
+        stillWatchingGuard.recordViewerAction()
         let shuffleId = shuffleState.id
         let nextContentId = shuffleState.shuffle.next.contentId
         cancelShuffleOperations()
@@ -5881,8 +5877,8 @@ class PlayerViewModel {
 
     /// Play from the viewer: Now Playing, SiloControl, or the end of a scrub.
     private func handleNowPlayingPlay() {
-        guard !isReconnecting else { return }
         stillWatchingGuard.recordViewerAction()
+        guard !isReconnecting else { return }
         if watchPartyAdapter?.request(.play) == true { return }
         noteViewerTransportCommand(play: true)
         if !holdPlayIntentForFreshLoad(true) {
@@ -7344,6 +7340,9 @@ class PlayerViewModel {
     /// fresh session — simpler than retrying just the stream load, and
     /// tolerates stale server-side sessions that may have been reaped.
     func retry() {
+        // Only the Retry button calls this; it reloads the same title, which
+        // the load's own different-title check would not count.
+        stillWatchingGuard.recordViewerAction()
         if connectionState == .lost {
             // Try again after a lost connection: a fresh reconnect at the
             // saved position, with the viewer's tracks and play intent.
@@ -7367,9 +7366,9 @@ class PlayerViewModel {
     }
 
     func togglePlayPause() {
+        stillWatchingGuard.recordViewerAction()
         // Nothing can play until the reconnect hands over a new transport.
         guard !isReconnecting else { return }
-        stillWatchingGuard.recordViewerAction()
         if watchPartyAdapter?.request(isPlaying ? .pause : .play) == true { return }
         // While a replan replaces the transport, the outgoing engine's state
         // can disagree with the viewer's: it sits paused under a recorded Play

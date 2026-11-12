@@ -2326,7 +2326,6 @@ final class PlayerSettings {
         defaults.set(false, forKey: key(Keys.autoSkipRecap))
         defaults.set(true, forKey: key(Keys.autoPlayNextEpisode))
         defaults.set(30, forKey: key(Keys.nextUpPromptSeconds))
-        defaults.set(Self.defaultStillWatchingThreshold, forKey: key(Keys.stillWatchingThreshold))
         defaults.set(true, forKey: key(Keys.hdrEnabled))
         defaults.set(true, forKey: key(Keys.dolbyVisionEnabled))
         defaults.set(true, forKey: key(Keys.seekCacheEnabled))
