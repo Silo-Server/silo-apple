@@ -25,6 +25,10 @@ struct TVPlaybackActionSelectors: View {
 
     var body: some View {
         HStack(spacing: 18) {
+            if showsEditions {
+                editionMenu
+                    .focused(focusedAction, equals: .edition)
+            }
             versionMenu
                 .focused(focusedAction, equals: .version)
             audioMenu
@@ -37,16 +41,85 @@ struct TVPlaybackActionSelectors: View {
         .task { await ProfilePrefsStore.shared.hydrateIfNeeded() }
     }
 
-    private var isVersionDisabled: Bool { currentVersion == nil || versions.isEmpty }
+    private var editions: [PlaybackEditions.Edition] {
+        PlaybackEditions.editions(from: versions)
+    }
+
+    /// Edition appears only when the title has more than one, as on Android TV.
+    private var showsEditions: Bool { editions.count > 1 }
+
+    private var currentEdition: PlaybackEditions.Edition? {
+        DetailPlaybackFormatting.currentEdition(versions: versions, currentVersion: currentVersion)
+    }
+
+    /// The current edition's files when editions show, else every file.
+    private var scopedVersions: [FileVersion] {
+        DetailPlaybackFormatting.versionSelectorVersions(versions: versions, currentVersion: currentVersion)
+    }
+
+    /// The file Auto would pick within `edition`, so choosing an edition
+    /// lands where the page would have started had it been the only one.
+    private func preferredVersion(in edition: PlaybackEditions.Edition) -> FileVersion? {
+        DetailVersionSelection.displayVersion(
+            versions: edition.versions,
+            selectedFileId: nil,
+            lastFileId: nil,
+            preferredQualityId: PlayerSettings.shared.preferredQuality
+        )
+    }
+
+    /// The file the Versions menu marks. With editions it has no Auto row,
+    /// so the file on screen is the selected one.
+    private var markedVersionFileId: Int? {
+        selectedVersionFileId ?? (showsEditions ? currentVersion?.fileId : nil)
+    }
+
+    private var isEditionDisabled: Bool { currentVersion == nil || !showsEditions }
+    private var isVersionDisabled: Bool {
+        currentVersion == nil || scopedVersions.isEmpty || (showsEditions && scopedVersions.count < 2)
+    }
     private var isAudioDisabled: Bool { currentVersion == nil || audioOptions.isEmpty }
     private var isSubtitleDisabled: Bool { currentVersion == nil }
 
+    /// Includes Edition while it is unmounted, so the row never returns
+    /// focus to a button that is gone.
     private var disabledActions: Set<TVDetailAction> {
         var actions: Set<TVDetailAction> = []
+        if isEditionDisabled { actions.insert(.edition) }
         if isVersionDisabled { actions.insert(.version) }
         if isAudioDisabled { actions.insert(.audio) }
         if isSubtitleDisabled { actions.insert(.subtitles) }
         return actions
+    }
+
+    private var editionMenu: some View {
+        TVCircleMenuButton(
+            icon: "rectangle.stack",
+            title: AppLanguage.string(.detailEdition, locale: locale),
+            accessibilityLabel: AppLanguage.string(.detailEditionSpoken(editionValue), locale: locale),
+            stabilizesFocusMotion: true,
+            menuTitle: AppLanguage.string(.detailEdition, locale: locale),
+            items: {
+                editions.map { edition in
+                    TVActionPopoverItem(
+                        id: "edition-\(edition.id)",
+                        title: PlaybackEditions.displayLabel(edition.label, locale: locale),
+                        detail: AppLanguage.string(
+                            .detailEditionVersionCount(edition.versions.count),
+                            locale: locale
+                        ),
+                        isSelected: currentEdition?.id == edition.id
+                    )
+                }
+            },
+            onSelect: { item in
+                let id = String(item.id.dropFirst("edition-".count))
+                guard let edition = editions.first(where: { $0.id == id }),
+                      let version = preferredVersion(in: edition) else { return }
+                onSelectVersion(version.fileId)
+            }
+        )
+        .disabled(isEditionDisabled)
     }
 
     private var versionMenu: some View {
@@ -57,19 +130,22 @@ struct TVPlaybackActionSelectors: View {
             stabilizesFocusMotion: true,
             menuTitle: AppLanguage.string(.detailVersion, locale: locale),
             items: {
-                [
+                // Auto chooses across every edition, so it is left out
+                // while editions show to keep a pick within its edition.
+                let auto: [TVActionPopoverItem] = showsEditions ? [] : [
                     TVActionPopoverItem(
                         id: "auto",
                         title: AppLanguage.string(.detailAuto, locale: locale),
                         detail: AppLanguage.string(.detailAutoVersion, locale: locale),
                         isSelected: selectedVersionFileId == nil
                     )
-                ] + versions.map { version in
+                ]
+                return auto + scopedVersions.map { version in
                     TVActionPopoverItem(
                         id: "file-\(version.fileId)",
                         title: DetailPlaybackFormatting.versionShortLabel(version),
                         detail: DetailPlaybackFormatting.versionDetailLabel(version),
-                        isSelected: selectedVersionFileId == version.fileId
+                        isSelected: markedVersionFileId == version.fileId
                     )
                 }
             },
@@ -168,9 +244,16 @@ struct TVPlaybackActionSelectors: View {
         .disabled(isSubtitleDisabled)
     }
 
+    private var editionValue: String {
+        PlaybackEditions.displayLabel(
+            currentEdition?.label ?? currentVersion?.editionDisplayLabel ?? PlaybackEditions.standardLabel,
+            locale: locale
+        )
+    }
+
     private var versionValue: String {
         let value = DetailPlaybackFormatting.versionCompactLabel(currentVersion)
-        return selectedVersionFileId == nil
+        return markedVersionFileId == nil
             ? AppLanguage.string(.detailAutoSpoken(value), locale: locale)
             : value
     }
