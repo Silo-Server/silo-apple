@@ -56,10 +56,8 @@ struct PlayerView: View {
     @Environment(\.layoutDirection) private var layoutDirection
     @State private var remoteIdentityNotice: RemotePlaybackIdentityManager.ActiveIdentity?
     @State private var isTimelinePreviewVisible = false
-    @State private var timelineTimeDisplayMode: TVPlayerTimeDisplayMode = .elapsedRemaining
     @State private var timelineSelectionRequest: UUID?
     @State private var timelinePreviewHideTask: Task<Void, Never>?
-    @State private var timelinePreviewContactCanToggle = false
     /// The buffering pill's buttons. Owned here because the pill is drawn at
     /// the notice position; `TVPlayerControls` applies its focus rules.
     @FocusState private var focusedBufferingAction: TVBufferingQualityPill.Action?
@@ -218,17 +216,14 @@ struct PlayerView: View {
                                     case .up, .down: break
                                     }
                                 },
-                                onDirectionalPressBegan: {
-                                    timelinePreviewContactCanToggle = false
-                                },
                                 onTouchSurfaceContactBegan: {
                                     handleTimelinePreviewContactBegan()
                                 },
                                 onTouchSurfaceContactEnded: {
-                                    handleTimelinePreviewContactEnded()
+                                    scheduleTimelinePreviewHide()
                                 },
                                 onTouchSurfaceContactCancelled: {
-                                    handleTimelinePreviewContactCancelled()
+                                    scheduleTimelinePreviewHide()
                                 },
                                 onSelect: {
                                     if viewModel.isHoldSeeking {
@@ -242,10 +237,8 @@ struct PlayerView: View {
                                     } else if viewModel.showSegmentSkip {
                                         // After the intro pill, which the
                                         // recap/credits pill waits for.
-                                        timelinePreviewContactCanToggle = false
                                         viewModel.skipCurrentSegment()
                                     } else if viewModel.isPlaying {
-                                        timelinePreviewContactCanToggle = false
                                         hideTimelinePreview(immediately: true)
                                         viewModel.pauseForTimelineSelection()
                                         timelineSelectionRequest = UUID()
@@ -282,15 +275,9 @@ struct PlayerView: View {
                             TVPlayerControls(
                                 viewModel: viewModel,
                                 showsTimelinePreview: isTimelinePreviewVisible,
-                                timeDisplayMode: timelineTimeDisplayMode,
                                 timelineSelectionRequest: timelineSelectionRequest,
                                 bufferingPillFocus: $focusedBufferingAction,
                                 showsCornerCapsule: showsWatchPartySyncCapsule,
-                                onToggleTimeDisplayMode: {
-                                    withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
-                                        timelineTimeDisplayMode.toggle()
-                                    }
-                                },
                                 onTimelineScrubbingChange: { isTimelineScrubbing = $0 },
                                 onDismiss: { dismissPlayer() }
                             )
@@ -496,8 +483,6 @@ struct PlayerView: View {
         .onChange(of: viewModel.showControls) { _, visible in
             if visible {
                 hideTimelinePreview()
-            } else {
-                timelineTimeDisplayMode = .elapsedRemaining
             }
         }
         .onChange(of: viewModel.bufferingPill?.kind) { _, _ in
@@ -707,28 +692,11 @@ struct PlayerView: View {
 
         timelinePreviewHideTask?.cancel()
         timelinePreviewHideTask = nil
-        timelinePreviewContactCanToggle = isTimelinePreviewVisible
         withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
             if !isTimelinePreviewVisible {
                 isTimelinePreviewVisible = true
             }
         }
-    }
-
-    private func handleTimelinePreviewContactEnded() {
-        guard isTimelinePreviewVisible else { return }
-        if timelinePreviewContactCanToggle {
-            withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
-                timelineTimeDisplayMode.toggle()
-            }
-        }
-        timelinePreviewContactCanToggle = false
-        scheduleTimelinePreviewHide()
-    }
-
-    private func handleTimelinePreviewContactCancelled() {
-        timelinePreviewContactCanToggle = false
-        scheduleTimelinePreviewHide()
     }
 
     private func scheduleTimelinePreviewHide() {
@@ -744,7 +712,6 @@ struct PlayerView: View {
     private func hideTimelinePreview(immediately: Bool = false) {
         timelinePreviewHideTask?.cancel()
         timelinePreviewHideTask = nil
-        timelinePreviewContactCanToggle = false
         guard isTimelinePreviewVisible else { return }
         if immediately {
             isTimelinePreviewVisible = false
@@ -752,10 +719,6 @@ struct PlayerView: View {
             withAnimation(.easeOut(duration: SiloTheme.fastDuration)) {
                 isTimelinePreviewVisible = false
             }
-            // A dismissed quick preview always starts fresh in duration mode
-            // on the next light touch. The immediate Select-to-HUD handoff
-            // intentionally preserves the current display mode instead.
-            timelineTimeDisplayMode = .elapsedRemaining
         }
     }
     #endif
