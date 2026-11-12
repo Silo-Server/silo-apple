@@ -51,8 +51,9 @@ blur private details in anything attached here. To keep captures private instead
 publish them to evidence.siloserver.org, where only you and Silo maintainers can open
 them, and replace the table with
 `Evidence: https://evidence.siloserver.org/r/silo-apple/pr-<number>/`. When nothing
-visible changes, replace this section's content with "Evidence: none, no user-visible
-change". -->
+visible changes, replace the table with how you checked the change: the steps you ran,
+the build or commit, and trimmed test results. Every pull request needs evidence; a
+contributor's pull request still without it 24 hours after opening is closed. -->
 
 ## Risks
 
@@ -63,7 +64,7 @@ identified".
 
 - [ ] I read and can explain the complete diff.
 - [ ] This pull request addresses one concern.
-- [ ] The Evidence section shows every change a user can see, or says there is none.
+- [ ] The Evidence section shows every change a user can see, or how I checked a change nobody sees.
 
 ## AI Disclosure
 
