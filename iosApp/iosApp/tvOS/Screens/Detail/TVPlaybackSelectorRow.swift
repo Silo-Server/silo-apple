@@ -45,7 +45,7 @@ struct TVPlaybackActionSelectors: View {
         PlaybackEditions.editions(from: versions)
     }
 
-    /// Edition appears only when the title has more than one, as on Android TV.
+    /// Edition appears only when the title has more than one, as on iPhone.
     private var showsEditions: Bool { editions.count > 1 }
 
     private var currentEdition: PlaybackEditions.Edition? {
@@ -57,8 +57,8 @@ struct TVPlaybackActionSelectors: View {
         DetailPlaybackFormatting.versionSelectorVersions(versions: versions, currentVersion: currentVersion)
     }
 
-    /// The file Auto would pick within `edition`, so choosing an edition
-    /// lands where the page would have started had it been the only one.
+    /// The file Auto would pick within `edition`. Choosing an edition pins
+    /// it, turning Auto off; Auto in Versions chooses across every edition.
     private func preferredVersion(in edition: PlaybackEditions.Edition) -> FileVersion? {
         DetailVersionSelection.displayVersion(
             versions: edition.versions,
@@ -68,16 +68,8 @@ struct TVPlaybackActionSelectors: View {
         )
     }
 
-    /// The file the Versions menu marks. With editions it has no Auto row,
-    /// so the file on screen is the selected one.
-    private var markedVersionFileId: Int? {
-        selectedVersionFileId ?? (showsEditions ? currentVersion?.fileId : nil)
-    }
-
     private var isEditionDisabled: Bool { currentVersion == nil || !showsEditions }
-    private var isVersionDisabled: Bool {
-        currentVersion == nil || scopedVersions.isEmpty || (showsEditions && scopedVersions.count < 2)
-    }
+    private var isVersionDisabled: Bool { currentVersion == nil || scopedVersions.isEmpty }
     private var isAudioDisabled: Bool { currentVersion == nil || audioOptions.isEmpty }
     private var isSubtitleDisabled: Bool { currentVersion == nil }
 
@@ -130,22 +122,19 @@ struct TVPlaybackActionSelectors: View {
             stabilizesFocusMotion: true,
             menuTitle: AppLanguage.string(.detailVersion, locale: locale),
             items: {
-                // Auto chooses across every edition, so it is left out
-                // while editions show to keep a pick within its edition.
-                let auto: [TVActionPopoverItem] = showsEditions ? [] : [
+                [
                     TVActionPopoverItem(
                         id: "auto",
                         title: AppLanguage.string(.detailAuto, locale: locale),
                         detail: AppLanguage.string(.detailAutoVersion, locale: locale),
                         isSelected: selectedVersionFileId == nil
                     )
-                ]
-                return auto + scopedVersions.map { version in
+                ] + scopedVersions.map { version in
                     TVActionPopoverItem(
                         id: "file-\(version.fileId)",
                         title: DetailPlaybackFormatting.versionShortLabel(version),
                         detail: DetailPlaybackFormatting.versionDetailLabel(version),
-                        isSelected: markedVersionFileId == version.fileId
+                        isSelected: selectedVersionFileId == version.fileId
                     )
                 }
             },
@@ -253,7 +242,7 @@ struct TVPlaybackActionSelectors: View {
 
     private var versionValue: String {
         let value = DetailPlaybackFormatting.versionCompactLabel(currentVersion)
-        return markedVersionFileId == nil
+        return selectedVersionFileId == nil
             ? AppLanguage.string(.detailAutoSpoken(value), locale: locale)
             : value
     }
