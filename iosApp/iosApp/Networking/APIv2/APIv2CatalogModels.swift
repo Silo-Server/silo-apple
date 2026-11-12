@@ -126,13 +126,17 @@ struct APIv2CatalogQuery: Encodable, Hashable {
     var group: String?
     var limit = 50
     var skipTotal = false
+    /// Reads the page starting at this zero-based list position instead of
+    /// the first. A page read this way is used on its own: its continuation
+    /// would send the position again and repeat the page.
+    var seek: Int?
     /// `image_size` and the per-slot widths, sent as query parameters on both
     /// operations and never in a POST body.
     var artwork: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
         case source, scope, sectionId, collectionId, personId, libraryId, q, type
-        case namePrefix, groups, match, sort, order, group, limit, skipTotal
+        case namePrefix, groups, match, sort, order, group, limit, skipTotal, seek
     }
 
     func getParameters() throws -> [String: String] {
@@ -152,6 +156,7 @@ struct APIv2CatalogQuery: Encodable, Hashable {
         query.merge(artwork) { current, _ in current }
         if let sort { query["sort"] = (order == "desc" ? "-" : "") + sort }
         if skipTotal { query["skip_total"] = "true" }
+        if let seek, seek > 0 { query["seek"] = String(seek) }
         if !groups.isEmpty {
             let encoder = JSONEncoder()
             encoder.outputFormatting = .sortedKeys
@@ -230,6 +235,68 @@ extension APIv2CatalogQuery {
         query.type = type
         query.limit = limit
         return query
+    }
+}
+
+/// `POST /api/v2/catalog/letters`: the scope and rules of a title-ordered
+/// query-source browse, as on the catalog query.
+struct APIv2CatalogLettersQuery: Encodable, Equatable {
+    var libraryId: String?
+    var type: String?
+    var match: String
+    var groups: [APIv2CatalogGroup]
+    var order: String
+
+    /// The letter index of the list `query` pages, which must be a
+    /// query-source browse in title order.
+    init(_ query: APIv2CatalogQuery) {
+        libraryId = query.libraryId
+        type = query.type
+        match = query.match
+        groups = query.groups
+        order = query.order
+    }
+}
+
+/// Where each letter's titles sit in a title-ordered browse, for jumping to a
+/// letter. Positions are zero-based and count in the browse's order.
+struct APIv2CatalogLetters: Decodable, Equatable {
+    struct Letter: Decodable, Equatable {
+        /// A to Z, or # for titles that start with a digit, a symbol or a
+        /// non-Latin letter.
+        let letter: String
+        let count: Int
+        /// The letter's first title.
+        let position: Int
+    }
+
+    /// A block of consecutive titles under one letter.
+    struct Run: Decodable, Equatable {
+        let letter: String
+        let position: Int
+    }
+
+    let total: Int
+    /// Letters with at least one title, in list order.
+    let letters: [Letter]
+    /// Blocks covering the whole list, in list order. A collation can sort
+    /// some of a letter's titles apart from the rest, so a position's letter
+    /// comes from these rather than from `letters`.
+    let runs: [Run]
+
+    /// The letter whose titles the list shows at `position`.
+    func letter(at position: Int) -> String? {
+        var current: String?
+        for run in runs {
+            if run.position > position { break }
+            current = run.letter
+        }
+        return current
+    }
+
+    /// The first position of `letter`, or nil when no title files under it.
+    func position(of letter: String) -> Int? {
+        letters.first { $0.letter == letter }?.position
     }
 }
 
