@@ -1004,7 +1004,7 @@ private struct MobileChapterMenuItems: View {
         let currentChapterIndex = viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
         ForEach(viewModel.chapters) { chapter in
             Button {
-                viewModel.seekTo(seconds: chapter.time)
+                viewModel.jumpToChapter(at: chapter.time)
             } label: {
                 if currentChapterIndex == chapter.index {
                     Label {
