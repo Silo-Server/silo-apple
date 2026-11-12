@@ -2,34 +2,31 @@ import XCTest
 @testable import Silo
 
 final class PlayerEndTimeTests: XCTestCase {
-    // 2026-11-09 18:21:00 UTC
     private let now = Date(timeIntervalSince1970: 1_794_248_460)
-    private var style: Date.FormatStyle {
-        var style = Date.FormatStyle(date: .omitted, time: .shortened, locale: Locale(identifier: "en_US_POSIX"))
-        style.timeZone = TimeZone(identifier: "UTC")!
-        return style
-    }
 
     func testAddsTheTimeLeftToTheClock() {
-        XCTAssertEqual(normalized(PlayerEndTime.label(now: now, remaining: 2_400, speed: 1, style: style)), "Ends 7:01 PM")
+        XCTAssertEqual(PlayerEndTime.date(now: now, remaining: 2_400, speed: 1), now.addingTimeInterval(2_400))
     }
 
     func testCountsRealTimeAtThePlaybackSpeed() {
-        XCTAssertEqual(normalized(PlayerEndTime.label(now: now, remaining: 2_400, speed: 2, style: style)), "Ends 6:41 PM")
+        XCTAssertEqual(PlayerEndTime.date(now: now, remaining: 2_400, speed: 2), now.addingTimeInterval(1_200))
     }
 
     func testFallsBackToNormalSpeedWhenTheSpeedIsUnusable() {
-        XCTAssertEqual(normalized(PlayerEndTime.label(now: now, remaining: 2_400, speed: 0, style: style)), "Ends 7:01 PM")
+        XCTAssertEqual(PlayerEndTime.date(now: now, remaining: 2_400, speed: 0), now.addingTimeInterval(2_400))
+        XCTAssertEqual(PlayerEndTime.date(now: now, remaining: 2_400, speed: .nan), now.addingTimeInterval(2_400))
     }
 
-    func testHasNoLabelWithoutATimeLeft() {
-        XCTAssertNil(PlayerEndTime.label(now: now, remaining: 0, speed: 1, style: style))
-        XCTAssertNil(PlayerEndTime.label(now: now, remaining: .nan, speed: 1, style: style))
-        XCTAssertNil(PlayerEndTime.label(now: now, remaining: .infinity, speed: 1, style: style))
+    func testHasNoEndTimeWithoutATimeLeft() {
+        XCTAssertNil(PlayerEndTime.date(now: now, remaining: 0, speed: 1))
+        XCTAssertNil(PlayerEndTime.date(now: now, remaining: .nan, speed: 1))
+        XCTAssertNil(PlayerEndTime.date(now: now, remaining: .infinity, speed: 1))
     }
 
-    /// Foundation may separate the day period with a narrow no-break space.
-    private func normalized(_ label: String?) -> String? {
-        label?.replacingOccurrences(of: "\u{202F}", with: " ")
+    func testLeavesTheTimeAloneWithoutAnEndTime() {
+        XCTAssertEqual(
+            PlayerEndTime.appending(to: "−0:00", now: now, remaining: 0, speed: 1, locale: Locale(identifier: "en_US")),
+            "−0:00"
+        )
     }
 }

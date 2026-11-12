@@ -802,7 +802,8 @@ private struct MobilePlayerTimeline: View {
             to: time,
             now: now,
             remaining: remaining,
-            speed: viewModel.nominalPlaybackSpeed
+            speed: viewModel.nominalPlaybackSpeed,
+            locale: locale
         )
     }
 

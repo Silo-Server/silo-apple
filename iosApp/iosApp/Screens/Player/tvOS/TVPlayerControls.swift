@@ -652,6 +652,7 @@ private extension PlayerViewModel {
 /// overlay.
 private struct TVPlayerTimeRow: View {
     let viewModel: PlayerViewModel
+    @Environment(\.locale) private var locale
 
     var body: some View {
         HStack {
@@ -680,7 +681,8 @@ private struct TVPlayerTimeRow: View {
             to: "−\(PlayerTimeFormatter.formatHMS(remaining))",
             now: now,
             remaining: remaining,
-            speed: viewModel.nominalPlaybackSpeed
+            speed: viewModel.nominalPlaybackSpeed,
+            locale: locale
         )
     }
 }
