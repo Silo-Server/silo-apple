@@ -2487,7 +2487,7 @@ struct MainTabView: View {
         // Load the saved downloads scope while the splash is up: its cached
         // capability decides whether Downloads is a tab, so the tab bar is
         // final at reveal. This is disk-only and idempotent; onAppActive()
-        // runs after reveal behind network work and skips the reload.
+        // runs after reveal and skips the reload.
         //
         // Then mirror Android's offline start-destination: launching with no
         // network but playable local downloads lands on Downloads instead of
