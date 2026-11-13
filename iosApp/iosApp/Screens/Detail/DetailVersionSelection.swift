@@ -34,10 +34,16 @@ enum DetailVersionSelection {
         return (edition?.versions ?? versions).max { rank($0) < rank($1) }
     }
 
-    /// The stored quality as a resolution cap, or nil when it caps nothing.
+    /// The quality as a resolution cap, or nil when it caps nothing. An id
+    /// outside the Settings list, such as a rung picked in the player
+    /// (`1080p-low`), caps by the resolution it names.
     private static func normalizedQualityPreference(_ quality: String?) -> String? {
         let id = ApplePlaybackQuality.normalizeStoredId(quality)
-        return id == ApplePlaybackQuality.autoId || id == ApplePlaybackQuality.ultraHDId ? nil : id
+        if id != ApplePlaybackQuality.autoId {
+            return id == ApplePlaybackQuality.ultraHDId ? nil : id
+        }
+        let rung = ApplePlaybackQuality.protocolV3QualityId(quality)
+        return resolutionRank(rung) > 0 ? rung : nil
     }
 
     /// Highest wins: the sharpest file within the preference, then a file of

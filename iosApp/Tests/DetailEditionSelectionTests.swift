@@ -117,6 +117,24 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertEqual(start(), shown(lastFileId: 32, quality: "1080p"))
     }
 
+    /// A quality picked in the player and carried to a reload (`1080p-low`
+    /// is a server rung, not a Settings id) still caps by its resolution.
+    func testAnInPlayerQualityOverrideStillCapsTheStart() {
+        let start = PlaybackSessionBridge.startSelection(
+            versions: versions,
+            requestedFileId: nil,
+            lastFileId: 32,
+            lastResolution: "2160p",
+            lastEditionKey: "director_cut",
+            prefersLastUsedVersion: false,
+            startsAtFirstPart: false,
+            preferredQualityOverride: "1080p-low",
+            settingsQuality: .auto
+        )
+        XCTAssertEqual(start.version.fileId, 185)
+        XCTAssertEqual(shown(lastFileId: 32, lastEditionKey: "director_cut", quality: "junk"), 32, "an unknown id is Auto")
+    }
+
     /// When no file fits the cap, Auto takes the closest one above it.
     func testAutoTakesTheClosestFileAboveTheCap() {
         XCTAssertEqual(shown(edition: "director_cut", quality: "720p"), 185)
