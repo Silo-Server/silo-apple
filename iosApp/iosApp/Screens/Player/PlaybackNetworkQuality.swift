@@ -113,13 +113,15 @@ final class PlaybackNetworkMonitor: @unchecked Sendable {
 final class PlaybackConnection {
     static let shared = PlaybackConnection()
 
-    private(set) var isMetered = PlaybackNetworkMonitor.shared.isMetered
+    private(set) var isMetered = false
     @ObservationIgnored private var observation: PlaybackNetworkMonitor.ObserverToken?
 
     private init() {
+        // Subscribe before the first read, so a change between them isn't lost.
         observation = PlaybackNetworkMonitor.shared.observe {
             DispatchQueue.main.async { PlaybackConnection.shared.refresh() }
         }
+        isMetered = PlaybackNetworkMonitor.shared.isMetered
     }
 
     private func refresh() {
