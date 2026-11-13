@@ -44,14 +44,14 @@ final class HomeSectionsMutationTests: XCTestCase {
 
     // MARK: - Explore all
 
-    func testOnlyAPlaybackRowKnownToShowItsWholeListDropsExploreAll() throws {
+    func testOnlyAContinueWatchingRowKnownToShowItsWholeListDropsExploreAll() throws {
         func row(_ type: String, shown: Int, itemLimit: Int? = 20, totalCount: Int?) throws -> ResolvedSection {
             let items = try (0..<shown).map { try makeItem(contentId: "item-\($0)") }
             return makeSection(id: type, type: type, itemLimit: itemLimit, totalCount: totalCount, items: items)
         }
 
         XCTAssertTrue(try row("continue_watching", shown: 1, totalCount: 1).showsWholeSection)
-        XCTAssertTrue(try row("next_up", shown: 3, itemLimit: nil, totalCount: 3).showsWholeSection)
+        XCTAssertTrue(try row("in_progress", shown: 3, itemLimit: nil, totalCount: 3).showsWholeSection)
 
         // The list holds more than the row shows.
         XCTAssertFalse(try row("continue_watching", shown: 3, totalCount: 5).showsWholeSection)
@@ -62,6 +62,8 @@ final class HomeSectionsMutationTests: XCTestCase {
         XCTAssertFalse(try row("continue_watching", shown: 1, totalCount: nil).showsWholeSection)
         // Home counts other rows after dropping titles shown elsewhere.
         XCTAssertFalse(try row("recommended_for_you", shown: 1, totalCount: 1).showsWholeSection)
+        // Next Up is cut at its limit before dismissed series are dropped.
+        XCTAssertFalse(try row("next_up", shown: 19, totalCount: 19).showsWholeSection)
     }
 
     func testRemovingACardFromAFullRowKeepsExploreAll() throws {
