@@ -27,6 +27,11 @@ struct TVItemDetailView: View {
     /// the selector must stop feeding it to the "Auto: …" preview.
     @State private var didClearSubtitleOverride = false
     @State private var didClearNextUpSubtitleOverride = false
+    /// Counts Subtitles picks on the next-up episode, so a refresh that
+    /// lands after one keeps it.
+    @State private var nextUpSubtitlePickCount = 0
+    /// The file the next-up episode's subtitle index was picked on.
+    @State private var nextUpSubtitlePickFileId: Int?
     @State private var nextUpPlaybackDetail: ItemDetail?
     /// The next-up episode's catalog item. The hero reads its ratings when
     /// the playback details for that episode could not be loaded.
@@ -435,6 +440,8 @@ struct TVItemDetailView: View {
                     )
                 },
                 onSelectNextUpSubtitleTrack: { index in
+                    nextUpSubtitlePickCount &+= 1
+                    nextUpSubtitlePickFileId = effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId)?.fileId
                     didClearNextUpSubtitleOverride = (index == nil)
                     viewModel.preferredNextUpSubtitleTrackWasManuallySelected = true
                     preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
@@ -711,8 +718,15 @@ struct TVItemDetailView: View {
         carryNextUpSubtitle(from: previous)
     }
 
-    /// `carrySubtitle` for the selected episode.
+    /// `carrySubtitle` for the selected episode. A moved track no longer
+    /// belongs to the file it was picked on, so a refresh reseeds it.
     private func carryNextUpSubtitle(from previous: FileVersion?) {
+        nextUpSubtitlePickFileId = DetailPlaybackFormatting.subtitlePickFileAfterVersionPick(
+            nextUpSubtitlePickFileId,
+            index: preferredNextUpSubtitleTrackIndex,
+            movingFrom: previous,
+            to: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId)
+        )
         preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
             for: nextUpPlaybackDetail,
             versionFileId: preferredNextUpFileId,
@@ -993,6 +1007,7 @@ struct TVItemDetailView: View {
                 usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
         }
+        let subtitlePickCountAtLoad = nextUpSubtitlePickCount
 
         do {
             // Paint the episode and any cached selectors immediately. Wait
@@ -1022,14 +1037,32 @@ struct TVItemDetailView: View {
             }
             nextUpPlaybackDetail = resolved
             if let resolved {
-                viewModel.preferredNextUpSubtitleTrackWasManuallySelected = false
-                preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
-                    version: effectiveVersion(for: resolved, versionFileId: nil),
-                    signature: resolved.effectiveSubtitleTrackSignature,
-                    mode: resolved.effectiveSubtitleMode,
-                    showForced: resolved.showsForcedSubtitles,
-                    usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
-                )
+                // Keep a Subtitles pick made while this ran when the page
+                // still shows the file it was picked on and that file still
+                // offers it. Otherwise re-derive the preference on the file
+                // the page shows.
+                let keepsPick = nextUpSubtitlePickCount != subtitlePickCountAtLoad
+                    && DetailPlaybackFormatting.keepsManualSubtitlePick(
+                        preferredNextUpSubtitleTrackIndex,
+                        pickedFileId: nextUpSubtitlePickFileId,
+                        reloadedFileId: effectiveVersion(for: resolved, versionFileId: preferredNextUpFileId)?.fileId
+                    ) { index in
+                        sanitizedSubtitleTrackIndex(
+                            for: resolved,
+                            versionFileId: preferredNextUpFileId,
+                            candidate: index
+                        ) != nil
+                    }
+                if !keepsPick {
+                    viewModel.preferredNextUpSubtitleTrackWasManuallySelected = false
+                    preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                        version: effectiveVersion(for: resolved, versionFileId: preferredNextUpFileId),
+                        signature: resolved.effectiveSubtitleTrackSignature,
+                        mode: resolved.effectiveSubtitleMode,
+                        showForced: resolved.showsForcedSubtitles,
+                        usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+                    )
+                }
             }
         } catch {
             guard !Task.isCancelled else { return }
