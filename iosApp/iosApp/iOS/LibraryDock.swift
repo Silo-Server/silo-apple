@@ -184,8 +184,9 @@ struct LibraryDock: View {
     let model: LibraryDockModel
     var style: LibraryDockStyle = .floating
 
-    /// Unselected labels and the library glyph.
-    static let unselectedColor = Color.siloOnSurface.opacity(0.85)
+    /// Unselected labels and the library glyph: as bright as the tab bar's
+    /// own items, so they read as clearly over light artwork.
+    static let unselectedColor = Color.primary
 
     @Namespace private var selection
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -221,6 +222,7 @@ struct LibraryDock: View {
     }
 
     private static let maxWidth: CGFloat = 480
+    private static let slotBacking = Color.black.opacity(0.25)
     private static let floatingHeight: CGFloat = 52
     /// Shared by the selected segment's fill and the fill that follows a
     /// drag, so the one hands over to the other smoothly.
@@ -303,6 +305,9 @@ struct LibraryDock: View {
         .padding(.leading, style.leadingInset ?? edgeInset)
         .padding(.trailing, edgeInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The accessory's glass is clearer than the tab bar's below it;
+        // this darkens it to match, filling the slot's capsule.
+        .background { Capsule().fill(Self.slotBacking) }
         .onGeometryChange(for: CGSize.self) { proxy in
             proxy.size
         } action: { size in
