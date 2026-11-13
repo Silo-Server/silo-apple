@@ -368,7 +368,8 @@ struct TVItemDetailView: View {
                     // after the watch-state read.
                     let playbackFileId = nextUpPlaybackFileId(
                         resolvedFileId: fileId,
-                        contentId: id
+                        contentId: id,
+                        startFromBeginning: startFromBeginning
                     )
                     let audioTrackIndex = preferredNextUpAudioTrackIndex
                     let subtitleTrackIndex = preferredNextUpSubtitleTrackIndex
@@ -506,7 +507,7 @@ struct TVItemDetailView: View {
                 onPlay: { startFromBeginning in
                     // Version and track picks are read at the press, not
                     // after the watch-state read.
-                    let fileId = playbackFileId(for: detail)
+                    let fileId = playbackFileId(for: detail, startFromBeginning: startFromBeginning)
                     let pinsVersion = preferredVersionFileId != nil
                     let audioTrackIndex = preferredAudioTrackIndex
                     let subtitleTrackIndex = preferredSubtitleTrackIndex
@@ -599,8 +600,13 @@ struct TVItemDetailView: View {
     /// The file the page shows, so Play starts it. Only a Version pick pins
     /// it (`pinsVersion`); otherwise the server may fall back to another
     /// file of the same edition.
-    private func playbackFileId(for detail: ItemDetail) -> Int? {
-        effectiveVersion(for: detail, versionFileId: preferredVersionFileId)?.fileId
+    private func playbackFileId(for detail: ItemDetail, startFromBeginning: Bool) -> Int? {
+        DetailVersionSelection.startFile(
+            effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
+            startFromBeginning: startFromBeginning,
+            pinned: preferredVersionFileId != nil,
+            in: detail.versions ?? []
+        )?.fileId
     }
 
     private func selectVersion(_ fileId: Int?, in detail: ItemDetail) {
@@ -643,17 +649,20 @@ struct TVItemDetailView: View {
     /// immediate quick Play safely falls back to server/device defaults.
     private func nextUpPlaybackFileId(
         resolvedFileId: Int?,
-        contentId: String
+        contentId: String,
+        startFromBeginning: Bool
     ) -> Int? {
-        if nextUpPlaybackDetail?.contentId != contentId {
+        guard let nextUpPlaybackDetail, nextUpPlaybackDetail.contentId == contentId else {
             return nil
         }
         if let resolvedFileId {
             return resolvedFileId
         }
-        return effectiveVersion(
-            for: nextUpPlaybackDetail,
-            versionFileId: preferredNextUpFileId
+        return DetailVersionSelection.startFile(
+            effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
+            startFromBeginning: startFromBeginning,
+            pinned: preferredNextUpFileId != nil,
+            in: nextUpPlaybackDetail.versions ?? []
         )?.fileId
     }
 

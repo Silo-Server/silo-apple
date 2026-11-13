@@ -891,11 +891,11 @@ actor PlaybackSessionBridge {
             versions: watchDetail.versions,
             requestedFileId: preferredFileId,
             lastFileId: watchDetail.userData?.lastFileId,
-            lastResolution: watchDetail.userData?.lastResolution,
             lastEditionKey: watchDetail.userData?.lastEditionKey,
             prefersLastUsedVersion: prefersLastUsedVersion,
             pinsRequestedVersion: pinsVersion,
-            startsAtFirstPart: startsAtFirstPart,
+            // Start Over on a later part restarts its presentation.
+            startsAtFirstPart: startsAtFirstPart || startFromBeginning,
             preferredQualityOverride: preferredQualityOverride,
             settingsQuality: PlayerSettings.shared.playbackQualityAxes(onMeteredNetwork: onMeteredNetwork)
         )
@@ -2437,8 +2437,8 @@ actor PlaybackSessionBridge {
     }
 
     /// Picks the start version: the requested file, else on a resume the
-    /// last-played one, else the best ranked match, where a resume ranks by
-    /// the resolution it last played.
+    /// last-played one, else the detail page's Auto for the start quality
+    /// (which for a resume whose file is gone stays in the last-played cut).
     ///
     /// The quality never comes from the version. `file_id` already pins the
     /// file and `allow_alternate_versions` governs fallback, so sending the
@@ -2449,7 +2449,6 @@ actor PlaybackSessionBridge {
         versions: [FileVersion],
         requestedFileId: Int?,
         lastFileId: Int?,
-        lastResolution: String?,
         lastEditionKey: String? = nil,
         prefersLastUsedVersion: Bool,
         pinsRequestedVersion: Bool = false,
@@ -2472,12 +2471,6 @@ actor PlaybackSessionBridge {
             version = lastUsed
             source = .lastUsed
         } else {
-            var rankingQuality = quality.preferredQuality
-            if prefersLastUsedVersion,
-               preferredQualityOverride == nil,
-               let lastPlayed = normalizedQualityPreference(lastResolution) {
-                rankingQuality = lastPlayed
-            }
             // A start without a detail page (a home card, a deep link) picks
             // the way the page does: the last-played cut, then the best file
             // of it for the quality, so it never switches cuts.
@@ -2485,13 +2478,13 @@ actor PlaybackSessionBridge {
                 versions: versions,
                 selectedFileId: nil,
                 lastFileId: lastFileId,
-                preferredQualityId: rankingQuality,
+                preferredQualityId: quality.preferredQuality,
                 lastEditionKey: lastEditionKey
             ) ?? versions[0]
             source = .ranked
         }
-        // A multi-part item that must play through starts at its first part,
-        // whichever part the quality ranking happened to prefer.
+        // A shuffle or a start from the beginning plays a multi-part item
+        // from its first part, though Auto resumes a later part last played.
         if startsAtFirstPart,
            requestedFileId == nil,
            let firstPart = PlayerMultipartPolicy.firstPart(for: version, in: versions) {

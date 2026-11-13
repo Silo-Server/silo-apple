@@ -6,18 +6,20 @@ import Foundation
 /// changes the cut.
 final class DetailEditionSelectionTests: XCTestCase {
 
-    /// Theatrical in 1080p, and a Director's Cut in 2160p and 1080p.
-    private let versions: [FileVersion] = {
+    private func decode(_ json: String) -> [FileVersion] {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try! decoder.decode([FileVersion].self, from: Data("""
-        [
-          { "file_id": 18, "edition_raw": "Theatrical", "edition_key": "theatrical", "resolution": "1080p" },
-          { "file_id": 32, "edition_raw": "Directors Cut", "edition_key": "director_cut", "resolution": "2160p" },
-          { "file_id": 185, "edition_raw": "Directors Cut", "edition_key": "director_cut", "resolution": "1080p" }
-        ]
-        """.utf8))
-    }()
+        return try! decoder.decode([FileVersion].self, from: Data(json.utf8))
+    }
+
+    /// Theatrical in 1080p, and a Director's Cut in 2160p and 1080p.
+    private lazy var versions: [FileVersion] = decode("""
+    [
+      { "file_id": 18, "edition_raw": "Theatrical", "edition_key": "theatrical", "resolution": "1080p" },
+      { "file_id": 32, "edition_raw": "Directors Cut", "edition_key": "director_cut", "resolution": "2160p" },
+      { "file_id": 185, "edition_raw": "Directors Cut", "edition_key": "director_cut", "resolution": "1080p" }
+    ]
+    """)
 
     private func shown(
         pinned: Int? = nil,
@@ -53,11 +55,33 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertEqual(shown(lastFileId: 18, lastEditionKey: " Director_Cut ", quality: "auto"), 32)
     }
 
-    /// With nothing played, the page opens on the edition holding the best
-    /// file for the preference.
-    func testWithNothingPlayedThePageOpensOnTheBestFilesEdition() {
+    /// With nothing played, each cut's Auto file competes: a file that fits
+    /// beats one above the cap beats an unknown one, then the higher rank,
+    /// then HDR, then the standard cut before a theatrical one before the
+    /// rest. File size never decides between cuts.
+    func testWithNothingPlayedThePageComparesEachCutsAutoFile() {
         XCTAssertEqual(shown(quality: "auto"), 32)
-        XCTAssertEqual(shown(quality: "1080p"), 18)
+        XCTAssertEqual(shown(quality: "1080p"), 18, "a 1080p tie goes to Theatrical over the Director's Cut")
+
+        let cuts = decode("""
+        [
+          { "file_id": 1, "edition_key": "theatrical", "edition_raw": "Theatrical", "resolution": "1080p", "file_size": 90 },
+          { "file_id": 2, "resolution": "1080p", "file_size": 10 },
+          { "file_id": 3, "edition_key": "extended", "edition_raw": "Extended", "resolution": "1080p", "hdr": true },
+          { "file_id": 4, "edition_key": "imax", "edition_raw": "IMAX", "resolution": "" }
+        ]
+        """)
+        func opening(_ ids: [Int], quality: String = "auto") -> Int? {
+            DetailVersionSelection.displayVersion(
+                versions: cuts.filter { ids.contains($0.fileId) },
+                selectedFileId: nil,
+                lastFileId: nil,
+                preferredQualityId: quality
+            )?.fileId
+        }
+        XCTAssertEqual(opening([1, 2]), 2, "the unnamed cut over Theatrical, though its file is smaller")
+        XCTAssertEqual(opening([1, 2, 3]), 3, "HDR before edition preference")
+        XCTAssertEqual(opening([3, 4], quality: "720p"), 3, "above the cap before unknown")
     }
 
     /// Picking an edition keeps Auto: its best file, even when another
@@ -75,34 +99,86 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertTrue(DetailPlaybackFormatting.shouldEnableVersionSelector(versions: versions, currentVersion: byId[185]))
     }
 
-    /// Two files of the same resolution: Auto keeps the one last played.
-    func testATieKeepsTheLastPlayedFile() {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let twins = try! decoder.decode([FileVersion].self, from: Data("""
+    /// Within a cut Auto follows the server's order: rank (8K included),
+    /// then HDR, then the larger file. The last-played file breaks no tie.
+    func testAutoFollowsTheServersFileOrder() {
+        let files = decode("""
         [
-          { "file_id": 40, "edition_key": "director_cut", "edition_raw": "Directors Cut", "resolution": "2160p" },
-          { "file_id": 41, "edition_key": "director_cut", "edition_raw": "Directors Cut", "resolution": "2160p" }
+          { "file_id": 40, "resolution": "2160p", "hdr": false, "file_size": 90 },
+          { "file_id": 41, "resolution": "2160p", "hdr": true, "file_size": 40 },
+          { "file_id": 42, "resolution": "2160p", "hdr": true, "file_size": 60 },
+          { "file_id": 43, "resolution": "4320p" }
         ]
-        """.utf8))
-        for last in [40, 41] {
-            XCTAssertEqual(DetailVersionSelection.displayVersion(
-                versions: twins, selectedFileId: nil, lastFileId: last, preferredQualityId: "auto"
-            )?.fileId, last)
+        """)
+        func auto(_ ids: [Int], lastFileId: Int? = nil) -> Int? {
+            DetailVersionSelection.displayVersion(
+                versions: files.filter { ids.contains($0.fileId) },
+                selectedFileId: nil,
+                lastFileId: lastFileId,
+                preferredQualityId: "auto"
+            )?.fileId
         }
+        XCTAssertEqual(auto([40, 41, 42, 43]), 43)
+        XCTAssertEqual(auto([40, 41]), 41, "HDR before SDR")
+        XCTAssertEqual(auto([41, 42], lastFileId: 41), 42, "the larger file")
+    }
+
+    /// A file of unknown resolution never fits a cap: one above the cap
+    /// plays first, and the unknown one only when nothing else is known.
+    func testUnknownResolutionIsALastResort() {
+        let files = decode("""
+        [
+          { "file_id": 50, "resolution": "" },
+          { "file_id": 51, "resolution": "2160p" }
+        ]
+        """)
+        XCTAssertEqual(DetailVersionSelection.displayVersion(
+            versions: files, selectedFileId: nil, lastFileId: nil, preferredQualityId: "1080p"
+        )?.fileId, 51)
+        XCTAssertEqual(DetailVersionSelection.displayVersion(
+            versions: [files[0]], selectedFileId: nil, lastFileId: nil, preferredQualityId: "1080p"
+        )?.fileId, 50)
+    }
+
+    /// Auto ranks first parts only, merging a cut's single file with its
+    /// multi-part set. A later part last played stays on the page so Resume
+    /// continues it, and Start Over starts that presentation's first part.
+    func testAutoSkipsLaterPartsButResumesOne() {
+        let files = decode("""
+        [
+          { "file_id": 60, "resolution": "2160p" },
+          { "file_id": 61, "resolution": "1080p", "presentation_group_key": "g",
+            "presentation_part_index": 1, "presentation_part_total": 2 },
+          { "file_id": 62, "resolution": "4320p", "presentation_group_key": "g",
+            "presentation_part_index": 2, "presentation_part_total": 2 }
+        ]
+        """)
+        func shown(lastFileId: Int?, pinned: Int? = nil) -> FileVersion? {
+            DetailVersionSelection.displayVersion(
+                versions: files, selectedFileId: pinned, lastFileId: lastFileId, preferredQualityId: "auto"
+            )
+        }
+        XCTAssertEqual(shown(lastFileId: nil)?.fileId, 60)
+        XCTAssertEqual(shown(lastFileId: 62)?.fileId, 62)
+        XCTAssertEqual(shown(lastFileId: 62, pinned: 60)?.fileId, 60)
+        XCTAssertEqual(DetailVersionSelection.startFile(
+            shown(lastFileId: 62), startFromBeginning: true, pinned: false, in: files
+        )?.fileId, 61)
+        XCTAssertEqual(DetailVersionSelection.startFile(
+            shown(lastFileId: 62), startFromBeginning: false, pinned: false, in: files
+        )?.fileId, 62)
     }
 
     /// A start without a detail page (a home card's Play, a deep link)
     /// picks the way the page does, so it doesn't switch to the Theatrical
     /// file that also fits the 1080p cap. Continue Watching still resumes
-    /// the last-played file.
+    /// the last-played file, and when that file is gone, Auto in its cut.
     func testAStartWithoutThePageStaysInTheLastPlayedCut() {
-        func start(lastEditionKey: String? = nil, resuming: Bool = false) -> Int {
+        func start(lastFileId: Int = 32, lastEditionKey: String? = nil, resuming: Bool = false) -> Int {
             PlaybackSessionBridge.startSelection(
                 versions: versions,
                 requestedFileId: nil,
-                lastFileId: 32,
-                lastResolution: "2160p",
+                lastFileId: lastFileId,
                 lastEditionKey: lastEditionKey,
                 prefersLastUsedVersion: resuming,
                 startsAtFirstPart: false,
@@ -114,6 +190,7 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertEqual(start(lastEditionKey: "director_cut"), 185)
         XCTAssertEqual(start(lastEditionKey: "theatrical"), 18)
         XCTAssertEqual(start(resuming: true), 32)
+        XCTAssertEqual(start(lastFileId: 99, lastEditionKey: "director_cut", resuming: true), 185)
         XCTAssertEqual(start(), shown(lastFileId: 32, quality: "1080p"))
     }
 
@@ -124,7 +201,6 @@ final class DetailEditionSelectionTests: XCTestCase {
             versions: versions,
             requestedFileId: nil,
             lastFileId: 32,
-            lastResolution: "2160p",
             lastEditionKey: "director_cut",
             prefersLastUsedVersion: false,
             startsAtFirstPart: false,

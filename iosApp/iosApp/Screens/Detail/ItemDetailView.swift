@@ -884,7 +884,11 @@ private struct ItemDetailPhoneContent: View {
                     presentPlayerFromDetail(
                         contentId: id,
                         fileId: usesSelectedEpisodeControls
-                            ? nextUpPlaybackFileId(resolvedFileId: fileId, contentId: id) : nil,
+                            ? nextUpPlaybackFileId(
+                                resolvedFileId: fileId,
+                                contentId: id,
+                                startFromBeginning: startFromBeginning
+                            ) : nil,
                         // `fileId` is set only by a version picked for this episode.
                         pinsVersion: usesSelectedEpisodeControls && fileId != nil,
                         audioTrackIndex: usesSelectedEpisodeControls
@@ -981,7 +985,7 @@ private struct ItemDetailPhoneContent: View {
                 subtitleOverrideCleared: didClearSubtitleOverride,
                 onPlay: { startFromBeginning, resumePosition in
                     // Track picks only travel with a resolved file.
-                    let fileId = playbackFileId(for: detail)
+                    let fileId = playbackFileId(for: detail, startFromBeginning: startFromBeginning)
                     presentPlayerFromDetail(
                         contentId: contentId,
                         fileId: fileId,
@@ -1056,17 +1060,28 @@ private struct ItemDetailPhoneContent: View {
     /// The file the page shows, so Play starts it. Only a Version pick pins
     /// it (`pinsVersion`); otherwise the server may fall back to another
     /// file of the same edition.
-    private func playbackFileId(for detail: ItemDetail) -> Int? {
-        effectiveVersion(for: detail, versionFileId: preferredVersionFileId)?.fileId
+    private func playbackFileId(for detail: ItemDetail, startFromBeginning: Bool = false) -> Int? {
+        DetailVersionSelection.startFile(
+            effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
+            startFromBeginning: startFromBeginning,
+            pinned: preferredVersionFileId != nil,
+            in: detail.versions ?? []
+        )?.fileId
     }
 
     /// Nil while the selected episode's files are still loading, so a quick
     /// Play never sends the previous episode's file.
-    private func nextUpPlaybackFileId(resolvedFileId: Int?, contentId: String) -> Int? {
-        guard nextUpWatchDetail?.contentId == contentId else { return nil }
-        return resolvedFileId ?? effectiveVersion(
-            for: nextUpWatchDetail,
-            versionFileId: preferredNextUpFileId
+    private func nextUpPlaybackFileId(
+        resolvedFileId: Int?,
+        contentId: String,
+        startFromBeginning: Bool
+    ) -> Int? {
+        guard let nextUpWatchDetail, nextUpWatchDetail.contentId == contentId else { return nil }
+        return resolvedFileId ?? DetailVersionSelection.startFile(
+            effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId),
+            startFromBeginning: startFromBeginning,
+            pinned: preferredNextUpFileId != nil,
+            in: nextUpWatchDetail.versions
         )?.fileId
     }
 
