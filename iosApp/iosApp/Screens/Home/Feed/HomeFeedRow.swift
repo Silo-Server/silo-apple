@@ -5,7 +5,8 @@ import SwiftUI
 /// layouts stay structural rather than incidental.
 struct HomeFeedRow: View {
     let section: ResolvedSection
-    /// Opens the row's full page from its title and a trailing Explore all card.
+    /// Opens the row's full page from its title and a trailing Explore all
+    /// card, unless the row already shows all of it.
     var onExploreAll: (() -> Void)? = nil
     /// Long-press actions, forwarded to every card in the row.
     var onRemoveFromContinueWatching: ((SectionItem) -> Void)? = nil
@@ -14,6 +15,11 @@ struct HomeFeedRow: View {
     @Environment(AppRouter.self) private var router
     /// The app language, so a switch re-renders the title.
     @Environment(\.locale) private var locale
+
+    /// Nil when the row already shows all its page would.
+    private var exploreAll: (() -> Void)? {
+        section.showsWholeSection ? nil : onExploreAll
+    }
 
     private var isResume: Bool { HomeFeed.isResume(section) }
     private var usesStills: Bool { Self.usesStills(section) }
@@ -62,7 +68,7 @@ struct HomeFeedRow: View {
             HomeSectionHeader(
                 title: section.displayTitle(in: locale),
                 icon: isResume ? "play.circle.fill" : nil,
-                action: onExploreAll
+                action: exploreAll
             )
 
             rowScroller
@@ -117,14 +123,14 @@ struct HomeFeedRow: View {
                     .id(item.contentId)
                     .onAppear { warmCards(after: item) }
                 }
-                if let onExploreAll, !section.items.isEmpty {
+                if let exploreAll, !section.items.isEmpty {
                     SectionExploreAllCard(
                         size: usesStills
                             ? HomeStillCard.artworkSize(width: Self.stillWidth)
                             : HomePosterCard.artworkSize(width: Self.posterWidth, aspect: isAudiobookRow ? .square : .poster),
                         cornerRadius: usesStills ? HomeFeedMetrics.stillRadius : HomeFeedMetrics.posterRadius,
                         rowTitle: section.displayTitle(in: locale),
-                        action: onExploreAll
+                        action: exploreAll
                     )
                 }
             }

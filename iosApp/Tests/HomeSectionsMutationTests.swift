@@ -42,6 +42,38 @@ final class HomeSectionsMutationTests: XCTestCase {
         XCTAssertEqual(result[0].totalCount, 0)
     }
 
+    // MARK: - Explore all
+
+    func testOnlyAPlaybackRowKnownToShowItsWholeListDropsExploreAll() throws {
+        func row(_ type: String, shown: Int, itemLimit: Int? = 20, totalCount: Int?) throws -> ResolvedSection {
+            let items = try (0..<shown).map { try makeItem(contentId: "item-\($0)") }
+            return makeSection(id: type, type: type, itemLimit: itemLimit, totalCount: totalCount, items: items)
+        }
+
+        XCTAssertTrue(try row("continue_watching", shown: 1, totalCount: 1).showsWholeSection)
+        XCTAssertTrue(try row("next_up", shown: 3, itemLimit: nil, totalCount: 3).showsWholeSection)
+
+        // The list holds more than the row shows.
+        XCTAssertFalse(try row("continue_watching", shown: 3, totalCount: 5).showsWholeSection)
+        // A row filled to its limit was cut there, whatever its count says.
+        XCTAssertFalse(try row("continue_watching", shown: 20, totalCount: 20).showsWholeSection)
+        XCTAssertFalse(try row("continue_watching", shown: 1, itemLimit: 1, totalCount: 1).showsWholeSection)
+        // A filtered library row carries no count.
+        XCTAssertFalse(try row("continue_watching", shown: 1, totalCount: nil).showsWholeSection)
+        // Home counts other rows after dropping titles shown elsewhere.
+        XCTAssertFalse(try row("recommended_for_you", shown: 1, totalCount: 1).showsWholeSection)
+    }
+
+    func testRemovingACardFromAFullRowKeepsExploreAll() throws {
+        let items = try (0..<20).map { try makeItem(contentId: "item-\($0)") }
+        let section = makeSection(id: "continue", type: "continue_watching", totalCount: 20, items: items)
+
+        let result = HomeSectionsMutation.removingDismissedItem(items[0], from: [section])
+
+        XCTAssertEqual(result[0].items.count, 19)
+        XCTAssertFalse(result[0].showsWholeSection)
+    }
+
     func testUnknownContentIdLeavesSectionUnchanged() throws {
         let item = try makeItem(contentId: "other")
         let section = makeSection(id: "continue", type: "continue_watching", totalCount: 1, items: [item])
@@ -615,6 +647,7 @@ final class HomeSectionsMutationTests: XCTestCase {
     private func makeSection(
         id: String,
         type: String,
+        itemLimit: Int? = nil,
         totalCount: Int?,
         items: [SectionItem]
     ) -> ResolvedSection {
@@ -623,7 +656,7 @@ final class HomeSectionsMutationTests: XCTestCase {
             sectionType: type,
             title: id,
             featured: false,
-            itemLimit: nil,
+            itemLimit: itemLimit,
             totalCount: totalCount,
             isCustom: false,
             customized: false,

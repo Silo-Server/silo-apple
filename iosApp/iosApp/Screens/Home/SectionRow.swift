@@ -11,6 +11,21 @@ extension ResolvedSection {
     var offersHomeDismissal: Bool {
         isContinueWatchingSection || sectionType.lowercased() == "next_up"
     }
+
+    /// Whether the row already shows every card its full page would, so it
+    /// gets no Explore all card and no title link.
+    ///
+    /// Only Continue Watching and Next Up can tell. Their `total_count` is the
+    /// list's own size, and the server sends a row shorter than its limit only
+    /// when the list has nothing more. Other rows keep the card even when
+    /// short: Home drops titles another row already shows and counts what is
+    /// left, so their page can hold more than the row and its count.
+    var showsWholeSection: Bool {
+        guard offersHomeDismissal, let totalCount else { return false }
+        let sentLimit = itemLimit.flatMap { $0 > 0 ? $0 : nil } ?? SectionRowLimit.cards
+        let limit = min(SectionRowLimit.cards, sentLimit)
+        return items.count < limit && totalCount <= items.count
+    }
 }
 
 /// A single section row on the home screen.
@@ -157,7 +172,7 @@ struct SectionRow: View {
             items: section.items,
             onItemTap: selectItem,
             onItemPlay: allowsDirectPlayback ? playItem : nil,
-            onExploreAll: onExploreAll,
+            onExploreAll: section.showsWholeSection ? nil : onExploreAll,
             showProgress: showProgress,
             icon: isContinueWatching ? "play.circle.fill" : nil,
             layout: layout,
