@@ -407,7 +407,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
             lastFileInProgress: detail.userData?.hasResumePoint ?? false,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: selectedEditionId,
-            lastEditionKey: detail.userData?.lastEditionKey
+            lastEditionKey: detail.userData?.lastEditionKey,
+            variants: detail.playbackVariants
         )
     }
 

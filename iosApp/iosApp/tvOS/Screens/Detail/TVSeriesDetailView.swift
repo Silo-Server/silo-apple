@@ -1110,7 +1110,8 @@ struct TVSeriesDetailView: View {
             lastFileInProgress: matchingPlaybackDetail?.userData?.hasResumePoint ?? false,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: selectedNextUpEditionId,
-            lastEditionKey: matchingPlaybackDetail?.userData?.lastEditionKey
+            lastEditionKey: matchingPlaybackDetail?.userData?.lastEditionKey,
+            variants: matchingPlaybackDetail?.playbackVariants
         )
     }
 

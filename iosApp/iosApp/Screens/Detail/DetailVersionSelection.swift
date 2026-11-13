@@ -8,7 +8,8 @@ enum DetailVersionSelection {
     /// The pinned file when the viewer picked one in Version. Otherwise Auto
     /// within the current edition: the one picked on the page (`editionId`),
     /// else the one last played (`lastEditionKey`, else the edition of
-    /// `lastFileId`), else the edition whose Auto file compares best.
+    /// `lastFileId`), else the edition whose Auto file compares best, with
+    /// the server's edition order (`variants`, else `versions`) last.
     ///
     /// While the item has a resume point (`lastFileInProgress`, from
     /// `LeafItemUserData.hasResumePoint`) and `lastFileId` is a later part of
@@ -21,7 +22,8 @@ enum DetailVersionSelection {
         lastFileInProgress: Bool,
         preferredQualityId: String? = nil,
         editionId: String? = nil,
-        lastEditionKey: String? = nil
+        lastEditionKey: String? = nil,
+        variants: [PlaybackVariant]? = nil
     ) -> FileVersion? {
         if let selectedFileId,
            let selected = versions.first(where: { $0.fileId == selectedFileId }) {
@@ -31,10 +33,10 @@ enum DetailVersionSelection {
         let cap = qualityCap(preferredQualityId)
         let editions = PlaybackEditions.editions(from: versions)
         let current = PlaybackEditions.edition(forKey: editionId, in: versions)
-            ?? lastPlayedEdition(lastEditionKey, in: editions)
+            ?? PlaybackEditions.edition(forKey: lastEditionKey, in: versions)
             ?? PlaybackEditions.edition(forFileId: lastFileId, in: versions)
         guard let current else {
-            return openingFile(editions: editions, cap: cap)
+            return openingFile(editions: editions, cap: cap, variants: variants)
         }
         if lastFileInProgress,
            let lastFileId,
@@ -51,8 +53,9 @@ enum DetailVersionSelection {
         let audioTrackIndex: Int?
         let subtitleTrackIndex: Int?
         /// The position to start from. 0, not nil, when the position was
-        /// saved on another edition: nil lets the player fall back to the
-        /// server's stored position, which belongs to that cut too.
+        /// saved on another edition or another part: nil lets the player
+        /// fall back to the server's stored position, which belongs there
+        /// too.
         let resumePosition: Double?
 
         /// No file to send, as before the page's files load.
@@ -67,7 +70,9 @@ enum DetailVersionSelection {
     /// watch state its resume position came from (`startsWith`), so a
     /// multipart position is applied to its own part. A last file in another
     /// edition holds no part here, and its position doesn't apply, so Play
-    /// starts that cut's Auto at 0. Start Over moves a later part to part 1.
+    /// starts that cut's Auto at 0; so does a position on another part, as
+    /// when Resume would not offer it and Auto falls back to part 1. Start
+    /// Over moves a later part to part 1.
     /// When the start file is not the one shown, the track picks are dropped
     /// (Off stays) and the file's tracks resolve as on any fresh start.
     static func pageStart(
@@ -80,7 +85,8 @@ enum DetailVersionSelection {
         preferredQualityId: String?,
         startFromBeginning: Bool,
         audioTrackIndex: Int?,
-        subtitleTrackIndex: Int?
+        subtitleTrackIndex: Int?,
+        variants: [PlaybackVariant]? = nil
     ) -> PageStart {
         func auto(_ userData: LeafItemUserData?, in editionId: String?) -> FileVersion? {
             displayVersion(
@@ -90,7 +96,8 @@ enum DetailVersionSelection {
                 lastFileInProgress: userData?.hasResumePoint ?? false,
                 preferredQualityId: preferredQualityId,
                 editionId: editionId,
-                lastEditionKey: userData?.lastEditionKey
+                lastEditionKey: userData?.lastEditionKey,
+                variants: variants
             )
         }
         let shown = auto(snapshot, in: editionId)
@@ -103,9 +110,11 @@ enum DetailVersionSelection {
         ) else {
             return .unresolved(resumePosition: resumePosition)
         }
-        let playedEdition = PlaybackEditions.edition(forFileId: watchState?.lastFileId, in: versions)?.id
-            ?? lastPlayedEdition(watchState?.lastEditionKey, in: PlaybackEditions.editions(from: versions))?.id
-        let position = !startFromBeginning && playedEdition != nil && playedEdition != shownEdition
+        let lastFile = versions.first { $0.fileId == watchState?.lastFileId }
+        let playedEdition = PlaybackEditions.edition(forFileId: lastFile?.fileId, in: versions)?.id
+            ?? PlaybackEditions.edition(forKey: watchState?.lastEditionKey, in: versions)?.id
+        let otherEdition = playedEdition != nil && playedEdition != shownEdition
+        let position = !startFromBeginning && (otherEdition || !positionCarries(from: lastFile, to: start))
             ? 0
             : resumePosition
         guard start.fileId != shown?.fileId else {
@@ -122,6 +131,14 @@ enum DetailVersionSelection {
             subtitleTrackIndex: DetailPlaybackFormatting.subtitleIndexAfterFileChange(subtitleTrackIndex) { nil },
             resumePosition: position
         )
+    }
+
+    /// Whether a position saved on `last` means anything on `start`. A
+    /// multipart part's position belongs to that part alone; versions of
+    /// one single-file cut share a timeline.
+    static func positionCarries(from last: FileVersion?, to start: FileVersion) -> Bool {
+        guard let last, last.fileId != start.fileId else { return true }
+        return (last.presentationPartIndex ?? 1) <= 1 && (start.presentationPartIndex ?? 1) <= 1
     }
 
     /// The file Play starts: `resolved`, except that Start Over on a later
@@ -156,9 +173,19 @@ enum DetailVersionSelection {
     /// beats above it beats unknown; then the higher rank (the lower one
     /// above the cap); then HDR; then the standard cut, then a theatrical
     /// one; then server order. File size is not compared across cuts.
-    private static func openingFile(editions: [PlaybackEditions.Edition], cap: Int?) -> FileVersion? {
-        let picks = editions.enumerated().compactMap { order, edition in
-            autoFile(in: edition.versions, cap: cap).map { (file: $0, edition: edition, order: order) }
+    private static func openingFile(
+        editions: [PlaybackEditions.Edition],
+        cap: Int?,
+        variants: [PlaybackVariant]?
+    ) -> FileVersion? {
+        // Edition ids are trimmed, lowercased keys.
+        let variantOrder = (variants ?? []).map {
+            ($0.editionKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        }
+        let picks = editions.enumerated().compactMap { index, edition in
+            // `playback_variants` order, else first appearance in `versions`.
+            let order = variantOrder.firstIndex(of: edition.id) ?? variantOrder.count + index
+            return autoFile(in: edition.versions, cap: cap).map { (file: $0, edition: edition, order: order) }
         }
         func key(_ pick: (file: FileVersion, edition: PlaybackEditions.Edition, order: Int)) -> [Int] {
             let rank = resolutionRank(pick.file.resolution)
@@ -193,19 +220,6 @@ enum DetailVersionSelection {
             return 0
         }
         return values.contains { $0.contains("theatrical") } ? 1 : 2
-    }
-
-    /// The edition `last_edition_key` names. A present empty key names the
-    /// unnamed edition.
-    private static func lastPlayedEdition(
-        _ key: String?,
-        in editions: [PlaybackEditions.Edition]
-    ) -> PlaybackEditions.Edition? {
-        guard let key = key?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return nil }
-        guard key.isEmpty else { return editions.first { $0.id == key } }
-        return editions.first { edition in
-            (edition.versions.first?.editionKey ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
     }
 
     /// The server's file order (`sortFileVersions`): rank, then HDR, then

@@ -1079,7 +1079,8 @@ private struct ItemDetailPhoneContent: View {
             preferredQualityId: detailQuality(onMeteredNetwork: nil),
             startFromBeginning: startFromBeginning,
             audioTrackIndex: preferredAudioTrackIndex,
-            subtitleTrackIndex: preferredSubtitleTrackIndex
+            subtitleTrackIndex: preferredSubtitleTrackIndex,
+            variants: detail.playbackVariants
         )
     }
 
@@ -1233,7 +1234,8 @@ private struct ItemDetailPhoneContent: View {
             lastFileInProgress: detail.userData?.hasResumePoint ?? false,
             preferredQualityId: detailQuality(onMeteredNetwork: onMeteredNetwork),
             editionId: preferredEditionId,
-            lastEditionKey: detail.userData?.lastEditionKey
+            lastEditionKey: detail.userData?.lastEditionKey,
+            variants: detail.playbackVariants
         )
     }
 

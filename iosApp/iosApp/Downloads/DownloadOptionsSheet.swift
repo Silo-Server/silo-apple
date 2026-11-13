@@ -18,7 +18,8 @@ struct DownloadRequestOptions {
         lastFileInProgress: Bool,
         preferredQualityId: String?,
         editionId: String? = nil,
-        lastEditionKey: String? = nil
+        lastEditionKey: String? = nil,
+        variants: [PlaybackVariant]? = nil
     ) -> Int? {
         DetailVersionSelection.displayVersion(
             versions: versions,
@@ -27,7 +28,8 @@ struct DownloadRequestOptions {
             lastFileInProgress: lastFileInProgress,
             preferredQualityId: preferredQualityId,
             editionId: editionId,
-            lastEditionKey: lastEditionKey
+            lastEditionKey: lastEditionKey,
+            variants: variants
         )?.fileId
     }
 }
@@ -38,6 +40,7 @@ struct DownloadOptionsSheet: View {
     let lastVersionFileId: Int?
     let lastFileInProgress: Bool
     let lastEditionKey: String?
+    let variants: [PlaybackVariant]?
     let onStart: (DownloadRequestOptions) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -60,6 +63,7 @@ struct DownloadOptionsSheet: View {
         lastVersionFileId: Int?,
         lastFileInProgress: Bool,
         lastEditionKey: String?,
+        variants: [PlaybackVariant]?,
         onStart: @escaping (DownloadRequestOptions) -> Void
     ) {
         self.title = title
@@ -67,6 +71,7 @@ struct DownloadOptionsSheet: View {
         self.lastVersionFileId = lastVersionFileId
         self.lastFileInProgress = lastFileInProgress
         self.lastEditionKey = lastEditionKey
+        self.variants = variants
         self.onStart = onStart
 
         _fileId = State(initialValue: selectedVersionFileId)
@@ -79,7 +84,8 @@ struct DownloadOptionsSheet: View {
             lastFileInProgress: lastFileInProgress,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: selectedEditionId,
-            lastEditionKey: lastEditionKey
+            lastEditionKey: lastEditionKey,
+            variants: variants
         )
         _editionId = State(
             initialValue: selectedEditionId ?? PlaybackEditions.edition(forFileId: opening?.fileId, in: versions)?.id
@@ -108,7 +114,8 @@ struct DownloadOptionsSheet: View {
             lastFileInProgress: lastFileInProgress,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: editionId,
-            lastEditionKey: lastEditionKey
+            lastEditionKey: lastEditionKey,
+            variants: variants
         )
     }
 
