@@ -253,7 +253,7 @@ final class BrowseGridController: UIViewController, UICollectionViewDelegate, UI
         let layout = UICollectionViewCompositionalLayout { [weak self] index, layoutEnvironment in
             self?.layoutSection(at: index, width: layoutEnvironment.container.effectiveContentSize.width)
         }
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        collectionView = BrowseGridCollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
         collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.alwaysBounceVertical = true
@@ -633,6 +633,16 @@ final class BrowseGridController: UIViewController, UICollectionViewDelegate, UI
             grid.onLoadMore()
         }
     }
+}
+
+/// The grid scrolls under the page's bars and insets its content by them
+/// itself (`contentInset`), so it gives its cells no safe area. A
+/// `UIHostingConfiguration` lays its SwiftUI content out inside the cell's
+/// safe area; a cell under the tab bar would otherwise draw its card
+/// tens of points above its row, over the row before, and the card would
+/// move as a pull to refresh slid the cell in and out from under the bar.
+private final class BrowseGridCollectionView: UICollectionView {
+    override var safeAreaInsets: UIEdgeInsets { .zero }
 }
 
 private final class BrowseCardCell: UICollectionViewCell {
