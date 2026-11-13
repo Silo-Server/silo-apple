@@ -498,6 +498,10 @@ private struct PhonePlaybackSelectorSheet: View {
     /// Height of the Mac drop-down's rows; nil until first measured.
     @State private var macRowsHeight: CGFloat?
     #endif
+    #if os(iOS)
+    /// Height the titled list needs to show every row; nil until first measured.
+    @State private var titledListHeight: CGFloat?
+    #endif
 
     private var editions: [PlaybackEditions.Edition] {
         PlaybackEditions.editions(from: versions)
@@ -594,6 +598,18 @@ private struct PhonePlaybackSelectorSheet: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .siloSheetBackground(legacyColor: .siloBackground)
+            // Fit the sheet or popover to the rows. The top inset is the
+            // navigation bar; the bottom safe area isn't added because a
+            // sheet supplies it itself. A popover reports an empty list
+            // before it has a size, so skip that or the popover shrinks to
+            // nothing and never lays out its rows.
+            .onScrollGeometryChange(for: CGFloat?.self) { geometry in
+                geometry.contentSize.height > 0
+                    ? geometry.contentSize.height + geometry.contentInsets.top
+                    : nil
+            } action: { _, height in
+                if let height { titledListHeight = height }
+            }
             .task { await loadPreferredSubtitleLanguage() }
             .navigationTitle(Text(kind.title))
             .navigationBarTitleDisplayMode(.inline)
@@ -608,10 +624,10 @@ private struct PhonePlaybackSelectorSheet: View {
         // of forcing a phone detent into the split-view detail column.
         .frame(
             width: popover == nil ? nil : 440,
-            height: popover == nil ? nil : 480
+            height: popover == nil ? nil : titledListHeight.map { min($0, 480) } ?? 480
         )
         .presentationCompactAdaptation(.sheet)
-        .presentationDetents([.medium, .large])
+        .presentationDetents(titledListHeight.map { [.height($0)] } ?? [.medium, .large])
         .presentationDragIndicator(.visible)
     }
     #endif
