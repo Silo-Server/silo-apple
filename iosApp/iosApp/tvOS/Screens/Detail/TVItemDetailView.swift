@@ -410,7 +410,6 @@ struct TVItemDetailView: View {
                 },
                 onSelectNextUpVersion: { fileId in
                     preferredNextUpFileId = fileId
-                    nextUpSubtitlePickFileId = effectiveVersion(for: nextUpPlaybackDetail, versionFileId: fileId)?.fileId
                     preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: nextUpPlaybackDetail,
                         versionFileId: fileId,
