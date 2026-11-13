@@ -95,6 +95,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// Keep the primary control interactive from frame one and fulfill that
     /// intent as soon as the target episode is known.
     @State private var pendingEpisodePlayRequest: PendingEpisodePlayRequest?
+    /// The viewer opened the Media Info section.
+    @State private var showsMediaInfo = false
 
     var body: some View {
         PhoneDetailPageSurface(
@@ -575,7 +577,16 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             detailsSection
                 .padding(.horizontal, SiloTheme.safePadding)
             similarSection
+            PhoneMediaInfoSection(version: mediaInfoVersion, episode: nextUpEpisode, isExpanded: $showsMediaInfo)
         }
+    }
+
+    /// The selected episode's version, once its watch detail has arrived.
+    /// For a moment after the selection moves, the page still holds the
+    /// previous episode's.
+    private var mediaInfoVersion: FileVersion? {
+        guard nextUpWatchDetail?.contentId == nextUpEpisode?.contentId else { return nil }
+        return effectiveNextUpVersion
     }
 
     // MARK: - Trailers & extras

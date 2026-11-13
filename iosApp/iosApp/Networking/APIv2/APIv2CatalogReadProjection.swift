@@ -428,7 +428,9 @@ extension VideoTrack {
         self.colorPrimaries = value.colorPrimaries
         self.colorTransfer = value.colorTransfer
         self.videoRange = value.videoRange
+        self.videoRangeType = value.videoRangeType
         self.dolbyVision = value.dolbyVision
+        self.hdr10Plus = value.hdr10Plus
         self.title = value.title
         self.language = nil
     }

@@ -9,6 +9,20 @@ import SwiftUI
 struct PhoneDetailFactsSection: View {
     let detail: ItemDetail
 
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        PhoneDetailFactList(facts: DetailFacts(detail: detail).assembleFacts(locale: locale))
+    }
+}
+
+/// The rows of a facts list: a capitalized label beside its value, with a
+/// thin divider between rows.
+struct PhoneDetailFactList: View {
+    let facts: [DetailFacts.Fact]
+    /// VoiceOver reads each row in one stop, as "label, value".
+    var readsRowsWhole = false
+
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.locale) private var locale
     /// The label column grows with its text so "FIRST AIRED" and "NARRATORS"
@@ -16,7 +30,6 @@ struct PhoneDetailFactsSection: View {
     @ScaledMetric(relativeTo: .caption2) private var labelWidth: CGFloat = 100
 
     var body: some View {
-        let facts = DetailFacts(detail: detail).assembleFacts(locale: locale)
         if !facts.isEmpty {
             VStack(spacing: 0) {
                 ForEach(Array(facts.enumerated()), id: \.offset) { index, fact in
@@ -25,11 +38,22 @@ struct PhoneDetailFactsSection: View {
                             .fill(Color.white.opacity(0.08))
                             .frame(height: 1)
                     }
-                    factRow(fact)
+                    row(fact)
                         .padding(.vertical, 12)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ fact: DetailFacts.Fact) -> some View {
+        if readsRowsWhole {
+            factRow(fact)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(verbatim: fact.value.isEmpty ? fact.label : "\(fact.label), \(fact.value)"))
+        } else {
+            factRow(fact)
         }
     }
 
