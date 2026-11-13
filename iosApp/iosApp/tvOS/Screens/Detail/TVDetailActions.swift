@@ -128,7 +128,7 @@ struct TVSecondaryPillButton: View {
 /// closes synchronously and hands focus straight back to this button.
 struct TVCircleMenuButton: View {
     let icon: String
-    /// Short label revealed while focused ("Versions", "More"). Nil keeps the
+    /// Short label revealed while focused ("Version", "More"). Nil keeps the
     /// button a fixed icon-only circle.
     let title: String?
     let accessibilityLabel: String
