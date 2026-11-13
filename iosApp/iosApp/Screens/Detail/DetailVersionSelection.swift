@@ -50,6 +50,15 @@ enum DetailVersionSelection {
         let fileId: Int?
         let audioTrackIndex: Int?
         let subtitleTrackIndex: Int?
+        /// The position to start from. 0, not nil, when the position was
+        /// saved on another edition: nil lets the player fall back to the
+        /// server's stored position, which belongs to that cut too.
+        let resumePosition: Double?
+
+        /// No file to send, as before the page's files load.
+        static func unresolved(resumePosition: Double?) -> PageStart {
+            PageStart(fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil, resumePosition: resumePosition)
+        }
     }
 
     /// The start for a page's Play. The page shows Auto for its snapshot
@@ -57,7 +66,8 @@ enum DetailVersionSelection {
     /// keeps the edition shown and resolves Auto within it again for the
     /// watch state its resume position came from (`startsWith`), so a
     /// multipart position is applied to its own part. A last file in another
-    /// edition holds no part here. Start Over moves a later part to part 1.
+    /// edition holds no part here, and its position doesn't apply, so Play
+    /// starts that cut's Auto at 0. Start Over moves a later part to part 1.
     /// When the start file is not the one shown, the track picks are dropped
     /// (Off stays) and the file's tracks resolve as on any fresh start.
     static func pageStart(
@@ -66,6 +76,7 @@ enum DetailVersionSelection {
         editionId: String?,
         shownWith snapshot: LeafItemUserData?,
         startsWith watchState: LeafItemUserData?,
+        resumePosition: Double?,
         preferredQualityId: String?,
         startFromBeginning: Bool,
         audioTrackIndex: Int?,
@@ -90,19 +101,26 @@ enum DetailVersionSelection {
             pinned: pinnedFileId != nil,
             in: versions
         ) else {
-            return PageStart(fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil)
+            return .unresolved(resumePosition: resumePosition)
         }
+        let playedEdition = PlaybackEditions.edition(forFileId: watchState?.lastFileId, in: versions)?.id
+            ?? PlaybackEditions.edition(forKey: watchState?.lastEditionKey, in: versions)?.id
+        let position = !startFromBeginning && playedEdition != nil && playedEdition != shownEdition
+            ? 0
+            : resumePosition
         guard start.fileId != shown?.fileId else {
             return PageStart(
                 fileId: start.fileId,
                 audioTrackIndex: audioTrackIndex,
-                subtitleTrackIndex: subtitleTrackIndex
+                subtitleTrackIndex: subtitleTrackIndex,
+                resumePosition: position
             )
         }
         return PageStart(
             fileId: start.fileId,
             audioTrackIndex: nil,
-            subtitleTrackIndex: DetailPlaybackFormatting.subtitleIndexAfterFileChange(subtitleTrackIndex) { nil }
+            subtitleTrackIndex: DetailPlaybackFormatting.subtitleIndexAfterFileChange(subtitleTrackIndex) { nil },
+            resumePosition: position
         )
     }
 

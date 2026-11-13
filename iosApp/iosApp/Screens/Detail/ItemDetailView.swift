@@ -795,6 +795,7 @@ private struct ItemDetailPhoneContent: View {
                 let start = playbackStart(
                     for: detail,
                     startFromBeginning: false,
+                    resumePosition: state.resumePosition(cached: detail.userData),
                     watchState: state.userData(cached: detail.userData)
                 )
                 playOnTV(SiloControlPlaybackRequest(
@@ -803,7 +804,7 @@ private struct ItemDetailPhoneContent: View {
                     audioTrackIndex: start.audioTrackIndex,
                     subtitleTrackIndex: start.subtitleTrackIndex,
                     startFromBeginning: false,
-                    resumePosition: state.resumePosition(cached: detail.userData),
+                    resumePosition: start.resumePosition,
                     pinsVersion: preferredVersionFileId != nil
                 ))
             }
@@ -883,11 +884,13 @@ private struct ItemDetailPhoneContent: View {
                     awaitsPlaybackReturn = true
                     SeriesPlaybackReturnInbox.discardPending()
                     let usesSelectedEpisodeControls = id == playbackEpisode(for: detail)?.contentId
+                    let resumePosition = startFromBeginning ? nil : resumePosition
                     let start = usesSelectedEpisodeControls
                         ? nextUpPlaybackStart(
                             pinnedFileId: fileId,
                             contentId: id,
                             startFromBeginning: startFromBeginning,
+                            resumePosition: resumePosition,
                             watchState: watchState
                         ) : nil
                     presentPlayerFromDetail(
@@ -898,7 +901,7 @@ private struct ItemDetailPhoneContent: View {
                         audioTrackIndex: start?.audioTrackIndex,
                         subtitleTrackIndex: start?.subtitleTrackIndex,
                         startFromBeginning: startFromBeginning,
-                        resumePosition: startFromBeginning ? nil : resumePosition
+                        resumePosition: start.map(\.resumePosition) ?? resumePosition
                     )
                 },
                 refreshResumeState: { id in await refreshedResumeState(contentId: id) },
@@ -990,6 +993,7 @@ private struct ItemDetailPhoneContent: View {
                     let start = playbackStart(
                         for: detail,
                         startFromBeginning: startFromBeginning,
+                        resumePosition: startFromBeginning ? nil : resumePosition,
                         watchState: watchState
                     )
                     presentPlayerFromDetail(
@@ -999,7 +1003,7 @@ private struct ItemDetailPhoneContent: View {
                         audioTrackIndex: start.audioTrackIndex,
                         subtitleTrackIndex: start.subtitleTrackIndex,
                         startFromBeginning: startFromBeginning,
-                        resumePosition: startFromBeginning ? nil : resumePosition
+                        resumePosition: start.resumePosition
                     )
                 },
                 refreshResumeState: { await refreshedResumeState(contentId: contentId) },
@@ -1070,6 +1074,7 @@ private struct ItemDetailPhoneContent: View {
     private func playbackStart(
         for detail: ItemDetail,
         startFromBeginning: Bool,
+        resumePosition: Double?,
         watchState: LeafItemUserData?
     ) -> DetailVersionSelection.PageStart {
         DetailVersionSelection.pageStart(
@@ -1078,6 +1083,7 @@ private struct ItemDetailPhoneContent: View {
             editionId: preferredEditionId,
             shownWith: detail.userData,
             startsWith: watchState,
+            resumePosition: resumePosition,
             preferredQualityId: detailQuality(onMeteredNetwork: nil),
             startFromBeginning: startFromBeginning,
             audioTrackIndex: preferredAudioTrackIndex,
@@ -1092,10 +1098,11 @@ private struct ItemDetailPhoneContent: View {
         pinnedFileId: Int?,
         contentId: String,
         startFromBeginning: Bool,
+        resumePosition: Double?,
         watchState: LeafItemUserData?
     ) -> DetailVersionSelection.PageStart {
         guard let nextUpWatchDetail, nextUpWatchDetail.contentId == contentId else {
-            return DetailVersionSelection.PageStart(fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil)
+            return .unresolved(resumePosition: resumePosition)
         }
         return DetailVersionSelection.pageStart(
             versions: nextUpWatchDetail.versions,
@@ -1103,6 +1110,7 @@ private struct ItemDetailPhoneContent: View {
             editionId: preferredNextUpEditionId,
             shownWith: nextUpWatchDetail.userData,
             startsWith: watchState,
+            resumePosition: resumePosition,
             preferredQualityId: detailQuality(onMeteredNetwork: nil),
             startFromBeginning: startFromBeginning,
             audioTrackIndex: preferredNextUpAudioTrackIndex,

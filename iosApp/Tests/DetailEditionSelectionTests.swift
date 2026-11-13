@@ -171,7 +171,8 @@ final class DetailEditionSelectionTests: XCTestCase {
     /// made on. Start Over on part 2 starts part 1 without part 2's picks
     /// (Off stays); a position another device saved on part 2 resumes part
     /// 2, not the part 1 the page's older snapshot showed. Play keeps the
-    /// cut on screen: a position saved on another cut starts this one's Auto.
+    /// cut on screen: a position saved on another cut starts this one's Auto
+    /// at 0, not at the other cut's position.
     func testPlayStartsThePartItsPositionBelongsTo() throws {
         let parts = decode("""
         [
@@ -201,21 +202,23 @@ final class DetailEditionSelectionTests: XCTestCase {
         ) -> DetailVersionSelection.PageStart {
             DetailVersionSelection.pageStart(
                 versions: parts, pinnedFileId: nil, editionId: nil,
-                shownWith: snapshot, startsWith: watchState, preferredQualityId: "auto",
+                shownWith: snapshot, startsWith: watchState,
+                resumePosition: fromBeginning ? nil : watchState.positionSeconds, preferredQualityId: "auto",
                 startFromBeginning: fromBeginning, audioTrackIndex: 2, subtitleTrackIndex: subtitle
             )
         }
         typealias Start = DetailVersionSelection.PageStart
         XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onPartTwo, fromBeginning: false),
-                       Start(fileId: 62, audioTrackIndex: 2, subtitleTrackIndex: 3))
+                       Start(fileId: 62, audioTrackIndex: 2, subtitleTrackIndex: 3, resumePosition: 600))
         XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onPartTwo, fromBeginning: true),
-                       Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: nil))
+                       Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: nil, resumePosition: nil))
         XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onPartTwo, fromBeginning: true, subtitle: -1),
-                       Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: -1))
+                       Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: -1, resumePosition: nil))
         XCTAssertEqual(start(shownWith: finished, startsWith: onPartTwo, fromBeginning: false),
-                       Start(fileId: 62, audioTrackIndex: nil, subtitleTrackIndex: nil))
+                       Start(fileId: 62, audioTrackIndex: nil, subtitleTrackIndex: nil, resumePosition: 600))
         XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onTheatrical, fromBeginning: false),
-                       Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: nil))
+                       Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: nil, resumePosition: 0),
+                       "Theatrical's 900 s doesn't apply; 0, not nil, so the player won't read it back")
     }
 
     /// Without a position Resume would offer, a later part last played no

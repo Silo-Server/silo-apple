@@ -378,7 +378,7 @@ struct TVItemDetailView: View {
                     ) { resumePosition, watchState in
                         awaitsPlaybackReturn = true
                         SeriesPlaybackReturnInbox.discardPending()
-                        let start = resolveStart(watchState)
+                        let start = resolveStart(resumePosition, watchState)
                         if let playbackFileId = start.fileId {
                             router.navigate(
                                 to: .playerWithFile(
@@ -389,7 +389,7 @@ struct TVItemDetailView: View {
                                     audioTrackIndex: start.audioTrackIndex,
                                     subtitleTrackIndex: start.subtitleTrackIndex,
                                     startFromBeginning: startFromBeginning,
-                                    resumePosition: resumePosition,
+                                    resumePosition: start.resumePosition,
                                     libraryId: libraryId
                                 )
                             )
@@ -398,7 +398,7 @@ struct TVItemDetailView: View {
                                 to: .player(
                                     contentId: id,
                                     startFromBeginning: startFromBeginning,
-                                    resumePosition: resumePosition,
+                                    resumePosition: start.resumePosition,
                                     libraryId: libraryId
                                 )
                             )
@@ -513,7 +513,7 @@ struct TVItemDetailView: View {
                         startFromBeginning: startFromBeginning,
                         cached: detail.userData
                     ) { resumePosition, watchState in
-                        let start = resolveStart(watchState)
+                        let start = resolveStart(resumePosition, watchState)
                         if let fileId = start.fileId {
                             router.navigate(
                                 to: .playerWithFile(
@@ -523,7 +523,7 @@ struct TVItemDetailView: View {
                                     audioTrackIndex: start.audioTrackIndex,
                                     subtitleTrackIndex: start.subtitleTrackIndex,
                                     startFromBeginning: startFromBeginning,
-                                    resumePosition: resumePosition,
+                                    resumePosition: start.resumePosition,
                                     libraryId: libraryId
                                 )
                             )
@@ -532,7 +532,7 @@ struct TVItemDetailView: View {
                                 to: .player(
                                     contentId: contentId,
                                     startFromBeginning: startFromBeginning,
-                                    resumePosition: resumePosition,
+                                    resumePosition: start.resumePosition,
                                     libraryId: libraryId
                                 )
                             )
@@ -603,7 +603,7 @@ struct TVItemDetailView: View {
     private func playbackStart(
         for detail: ItemDetail,
         startFromBeginning: Bool
-    ) -> (_ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
+    ) -> (_ resumePosition: Double?, _ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
         pressStart(
             versions: detail.versions ?? [],
             pinnedFileId: preferredVersionFileId,
@@ -623,15 +623,16 @@ struct TVItemDetailView: View {
         startFromBeginning: Bool,
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?
-    ) -> (_ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
+    ) -> (_ resumePosition: Double?, _ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
         let quality = PlayerSettings.shared.connectionPreferredQuality
-        return { watchState in
+        return { resumePosition, watchState in
             DetailVersionSelection.pageStart(
                 versions: versions,
                 pinnedFileId: pinnedFileId,
                 editionId: editionId,
                 shownWith: snapshot,
                 startsWith: watchState,
+                resumePosition: resumePosition,
                 preferredQualityId: quality,
                 startFromBeginning: startFromBeginning,
                 audioTrackIndex: audioTrackIndex,
@@ -683,9 +684,9 @@ struct TVItemDetailView: View {
         pinnedFileId: Int?,
         contentId: String,
         startFromBeginning: Bool
-    ) -> (_ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
+    ) -> (_ resumePosition: Double?, _ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
         guard let nextUpPlaybackDetail, nextUpPlaybackDetail.contentId == contentId else {
-            return { _ in DetailVersionSelection.PageStart(fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil) }
+            return { resumePosition, _ in .unresolved(resumePosition: resumePosition) }
         }
         return pressStart(
             versions: nextUpPlaybackDetail.versions ?? [],
