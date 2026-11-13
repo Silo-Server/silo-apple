@@ -92,6 +92,31 @@ final class DetailEditionSelectionTests: XCTestCase {
         }
     }
 
+    /// A start without a detail page (a home card's Play, a deep link)
+    /// picks the way the page does, so it doesn't switch to the Theatrical
+    /// file that also fits the 1080p cap. Continue Watching still resumes
+    /// the last-played file.
+    func testAStartWithoutThePageStaysInTheLastPlayedCut() {
+        func start(lastEditionKey: String? = nil, resuming: Bool = false) -> Int {
+            PlaybackSessionBridge.startSelection(
+                versions: versions,
+                requestedFileId: nil,
+                lastFileId: 32,
+                lastResolution: "2160p",
+                lastEditionKey: lastEditionKey,
+                prefersLastUsedVersion: resuming,
+                startsAtFirstPart: false,
+                preferredQualityOverride: nil,
+                settingsQuality: AppleQualityAxes(resolution: "1080p", bitrateKbps: nil)
+            ).version.fileId
+        }
+        XCTAssertEqual(start(), 185)
+        XCTAssertEqual(start(lastEditionKey: "director_cut"), 185)
+        XCTAssertEqual(start(lastEditionKey: "theatrical"), 18)
+        XCTAssertEqual(start(resuming: true), 32)
+        XCTAssertEqual(start(), shown(lastFileId: 32, quality: "1080p"))
+    }
+
     /// When no file fits the cap, Auto takes the closest one above it.
     func testAutoTakesTheClosestFileAboveTheCap() {
         XCTAssertEqual(shown(edition: "director_cut", quality: "720p"), 185)

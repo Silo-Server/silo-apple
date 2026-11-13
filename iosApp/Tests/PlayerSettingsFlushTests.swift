@@ -2381,40 +2381,24 @@ final class PlayerSettingsFlushTests: XCTestCase {
         XCTAssertEqual(AppleQualityAxes.join(resolution: "480p", bitrateKbps: 300), "328p")
     }
 
-    func testAStoredOriginalQualityKeepsTheRememberedVersionLikeAuto() throws {
+    func testAStoredOriginalQualityRanksLikeAuto() throws {
         let sevenTwenty = Self.version(fileId: 1, resolution: "720p", bitrateKbps: 4_000)
         let fourK = Self.version(fileId: 2, resolution: "2160p", bitrateKbps: 30_000)
         let versions = [sevenTwenty, fourK]
 
-        // The bridge passes the stored quality through normalizeStoredId,
-        // which reads "original" as Auto, the nil preference.
+        // The stored quality goes through normalizeStoredId, which reads
+        // "original" as Auto, the nil preference.
         XCTAssertEqual(ApplePlaybackQuality.normalizeStoredId("original"), ApplePlaybackQuality.autoId)
-        XCTAssertEqual(
-            PlaybackSessionBridge.selectVersion(
-                from: versions,
-                lastFileId: sevenTwenty.fileId,
-                preferredQuality: nil
-            ).fileId,
-            sevenTwenty.fileId,
-            "Auto must retain the remembered-version fallback"
-        )
-        XCTAssertEqual(
-            PlaybackSessionBridge.selectVersion(
-                from: versions,
-                lastFileId: sevenTwenty.fileId,
-                preferredQuality: "original"
-            ).fileId,
-            sevenTwenty.fileId,
-            "original no longer outranks the remembered version"
-        )
-        XCTAssertEqual(
-            DetailVersionSelection.displayVersion(
-                versions: versions, selectedFileId: nil, lastFileId: nil, preferredQualityId: "original"
-            )?.fileId,
-            DetailVersionSelection.displayVersion(
-                versions: versions, selectedFileId: nil, lastFileId: nil, preferredQualityId: "auto"
-            )?.fileId
-        )
+        for lastFileId in [nil, sevenTwenty.fileId] {
+            XCTAssertEqual(
+                DetailVersionSelection.displayVersion(
+                    versions: versions, selectedFileId: nil, lastFileId: lastFileId, preferredQualityId: "original"
+                )?.fileId,
+                DetailVersionSelection.displayVersion(
+                    versions: versions, selectedFileId: nil, lastFileId: lastFileId, preferredQualityId: "auto"
+                )?.fileId
+            )
+        }
     }
 
     func testAnUncappedResolutionPicksThatResolutionsBestTier() throws {

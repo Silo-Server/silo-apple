@@ -892,6 +892,7 @@ actor PlaybackSessionBridge {
             requestedFileId: preferredFileId,
             lastFileId: watchDetail.userData?.lastFileId,
             lastResolution: watchDetail.userData?.lastResolution,
+            lastEditionKey: watchDetail.userData?.lastEditionKey,
             prefersLastUsedVersion: prefersLastUsedVersion,
             pinsRequestedVersion: pinsVersion,
             startsAtFirstPart: startsAtFirstPart,
@@ -2449,6 +2450,7 @@ actor PlaybackSessionBridge {
         requestedFileId: Int?,
         lastFileId: Int?,
         lastResolution: String?,
+        lastEditionKey: String? = nil,
         prefersLastUsedVersion: Bool,
         pinsRequestedVersion: Bool = false,
         startsAtFirstPart: Bool,
@@ -2476,7 +2478,16 @@ actor PlaybackSessionBridge {
                let lastPlayed = normalizedQualityPreference(lastResolution) {
                 rankingQuality = lastPlayed
             }
-            version = selectVersion(from: versions, lastFileId: lastFileId, preferredQuality: rankingQuality)
+            // A start without a detail page (a home card, a deep link) picks
+            // the way the page does: the last-played cut, then the best file
+            // of it for the quality, so it never switches cuts.
+            version = DetailVersionSelection.displayVersion(
+                versions: versions,
+                selectedFileId: nil,
+                lastFileId: lastFileId,
+                preferredQualityId: rankingQuality,
+                lastEditionKey: lastEditionKey
+            ) ?? versions[0]
             source = .ranked
         }
         // A multi-part item that must play through starts at its first part,
@@ -2507,73 +2518,6 @@ actor PlaybackSessionBridge {
 
     private func protocolV3TrackId(fileId: Int, kind: String, index: Int) -> String {
         "file:\(fileId):\(kind):\(index)"
-    }
-
-    /// Pick the best version for the user's preferred quality. The server does
-    /// the compatibility filtering from the reported capability snapshot and
-    /// may answer with a different `effective_media_file_id`; this ranking step
-    /// only decides which version the request asks for.
-    static func selectVersion(
-        from versions: [FileVersion],
-        lastFileId: Int?,
-        preferredQuality: String?
-    ) -> FileVersion {
-        let ranked = versions.sorted {
-            score(for: $0, preferredQuality: preferredQuality) >
-                score(for: $1, preferredQuality: preferredQuality)
-        }
-
-        if let preferredQuality,
-           let matchingQuality = ranked.first(where: {
-               qualityMatches($0.resolution, preferredQuality: preferredQuality)
-           }) {
-            return matchingQuality
-        }
-
-        if let lastFileId,
-           let lastUsed = versions.first(where: { $0.fileId == lastFileId }) {
-            return lastUsed
-        }
-
-        return ranked.first ?? versions[0]
-    }
-
-    private static func score(for version: FileVersion, preferredQuality: String?) -> Int {
-        var score = resolutionRank(version.resolution) * 10
-
-        if let preferredQuality {
-            if qualityMatches(version.resolution, preferredQuality: preferredQuality) {
-                score += 100
-            } else if resolutionRank(version.resolution) > resolutionRank(preferredQuality) {
-                score -= 50
-            }
-        }
-
-        return score
-    }
-
-    private static func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {
-        let versionRank = resolutionRank(resolution)
-        let requestedRank = resolutionRank(preferredQuality)
-        return versionRank > 0 && versionRank <= requestedRank
-    }
-
-    private static func resolutionRank(_ value: String?) -> Int {
-        guard let value = value?.lowercased() else { return 0 }
-
-        if value.contains("2160") || value.contains("4k") {
-            return 4
-        }
-        if value.contains("1080") {
-            return 3
-        }
-        if value.contains("720") {
-            return 2
-        }
-        if value.contains("480") {
-            return 1
-        }
-        return 0
     }
 
 }
