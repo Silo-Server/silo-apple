@@ -15,6 +15,7 @@ struct DownloadRequestOptions {
         versions: [FileVersion],
         selectedFileId: Int?,
         lastFileId: Int?,
+        lastFileInProgress: Bool,
         preferredQualityId: String?,
         editionId: String? = nil,
         lastEditionKey: String? = nil
@@ -23,6 +24,7 @@ struct DownloadRequestOptions {
             versions: versions,
             selectedFileId: selectedFileId,
             lastFileId: lastFileId,
+            lastFileInProgress: lastFileInProgress,
             preferredQualityId: preferredQualityId,
             editionId: editionId,
             lastEditionKey: lastEditionKey
@@ -34,6 +36,7 @@ struct DownloadOptionsSheet: View {
     let title: String
     let versions: [FileVersion]
     let lastVersionFileId: Int?
+    let lastFileInProgress: Bool
     let lastEditionKey: String?
     let onStart: (DownloadRequestOptions) -> Void
 
@@ -55,12 +58,14 @@ struct DownloadOptionsSheet: View {
         selectedVersionFileId: Int?,
         selectedEditionId: String?,
         lastVersionFileId: Int?,
+        lastFileInProgress: Bool,
         lastEditionKey: String?,
         onStart: @escaping (DownloadRequestOptions) -> Void
     ) {
         self.title = title
         self.versions = versions
         self.lastVersionFileId = lastVersionFileId
+        self.lastFileInProgress = lastFileInProgress
         self.lastEditionKey = lastEditionKey
         self.onStart = onStart
 
@@ -71,6 +76,7 @@ struct DownloadOptionsSheet: View {
             versions: versions,
             selectedFileId: selectedVersionFileId,
             lastFileId: lastVersionFileId,
+            lastFileInProgress: lastFileInProgress,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: selectedEditionId,
             lastEditionKey: lastEditionKey
@@ -99,6 +105,7 @@ struct DownloadOptionsSheet: View {
             versions: versions,
             selectedFileId: fileId,
             lastFileId: lastVersionFileId,
+            lastFileInProgress: lastFileInProgress,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: editionId,
             lastEditionKey: lastEditionKey

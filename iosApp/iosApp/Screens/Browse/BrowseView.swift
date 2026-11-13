@@ -10,12 +10,14 @@ struct BrowseView: View {
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
+    @Environment(\.libraryPageReloadRequest) private var reloadRequest
     @State private var shuffleLauncher = ShuffleLauncher()
     #if os(iOS)
     /// Scrolls the grid to a letter's first title.
     @State private var gridCommands = BrowseGridCommands()
     /// The jump waiting for its titles; a later jump replaces it.
     @State private var pendingJump: Task<Void, Never>?
+    @Environment(\.libraryPageScrollToTopRequest) private var scrollToTopRequest
     #else
     /// Letter-jump scroll state, kept off this view so scrolling doesn't
     /// redraw the grid.
@@ -26,6 +28,7 @@ struct BrowseView: View {
     @State private var jumpedLetter = JumpedLetter()
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
+    @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
 
     @ViewBuilder
     var body: some View {
@@ -95,6 +98,12 @@ struct BrowseView: View {
         }
         .refreshable {
             await viewModel.refresh()
+            pageDidRefresh?()
+        }
+        // The iPhone Libraries tab keeps this page alive under its others
+        // and asks for a reload when it comes back after a title changed.
+        .onChange(of: reloadRequest) {
+            Task { await viewModel.refresh() }
         }
     }
 
@@ -120,6 +129,7 @@ struct BrowseView: View {
             .frame(maxWidth: .infinity)
         }
         .reportsPageChromeScroll()
+        .scrollsToTopOnLibraryDockRequest()
         .environment(\.browseLibraryId, libraryId)
     }
 
@@ -173,10 +183,21 @@ struct BrowseView: View {
             onLoadMore: {
                 Task { await viewModel.loadItems() }
             },
-            onRefresh: { await viewModel.refresh() },
+            onRefresh: {
+                await viewModel.refresh()
+                pageDidRefresh?()
+            },
             onUserScroll: { [jumpedLetter] in jumpedLetter.letter = nil }
         )
+        .reportsLibraryPageScrollView()
         .environment(\.browseLibraryId, libraryId)
+        .onChange(of: scrollToTopRequest) {
+            // A letter jump still waiting for its titles would move the page
+            // away from the top once they arrive.
+            pendingJump?.cancel()
+            pendingJump = nil
+            gridCommands.scrollToTop()
+        }
     }
 
     private var gridHeader: some View {
@@ -662,6 +683,7 @@ struct LibraryRecommendedView: View {
     @State private var viewModel = LibraryRecommendedViewModel()
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
+    @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -698,6 +720,13 @@ struct LibraryRecommendedView: View {
         }
         .refreshable {
             await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
+            pageDidRefresh?()
+        }
+        // The Libraries tab keeps this page alive under its others, so a
+        // title marked watched elsewhere would otherwise keep its old card
+        // in Continue Watching and Next Up. Home reloads on the same signal.
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+            Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) }
         }
     }
 
@@ -729,6 +758,7 @@ struct LibraryRecommendedView: View {
         }
         .siloScrollEdgeEffect()
         .reportsPageChromeScroll()
+        .scrollsToTopOnLibraryDockRequest()
         .environment(\.browseLibraryId, libraryId)
     }
 

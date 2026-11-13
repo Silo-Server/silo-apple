@@ -346,6 +346,7 @@ struct TVMovieDetailView: View {
             versions: availableVersions,
             selectedFileId: selectedVersionFileId,
             lastFileId: detail.userData?.lastFileId,
+            lastFileInProgress: detail.userData?.hasResumePoint ?? false,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: selectedEditionId,
             lastEditionKey: detail.userData?.lastEditionKey

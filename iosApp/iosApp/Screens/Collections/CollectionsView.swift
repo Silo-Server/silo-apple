@@ -534,6 +534,7 @@ struct LibraryCollectionsView: View {
     let libraryId: Int
     var mediaScope: LibraryVideoScope? = nil
 
+    @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
     @State private var viewModel = LibraryCollectionsViewModel()
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
@@ -571,6 +572,7 @@ struct LibraryCollectionsView: View {
                     .padding(.bottom, SiloTheme.largePadding)
                 }
                 .reportsPageChromeScroll()
+                .scrollsToTopOnLibraryDockRequest()
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadCollections(libraryId: libraryId) } })
             } else if viewModel.isLoading {
@@ -589,6 +591,7 @@ struct LibraryCollectionsView: View {
         }
         .refreshable {
             await viewModel.loadCollections(libraryId: libraryId)
+            pageDidRefresh?()
         }
     }
 
