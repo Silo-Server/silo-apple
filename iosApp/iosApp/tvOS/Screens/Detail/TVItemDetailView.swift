@@ -836,6 +836,7 @@ struct TVItemDetailView: View {
                 usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
             )
         }
+        let seededSubtitleIndex = preferredNextUpSubtitleTrackIndex
 
         do {
             // Paint the episode and any cached selectors immediately. Wait
@@ -863,10 +864,15 @@ struct TVItemDetailView: View {
             } else {
                 resolved = enriched
             }
+            // Keep a Subtitles pick made on the cached selectors while this
+            // ran. Re-derive one that still holds the seed, on the file the
+            // page shows.
+            let subtitleIsUntouched = preferredNextUpSubtitleTrackIndex == seededSubtitleIndex
+                && !didClearNextUpSubtitleOverride
             nextUpPlaybackDetail = resolved
-            if let resolved {
+            if let resolved, subtitleIsUntouched {
                 preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
-                    version: effectiveVersion(for: resolved, versionFileId: nil),
+                    version: effectiveVersion(for: resolved, versionFileId: preferredNextUpFileId),
                     signature: resolved.effectiveSubtitleTrackSignature,
                     mode: resolved.effectiveSubtitleMode,
                     showForced: resolved.showsForcedSubtitles,
