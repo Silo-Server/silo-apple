@@ -422,7 +422,7 @@ struct LibrariesTabView: View {
             // Read each time the library becomes active and after a refresh;
             // a newer read cancels an older one before it can land.
             .task(id: "\(countKey(for: activeLibrary))#\(countRefreshes)") {
-                await loadLibraryCount(activeLibrary, key: countKey(for: activeLibrary))
+                await loadLibraryCount(activeLibrary, key: countKey(for: activeLibrary), authority: libraryAuthority)
             }
     }
 
@@ -561,10 +561,7 @@ struct LibrariesTabView: View {
               !Task.isCancelled,
               await SiloAPI.shared.isCurrentOwner(owner),
               !Task.isCancelled,
-              authority == MainTabLibraryAuthority(
-                  serverId: ServerRegistry.shared.activeServerId,
-                  profileId: ServerRegistry.shared.activeProfileId
-              ) else { return }
+              authority == Self.currentAuthority() else { return }
         let resolved = response.resolvedSections
         ResponseCache.shared.set(resolved, for: "library:\(libraryId):collections")
         LibraryCollectionPresence.remember(
@@ -574,17 +571,33 @@ struct LibrariesTabView: View {
         )
     }
 
+    /// The server and profile active now, which a reply must still match.
+    private static func currentAuthority() -> MainTabLibraryAuthority? {
+        MainTabLibraryAuthority(
+            serverId: ServerRegistry.shared.activeServerId,
+            profileId: ServerRegistry.shared.activeProfileId
+        )
+    }
+
     private func collectionPresenceKey(for library: Library) -> String {
         "\(libraryAuthority?.serverId ?? "-"):\(libraryAuthority?.profileId ?? "-")|\(library.id)"
     }
 
     /// The library's exact size under its Movies/Series scope, for the
     /// header caption. A server that can't count exactly leaves the kind.
-    private func loadLibraryCount(_ library: Library, key: String) async {
+    /// Kept only for the server, profile and scope it was asked for: a
+    /// switch while the request is out drops it.
+    private func loadLibraryCount(_ library: Library, key: String, authority: MainTabLibraryAuthority?) async {
         var query = CatalogQueryBuilder.libraryProbe(libraryId: library.id)
         query.skipTotal = false
         query.type = videoScope(for: library)?.rawValue
-        guard let page = try? await SiloAPI.shared.catalogPage(query), !Task.isCancelled else { return }
+        guard let owner = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              let page = try? await SiloAPI.shared.catalogPage(query),
+              !Task.isCancelled,
+              await SiloAPI.shared.isCurrentOwner(owner),
+              !Task.isCancelled,
+              authority == Self.currentAuthority(),
+              countKey(for: library) == key else { return }
         // A count the server can no longer give exactly replaces the one
         // shown before with the kind alone.
         if page.response.totalExact != false, let total = page.response.total {

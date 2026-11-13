@@ -99,6 +99,12 @@ struct BrowseView: View {
             await viewModel.refresh()
             pageDidRefresh?()
         }
+        // The iPhone Libraries tab keeps this page alive under its others,
+        // so a title marked watched elsewhere would keep its old card. Its
+        // cards update in place; the list keeps its length and position.
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+            Task { await viewModel.refreshShownTitles() }
+        }
     }
 
     // MARK: - Content

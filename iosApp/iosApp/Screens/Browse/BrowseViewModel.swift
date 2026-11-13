@@ -296,6 +296,21 @@ class BrowseViewModel {
         }
     }
 
+    /// A title's watched state, favourite or progress changed elsewhere:
+    /// read the titles shown again and update their cards in place, so the
+    /// list keeps its length and the grid its scroll position.
+    func refreshShownTitles() async {
+        guard hasLoaded else { return }
+        pager?.rereadKept()
+        let myGeneration = generation
+        let key = currentCacheKey
+        guard let page = try? await readFirstPage(libraryId, filterState, mediaScope),
+              myGeneration == generation, key == currentCacheKey, !Task.isCancelled else { return }
+        let fresh = Dictionary(page.response.items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let updated = items.map { fresh[$0.id] ?? $0 }
+        if updated != items { items = updated }
+    }
+
     /// Reload the list from the top and drop the titles read further down,
     /// for pull-to-refresh.
     func refresh() async {
