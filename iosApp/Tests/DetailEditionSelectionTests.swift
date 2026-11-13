@@ -135,6 +135,17 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertEqual(shown(lastFileId: 32, lastEditionKey: "director_cut", quality: "junk"), 32, "an unknown id is Auto")
     }
 
+    /// When the connection moves the selected episode to another file, Auto
+    /// and Off carry over; a track index named a stream of the old file and
+    /// is replaced by what Auto picks on the new one.
+    func testASubtitleChoiceAcrossAFileChangeKeepsAutoAndOff() {
+        let reseed = { Optional(4) }
+        XCTAssertNil(DetailPlaybackFormatting.subtitleIndexAfterFileChange(nil, reseed: reseed), "Auto")
+        XCTAssertEqual(DetailPlaybackFormatting.subtitleIndexAfterFileChange(-1, reseed: reseed), -1, "Off")
+        XCTAssertEqual(DetailPlaybackFormatting.subtitleIndexAfterFileChange(2, reseed: reseed), 4)
+        XCTAssertNil(DetailPlaybackFormatting.subtitleIndexAfterFileChange(2) { nil })
+    }
+
     /// When no file fits the cap, Auto takes the closest one above it.
     func testAutoTakesTheClosestFileAboveTheCap() {
         XCTAssertEqual(shown(edition: "director_cut", quality: "720p"), 185)

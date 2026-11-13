@@ -278,6 +278,15 @@ enum DetailPlaybackFormatting {
         return nil
     }
 
+    /// The subtitle selection once Auto's file has changed under the page.
+    /// Auto (nil) and Off (negative) mean the same on any file, so they stay.
+    /// A track index names a stream of the old file, so it gives way to
+    /// `reseed`, what Auto picks on the new one.
+    static func subtitleIndexAfterFileChange(_ index: Int?, reseed: () -> Int?) -> Int? {
+        guard let index, index >= 0 else { return index }
+        return reseed()
+    }
+
     /// Whether a subtitle picked in the detail selector survives the page
     /// reloading, as it does when the viewer returns from the player. Off and
     /// Auto always do. A track index belongs to one file, so a track pick

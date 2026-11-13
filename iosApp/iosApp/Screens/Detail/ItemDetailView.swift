@@ -1139,7 +1139,9 @@ private struct ItemDetailPhoneContent: View {
             }
             if before.fileId != effectiveVersion(for: nextUpWatchDetail, versionFileId: nil)?.fileId {
                 preferredNextUpAudioTrackIndex = nil
-                preferredNextUpSubtitleTrackIndex = launchSubtitleIndex(for: nextUpWatchDetail)
+                preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.subtitleIndexAfterFileChange(
+                    preferredNextUpSubtitleTrackIndex
+                ) { launchSubtitleIndex(for: nextUpWatchDetail) }
             }
         }
     }
