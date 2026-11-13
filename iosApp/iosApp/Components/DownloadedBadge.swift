@@ -26,11 +26,14 @@ struct DownloadedBadge: View {
 struct DownloadedBadgeOverlay: View {
     let contentId: String?
     let padding: CGFloat
+    /// Set when the card draws a progress bar, so the badge sits above it.
+    var clearsProgressBar = false
 
     var body: some View {
         if let contentId, DownloadManager.shared.isDownloaded(contentId: contentId) {
             DownloadedBadge()
                 .padding(padding)
+                .padding(.bottom, clearsProgressBar ? max(ProgressBar.badgeClearance - padding, 0) : 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         }
     }

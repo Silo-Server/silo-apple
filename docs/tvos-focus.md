@@ -160,9 +160,18 @@ row reaches it natively, whether the user clicks or swipes. The bar's
 entry land on the selected tab instead of the tab above the focused card. The
 page is the shell focus scope's preferred default, so a repair after the
 focused card disappears returns to the page, not the bar. The shell disables the
-bar only for a short window while it hands focus down to the page, so the
+bar for a short window while it hands focus down to the page, so the
 engine's repair from the resigning tab cannot land back in the bar. The pages'
 first-row Up handlers remain as a fallback for that window.
+
+A page that opens its own panel over its content, like the library Sort panel,
+publishes `TVPagePanelOpenKey`, and the shell disables the bar while the panel
+is open. The bar sits outside the page, so disabling the page's own content
+does not stop Up from the panel's first row from reaching a tab. Explicit bar
+claims, such as the focus watchdog's last-resort repair, lift that lock until
+the panel closes. Only publish it for a panel that reliably claims focus when it
+opens: with the bar disabled, a failed claim leaves nothing focused until that
+last-resort repair, about ten seconds later.
 
 The top menu has three conceptual states:
 

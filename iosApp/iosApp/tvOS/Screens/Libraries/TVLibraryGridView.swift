@@ -118,6 +118,11 @@ struct TVLibraryGridView: View {
             }
         }
         .environment(\.browseLibraryId, libraryId)
+        // The top bar sits outside this page; the shell disables it while
+        // Sort is open so focus stays in the panel. Not Filter yet: its
+        // opening focus claim doesn't land on Apple TV (#1134), and with the
+        // bar disabled nothing would be focused.
+        .preference(key: TVPagePanelOpenKey.self, value: openPanel == .sort)
         .animation(.easeOut(duration: 0.18), value: openPanel)
         .siloBackground()
         .task {

@@ -12,6 +12,8 @@ struct TVMovieDetailView: View {
     /// The box set the movie belongs to; nil draws no row.
     var boxSet: CatalogBoxSetDetail? = nil
     let selectedVersionFileId: Int?
+    /// The edition picked on this visit; nil opens on the last-played one.
+    let selectedEditionId: String?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
     /// True once the user explicitly resets subtitles to "Auto" this visit.
@@ -34,6 +36,7 @@ struct TVMovieDetailView: View {
     let onTrailerStatusShown: () -> Void
     let onPlay: (_ startFromBeginning: Bool) -> Void
     let onSelectVersion: (Int?) -> Void
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
     let onToggleFavorite: () -> Void
@@ -192,6 +195,7 @@ struct TVMovieDetailView: View {
                     showForcedSubtitles: detail.showsForcedSubtitles,
                     preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                     onSelectVersion: onSelectVersion,
+                    onSelectEdition: onSelectEdition,
                     onSelectAudioTrack: onSelectAudioTrack,
                     onSelectSubtitleTrack: onSelectSubtitleTrack,
                     focusedAction: focusedAction
@@ -258,7 +262,7 @@ struct TVMovieDetailView: View {
                 switch MoreAction(rawValue: item.id) {
                 case .watchParty:
                     WatchPartyEntry.open(contentId: detail.contentId, title: detail.title, type: detail.type,
-                        fileId: selectedVersionFileId, libraryId: partyLibraryId,
+                        fileId: watchPartyFileId, libraryId: partyLibraryId,
                         preview: WatchPartySelectedItem(previewing: detail), router: partyRouter)
                 case .favorite:
                     onToggleFavorite()
@@ -275,7 +279,12 @@ struct TVMovieDetailView: View {
         )
     }
 
+    /// Nil also when the position was saved on another edition than the
+    /// one shown: Play starts the shown one at 0.
     private var resumePositionSeconds: Double? {
+        guard DetailVersionSelection.savedPositionIsInEdition(
+            of: currentVersion, in: availableVersions, userData: detail.userData
+        ) else { return nil }
         guard let pos = detail.userData?.positionSeconds, pos > 30 else { return nil }
         if let dur = detail.userData?.durationSeconds, dur > 0, pos >= dur - 5 {
             return nil
@@ -342,8 +351,18 @@ struct TVMovieDetailView: View {
             versions: availableVersions,
             selectedFileId: selectedVersionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            lastFileInProgress: detail.userData?.hasResumePoint ?? false,
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedEditionId,
+            lastEditionKey: detail.userData?.lastEditionKey,
+            variants: detail.playbackVariants
         )
+    }
+
+    /// The file a party starts from: the one the page shows once the viewer
+    /// picked an edition or a version here, else the server's default.
+    private var watchPartyFileId: Int? {
+        selectedVersionFileId == nil && selectedEditionId == nil ? nil : currentVersion?.fileId
     }
 }
 #endif

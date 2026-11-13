@@ -357,7 +357,7 @@ struct MediaCard: View {
             }
 
             if let progress, progress > 0 {
-                ProgressBar(value: progress)
+                ProgressBar(value: progress, belowCornerLabel: boxSet != nil)
             }
 
             // Shown whether or not badges are on.
@@ -368,7 +368,7 @@ struct MediaCard: View {
             )
 
             #if !os(tvOS)
-            DownloadedBadgeOverlay(contentId: contentId, padding: 6)
+            DownloadedBadgeOverlay(contentId: contentId, padding: 6, clearsProgressBar: (progress ?? 0) > 0)
             #endif
         }
         .frame(width: cardWidth, height: cardHeight)

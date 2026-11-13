@@ -108,6 +108,10 @@ struct TVMainTabView: View {
     /// Starts locked so launch focus goes to content.
     @State private var isBarLockedForContentHandoff = true
     @State private var barLockGeneration = 0
+    /// Disables the bar while the page shows a panel that owns focus
+    /// (`TVPagePanelOpenKey`), so Up from the panel's first row stays in the
+    /// panel. An explicit bar claim (`focusTopMenuIfVisible`) lifts it.
+    @State private var isBarLockedByPagePanel = false
     /// True while a route pushed *from the bar* (search, profile/For You
     /// panel items) is on the stack. When the stack pops back to root,
     /// focus returns to the bar — the explicit "next owner" choice
@@ -154,6 +158,9 @@ struct TVMainTabView: View {
             NavigationStack(path: $router.path) {
                 rootContent
                     .prefersDefaultFocus(router.path.isEmpty, in: shellFocusNamespace)
+                    .onPreferenceChange(TVPagePanelOpenKey.self) { isOpen in
+                        isBarLockedByPagePanel = isOpen
+                    }
                     .navigationDestination(for: Route.self) { route in
                         routeContent(for: route)
                     }
@@ -166,7 +173,7 @@ struct TVMainTabView: View {
                     currentProfile: currentProfile,
                     isMenuFocused: $isTopMenuFocused,
                     isFocusSuppressed: isTopMenuFocusSuppressed,
-                    isLockedForContentHandoff: isBarLockedForContentHandoff,
+                    isLockedForContentHandoff: isBarLockedForContentHandoff || isBarLockedByPagePanel,
                     focusRequest: topMenuFocusRequest,
                     focusResetRequest: topMenuFocusResetRequest,
                     focusRequestTarget: panelReturnFocus,
@@ -1204,6 +1211,11 @@ struct TVMainTabView: View {
 
         panelReturnFocus = target
         unlockBar()
+        // An open page panel blocks only native moves into the bar. The
+        // watchdog's last-resort repair and a pop back from a Siri search
+        // still need the bar, so an explicit claim lifts that lock too, until
+        // the panel closes.
+        isBarLockedByPagePanel = false
         // Claim ownership before the bar's @FocusState lands so content
         // hand-down tokens cannot briefly re-focus rows during an Up return.
         isTopMenuFocused = true

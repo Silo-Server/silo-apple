@@ -5,7 +5,6 @@ import SwiftUI
 /// `AdaptiveColumns.widthFittedPosters`), 6 columns on tvOS. Cards
 /// handle their own focus lift on tvOS.
 struct CatalogGrid: View {
-    @Environment(\.locale) private var locale
     let items: [BrowseItem]
     let isLoading: Bool
     let hasMore: Bool
@@ -14,12 +13,20 @@ struct CatalogGrid: View {
     var forcesThreeColumnsOnPhone = false
     let onItemTap: (BrowseItem) -> Void
     let onLoadMore: () -> Void
+    /// Titles exist above the first card, after a jump to a letter started
+    /// the grid partway down its list; reaching the top asks for them.
+    var hasEarlier = false
+    var onLoadEarlier: (Int) -> Void = { _ in }
+    /// Makes the cards scroll targets, so the scroll view can keep the card
+    /// in view still when titles load above it. Off unless asked for, as it
+    /// costs work on every scroll.
+    var tracksScrollPosition = false
+    /// Told how many columns the grid lays out.
+    var onColumnCount: (Int) -> Void = { _ in }
     /// The grid asks for more when the card this far from the end appears,
     /// so a load that adds fewer cards leaves the trigger on a card that is
     /// already showing.
     static let loadMoreLead = 6
-    @Environment(\.browseLibraryId) private var browseLibraryId
-    @Environment(AppRouter.self) private var router
     @State private var uiCustomization = UICustomizationPreferences.shared
     @State private var gridWidth: CGFloat = 0
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -66,6 +73,7 @@ struct CatalogGrid: View {
     var body: some View {
         let widthOverride = cardWidthOverride
         let columns = columns
+        let laidOutColumns = Self.laidOutColumnCount(columns, width: gridWidth)
         LazyVGrid(columns: columns, spacing: rowSpacing) {
             if items.isEmpty && isLoading {
                 // First page still loading: the grid's own shape, unfilled.
@@ -77,16 +85,28 @@ struct CatalogGrid: View {
                 let item = entry.item
                 // Search can return episodes: caption them with the series
                 // name and "S01E02 · Pilot", as on Home.
-                card(for: item, widthOverride: widthOverride, rowTitles: rowTitles(at: entry.index, columnCount: columns.count))
+                CatalogGridCard(
+                    item: item,
+                    widthOverride: widthOverride,
+                    rowTitles: rowTitles(at: entry.index, columnCount: columns.count),
+                    onItemTap: onItemTap
+                )
                 .frame(maxWidth: .infinity)
                 .onAppear {
                     if item.id == items.suffix(Self.loadMoreLead).first?.id, hasMore {
                         onLoadMore()
                     }
+                    if hasEarlier, entry.index < laidOutColumns * 2 {
+                        onLoadEarlier(laidOutColumns)
+                    }
                 }
             }
         }
-        #if os(iOS)
+        .scrollTargetLayout(isEnabled: tracksScrollPosition)
+        .onChange(of: laidOutColumns, initial: true) { _, count in
+            onColumnCount(count)
+        }
+        #if !os(tvOS)
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
@@ -106,66 +126,6 @@ struct CatalogGrid: View {
         }
     }
 
-    @ViewBuilder
-    private func card(for item: BrowseItem, widthOverride: CGFloat?, rowTitles: [String]?) -> some View {
-        if let boxSet = item.boxSet, item.isBoxSet {
-            // A box set opens its own page and has no title menu or Play.
-            MediaCard(
-                title: item.title,
-                posterUrl: item.posterUrl ?? boxSet.posterUrl ?? "",
-                thumbhash: item.posterThumbhash ?? boxSet.posterThumbhash,
-                mediaType: "movie",
-                subtitle: boxSet.cardCaption,
-                progress: boxSet.watchedProgress,
-                action: {
-                    if let route = Route.boxSet(boxSet) { router.navigate(to: route) }
-                },
-                aspect: .poster,
-                cardWidthOverride: widthOverride,
-                rowTitles: rowTitles,
-                boxSet: boxSet
-            )
-        } else {
-            MediaCard(
-                title: EpisodeCardCaption.cardTitle(for: item),
-                posterUrl: item.posterUrl ?? "",
-                thumbhash: item.posterThumbhash,
-                episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
-                imageIsEpisodeStill: item.posterIsEpisodeStill,
-                mediaType: item.type,
-                year: item.year,
-                subtitle: EpisodeCardCaption.line(for: item, locale: locale)
-                    ?? CardYears.caption(for: item, locale: locale),
-                userState: item.userState,
-                overlayData: OverlayData.from(item),
-                action: { onItemTap(item) },
-                playAction: playAction(for: item),
-                contentId: item.contentId,
-                seriesContext: SeriesDetailContext(item: SectionItem(browseItem: item)),
-                aspect: item.isAudiobook ? .square : .poster,
-                cardWidthOverride: widthOverride,
-                episodeAccessibilityLabel: EpisodeCardCaption.accessibilityLabel(for: item, locale: locale),
-                rowTitles: rowTitles
-            )
-        }
-    }
-
-    private func playAction(for item: BrowseItem) -> (() -> Void)? {
-        #if os(tvOS)
-        guard SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
-        return {
-            router.presentPlayer(
-                contentId: item.contentId,
-                libraryId: browseLibraryId,
-                posterURL: item.posterUrl,
-                backdropURL: item.backdropUrl
-            )
-        }
-        #else
-        return nil
-        #endif
-    }
-
     /// Card titles in the grid row holding `index`, so each card sizes its
     /// title to the row's tallest. Nil on macOS and tvOS, whose cards draw
     /// one-line titles.
@@ -178,6 +138,17 @@ struct CatalogGrid: View {
         #else
         return nil
         #endif
+    }
+
+    /// Columns the grid lays out. The Mac's single adaptive column holds as
+    /// many cards as fit the width, as LazyVGrid fits them.
+    static func laidOutColumnCount(_ columns: [GridItem], width: CGFloat) -> Int {
+        guard columns.count == 1, case .adaptive(let minimum, _) = columns[0].size else {
+            return max(columns.count, 1)
+        }
+        let spacing = columns[0].spacing ?? 8
+        guard width > 0 else { return 1 }
+        return max(1, Int((width + spacing) / (minimum + spacing)))
     }
 
     private var usesThreeColumnPhoneLayout: Bool {
@@ -242,6 +213,80 @@ struct CatalogGrid: View {
                 : SiloTheme.posterCardWidth * scale
         )
         return fittedWidth / scale
+        #else
+        return nil
+        #endif
+    }
+}
+
+/// One catalog item as a poster card: a box set opens its own page, any
+/// other title its detail page. Shared by the poster grids so a title looks
+/// and behaves the same in each.
+struct CatalogGridCard: View {
+    let item: BrowseItem
+    let widthOverride: CGFloat?
+    /// See `MediaCard.rowTitles`.
+    let rowTitles: [String]?
+    let onItemTap: (BrowseItem) -> Void
+    @Environment(\.locale) private var locale
+    @Environment(\.browseLibraryId) private var browseLibraryId
+    @Environment(AppRouter.self) private var router
+
+    @ViewBuilder
+    var body: some View {
+        if let boxSet = item.boxSet, item.isBoxSet {
+            // A box set opens its own page and has no title menu or Play.
+            MediaCard(
+                title: item.title,
+                posterUrl: item.posterUrl ?? boxSet.posterUrl ?? "",
+                thumbhash: item.posterThumbhash ?? boxSet.posterThumbhash,
+                mediaType: "movie",
+                subtitle: boxSet.cardCaption,
+                progress: boxSet.watchedProgress,
+                action: {
+                    if let route = Route.boxSet(boxSet) { router.navigate(to: route) }
+                },
+                aspect: .poster,
+                cardWidthOverride: widthOverride,
+                rowTitles: rowTitles,
+                boxSet: boxSet
+            )
+        } else {
+            MediaCard(
+                title: EpisodeCardCaption.cardTitle(for: item),
+                posterUrl: item.posterUrl ?? "",
+                thumbhash: item.posterThumbhash,
+                episodeWatchState: item.isEpisodeItem ? EpisodeWatchState(browseItem: item) : nil,
+                imageIsEpisodeStill: item.posterIsEpisodeStill,
+                mediaType: item.type,
+                year: item.year,
+                subtitle: EpisodeCardCaption.line(for: item, locale: locale)
+                    ?? CardYears.caption(for: item, locale: locale),
+                userState: item.userState,
+                overlayData: OverlayData.from(item),
+                action: { onItemTap(item) },
+                playAction: playAction,
+                contentId: item.contentId,
+                seriesContext: SeriesDetailContext(item: SectionItem(browseItem: item)),
+                aspect: item.isAudiobook ? .square : .poster,
+                cardWidthOverride: widthOverride,
+                episodeAccessibilityLabel: EpisodeCardCaption.accessibilityLabel(for: item, locale: locale),
+                rowTitles: rowTitles
+            )
+        }
+    }
+
+    private var playAction: (() -> Void)? {
+        #if os(tvOS)
+        guard SiloMediaType.isDirectlyPlayable(item.type) else { return nil }
+        return {
+            router.presentPlayer(
+                contentId: item.contentId,
+                libraryId: browseLibraryId,
+                posterURL: item.posterUrl,
+                backdropURL: item.backdropUrl
+            )
+        }
         #else
         return nil
         #endif

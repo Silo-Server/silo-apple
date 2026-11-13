@@ -119,7 +119,7 @@ struct MacPlayerOptionsPanel: View {
                             detail: PlayerTimeFormatter.formatHMS(chapter.time),
                             selected: chapter.index == currentChapterIndex
                         ) {
-                            viewModel.seekTo(seconds: chapter.time)
+                            viewModel.jumpToChapter(at: chapter.time)
                         }
                     }
                 }

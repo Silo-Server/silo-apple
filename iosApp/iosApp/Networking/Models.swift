@@ -1146,7 +1146,13 @@ struct VideoTrack: Codable, Identifiable, Hashable {
     let colorPrimaries: String?
     let colorTransfer: String?
     let videoRange: String?
+    /// The server's finer class of the range ("HDR10", "HDR10Plus", "HLG",
+    /// "DOVIWithHDR10", …); `videoRange` only tells HDR from Dolby Vision.
+    let videoRangeType: String?
     let dolbyVision: String?
+    /// The stream carries HDR10+ dynamic metadata, on its own or beside
+    /// Dolby Vision.
+    let hdr10Plus: Bool?
     let title: String?
     let language: String?
     var id: Int { index ?? 0 }
@@ -1257,6 +1263,16 @@ struct LeafItemUserData: Codable, Hashable {
     let durationSeconds: Double?
     let lastFileId: Int?
     let lastResolution: String?
+    /// The edition of the version last played.
+    let lastEditionKey: String?
+
+    /// A position Resume would offer (`PlaybackResumePoint`). Only then does
+    /// Auto stay on a later multipart part last played; otherwise it starts
+    /// at part 1. `played` is ignored: the server zeroes the position when a
+    /// title is finished and keeps the flag through a rewatch.
+    var hasResumePoint: Bool {
+        PlaybackResumePoint.position(positionSeconds, duration: durationSeconds) != nil
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1266,6 +1282,7 @@ struct LeafItemUserData: Codable, Hashable {
         durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
         lastFileId = try c.decodeIfPresent(Int.self, forKey: .lastFileId)
         lastResolution = try c.decodeIfPresent(String.self, forKey: .lastResolution)
+        lastEditionKey = try c.decodeIfPresent(String.self, forKey: .lastEditionKey)
     }
 }
 
@@ -1394,6 +1411,9 @@ struct WatchDetail {
     var effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
     var effectiveSubtitleTrackSignature: SubtitleTrackSignature?
+    /// The server's watch choices; their order breaks the last tie between
+    /// cuts. Nil from servers that predate it.
+    var playbackVariants: [PlaybackVariant]? = nil
 
     /// "Show forced subtitles" for this content. The server omits
     /// `effective_show_forced_subtitles` when no stored setting applies, and

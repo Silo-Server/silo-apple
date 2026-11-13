@@ -146,6 +146,10 @@ struct TVBrowseSortPanel: View {
                 }
                 .buttonStyle(TVBrowsePanelRowStyle())
                 .focused($focusedSort, equals: key)
+                // On Apple TV the `resetFocus(in:)` in `claimFocus()` decides
+                // where focus lands, so the row `claimFocus()` targets has to
+                // be the scope's preferred default too.
+                .prefersDefaultFocus(key == focusTarget, in: sortFocusScope)
             }
         }
         .padding(14)

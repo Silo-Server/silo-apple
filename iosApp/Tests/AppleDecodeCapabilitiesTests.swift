@@ -39,7 +39,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         XCTAssertEqual(software["h264"], [1_920, 1_080, 30, 10_000])
         XCTAssertEqual(software["av1"], [1_920, 1_080, 30, 3_000])
         XCTAssertEqual(software["vp9"], [1_920, 1_080, 30, 3_000])
-        XCTAssertEqual(software["mpeg2video"], [720, 480, 31, 7_000])
+        XCTAssertEqual(software["mpeg2video"], [1_920, 1_080, 31, 40_000])
         XCTAssertEqual(software["vc1"], [1_920, 1_080, 30, 32_000])
     }
 
@@ -88,6 +88,20 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         let downloads = Set(DownloadCaps.current().codecsAudio)
         XCTAssertEqual(v3, downloads)
         XCTAssertEqual(v3, Set(AppleDecodeCapabilities.audioCodecs))
+    }
+
+    /// Apple TV HD sends the platform-attested entries. A Blu-ray MPEG-2
+    /// remux (1080p23.976, about 36 Mbps of video) must fit its MPEG-2
+    /// entry, or the server transcodes it (silo-apple#1124).
+    func testPlatformAttestedMPEG2AdmitsBluRayRemux() throws {
+        let entry = try XCTUnwrap(
+            ApplePlaybackV3Capabilities.snapshot(videoCapabilityMode: .platformAttested)
+                .capabilities.videoDecode.first { $0.codec == "mpeg2video" }
+        )
+        XCTAssertGreaterThanOrEqual(entry.maxWidth, 1_920)
+        XCTAssertGreaterThanOrEqual(entry.maxHeight, 1_080)
+        XCTAssertGreaterThanOrEqual(entry.maxFrameRate, 24_000.0 / 1_001.0)
+        XCTAssertGreaterThanOrEqual(entry.maxBitrateKbps, 36_000)
     }
 
     func testBareAudioContainersReachTheFlatAndOriginalHTTPClaims() throws {
@@ -223,7 +237,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
                 ($0.codec, [$0.bitDepths.first ?? 0, $0.maxWidth, $0.maxHeight, Int($0.maxFrameRate), $0.maxBitrateKbps])
             }))
         }
-        let mpeg2 = [8, 720, 480, 31, 7_000]
+        let mpeg2 = [8, 1_920, 1_080, 31, 40_000]
         let dav1d = [10, 1_920, 1_080, 30, 3_000]
 
         let hardware = policy(hardwareAV1: true, simulator: false)
@@ -270,7 +284,7 @@ final class AppleDecodeCapabilitiesTests: XCTestCase {
         #if os(tvOS)
         XCTAssertTrue(decode.isEmpty, "Apple TV 4K keeps the unbounded declaration")
         #else
-        XCTAssertTrue(decode.contains { $0["codec"] as? String == "mpeg2video" && $0["max_height"] as? Int == 480 })
+        XCTAssertTrue(decode.contains { $0["codec"] as? String == "mpeg2video" && $0["max_height"] as? Int == 1_080 })
         #endif
         XCTAssertEqual(
             object["codecs_video"] as? [String],

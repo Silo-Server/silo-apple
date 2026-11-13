@@ -2,15 +2,6 @@
 import CoreGraphics
 import SwiftUI
 
-enum TVPlayerTimeDisplayMode: Equatable {
-    case elapsedRemaining
-    case currentAndFinish
-
-    mutating func toggle() {
-        self = self == .elapsedRemaining ? .currentAndFinish : .elapsedRemaining
-    }
-}
-
 /// tvOS player overlay. The idle state is minimal: no hero strip, a thin
 /// scrubber, and an icon-only transport row along the bottom.
 /// When the user opens the options panel, the idle overlay steps aside and
@@ -25,7 +16,6 @@ struct TVPlayerControls: View {
 
     let viewModel: PlayerViewModel
     let showsTimelinePreview: Bool
-    let timeDisplayMode: TVPlayerTimeDisplayMode
     let timelineSelectionRequest: UUID?
     /// The buffering pill's buttons. The shell draws the pill at the notice
     /// position, outside this overlay, but it follows the intro pill's focus
@@ -34,7 +24,6 @@ struct TVPlayerControls: View {
     /// The shell's Watch Party sync capsule holds the top-trailing corner,
     /// so the status column starts below it.
     let showsCornerCapsule: Bool
-    let onToggleTimeDisplayMode: () -> Void
     /// Reports the explicit timeline scrub, so the shell can take the
     /// buffering pill out of the focus graph during it as `introSkipLayer`
     /// does for the intro pill.
@@ -71,10 +60,6 @@ struct TVPlayerControls: View {
     /// any other reason (intro skip, HUD) so direction moves into the row
     /// keep working from elsewhere.
     @State private var trapsTransportFocus = false
-    /// A touch-surface contact can toggle the full HUD's clock labels only
-    /// if it ends as a light touch. Select and drag interactions clear this
-    /// candidate so their existing transport behavior remains exclusive.
-    @State private var fullHUDContactCanToggle = false
     /// Bumped each time the controls hide, which replaces the recap/credits
     /// pill's view (see `segmentSkipLayer`).
     @State private var segmentSkipPillGeneration = 0
@@ -142,29 +127,6 @@ struct TVPlayerControls: View {
                 .transition(.opacity)
             }
         }
-        .background {
-            TVTouchSurfaceContactGestureView(
-                // Keep the raw contact observer active in both normal HUD
-                // and timeline-selection states. Its simultaneous-recognition
-                // delegate lets an actual pan continue to own scrubbing.
-                isActive: viewModel.showControls && !isHUDPresented,
-                onContactBegan: {
-                    fullHUDContactCanToggle = true
-                },
-                onContactEnded: {
-                    guard fullHUDContactCanToggle else { return }
-                    fullHUDContactCanToggle = false
-                    onToggleTimeDisplayMode()
-                },
-                onContactCancelled: {
-                    fullHUDContactCanToggle = false
-                },
-                onDirectionalPressBegan: {
-                    fullHUDContactCanToggle = false
-                }
-            )
-            .frame(width: 1, height: 1)
-        }
         .animation(.easeOut(duration: SiloTheme.fastDuration), value: isHUDPresented)
         .animation(.easeOut(duration: 0.2), value: viewModel.showIntroSkip)
         // Menu / exit handling intentionally lives at the `PlayerView` level
@@ -173,7 +135,6 @@ struct TVPlayerControls: View {
         // the HUD's tab pill — adding a handler here would consume Menu while
         // the HUD is closed and break the "dismiss controls first" path.
         .onChange(of: isHUDPresented) { _, presented in
-            fullHUDContactCanToggle = false
             if !presented {
                 cancelPendingScrub = false
                 focusedHUDTab = nil
@@ -262,14 +223,12 @@ struct TVPlayerControls: View {
         }
         .onChange(of: timelineSelectionRequest) { _, request in
             guard request != nil else { return }
-            fullHUDContactCanToggle = false
             // PlayerView only issues this request from its playing Select
             // path, immediately after pausing the backend.
             resumePlaybackAfterTimelineSelection = true
             enterTimelineSelection()
         }
         .onChange(of: viewModel.showControls) { _, shown in
-            fullHUDContactCanToggle = false
             if !shown { segmentSkipPillGeneration += 1 }
         }
         .onChange(of: isTimelineScrubbing) { _, scrubbing in
@@ -360,7 +319,7 @@ struct TVPlayerControls: View {
             bottomGradient.ignoresSafeArea()
             VStack(spacing: 10) {
                 TVPassiveTimelineBar(viewModel: viewModel)
-                TVPlayerTimeRow(viewModel: viewModel, mode: timeDisplayMode)
+                TVPlayerTimeRow(viewModel: viewModel)
             }
             .mediaLayoutDirection()
             .padding(.horizontal, Self.transportHorizontalInset)
@@ -530,9 +489,6 @@ struct TVPlayerControls: View {
             TVPlayerScrubber(
                 viewModel: viewModel,
                 isFocused: $isScrubberFocused,
-                onSelectInteraction: {
-                    fullHUDContactCanToggle = false
-                },
                 onMoveToTransport: {
                     // This fires only because the trap kept the transport row
                     // out of the focus graph (no native Down target). Restore
@@ -564,7 +520,7 @@ struct TVPlayerControls: View {
                 cancelOnBlur: cancelPendingScrub
             )
             .mediaLayoutDirection()
-            TVPlayerTimeRow(viewModel: viewModel, mode: timeDisplayMode)
+            TVPlayerTimeRow(viewModel: viewModel)
                 .mediaLayoutDirection()
             TVPlayerTransportCluster(
                 viewModel: viewModel,
@@ -691,29 +647,22 @@ private extension PlayerViewModel {
     }
 }
 
-/// Elapsed/remaining or clock/finish-time row. It reads the playback clock,
-/// so clock ticks re-render this view rather than the whole overlay.
+/// Elapsed time, and the time remaining with the finish time. It reads the
+/// playback clock, so clock ticks re-render this view rather than the whole
+/// overlay.
 private struct TVPlayerTimeRow: View {
     let viewModel: PlayerViewModel
-    let mode: TVPlayerTimeDisplayMode
+    @Environment(\.locale) private var locale
 
     var body: some View {
-        if mode == .currentAndFinish {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                HStack {
-                    clockText(formatClockTime(context.date))
-                    Spacer()
-                    if viewModel.duration > 0 {
-                        clockText(formatClockTime(estimatedFinishDate(from: context.date)))
-                    }
-                }
-            }
-        } else {
-            HStack {
-                clockText(PlayerTimeFormatter.formatHMS(viewModel.timelineDisplayTime))
-                Spacer()
-                if viewModel.duration > 0 {
-                    clockText("−\(PlayerTimeFormatter.formatHMS(remainingTime))")
+        HStack {
+            clockText(PlayerTimeFormatter.formatHMS(viewModel.timelineDisplayTime))
+            Spacer()
+            if viewModel.duration > 0 {
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    // Date(), not the schedule date: the position redraws this
+                    // between ticks, and a stale clock would flicker the minute.
+                    clockText(trailingText(now: Date()))
                 }
             }
         }
@@ -726,17 +675,15 @@ private struct TVPlayerTimeRow: View {
             .monospacedDigit()
     }
 
-    private var remainingTime: Double {
-        max(0, viewModel.duration - viewModel.timelineDisplayTime)
-    }
-
-    private func estimatedFinishDate(from now: Date) -> Date {
-        let speed = max(viewModel.effectivePlaybackSpeed, 0.1)
-        return now.addingTimeInterval(remainingTime / speed)
-    }
-
-    private func formatClockTime(_ date: Date) -> String {
-        date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: AppLanguage.formattingLocale))
+    private func trailingText(now: Date) -> String {
+        let remaining = max(0, viewModel.duration - viewModel.timelineDisplayTime)
+        return PlayerEndTime.appending(
+            to: "−\(PlayerTimeFormatter.formatHMS(remaining))",
+            now: now,
+            remaining: remaining,
+            speed: viewModel.nominalPlaybackSpeed,
+            locale: locale
+        )
     }
 }
 

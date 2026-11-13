@@ -298,6 +298,20 @@ final class PlayerSettings {
         )
     }
 
+    /// The pair playback asks for on the current connection, as an id: what
+    /// a detail page's Auto ranks files with, so Play starts the file the
+    /// page shows on mobile data too. Observable through
+    /// ``PlaybackConnection``, so the page follows a change of connection.
+    var connectionPreferredQuality: String {
+        preferredQuality(onMeteredNetwork: PlaybackConnection.shared.isMetered)
+    }
+
+    /// The pair playback asks for on a metered or unmetered connection, as an id.
+    func preferredQuality(onMeteredNetwork: Bool) -> String {
+        let axes = playbackQualityAxes(onMeteredNetwork: onMeteredNetwork)
+        return AppleQualityAxes.join(resolution: axes.resolution, bitrateKbps: axes.bitrateKbps)
+    }
+
     /// The shared preset the stored pair corresponds to, or nil when the pair
     /// is a combination no preset covers — set through the API, or written by a
     /// client whose ladder has a rung this table does not. The settings picker
@@ -666,6 +680,15 @@ final class PlayerSettings {
         }
     }
 
+    /// Episodes that may auto-play in a row before Next Up waits for the
+    /// viewer. Client-local in the settings contract; 0 never waits.
+    private(set) var stillWatchingThreshold: Int {
+        didSet {
+            guard !isLoadingCache else { return }
+            defaults.set(stillWatchingThreshold, forKey: Self.cacheKey(Keys.stillWatchingThreshold))
+        }
+    }
+
     /// Synced keys this device holds its own `profile_device` value for.
     ///
     /// Read from each resolved row's scope, and kept current by the setters
@@ -790,6 +813,9 @@ final class PlayerSettings {
         )
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
+        )
+        stillWatchingThreshold = Self.clampStillWatchingThreshold(
+            Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: Self.defaultStillWatchingThreshold)
         )
         deviceOverriddenKeys = Self.cachedOverriddenKeys(defaults)
 
@@ -1083,6 +1109,10 @@ final class PlayerSettings {
         enqueueDeviceValue(.autoPlayNext, value: .bool(enabled))
     }
 
+    func setStillWatchingThreshold(_ threshold: Int) {
+        stillWatchingThreshold = Self.clampStillWatchingThreshold(threshold)
+    }
+
     func setNextUpPromptSeconds(_ seconds: Int) {
         let normalized = Self.clampNextUpPromptSeconds(seconds)
         nextUpPromptSeconds = normalized
@@ -1347,6 +1377,7 @@ final class PlayerSettings {
             deinterlaceFieldRate != .fullMotion,
             // A build without the object-audio components hides this setting.
             AetherObjectAudioPolicy.isAvailable && !trueHDAtmosEnabled,
+            stillWatchingThreshold != Self.defaultStillWatchingThreshold,
         ].filter { $0 }.count
     }
 
@@ -1494,6 +1525,7 @@ final class PlayerSettings {
         deinterlaceMode = .automatic
         deinterlaceFieldRate = .fullMotion
         trueHDAtmosEnabled = true
+        stillWatchingThreshold = Self.defaultStillWatchingThreshold
     }
 
     /// Keep showing this device's own values for keys whose change has not
@@ -1878,6 +1910,9 @@ final class PlayerSettings {
         )
         nextUpPromptSeconds = Self.clampNextUpPromptSeconds(
             Self.cachedInt(defaults, key: Keys.nextUpPromptSeconds, defaultValue: 30)
+        )
+        stillWatchingThreshold = Self.clampStillWatchingThreshold(
+            Self.cachedInt(defaults, key: Keys.stillWatchingThreshold, defaultValue: Self.defaultStillWatchingThreshold)
         )
         hdrEnabled = Self.cachedBool(defaults, key: Keys.hdrEnabled, defaultValue: true)
         dolbyVisionEnabled = Self.cachedBool(defaults, key: Keys.dolbyVisionEnabled, defaultValue: true)
@@ -2463,6 +2498,13 @@ final class PlayerSettings {
         return defaults.integer(forKey: scopedKey)
     }
 
+    static let stillWatchingThresholdRange = 0...20
+    static let defaultStillWatchingThreshold = 3
+
+    private static func clampStillWatchingThreshold(_ threshold: Int) -> Int {
+        min(max(threshold, stillWatchingThresholdRange.lowerBound), stillWatchingThresholdRange.upperBound)
+    }
+
     private static func clampNextUpPromptSeconds(_ seconds: Int) -> Int {
         max(0, min(seconds, 120))
     }
@@ -2516,6 +2558,7 @@ final class PlayerSettings {
         static let autoPlayNextEpisode = "autoPlayNext"
         static let legacyAutoPlayNextEpisode = "player.autoPlayNextEpisode"
         static let nextUpPromptSeconds = "player.nextUpPromptSeconds"
+        static let stillWatchingThreshold = "player.passoutThreshold"
         static let deviceOverriddenKeys = "player.deviceOverriddenKeys"
     }
 }

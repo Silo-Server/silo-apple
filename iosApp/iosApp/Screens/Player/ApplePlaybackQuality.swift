@@ -344,14 +344,14 @@ enum ApplePlaybackQuality {
         }
     }
 
-    static func formatBitrate(kbps: Int) -> String {
+    static func formatBitrate(kbps: Int, locale: Locale = AppLanguage.formattingLocale) -> String {
         if kbps >= 1000 {
             let mbps = Double(kbps) / 1000.0
             if mbps.rounded(.towardZero) == mbps {
-                return "\(LocaleFormat.integer(Int(mbps))) Mbps"
+                return "\(LocaleFormat.integer(Int(mbps), locale: locale)) Mbps"
             }
-            return LocaleFormat.decimal(mbps, fractionDigits: 1) + " Mbps"
+            return LocaleFormat.decimal(mbps, fractionDigits: 1, locale: locale) + " Mbps"
         }
-        return "\(LocaleFormat.integer(kbps)) kbps"
+        return "\(LocaleFormat.integer(kbps, locale: locale)) kbps"
     }
 }

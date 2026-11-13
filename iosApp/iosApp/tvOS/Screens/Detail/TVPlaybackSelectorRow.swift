@@ -15,6 +15,8 @@ struct TVPlaybackActionSelectors: View {
     /// Read live from `ProfilePrefsStore` by the parent page.
     let preferredSubtitleLanguage: String?
     let onSelectVersion: (Int?) -> Void
+    /// Takes a `PlaybackEditions.Edition.id`; Version stays on Auto.
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
     /// The action row's focus binding, so the row can return to the selector
@@ -25,6 +27,10 @@ struct TVPlaybackActionSelectors: View {
 
     var body: some View {
         HStack(spacing: 18) {
+            if showsEditions {
+                editionMenu
+                    .focused(focusedAction, equals: .edition)
+            }
             versionMenu
                 .focused(focusedAction, equals: .version)
             audioMenu
@@ -37,21 +43,72 @@ struct TVPlaybackActionSelectors: View {
         .task { await ProfilePrefsStore.shared.hydrateIfNeeded() }
     }
 
-    private var isVersionDisabled: Bool { currentVersion == nil || versions.isEmpty }
+    private var editions: [PlaybackEditions.Edition] {
+        PlaybackEditions.editions(from: versions)
+    }
+
+    /// Edition appears only when the title has more than one, as on iPhone.
+    private var showsEditions: Bool { editions.count > 1 }
+
+    private var currentEdition: PlaybackEditions.Edition? {
+        DetailPlaybackFormatting.currentEdition(versions: versions, currentVersion: currentVersion)
+    }
+
+    /// The current edition's files when editions show, else every file.
+    private var scopedVersions: [FileVersion] {
+        DetailPlaybackFormatting.versionSelectorVersions(versions: versions, currentVersion: currentVersion)
+    }
+
+    private var isEditionDisabled: Bool { currentVersion == nil || !showsEditions }
+    /// Version opens only when the current edition has a choice, as on iPhone.
+    private var isVersionDisabled: Bool {
+        currentVersion == nil
+            || !DetailPlaybackFormatting.shouldEnableVersionSelector(versions: versions, currentVersion: currentVersion)
+    }
     private var isAudioDisabled: Bool { currentVersion == nil || audioOptions.isEmpty }
     private var isSubtitleDisabled: Bool { currentVersion == nil }
 
+    /// Includes Edition while it is unmounted, so the row never returns
+    /// focus to a button that is gone.
     private var disabledActions: Set<TVDetailAction> {
         var actions: Set<TVDetailAction> = []
+        if isEditionDisabled { actions.insert(.edition) }
         if isVersionDisabled { actions.insert(.version) }
         if isAudioDisabled { actions.insert(.audio) }
         if isSubtitleDisabled { actions.insert(.subtitles) }
         return actions
     }
 
+    private var editionMenu: some View {
+        TVCircleMenuButton(
+            icon: "rectangle.stack",
+            title: AppLanguage.string(.detailEdition, locale: locale),
+            accessibilityLabel: AppLanguage.string(.detailEditionSpoken(editionValue), locale: locale),
+            stabilizesFocusMotion: true,
+            menuTitle: AppLanguage.string(.detailEdition, locale: locale),
+            items: {
+                editions.map { edition in
+                    TVActionPopoverItem(
+                        id: "edition-\(edition.id)",
+                        title: PlaybackEditions.displayLabel(edition.label, locale: locale),
+                        detail: AppLanguage.string(
+                            .detailEditionVersionCount(edition.versions.count),
+                            locale: locale
+                        ),
+                        isSelected: currentEdition?.id == edition.id
+                    )
+                }
+            },
+            onSelect: { item in
+                onSelectEdition(String(item.id.dropFirst("edition-".count)))
+            }
+        )
+        .disabled(isEditionDisabled)
+    }
+
     private var versionMenu: some View {
         TVCircleMenuButton(
-            icon: "square.stack",
+            icon: "play.rectangle.on.rectangle",
             title: AppLanguage.string(.detailVersion, locale: locale),
             accessibilityLabel: AppLanguage.string(.detailVersionSpoken(versionValue), locale: locale),
             stabilizesFocusMotion: true,
@@ -64,7 +121,7 @@ struct TVPlaybackActionSelectors: View {
                         detail: AppLanguage.string(.detailAutoVersion, locale: locale),
                         isSelected: selectedVersionFileId == nil
                     )
-                ] + versions.map { version in
+                ] + scopedVersions.map { version in
                     TVActionPopoverItem(
                         id: "file-\(version.fileId)",
                         title: DetailPlaybackFormatting.versionShortLabel(version),
@@ -166,6 +223,13 @@ struct TVPlaybackActionSelectors: View {
             }
         )
         .disabled(isSubtitleDisabled)
+    }
+
+    private var editionValue: String {
+        PlaybackEditions.displayLabel(
+            currentEdition?.label ?? currentVersion?.editionDisplayLabel ?? PlaybackEditions.standardLabel,
+            locale: locale
+        )
     }
 
     private var versionValue: String {

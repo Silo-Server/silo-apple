@@ -139,7 +139,9 @@ struct CardOverlays: View {
         // Wide cards leave more bottom room because a title block or
         // progress bar typically sits under the image.
         case .wide: return 24
-        case .poster: return hasProgressBar ? inset * 2 : inset
+        // The bar keeps its size on small posters, so the badges clear it by
+        // a fixed distance rather than one (scaled) inset step.
+        case .poster: return hasProgressBar ? max(inset * 2, ProgressBar.badgeClearance) : inset
         }
     }
 

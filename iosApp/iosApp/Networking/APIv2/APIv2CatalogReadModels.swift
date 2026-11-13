@@ -358,6 +358,27 @@ enum APIv2CatalogRead {
         let effectiveSubtitleMode: String?
         let effectiveShowForcedSubtitles: Bool?
         let effectiveSubtitleTrackSignature: WatchSubtitleSignature?
+        /// Absent from servers that predate it.
+        let playbackVariants: [WatchPlaybackVariant]?
+    }
+
+    struct WatchPlaybackVariant: Decodable {
+        let variantId: String
+        let editionRaw: String?
+        let editionKey: String?
+        let presentationKind: String?
+        let presentationGroupKey: String?
+        let partCount: Int64
+        let totalDurationSeconds: Int64?
+        let defaultFileId: String?
+        let parts: [WatchPlaybackVariantPart]
+    }
+
+    struct WatchPlaybackVariantPart: Decodable {
+        let partIndex: Int64
+        let defaultFileId: String?
+        let totalDurationSeconds: Int64?
+        let versions: [WatchFileVersion]
     }
 
     struct ItemExtraInfo: Decodable {
@@ -445,11 +466,13 @@ enum APIv2CatalogRead {
         let colorTransfer: String?
         let dolbyVision: String?
         let frameRate: String?
+        let hdr10Plus: Bool?
         let height: Int64?
         let level: Int64?
         let profile: String?
         let title: String?
         let videoRange: String?
+        let videoRangeType: String?
         let width: Int64?
     }
 
@@ -457,6 +480,7 @@ enum APIv2CatalogRead {
         let durationSeconds: Double?
         let inProgressCount: Int64
         let isInProgress: Bool?
+        let lastEditionKey: String?
         let lastFileId: String?
         let lastResolution: String?
         let played: Bool

@@ -891,10 +891,13 @@ actor PlaybackSessionBridge {
             versions: watchDetail.versions,
             requestedFileId: preferredFileId,
             lastFileId: watchDetail.userData?.lastFileId,
-            lastResolution: watchDetail.userData?.lastResolution,
+            lastFileInProgress: watchDetail.userData?.hasResumePoint ?? false,
+            lastEditionKey: watchDetail.userData?.lastEditionKey,
+            variants: watchDetail.playbackVariants,
             prefersLastUsedVersion: prefersLastUsedVersion,
             pinsRequestedVersion: pinsVersion,
-            startsAtFirstPart: startsAtFirstPart,
+            // Start Over on a later part restarts its presentation.
+            startsAtFirstPart: startsAtFirstPart || startFromBeginning,
             preferredQualityOverride: preferredQualityOverride,
             settingsQuality: PlayerSettings.shared.playbackQualityAxes(onMeteredNetwork: onMeteredNetwork)
         )
@@ -906,7 +909,7 @@ actor PlaybackSessionBridge {
         }
         let normalizedResumePosition: Double? = {
             guard let resumePosition, resumePosition.isFinite, resumePosition >= 0 else {
-                return nil
+                return start.ignoresStoredPosition ? 0 : nil
             }
             return resumePosition
         }()
@@ -2433,11 +2436,16 @@ actor PlaybackSessionBridge {
         /// The client quality id, nil for Auto.
         let qualityPreference: String?
         let bandwidthCapKbps: Int?
+        /// The stored position belongs to another part of a multi-part
+        /// title, as when Resume would not offer it on the later part last
+        /// played and Auto returns to part 1. A start with no explicit
+        /// position begins at 0 instead of falling back to it.
+        let ignoresStoredPosition: Bool
     }
 
     /// Picks the start version: the requested file, else on a resume the
-    /// last-played one, else the best ranked match, where a resume ranks by
-    /// the resolution it last played.
+    /// last-played one, else the detail page's Auto for the start quality
+    /// (which for a resume whose file is gone stays in the last-played cut).
     ///
     /// The quality never comes from the version. `file_id` already pins the
     /// file and `allow_alternate_versions` governs fallback, so sending the
@@ -2448,7 +2456,9 @@ actor PlaybackSessionBridge {
         versions: [FileVersion],
         requestedFileId: Int?,
         lastFileId: Int?,
-        lastResolution: String?,
+        lastFileInProgress: Bool,
+        lastEditionKey: String? = nil,
+        variants: [PlaybackVariant]? = nil,
         prefersLastUsedVersion: Bool,
         pinsRequestedVersion: Bool = false,
         startsAtFirstPart: Bool,
@@ -2470,17 +2480,22 @@ actor PlaybackSessionBridge {
             version = lastUsed
             source = .lastUsed
         } else {
-            var rankingQuality = quality.preferredQuality
-            if prefersLastUsedVersion,
-               preferredQualityOverride == nil,
-               let lastPlayed = normalizedQualityPreference(lastResolution) {
-                rankingQuality = lastPlayed
-            }
-            version = selectVersion(from: versions, lastFileId: lastFileId, preferredQuality: rankingQuality)
+            // A start without a detail page (a home card, a deep link) picks
+            // the way the page does: the last-played cut, then the best file
+            // of it for the quality, so it never switches cuts.
+            version = DetailVersionSelection.displayVersion(
+                versions: versions,
+                selectedFileId: nil,
+                lastFileId: lastFileId,
+                lastFileInProgress: lastFileInProgress,
+                preferredQualityId: quality.preferredQuality,
+                lastEditionKey: lastEditionKey,
+                variants: variants
+            ) ?? versions[0]
             source = .ranked
         }
-        // A multi-part item that must play through starts at its first part,
-        // whichever part the quality ranking happened to prefer.
+        // A shuffle or a start from the beginning plays a multi-part item
+        // from its first part, though Auto resumes a later part last played.
         if startsAtFirstPart,
            requestedFileId == nil,
            let firstPart = PlayerMultipartPolicy.firstPart(for: version, in: versions) {
@@ -2491,7 +2506,11 @@ actor PlaybackSessionBridge {
             source: source,
             keepsVersion: pinsRequestedVersion && source == .requested,
             qualityPreference: quality.preferredQuality,
-            bandwidthCapKbps: quality.bandwidthCapKbps
+            bandwidthCapKbps: quality.bandwidthCapKbps,
+            ignoresStoredPosition: !DetailVersionSelection.positionCarries(
+                from: versions.first { $0.fileId == lastFileId },
+                to: version
+            )
         )
     }
 
@@ -2507,73 +2526,6 @@ actor PlaybackSessionBridge {
 
     private func protocolV3TrackId(fileId: Int, kind: String, index: Int) -> String {
         "file:\(fileId):\(kind):\(index)"
-    }
-
-    /// Pick the best version for the user's preferred quality. The server does
-    /// the compatibility filtering from the reported capability snapshot and
-    /// may answer with a different `effective_media_file_id`; this ranking step
-    /// only decides which version the request asks for.
-    static func selectVersion(
-        from versions: [FileVersion],
-        lastFileId: Int?,
-        preferredQuality: String?
-    ) -> FileVersion {
-        let ranked = versions.sorted {
-            score(for: $0, preferredQuality: preferredQuality) >
-                score(for: $1, preferredQuality: preferredQuality)
-        }
-
-        if let preferredQuality,
-           let matchingQuality = ranked.first(where: {
-               qualityMatches($0.resolution, preferredQuality: preferredQuality)
-           }) {
-            return matchingQuality
-        }
-
-        if let lastFileId,
-           let lastUsed = versions.first(where: { $0.fileId == lastFileId }) {
-            return lastUsed
-        }
-
-        return ranked.first ?? versions[0]
-    }
-
-    private static func score(for version: FileVersion, preferredQuality: String?) -> Int {
-        var score = resolutionRank(version.resolution) * 10
-
-        if let preferredQuality {
-            if qualityMatches(version.resolution, preferredQuality: preferredQuality) {
-                score += 100
-            } else if resolutionRank(version.resolution) > resolutionRank(preferredQuality) {
-                score -= 50
-            }
-        }
-
-        return score
-    }
-
-    private static func qualityMatches(_ resolution: String?, preferredQuality: String) -> Bool {
-        let versionRank = resolutionRank(resolution)
-        let requestedRank = resolutionRank(preferredQuality)
-        return versionRank > 0 && versionRank <= requestedRank
-    }
-
-    private static func resolutionRank(_ value: String?) -> Int {
-        guard let value = value?.lowercased() else { return 0 }
-
-        if value.contains("2160") || value.contains("4k") {
-            return 4
-        }
-        if value.contains("1080") {
-            return 3
-        }
-        if value.contains("720") {
-            return 2
-        }
-        if value.contains("480") {
-            return 1
-        }
-        return 0
     }
 
 }

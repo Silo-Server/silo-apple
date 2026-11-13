@@ -771,27 +771,40 @@ private struct MobilePlayerTimeline: View {
 
             Spacer()
 
-            Button {
-                showsRemainingTime.toggle()
-            } label: {
-                Text(trailingTimeText)
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .monospacedDigit()
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                // Date(), not the schedule date: the position redraws this
+                // between ticks, and a stale clock would flicker the minute.
+                let text = trailingTimeText(now: Date())
+                Button {
+                    showsRemainingTime.toggle()
+                } label: {
+                    Text(text)
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .monospacedDigit()
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(showsRemainingTime
+                    ? LocalizedStringResource.playerProgressTimeRemaining
+                    : .playerProgressDuration))
+                .accessibilityValue(text)
+                .accessibilityHint(Text(.playerProgressToggleTimeHint))
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(showsRemainingTime
-                ? LocalizedStringResource.playerProgressTimeRemaining
-                : .playerProgressDuration))
-            .accessibilityHint(Text(.playerProgressToggleTimeHint))
         }
     }
 
-    private var trailingTimeText: String {
-        if showsRemainingTime {
-            return "−" + PlayerTimeFormatter.formatHMS(max(viewModel.duration - displayTime, 0))
-        }
-        return PlayerTimeFormatter.formatHMS(viewModel.duration)
+    private func trailingTimeText(now: Date) -> String {
+        let remaining = max(viewModel.duration - displayTime, 0)
+        let time = showsRemainingTime
+            ? "−" + PlayerTimeFormatter.formatHMS(remaining)
+            : PlayerTimeFormatter.formatHMS(viewModel.duration)
+        return PlayerEndTime.appending(
+            to: time,
+            now: now,
+            remaining: remaining,
+            speed: viewModel.nominalPlaybackSpeed,
+            locale: locale
+        )
     }
 
     private func statusChip(systemImage: String, text: String) -> some View {
@@ -991,7 +1004,7 @@ private struct MobileChapterMenuItems: View {
         let currentChapterIndex = viewModel.chapters.lastIndex(where: { $0.time <= viewModel.currentTime })
         ForEach(viewModel.chapters) { chapter in
             Button {
-                viewModel.seekTo(seconds: chapter.time)
+                viewModel.jumpToChapter(at: chapter.time)
             } label: {
                 if currentChapterIndex == chapter.index {
                     Label {

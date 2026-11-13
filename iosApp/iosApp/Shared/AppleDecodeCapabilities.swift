@@ -318,8 +318,10 @@ enum AppleDecodeCapabilities {
             ("h264", "libavcodec", ["high 10"], [10], 1_920, 1_080, 30, 10_000),
             ("av1", "dav1d", ["main"], [10], 1_920, 1_080, 30, 3_000),
             ("vp9", "libavcodec", ["profile 0"], [8], 1_920, 1_080, 30, 3_000),
-            // The exercised NTSC fixture reports 30.303 fps.
-            ("mpeg2video", "libavcodec", ["main"], [8], 720, 480, 31, 7_000),
+            // Blu-ray MPEG-2 up to its 40 Mbps video ceiling. 31 fps admits
+            // the exercised NTSC fixture, which reports 30.303 fps. Not yet
+            // measured on Apple TV HD (silo-apple#1124).
+            ("mpeg2video", "libavcodec", ["main"], [8], 1_920, 1_080, 31, 40_000),
             ("vc1", "libavcodec", ["advanced"], [8], 1_920, 1_080, 30, 32_000),
         ]
         return capabilities.map { capability in

@@ -10,9 +10,25 @@ struct BrowseView: View {
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
+    @Environment(\.libraryPageReloadRequest) private var reloadRequest
     @State private var shuffleLauncher = ShuffleLauncher()
+    #if os(iOS)
+    /// Scrolls the grid to a letter's first title.
+    @State private var gridCommands = BrowseGridCommands()
+    /// The jump waiting for its titles; a later jump replaces it.
+    @State private var pendingJump: Task<Void, Never>?
+    @Environment(\.libraryPageScrollToTopRequest) private var scrollToTopRequest
+    #else
+    /// Letter-jump scroll state, kept off this view so scrolling doesn't
+    /// redraw the grid.
+    @State private var letterJump = LetterJumpState()
+    #endif
+    /// Read by the letter index only, so marking a letter doesn't redraw
+    /// the grid.
+    @State private var jumpedLetter = JumpedLetter()
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
+    @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
 
     @ViewBuilder
     var body: some View {
@@ -37,6 +53,29 @@ struct BrowseView: View {
                 scrollContent
             }
         }
+        .overlay(alignment: .trailing) {
+            #if !os(tvOS)
+            // Outside the scroll view, so it stays put while the grid scrolls.
+            if showsLetterIndex, let index = viewModel.letterIndex {
+                BrowseLetterIndex(
+                    available: Set(index.letters.map(\.letter)),
+                    jumped: jumpedLetter,
+                    onEngage: engageLetterIndex,
+                    onPreview: { letter in
+                        // Only the iPhone and iPad grid reads by page; the
+                        // Mac's jump reads its own window.
+                        #if os(iOS)
+                        viewModel.prepareJump(to: letter)
+                        #endif
+                    },
+                    onJump: jump(to:)
+                )
+                .transition(.opacity)
+            }
+            #endif
+        }
+        // A new list (sort, filters, refresh) has no jump in it yet.
+        .onChange(of: viewModel.letterIndex) { jumpedLetter.letter = nil }
         .siloPageBackground()
         .overlay(alignment: .top) {
             // Grid is painted from cache but the server can't be reached —
@@ -51,13 +90,20 @@ struct BrowseView: View {
         .sheet(isPresented: $showFilters) {
             FilterView(viewModel: viewModel)
         }
+        .shuffleFailureAlert(shuffleLauncher)
         .task(id: BrowseConfigurationID(libraryId: libraryId, libraryType: libraryType, mediaScope: mediaScope)) {
             guard await viewModel.configure(libraryId: libraryId, libraryType: libraryType, mediaScope: mediaScope) else { return }
-            await viewModel.loadItems(reset: true)
+            await viewModel.loadFromTop()
             await viewModel.loadFacetsIfNeeded()
         }
         .refreshable {
-            await viewModel.loadItems(reset: true)
+            await viewModel.refresh()
+            pageDidRefresh?()
+        }
+        // The iPhone Libraries tab keeps this page alive under its others
+        // and asks for a reload when it comes back after a title changed.
+        .onChange(of: reloadRequest) {
+            Task { await viewModel.refresh() }
         }
     }
 
@@ -83,6 +129,7 @@ struct BrowseView: View {
             .frame(maxWidth: .infinity)
         }
         .reportsPageChromeScroll()
+        .scrollsToTopOnLibraryDockRequest()
         .environment(\.browseLibraryId, libraryId)
     }
 
@@ -118,6 +165,56 @@ struct BrowseView: View {
         }
     }
 
+    #if os(iOS)
+    /// The whole page in one collection view: the controls, then the grid.
+    private var scrollContent: some View {
+        BrowseCollectionGrid(
+            items: viewModel.items,
+            pager: viewModel.pager,
+            isLoading: viewModel.isLoading || !viewModel.hasLoaded,
+            hasMore: viewModel.hasMore,
+            listIdentity: viewModel.listIdentity,
+            forcesThreeColumnsOnPhone: libraryId != nil,
+            usesSquareArtwork: viewModel.items.first?.isAudiobook ?? (viewModel.mediaType == .audiobook),
+            trailingPadding: gridTrailingPadding,
+            commands: gridCommands,
+            header: { AnyView(gridHeader) },
+            onItemTap: { router.navigate(to: .itemDetail(browseItem: $0, libraryId: libraryId)) },
+            onLoadMore: {
+                Task { await viewModel.loadItems() }
+            },
+            onRefresh: {
+                await viewModel.refresh()
+                pageDidRefresh?()
+            },
+            onUserScroll: { [jumpedLetter] in jumpedLetter.letter = nil }
+        )
+        .reportsLibraryPageScrollView()
+        .environment(\.browseLibraryId, libraryId)
+        .onChange(of: scrollToTopRequest) {
+            // A letter jump still waiting for its titles would move the page
+            // away from the top once they arrive.
+            pendingJump?.cancel()
+            pendingJump = nil
+            gridCommands.scrollToTop()
+        }
+    }
+
+    private var gridHeader: some View {
+        VStack(spacing: SiloTheme.padding) {
+            if showsSearchShortcut {
+                searchBar
+            }
+
+            controlBar
+
+            if hasActiveFilters {
+                activeFilterChips
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+    #else
     private var scrollContent: some View {
         ScrollView {
             VStack(spacing: SiloTheme.padding) {
@@ -139,13 +236,40 @@ struct BrowseView: View {
                     onItemTap: { router.navigate(to: .itemDetail(browseItem: $0, libraryId: libraryId)) },
                     onLoadMore: {
                         Task { await viewModel.loadItems() }
-                    }
+                    },
+                    hasEarlier: viewModel.hasEarlier,
+                    onLoadEarlier: { columns in
+                        Task { await viewModel.loadEarlier(columns: columns) }
+                    },
+                    tracksScrollPosition: letterJump.isEngaged,
+                    onColumnCount: { [letterJump] in letterJump.columnCount = $0 }
                 )
-                .padding(.horizontal, SiloTheme.padding)
+                .padding(.leading, SiloTheme.padding)
+                .padding(.trailing, gridTrailingPadding)
             }
+        }
+        // Once the letter index is in use, the scroll view follows the card
+        // at the top: a jump sets it, and titles loading above it leave it
+        // where it is.
+        .scrollPosition(id: Bindable(letterJump).cardID, anchor: .top)
+        .onScrollPhaseChange { _, phase in
+            if phase == .interacting { jumpedLetter.letter = nil }
         }
         .reportsPageChromeScroll()
         .environment(\.browseLibraryId, libraryId)
+    }
+    #endif
+
+    /// Leaves the letter index its own column beside the posters wherever it
+    /// can appear, so the posters don't shift when it does.
+    private var gridTrailingPadding: CGFloat {
+        #if os(tvOS)
+        SiloTheme.padding
+        #else
+        viewModel.filterState.sort == .title && viewModel.offersLetterIndex
+            ? BrowseLetterIndex.reservedWidth
+            : SiloTheme.padding
+        #endif
     }
 
     // MARK: - Search Bar
@@ -206,7 +330,6 @@ struct BrowseView: View {
             }
         }
         .padding(.horizontal, SiloTheme.padding)
-        .shuffleFailureAlert(shuffleLauncher)
     }
 
     /// The library a Shuffle chip plays from; nil where Shuffle isn't offered.
@@ -296,6 +419,48 @@ struct BrowseView: View {
         .siloGlass(in: .capsule)
     }
 
+    // MARK: - Letter jump
+
+    /// The index jumps by list position, which only title order has.
+    private var showsLetterIndex: Bool {
+        viewModel.filterState.sort == .title && !viewModel.items.isEmpty
+            && (viewModel.letterIndex?.total ?? 0) > 0
+    }
+
+    #if os(iOS)
+    private func engageLetterIndex() {}
+
+    /// The grid already has a place for every title, so a jump is one
+    /// scroll, made once the letter's titles are read or a moment has passed.
+    private func jump(to letter: String) {
+        pendingJump?.cancel()
+        let commands = gridCommands
+        let list = viewModel.listIdentity
+        pendingJump = Task {
+            guard let position = await viewModel.position(forJumpTo: letter), !Task.isCancelled,
+                  // A sort, filter or library change while the jump waited
+                  // put a different list in the grid.
+                  viewModel.listIdentity == list else { return }
+            commands.scroll(toPosition: position)
+        }
+    }
+    #else
+    private func engageLetterIndex() {
+        letterJump.isEngaged = true
+    }
+
+    private func jump(to letter: String) {
+        letterJump.isEngaged = true
+        let state = letterJump
+        Task {
+            guard let card = await viewModel.jump(to: letter, columns: state.columnCount) else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { state.cardID = card }
+        }
+    }
+    #endif
+
     // MARK: - Active Filters
 
     private var hasActiveFilters: Bool { viewModel.hasActiveFilters }
@@ -329,6 +494,29 @@ struct BrowseView: View {
         .padding(.vertical, 5)
         .siloGlass(in: .capsule)
     }
+}
+
+#if !os(iOS)
+/// Scroll state of the letter index. The scroll view writes `cardID` on
+/// every scroll, and nothing draws from it, so scrolling redraws nothing.
+@Observable
+@MainActor
+final class LetterJumpState {
+    /// The card at the top of the grid, bound to the scroll position.
+    var cardID: String?
+    /// Set on the first touch of the letter index; turns on scroll-position
+    /// tracking, which plain browsing doesn't pay for.
+    var isEngaged = false
+    @ObservationIgnored var columnCount = 1
+}
+#endif
+
+/// The letter the index last jumped to, marked on the index until the grid
+/// is scrolled by hand or shows another list.
+@Observable
+@MainActor
+final class JumpedLetter {
+    var letter: String?
 }
 
 private struct BrowseConfigurationID: Hashable {
@@ -495,6 +683,7 @@ struct LibraryRecommendedView: View {
     @State private var viewModel = LibraryRecommendedViewModel()
     @Environment(AppRouter.self) private var router
     @Environment(\.locale) private var locale
+    @Environment(\.libraryPageDidRefresh) private var pageDidRefresh
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -531,6 +720,13 @@ struct LibraryRecommendedView: View {
         }
         .refreshable {
             await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
+            pageDidRefresh?()
+        }
+        // The Libraries tab keeps this page alive under its others, so a
+        // title marked watched elsewhere would otherwise keep its old card
+        // in Continue Watching and Next Up. Home reloads on the same signal.
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+            Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) }
         }
     }
 
@@ -562,6 +758,7 @@ struct LibraryRecommendedView: View {
         }
         .siloScrollEdgeEffect()
         .reportsPageChromeScroll()
+        .scrollsToTopOnLibraryDockRequest()
         .environment(\.browseLibraryId, libraryId)
     }
 

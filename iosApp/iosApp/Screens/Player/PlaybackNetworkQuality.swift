@@ -105,6 +105,30 @@ final class PlaybackNetworkMonitor: @unchecked Sendable {
     }
 }
 
+/// Whether the connection is metered, as observable state. A detail page
+/// ranks its files with the connection's quality pair, so reading this in a
+/// view redraws it when the connection changes, and Play then starts the
+/// file the page shows. The monitor itself is not observable.
+@Observable
+final class PlaybackConnection {
+    static let shared = PlaybackConnection()
+
+    private(set) var isMetered = false
+    @ObservationIgnored private var observation: PlaybackNetworkMonitor.ObserverToken?
+
+    private init() {
+        // Subscribe before the first read, so a change between them isn't lost.
+        observation = PlaybackNetworkMonitor.shared.observe {
+            DispatchQueue.main.async { PlaybackConnection.shared.refresh() }
+        }
+        isMetered = PlaybackNetworkMonitor.shared.isMetered
+    }
+
+    private func refresh() {
+        isMetered = PlaybackNetworkMonitor.shared.isMetered
+    }
+}
+
 /// Replans an active playback when the connection moves between metered and
 /// unmetered and the two quality pairs differ. Owned by the player.
 @MainActor

@@ -333,8 +333,11 @@ transcode-only opaque fixtures, which established the strict fallback and
 download envelopes. The server accepts those `hardware: false` entries only
 with `software_video_decode_v1` and enforces their profile, bit depth, frame
 size, frame rate, and bitrate bounds. Those bounds remain deliberately narrow:
-1080p30 at rounded 10/3/3/32 Mbps ceilings for H.264/AV1/VP9/VC-1, and 720x480
-at 31 fps and 7 Mbps for MPEG-2. They no longer constrain online Apple TV 4K
+1080p30 at rounded 10/3/3/32 Mbps ceilings for H.264/AV1/VP9/VC-1. MPEG-2
+was first bounded to its 720x480 fixture and now claims 1080p at 31 fps and
+40 Mbps, the Blu-ray MPEG-2 video ceiling, so Apple TV HD direct plays
+Blu-ray MPEG-2 remuxes (silo-apple#1124); that bound has not been measured
+on Apple TV HD. They no longer constrain online Apple TV 4K
 `original_http`; there, the pinned engine manifest gets the source to Aether's
 own probe. Broader physical-hardware validation is still required before
 release, especially for sustained software decode where a load can succeed

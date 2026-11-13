@@ -21,6 +21,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let hierarchyError: String?
     let onRetryHierarchy: () async -> Void
     let selectedNextUpFileId: Int?
+    /// The edition picked for the selected episode on this visit.
+    let selectedNextUpEditionId: String?
     let selectedNextUpAudioTrackIndex: Int?
     let selectedNextUpSubtitleTrackIndex: Int?
     let nextUpWatchDetail: WatchDetail?
@@ -32,14 +34,18 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let onSelectSeason: (Season) -> Void
     /// `resumePosition` is the point the user was offered (nil for a
     /// restart or an episode without progress).
+    /// `watchState` is the watch state the position came from; Play
+    /// resolves the episode's file from it.
     let onPlayEpisode: (
-        _ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool, _ resumePosition: Double?
+        _ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool, _ resumePosition: Double?,
+        _ watchState: LeafItemUserData?
     ) -> Void
     /// Reads the episode's current watch state from the server, so the
     /// resume prompt never offers a position another device has moved past.
     let refreshResumeState: (_ contentId: String) async -> DetailResumeState
     let onEpisodeTap: (String) -> Void
     let onSelectNextUpVersion: (Int?) -> Void
+    let onSelectNextUpEdition: (String) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
     let onSelectNextUpSubtitleTrack: (Int?) -> Void
     let onToggleFavorite: () -> Void
@@ -78,6 +84,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private struct PendingResume {
         let episode: EpisodeListItem
         let position: Double
+        let watchState: LeafItemUserData?
     }
     @State private var pendingResume: PendingResume?
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
@@ -95,6 +102,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// Keep the primary control interactive from frame one and fulfill that
     /// intent as soon as the target episode is known.
     @State private var pendingEpisodePlayRequest: PendingEpisodePlayRequest?
+    /// The viewer opened the Media Info section.
+    @State private var showsMediaInfo = false
 
     var body: some View {
         PhoneDetailPageSurface(
@@ -142,10 +151,14 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         ) {
             guard let pendingResume else { return }
             let episode = pendingResume.episode
-            onPlayEpisode(episode.contentId, playbackFileId(for: episode), false, pendingResume.position)
+            onPlayEpisode(
+                episode.contentId, playbackFileId(for: episode), false, pendingResume.position,
+                pendingResume.watchState
+            )
         } onRestart: {
-            guard let episode = pendingResume?.episode else { return }
-            onPlayEpisode(episode.contentId, playbackFileId(for: episode), true, nil)
+            guard let pendingResume else { return }
+            let episode = pendingResume.episode
+            onPlayEpisode(episode.contentId, playbackFileId(for: episode), true, nil, pendingResume.watchState)
         }
         .onDisappear {
             hierarchyRetryTask?.cancel()
@@ -338,6 +351,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     subtitleSignature: nextUpWatchDetail?.effectiveSubtitleTrackSignature,
                     showForcedSubtitles: nextUpWatchDetail?.showsForcedSubtitles ?? true,
                     onSelectVersion: onSelectNextUpVersion,
+                    onSelectEdition: onSelectNextUpEdition,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
                 )
@@ -381,7 +395,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         #if os(iOS)
         if let episode = nextUpEpisode {
             WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode", // i18n-ignore: watch-party payload title and type (D44)
-                fileId: playbackFileId(for: episode), episode: episode)
+                fileId: watchPartyFileId(for: episode), episode: episode)
         }
         #endif
         if let selectedSeason {
@@ -432,10 +446,16 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             let state = await refreshResumeState(episode.contentId)
             guard !Task.isCancelled else { return }
             resumeLookupTask = nil
-            if let position = state.resumePosition(cached: episode.userData) {
-                pendingResume = PendingResume(episode: episode, position: position)
+            let watchState = state.userData(cached: episode.userData)
+            // A position saved on another edition than the one shown isn't
+            // offered: Play starts the shown one at 0.
+            if let position = state.resumePosition(cached: episode.userData),
+               DetailVersionSelection.savedPositionIsInEdition(
+                   of: shownVersion(for: episode), in: nextUpVersions, userData: watchState
+               ) {
+                pendingResume = PendingResume(episode: episode, position: position, watchState: watchState)
             } else {
-                onPlayEpisode(episode.contentId, playbackFileId(for: episode), false, nil)
+                onPlayEpisode(episode.contentId, playbackFileId(for: episode), false, nil, watchState)
             }
         }
     }
@@ -521,7 +541,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// "Resume S2·E5" when the tap offers to resume, else "Play S2·E5". The
     /// confirmation dialog still lets the user restart instead.
     private func playButtonLabel(for episode: EpisodeListItem) -> String {
-        DetailPlayLabel.episode(episode)
+        DetailPlayLabel.episode(episode, shown: shownVersion(for: episode), in: nextUpVersions)
+    }
+
+    /// The file the page shows for `episode`, once its files have loaded.
+    private func shownVersion(for episode: EpisodeListItem) -> FileVersion? {
+        nextUpWatchDetail?.contentId == episode.contentId ? effectiveNextUpVersion : nil
     }
 
     private var resumeTimestamp: String {
@@ -535,6 +560,16 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private func playbackFileId(for episode: EpisodeListItem) -> Int? {
         guard episode.contentId == nextUpEpisode?.contentId else { return nil }
         return selectedFileId(for: episode)
+    }
+
+    /// The file a party starts from: the one the page shows once the viewer
+    /// picked an edition or a version for this episode, else the server's.
+    private func watchPartyFileId(for episode: EpisodeListItem) -> Int? {
+        if let pinned = playbackFileId(for: episode) { return pinned }
+        guard selectedNextUpEditionId != nil,
+              episode.contentId == nextUpEpisode?.contentId,
+              nextUpWatchDetail?.contentId == episode.contentId else { return nil }
+        return effectiveNextUpVersion?.fileId
     }
 
     private func selectedFileId(for episode: EpisodeListItem) -> Int? {
@@ -559,7 +594,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             versions: nextUpVersions,
             selectedFileId: selectedNextUpFileId,
             lastFileId: nextUpWatchDetail?.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            lastFileInProgress: nextUpWatchDetail?.userData?.hasResumePoint ?? false,
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedNextUpEditionId,
+            lastEditionKey: nextUpWatchDetail?.userData?.lastEditionKey,
+            variants: nextUpWatchDetail?.playbackVariants
         )
     }
 
@@ -575,7 +614,16 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             detailsSection
                 .padding(.horizontal, SiloTheme.safePadding)
             similarSection
+            PhoneMediaInfoSection(version: mediaInfoVersion, episode: nextUpEpisode, isExpanded: $showsMediaInfo)
         }
+    }
+
+    /// The selected episode's version, once its watch detail has arrived.
+    /// For a moment after the selection moves, the page still holds the
+    /// previous episode's.
+    private var mediaInfoVersion: FileVersion? {
+        guard nextUpWatchDetail?.contentId == nextUpEpisode?.contentId else { return nil }
+        return effectiveNextUpVersion
     }
 
     // MARK: - Trailers & extras
