@@ -1263,6 +1263,8 @@ struct LeafItemUserData: Codable, Hashable {
     let durationSeconds: Double?
     let lastFileId: Int?
     let lastResolution: String?
+    /// The edition of the version last played.
+    let lastEditionKey: String?
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1272,6 +1274,7 @@ struct LeafItemUserData: Codable, Hashable {
         durationSeconds = try c.decodeIfPresent(Double.self, forKey: .durationSeconds)
         lastFileId = try c.decodeIfPresent(Int.self, forKey: .lastFileId)
         lastResolution = try c.decodeIfPresent(String.self, forKey: .lastResolution)
+        lastEditionKey = try c.decodeIfPresent(String.self, forKey: .lastEditionKey)
     }
 }
 

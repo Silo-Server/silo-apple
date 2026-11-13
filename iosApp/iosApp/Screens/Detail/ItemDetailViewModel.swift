@@ -196,12 +196,15 @@ class ItemDetailViewModel {
     // being reset every time the detail task restarts. The phone page keeps
     // its own per-visit copies in ItemDetailPhoneContent.
     var preferredVersionFileId: Int?
+    /// The edition picked on the page; nil opens on the last-played one.
+    var preferredEditionId: String?
     var preferredAudioTrackIndex: Int?
     var preferredSubtitleTrackIndex: Int?
     /// Distinguishes a selector choice from a server-derived launch seed so
     /// enabling device caption settings can discard only the latter.
     var preferredSubtitleTrackWasManuallySelected = false
     var preferredNextUpFileId: Int?
+    var preferredNextUpEditionId: String?
     var preferredNextUpAudioTrackIndex: Int?
     var preferredNextUpSubtitleTrackIndex: Int?
     #endif

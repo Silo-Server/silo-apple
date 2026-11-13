@@ -459,6 +459,7 @@ enum APIv2CatalogRead {
         let durationSeconds: Double?
         let inProgressCount: Int64
         let isInProgress: Bool?
+        let lastEditionKey: String?
         let lastFileId: String?
         let lastResolution: String?
         let played: Bool

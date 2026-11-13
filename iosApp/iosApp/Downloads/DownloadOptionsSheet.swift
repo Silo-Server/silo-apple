@@ -6,22 +6,26 @@ struct DownloadRequestOptions {
     let quality: String
 
     /// The file a download pins: the version the detail screen displays.
-    /// Auto resolves the way the version selector shows it (last played,
-    /// then quality preference), so the saved file and the sidecar
-    /// subtitles that travel with it match what the user saw. Leaving Auto
-    /// to the server let it pick its own default, a different file. Nil
-    /// only when the item has no version metadata.
+    /// Auto resolves the way the version selector shows it (the best file
+    /// for the quality preference in the current edition), so the saved
+    /// file and the sidecar subtitles that travel with it match what the
+    /// user saw. Leaving Auto to the server let it pick its own default, a
+    /// different file. Nil only when the item has no version metadata.
     static func fileId(
         versions: [FileVersion],
         selectedFileId: Int?,
         lastFileId: Int?,
-        preferredQualityId: String?
+        preferredQualityId: String?,
+        editionId: String? = nil,
+        lastEditionKey: String? = nil
     ) -> Int? {
         DetailVersionSelection.displayVersion(
             versions: versions,
             selectedFileId: selectedFileId,
             lastFileId: lastFileId,
-            preferredQualityId: preferredQualityId
+            preferredQualityId: preferredQualityId,
+            editionId: editionId,
+            lastEditionKey: lastEditionKey
         )?.fileId
     }
 }
@@ -30,6 +34,7 @@ struct DownloadOptionsSheet: View {
     let title: String
     let versions: [FileVersion]
     let lastVersionFileId: Int?
+    let lastEditionKey: String?
     let onStart: (DownloadRequestOptions) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -37,6 +42,8 @@ struct DownloadOptionsSheet: View {
     private var manager: DownloadManager { DownloadManager.shared }
 
     @State private var fileId: Int?
+    /// The edition picked here or on the page; Auto stays within it.
+    @State private var editionId: String?
     @State private var quality: String
     /// Free space for the size warning, read once in `.task` rather than on
     /// every render.
@@ -46,15 +53,19 @@ struct DownloadOptionsSheet: View {
         title: String,
         versions: [FileVersion],
         selectedVersionFileId: Int?,
+        selectedEditionId: String?,
         lastVersionFileId: Int?,
+        lastEditionKey: String?,
         onStart: @escaping (DownloadRequestOptions) -> Void
     ) {
         self.title = title
         self.versions = versions
         self.lastVersionFileId = lastVersionFileId
+        self.lastEditionKey = lastEditionKey
         self.onStart = onStart
 
         _fileId = State(initialValue: selectedVersionFileId)
+        _editionId = State(initialValue: selectedEditionId)
         _quality = State(initialValue: DownloadSettings.shared.preferredFormat)
     }
 
@@ -68,11 +79,17 @@ struct DownloadOptionsSheet: View {
     }
 
     private var effectiveVersion: FileVersion? {
+        resolvedVersion(fileId: fileId)
+    }
+
+    private func resolvedVersion(fileId: Int?) -> FileVersion? {
         DetailVersionSelection.displayVersion(
             versions: versions,
             selectedFileId: fileId,
             lastFileId: lastVersionFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: editionId,
+            lastEditionKey: lastEditionKey
         )
     }
 
@@ -194,13 +211,8 @@ struct DownloadOptionsSheet: View {
                     ),
                     isSelected: currentEdition?.id == edition.id
                 ) {
-                    let best = DetailVersionSelection.displayVersion(
-                        versions: edition.versions,
-                        selectedFileId: nil,
-                        lastFileId: lastVersionFileId,
-                        preferredQualityId: PlayerSettings.shared.preferredQuality
-                    )
-                    fileId = best?.fileId
+                    editionId = edition.id
+                    fileId = nil
                 }
             }
         } header: {
@@ -277,12 +289,7 @@ struct DownloadOptionsSheet: View {
     /// Names the version Auto resolves to, the one the detail screen shows,
     /// so choosing Auto never hides which file will be saved.
     private var autoVersionDetail: String {
-        guard let autoVersion = DetailVersionSelection.displayVersion(
-            versions: versions,
-            selectedFileId: nil,
-            lastFileId: lastVersionFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
-        ) else {
+        guard let autoVersion = resolvedVersion(fileId: nil) else {
             return AppLanguage.string(.downloadsOptionsServerChooses, locale: locale)
         }
         let label = DetailPlaybackFormatting.versionPrimaryText(autoVersion)

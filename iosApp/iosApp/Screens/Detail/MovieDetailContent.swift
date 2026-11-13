@@ -11,6 +11,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// The box set the movie belongs to; nil draws no row.
     let boxSet: CatalogBoxSetDetail?
     let selectedVersionFileId: Int?
+    /// The edition picked on this visit; nil opens on the last-played one.
+    let selectedEditionId: String?
     let selectedAudioTrackIndex: Int?
     let selectedSubtitleTrackIndex: Int?
     /// The viewer picked Auto on this visit, so `detail`'s effective
@@ -23,6 +25,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     /// prompt never offers a position another device has moved past.
     let refreshResumeState: () async -> DetailResumeState
     let onSelectVersion: (Int?) -> Void
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
     let onToggleFavorite: () -> Void
@@ -202,6 +205,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
                         detail: detail,
                         versions: availableVersions,
                         selectedVersionFileId: selectedVersionFileId,
+                        selectedEditionId: selectedEditionId,
                         showOptions: $showDownloadOptions
                     )
                 } else if showsUnavailableDownload {
@@ -241,6 +245,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
             subtitleSignature: detail.effectiveSubtitleTrackSignature,
             showForcedSubtitles: detail.showsForcedSubtitles,
             onSelectVersion: onSelectVersion,
+            onSelectEdition: onSelectEdition,
             onSelectAudioTrack: onSelectAudioTrack,
             onSelectSubtitleTrack: onSelectSubtitleTrack
         )
@@ -283,7 +288,7 @@ struct MovieDetailContent<BelowOverview: View>: View {
     private var overflowMenuItems: some View {
         #if os(iOS)
         WatchPartyMenuButton(contentId: detail.contentId, title: detail.title, type: detail.type,
-            fileId: selectedVersionFileId, preview: WatchPartySelectedItem(previewing: detail))
+            fileId: watchPartyFileId, preview: WatchPartySelectedItem(previewing: detail))
         #endif
         if showsDownloadButton {
             Button {
@@ -393,8 +398,16 @@ struct MovieDetailContent<BelowOverview: View>: View {
             versions: availableVersions,
             selectedFileId: selectedVersionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedEditionId,
+            lastEditionKey: detail.userData?.lastEditionKey
         )
+    }
+
+    /// The file a party starts from: the one the page shows once the viewer
+    /// picked an edition or a version here, else the server's default.
+    private var watchPartyFileId: Int? {
+        selectedVersionFileId == nil && selectedEditionId == nil ? nil : effectiveVersion?.fileId
     }
 }
 #endif

@@ -55,6 +55,14 @@ enum PlaybackEditions {
         }
     }
 
+    /// The edition whose key is `key` (an `Edition.id` or a server
+    /// `edition_key`), if any.
+    static func edition(forKey key: String?, in versions: [FileVersion]) -> Edition? {
+        let key = key?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard !key.isEmpty else { return nil }
+        return editions(from: versions).first { $0.id == key }
+    }
+
     private static func normalizedKey(for version: FileVersion) -> String {
         let key = version.editionKey?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         if !key.isEmpty { return key }

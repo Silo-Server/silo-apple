@@ -164,6 +164,8 @@ struct PhonePlaybackSelectorRow: View {
     var subtitleSignature: SubtitleTrackSignature? = nil
     var showForcedSubtitles = true
     let onSelectVersion: (Int?) -> Void
+    /// Takes a `PlaybackEditions.Edition.id`; Version stays on Auto.
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
 
@@ -238,6 +240,7 @@ struct PhonePlaybackSelectorRow: View {
             selectedSubtitleTrackIndex: selectedSubtitleTrackIndex,
             popover: presentedPopover,
             onSelectVersion: onSelectVersion,
+            onSelectEdition: onSelectEdition,
             onSelectAudioTrack: onSelectAudioTrack,
             onSelectSubtitleTrack: onSelectSubtitleTrack
         )
@@ -488,6 +491,7 @@ private struct PhonePlaybackSelectorSheet: View {
     /// Nil when presented as a sheet.
     let popover: DetailSelectorPopover?
     let onSelectVersion: (Int?) -> Void
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
 
@@ -647,13 +651,7 @@ private struct PhonePlaybackSelectorSheet: View {
                         detail: AppLanguage.string(.detailEditionVersionCount(edition.versions.count), locale: locale),
                         isSelected: currentEdition?.id == edition.id
                     ) {
-                        let best = DetailVersionSelection.displayVersion(
-                            versions: edition.versions,
-                            selectedFileId: nil,
-                            lastFileId: nil,
-                            preferredQualityId: PlayerSettings.shared.preferredQuality
-                        )
-                        onSelectVersion(best?.fileId)
+                        onSelectEdition(edition.id)
                         dismiss()
                     }
                 }

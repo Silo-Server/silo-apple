@@ -21,6 +21,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let hierarchyError: String?
     let onRetryHierarchy: () async -> Void
     let selectedNextUpFileId: Int?
+    /// The edition picked for the selected episode on this visit.
+    let selectedNextUpEditionId: String?
     let selectedNextUpAudioTrackIndex: Int?
     let selectedNextUpSubtitleTrackIndex: Int?
     let nextUpWatchDetail: WatchDetail?
@@ -40,6 +42,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let refreshResumeState: (_ contentId: String) async -> DetailResumeState
     let onEpisodeTap: (String) -> Void
     let onSelectNextUpVersion: (Int?) -> Void
+    let onSelectNextUpEdition: (String) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
     let onSelectNextUpSubtitleTrack: (Int?) -> Void
     let onToggleFavorite: () -> Void
@@ -340,6 +343,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
                     subtitleSignature: nextUpWatchDetail?.effectiveSubtitleTrackSignature,
                     showForcedSubtitles: nextUpWatchDetail?.showsForcedSubtitles ?? true,
                     onSelectVersion: onSelectNextUpVersion,
+                    onSelectEdition: onSelectNextUpEdition,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack
                 )
@@ -383,7 +387,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         #if os(iOS)
         if let episode = nextUpEpisode {
             WatchPartyMenuButton(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode", // i18n-ignore: watch-party payload title and type (D44)
-                fileId: playbackFileId(for: episode), episode: episode)
+                fileId: watchPartyFileId(for: episode), episode: episode)
         }
         #endif
         if let selectedSeason {
@@ -539,6 +543,16 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         return selectedFileId(for: episode)
     }
 
+    /// The file a party starts from: the one the page shows once the viewer
+    /// picked an edition or a version for this episode, else the server's.
+    private func watchPartyFileId(for episode: EpisodeListItem) -> Int? {
+        if let pinned = playbackFileId(for: episode) { return pinned }
+        guard selectedNextUpEditionId != nil,
+              episode.contentId == nextUpEpisode?.contentId,
+              nextUpWatchDetail?.contentId == episode.contentId else { return nil }
+        return effectiveNextUpVersion?.fileId
+    }
+
     private func selectedFileId(for episode: EpisodeListItem) -> Int? {
         guard let selectedNextUpFileId else {
             return nil
@@ -561,7 +575,9 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             versions: nextUpVersions,
             selectedFileId: selectedNextUpFileId,
             lastFileId: nextUpWatchDetail?.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedNextUpEditionId,
+            lastEditionKey: nextUpWatchDetail?.userData?.lastEditionKey
         )
     }
 

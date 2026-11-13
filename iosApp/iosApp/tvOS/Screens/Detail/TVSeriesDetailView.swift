@@ -200,6 +200,8 @@ struct TVSeriesDetailView: View {
     let hierarchyError: String?
     let onRetryHierarchy: () async -> Void
     let selectedNextUpFileId: Int?
+    /// The edition picked for the selected episode on this visit.
+    let selectedNextUpEditionId: String?
     let selectedNextUpAudioTrackIndex: Int?
     let selectedNextUpSubtitleTrackIndex: Int?
     let nextUpPlaybackDetail: ItemDetail?
@@ -223,6 +225,7 @@ struct TVSeriesDetailView: View {
     let onSetEpisodeFavorite: (_ contentId: String, _ isFavorite: Bool) async -> PersonalStateOutcome
     let onSetEpisodeWatchlist: (_ contentId: String, _ inWatchlist: Bool) async -> PersonalStateOutcome
     let onSelectNextUpVersion: (Int?) -> Void
+    let onSelectNextUpEdition: (String) -> Void
     let onSelectNextUpAudioTrack: (Int?) -> Void
     let onSelectNextUpSubtitleTrack: (Int?) -> Void
     let onToggleFavorite: () -> Void
@@ -551,6 +554,7 @@ struct TVSeriesDetailView: View {
                     showForcedSubtitles: matchingPlaybackDetail?.showsForcedSubtitles ?? true,
                     preferredSubtitleLanguage: profilePrefsStore.preferredSubtitleLanguage,
                     onSelectVersion: onSelectNextUpVersion,
+                    onSelectEdition: onSelectNextUpEdition,
                     onSelectAudioTrack: onSelectNextUpAudioTrack,
                     onSelectSubtitleTrack: onSelectNextUpSubtitleTrack,
                     focusedAction: focusedAction
@@ -1044,7 +1048,7 @@ struct TVSeriesDetailView: View {
                 case .watchParty:
                     if let episode = displayedEpisode {
                         WatchPartyEntry.open(contentId: episode.contentId, title: episode.title ?? "Episode", type: "episode", // i18n-ignore: watch-party payload (D44)
-                            fileId: selectedFileId(for: episode), libraryId: partyLibraryId,
+                            fileId: watchPartyFileId(for: episode), libraryId: partyLibraryId,
                             preview: WatchPartySelectedItem(previewing: episode, series: detail, seasons: seasons),
                             router: partyRouter)
                     }
@@ -1103,8 +1107,19 @@ struct TVSeriesDetailView: View {
             versions: nextUpVersions,
             selectedFileId: selectedNextUpFileId,
             lastFileId: matchingPlaybackDetail?.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedNextUpEditionId,
+            lastEditionKey: matchingPlaybackDetail?.userData?.lastEditionKey
         )
+    }
+
+    /// The file a party starts from: the one the page shows once the viewer
+    /// picked an edition or a version for this episode, else the server's.
+    private func watchPartyFileId(for episode: EpisodeListItem) -> Int? {
+        if let pinned = selectedFileId(for: episode) { return pinned }
+        guard selectedNextUpEditionId != nil,
+              matchingPlaybackDetail?.contentId == episode.contentId else { return nil }
+        return effectiveNextUpVersion?.fileId
     }
 
     private func selectedFileId(for episode: EpisodeListItem) -> Int? {

@@ -15,6 +15,8 @@ struct TVPlaybackActionSelectors: View {
     /// Read live from `ProfilePrefsStore` by the parent page.
     let preferredSubtitleLanguage: String?
     let onSelectVersion: (Int?) -> Void
+    /// Takes a `PlaybackEditions.Edition.id`; Version stays on Auto.
+    let onSelectEdition: (String) -> Void
     let onSelectAudioTrack: (Int?) -> Void
     let onSelectSubtitleTrack: (Int?) -> Void
     /// The action row's focus binding, so the row can return to the selector
@@ -57,19 +59,12 @@ struct TVPlaybackActionSelectors: View {
         DetailPlaybackFormatting.versionSelectorVersions(versions: versions, currentVersion: currentVersion)
     }
 
-    /// The file Auto would pick within `edition`. Choosing an edition pins
-    /// it, turning Auto off; Auto in Versions chooses across every edition.
-    private func preferredVersion(in edition: PlaybackEditions.Edition) -> FileVersion? {
-        DetailVersionSelection.displayVersion(
-            versions: edition.versions,
-            selectedFileId: nil,
-            lastFileId: nil,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
-        )
-    }
-
     private var isEditionDisabled: Bool { currentVersion == nil || !showsEditions }
-    private var isVersionDisabled: Bool { currentVersion == nil || scopedVersions.isEmpty }
+    /// Version opens only when the current edition has a choice, as on iPhone.
+    private var isVersionDisabled: Bool {
+        currentVersion == nil
+            || !DetailPlaybackFormatting.shouldEnableVersionSelector(versions: versions, currentVersion: currentVersion)
+    }
     private var isAudioDisabled: Bool { currentVersion == nil || audioOptions.isEmpty }
     private var isSubtitleDisabled: Bool { currentVersion == nil }
 
@@ -105,10 +100,7 @@ struct TVPlaybackActionSelectors: View {
                 }
             },
             onSelect: { item in
-                let id = String(item.id.dropFirst("edition-".count))
-                guard let edition = editions.first(where: { $0.id == id }),
-                      let version = preferredVersion(in: edition) else { return }
-                onSelectVersion(version.fileId)
+                onSelectEdition(String(item.id.dropFirst("edition-".count)))
             }
         )
         .disabled(isEditionDisabled)

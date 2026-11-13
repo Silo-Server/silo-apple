@@ -214,6 +214,7 @@ extension LeafItemUserData {
         self.durationSeconds = value.durationSeconds
         self.lastFileId = try value.lastFileId.map { try catalogLegacyID($0) }
         self.lastResolution = value.lastResolution
+        self.lastEditionKey = value.lastEditionKey
     }
 }
 

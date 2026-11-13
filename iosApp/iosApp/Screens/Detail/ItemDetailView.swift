@@ -407,6 +407,8 @@ private struct ItemDetailPhoneContent: View {
     /// page theme music looks up the selected season's own set on.
     private var isSeriesPage: Bool { viewModel.detail.map { SiloMediaType.isSeries($0.type) } ?? false }
     @State private var preferredVersionFileId: Int?
+    /// The edition picked on this visit. Nil opens on the last-played one.
+    @State private var preferredEditionId: String?
     @State private var preferredAudioTrackIndex: Int?
     @State private var preferredSubtitleTrackIndex: Int?
     @State private var preferredSubtitleTrackWasManuallySelected = false
@@ -417,6 +419,7 @@ private struct ItemDetailPhoneContent: View {
     /// nothing on another version.
     @State private var preferredSubtitleTrackFileId: Int?
     @State private var preferredNextUpFileId: Int?
+    @State private var preferredNextUpEditionId: String?
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
     @State private var nextUpWatchDetail: WatchDetail?
@@ -515,6 +518,7 @@ private struct ItemDetailPhoneContent: View {
             hasStartedDetailLoad = true
             didClearSubtitleOverride = false
             preferredVersionFileId = nil
+            preferredEditionId = nil
             preferredAudioTrackIndex = nil
             // A subtitle picked in the selector on this visit, Off included,
             // stays when the viewer returns from the player, as on tvOS.
@@ -859,6 +863,7 @@ private struct ItemDetailPhoneContent: View {
                 hierarchyError: viewModel.seriesLoadErrorMessage,
                 onRetryHierarchy: { await viewModel.retrySeriesHierarchy() },
                 selectedNextUpFileId: preferredNextUpFileId,
+                selectedNextUpEditionId: preferredNextUpEditionId,
                 selectedNextUpAudioTrackIndex: preferredNextUpAudioTrackIndex,
                 selectedNextUpSubtitleTrackIndex: preferredNextUpSubtitleTrackIndex,
                 nextUpWatchDetail: nextUpWatchDetail,
@@ -876,7 +881,7 @@ private struct ItemDetailPhoneContent: View {
                     presentPlayerFromDetail(
                         contentId: id,
                         fileId: usesSelectedEpisodeControls
-                            ? nextUpPlaybackFileId(resolvedFileId: fileId) : nil,
+                            ? nextUpPlaybackFileId(resolvedFileId: fileId, contentId: id) : nil,
                         // `fileId` is set only by a version picked for this episode.
                         pinsVersion: usesSelectedEpisodeControls && fileId != nil,
                         audioTrackIndex: usesSelectedEpisodeControls
@@ -895,18 +900,10 @@ private struct ItemDetailPhoneContent: View {
                     // detail stack from participating in the selection change.
                     selectedSeriesEpisodeId = id
                 },
-                onSelectNextUpVersion: { fileId in
-                    preferredNextUpFileId = fileId
-                    preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: nextUpWatchDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpAudioTrackIndex
-                    )
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: nextUpWatchDetail,
-                        versionFileId: fileId,
-                        candidate: preferredNextUpSubtitleTrackIndex
-                    )
+                onSelectNextUpVersion: { selectNextUpVersion($0) },
+                onSelectNextUpEdition: { id in
+                    preferredNextUpEditionId = id
+                    selectNextUpVersion(nil)
                 },
                 onSelectNextUpAudioTrack: { index in
                     preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
@@ -975,6 +972,7 @@ private struct ItemDetailPhoneContent: View {
                 isWatched: viewModel.isWatched,
                 boxSet: viewModel.boxSet,
                 selectedVersionFileId: preferredVersionFileId,
+                selectedEditionId: preferredEditionId,
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
                 subtitleOverrideCleared: didClearSubtitleOverride,
@@ -992,19 +990,12 @@ private struct ItemDetailPhoneContent: View {
                     )
                 },
                 refreshResumeState: { await refreshedResumeState(contentId: contentId) },
-                onSelectVersion: { fileId in
-                    preferredVersionFileId = fileId
-                    preferredAudioTrackIndex = sanitizedAudioTrackIndex(
-                        for: detail,
-                        versionFileId: fileId,
-                        candidate: preferredAudioTrackIndex
-                    )
-                    preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: detail,
-                        versionFileId: fileId,
-                        candidate: preferredSubtitleTrackIndex
-                    )
-                    preferredSubtitleTrackFileId = effectiveVersion(for: detail, versionFileId: fileId)?.fileId
+                onSelectVersion: { selectVersion($0, in: detail) },
+                onSelectEdition: { id in
+                    // Committed before the version so tracks are checked
+                    // against the edition's Auto file.
+                    preferredEditionId = id
+                    selectVersion(nil, in: detail)
                 },
                 onSelectAudioTrack: { index in
                     preferredAudioTrackIndex = sanitizedAudioTrackIndex(
@@ -1059,27 +1050,50 @@ private struct ItemDetailPhoneContent: View {
         presentPlayerFromDetail(contentId: contentId, startFromBeginning: true, resumePosition: nil)
     }
 
+    /// The file the page shows, so Play starts it. Only a Version pick pins
+    /// it (`pinsVersion`); otherwise the server may fall back to another
+    /// file of the same edition.
     private func playbackFileId(for detail: ItemDetail) -> Int? {
-        if let preferredVersionFileId {
-            return preferredVersionFileId
-        }
-        if preferredAudioTrackIndex != nil || preferredSubtitleTrackIndex != nil {
-            return effectiveVersion(for: detail, versionFileId: preferredVersionFileId)?.fileId
-        }
-        return nil
+        effectiveVersion(for: detail, versionFileId: preferredVersionFileId)?.fileId
     }
 
-    private func nextUpPlaybackFileId(resolvedFileId: Int?) -> Int? {
-        if let resolvedFileId {
-            return resolvedFileId
-        }
-        if preferredNextUpAudioTrackIndex != nil || preferredNextUpSubtitleTrackIndex != nil {
-            return effectiveVersion(
-                for: nextUpWatchDetail,
-                versionFileId: preferredNextUpFileId
-            )?.fileId
-        }
-        return nil
+    /// Nil while the selected episode's files are still loading, so a quick
+    /// Play never sends the previous episode's file.
+    private func nextUpPlaybackFileId(resolvedFileId: Int?, contentId: String) -> Int? {
+        guard nextUpWatchDetail?.contentId == contentId else { return nil }
+        return resolvedFileId ?? effectiveVersion(
+            for: nextUpWatchDetail,
+            versionFileId: preferredNextUpFileId
+        )?.fileId
+    }
+
+    private func selectVersion(_ fileId: Int?, in detail: ItemDetail) {
+        preferredVersionFileId = fileId
+        preferredAudioTrackIndex = sanitizedAudioTrackIndex(
+            for: detail,
+            versionFileId: fileId,
+            candidate: preferredAudioTrackIndex
+        )
+        preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+            for: detail,
+            versionFileId: fileId,
+            candidate: preferredSubtitleTrackIndex
+        )
+        preferredSubtitleTrackFileId = effectiveVersion(for: detail, versionFileId: fileId)?.fileId
+    }
+
+    private func selectNextUpVersion(_ fileId: Int?) {
+        preferredNextUpFileId = fileId
+        preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
+            for: nextUpWatchDetail,
+            versionFileId: fileId,
+            candidate: preferredNextUpAudioTrackIndex
+        )
+        preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
+            for: nextUpWatchDetail,
+            versionFileId: fileId,
+            candidate: preferredNextUpSubtitleTrackIndex
+        )
     }
 
     /// The server's current watch state for a Play tap. Skipped when the
@@ -1093,22 +1107,28 @@ private struct ItemDetailPhoneContent: View {
         }
     }
 
+    /// The movie's file, in the edition picked on this visit.
     private func effectiveVersion(for detail: ItemDetail, versionFileId: Int?) -> FileVersion? {
         DetailVersionSelection.displayVersion(
             versions: detail.versions ?? [],
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: preferredEditionId,
+            lastEditionKey: detail.userData?.lastEditionKey
         )
     }
 
+    /// The selected episode's file, in the edition picked for it.
     private func effectiveVersion(for detail: WatchDetail?, versionFileId: Int?) -> FileVersion? {
         guard let detail else { return nil }
         return DetailVersionSelection.displayVersion(
             versions: detail.versions,
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: preferredNextUpEditionId,
+            lastEditionKey: detail.userData?.lastEditionKey
         )
     }
 
@@ -1308,6 +1328,7 @@ private struct ItemDetailPhoneContent: View {
             nextUpWatchDetail = nil
             isLoadingNextUpWatchDetail = false
             preferredNextUpFileId = nil
+            preferredNextUpEditionId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
             return
@@ -1317,6 +1338,7 @@ private struct ItemDetailPhoneContent: View {
         let cacheKey = CacheKey.itemWatchDetail(requestedContentId, libraryId: libraryId)
         let cached: WatchDetail? = ResponseCache.shared.get(cacheKey)
         preferredNextUpFileId = nil
+        preferredNextUpEditionId = nil
         preferredNextUpAudioTrackIndex = nil
         // A cached episode paints its selectors at once; only a miss shows
         // the skeleton while the request runs.
@@ -1346,6 +1368,7 @@ private struct ItemDetailPhoneContent: View {
             ResponseCache.shared.set(watchDetail, for: cacheKey, fetchedAt: writeToken)
             // Keep any pick made on the cached selectors while this ran.
             let isUntouched = preferredNextUpFileId == nil
+                && preferredNextUpEditionId == nil
                 && preferredNextUpAudioTrackIndex == nil
                 && preferredNextUpSubtitleTrackIndex == seededSubtitleIndex
             nextUpWatchDetail = watchDetail

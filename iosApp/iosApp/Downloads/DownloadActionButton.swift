@@ -23,7 +23,9 @@ struct DownloadActionButton: View {
     /// Full version metadata for the options sheet and the large-file guard.
     private let versions: [FileVersion]
     private let selectedVersionFileId: Int?
+    private let selectedEditionId: String?
     private let lastVersionFileId: Int?
+    private let lastEditionKey: String?
     /// Owned by the detail screen so its overflow menu can open the same
     /// options sheet.
     @Binding private var showOptions: Bool
@@ -44,6 +46,7 @@ struct DownloadActionButton: View {
         detail: ItemDetail,
         versions: [FileVersion],
         selectedVersionFileId: Int?,
+        selectedEditionId: String?,
         showOptions: Binding<Bool>
     ) {
         contentId = detail.contentId
@@ -61,7 +64,9 @@ struct DownloadActionButton: View {
         posterThumbhash = detail.posterThumbhash
         self.versions = versions
         self.selectedVersionFileId = selectedVersionFileId
+        self.selectedEditionId = selectedEditionId
         lastVersionFileId = detail.userData?.lastFileId
+        lastEditionKey = detail.userData?.lastEditionKey
         _showOptions = showOptions
     }
 
@@ -78,7 +83,9 @@ struct DownloadActionButton: View {
                     title: displayTitle,
                     versions: versions,
                     selectedVersionFileId: selectedVersionFileId,
+                    selectedEditionId: selectedEditionId,
                     lastVersionFileId: lastVersionFileId,
+                    lastEditionKey: lastEditionKey,
                     onStart: startDownload
                 )
             }
@@ -303,7 +310,9 @@ struct DownloadActionButton: View {
             versions: versions,
             selectedFileId: selectedVersionFileId,
             lastFileId: lastVersionFileId,
-            preferredQualityId: PlayerSettings.shared.preferredQuality
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedEditionId,
+            lastEditionKey: lastEditionKey
         )
     }
 
