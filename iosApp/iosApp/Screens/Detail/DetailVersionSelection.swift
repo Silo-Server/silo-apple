@@ -45,9 +45,68 @@ enum DetailVersionSelection {
         return autoFile(in: current.versions, cap: cap)
     }
 
-    /// The file a page's Play starts: the one shown, except that Start Over
-    /// on a later part Auto resumed starts that presentation's first part.
-    static func startFile(
+    /// What a page's Play sends.
+    struct PageStart: Equatable {
+        let fileId: Int?
+        let audioTrackIndex: Int?
+        let subtitleTrackIndex: Int?
+    }
+
+    /// The start for a page's Play. The page shows Auto for its snapshot
+    /// (`shownWith`), and the track picks name streams of that file. Play
+    /// resolves Auto again for the watch state its resume position came
+    /// from (`startsWith`), so a multipart position is applied to its own
+    /// part, and Start Over moves a later part to part 1. When that start
+    /// file is not the one shown, the track picks are dropped (Off stays)
+    /// and the file's tracks resolve as on any fresh start.
+    static func pageStart(
+        versions: [FileVersion],
+        pinnedFileId: Int?,
+        editionId: String?,
+        shownWith snapshot: LeafItemUserData?,
+        startsWith watchState: LeafItemUserData?,
+        preferredQualityId: String?,
+        startFromBeginning: Bool,
+        audioTrackIndex: Int?,
+        subtitleTrackIndex: Int?
+    ) -> PageStart {
+        func auto(_ userData: LeafItemUserData?) -> FileVersion? {
+            displayVersion(
+                versions: versions,
+                selectedFileId: pinnedFileId,
+                lastFileId: userData?.lastFileId,
+                lastFileInProgress: userData?.hasResumePoint ?? false,
+                preferredQualityId: preferredQualityId,
+                editionId: editionId,
+                lastEditionKey: userData?.lastEditionKey
+            )
+        }
+        let shown = auto(snapshot)
+        guard let start = startFile(
+            auto(watchState),
+            startFromBeginning: startFromBeginning,
+            pinned: pinnedFileId != nil,
+            in: versions
+        ) else {
+            return PageStart(fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil)
+        }
+        guard start.fileId != shown?.fileId else {
+            return PageStart(
+                fileId: start.fileId,
+                audioTrackIndex: audioTrackIndex,
+                subtitleTrackIndex: subtitleTrackIndex
+            )
+        }
+        return PageStart(
+            fileId: start.fileId,
+            audioTrackIndex: nil,
+            subtitleTrackIndex: DetailPlaybackFormatting.subtitleIndexAfterFileChange(subtitleTrackIndex) { nil }
+        )
+    }
+
+    /// The file Play starts: `resolved`, except that Start Over on a later
+    /// part Auto resumed starts that presentation's first part.
+    private static func startFile(
         _ shown: FileVersion?,
         startFromBeginning: Bool,
         pinned: Bool,

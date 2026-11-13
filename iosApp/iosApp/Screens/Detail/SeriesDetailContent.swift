@@ -34,8 +34,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     let onSelectSeason: (Season) -> Void
     /// `resumePosition` is the point the user was offered (nil for a
     /// restart or an episode without progress).
+    /// `watchState` is the watch state the position came from; Play
+    /// resolves the episode's file from it.
     let onPlayEpisode: (
-        _ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool, _ resumePosition: Double?
+        _ contentId: String, _ fileId: Int?, _ startFromBeginning: Bool, _ resumePosition: Double?,
+        _ watchState: LeafItemUserData?
     ) -> Void
     /// Reads the episode's current watch state from the server, so the
     /// resume prompt never offers a position another device has moved past.
@@ -81,6 +84,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     private struct PendingResume {
         let episode: EpisodeListItem
         let position: Double
+        let watchState: LeafItemUserData?
     }
     @State private var pendingResume: PendingResume?
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
@@ -147,10 +151,14 @@ struct SeriesDetailContent<BelowOverview: View>: View {
         ) {
             guard let pendingResume else { return }
             let episode = pendingResume.episode
-            onPlayEpisode(episode.contentId, playbackFileId(for: episode), false, pendingResume.position)
+            onPlayEpisode(
+                episode.contentId, playbackFileId(for: episode), false, pendingResume.position,
+                pendingResume.watchState
+            )
         } onRestart: {
-            guard let episode = pendingResume?.episode else { return }
-            onPlayEpisode(episode.contentId, playbackFileId(for: episode), true, nil)
+            guard let pendingResume else { return }
+            let episode = pendingResume.episode
+            onPlayEpisode(episode.contentId, playbackFileId(for: episode), true, nil, pendingResume.watchState)
         }
         .onDisappear {
             hierarchyRetryTask?.cancel()
@@ -438,10 +446,11 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             let state = await refreshResumeState(episode.contentId)
             guard !Task.isCancelled else { return }
             resumeLookupTask = nil
+            let watchState = state.userData(cached: episode.userData)
             if let position = state.resumePosition(cached: episode.userData) {
-                pendingResume = PendingResume(episode: episode, position: position)
+                pendingResume = PendingResume(episode: episode, position: position, watchState: watchState)
             } else {
-                onPlayEpisode(episode.contentId, playbackFileId(for: episode), false, nil)
+                onPlayEpisode(episode.contentId, playbackFileId(for: episode), false, nil, watchState)
             }
         }
     }

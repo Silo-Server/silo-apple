@@ -20,7 +20,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
     let subtitleOverrideCleared: Bool
     /// `resumePosition` is the point the user was offered (nil for a
     /// restart or a title without progress).
-    let onPlay: (_ startFromBeginning: Bool, _ resumePosition: Double?) -> Void
+    /// `watchState` is the watch state the position came from; Play
+    /// resolves its file from it.
+    let onPlay: (_ startFromBeginning: Bool, _ resumePosition: Double?, _ watchState: LeafItemUserData?) -> Void
     /// Reads the title's current watch state from the server, so the resume
     /// prompt never offers a position another device has moved past.
     let refreshResumeState: () async -> DetailResumeState
@@ -56,6 +58,8 @@ struct MovieDetailContent<BelowOverview: View>: View {
     @Environment(\.locale) private var locale
     /// The position the resume prompt offers; non-nil while it is shown.
     @State private var pendingResumePosition: Double?
+    /// The watch state `pendingResumePosition` came from.
+    @State private var pendingResumeWatchState: LeafItemUserData?
     /// The Play tap's in-flight watch-state read. A second tap replaces it.
     @State private var resumeLookupTask: Task<Void, Never>?
     /// The download options sheet, opened from the More menu.
@@ -105,9 +109,9 @@ struct MovieDetailContent<BelowOverview: View>: View {
             stoppedAt: resumeTimestamp
         ) {
             guard let pendingResumePosition else { return }
-            onPlay(false, pendingResumePosition)
+            onPlay(false, pendingResumePosition, pendingResumeWatchState)
         } onRestart: {
-            onPlay(true, nil)
+            onPlay(true, nil, pendingResumeWatchState ?? detail.userData)
         }
         .onDisappear {
             resumeLookupTask?.cancel()
@@ -257,10 +261,12 @@ struct MovieDetailContent<BelowOverview: View>: View {
             let state = await refreshResumeState()
             guard !Task.isCancelled else { return }
             resumeLookupTask = nil
+            let watchState = state.userData(cached: detail.userData)
             if let position = state.resumePosition(cached: detail.userData) {
+                pendingResumeWatchState = watchState
                 pendingResumePosition = position
             } else {
-                onPlay(false, nil)
+                onPlay(false, nil, watchState)
             }
         }
     }

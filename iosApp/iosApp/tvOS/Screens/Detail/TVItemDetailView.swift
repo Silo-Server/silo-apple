@@ -366,29 +366,28 @@ struct TVItemDetailView: View {
                     let episode = viewModel.seriesEpisodeWindow.episodes.first(where: { $0.contentId == id })
                     // Version and track picks are read at the press, not
                     // after the watch-state read.
-                    let playbackFileId = nextUpPlaybackFileId(
-                        resolvedFileId: fileId,
+                    let resolveStart = nextUpPlaybackStart(
+                        pinnedFileId: fileId,
                         contentId: id,
                         startFromBeginning: startFromBeginning
                     )
-                    let audioTrackIndex = preferredNextUpAudioTrackIndex
-                    let subtitleTrackIndex = preferredNextUpSubtitleTrackIndex
                     playWithFreshResumePosition(
                         contentId: id,
                         startFromBeginning: startFromBeginning,
                         cached: episode?.userData
-                    ) { resumePosition in
+                    ) { resumePosition, watchState in
                         awaitsPlaybackReturn = true
                         SeriesPlaybackReturnInbox.discardPending()
-                        if let playbackFileId {
+                        let start = resolveStart(watchState)
+                        if let playbackFileId = start.fileId {
                             router.navigate(
                                 to: .playerWithFile(
                                     contentId: id,
                                     fileId: playbackFileId,
                                     // `fileId` is set only by a version picked for this episode.
                                     pinsVersion: fileId != nil,
-                                    audioTrackIndex: audioTrackIndex,
-                                    subtitleTrackIndex: subtitleTrackIndex,
+                                    audioTrackIndex: start.audioTrackIndex,
+                                    subtitleTrackIndex: start.subtitleTrackIndex,
                                     startFromBeginning: startFromBeginning,
                                     resumePosition: resumePosition,
                                     libraryId: libraryId
@@ -507,23 +506,22 @@ struct TVItemDetailView: View {
                 onPlay: { startFromBeginning in
                     // Version and track picks are read at the press, not
                     // after the watch-state read.
-                    let fileId = playbackFileId(for: detail, startFromBeginning: startFromBeginning)
+                    let resolveStart = playbackStart(for: detail, startFromBeginning: startFromBeginning)
                     let pinsVersion = preferredVersionFileId != nil
-                    let audioTrackIndex = preferredAudioTrackIndex
-                    let subtitleTrackIndex = preferredSubtitleTrackIndex
                     playWithFreshResumePosition(
                         contentId: contentId,
                         startFromBeginning: startFromBeginning,
                         cached: detail.userData
-                    ) { resumePosition in
-                        if let fileId {
+                    ) { resumePosition, watchState in
+                        let start = resolveStart(watchState)
+                        if let fileId = start.fileId {
                             router.navigate(
                                 to: .playerWithFile(
                                     contentId: contentId,
                                     fileId: fileId,
                                     pinsVersion: pinsVersion,
-                                    audioTrackIndex: audioTrackIndex,
-                                    subtitleTrackIndex: subtitleTrackIndex,
+                                    audioTrackIndex: start.audioTrackIndex,
+                                    subtitleTrackIndex: start.subtitleTrackIndex,
                                     startFromBeginning: startFromBeginning,
                                     resumePosition: resumePosition,
                                     libraryId: libraryId
@@ -597,16 +595,49 @@ struct TVItemDetailView: View {
         return { viewModel.translateDescriptions() }
     }
 
-    /// The file the page shows, so Play starts it. Only a Version pick pins
-    /// it (`pinsVersion`); otherwise the server may fall back to another
-    /// file of the same edition.
-    private func playbackFileId(for detail: ItemDetail, startFromBeginning: Bool) -> Int? {
-        DetailVersionSelection.startFile(
-            effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
+    /// The file and track picks Play sends: the file the page shows, for
+    /// the watch state the resume position comes from. The page's picks
+    /// are read now, at the press; the start resolves once that watch state
+    /// is known. Only a Version pick pins the file (`pinsVersion`);
+    /// otherwise the server may fall back to another file of the edition.
+    private func playbackStart(
+        for detail: ItemDetail,
+        startFromBeginning: Bool
+    ) -> (_ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
+        pressStart(
+            versions: detail.versions ?? [],
+            pinnedFileId: preferredVersionFileId,
+            editionId: preferredEditionId,
+            snapshot: detail.userData,
             startFromBeginning: startFromBeginning,
-            pinned: preferredVersionFileId != nil,
-            in: detail.versions ?? []
-        )?.fileId
+            audioTrackIndex: preferredAudioTrackIndex,
+            subtitleTrackIndex: preferredSubtitleTrackIndex
+        )
+    }
+
+    private func pressStart(
+        versions: [FileVersion],
+        pinnedFileId: Int?,
+        editionId: String?,
+        snapshot: LeafItemUserData?,
+        startFromBeginning: Bool,
+        audioTrackIndex: Int?,
+        subtitleTrackIndex: Int?
+    ) -> (_ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
+        let quality = PlayerSettings.shared.connectionPreferredQuality
+        return { watchState in
+            DetailVersionSelection.pageStart(
+                versions: versions,
+                pinnedFileId: pinnedFileId,
+                editionId: editionId,
+                shownWith: snapshot,
+                startsWith: watchState,
+                preferredQualityId: quality,
+                startFromBeginning: startFromBeginning,
+                audioTrackIndex: audioTrackIndex,
+                subtitleTrackIndex: subtitleTrackIndex
+            )
+        }
     }
 
     private func selectVersion(_ fileId: Int?, in detail: ItemDetail) {
@@ -644,26 +675,27 @@ struct TVItemDetailView: View {
         )
     }
 
-    /// Next-up analogue of `playbackFileId(for:)`. When Series focus changes,
+    /// Next-up analogue of `playbackStart(for:)`. When Series focus changes,
     /// reject any file choice still belonging to the previous episode so an
     /// immediate quick Play safely falls back to server/device defaults.
-    private func nextUpPlaybackFileId(
-        resolvedFileId: Int?,
+    /// `pinnedFileId` is a version picked for this episode.
+    private func nextUpPlaybackStart(
+        pinnedFileId: Int?,
         contentId: String,
         startFromBeginning: Bool
-    ) -> Int? {
+    ) -> (_ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
         guard let nextUpPlaybackDetail, nextUpPlaybackDetail.contentId == contentId else {
-            return nil
+            return { _ in DetailVersionSelection.PageStart(fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil) }
         }
-        if let resolvedFileId {
-            return resolvedFileId
-        }
-        return DetailVersionSelection.startFile(
-            effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId),
+        return pressStart(
+            versions: nextUpPlaybackDetail.versions ?? [],
+            pinnedFileId: pinnedFileId ?? preferredNextUpFileId,
+            editionId: preferredNextUpEditionId,
+            snapshot: nextUpPlaybackDetail.userData,
             startFromBeginning: startFromBeginning,
-            pinned: preferredNextUpFileId != nil,
-            in: nextUpPlaybackDetail.versions ?? []
-        )?.fileId
+            audioTrackIndex: preferredNextUpAudioTrackIndex,
+            subtitleTrackIndex: preferredNextUpSubtitleTrackIndex
+        )
     }
 
     /// Starts playback from the server's current position. The page's
@@ -672,24 +704,25 @@ struct TVItemDetailView: View {
     /// a Resume/Play press re-reads the item's watch state first. The
     /// snapshot (`cached`) is used only when the server is known unreachable,
     /// errors, or takes longer than `DetailResumeState.defaultTimeout`.
-    /// Start Over skips the read.
+    /// Start Over skips the read. `play` also gets the watch state the
+    /// position came from, so the start file is resolved from it.
     private func playWithFreshResumePosition(
         contentId id: String,
         startFromBeginning: Bool,
         cached: LeafItemUserData?,
-        play: @escaping (_ resumePosition: Double?) -> Void
+        play: @escaping (_ resumePosition: Double?, _ watchState: LeafItemUserData?) -> Void
     ) {
         resumeLookupTask?.cancel()
         resumeLookupTask = nil
         guard !startFromBeginning else {
-            play(nil)
+            play(nil, cached)
             return
         }
         resumeLookupTask = Task {
             let state = await refreshedResumeState(contentId: id)
             guard !Task.isCancelled, isPageVisible else { return }
             resumeLookupTask = nil
-            play(state.resumePosition(cached: cached))
+            play(state.resumePosition(cached: cached), state.userData(cached: cached))
         }
     }
 

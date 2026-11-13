@@ -145,8 +145,7 @@ final class DetailEditionSelectionTests: XCTestCase {
 
     /// Auto ranks first parts only, merging a cut's single file with its
     /// multi-part set. While the title is in progress, a later part last
-    /// played stays on the page so Resume continues it, and Start Over
-    /// starts that presentation's first part.
+    /// played stays on the page so Resume continues it.
     func testAutoSkipsLaterPartsButResumesOne() {
         let files = decode("""
         [
@@ -165,12 +164,51 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertEqual(shown(lastFileId: nil)?.fileId, 60)
         XCTAssertEqual(shown(lastFileId: 62)?.fileId, 62)
         XCTAssertEqual(shown(lastFileId: 62, pinned: 60)?.fileId, 60)
-        XCTAssertEqual(DetailVersionSelection.startFile(
-            shown(lastFileId: 62), startFromBeginning: true, pinned: false, in: files
-        )?.fileId, 61)
-        XCTAssertEqual(DetailVersionSelection.startFile(
-            shown(lastFileId: 62), startFromBeginning: false, pinned: false, in: files
-        )?.fileId, 62)
+    }
+
+    /// Play resolves its file from the watch state its resume position came
+    /// from, and sends the page's track picks only with the file they were
+    /// made on. Start Over on part 2 starts part 1 without part 2's picks
+    /// (Off stays); a position another device saved on part 2 resumes part
+    /// 2, not the part 1 the page's older snapshot showed.
+    func testPlayStartsThePartItsPositionBelongsTo() throws {
+        let parts = decode("""
+        [
+          { "file_id": 61, "resolution": "1080p", "presentation_group_key": "g",
+            "presentation_part_index": 1, "presentation_part_total": 2 },
+          { "file_id": 62, "resolution": "1080p", "presentation_group_key": "g",
+            "presentation_part_index": 2, "presentation_part_total": 2 }
+        ]
+        """)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let onPartTwo = try decoder.decode(LeafItemUserData.self, from: Data(
+            #"{ "played": false, "position_seconds": 600, "last_file_id": 62 }"#.utf8
+        ))
+        let finished = try decoder.decode(LeafItemUserData.self, from: Data(
+            #"{ "played": true, "position_seconds": 0, "last_file_id": 62 }"#.utf8
+        ))
+        func start(
+            shownWith snapshot: LeafItemUserData,
+            startsWith watchState: LeafItemUserData,
+            fromBeginning: Bool,
+            subtitle: Int? = 3
+        ) -> DetailVersionSelection.PageStart {
+            DetailVersionSelection.pageStart(
+                versions: parts, pinnedFileId: nil, editionId: nil,
+                shownWith: snapshot, startsWith: watchState, preferredQualityId: "auto",
+                startFromBeginning: fromBeginning, audioTrackIndex: 2, subtitleTrackIndex: subtitle
+            )
+        }
+        typealias Start = DetailVersionSelection.PageStart
+        XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onPartTwo, fromBeginning: false),
+                       Start(fileId: 62, audioTrackIndex: 2, subtitleTrackIndex: 3))
+        XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onPartTwo, fromBeginning: true),
+                       Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: nil))
+        XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onPartTwo, fromBeginning: true, subtitle: -1),
+                       Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: -1))
+        XCTAssertEqual(start(shownWith: finished, startsWith: onPartTwo, fromBeginning: false),
+                       Start(fileId: 62, audioTrackIndex: nil, subtitleTrackIndex: nil))
     }
 
     /// Without a saved position, a later part last played no longer holds

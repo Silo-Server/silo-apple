@@ -785,24 +785,26 @@ private struct ItemDetailPhoneContent: View {
     private func handleRemoteControlTap() {
         if let detail = viewModel.detail, isDirectlyPlayable(detail) {
             // The TV resumes from the request's explicit position, so read
-            // the server's current one rather than the page's snapshot.
-            let fileId = playbackFileId(for: detail)
-            let pinsVersion = preferredVersionFileId != nil
-            let audioTrackIndex = preferredAudioTrackIndex
-            let subtitleTrackIndex = preferredSubtitleTrackIndex
+            // the server's current one rather than the page's snapshot, and
+            // resolve the file from the same state.
             controlResumeLookupTask?.cancel()
             controlResumeLookupTask = Task {
                 let state = await refreshedResumeState(contentId: contentId)
                 guard !Task.isCancelled else { return }
                 controlResumeLookupTask = nil
+                let start = playbackStart(
+                    for: detail,
+                    startFromBeginning: false,
+                    watchState: state.userData(cached: detail.userData)
+                )
                 playOnTV(SiloControlPlaybackRequest(
                     contentId: contentId,
-                    fileId: fileId,
-                    audioTrackIndex: audioTrackIndex,
-                    subtitleTrackIndex: subtitleTrackIndex,
+                    fileId: start.fileId,
+                    audioTrackIndex: start.audioTrackIndex,
+                    subtitleTrackIndex: start.subtitleTrackIndex,
                     startFromBeginning: false,
                     resumePosition: state.resumePosition(cached: detail.userData),
-                    pinsVersion: pinsVersion
+                    pinsVersion: preferredVersionFileId != nil
                 ))
             }
         } else if siloControl.remotePlaybackEngaged {
@@ -877,24 +879,24 @@ private struct ItemDetailPhoneContent: View {
                     selectedSeriesEpisodeId = nil
                     Task { await viewModel.selectSeason(season) }
                 },
-                onPlayEpisode: { id, fileId, startFromBeginning, resumePosition in
+                onPlayEpisode: { id, fileId, startFromBeginning, resumePosition, watchState in
                     awaitsPlaybackReturn = true
                     SeriesPlaybackReturnInbox.discardPending()
                     let usesSelectedEpisodeControls = id == playbackEpisode(for: detail)?.contentId
+                    let start = usesSelectedEpisodeControls
+                        ? nextUpPlaybackStart(
+                            pinnedFileId: fileId,
+                            contentId: id,
+                            startFromBeginning: startFromBeginning,
+                            watchState: watchState
+                        ) : nil
                     presentPlayerFromDetail(
                         contentId: id,
-                        fileId: usesSelectedEpisodeControls
-                            ? nextUpPlaybackFileId(
-                                resolvedFileId: fileId,
-                                contentId: id,
-                                startFromBeginning: startFromBeginning
-                            ) : nil,
+                        fileId: start?.fileId,
                         // `fileId` is set only by a version picked for this episode.
                         pinsVersion: usesSelectedEpisodeControls && fileId != nil,
-                        audioTrackIndex: usesSelectedEpisodeControls
-                            ? preferredNextUpAudioTrackIndex : nil,
-                        subtitleTrackIndex: usesSelectedEpisodeControls
-                            ? preferredNextUpSubtitleTrackIndex : nil,
+                        audioTrackIndex: start?.audioTrackIndex,
+                        subtitleTrackIndex: start?.subtitleTrackIndex,
                         startFromBeginning: startFromBeginning,
                         resumePosition: startFromBeginning ? nil : resumePosition
                     )
@@ -983,15 +985,19 @@ private struct ItemDetailPhoneContent: View {
                 selectedAudioTrackIndex: preferredAudioTrackIndex,
                 selectedSubtitleTrackIndex: preferredSubtitleTrackIndex,
                 subtitleOverrideCleared: didClearSubtitleOverride,
-                onPlay: { startFromBeginning, resumePosition in
-                    // Track picks only travel with a resolved file.
-                    let fileId = playbackFileId(for: detail, startFromBeginning: startFromBeginning)
+                onPlay: { startFromBeginning, resumePosition, watchState in
+                    // Track picks only travel with the file they were made on.
+                    let start = playbackStart(
+                        for: detail,
+                        startFromBeginning: startFromBeginning,
+                        watchState: watchState
+                    )
                     presentPlayerFromDetail(
                         contentId: contentId,
-                        fileId: fileId,
+                        fileId: start.fileId,
                         pinsVersion: preferredVersionFileId != nil,
-                        audioTrackIndex: fileId == nil ? nil : preferredAudioTrackIndex,
-                        subtitleTrackIndex: fileId == nil ? nil : preferredSubtitleTrackIndex,
+                        audioTrackIndex: start.audioTrackIndex,
+                        subtitleTrackIndex: start.subtitleTrackIndex,
                         startFromBeginning: startFromBeginning,
                         resumePosition: startFromBeginning ? nil : resumePosition
                     )
@@ -1057,32 +1063,51 @@ private struct ItemDetailPhoneContent: View {
         presentPlayerFromDetail(contentId: contentId, startFromBeginning: true, resumePosition: nil)
     }
 
-    /// The file the page shows, so Play starts it. Only a Version pick pins
-    /// it (`pinsVersion`); otherwise the server may fall back to another
-    /// file of the same edition.
-    private func playbackFileId(for detail: ItemDetail, startFromBeginning: Bool = false) -> Int? {
-        DetailVersionSelection.startFile(
-            effectiveVersion(for: detail, versionFileId: preferredVersionFileId),
+    /// The file and track picks Play sends: the file the page shows, for
+    /// the watch state the resume position came from (`watchState`). Only a
+    /// Version pick pins it (`pinsVersion`); otherwise the server may fall
+    /// back to another file of the same edition.
+    private func playbackStart(
+        for detail: ItemDetail,
+        startFromBeginning: Bool,
+        watchState: LeafItemUserData?
+    ) -> DetailVersionSelection.PageStart {
+        DetailVersionSelection.pageStart(
+            versions: detail.versions ?? [],
+            pinnedFileId: preferredVersionFileId,
+            editionId: preferredEditionId,
+            shownWith: detail.userData,
+            startsWith: watchState,
+            preferredQualityId: detailQuality(onMeteredNetwork: nil),
             startFromBeginning: startFromBeginning,
-            pinned: preferredVersionFileId != nil,
-            in: detail.versions ?? []
-        )?.fileId
+            audioTrackIndex: preferredAudioTrackIndex,
+            subtitleTrackIndex: preferredSubtitleTrackIndex
+        )
     }
 
-    /// Nil while the selected episode's files are still loading, so a quick
-    /// Play never sends the previous episode's file.
-    private func nextUpPlaybackFileId(
-        resolvedFileId: Int?,
+    /// The selected episode's start. No file while its files are still
+    /// loading, so a quick Play never sends the previous episode's file.
+    /// `pinnedFileId` is a version picked for this episode.
+    private func nextUpPlaybackStart(
+        pinnedFileId: Int?,
         contentId: String,
-        startFromBeginning: Bool
-    ) -> Int? {
-        guard let nextUpWatchDetail, nextUpWatchDetail.contentId == contentId else { return nil }
-        return resolvedFileId ?? DetailVersionSelection.startFile(
-            effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId),
+        startFromBeginning: Bool,
+        watchState: LeafItemUserData?
+    ) -> DetailVersionSelection.PageStart {
+        guard let nextUpWatchDetail, nextUpWatchDetail.contentId == contentId else {
+            return DetailVersionSelection.PageStart(fileId: nil, audioTrackIndex: nil, subtitleTrackIndex: nil)
+        }
+        return DetailVersionSelection.pageStart(
+            versions: nextUpWatchDetail.versions,
+            pinnedFileId: pinnedFileId ?? preferredNextUpFileId,
+            editionId: preferredNextUpEditionId,
+            shownWith: nextUpWatchDetail.userData,
+            startsWith: watchState,
+            preferredQualityId: detailQuality(onMeteredNetwork: nil),
             startFromBeginning: startFromBeginning,
-            pinned: preferredNextUpFileId != nil,
-            in: nextUpWatchDetail.versions
-        )?.fileId
+            audioTrackIndex: preferredNextUpAudioTrackIndex,
+            subtitleTrackIndex: preferredNextUpSubtitleTrackIndex
+        )
     }
 
     private func selectVersion(_ fileId: Int?, in detail: ItemDetail) {
