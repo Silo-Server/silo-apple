@@ -1539,9 +1539,9 @@ private struct ItemDetailPhoneContent: View {
                 && preferredNextUpEditionId == nil
                 && preferredNextUpAudioTrackIndex == nil
                 && preferredNextUpSubtitleTrackIndex == seededSubtitleIndex
+                && !preferredNextUpSubtitleTrackWasManuallySelected
             nextUpWatchDetail = watchDetail
             if isUntouched {
-                preferredNextUpSubtitleTrackWasManuallySelected = false
                 preferredNextUpSubtitleTrackIndex = launchSubtitleIndex(for: watchDetail)
             }
         } catch {
