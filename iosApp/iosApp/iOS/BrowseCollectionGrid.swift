@@ -301,21 +301,33 @@ final class BrowseGridController: UIViewController, UICollectionViewDelegate, UI
 
     /// Inset the grid by the bars it scrolls under. A grid resting at its
     /// top stays there when the bar above it changes height.
+    ///
+    /// The refresh control adds its own height to the top inset while it
+    /// spins, so only the change in the bars is applied, never the bars'
+    /// height over what the control added: overwriting it snapped the pulled
+    /// grid up as a refresh began, which the tab bar took for a scroll and
+    /// minimised. A grid being pulled or refreshing is not at rest, so its
+    /// offset is left to the finger and the control.
     private func applyInsets() {
+        let top = model.topInset, bottom = model.bottomInset
+        guard abs(appliedInsets.top - top) >= 0.5 || abs(appliedInsets.bottom - bottom) >= 0.5 else { return }
         let old = collectionView.contentInset
-        guard abs(old.top - model.topInset) >= 0.5 || abs(old.bottom - model.bottomInset) >= 0.5 else { return }
-        let wasAtTop = collectionView.contentOffset.y <= -old.top + 0.5
+        let isRefreshing = collectionView.refreshControl?.isRefreshing == true
+        let wasAtRest = !isRefreshing && !collectionView.isDragging && !collectionView.isDecelerating
+            && abs(collectionView.contentOffset.y + old.top) < 0.5
         var insets = old
-        insets.top = model.topInset
-        insets.bottom = model.bottomInset
+        insets.top += top - appliedInsets.top
+        insets.bottom += bottom - appliedInsets.bottom
+        appliedInsets = (top, bottom)
         collectionView.contentInset = insets
-        collectionView.verticalScrollIndicatorInsets = UIEdgeInsets(
-            top: model.topInset, left: 0, bottom: model.bottomInset, right: 0
-        )
-        if wasAtTop {
-            collectionView.contentOffset.y = -model.topInset
+        collectionView.verticalScrollIndicatorInsets = UIEdgeInsets(top: top, left: 0, bottom: bottom, right: 0)
+        if wasAtRest {
+            collectionView.contentOffset.y = -insets.top
         }
     }
+
+    /// The bars' heights last added to `contentInset`.
+    private var appliedInsets: (top: CGFloat, bottom: CGFloat) = (0, 0)
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
