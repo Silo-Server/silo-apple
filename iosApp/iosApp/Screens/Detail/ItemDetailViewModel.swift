@@ -207,6 +207,8 @@ class ItemDetailViewModel {
     var preferredNextUpEditionId: String?
     var preferredNextUpAudioTrackIndex: Int?
     var preferredNextUpSubtitleTrackIndex: Int?
+    /// As `preferredSubtitleTrackWasManuallySelected`, for the selected episode.
+    var preferredNextUpSubtitleTrackWasManuallySelected = false
     #endif
 
     // Track the series contentId for season/episode loading

@@ -54,6 +54,142 @@ final class DetailVersionSelectionTests: XCTestCase {
         ))
     }
 
+    /// Two files of one title rarely number their subtitle streams alike. A
+    /// track picked on one file becomes the other file's matching track, not
+    /// whatever sits at the same stream index there.
+    func testASubtitlePickFollowsItsTrackToAnotherVersion() {
+        let versions = decodedVersions("""
+        [
+          { "file_id": 14, "subtitle_tracks": [
+            { "index": 2, "codec": "subrip", "language": "en", "title": "SUBRIP" },
+            { "index": 3, "codec": "subrip", "language": "en", "title": "SDH" },
+            { "index": 4, "codec": "subrip", "language": "fr", "title": "SUBRIP" },
+            { "index": 5, "codec": "subrip", "language": "es", "title": "Latin American" },
+            { "index": 6, "codec": "subrip", "language": "de", "forced": true },
+            { "index": 7, "codec": "subrip", "language": "es", "title": "Castilian" }
+          ] },
+          { "file_id": 36, "subtitle_tracks": [
+            { "index": 3, "codec": "hdmv_pgs_subtitle", "language": "en", "title": "English" },
+            { "index": 4, "codec": "hdmv_pgs_subtitle", "language": "en", "title": "English (SDH)" },
+            { "index": 5, "codec": "hdmv_pgs_subtitle", "language": "zh" },
+            { "index": 6, "codec": "hdmv_pgs_subtitle", "language": "de" },
+            { "index": 11, "codec": "hdmv_pgs_subtitle", "language": "fr", "title": "French (Canadian)" },
+            { "index": 22, "codec": "hdmv_pgs_subtitle", "language": "es", "title": "Spanish (Castilian)" },
+            { "index": 23, "codec": "hdmv_pgs_subtitle", "language": "es", "title": "Spanish (Latin American)" }
+          ] }
+        ]
+        """)
+        func moved(
+            _ index: Int?,
+            from: Int,
+            to: Int,
+            signature: SubtitleTrackSignature? = nil,
+            manual: Bool = true
+        ) -> Int? {
+            DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
+                index,
+                movingFrom: versions.first { $0.fileId == from },
+                to: versions.first { $0.fileId == to },
+                isManualPick: manual,
+                signature: signature,
+                mode: SubtitleMode.always.rawValue,
+                showForced: true,
+                usesDeviceSettings: false
+            )
+        }
+        XCTAssertEqual(moved(4, from: 36, to: 14), 3, "English (SDH) stays English SDH, not stream 4 (French)")
+        XCTAssertEqual(moved(4, from: 14, to: 36), 11, "French, not stream 4 (English SDH)")
+        XCTAssertEqual(moved(5, from: 14, to: 36), 23, "the Spanish track with the same title")
+        XCTAssertEqual(moved(23, from: 36, to: 14), 5, "and back, not the first Spanish track")
+        XCTAssertEqual(moved(22, from: 36, to: 14), 7)
+        XCTAssertEqual(moved(3, from: 36, to: 14), 2, "plain English, not the SDH track")
+        XCTAssertNil(moved(6, from: 14, to: 36), "no forced German there: Auto, not stream 6")
+        XCTAssertNil(moved(5, from: 36, to: 14), "no Chinese there: Auto")
+        XCTAssertEqual(moved(-1, from: 14, to: 36), -1, "Off")
+        XCTAssertNil(moved(nil, from: 14, to: 36), "Auto")
+        XCTAssertEqual(moved(5, from: 14, to: 14), 5, "same file")
+        // A track the server preference chose is chosen again on the other
+        // file, as opening the page there would.
+        let english = SubtitleTrackSignature(language: "en", label: "SDH")
+        XCTAssertEqual(moved(3, from: 14, to: 36, signature: english, manual: false), 4)
+    }
+
+    /// The saved preference can resolve to a near match, here full English for
+    /// a forced-English preference. A viewer who picks that track themselves
+    /// keeps a full track on the next file; the preference alone moves to the
+    /// forced one there. `und` names no language, so it matches nothing, and
+    /// a regional tag prefers the same tag.
+    func testAPickedTrackIsNotTakenForTheSavedPreference() {
+        let versions = decodedVersions("""
+        [
+          { "file_id": 1, "subtitle_tracks": [
+            { "index": 2, "codec": "subrip", "language": "en" },
+            { "index": 3, "codec": "subrip", "language": "und", "title": "Commentary" },
+            { "index": 5, "codec": "subrip", "language": "zh-Hant" }
+          ] },
+          { "file_id": 2, "subtitle_tracks": [
+            { "index": 2, "codec": "subrip", "language": "en", "forced": true },
+            { "index": 3, "codec": "subrip", "language": "en" },
+            { "index": 4, "codec": "subrip", "language": "und", "title": "Spanish" },
+            { "index": 5, "codec": "subrip", "language": "zh-Hans" },
+            { "index": 6, "codec": "subrip", "language": "zh-Hant" }
+          ] }
+        ]
+        """)
+        func moved(_ index: Int, manual: Bool) -> Int? {
+            DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
+                index,
+                movingFrom: versions[0],
+                to: versions[1],
+                isManualPick: manual,
+                signature: SubtitleTrackSignature(language: "en", forced: true),
+                mode: SubtitleMode.always.rawValue,
+                showForced: true,
+                usesDeviceSettings: false
+            )
+        }
+        XCTAssertEqual(moved(2, manual: true), 3)
+        XCTAssertEqual(moved(2, manual: false), 2)
+        XCTAssertNil(moved(3, manual: true))
+        XCTAssertEqual(moved(5, manual: true), 6, "Traditional Chinese, not the first Chinese track")
+    }
+
+    /// A track moved to another version is numbered for that file. Its number
+    /// must not be read on the file it was picked on when the page reloads
+    /// there, as it does after Play clears the Version pin.
+    func testAMovedSubtitlePickIsNotKeptByItsNumberOnReload() {
+        let versions = decodedVersions("""
+        [
+          { "file_id": 14, "subtitle_tracks": [
+            { "index": 3, "codec": "subrip", "language": "fr" },
+            { "index": 4, "codec": "subrip", "language": "en" }
+          ] },
+          { "file_id": 36, "subtitle_tracks": [
+            { "index": 3, "codec": "subrip", "language": "en" }
+          ] }
+        ]
+        """)
+        func fileAfterPick(_ index: Int?, from: Int, to: Int) -> Int? {
+            DetailPlaybackFormatting.subtitlePickFileAfterVersionPick(
+                14,
+                index: index,
+                movingFrom: versions.first { $0.fileId == from },
+                to: versions.first { $0.fileId == to }
+            )
+        }
+        // English, picked as stream 4 of file 14, is stream 3 of file 36.
+        // Stream 3 of file 14 is French.
+        let moved = fileAfterPick(4, from: 14, to: 36)
+        for reloaded in [14, 36] {
+            XCTAssertFalse(DetailPlaybackFormatting.keepsManualSubtitlePick(
+                3, pickedFileId: moved, reloadedFileId: reloaded
+            ) { _ in true }, "reloaded on file \(reloaded)")
+        }
+        XCTAssertEqual(fileAfterPick(4, from: 14, to: 14), 14, "same file")
+        XCTAssertEqual(fileAfterPick(-1, from: 14, to: 36), 14, "Off")
+        XCTAssertEqual(fileAfterPick(nil, from: 14, to: 36), 14, "Auto")
+    }
+
     /// Server mode Off (profile or series) with show forced on is not an
     /// explicit Off: Play from the detail page lets the resolver start on the
     /// forced track in the audio language, like every other entry path. A
