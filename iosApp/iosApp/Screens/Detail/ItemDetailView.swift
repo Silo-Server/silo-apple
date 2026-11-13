@@ -904,10 +904,7 @@ private struct ItemDetailPhoneContent: View {
                     selectedSeriesEpisodeId = id
                 },
                 onSelectNextUpVersion: { selectNextUpVersion($0) },
-                onSelectNextUpEdition: { id in
-                    preferredNextUpEditionId = id
-                    selectNextUpVersion(nil)
-                },
+                onSelectNextUpEdition: { selectNextUpVersion(nil, edition: $0) },
                 onSelectNextUpAudioTrack: { index in
                     preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: nextUpWatchDetail,
@@ -994,12 +991,7 @@ private struct ItemDetailPhoneContent: View {
                 },
                 refreshResumeState: { await refreshedResumeState(contentId: contentId) },
                 onSelectVersion: { selectVersion($0, in: detail) },
-                onSelectEdition: { id in
-                    // Committed before the version so tracks are checked
-                    // against the edition's Auto file.
-                    preferredEditionId = id
-                    selectVersion(nil, in: detail)
-                },
+                onSelectEdition: { selectVersion(nil, edition: $0, in: detail) },
                 onSelectAudioTrack: { index in
                     preferredAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: detail,
@@ -1070,12 +1062,17 @@ private struct ItemDetailPhoneContent: View {
         )?.fileId
     }
 
-    private func selectVersion(_ fileId: Int?, in detail: ItemDetail) {
+    /// A Version pick, or an Edition pick (`edition`), which leaves Version
+    /// on Auto. The subtitle moves to the new file's matching track.
+    private func selectVersion(_ fileId: Int?, edition: String? = nil, in detail: ItemDetail) {
+        let previous = effectiveVersion(for: detail, versionFileId: preferredVersionFileId)
+        if let edition { preferredEditionId = edition }
         // A pin records its cut, so Auto stays there once the pin is cleared.
         if let fileId {
             preferredEditionId = PlaybackEditions.edition(forFileId: fileId, in: detail.versions ?? [])?.id
         }
         preferredVersionFileId = fileId
+        let next = effectiveVersion(for: detail, versionFileId: fileId)
         preferredAudioTrackIndex = sanitizedAudioTrackIndex(
             for: detail,
             versionFileId: fileId,
@@ -1084,12 +1081,22 @@ private struct ItemDetailPhoneContent: View {
         preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
             for: detail,
             versionFileId: fileId,
-            candidate: preferredSubtitleTrackIndex
+            candidate: DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
+                preferredSubtitleTrackIndex,
+                movingFrom: previous,
+                to: next,
+                signature: detail.effectiveSubtitleTrackSignature,
+                mode: detail.effectiveSubtitleMode,
+                showForced: detail.showsForcedSubtitles,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+            )
         )
-        preferredSubtitleTrackFileId = effectiveVersion(for: detail, versionFileId: fileId)?.fileId
+        preferredSubtitleTrackFileId = next?.fileId
     }
 
-    private func selectNextUpVersion(_ fileId: Int?) {
+    private func selectNextUpVersion(_ fileId: Int?, edition: String? = nil) {
+        let previous = effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId)
+        if let edition { preferredNextUpEditionId = edition }
         if let fileId {
             preferredNextUpEditionId = PlaybackEditions.edition(forFileId: fileId, in: nextUpWatchDetail?.versions ?? [])?.id
         }
@@ -1102,7 +1109,15 @@ private struct ItemDetailPhoneContent: View {
         preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
             for: nextUpWatchDetail,
             versionFileId: fileId,
-            candidate: preferredNextUpSubtitleTrackIndex
+            candidate: DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
+                preferredNextUpSubtitleTrackIndex,
+                movingFrom: previous,
+                to: effectiveVersion(for: nextUpWatchDetail, versionFileId: fileId),
+                signature: nextUpWatchDetail?.effectiveSubtitleTrackSignature,
+                mode: nextUpWatchDetail?.effectiveSubtitleMode,
+                showForced: nextUpWatchDetail?.showsForcedSubtitles ?? true,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+            )
         )
     }
 

@@ -304,6 +304,58 @@ enum DetailPlaybackFormatting {
         return isAvailable(index)
     }
 
+    /// The subtitle to keep when a Version or Edition pick moves the page from
+    /// one file to another. A track index belongs to one file, so the same
+    /// index on the next file can be another language. Auto and Off carry
+    /// over. A track the server preference chose is chosen again on the next
+    /// file, as a fresh page would. A track the viewer picked becomes the next
+    /// file's track in the same language, with the same forced and SDH flags,
+    /// preferring the same title; with none, the pick falls back to Auto.
+    /// When the file changes without a pick, see `subtitleIndexAfterFileChange`.
+    static func subtitleIndexAfterVersionPick(
+        _ index: Int?,
+        movingFrom previous: FileVersion?,
+        to next: FileVersion?,
+        signature: SubtitleTrackSignature?,
+        mode: String?,
+        showForced: Bool,
+        usesDeviceSettings: Bool
+    ) -> Int? {
+        guard let index, index >= 0, previous?.fileId != next?.fileId else { return index }
+        func seeded(_ version: FileVersion?) -> Int? {
+            launchPreferredSubtitleIndex(
+                version: version,
+                signature: signature,
+                mode: mode,
+                showForced: showForced,
+                usesDeviceSettings: usesDeviceSettings
+            )
+        }
+        if seeded(previous) == index { return seeded(next) }
+
+        guard let picked = previous?.subtitleTracks?.first(where: { $0.selectionIndex == index }),
+              let language = nonEmpty(picked.language) else { return nil }
+        let matches = (next?.subtitleTracks ?? []).filter { track in
+            guard track.selectionIndex != nil, !track.hasUnsupportedFormat,
+                  let trackLanguage = nonEmpty(track.language) else { return false }
+            return SubtitleAutoResolver.languagesMatch(trackLanguage, language)
+                && isForced(track) == isForced(picked)
+                && isHearingImpaired(track) == isHearingImpaired(picked)
+        }
+        func title(_ track: SubtitleTrack) -> String? {
+            nonEmpty(track.title) ?? nonEmpty(track.embeddedTitle)
+        }
+        // "Latin American" and "Spanish (Latin American)" name the same track.
+        if let wanted = title(picked),
+           let match = matches.first(where: { title($0)?.caseInsensitiveCompare(wanted) == .orderedSame })
+            ?? matches.first(where: { title($0).map {
+                $0.localizedCaseInsensitiveContains(wanted) || wanted.localizedCaseInsensitiveContains($0)
+            } == true }) {
+            return match.selectionIndex
+        }
+        return matches.first?.selectionIndex
+    }
+
     /// A server-remembered track is useful for reflecting the server policy
     /// in the pre-play selector, but it is not a manual choice made during
     /// this visit. Device-settings mode must start on Apple's caption policy

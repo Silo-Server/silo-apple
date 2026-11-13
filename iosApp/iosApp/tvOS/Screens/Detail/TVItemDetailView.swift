@@ -415,12 +415,7 @@ struct TVItemDetailView: View {
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
                 onSelectNextUpVersion: { selectNextUpVersion($0) },
-                onSelectNextUpEdition: { id in
-                    // Committed before the version so tracks are checked
-                    // against the edition's Auto file.
-                    preferredNextUpEditionId = id
-                    selectNextUpVersion(nil)
-                },
+                onSelectNextUpEdition: { selectNextUpVersion(nil, edition: $0) },
                 onSelectNextUpAudioTrack: { index in
                     preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: nextUpPlaybackDetail,
@@ -541,10 +536,7 @@ struct TVItemDetailView: View {
                     }
                 },
                 onSelectVersion: { selectVersion($0, in: detail) },
-                onSelectEdition: { id in
-                    preferredEditionId = id
-                    selectVersion(nil, in: detail)
-                },
+                onSelectEdition: { selectVersion(nil, edition: $0, in: detail) },
                 onSelectAudioTrack: { index in
                     preferredAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: detail,
@@ -603,7 +595,11 @@ struct TVItemDetailView: View {
         effectiveVersion(for: detail, versionFileId: preferredVersionFileId)?.fileId
     }
 
-    private func selectVersion(_ fileId: Int?, in detail: ItemDetail) {
+    /// A Version pick, or an Edition pick (`edition`), which leaves Version
+    /// on Auto. The subtitle moves to the new file's matching track.
+    private func selectVersion(_ fileId: Int?, edition: String? = nil, in detail: ItemDetail) {
+        let previous = effectiveVersion(for: detail, versionFileId: preferredVersionFileId)
+        if let edition { preferredEditionId = edition }
         // A pin records its cut, so Auto stays there once the pin is cleared.
         if let fileId {
             preferredEditionId = PlaybackEditions.edition(forFileId: fileId, in: detail.versions ?? [])?.id
@@ -617,11 +613,13 @@ struct TVItemDetailView: View {
         preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
             for: detail,
             versionFileId: fileId,
-            candidate: preferredSubtitleTrackIndex
+            candidate: carriedSubtitleIndex(preferredSubtitleTrackIndex, in: detail, from: previous, toFileId: fileId)
         )
     }
 
-    private func selectNextUpVersion(_ fileId: Int?) {
+    private func selectNextUpVersion(_ fileId: Int?, edition: String? = nil) {
+        let previous = effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId)
+        if let edition { preferredNextUpEditionId = edition }
         if let fileId {
             preferredNextUpEditionId = PlaybackEditions.edition(forFileId: fileId, in: nextUpPlaybackDetail?.versions ?? [])?.id
         }
@@ -634,7 +632,26 @@ struct TVItemDetailView: View {
         preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
             for: nextUpPlaybackDetail,
             versionFileId: fileId,
-            candidate: preferredNextUpSubtitleTrackIndex
+            candidate: nextUpPlaybackDetail.flatMap {
+                carriedSubtitleIndex(preferredNextUpSubtitleTrackIndex, in: $0, from: previous, toFileId: fileId)
+            }
+        )
+    }
+
+    private func carriedSubtitleIndex(
+        _ index: Int?,
+        in detail: ItemDetail,
+        from previous: FileVersion?,
+        toFileId fileId: Int?
+    ) -> Int? {
+        DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
+            index,
+            movingFrom: previous,
+            to: effectiveVersion(for: detail, versionFileId: fileId),
+            signature: detail.effectiveSubtitleTrackSignature,
+            mode: detail.effectiveSubtitleMode,
+            showForced: detail.showsForcedSubtitles,
+            usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
         )
     }
 
