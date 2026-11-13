@@ -24,6 +24,17 @@ struct TVTopMenuAnchorKey: PreferenceKey {
     }
 }
 
+/// True while the page shows a panel that owns focus, such as the library
+/// Sort panel. The shell disables the bar meanwhile, so a move past the
+/// panel's edge can't land on a tab behind it.
+struct TVPagePanelOpenKey: PreferenceKey {
+    static let defaultValue = false
+
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
 /// A library content type that can surface as a root tab (Skyline §3.1).
 /// Tabs represent types, not server libraries — a type's tab appears only
 /// if the profile can see at least one library of that type.
