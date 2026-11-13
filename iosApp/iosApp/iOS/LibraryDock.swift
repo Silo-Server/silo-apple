@@ -222,7 +222,7 @@ struct LibraryDock: View {
     }
 
     private static let maxWidth: CGFloat = 480
-    private static let slotBacking = Color.black.opacity(0.25)
+    private static let slotBacking = Color.black.opacity(0.12)
     private static let floatingHeight: CGFloat = 52
     /// Shared by the selected segment's fill and the fill that follows a
     /// drag, so the one hands over to the other smoothly.
