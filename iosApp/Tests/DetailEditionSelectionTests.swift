@@ -170,14 +170,16 @@ final class DetailEditionSelectionTests: XCTestCase {
     /// from, and sends the page's track picks only with the file they were
     /// made on. Start Over on part 2 starts part 1 without part 2's picks
     /// (Off stays); a position another device saved on part 2 resumes part
-    /// 2, not the part 1 the page's older snapshot showed.
+    /// 2, not the part 1 the page's older snapshot showed. Play keeps the
+    /// cut on screen: a position saved on another cut starts this one's Auto.
     func testPlayStartsThePartItsPositionBelongsTo() throws {
         let parts = decode("""
         [
           { "file_id": 61, "resolution": "1080p", "presentation_group_key": "g",
             "presentation_part_index": 1, "presentation_part_total": 2 },
           { "file_id": 62, "resolution": "1080p", "presentation_group_key": "g",
-            "presentation_part_index": 2, "presentation_part_total": 2 }
+            "presentation_part_index": 2, "presentation_part_total": 2 },
+          { "file_id": 70, "resolution": "1080p", "edition_key": "theatrical", "edition_raw": "Theatrical" }
         ]
         """)
         let decoder = JSONDecoder()
@@ -187,6 +189,9 @@ final class DetailEditionSelectionTests: XCTestCase {
         ))
         let finished = try decoder.decode(LeafItemUserData.self, from: Data(
             #"{ "played": true, "position_seconds": 0, "last_file_id": 62 }"#.utf8
+        ))
+        let onTheatrical = try decoder.decode(LeafItemUserData.self, from: Data(
+            #"{ "played": false, "position_seconds": 900, "last_file_id": 70, "last_edition_key": "theatrical" }"#.utf8
         ))
         func start(
             shownWith snapshot: LeafItemUserData,
@@ -209,11 +214,14 @@ final class DetailEditionSelectionTests: XCTestCase {
                        Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: -1))
         XCTAssertEqual(start(shownWith: finished, startsWith: onPartTwo, fromBeginning: false),
                        Start(fileId: 62, audioTrackIndex: nil, subtitleTrackIndex: nil))
+        XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onTheatrical, fromBeginning: false),
+                       Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: nil))
     }
 
-    /// Without a saved position, a later part last played no longer holds
-    /// Auto: a title finished on its last part rewatches from part 1. A
-    /// rewatch in progress keeps its part, though the title stays played.
+    /// Without a position Resume would offer, a later part last played no
+    /// longer holds Auto: a title finished on its last part rewatches from
+    /// part 1, as does one stopped in its first seconds. A rewatch in
+    /// progress keeps its part, though the title stays played.
     func testAFinishedMultipartTitleStartsAtPartOne() throws {
         let parts = decode("""
         [
@@ -237,6 +245,7 @@ final class DetailEditionSelectionTests: XCTestCase {
         }
         XCTAssertEqual(try shown(#"{ "played": true, "position_seconds": 0, "last_file_id": 62 }"#), 61)
         XCTAssertEqual(try shown(#"{ "played": true, "position_seconds": 600, "last_file_id": 62 }"#), 62)
+        XCTAssertEqual(try shown(#"{ "played": false, "position_seconds": 10, "last_file_id": 62 }"#), 61)
     }
 
     /// A start without a detail page (a home card's Play, a deep link)

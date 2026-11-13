@@ -54,11 +54,12 @@ enum DetailVersionSelection {
 
     /// The start for a page's Play. The page shows Auto for its snapshot
     /// (`shownWith`), and the track picks name streams of that file. Play
-    /// resolves Auto again for the watch state its resume position came
-    /// from (`startsWith`), so a multipart position is applied to its own
-    /// part, and Start Over moves a later part to part 1. When that start
-    /// file is not the one shown, the track picks are dropped (Off stays)
-    /// and the file's tracks resolve as on any fresh start.
+    /// keeps the edition shown and resolves Auto within it again for the
+    /// watch state its resume position came from (`startsWith`), so a
+    /// multipart position is applied to its own part. A last file in another
+    /// edition holds no part here. Start Over moves a later part to part 1.
+    /// When the start file is not the one shown, the track picks are dropped
+    /// (Off stays) and the file's tracks resolve as on any fresh start.
     static func pageStart(
         versions: [FileVersion],
         pinnedFileId: Int?,
@@ -70,7 +71,7 @@ enum DetailVersionSelection {
         audioTrackIndex: Int?,
         subtitleTrackIndex: Int?
     ) -> PageStart {
-        func auto(_ userData: LeafItemUserData?) -> FileVersion? {
+        func auto(_ userData: LeafItemUserData?, in editionId: String?) -> FileVersion? {
             displayVersion(
                 versions: versions,
                 selectedFileId: pinnedFileId,
@@ -81,9 +82,10 @@ enum DetailVersionSelection {
                 lastEditionKey: userData?.lastEditionKey
             )
         }
-        let shown = auto(snapshot)
+        let shown = auto(snapshot, in: editionId)
+        let shownEdition = shown.flatMap { PlaybackEditions.edition(forFileId: $0.fileId, in: versions)?.id }
         guard let start = startFile(
-            auto(watchState),
+            auto(watchState, in: shownEdition ?? editionId),
             startFromBeginning: startFromBeginning,
             pinned: pinnedFileId != nil,
             in: versions
