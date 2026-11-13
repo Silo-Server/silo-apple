@@ -4,10 +4,12 @@ import Foundation
 /// …) and resolves the edition that owns a given file. The server's
 /// `edition_key` is the stable grouping identity; display uses `edition_raw`,
 /// then "Standard".
-/// A version with no edition label is grouped under "Standard".
+/// Files with no `edition_key` form the unnamed edition, whose id is "" and
+/// whose label is "Standard". It stays apart from a cut whose key is
+/// `standard`, so both can be listed, each with its own row.
 enum PlaybackEditions {
     struct Edition: Identifiable, Hashable {
-        let id: String          // normalized (lowercased) key
+        let id: String          // trimmed, lowercased key; "" for the unnamed edition
         let label: String       // display name
         let versions: [FileVersion]
     }
@@ -56,16 +58,19 @@ enum PlaybackEditions {
     }
 
     /// The edition whose key is `key` (an `Edition.id` or a server
-    /// `edition_key`), if any.
+    /// `edition_key`), if any. A present empty key names the unnamed
+    /// edition; nil names none.
     static func edition(forKey key: String?, in versions: [FileVersion]) -> Edition? {
-        let key = key?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        guard !key.isEmpty else { return nil }
-        return editions(from: versions).first { $0.id == key }
+        guard let key else { return nil }
+        let id = normalizedKey(key)
+        return editions(from: versions).first { $0.id == id }
     }
 
     private static func normalizedKey(for version: FileVersion) -> String {
-        let key = version.editionKey?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        if !key.isEmpty { return key }
-        return version.editionDisplayLabel.lowercased()
+        normalizedKey(version.editionKey ?? "")
+    }
+
+    private static func normalizedKey(_ key: String) -> String {
+        key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }

@@ -157,6 +157,11 @@ struct TVItemDetailView: View {
             nextUpCatalogDetail = nil
             if !isReturning {
                 activeSeriesEpisodeContentId = entryContext?.episodeContentId
+                // An edition is picked per visit. The cached model keeps it
+                // across a trip to the player, but a new visit opens on the
+                // last-played cut again.
+                preferredEditionId = nil
+                preferredNextUpEditionId = nil
             }
             if let seasonNumber = entryContext?.seasonNumber {
                 viewModel.prepareInitialSeriesSeason(
@@ -598,6 +603,7 @@ struct TVItemDetailView: View {
     ) -> (_ resumePosition: Double?, _ watchState: LeafItemUserData?) -> DetailVersionSelection.PageStart {
         pressStart(
             versions: detail.versions ?? [],
+            variants: detail.playbackVariants,
             pinnedFileId: preferredVersionFileId,
             editionId: preferredEditionId,
             snapshot: detail.userData,
@@ -609,6 +615,7 @@ struct TVItemDetailView: View {
 
     private func pressStart(
         versions: [FileVersion],
+        variants: [PlaybackVariant]?,
         pinnedFileId: Int?,
         editionId: String?,
         snapshot: LeafItemUserData?,
@@ -628,7 +635,8 @@ struct TVItemDetailView: View {
                 preferredQualityId: quality,
                 startFromBeginning: startFromBeginning,
                 audioTrackIndex: audioTrackIndex,
-                subtitleTrackIndex: subtitleTrackIndex
+                subtitleTrackIndex: subtitleTrackIndex,
+                variants: variants
             )
         }
     }
@@ -753,6 +761,7 @@ struct TVItemDetailView: View {
         }
         return pressStart(
             versions: nextUpPlaybackDetail.versions ?? [],
+            variants: nextUpPlaybackDetail.playbackVariants,
             pinnedFileId: pinnedFileId ?? preferredNextUpFileId,
             editionId: preferredNextUpEditionId,
             snapshot: nextUpPlaybackDetail.userData,
@@ -810,7 +819,8 @@ struct TVItemDetailView: View {
             editionId: detail.contentId == nextUpPlaybackDetail?.contentId
                 ? preferredNextUpEditionId
                 : preferredEditionId,
-            lastEditionKey: detail.userData?.lastEditionKey
+            lastEditionKey: detail.userData?.lastEditionKey,
+            variants: detail.playbackVariants
         )
     }
 

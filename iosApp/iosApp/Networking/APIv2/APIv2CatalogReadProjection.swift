@@ -303,6 +303,28 @@ extension WatchDetail {
         effectiveSubtitleMode = value.effectiveSubtitleMode
         effectiveShowForcedSubtitles = value.effectiveShowForcedSubtitles
         effectiveSubtitleTrackSignature = value.effectiveSubtitleTrackSignature.map { SubtitleTrackSignature(catalog: $0) }
+        playbackVariants = try value.playbackVariants.map { try $0.map { try PlaybackVariant(watch: $0) } }
+    }
+}
+
+extension PlaybackVariant {
+    init(watch value: APIv2CatalogRead.WatchPlaybackVariant) throws {
+        self.variantId = value.variantId
+        self.editionRaw = value.editionRaw
+        self.editionKey = value.editionKey
+        self.presentationKind = value.presentationKind
+        self.presentationGroupKey = value.presentationGroupKey
+        self.partCount = try catalogLegacyInt(value.partCount)
+        self.totalDuration = value.totalDurationSeconds.map(Double.init)
+        self.defaultFileId = try value.defaultFileId.map { try catalogLegacyID($0) }
+        self.parts = try value.parts.map { part in
+            PlaybackVariantPart(
+                partIndex: try catalogLegacyInt(part.partIndex),
+                defaultFileId: try part.defaultFileId.map { try catalogLegacyID($0) },
+                totalDuration: part.totalDurationSeconds.map(Double.init),
+                versions: try part.versions.map { try FileVersion(watch: $0) }
+            )
+        }
     }
 }
 

@@ -567,8 +567,15 @@ struct TVSeriesDetailView: View {
     private func showPlayTitle(for episode: EpisodeListItem) -> String {
         let season = LocaleFormat.codeNumber(episode.seasonNumber)
         let number = LocaleFormat.codeNumber(episode.episodeNumber)
+        // A position saved on another edition than the one shown isn't
+        // resumed: Play starts the shown one at 0.
+        let shown = matchingPlaybackDetail?.contentId == episode.contentId ? effectiveNextUpVersion : nil
+        let resumes = episode.userData?.isInProgress == true
+            && DetailVersionSelection.savedPositionIsInEdition(
+                of: shown, in: nextUpVersions, userData: episode.userData
+            )
         return AppLanguage.string(
-            episode.userData?.isInProgress == true
+            resumes
                 ? .detailResumeEpisode(season, number)
                 : .detailPlayEpisode(season, number),
             locale: locale
@@ -1110,7 +1117,8 @@ struct TVSeriesDetailView: View {
             lastFileInProgress: matchingPlaybackDetail?.userData?.hasResumePoint ?? false,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: selectedNextUpEditionId,
-            lastEditionKey: matchingPlaybackDetail?.userData?.lastEditionKey
+            lastEditionKey: matchingPlaybackDetail?.userData?.lastEditionKey,
+            variants: matchingPlaybackDetail?.playbackVariants
         )
     }
 

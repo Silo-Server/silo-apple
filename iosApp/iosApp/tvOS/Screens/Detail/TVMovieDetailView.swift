@@ -279,7 +279,12 @@ struct TVMovieDetailView: View {
         )
     }
 
+    /// Nil also when the position was saved on another edition than the
+    /// one shown: Play starts the shown one at 0.
     private var resumePositionSeconds: Double? {
+        guard DetailVersionSelection.savedPositionIsInEdition(
+            of: currentVersion, in: availableVersions, userData: detail.userData
+        ) else { return nil }
         guard let pos = detail.userData?.positionSeconds, pos > 30 else { return nil }
         if let dur = detail.userData?.durationSeconds, dur > 0, pos >= dur - 5 {
             return nil
@@ -349,7 +354,8 @@ struct TVMovieDetailView: View {
             lastFileInProgress: detail.userData?.hasResumePoint ?? false,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: selectedEditionId,
-            lastEditionKey: detail.userData?.lastEditionKey
+            lastEditionKey: detail.userData?.lastEditionKey,
+            variants: detail.playbackVariants
         )
     }
 

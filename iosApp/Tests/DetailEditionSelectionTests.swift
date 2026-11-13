@@ -84,6 +84,84 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertEqual(opening([1, 2]), 2, "the unnamed cut over Theatrical, though its file is smaller")
         XCTAssertEqual(opening([1, 2, 3]), 3, "HDR before edition preference")
         XCTAssertEqual(opening([3, 4], quality: "720p"), 3, "above the cap before unknown")
+
+        // The last tie goes to the server's edition order: playback_variants,
+        // not the order files appear in versions.
+        let ties = decode("""
+        [
+          { "file_id": 5, "edition_key": "b", "edition_raw": "B", "resolution": "1080p" },
+          { "file_id": 6, "edition_key": "a", "edition_raw": "A", "resolution": "1080p" }
+        ]
+        """)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let variants = try! decoder.decode([PlaybackVariant].self, from: Data("""
+        [
+          { "variant_id": "a", "edition_key": "a", "part_count": 1, "parts": [] },
+          { "variant_id": "b", "edition_key": "b", "part_count": 1, "parts": [] }
+        ]
+        """.utf8))
+        func tie(_ variants: [PlaybackVariant]?) -> Int? {
+            DetailVersionSelection.displayVersion(
+                versions: ties, selectedFileId: nil, lastFileId: nil, lastFileInProgress: false,
+                preferredQualityId: "auto", variants: variants
+            )?.fileId
+        }
+        XCTAssertEqual(tie(variants), 6)
+        XCTAssertEqual(tie(nil), 5, "versions order without variants")
+    }
+
+    /// A start without a page reads `playback_variants` from the watch
+    /// response, so it breaks the last tie between cuts as the page does.
+    func testAStartWithoutThePageBreaksTheEditionTieLikeThePage() throws {
+        func file(_ id: Int, _ key: String) -> String {
+            """
+            { "file_id": "\(id)", "edition_key": "\(key)", "edition_raw": "\(key.uppercased())",
+              "resolution": "1080p", "hdr": false, "file_size": 1, "bitrate": 1, "duration_seconds": 1,
+              "codec_audio": "aac", "codec_video": "h264", "container": "mkv" }
+            """
+        }
+        let json = """
+        { "content_id": "m1", "type": "movie", "title": "M", "subtitles": [],
+          "versions": [\(file(5, "b")), \(file(6, "a"))],
+          "playback_variants": [
+            { "variant_id": "a", "edition_key": "a", "part_count": 1,
+              "parts": [{ "part_index": 1, "versions": [\(file(6, "a"))] }] },
+            { "variant_id": "b", "edition_key": "b", "part_count": 1,
+              "parts": [{ "part_index": 1, "versions": [\(file(5, "b"))] }] }
+          ] }
+        """
+        let watch = try WatchDetail(v2: HTTPClient.makeJSONDecoder().decode(
+            APIv2CatalogRead.WatchDetail.self, from: Data(json.utf8)
+        ))
+        let start = PlaybackSessionBridge.startSelection(
+            versions: watch.versions, requestedFileId: nil, lastFileId: nil, lastFileInProgress: false,
+            variants: watch.playbackVariants, prefersLastUsedVersion: false, startsAtFirstPart: false,
+            preferredQualityOverride: nil, settingsQuality: .auto
+        )
+        let page = DetailVersionSelection.displayVersion(
+            versions: watch.versions, selectedFileId: nil, lastFileId: nil, lastFileInProgress: false,
+            preferredQualityId: "auto", variants: watch.playbackVariants
+        )
+        XCTAssertEqual(start.version.fileId, 6)
+        XCTAssertEqual(page?.fileId, 6)
+    }
+
+    /// The unnamed edition is its own cut, apart from one keyed `standard`:
+    /// each gets an Edition row, and Auto stays on the unnamed one.
+    func testTheUnnamedEditionIsNotTheStandardOne() {
+        let files = decode("""
+        [
+          { "file_id": 7, "resolution": "2160p" },
+          { "file_id": 8, "edition_key": "standard", "edition_raw": "Standard", "resolution": "1080p" }
+        ]
+        """)
+        XCTAssertEqual(PlaybackEditions.editions(from: files).map(\.id), ["", "standard"])
+        XCTAssertEqual(PlaybackEditions.editions(from: files).map(\.label), ["Standard", "Standard"])
+        XCTAssertEqual(DetailVersionSelection.displayVersion(
+            versions: files, selectedFileId: nil, lastFileId: 7, lastFileInProgress: false,
+            preferredQualityId: "1080p", lastEditionKey: ""
+        )?.fileId, 7)
     }
 
     /// Picking an edition keeps Auto: its best file, even when another
@@ -194,14 +272,21 @@ final class DetailEditionSelectionTests: XCTestCase {
         let onTheatrical = try decoder.decode(LeafItemUserData.self, from: Data(
             #"{ "played": false, "position_seconds": 900, "last_file_id": 70, "last_edition_key": "theatrical" }"#.utf8
         ))
+        let onGoneUnnamedFile = try decoder.decode(LeafItemUserData.self, from: Data(
+            #"{ "played": false, "position_seconds": 900, "last_file_id": 99, "last_edition_key": "" }"#.utf8
+        ))
+        let tenSecondsIntoPartTwo = try decoder.decode(LeafItemUserData.self, from: Data(
+            #"{ "played": false, "position_seconds": 10, "last_file_id": 62 }"#.utf8
+        ))
         func start(
             shownWith snapshot: LeafItemUserData,
             startsWith watchState: LeafItemUserData,
             fromBeginning: Bool,
-            subtitle: Int? = 3
+            subtitle: Int? = 3,
+            edition: String? = nil
         ) -> DetailVersionSelection.PageStart {
             DetailVersionSelection.pageStart(
-                versions: parts, pinnedFileId: nil, editionId: nil,
+                versions: parts, pinnedFileId: nil, editionId: edition,
                 shownWith: snapshot, startsWith: watchState,
                 resumePosition: fromBeginning ? nil : watchState.positionSeconds, preferredQualityId: "auto",
                 startFromBeginning: fromBeginning, audioTrackIndex: 2, subtitleTrackIndex: subtitle
@@ -219,6 +304,25 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onTheatrical, fromBeginning: false),
                        Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: nil, resumePosition: 0),
                        "Theatrical's 900 s doesn't apply; 0, not nil, so the player won't read it back")
+        XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onGoneUnnamedFile, fromBeginning: false, edition: "theatrical"),
+                       Start(fileId: 70, audioTrackIndex: 2, subtitleTrackIndex: 3, resumePosition: 0),
+                       "an empty last_edition_key names the unnamed cut, not the Theatrical one shown")
+
+        // Resume doesn't offer 10 s, so Auto is part 1, and part 2's stored
+        // 10 s must not reach it: from the page, and from a start without one.
+        XCTAssertEqual(DetailVersionSelection.pageStart(
+            versions: parts, pinnedFileId: nil, editionId: nil,
+            shownWith: tenSecondsIntoPartTwo, startsWith: tenSecondsIntoPartTwo, resumePosition: nil,
+            preferredQualityId: "auto", startFromBeginning: false, audioTrackIndex: 2, subtitleTrackIndex: 3
+        ), Start(fileId: 61, audioTrackIndex: 2, subtitleTrackIndex: 3, resumePosition: 0))
+        let noPage = PlaybackSessionBridge.startSelection(
+            versions: parts, requestedFileId: nil, lastFileId: 62,
+            lastFileInProgress: tenSecondsIntoPartTwo.hasResumePoint,
+            prefersLastUsedVersion: false, startsAtFirstPart: false,
+            preferredQualityOverride: nil, settingsQuality: .auto
+        )
+        XCTAssertEqual(noPage.version.fileId, 61)
+        XCTAssertTrue(noPage.ignoresStoredPosition)
     }
 
     /// Without a position Resume would offer, a later part last played no

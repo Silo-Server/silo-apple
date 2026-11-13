@@ -893,6 +893,7 @@ actor PlaybackSessionBridge {
             lastFileId: watchDetail.userData?.lastFileId,
             lastFileInProgress: watchDetail.userData?.hasResumePoint ?? false,
             lastEditionKey: watchDetail.userData?.lastEditionKey,
+            variants: watchDetail.playbackVariants,
             prefersLastUsedVersion: prefersLastUsedVersion,
             pinsRequestedVersion: pinsVersion,
             // Start Over on a later part restarts its presentation.
@@ -908,7 +909,7 @@ actor PlaybackSessionBridge {
         }
         let normalizedResumePosition: Double? = {
             guard let resumePosition, resumePosition.isFinite, resumePosition >= 0 else {
-                return nil
+                return start.ignoresStoredPosition ? 0 : nil
             }
             return resumePosition
         }()
@@ -2435,6 +2436,11 @@ actor PlaybackSessionBridge {
         /// The client quality id, nil for Auto.
         let qualityPreference: String?
         let bandwidthCapKbps: Int?
+        /// The stored position belongs to another part of a multi-part
+        /// title, as when Resume would not offer it on the later part last
+        /// played and Auto returns to part 1. A start with no explicit
+        /// position begins at 0 instead of falling back to it.
+        let ignoresStoredPosition: Bool
     }
 
     /// Picks the start version: the requested file, else on a resume the
@@ -2452,6 +2458,7 @@ actor PlaybackSessionBridge {
         lastFileId: Int?,
         lastFileInProgress: Bool,
         lastEditionKey: String? = nil,
+        variants: [PlaybackVariant]? = nil,
         prefersLastUsedVersion: Bool,
         pinsRequestedVersion: Bool = false,
         startsAtFirstPart: Bool,
@@ -2482,7 +2489,8 @@ actor PlaybackSessionBridge {
                 lastFileId: lastFileId,
                 lastFileInProgress: lastFileInProgress,
                 preferredQualityId: quality.preferredQuality,
-                lastEditionKey: lastEditionKey
+                lastEditionKey: lastEditionKey,
+                variants: variants
             ) ?? versions[0]
             source = .ranked
         }
@@ -2498,7 +2506,11 @@ actor PlaybackSessionBridge {
             source: source,
             keepsVersion: pinsRequestedVersion && source == .requested,
             qualityPreference: quality.preferredQuality,
-            bandwidthCapKbps: quality.bandwidthCapKbps
+            bandwidthCapKbps: quality.bandwidthCapKbps,
+            ignoresStoredPosition: !DetailVersionSelection.positionCarries(
+                from: versions.first { $0.fileId == lastFileId },
+                to: version
+            )
         )
     }
 

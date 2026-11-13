@@ -1411,6 +1411,9 @@ struct WatchDetail {
     var effectiveSubtitleMode: String?
     let effectiveShowForcedSubtitles: Bool?
     var effectiveSubtitleTrackSignature: SubtitleTrackSignature?
+    /// The server's watch choices; their order breaks the last tie between
+    /// cuts. Nil from servers that predate it.
+    var playbackVariants: [PlaybackVariant]? = nil
 
     /// "Show forced subtitles" for this content. The server omits
     /// `effective_show_forced_subtitles` when no stored setting applies, and

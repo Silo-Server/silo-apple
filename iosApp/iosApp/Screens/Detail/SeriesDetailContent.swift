@@ -447,7 +447,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             guard !Task.isCancelled else { return }
             resumeLookupTask = nil
             let watchState = state.userData(cached: episode.userData)
-            if let position = state.resumePosition(cached: episode.userData) {
+            // A position saved on another edition than the one shown isn't
+            // offered: Play starts the shown one at 0.
+            if let position = state.resumePosition(cached: episode.userData),
+               DetailVersionSelection.savedPositionIsInEdition(
+                   of: shownVersion(for: episode), in: nextUpVersions, userData: watchState
+               ) {
                 pendingResume = PendingResume(episode: episode, position: position, watchState: watchState)
             } else {
                 onPlayEpisode(episode.contentId, playbackFileId(for: episode), false, nil, watchState)
@@ -536,7 +541,12 @@ struct SeriesDetailContent<BelowOverview: View>: View {
     /// "Resume S2·E5" when the tap offers to resume, else "Play S2·E5". The
     /// confirmation dialog still lets the user restart instead.
     private func playButtonLabel(for episode: EpisodeListItem) -> String {
-        DetailPlayLabel.episode(episode)
+        DetailPlayLabel.episode(episode, shown: shownVersion(for: episode), in: nextUpVersions)
+    }
+
+    /// The file the page shows for `episode`, once its files have loaded.
+    private func shownVersion(for episode: EpisodeListItem) -> FileVersion? {
+        nextUpWatchDetail?.contentId == episode.contentId ? effectiveNextUpVersion : nil
     }
 
     private var resumeTimestamp: String {
@@ -587,7 +597,8 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             lastFileInProgress: nextUpWatchDetail?.userData?.hasResumePoint ?? false,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: selectedNextUpEditionId,
-            lastEditionKey: nextUpWatchDetail?.userData?.lastEditionKey
+            lastEditionKey: nextUpWatchDetail?.userData?.lastEditionKey,
+            variants: nextUpWatchDetail?.playbackVariants
         )
     }
 
