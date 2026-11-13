@@ -104,7 +104,7 @@ enum DetailVersionSelection {
             return .unresolved(resumePosition: resumePosition)
         }
         let playedEdition = PlaybackEditions.edition(forFileId: watchState?.lastFileId, in: versions)?.id
-            ?? PlaybackEditions.edition(forKey: watchState?.lastEditionKey, in: versions)?.id
+            ?? lastPlayedEdition(watchState?.lastEditionKey, in: PlaybackEditions.editions(from: versions))?.id
         let position = !startFromBeginning && playedEdition != nil && playedEdition != shownEdition
             ? 0
             : resumePosition

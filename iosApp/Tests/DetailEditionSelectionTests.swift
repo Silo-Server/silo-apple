@@ -194,14 +194,18 @@ final class DetailEditionSelectionTests: XCTestCase {
         let onTheatrical = try decoder.decode(LeafItemUserData.self, from: Data(
             #"{ "played": false, "position_seconds": 900, "last_file_id": 70, "last_edition_key": "theatrical" }"#.utf8
         ))
+        let onGoneUnnamedFile = try decoder.decode(LeafItemUserData.self, from: Data(
+            #"{ "played": false, "position_seconds": 900, "last_file_id": 99, "last_edition_key": "" }"#.utf8
+        ))
         func start(
             shownWith snapshot: LeafItemUserData,
             startsWith watchState: LeafItemUserData,
             fromBeginning: Bool,
-            subtitle: Int? = 3
+            subtitle: Int? = 3,
+            edition: String? = nil
         ) -> DetailVersionSelection.PageStart {
             DetailVersionSelection.pageStart(
-                versions: parts, pinnedFileId: nil, editionId: nil,
+                versions: parts, pinnedFileId: nil, editionId: edition,
                 shownWith: snapshot, startsWith: watchState,
                 resumePosition: fromBeginning ? nil : watchState.positionSeconds, preferredQualityId: "auto",
                 startFromBeginning: fromBeginning, audioTrackIndex: 2, subtitleTrackIndex: subtitle
@@ -219,6 +223,9 @@ final class DetailEditionSelectionTests: XCTestCase {
         XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onTheatrical, fromBeginning: false),
                        Start(fileId: 61, audioTrackIndex: nil, subtitleTrackIndex: nil, resumePosition: 0),
                        "Theatrical's 900 s doesn't apply; 0, not nil, so the player won't read it back")
+        XCTAssertEqual(start(shownWith: onPartTwo, startsWith: onGoneUnnamedFile, fromBeginning: false, edition: "theatrical"),
+                       Start(fileId: 70, audioTrackIndex: 2, subtitleTrackIndex: 3, resumePosition: 0),
+                       "an empty last_edition_key names the unnamed cut, not the Theatrical one shown")
     }
 
     /// Without a position Resume would offer, a later part last played no
