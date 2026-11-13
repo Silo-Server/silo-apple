@@ -418,6 +418,7 @@ enum TVCircleFocusMotion {
 enum TVDetailAction: Hashable {
     case play
     case startOver
+    case edition
     case version
     case audio
     case subtitles
