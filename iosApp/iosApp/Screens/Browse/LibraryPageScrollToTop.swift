@@ -1,0 +1,36 @@
+import SwiftUI
+
+extension EnvironmentValues {
+    /// Bumped when the iPhone Libraries dock's selected section is tapped
+    /// again, which scrolls that library page back to its top. Nil where no
+    /// dock asks, so other hosts of the pages are untouched.
+    @Entry var libraryPageScrollToTopRequest: Int? = nil
+}
+
+extension View {
+    /// Scroll this vertical `ScrollView` to its top when the Libraries dock
+    /// asks (`libraryPageScrollToTopRequest`).
+    func scrollsToTopOnLibraryDockRequest() -> some View {
+        modifier(LibraryPageScrollToTop())
+    }
+}
+
+private struct LibraryPageScrollToTop: ViewModifier {
+    @Environment(\.libraryPageScrollToTopRequest) private var request
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var position = ScrollPosition(edge: .top)
+
+    func body(content: Content) -> some View {
+        if request != nil {
+            content
+                .scrollPosition($position)
+                .onChange(of: request) {
+                    withAnimation(reduceMotion ? nil : .smooth) {
+                        position.scrollTo(edge: .top)
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}

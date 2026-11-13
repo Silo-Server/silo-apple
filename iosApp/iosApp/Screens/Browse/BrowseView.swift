@@ -16,6 +16,7 @@ struct BrowseView: View {
     @State private var gridCommands = BrowseGridCommands()
     /// The jump waiting for its titles; a later jump replaces it.
     @State private var pendingJump: Task<Void, Never>?
+    @Environment(\.libraryPageScrollToTopRequest) private var scrollToTopRequest
     #else
     /// Letter-jump scroll state, kept off this view so scrolling doesn't
     /// redraw the grid.
@@ -177,6 +178,7 @@ struct BrowseView: View {
             onUserScroll: { [jumpedLetter] in jumpedLetter.letter = nil }
         )
         .environment(\.browseLibraryId, libraryId)
+        .onChange(of: scrollToTopRequest) { gridCommands.scrollToTop() }
     }
 
     private var gridHeader: some View {
@@ -729,6 +731,7 @@ struct LibraryRecommendedView: View {
         }
         .siloScrollEdgeEffect()
         .reportsPageChromeScroll()
+        .scrollsToTopOnLibraryDockRequest()
         .environment(\.browseLibraryId, libraryId)
     }
 

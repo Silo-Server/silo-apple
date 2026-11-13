@@ -146,6 +146,24 @@ struct LibrariesTabView: View {
     /// Feeds the glass strip behind the hoisted top chrome. Tab content reads
     /// it from the environment so each tab's ScrollView can report its offset.
     @State private var chromeScrollState = PageChromeScrollState()
+    #if os(iOS)
+    /// The iPhone dock layout keeps every page it has shown alive, so each
+    /// keeps its scroll position, and gives each its own chrome state, so
+    /// the header's glass follows the page on screen.
+    @State private var dock = LibraryDockModel()
+    @State private var mountedTabs: Set<LibraryPageTab> = []
+    @State private var pageChromeStates: [LibraryPageTab: PageChromeScrollState] = Dictionary(
+        uniqueKeysWithValues: LibraryPageTab.allCases.map { ($0, PageChromeScrollState()) }
+    )
+    @State private var scrollToTopRequests: [LibraryPageTab: Int] = [:]
+    /// Exact sizes by library and Movies/Series scope, for the header caption.
+    @State private var libraryCounts: [String: Int] = [:]
+    @State private var isDockVisible = false
+    @Environment(LibraryDockHost.self) private var dockHost: LibraryDockHost?
+    @Environment(SiloControlClient.self) private var siloControl
+    @Environment(AudioPlaybackStore.self) private var audioStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    #endif
 
     /// Persist the last-selected library. Fixed-library roots have no
     /// persistence key because their destination already fixes the ID.
@@ -217,27 +235,50 @@ struct LibrariesTabView: View {
             guard let response = notification.object as? LibrariesResponse else { return }
             acceptRefreshedLibraries(response)
         }
+        // The top bar's library selector; the iPhone dock uses a menu.
         .sheet(isPresented: $showPicker) {
             LibraryPickerSheet(
                 libraries: visibleLibraries,
                 scopedCategory: pickerScopeCategory,
                 selectedLibraryId: selectedLibraryId,
-                onSelect: { id in
-                    selectedLibraryId = id
-                    persistLibrarySelection(id)
-                    showPicker = false
-                    StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
-                }
+                onSelect: selectLibrary
             )
         }
     }
 
+    private func selectLibrary(_ id: Int) {
+        selectedLibraryId = id
+        #if os(iOS)
+        // In the same update as the switch, so the new library's first frame
+        // already has its full dock.
+        if let library = visibleLibraries.first(where: { $0.id == id }) {
+            showInDock(library)
+        }
+        #endif
+        persistLibrarySelection(id)
+        showPicker = false
+        StartupContentPrefetcher.prefetchLibraryLanding(libraryId: id)
+    }
+
     @ViewBuilder
     private func loadedContent(activeLibrary: Library) -> some View {
+        #if os(iOS)
+        if usesDockLayout {
+            dockedContent(activeLibrary: activeLibrary)
+        } else {
+            tabbedContent(activeLibrary: activeLibrary)
+        }
+        #else
+        tabbedContent(activeLibrary: activeLibrary)
+        #endif
+    }
+
+    @ViewBuilder
+    private func tabbedContent(activeLibrary: Library) -> some View {
         // Switch tab content directly here so we can hoist the top bar + tab
         // selector into a single `safeAreaInset` overlay shared by all three
         // tabs.
-        tabContent(activeLibrary: activeLibrary)
+        page(selectedTab, activeLibrary: activeLibrary)
             // Forces the whole tab subtree to reset when switching
             // libraries, so stale content never flashes on screen.
             .id("\(activeLibrary.id):\(videoScope(for: activeLibrary)?.rawValue ?? "all")")
@@ -258,8 +299,8 @@ struct LibrariesTabView: View {
     }
 
     @ViewBuilder
-    private func tabContent(activeLibrary: Library) -> some View {
-        switch selectedTab {
+    private func page(_ tab: LibraryPageTab, activeLibrary: Library) -> some View {
+        switch tab {
         case .recommended:
             LibraryRecommendedView(libraryId: activeLibrary.id, mediaScope: videoScope(for: activeLibrary))
         case .library:
@@ -310,6 +351,204 @@ struct LibrariesTabView: View {
                 .padding(.bottom, SiloTheme.padding)
         }
     }
+
+    #if os(iOS)
+    // MARK: - iPhone dock layout
+
+    /// iPhone in either orientation, outside the iPhone Duo's cover screen,
+    /// shows one page at a time under a plain header and switches pages from
+    /// the dock. iPad, Mac and Apple TV keep the chip-row layout.
+    private var usesDockLayout: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && statusColumn == nil
+    }
+
+    private func pageID(for library: Library) -> String {
+        "\(library.id):\(videoScope(for: library)?.rawValue ?? "all")"
+    }
+
+    private func dockedContent(activeLibrary: Library) -> some View {
+        let id = pageID(for: activeLibrary)
+        let chrome = pageChromeStates[selectedTab] ?? chromeScrollState
+        return dockPages(activeLibrary: activeLibrary)
+            // Forces every page to reset when switching libraries, so stale
+            // content never flashes on screen.
+            .id(id)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                dockHeader(activeLibrary: activeLibrary)
+                    .pageChromeBacking(
+                        scrollState: chrome,
+                        outset: EdgeInsets(top: 0, leading: -8, bottom: -8, trailing: -8)
+                    )
+                    .background {
+                        PageChromeGlass(scrollState: chrome)
+                    }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                // Exactly one dock shows: here, or in the tab bar's slot.
+                if !dockIsInSlot {
+                    LibraryDock(model: dock)
+                }
+            }
+            .onAppear {
+                configureDock(activeLibrary: activeLibrary)
+                isDockVisible = true
+                dockHost?.present(dock)
+            }
+            .onDisappear {
+                isDockVisible = false
+                dockHost?.withdraw(dock)
+            }
+            .onChange(of: selectedTab, initial: true) {
+                dock.selectedTab = selectedTab
+                mountedTabs.insert(selectedTab)
+            }
+            .onChange(of: id) {
+                // The new library's pages start at their tops.
+                mountedTabs = [selectedTab]
+                for state in pageChromeStates.values { state.update(0) }
+            }
+            .onChange(of: activeLibrary) { showInDock(activeLibrary) }
+            .onChange(of: visibleLibraries) { dock.libraries = visibleLibraries }
+            .task(id: activeLibrary.id) { await loadCollectionPresence(libraryId: activeLibrary.id) }
+            .task(id: id) { await loadLibraryCount(activeLibrary, key: id) }
+    }
+
+    /// Every page shown so far, stacked; only the selected one is visible
+    /// and reachable, so the others keep their scroll positions. The
+    /// selected page comes first: the tab bar minimises with the first
+    /// scroll view it finds in the tab.
+    private func dockPages(activeLibrary: Library) -> some View {
+        let ordered = [selectedTab] + LibraryPageTab.allCases.filter { $0 != selectedTab }
+        return ZStack {
+            ForEach(ordered) { tab in
+                if tab == selectedTab || mountedTabs.contains(tab) {
+                    let isSelected = tab == selectedTab
+                    page(tab, activeLibrary: activeLibrary)
+                        .background(LibraryPageScrollClaim(isActive: isSelected))
+                        .environment(pageChromeStates[tab] ?? chromeScrollState)
+                        .environment(\.libraryPageScrollToTopRequest, scrollToTopRequests[tab, default: 0])
+                        .opacity(isSelected ? 1 : 0)
+                        .allowsHitTesting(isSelected)
+                        .accessibilityHidden(!isSelected)
+                        .zIndex(isSelected ? 1 : 0)
+                }
+            }
+        }
+    }
+
+    /// The library's name with its size, the shared actions, and the
+    /// Movies/Series switch of a mixed library.
+    private func dockHeader(activeLibrary: Library) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(verbatim: activeLibrary.name)
+                        .font(.siloTitle)
+                        .foregroundStyle(Color.siloOnSurface)
+                        .lineLimit(1)
+                    Text(dockCaption(for: activeLibrary))
+                        .font(.siloCaption)
+                        .foregroundStyle(Color.siloSecondaryText)
+                        .lineLimit(1)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
+
+                Spacer(minLength: 8)
+
+                TabTopBarActions(
+                    onSearch: { router.navigate(to: .search) },
+                    onOpenSettings: { router.navigate(to: .settings) },
+                    onOpenRequests: { router.navigate(to: .requestsHub) },
+                    onSwitchProfile: { router.switchProfile() },
+                    onSignOut: { router.signOutAndReset() }
+                )
+            }
+            .padding(.horizontal, SiloTheme.padding)
+            .padding(.top, SiloTheme.smallPadding)
+            .padding(.bottom, SiloTheme.smallPadding)
+
+            if activeLibrary.isMixedLibrary {
+                LibraryVideoScopePicker(selection: $selectedVideoScope)
+            }
+        }
+    }
+
+    /// The library's size once known, else its kind.
+    private func dockCaption(for library: Library) -> LocalizedStringResource {
+        if let count = libraryCounts[pageID(for: library)] {
+            return libraryCountLabel(count, library: library, scope: videoScope(for: library))
+        }
+        if library.isAudiobookLibrary { return .libraryKindAudiobooks }
+        if library.isMixedLibrary { return .libraryKindMixed }
+        if library.isSeriesLibrary { return .libraryKindSeries }
+        if library.type == "movies" { return .libraryKindMovies }
+        if library.type == "music" { return .libraryKindMusic }
+        return .libraryTypeGeneric
+    }
+
+    /// The tab bar shows the dock in its accessory slot (iOS 26.1 and
+    /// later) unless a now-playing bar holds the slot.
+    private var dockIsInSlot: Bool {
+        guard LibraryDockHost.slotIsAvailable, isDockVisible,
+              let dockHost, dockHost.dock === dock else { return false }
+        return !NowPlayingShelf.hasActiveAccessory(control: siloControl, audio: audioStore)
+    }
+
+    /// Put `library` in the dock with the sections it had last time, read
+    /// synchronously, so the dock never gains or loses a segment while it's
+    /// on screen.
+    private func showInDock(_ library: Library) {
+        dock.library = library
+        dock.hasCollections = LibraryCollectionPresence.remembered(
+            serverId: libraryAuthority?.serverId,
+            libraryId: library.id
+        )
+    }
+
+    private func configureDock(activeLibrary: Library) {
+        showInDock(activeLibrary)
+        dock.selectedTab = selectedTab
+        dock.onSelect = { tab in
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) {
+                selectedTab = tab
+            }
+        }
+        dock.onScrollToTop = { tab in
+            scrollToTopRequests[tab, default: 0] += 1
+        }
+        dock.libraries = visibleLibraries
+        dock.onPickLibrary = { selectLibrary($0) }
+    }
+
+    /// Whether the library has collections, from the server. It only
+    /// updates the remembered answer, which the dock uses the next time the
+    /// library opens; a page already on screen keeps its segments, and a
+    /// Collections page with none shows its own empty state.
+    private func loadCollectionPresence(libraryId: Int) async {
+        guard let response = try? await SiloAPI.shared.libraryCollections(libraryId: libraryId),
+              !Task.isCancelled else { return }
+        let resolved = response.resolvedSections
+        ResponseCache.shared.set(resolved, for: "library:\(libraryId):collections")
+        LibraryCollectionPresence.remember(
+            resolved.contains { !$0.collections.isEmpty },
+            serverId: libraryAuthority?.serverId,
+            libraryId: libraryId
+        )
+    }
+
+    /// The library's exact size under its Movies/Series scope, for the
+    /// header caption. A server that can't count exactly leaves the kind.
+    private func loadLibraryCount(_ library: Library, key: String) async {
+        guard libraryCounts[key] == nil else { return }
+        var query = CatalogQueryBuilder.libraryProbe(libraryId: library.id)
+        query.skipTotal = false
+        query.type = videoScope(for: library)?.rawValue
+        guard let page = try? await SiloAPI.shared.catalogPage(query), !Task.isCancelled,
+              page.response.totalExact != false, let total = page.response.total else { return }
+        libraryCounts[key] = total
+    }
+    #endif
 
     /// The iPhone Duo's cover screen moves the header actions into the
     /// status column, leaving the title and tabs alone in a rounded panel.
@@ -637,3 +876,29 @@ private struct LibraryPickerRow: View {
         return .libraryTypeGeneric
     }
 }
+
+#if os(iOS)
+/// Whether each library had collections the last time it loaded, by server
+/// and library, so the iPhone dock shows the right segments on its first
+/// frame. Unknown libraries show Collections.
+private enum LibraryCollectionPresence {
+    private static let storageKey = "librariesTabHasCollections"
+
+    private static func key(serverId: String?, libraryId: Int) -> String {
+        "\(serverId ?? "none"):\(libraryId)"
+    }
+
+    static func remembered(serverId: String?, libraryId: Int, defaults: UserDefaults = .standard) -> Bool {
+        let stored = defaults.dictionary(forKey: storageKey) as? [String: Bool]
+        return stored?[key(serverId: serverId, libraryId: libraryId)] ?? true
+    }
+
+    static func remember(_ hasCollections: Bool, serverId: String?, libraryId: Int, defaults: UserDefaults = .standard) {
+        var stored = defaults.dictionary(forKey: storageKey) as? [String: Bool] ?? [:]
+        let key = key(serverId: serverId, libraryId: libraryId)
+        guard stored[key] != hasCollections else { return }
+        stored[key] = hasCollections
+        defaults.set(stored, forKey: storageKey)
+    }
+}
+#endif

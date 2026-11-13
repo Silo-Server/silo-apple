@@ -82,10 +82,16 @@ struct BrowseCollectionGrid: View {
 @MainActor
 final class BrowseGridCommands {
     fileprivate var scrollHandler: ((Int) -> Void)?
+    fileprivate var topHandler: (() -> Void)?
 
     /// Put the title at list `position` in the grid's top row, at once.
     func scroll(toPosition position: Int) {
         scrollHandler?(position)
+    }
+
+    /// Scroll back to the top of the page, controls and all.
+    func scrollToTop() {
+        topHandler?()
     }
 }
 
@@ -345,9 +351,11 @@ final class BrowseGridController: UIViewController, UICollectionViewDelegate, UI
 
     private func bind(replacing old: BrowseGridModel?) {
         model.grid.commands.scrollHandler = { [weak self] in self?.scroll(toPosition: $0) }
+        model.grid.commands.topHandler = { [weak self] in self?.scrollToTop() }
         model.grid.pager?.onChange = { [weak self] in self?.refreshVisibleCells(force: false) }
         if let old, old.grid.commands !== model.grid.commands {
             old.grid.commands.scrollHandler = nil
+            old.grid.commands.topHandler = nil
         }
     }
 
@@ -549,6 +557,14 @@ final class BrowseGridController: UIViewController, UICollectionViewDelegate, UI
     }
 
     // MARK: - Scrolling
+
+    private func scrollToTop() {
+        guard isViewLoaded else { return }
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: -collectionView.adjustedContentInset.top),
+            animated: !UIAccessibility.isReduceMotionEnabled
+        )
+    }
 
     private func scroll(toPosition position: Int) {
         guard isViewLoaded, (0..<cardCount).contains(position) else { return }

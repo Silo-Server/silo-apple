@@ -571,6 +571,7 @@ struct LibraryCollectionsView: View {
                     .padding(.bottom, SiloTheme.largePadding)
                 }
                 .reportsPageChromeScroll()
+                .scrollsToTopOnLibraryDockRequest()
             } else if let error = viewModel.error {
                 ErrorView(state: error, onRetry: { Task { await viewModel.loadCollections(libraryId: libraryId) } })
             } else if viewModel.isLoading {
