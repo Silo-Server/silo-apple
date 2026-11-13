@@ -205,6 +205,7 @@ struct LibraryDock: View {
     private var dragX: CGFloat?
     private static let switcherSpace = "libraryDockSwitcher"
     @Environment(\.locale) private var locale
+    @Environment(\.displayScale) private var displayScale
 
     private var isFloating: Bool { style == .floating }
     /// At accessibility text sizes the segments show icons; the Large
@@ -256,26 +257,38 @@ struct LibraryDock: View {
     }
 
     private var floatingRow: some View {
-        HStack(spacing: SiloTheme.smallPadding) {
-            LibraryDockLibraryButton(model: model, style: style)
-                .frame(width: Self.floatingHeight, height: Self.floatingHeight)
-                .siloGlass(in: Circle(), interactive: model.canSwitchLibrary)
-            switcher
-                .padding(edgeInset)
-                .frame(maxWidth: .infinity, minHeight: Self.floatingHeight)
-                .siloGlass(in: Capsule())
+        // Measured at the width offered, not the row's: labels too wide
+        // for the room would otherwise widen the row to fit them, and the
+        // dock would never see that they don't.
+        LibraryDockOfferedWidth {
+            HStack(spacing: SiloTheme.smallPadding) {
+                LibraryDockLibraryButton(model: model, style: style)
+                    .frame(width: Self.floatingHeight, height: Self.floatingHeight)
+                    .siloGlass(in: Circle(), interactive: model.canSwitchLibrary)
+                switcher
+                    .padding(edgeInset)
+                    .frame(maxWidth: .infinity, minHeight: Self.floatingHeight)
+                    .siloGlass(in: Capsule())
+            }
         }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
-            noteAvailableWidth(width - Self.floatingHeight - SiloTheme.smallPadding - 2 * edgeInset)
+            // As before the labels were fitted here, a row too wide for its
+            // room may run into the page's side margins; the labels shrink
+            // only when it would run off the screen.
+            noteAvailableWidth(width + 2 * SiloTheme.padding - Self.floatingHeight - SiloTheme.smallPadding - 2 * edgeInset)
         }
     }
 
     // MARK: In the slot
 
     private var slotRow: some View {
-        HStack(spacing: 0) {
+        LibraryDockSlotRowLayout(
+            buttonMinWidth: style.iconBox,
+            buttonMaxWidth: style.iconBoxMax,
+            referenceSegmentsWidth: fullSetSegmentsWidth
+        ) {
             LibraryDockLibraryButton(model: model, style: style)
                 .frame(minWidth: style.iconBox, maxWidth: style.iconBoxMax)
                 .frame(maxHeight: .infinity)
@@ -289,20 +302,41 @@ struct LibraryDock: View {
         }
         .padding(.leading, style.leadingInset ?? edgeInset)
         .padding(.trailing, edgeInset)
-        // Any width the button doesn't take becomes outer room on the
-        // leading side, so the last segment keeps its trailing inset.
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onGeometryChange(for: CGSize.self) { proxy in
             proxy.size
         } action: { size in
             slotHeight = size.height
             // Expanded, the segments sit as a tight group, so their room is
             // the row less the library button at its least width and the
-            // hairline's gaps.
+            // hairline's gaps. As before the labels were fitted here, a group
+            // a little too wide may take the leading inset; they shrink only
+            // past that.
             if !style.segmentsFillWidth {
-                noteAvailableWidth(size.width - expandedLeadingWidth - edgeInset)
+                noteAvailableWidth(size.width - expandedLeadingWidth)
             }
         }
+    }
+
+    /// With a section hidden, the width all three labelled segments would
+    /// take, so the library button sits where it does with all three. Nil
+    /// when every section shows or the segments are icons.
+    private var fullSetSegmentsWidth: CGFloat? {
+        let all = LibraryPageTab.allCases
+        guard model.visibleTabs.count < all.count, !usesIcons, labelVariant != .icons else { return nil }
+        let pointSize: CGFloat? = labelVariant == .smaller ? LibraryDockStyle.fallbackPointSize : nil
+        let labels = all.reduce(0) { total, tab in
+            total + LibraryDockLabelWidths.width(
+                of: AppLanguage.string(tab.dockTitle, locale: locale),
+                pointSize: pointSize,
+                textStyle: style.labelTextStyle,
+                baseSize: style.labelBaseSize,
+                dynamicTypeSize: dynamicTypeSize,
+                roundingScale: displayScale,
+                atTextStyleSize: true
+            )
+        }
+        return labels + style.labelPadding * 2 * CGFloat(all.count) + style.segmentGap * CGFloat(all.count - 1)
     }
 
     /// The expanded slot's leading cluster at its least width.
@@ -355,7 +389,11 @@ struct LibraryDock: View {
                 pointSize: pointSize,
                 textStyle: style.labelTextStyle,
                 baseSize: style.labelBaseSize,
-                dynamicTypeSize: dynamicTypeSize
+                dynamicTypeSize: dynamicTypeSize,
+                // Inline keeps the measure it was tuned with; elsewhere the
+                // labels are measured at the size and rounding they draw at.
+                roundingScale: style.segmentsFillWidth ? 1 : displayScale,
+                atTextStyleSize: !style.segmentsFillWidth
             )
         }
         let room = style.labelPadding * 2 * CGFloat(tabs.count) + style.segmentGap * CGFloat(max(0, tabs.count - 1))
@@ -576,10 +614,22 @@ private struct LibraryDockSegmentsLayout: Layout {
     let gap: CGFloat
     var fillsWidth = false
 
+    /// Equal slots across `width`, when each is at least as wide as the
+    /// widest segment needs: with two segments, or icons, the segments
+    /// share the room evenly instead of leaving an empty stretch.
+    private func equalSlotWidth(in width: CGFloat?, ideals: [CGFloat]) -> CGFloat? {
+        guard let width, width.isFinite, !ideals.isEmpty else { return nil }
+        let slot = (width - gap * CGFloat(ideals.count - 1)) / CGFloat(ideals.count)
+        return slot >= (ideals.max() ?? 0) ? slot : nil
+    }
+
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let ideals = subviews.map { $0.sizeThatFits(.unspecified) }
         let idealWidth = ideals.reduce(0) { $0 + $1.width } + gap * CGFloat(max(0, subviews.count - 1))
         let height = proposal.height ?? (ideals.map(\.height).max() ?? 0)
+        if equalSlotWidth(in: proposal.width, ideals: ideals.map(\.width)) != nil, let width = proposal.width {
+            return CGSize(width: width, height: height)
+        }
         let width = fillsWidth ? (proposal.width ?? idealWidth) : idealWidth
         return CGSize(width: width, height: height)
     }
@@ -588,6 +638,14 @@ private struct LibraryDockSegmentsLayout: Layout {
         guard !subviews.isEmpty else { return }
         let count = CGFloat(subviews.count)
         let widths = subviews.map { $0.sizeThatFits(.unspecified).width }
+        if let slot = equalSlotWidth(in: bounds.width, ideals: widths) {
+            var x = bounds.minX
+            for subview in subviews {
+                subview.place(at: CGPoint(x: x, y: bounds.minY), proposal: ProposedViewSize(width: slot, height: bounds.height))
+                x += slot + gap
+            }
+            return
+        }
         let leftover = max(0, bounds.width - widths.reduce(0, +) - gap * (count - 1))
         let extra = fillsWidth ? leftover / count : 0
         var x = bounds.minX
@@ -597,6 +655,77 @@ private struct LibraryDockSegmentsLayout: Layout {
                 proposal: ProposedViewSize(width: width + extra, height: bounds.height)
             )
             x += width + extra + gap
+        }
+    }
+}
+
+/// Takes the width it is offered whatever its content would like, so the
+/// floating dock measures the room it has. Its height is the content's.
+private struct LibraryDockOfferedWidth: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let content = subviews.first?.sizeThatFits(proposal) ?? .zero
+        guard let width = proposal.width, width.isFinite else { return content }
+        return CGSize(width: width, height: content.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(
+            at: CGPoint(x: bounds.midX, y: bounds.midY),
+            anchor: .center,
+            proposal: ProposedViewSize(width: bounds.width, height: proposal.height)
+        )
+    }
+}
+
+/// The slot row: the library button, the hairline, the segments. The
+/// button grows into spare room up to `buttonMaxWidth`; the segments then
+/// take the rest when they can share it as equal slots, and otherwise sit
+/// as a tight group with any room left on the leading side, so the last
+/// segment always keeps its trailing inset. With `referenceSegmentsWidth`
+/// (a section hidden), the button and the leading room are worked out for
+/// that width, so the button stays where it is with every section, and the
+/// segments shown share everything after it.
+private struct LibraryDockSlotRowLayout: Layout {
+    let buttonMinWidth: CGFloat
+    let buttonMaxWidth: CGFloat
+    var referenceSegmentsWidth: CGFloat?
+
+    private struct Widths {
+        var button: CGFloat
+        var hairline: CGFloat
+        var segments: CGFloat
+    }
+
+    private func widths(for width: CGFloat, height: CGFloat?, subviews: Subviews) -> Widths? {
+        guard subviews.count == 3 else { return nil }
+        let hairline = subviews[1].sizeThatFits(.unspecified).width
+        let segmentsIdeal = referenceSegmentsWidth ?? subviews[2].sizeThatFits(.unspecified).width
+        let spare = width - hairline - buttonMinWidth - segmentsIdeal
+        let button = buttonMinWidth + min(max(spare, 0), buttonMaxWidth - buttonMinWidth)
+        let leadingRoom = referenceSegmentsWidth == nil ? 0 : max(0, width - hairline - button - segmentsIdeal)
+        let room = max(0, width - hairline - button - leadingRoom)
+        // Segments wider than their room overhang the leading side, as the
+        // row always has, so the last keeps its trailing inset.
+        let segments = subviews[2].sizeThatFits(ProposedViewSize(width: room, height: height)).width
+        return Widths(button: button, hairline: hairline, segments: segments)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let widths = widths(for: bounds.width, height: bounds.height, subviews: subviews) else { return }
+        var x = bounds.maxX - widths.segments - widths.hairline - widths.button
+        for (subview, width) in zip(subviews, [widths.button, widths.hairline, widths.segments]) {
+            // Centred in its share, so a glyph wider than its box overhangs
+            // both sides evenly.
+            subview.place(
+                at: CGPoint(x: x + width / 2, y: bounds.midY),
+                anchor: .center,
+                proposal: ProposedViewSize(width: width, height: bounds.height)
+            )
+            x += width
         }
     }
 }
@@ -773,30 +902,81 @@ extension Library {
 ///
 /// Placed as a page's background, it finds the page's scroll view among
 /// the views SwiftUI places after it, and passes it to the view controller
-/// the tab bar controller holds for the tab.
+/// the tab bar controller holds for the tab. It looks when the page is
+/// selected, when it reaches the window, and when the page's scroll view
+/// appears later (a page still loading has none yet), which the page's
+/// `LibraryPageScrollViewMarker` reports through `link`.
 struct LibraryPageScrollClaim: UIViewRepresentable {
     let isActive: Bool
+    let link: LibraryPageScrollClaimLink
 
     func makeUIView(context: Context) -> LibraryPageScrollClaimView {
         LibraryPageScrollClaimView()
     }
 
     func updateUIView(_ view: LibraryPageScrollClaimView, context: Context) {
+        link.claimView = view
         let becameActive = isActive && !view.isActive
         view.isActive = isActive
         if becameActive { view.claimSoon() }
     }
 }
 
-final class LibraryPageScrollClaimView: UIView {
-    var isActive = false {
-        didSet { if isActive != oldValue { attemptsLeft = Self.maxAttempts } }
+/// Connects a page's scroll view, when it appears, to the page's claim.
+@MainActor
+final class LibraryPageScrollClaimLink {
+    fileprivate weak var claimView: LibraryPageScrollClaimView?
+
+    func scrollViewAppeared() {
+        claimView?.claimSoon()
     }
-    /// A page still loading may not have its scroll view yet (Collections
-    /// before its first answer); the claim tries again a few times.
-    private static let maxAttempts = 30
-    private static let retryInterval: TimeInterval = 0.2
-    private var attemptsLeft = maxAttempts
+}
+
+extension EnvironmentValues {
+    /// The selected library page's claim on the tab bar's scroll view. Nil
+    /// outside the iPhone Libraries tab.
+    @Entry var libraryPageScrollClaimLink: LibraryPageScrollClaimLink? = nil
+}
+
+extension View {
+    /// Tells the Libraries tab when this page's scroll view appears, so the
+    /// tab bar can follow it. Does nothing outside the Libraries tab.
+    func reportsLibraryPageScrollView() -> some View {
+        background { LibraryPageScrollViewMarker() }
+    }
+}
+
+private struct LibraryPageScrollViewMarker: UIViewRepresentable {
+    @Environment(\.libraryPageScrollClaimLink) private var link
+
+    func makeUIView(context: Context) -> MarkerView {
+        MarkerView()
+    }
+
+    func updateUIView(_ view: MarkerView, context: Context) {
+        view.link = link
+    }
+
+    final class MarkerView: UIView {
+        var link: LibraryPageScrollClaimLink?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            isAccessibilityElement = false
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil { link?.scrollViewAppeared() }
+        }
+    }
+}
+
+final class LibraryPageScrollClaimView: UIView {
+    var isActive = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -817,15 +997,7 @@ final class LibraryPageScrollClaimView: UIView {
     }
 
     private func claim() {
-        guard isActive, window != nil else { return }
-        guard let scrollView = pageScrollView() else {
-            guard attemptsLeft > 0 else { return }
-            attemptsLeft -= 1
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.retryInterval) { [weak self] in
-                self?.claim()
-            }
-            return
-        }
+        guard isActive, window != nil, let scrollView = pageScrollView() else { return }
         var responder: UIResponder? = scrollView
         while let next = responder {
             if let controller = next as? UIViewController, controller.parent is UITabBarController {
@@ -900,24 +1072,34 @@ private enum LibraryDockLabelWidths {
     private static var cache: [String: CGFloat] = [:]
 
     /// `pointSize` nil is `baseSize` in `textStyle`, scaled for
-    /// `dynamicTypeSize`.
+    /// `dynamicTypeSize`, or with `atTextStyleSize` the text style's own
+    /// size there, the size the label draws at. Rounded up to whole points,
+    /// or with `roundingScale` to that many steps a point, as a label lays
+    /// out.
     static func width(
         of text: String,
         pointSize: CGFloat?,
         textStyle: UIFont.TextStyle,
         baseSize: CGFloat,
-        dynamicTypeSize: DynamicTypeSize
+        dynamicTypeSize: DynamicTypeSize,
+        roundingScale: CGFloat = 1,
+        atTextStyleSize: Bool = false
     ) -> CGFloat {
-        let key = "\(text)|\(pointSize ?? 0)|\(textStyle.rawValue)|\(baseSize)|\(dynamicTypeSize)"
-        if let width = cache[key] { return width }
-        let size = pointSize ?? UIFontMetrics(forTextStyle: textStyle).scaledValue(
-            for: baseSize,
-            compatibleWith: UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
-        )
-        let font = UIFont.systemFont(ofSize: size, weight: .bold)
-        let width = ceil((text as NSString).size(withAttributes: [.font: font]).width)
-        cache[key] = width
-        return width
+        let key = "\(text)|\(pointSize ?? 0)|\(textStyle.rawValue)|\(baseSize)|\(dynamicTypeSize)|\(atTextStyleSize)"
+        let width: CGFloat
+        if let cached = cache[key] {
+            width = cached
+        } else {
+            let traits = UITraitCollection(preferredContentSizeCategory: UIContentSizeCategory(dynamicTypeSize))
+            let size = pointSize ?? (atTextStyleSize
+                ? UIFont.preferredFont(forTextStyle: textStyle, compatibleWith: traits).pointSize
+                : UIFontMetrics(forTextStyle: textStyle).scaledValue(for: baseSize, compatibleWith: traits))
+            let font = UIFont.systemFont(ofSize: size, weight: .bold)
+            width = (text as NSString).size(withAttributes: [.font: font]).width
+            cache[key] = width
+        }
+        let scale = max(roundingScale, 1)
+        return ceil(width * scale) / scale
     }
 }
 

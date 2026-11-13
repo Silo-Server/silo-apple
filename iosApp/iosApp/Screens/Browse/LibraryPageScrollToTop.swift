@@ -13,7 +13,8 @@ extension EnvironmentValues {
 
 extension View {
     /// Scroll this vertical `ScrollView` to its top when the Libraries dock
-    /// asks (`libraryPageScrollToTopRequest`).
+    /// asks (`libraryPageScrollToTopRequest`). On iPhone it also reports
+    /// the scroll view's arrival, so the tab bar follows the page.
     func scrollsToTopOnLibraryDockRequest() -> some View {
         modifier(LibraryPageScrollToTop())
     }
@@ -28,6 +29,9 @@ private struct LibraryPageScrollToTop: ViewModifier {
         if request != nil {
             content
                 .scrollPosition($position)
+                #if os(iOS)
+                .reportsLibraryPageScrollView()
+                #endif
                 .onChange(of: request) {
                     withAnimation(reduceMotion ? nil : .smooth) {
                         position.scrollTo(edge: .top)

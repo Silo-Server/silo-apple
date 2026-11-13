@@ -123,6 +123,7 @@ struct BrowseView: View {
             .frame(maxWidth: .infinity)
         }
         .reportsPageChromeScroll()
+        .scrollsToTopOnLibraryDockRequest()
         .environment(\.browseLibraryId, libraryId)
     }
 
@@ -182,6 +183,7 @@ struct BrowseView: View {
             },
             onUserScroll: { [jumpedLetter] in jumpedLetter.letter = nil }
         )
+        .reportsLibraryPageScrollView()
         .environment(\.browseLibraryId, libraryId)
         .onChange(of: scrollToTopRequest) {
             // A letter jump still waiting for its titles would move the page
@@ -713,6 +715,12 @@ struct LibraryRecommendedView: View {
         .refreshable {
             await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope)
             pageDidRefresh?()
+        }
+        // The Libraries tab keeps this page alive under its others, so a
+        // title marked watched elsewhere would otherwise keep its old card
+        // in Continue Watching and Next Up. Home reloads on the same signal.
+        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+            Task { await viewModel.loadSections(libraryId: libraryId, mediaScope: mediaScope) }
         }
     }
 

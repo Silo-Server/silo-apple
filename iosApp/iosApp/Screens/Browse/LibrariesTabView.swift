@@ -156,6 +156,9 @@ struct LibrariesTabView: View {
         uniqueKeysWithValues: LibraryPageTab.allCases.map { ($0, PageChromeScrollState()) }
     )
     @State private var scrollToTopRequests: [LibraryPageTab: Int] = [:]
+    @State private var scrollClaimLinks: [LibraryPageTab: LibraryPageScrollClaimLink] = Dictionary(
+        uniqueKeysWithValues: LibraryPageTab.allCases.map { ($0, LibraryPageScrollClaimLink()) }
+    )
     /// Exact sizes by server, profile, library and Movies/Series scope, for
     /// the header caption.
     @State private var libraryCounts: [String: Int] = [:]
@@ -413,7 +416,9 @@ struct LibrariesTabView: View {
             }
             .onChange(of: activeLibrary) { showInDock(activeLibrary) }
             .onChange(of: visibleLibraries) { dock.libraries = visibleLibraries }
-            .task(id: activeLibrary.id) { await loadCollectionPresence(libraryId: activeLibrary.id) }
+            .task(id: collectionPresenceKey(for: activeLibrary)) {
+                await loadCollectionPresence(libraryId: activeLibrary.id, authority: libraryAuthority)
+            }
             // Read each time the library becomes active and after a refresh;
             // a newer read cancels an older one before it can land.
             .task(id: "\(countKey(for: activeLibrary))#\(countRefreshes)") {
@@ -431,8 +436,10 @@ struct LibrariesTabView: View {
             ForEach(ordered) { tab in
                 if tab == selectedTab || mountedTabs.contains(tab) {
                     let isSelected = tab == selectedTab
+                    let claimLink = scrollClaimLinks[tab, default: LibraryPageScrollClaimLink()]
                     page(tab, activeLibrary: activeLibrary)
-                        .background(LibraryPageScrollClaim(isActive: isSelected))
+                        .environment(\.libraryPageScrollClaimLink, claimLink)
+                        .background(LibraryPageScrollClaim(isActive: isSelected, link: claimLink))
                         .environment(pageChromeStates[tab] ?? chromeScrollState)
                         .environment(\.libraryPageScrollToTopRequest, scrollToTopRequests[tab, default: 0])
                         .environment(\.libraryPageDidRefresh) { countRefreshes += 1 }
@@ -546,16 +553,29 @@ struct LibrariesTabView: View {
     /// updates the remembered answer, which the dock uses the next time the
     /// library opens; a page already on screen keeps its segments, and a
     /// Collections page with none shows its own empty state.
-    private func loadCollectionPresence(libraryId: Int) async {
-        guard let response = try? await SiloAPI.shared.libraryCollections(libraryId: libraryId),
-              !Task.isCancelled else { return }
+    /// The answer is kept only for the server and profile it was asked
+    /// for: a switch while the request is out drops it.
+    private func loadCollectionPresence(libraryId: Int, authority: MainTabLibraryAuthority?) async {
+        guard let owner = await TokenStore.shared.captureOrdinaryRequestAuth(),
+              let response = try? await SiloAPI.shared.libraryCollections(libraryId: libraryId),
+              !Task.isCancelled,
+              await SiloAPI.shared.isCurrentOwner(owner),
+              !Task.isCancelled,
+              authority == MainTabLibraryAuthority(
+                  serverId: ServerRegistry.shared.activeServerId,
+                  profileId: ServerRegistry.shared.activeProfileId
+              ) else { return }
         let resolved = response.resolvedSections
         ResponseCache.shared.set(resolved, for: "library:\(libraryId):collections")
         LibraryCollectionPresence.remember(
             resolved.contains { !$0.collections.isEmpty },
-            authority: libraryAuthority,
+            authority: authority,
             libraryId: libraryId
         )
+    }
+
+    private func collectionPresenceKey(for library: Library) -> String {
+        "\(libraryAuthority?.serverId ?? "-"):\(libraryAuthority?.profileId ?? "-")|\(library.id)"
     }
 
     /// The library's exact size under its Movies/Series scope, for the
@@ -564,9 +584,14 @@ struct LibrariesTabView: View {
         var query = CatalogQueryBuilder.libraryProbe(libraryId: library.id)
         query.skipTotal = false
         query.type = videoScope(for: library)?.rawValue
-        guard let page = try? await SiloAPI.shared.catalogPage(query), !Task.isCancelled,
-              page.response.totalExact != false, let total = page.response.total else { return }
-        libraryCounts[key] = total
+        guard let page = try? await SiloAPI.shared.catalogPage(query), !Task.isCancelled else { return }
+        // A count the server can no longer give exactly replaces the one
+        // shown before with the kind alone.
+        if page.response.totalExact != false, let total = page.response.total {
+            libraryCounts[key] = total
+        } else {
+            libraryCounts[key] = nil
+        }
     }
     #endif
 
