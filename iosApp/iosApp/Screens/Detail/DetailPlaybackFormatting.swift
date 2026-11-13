@@ -366,6 +366,22 @@ enum DetailPlaybackFormatting {
         return matches.first?.selectionIndex
     }
 
+    /// The file a manual subtitle pick still belongs to once a Version or
+    /// Edition pick has moved the page from `previous` to `next`. A track
+    /// moved to another file is numbered for that file, so it no longer
+    /// belongs to the one it was picked on: nil, which
+    /// `keepsManualSubtitlePick` drops on the next reload, whichever file
+    /// that shows. Auto and Off belong to no file.
+    static func subtitlePickFileAfterVersionPick(
+        _ pickedFileId: Int?,
+        index: Int?,
+        movingFrom previous: FileVersion?,
+        to next: FileVersion?
+    ) -> Int? {
+        guard let index, index >= 0, previous?.fileId != next?.fileId else { return pickedFileId }
+        return nil
+    }
+
     /// A server-remembered track is useful for reflecting the server policy
     /// in the pre-play selector, but it is not a manual choice made during
     /// this visit. Device-settings mode must start on Apple's caption policy

@@ -154,6 +154,42 @@ final class DetailVersionSelectionTests: XCTestCase {
         XCTAssertEqual(moved(5, manual: true), 6, "Traditional Chinese, not the first Chinese track")
     }
 
+    /// A track moved to another version is numbered for that file. Its number
+    /// must not be read on the file it was picked on when the page reloads
+    /// there, as it does after Play clears the Version pin.
+    func testAMovedSubtitlePickIsNotKeptByItsNumberOnReload() {
+        let versions = decodedVersions("""
+        [
+          { "file_id": 14, "subtitle_tracks": [
+            { "index": 3, "codec": "subrip", "language": "fr" },
+            { "index": 4, "codec": "subrip", "language": "en" }
+          ] },
+          { "file_id": 36, "subtitle_tracks": [
+            { "index": 3, "codec": "subrip", "language": "en" }
+          ] }
+        ]
+        """)
+        func fileAfterPick(_ index: Int?, from: Int, to: Int) -> Int? {
+            DetailPlaybackFormatting.subtitlePickFileAfterVersionPick(
+                14,
+                index: index,
+                movingFrom: versions.first { $0.fileId == from },
+                to: versions.first { $0.fileId == to }
+            )
+        }
+        // English, picked as stream 4 of file 14, is stream 3 of file 36.
+        // Stream 3 of file 14 is French.
+        let moved = fileAfterPick(4, from: 14, to: 36)
+        for reloaded in [14, 36] {
+            XCTAssertFalse(DetailPlaybackFormatting.keepsManualSubtitlePick(
+                3, pickedFileId: moved, reloadedFileId: reloaded
+            ) { _ in true }, "reloaded on file \(reloaded)")
+        }
+        XCTAssertEqual(fileAfterPick(4, from: 14, to: 14), 14, "same file")
+        XCTAssertEqual(fileAfterPick(-1, from: 14, to: 36), 14, "Off")
+        XCTAssertEqual(fileAfterPick(nil, from: 14, to: 36), 14, "Auto")
+    }
+
     /// Server mode Off (profile or series) with show forced on is not an
     /// explicit Off: Play from the detail page lets the resolver start on the
     /// forced track in the audio language, like every other entry path. A

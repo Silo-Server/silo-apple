@@ -416,12 +416,16 @@ private struct ItemDetailPhoneContent: View {
     /// cleared preference from the server.
     @State private var didClearSubtitleOverride = false
     /// The file a manual subtitle track pick was made on; its index means
-    /// nothing on another version.
+    /// nothing on another version. Nil once a Version or Edition pick has
+    /// moved the track to another file.
     @State private var preferredSubtitleTrackFileId: Int?
     @State private var preferredNextUpFileId: Int?
     @State private var preferredNextUpEditionId: String?
     @State private var preferredNextUpAudioTrackIndex: Int?
     @State private var preferredNextUpSubtitleTrackIndex: Int?
+    /// Whether the viewer picked the selected episode's subtitle, as opposed
+    /// to the saved preference seeding it.
+    @State private var preferredNextUpSubtitleTrackWasManuallySelected = false
     @State private var nextUpWatchDetail: WatchDetail?
     /// Set when the viewer picks Auto for the selected episode, until the
     /// next episode load.
@@ -929,6 +933,7 @@ private struct ItemDetailPhoneContent: View {
                 },
                 onSelectNextUpSubtitleTrack: { index in
                     didClearNextUpSubtitleOverride = (index == nil)
+                    preferredNextUpSubtitleTrackWasManuallySelected = true
                     preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: nextUpWatchDetail,
                         versionFileId: preferredNextUpFileId,
@@ -1141,9 +1146,15 @@ private struct ItemDetailPhoneContent: View {
 
     /// After a Version or Edition pick moved the page off `previous`: a
     /// subtitle index names a stream of that file, so it becomes the shown
-    /// file's matching track. `preferredSubtitleTrackFileId` keeps the file
-    /// the pick was made on.
+    /// file's matching track. The moved track no longer belongs to the file
+    /// it was picked on, so a reload reseeds it from the saved preference.
     private func carrySubtitle(in detail: ItemDetail, from previous: FileVersion?) {
+        preferredSubtitleTrackFileId = DetailPlaybackFormatting.subtitlePickFileAfterVersionPick(
+            preferredSubtitleTrackFileId,
+            index: preferredSubtitleTrackIndex,
+            movingFrom: previous,
+            to: effectiveVersion(for: detail, versionFileId: preferredVersionFileId)
+        )
         preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
             for: detail,
             versionFileId: preferredVersionFileId,
@@ -1194,9 +1205,7 @@ private struct ItemDetailPhoneContent: View {
                 preferredNextUpSubtitleTrackIndex,
                 movingFrom: previous,
                 to: effectiveVersion(for: nextUpWatchDetail, versionFileId: preferredNextUpFileId),
-                // As in `loadNextUpWatchDetail`, the episode's seed is told
-                // apart from a pick by its value.
-                isManualPick: false,
+                isManualPick: preferredNextUpSubtitleTrackWasManuallySelected,
                 signature: nextUpWatchDetail?.effectiveSubtitleTrackSignature,
                 mode: nextUpWatchDetail?.effectiveSubtitleMode,
                 showForced: nextUpWatchDetail?.showsForcedSubtitles ?? true,
@@ -1238,6 +1247,7 @@ private struct ItemDetailPhoneContent: View {
             }
             if before.fileId != effectiveVersion(for: nextUpWatchDetail, versionFileId: nil)?.fileId {
                 preferredNextUpAudioTrackIndex = nil
+                preferredNextUpSubtitleTrackWasManuallySelected = false
                 preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.subtitleIndexAfterFileChange(
                     preferredNextUpSubtitleTrackIndex
                 ) { launchSubtitleIndex(for: nextUpWatchDetail) }
@@ -1481,6 +1491,7 @@ private struct ItemDetailPhoneContent: View {
 
     private func loadNextUpWatchDetail(for detail: ItemDetail) async {
         didClearNextUpSubtitleOverride = false
+        preferredNextUpSubtitleTrackWasManuallySelected = false
         guard let nextUp = playbackEpisode(for: detail) else {
             nextUpWatchDetail = nil
             isLoadingNextUpWatchDetail = false
@@ -1530,6 +1541,7 @@ private struct ItemDetailPhoneContent: View {
                 && preferredNextUpSubtitleTrackIndex == seededSubtitleIndex
             nextUpWatchDetail = watchDetail
             if isUntouched {
+                preferredNextUpSubtitleTrackWasManuallySelected = false
                 preferredNextUpSubtitleTrackIndex = launchSubtitleIndex(for: watchDetail)
             }
         } catch {

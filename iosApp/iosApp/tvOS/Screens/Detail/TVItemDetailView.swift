@@ -436,6 +436,7 @@ struct TVItemDetailView: View {
                 },
                 onSelectNextUpSubtitleTrack: { index in
                     didClearNextUpSubtitleOverride = (index == nil)
+                    viewModel.preferredNextUpSubtitleTrackWasManuallySelected = true
                     preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: nextUpPlaybackDetail,
                         versionFileId: preferredNextUpFileId,
@@ -710,8 +711,7 @@ struct TVItemDetailView: View {
         carryNextUpSubtitle(from: previous)
     }
 
-    /// `carrySubtitle` for the selected episode. Its seed is told apart from
-    /// a pick by its value, as `loadSeriesNextUpPlaybackDetail` does.
+    /// `carrySubtitle` for the selected episode.
     private func carryNextUpSubtitle(from previous: FileVersion?) {
         preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
             for: nextUpPlaybackDetail,
@@ -722,7 +722,7 @@ struct TVItemDetailView: View {
                     in: $0,
                     from: previous,
                     to: effectiveVersion(for: $0, versionFileId: preferredNextUpFileId),
-                    isManualPick: false
+                    isManualPick: viewModel.preferredNextUpSubtitleTrackWasManuallySelected
                 )
             }
         )
@@ -967,6 +967,7 @@ struct TVItemDetailView: View {
             preferredNextUpEditionId = nil
             preferredNextUpAudioTrackIndex = nil
             preferredNextUpSubtitleTrackIndex = nil
+            viewModel.preferredNextUpSubtitleTrackWasManuallySelected = false
             didClearNextUpSubtitleOverride = false
             return
         }
@@ -981,6 +982,7 @@ struct TVItemDetailView: View {
         preferredNextUpEditionId = nil
         preferredNextUpAudioTrackIndex = nil
         preferredNextUpSubtitleTrackIndex = nil
+        viewModel.preferredNextUpSubtitleTrackWasManuallySelected = false
         didClearNextUpSubtitleOverride = false
         if let usableCached {
             preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
@@ -1020,6 +1022,7 @@ struct TVItemDetailView: View {
             }
             nextUpPlaybackDetail = resolved
             if let resolved {
+                viewModel.preferredNextUpSubtitleTrackWasManuallySelected = false
                 preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
                     version: effectiveVersion(for: resolved, versionFileId: nil),
                     signature: resolved.effectiveSubtitleTrackSignature,
