@@ -82,10 +82,16 @@ struct BrowseCollectionGrid: View {
 @MainActor
 final class BrowseGridCommands {
     fileprivate var scrollHandler: ((Int) -> Void)?
+    fileprivate var topHandler: (() -> Void)?
 
     /// Put the title at list `position` in the grid's top row, at once.
     func scroll(toPosition position: Int) {
         scrollHandler?(position)
+    }
+
+    /// Scroll back to the top of the page, controls and all.
+    func scrollToTop() {
+        topHandler?()
     }
 }
 
@@ -247,7 +253,7 @@ final class BrowseGridController: UIViewController, UICollectionViewDelegate, UI
         let layout = UICollectionViewCompositionalLayout { [weak self] index, layoutEnvironment in
             self?.layoutSection(at: index, width: layoutEnvironment.container.effectiveContentSize.width)
         }
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        collectionView = BrowseGridCollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.backgroundColor = .clear
         collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.alwaysBounceVertical = true
@@ -295,21 +301,33 @@ final class BrowseGridController: UIViewController, UICollectionViewDelegate, UI
 
     /// Inset the grid by the bars it scrolls under. A grid resting at its
     /// top stays there when the bar above it changes height.
+    ///
+    /// The refresh control adds its own height to the top inset while it
+    /// spins, so only the change in the bars is applied, never the bars'
+    /// height over what the control added: overwriting it snapped the pulled
+    /// grid up as a refresh began, which the tab bar took for a scroll and
+    /// minimised. A grid being pulled or refreshing is not at rest, so its
+    /// offset is left to the finger and the control.
     private func applyInsets() {
+        let top = model.topInset, bottom = model.bottomInset
+        guard abs(appliedInsets.top - top) >= 0.5 || abs(appliedInsets.bottom - bottom) >= 0.5 else { return }
         let old = collectionView.contentInset
-        guard abs(old.top - model.topInset) >= 0.5 || abs(old.bottom - model.bottomInset) >= 0.5 else { return }
-        let wasAtTop = collectionView.contentOffset.y <= -old.top + 0.5
+        let isRefreshing = collectionView.refreshControl?.isRefreshing == true
+        let wasAtRest = !isRefreshing && !collectionView.isDragging && !collectionView.isDecelerating
+            && abs(collectionView.contentOffset.y + old.top) < 0.5
         var insets = old
-        insets.top = model.topInset
-        insets.bottom = model.bottomInset
+        insets.top += top - appliedInsets.top
+        insets.bottom += bottom - appliedInsets.bottom
+        appliedInsets = (top, bottom)
         collectionView.contentInset = insets
-        collectionView.verticalScrollIndicatorInsets = UIEdgeInsets(
-            top: model.topInset, left: 0, bottom: model.bottomInset, right: 0
-        )
-        if wasAtTop {
-            collectionView.contentOffset.y = -model.topInset
+        collectionView.verticalScrollIndicatorInsets = UIEdgeInsets(top: top, left: 0, bottom: bottom, right: 0)
+        if wasAtRest {
+            collectionView.contentOffset.y = -insets.top
         }
     }
+
+    /// The bars' heights last added to `contentInset`.
+    private var appliedInsets: (top: CGFloat, bottom: CGFloat) = (0, 0)
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
@@ -345,9 +363,11 @@ final class BrowseGridController: UIViewController, UICollectionViewDelegate, UI
 
     private func bind(replacing old: BrowseGridModel?) {
         model.grid.commands.scrollHandler = { [weak self] in self?.scroll(toPosition: $0) }
+        model.grid.commands.topHandler = { [weak self] in self?.scrollToTop() }
         model.grid.pager?.onChange = { [weak self] in self?.refreshVisibleCells(force: false) }
         if let old, old.grid.commands !== model.grid.commands {
             old.grid.commands.scrollHandler = nil
+            old.grid.commands.topHandler = nil
         }
     }
 
@@ -550,6 +570,14 @@ final class BrowseGridController: UIViewController, UICollectionViewDelegate, UI
 
     // MARK: - Scrolling
 
+    private func scrollToTop() {
+        guard isViewLoaded else { return }
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: -collectionView.adjustedContentInset.top),
+            animated: !UIAccessibility.isReduceMotionEnabled
+        )
+    }
+
     private func scroll(toPosition position: Int) {
         guard isViewLoaded, (0..<cardCount).contains(position) else { return }
         collectionView.layoutIfNeeded()
@@ -617,6 +645,16 @@ final class BrowseGridController: UIViewController, UICollectionViewDelegate, UI
             grid.onLoadMore()
         }
     }
+}
+
+/// The grid scrolls under the page's bars and insets its content by them
+/// itself (`contentInset`), so it gives its cells no safe area. A
+/// `UIHostingConfiguration` lays its SwiftUI content out inside the cell's
+/// safe area; a cell under the tab bar would otherwise draw its card
+/// tens of points above its row, over the row before, and the card would
+/// move as a pull to refresh slid the cell in and out from under the bar.
+private final class BrowseGridCollectionView: UICollectionView {
+    override var safeAreaInsets: UIEdgeInsets { .zero }
 }
 
 private final class BrowseCardCell: UICollectionViewCell {
