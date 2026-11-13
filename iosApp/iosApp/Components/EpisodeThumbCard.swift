@@ -198,13 +198,9 @@ struct EpisodeThumbCard: View {
             }
 
             // Progress bar (resume)
-            if showProgress, let p = progressValue, p > 0 {
-                VStack {
-                    Spacer()
-                    ProgressBar(value: p)
-                }
-                .frame(width: cardWidth, height: cardHeight)
-                .clipShape(RoundedRectangle(cornerRadius: SiloTheme.cornerRadius))
+            if let p = barProgress {
+                ProgressBar(value: p)
+                    .frame(width: cardWidth, height: cardHeight)
             }
 
             // Watched check
@@ -226,7 +222,7 @@ struct EpisodeThumbCard: View {
             }
 
             #if !os(tvOS)
-            DownloadedBadgeOverlay(contentId: item.contentId, padding: badgeInset)
+            DownloadedBadgeOverlay(contentId: item.contentId, padding: badgeInset, clearsProgressBar: barProgress != nil)
             #endif
         }
         .frame(width: cardWidth, height: cardHeight)
@@ -298,6 +294,12 @@ struct EpisodeThumbCard: View {
 
     private var episodeAccessibilityLabel: String? {
         EpisodeCardCaption.accessibilityLabel(for: item, locale: locale)
+    }
+
+    /// The progress the card draws a bar for, if any.
+    private var barProgress: Double? {
+        guard showProgress, let p = progressValue, p > 0 else { return nil }
+        return p
     }
 
     private var progressValue: Double? {
