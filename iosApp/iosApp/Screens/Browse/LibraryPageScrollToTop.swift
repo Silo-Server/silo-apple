@@ -6,6 +6,12 @@ extension EnvironmentValues {
     /// dock asks, so other hosts of the pages are untouched.
     @Entry var libraryPageScrollToTopRequest: Int? = nil
 
+    /// Bumped when the iPhone Libraries tab shows its Browse page again
+    /// after a title's watched state, favourite or progress changed while
+    /// the page was hidden, so the page reads its list again, as a page
+    /// built afresh on every switch would. Nil elsewhere.
+    @Entry var libraryPageReloadRequest: Int? = nil
+
     /// Told when a library page is pulled to refresh, so the iPhone
     /// Libraries header reads its count again. Nil elsewhere.
     @Entry var libraryPageDidRefresh: (@MainActor () -> Void)? = nil

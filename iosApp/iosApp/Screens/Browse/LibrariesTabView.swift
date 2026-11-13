@@ -156,6 +156,10 @@ struct LibrariesTabView: View {
         uniqueKeysWithValues: LibraryPageTab.allCases.map { ($0, PageChromeScrollState()) }
     )
     @State private var scrollToTopRequests: [LibraryPageTab: Int] = [:]
+    /// Browse stays mounted while hidden; a title changed meanwhile marks it
+    /// for a reload the next time it is selected.
+    @State private var browseReloadRequests = 0
+    @State private var browseIsStale = false
     @State private var scrollClaimLinks: [LibraryPageTab: LibraryPageScrollClaimLink] = Dictionary(
         uniqueKeysWithValues: LibraryPageTab.allCases.map { ($0, LibraryPageScrollClaimLink()) }
     )
@@ -408,9 +412,20 @@ struct LibrariesTabView: View {
             .onChange(of: selectedTab, initial: true) {
                 dock.selectedTab = selectedTab
                 mountedTabs.insert(selectedTab)
+                if selectedTab == .library, browseIsStale {
+                    browseIsStale = false
+                    browseReloadRequests += 1
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
+                // As when every switch built the page afresh: Browse on
+                // screen is left as it is, and reads again the next time it
+                // is switched to. A page not yet built reads afresh anyway.
+                if mountedTabs.contains(.library) { browseIsStale = true }
             }
             .onChange(of: id) {
-                // The new library's pages start at their tops.
+                // The new library's pages start at their tops, read afresh.
+                browseIsStale = false
                 mountedTabs = [selectedTab]
                 for state in pageChromeStates.values { state.update(0) }
             }
@@ -442,6 +457,7 @@ struct LibrariesTabView: View {
                         .background(LibraryPageScrollClaim(isActive: isSelected, link: claimLink))
                         .environment(pageChromeStates[tab] ?? chromeScrollState)
                         .environment(\.libraryPageScrollToTopRequest, scrollToTopRequests[tab, default: 0])
+                        .environment(\.libraryPageReloadRequest, tab == .library ? browseReloadRequests : nil)
                         .environment(\.libraryPageDidRefresh) { countRefreshes += 1 }
                         .opacity(isSelected ? 1 : 0)
                         .allowsHitTesting(isSelected)

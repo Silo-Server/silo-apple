@@ -32,9 +32,6 @@ final class CatalogPositionPager {
     private var reads: [Int: (id: Int, task: Task<Void, Never>)] = [:]
     /// Pages whose last read failed; skipped until the next retry.
     private var failed: Set<Int> = []
-    /// Pages kept from before a title changed elsewhere; shown until read
-    /// again.
-    private var stale: Set<Int> = []
     private var retry: Task<Void, Never>?
     private var lastReadID = 0
     private var visible: Range<Int> = 0..<0
@@ -88,15 +85,6 @@ final class CatalogPositionPager {
             reads.removeValue(forKey: page)?.task.cancel()
         }
         seed(first)
-        pump()
-    }
-
-    /// A title's watched state, favourite or progress changed elsewhere:
-    /// read every kept page again, the ones on screen first, showing the
-    /// old titles until the new ones arrive so no card blanks.
-    func rereadKept() {
-        stale.formUnion(pages.keys)
-        failed = []
         pump()
     }
 
@@ -179,8 +167,7 @@ final class CatalogPositionPager {
     private func pump() {
         guard !isCancelled else { return }
         let wanted = wantedPages
-        for page in wanted where (pages[page] == nil || stale.contains(page))
-            && reads[page] == nil && !failed.contains(page) {
+        for page in wanted where pages[page] == nil && reads[page] == nil && !failed.contains(page) {
             if reads.count >= Self.maxConcurrentReads {
                 // The grid has moved on from some page still being read.
                 guard let passed = reads.keys.first(where: { !wanted.contains($0) }) else { break }
@@ -201,7 +188,6 @@ final class CatalogPositionPager {
             self.reads[page] = nil
             if let items {
                 self.pages[page] = items
-                self.stale.remove(page)
                 self.onChange?()
             } else {
                 self.failed.insert(page)

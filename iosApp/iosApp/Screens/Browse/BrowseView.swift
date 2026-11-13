@@ -10,6 +10,7 @@ struct BrowseView: View {
 
     @State private var viewModel = BrowseViewModel()
     @State private var showFilters = false
+    @Environment(\.libraryPageReloadRequest) private var reloadRequest
     @State private var shuffleLauncher = ShuffleLauncher()
     #if os(iOS)
     /// Scrolls the grid to a letter's first title.
@@ -99,11 +100,10 @@ struct BrowseView: View {
             await viewModel.refresh()
             pageDidRefresh?()
         }
-        // The iPhone Libraries tab keeps this page alive under its others,
-        // so a title marked watched elsewhere would keep its old card. Its
-        // cards update in place; the list keeps its length and position.
-        .onReceive(NotificationCenter.default.publisher(for: .homeSectionsShouldRefresh)) { _ in
-            Task { await viewModel.refreshShownTitles() }
+        // The iPhone Libraries tab keeps this page alive under its others
+        // and asks for a reload when it comes back after a title changed.
+        .onChange(of: reloadRequest) {
+            Task { await viewModel.refresh() }
         }
     }
 
