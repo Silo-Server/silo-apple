@@ -31,7 +31,7 @@ enum PhonePlaybackSelectorKind: String, Identifiable {
     var icon: String {
         switch self {
         case .edition: return "rectangle.stack"
-        case .version: return "4k.tv"
+        case .version: return "play.rectangle.on.rectangle"
         case .audio: return "speaker.wave.2"
         case .subtitles: return "captions.bubble"
         }
