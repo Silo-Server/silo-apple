@@ -303,7 +303,12 @@ final class PlayerSettings {
     /// page shows on mobile data too. Observable through
     /// ``PlaybackConnection``, so the page follows a change of connection.
     var connectionPreferredQuality: String {
-        let axes = playbackQualityAxes(onMeteredNetwork: PlaybackConnection.shared.isMetered)
+        preferredQuality(onMeteredNetwork: PlaybackConnection.shared.isMetered)
+    }
+
+    /// The pair playback asks for on a metered or unmetered connection, as an id.
+    func preferredQuality(onMeteredNetwork: Bool) -> String {
+        let axes = playbackQualityAxes(onMeteredNetwork: onMeteredNetwork)
         return AppleQualityAxes.join(resolution: axes.resolution, bitrateKbps: axes.bitrateKbps)
     }
 

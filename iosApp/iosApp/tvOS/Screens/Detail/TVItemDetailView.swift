@@ -604,6 +604,10 @@ struct TVItemDetailView: View {
     }
 
     private func selectVersion(_ fileId: Int?, in detail: ItemDetail) {
+        // A pin records its cut, so Auto stays there once the pin is cleared.
+        if let fileId {
+            preferredEditionId = PlaybackEditions.edition(forFileId: fileId, in: detail.versions ?? [])?.id
+        }
         preferredVersionFileId = fileId
         preferredAudioTrackIndex = sanitizedAudioTrackIndex(
             for: detail,
@@ -618,6 +622,9 @@ struct TVItemDetailView: View {
     }
 
     private func selectNextUpVersion(_ fileId: Int?) {
+        if let fileId {
+            preferredNextUpEditionId = PlaybackEditions.edition(forFileId: fileId, in: nextUpPlaybackDetail?.versions ?? [])?.id
+        }
         preferredNextUpFileId = fileId
         preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
             for: nextUpPlaybackDetail,

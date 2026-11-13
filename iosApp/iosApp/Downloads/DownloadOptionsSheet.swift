@@ -65,7 +65,19 @@ struct DownloadOptionsSheet: View {
         self.onStart = onStart
 
         _fileId = State(initialValue: selectedVersionFileId)
-        _editionId = State(initialValue: selectedEditionId)
+        // The cut the sheet opens on stays its cut: without one, Auto would
+        // re-rank across editions if the connection's quality changed.
+        let opening = DetailVersionSelection.displayVersion(
+            versions: versions,
+            selectedFileId: selectedVersionFileId,
+            lastFileId: lastVersionFileId,
+            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            editionId: selectedEditionId,
+            lastEditionKey: lastEditionKey
+        )
+        _editionId = State(
+            initialValue: selectedEditionId ?? PlaybackEditions.edition(forFileId: opening?.fileId, in: versions)?.id
+        )
         _quality = State(initialValue: DownloadSettings.shared.preferredFormat)
     }
 

@@ -511,6 +511,9 @@ private struct ItemDetailPhoneContent: View {
                 || (isSeriesPage && viewModel.seasons.isEmpty
                     && viewModel.isLoadingSeriesHierarchy)
         )
+        .onChange(of: PlaybackConnection.shared.isMetered) { wasMetered, _ in
+            reconcileTracksAfterConnectionChange(wasMetered: wasMetered)
+        }
         .task(id: contentId) {
             // Returning from the player restarts this task. Keep the episode
             // and season the page was showing instead of the entry context.
@@ -1068,6 +1071,10 @@ private struct ItemDetailPhoneContent: View {
     }
 
     private func selectVersion(_ fileId: Int?, in detail: ItemDetail) {
+        // A pin records its cut, so Auto stays there once the pin is cleared.
+        if let fileId {
+            preferredEditionId = PlaybackEditions.edition(forFileId: fileId, in: detail.versions ?? [])?.id
+        }
         preferredVersionFileId = fileId
         preferredAudioTrackIndex = sanitizedAudioTrackIndex(
             for: detail,
@@ -1083,6 +1090,9 @@ private struct ItemDetailPhoneContent: View {
     }
 
     private func selectNextUpVersion(_ fileId: Int?) {
+        if let fileId {
+            preferredNextUpEditionId = PlaybackEditions.edition(forFileId: fileId, in: nextUpWatchDetail?.versions ?? [])?.id
+        }
         preferredNextUpFileId = fileId
         preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
             for: nextUpWatchDetail,
@@ -1107,26 +1117,68 @@ private struct ItemDetailPhoneContent: View {
         }
     }
 
+    /// The connection moved between Wi-Fi and mobile data, which can change
+    /// Auto's file under the open page. Track picks made on the old file name
+    /// streams of that file, so they're dropped and reseeded as on a reload.
+    private func reconcileTracksAfterConnectionChange(wasMetered: Bool) {
+        if preferredVersionFileId == nil, let detail = viewModel.detail,
+           let before = effectiveVersion(for: detail, versionFileId: nil, onMeteredNetwork: wasMetered) {
+            // The connection never changes the cut: keep the one shown.
+            if preferredEditionId == nil {
+                preferredEditionId = PlaybackEditions.edition(forFileId: before.fileId, in: detail.versions ?? [])?.id
+            }
+            if before.fileId != effectiveVersion(for: detail, versionFileId: nil)?.fileId {
+                preferredAudioTrackIndex = nil
+                reseedSubtitleOverride()
+            }
+        }
+        if preferredNextUpFileId == nil, let nextUpWatchDetail,
+           let before = effectiveVersion(for: nextUpWatchDetail, versionFileId: nil, onMeteredNetwork: wasMetered) {
+            if preferredNextUpEditionId == nil {
+                preferredNextUpEditionId = PlaybackEditions.edition(forFileId: before.fileId, in: nextUpWatchDetail.versions)?.id
+            }
+            if before.fileId != effectiveVersion(for: nextUpWatchDetail, versionFileId: nil)?.fileId {
+                preferredNextUpAudioTrackIndex = nil
+                preferredNextUpSubtitleTrackIndex = launchSubtitleIndex(for: nextUpWatchDetail)
+            }
+        }
+    }
+
+    /// The quality Auto ranks with: the current connection's, or the one
+    /// for `onMeteredNetwork` when asking what it was before a change.
+    private func detailQuality(onMeteredNetwork: Bool?) -> String {
+        onMeteredNetwork.map { PlayerSettings.shared.preferredQuality(onMeteredNetwork: $0) }
+            ?? PlayerSettings.shared.connectionPreferredQuality
+    }
+
     /// The movie's file, in the edition picked on this visit.
-    private func effectiveVersion(for detail: ItemDetail, versionFileId: Int?) -> FileVersion? {
+    private func effectiveVersion(
+        for detail: ItemDetail,
+        versionFileId: Int?,
+        onMeteredNetwork: Bool? = nil
+    ) -> FileVersion? {
         DetailVersionSelection.displayVersion(
             versions: detail.versions ?? [],
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            preferredQualityId: detailQuality(onMeteredNetwork: onMeteredNetwork),
             editionId: preferredEditionId,
             lastEditionKey: detail.userData?.lastEditionKey
         )
     }
 
     /// The selected episode's file, in the edition picked for it.
-    private func effectiveVersion(for detail: WatchDetail?, versionFileId: Int?) -> FileVersion? {
+    private func effectiveVersion(
+        for detail: WatchDetail?,
+        versionFileId: Int?,
+        onMeteredNetwork: Bool? = nil
+    ) -> FileVersion? {
         guard let detail else { return nil }
         return DetailVersionSelection.displayVersion(
             versions: detail.versions,
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
-            preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
+            preferredQualityId: detailQuality(onMeteredNetwork: onMeteredNetwork),
             editionId: preferredNextUpEditionId,
             lastEditionKey: detail.userData?.lastEditionKey
         )

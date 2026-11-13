@@ -36,6 +36,9 @@ struct DownloadActionButton: View {
     @State private var confirmingCancel = false
     /// Guard text for the pre-download confirmation; non-nil presents it.
     @State private var largeDownloadWarning: String?
+    /// The file the large-download warning describes, so confirming it
+    /// downloads that file even if the connection changed Auto's meanwhile.
+    @State private var warnedFileId: Int?
     /// Short-lived caption above the button; non-nil shows it.
     @State private var startNotice: LocalizedStringResource?
     @State private var startFeedbackCount = 0
@@ -107,7 +110,7 @@ struct DownloadActionButton: View {
                     set: { if !$0 { largeDownloadWarning = nil } }
                 )
             ) {
-                Button(.downloadsLargeDownloadAnyway, action: startWithDefaults)
+                Button(.downloadsLargeDownloadAnyway) { startWithDefaults(fileId: warnedFileId) }
                 Button(.downloadsLargeChooseOptions) { showOptions = true }
                 Button(.commonCancel, role: .cancel) {}
             } message: {
@@ -220,22 +223,24 @@ struct DownloadActionButton: View {
     /// candidates when that size is unknown) warrants confirming first.
     private func handleDownloadTap() {
         guard !isRegistrationPending, record == nil else { return }
-        let estimate = DownloadSizeEstimate.estimate(versions: versions, fileId: displayedVersionFileId)
+        let fileId = displayedVersionFileId
+        let estimate = DownloadSizeEstimate.estimate(versions: versions, fileId: fileId)
             ?? DownloadSizeEstimate.estimate(fileSizes: versions.compactMap(\.fileSize))
         let available = DownloadFilePaths.availableCapacity()
         if let warning = estimate?.warningMessage(availableBytes: available) {
+            warnedFileId = fileId
             largeDownloadWarning = warning
             return
         }
-        startWithDefaults()
+        startWithDefaults(fileId: fileId)
     }
 
     /// The version the detail screen displays, with Auto resolved the same
     /// way the selector shows it, + the global Downloads quality preference,
     /// clamped to what the server currently offers.
-    private func startWithDefaults() {
+    private func startWithDefaults(fileId: Int?) {
         startDownload(DownloadRequestOptions(
-            fileId: displayedVersionFileId,
+            fileId: fileId,
             quality: DownloadSettings.shared.resolvedFormat(
                 allowedFormats: manager.capability?.qualityPresets ?? []
             )
