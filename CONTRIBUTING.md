@@ -215,9 +215,16 @@ without it.
 
 Use a Conventional Commit title, fill in the pull request template, explain
 which platforms are affected, paste the actual validation results, and call out
-any server or Android coordination.
-Read the [AI-assisted contribution policy](https://github.com/Silo-Server/silo-server/blob/main/docs/ai-contributions.md)
+any server coordination. Read the [AI-assisted contribution policy](https://github.com/Silo-Server/silo-server/blob/main/docs/ai-contributions.md)
 and include its disclosure block.
+
+A change users can notice is not done until the other Silo clients (Android,
+Roku, and Web) have it or have a reason not to. For each one that needs the same
+change, open an issue in its repository at minimum, linking your pull request;
+search first and add to an existing issue when there is one. Open a pull request
+there too if you can build and verify that client and its contribution rules let
+you. List the outcome on the template's `Other clients:` line. [Cross-client
+parity](AGENTS.md#cross-client-parity) has the details.
 
 ## Licensing of contributions
 

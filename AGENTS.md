@@ -15,16 +15,47 @@ This repository is part of a broader multi-repo Silo workspace. The sibling
 repositories are usually checked out alongside this repository.
 
 - `silo-apple` owns iOS, tvOS, and macOS client code only.
-- `silo-server` owns the Go backend, web admin UI, API contracts, auth/session
-  behavior, catalog/scanner/playback services, database migrations, Jellyfin
-  compatibility, and host-side plugin runtime.
-- `silo-android` owns the Android phone and TV clients. When changing shared
-  client behavior, compare Android so Apple and Android stay aligned.
+- `silo-server` owns the Go backend, the web app and web admin UI (`web/`), API
+  contracts, auth/session behavior, catalog/scanner/playback services, database
+  migrations, Jellyfin compatibility, and host-side plugin runtime.
+- `silo-android` owns the Android phone and TV clients.
+- `silo-roku` owns the Roku client.
 
 When a task touches auth, API models, playback/session state, library browsing,
-metadata display, or server-driven behavior, check whether the server and
-Android client need coordinated changes. Do not force server concerns into this
+metadata display, or server-driven behavior, check whether the server and the
+other clients need coordinated changes. Do not force server concerns into this
 repo.
+
+## Cross-client parity
+
+Silo has four clients: Apple (this repository), Android (`silo-android`), Roku
+(`silo-roku`), and Web (`silo-server`, under `web/`). A feature, fix, or other
+change a user can notice in one client is not done until each other client has
+been handled or ruled out. The change's author owns this, whether a person or
+an agent.
+
+For each other client:
+
+- Rule it out when the change is specific to this platform (a tvOS focus fix,
+  a Mac menu command), the other client already behaves correctly, or the
+  feature is outside that client's scope (for example Roku's deferred features
+  in `silo-roku/docs/spec.md`, or ebooks on a TV client). Note the reason.
+- Otherwise, open an issue in that client's repository at minimum. Search its
+  issues first and add to an existing one rather than filing a duplicate. Title
+  it `Parity: <behavior> (from Silo-Server/silo-apple#NNN)`, describe what users
+  should get, link this pull request, and point to the code that implements it
+  here. A parity issue follows up work already in review or merged, so it goes
+  in Issues, not Discussions → Ideas.
+- Also open a pull request there when you can build and verify that client and
+  its contribution rules let you open one. Link it from the issue.
+
+Open parity issues when this pull request opens, so each one can link it. List
+the outcome on the pull request's `Other clients:` line, one entry per client:
+`Other clients: Android Silo-Server/silo-android#NNN; Roku N/A (tvOS-only focus fix); Web Silo-Server/silo-server#NNN`.
+
+Agents open the parity issues without asking and apply the Writing rules below
+to them. Ask the developer before opening a pull request in another
+repository; approval to open one here does not cover the others.
 
 ## Build, Test, and Development Commands
 
