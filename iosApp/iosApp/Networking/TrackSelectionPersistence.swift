@@ -427,7 +427,7 @@ enum TrackSelectionPersistence {
     }
 
     /// A language code that names a language: nil for empty and `und`.
-    fileprivate static func taggedLanguage(_ code: String?) -> String? {
+    static func taggedLanguage(_ code: String?) -> String? {
         guard let code = code?.trimmingCharacters(in: .whitespaces), !code.isEmpty,
               code.lowercased() != "und" else { return nil }
         return code

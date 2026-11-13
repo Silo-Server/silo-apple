@@ -308,7 +308,8 @@ enum DetailPlaybackFormatting {
     /// one file to another. A track index belongs to one file, so the same
     /// index on the next file can be another language. Auto and Off carry
     /// over. A track the server preference chose is chosen again on the next
-    /// file, as a fresh page would. A track the viewer picked becomes the next
+    /// file, as a fresh page would; without `isManualPick`, an index equal to
+    /// the old file's seed counts as that. A track the viewer picked becomes the next
     /// file's track in the same language, with the same forced and SDH flags,
     /// preferring the same title; with none, the pick falls back to Auto.
     /// When the file changes without a pick, see `subtitleIndexAfterFileChange`.
@@ -316,6 +317,7 @@ enum DetailPlaybackFormatting {
         _ index: Int?,
         movingFrom previous: FileVersion?,
         to next: FileVersion?,
+        isManualPick: Bool,
         signature: SubtitleTrackSignature?,
         mode: String?,
         showForced: Bool,
@@ -331,17 +333,25 @@ enum DetailPlaybackFormatting {
                 usesDeviceSettings: usesDeviceSettings
             )
         }
-        if seeded(previous) == index { return seeded(next) }
+        if !isManualPick, seeded(previous) == index { return seeded(next) }
 
+        // `und` names no language, so it identifies no track.
         guard let picked = previous?.subtitleTracks?.first(where: { $0.selectionIndex == index }),
-              let language = nonEmpty(picked.language) else { return nil }
-        let matches = (next?.subtitleTracks ?? []).filter { track in
+              let language = TrackSelectionPersistence.taggedLanguage(picked.language) else { return nil }
+        let sameLanguage = (next?.subtitleTracks ?? []).filter { track in
             guard track.selectionIndex != nil, !track.hasUnsupportedFormat,
-                  let trackLanguage = nonEmpty(track.language) else { return false }
+                  let trackLanguage = TrackSelectionPersistence.taggedLanguage(track.language) else { return false }
             return SubtitleAutoResolver.languagesMatch(trackLanguage, language)
                 && isForced(track) == isForced(picked)
                 && isHearingImpaired(track) == isHearingImpaired(picked)
         }
+        // The same tag (zh-Hant) before the same primary language (zh-Hans),
+        // as the player's resolver ranks them.
+        func tag(_ code: String?) -> String? {
+            code?.trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: "_", with: "-")
+        }
+        let sameTag = sameLanguage.filter { tag($0.language) == tag(language) }
+        let matches = sameTag.isEmpty ? sameLanguage : sameTag
         func title(_ track: SubtitleTrack) -> String? {
             nonEmpty(track.title) ?? nonEmpty(track.embeddedTitle)
         }

@@ -83,12 +83,14 @@ final class DetailVersionSelectionTests: XCTestCase {
             _ index: Int?,
             from: Int,
             to: Int,
-            signature: SubtitleTrackSignature? = nil
+            signature: SubtitleTrackSignature? = nil,
+            manual: Bool = true
         ) -> Int? {
             DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
                 index,
                 movingFrom: versions.first { $0.fileId == from },
                 to: versions.first { $0.fileId == to },
+                isManualPick: manual,
                 signature: signature,
                 mode: SubtitleMode.always.rawValue,
                 showForced: true,
@@ -109,7 +111,47 @@ final class DetailVersionSelectionTests: XCTestCase {
         // A track the server preference chose is chosen again on the other
         // file, as opening the page there would.
         let english = SubtitleTrackSignature(language: "en", label: "SDH")
-        XCTAssertEqual(moved(3, from: 14, to: 36, signature: english), 4)
+        XCTAssertEqual(moved(3, from: 14, to: 36, signature: english, manual: false), 4)
+    }
+
+    /// The saved preference can resolve to a near match, here full English for
+    /// a forced-English preference. A viewer who picks that track themselves
+    /// keeps a full track on the next file; the preference alone moves to the
+    /// forced one there. `und` names no language, so it matches nothing, and
+    /// a regional tag prefers the same tag.
+    func testAPickedTrackIsNotTakenForTheSavedPreference() {
+        let versions = decodedVersions("""
+        [
+          { "file_id": 1, "subtitle_tracks": [
+            { "index": 2, "codec": "subrip", "language": "en" },
+            { "index": 3, "codec": "subrip", "language": "und", "title": "Commentary" },
+            { "index": 5, "codec": "subrip", "language": "zh-Hant" }
+          ] },
+          { "file_id": 2, "subtitle_tracks": [
+            { "index": 2, "codec": "subrip", "language": "en", "forced": true },
+            { "index": 3, "codec": "subrip", "language": "en" },
+            { "index": 4, "codec": "subrip", "language": "und", "title": "Spanish" },
+            { "index": 5, "codec": "subrip", "language": "zh-Hans" },
+            { "index": 6, "codec": "subrip", "language": "zh-Hant" }
+          ] }
+        ]
+        """)
+        func moved(_ index: Int, manual: Bool) -> Int? {
+            DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
+                index,
+                movingFrom: versions[0],
+                to: versions[1],
+                isManualPick: manual,
+                signature: SubtitleTrackSignature(language: "en", forced: true),
+                mode: SubtitleMode.always.rawValue,
+                showForced: true,
+                usesDeviceSettings: false
+            )
+        }
+        XCTAssertEqual(moved(2, manual: true), 3)
+        XCTAssertEqual(moved(2, manual: false), 2)
+        XCTAssertNil(moved(3, manual: true))
+        XCTAssertEqual(moved(5, manual: true), 6, "Traditional Chinese, not the first Chinese track")
     }
 
     /// Server mode Off (profile or series) with show forced on is not an

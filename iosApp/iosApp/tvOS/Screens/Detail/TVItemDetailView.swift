@@ -613,7 +613,13 @@ struct TVItemDetailView: View {
         preferredSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
             for: detail,
             versionFileId: fileId,
-            candidate: carriedSubtitleIndex(preferredSubtitleTrackIndex, in: detail, from: previous, toFileId: fileId)
+            candidate: carriedSubtitleIndex(
+                preferredSubtitleTrackIndex,
+                in: detail,
+                from: previous,
+                toFileId: fileId,
+                isManualPick: viewModel.preferredSubtitleTrackWasManuallySelected
+            )
         )
     }
 
@@ -633,7 +639,13 @@ struct TVItemDetailView: View {
             for: nextUpPlaybackDetail,
             versionFileId: fileId,
             candidate: nextUpPlaybackDetail.flatMap {
-                carriedSubtitleIndex(preferredNextUpSubtitleTrackIndex, in: $0, from: previous, toFileId: fileId)
+                carriedSubtitleIndex(
+                    preferredNextUpSubtitleTrackIndex,
+                    in: $0,
+                    from: previous,
+                    toFileId: fileId,
+                    isManualPick: false
+                )
             }
         )
     }
@@ -642,12 +654,14 @@ struct TVItemDetailView: View {
         _ index: Int?,
         in detail: ItemDetail,
         from previous: FileVersion?,
-        toFileId fileId: Int?
+        toFileId fileId: Int?,
+        isManualPick: Bool
     ) -> Int? {
         DetailPlaybackFormatting.subtitleIndexAfterVersionPick(
             index,
             movingFrom: previous,
             to: effectiveVersion(for: detail, versionFileId: fileId),
+            isManualPick: isManualPick,
             signature: detail.effectiveSubtitleTrackSignature,
             mode: detail.effectiveSubtitleMode,
             showForced: detail.showsForcedSubtitles,

@@ -1085,6 +1085,7 @@ private struct ItemDetailPhoneContent: View {
                 preferredSubtitleTrackIndex,
                 movingFrom: previous,
                 to: next,
+                isManualPick: preferredSubtitleTrackWasManuallySelected,
                 signature: detail.effectiveSubtitleTrackSignature,
                 mode: detail.effectiveSubtitleMode,
                 showForced: detail.showsForcedSubtitles,
@@ -1113,6 +1114,9 @@ private struct ItemDetailPhoneContent: View {
                 preferredNextUpSubtitleTrackIndex,
                 movingFrom: previous,
                 to: effectiveVersion(for: nextUpWatchDetail, versionFileId: fileId),
+                // As in `loadNextUpWatchDetail`, the episode's seed is told
+                // apart from a pick by its value.
+                isManualPick: false,
                 signature: nextUpWatchDetail?.effectiveSubtitleTrackSignature,
                 mode: nextUpWatchDetail?.effectiveSubtitleMode,
                 showForced: nextUpWatchDetail?.showsForcedSubtitles ?? true,
