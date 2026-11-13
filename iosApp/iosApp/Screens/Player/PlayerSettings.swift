@@ -300,9 +300,10 @@ final class PlayerSettings {
 
     /// The pair playback asks for on the current connection, as an id: what
     /// a detail page's Auto ranks files with, so Play starts the file the
-    /// page shows on mobile data too.
+    /// page shows on mobile data too. Observable through
+    /// ``PlaybackConnection``, so the page follows a change of connection.
     var connectionPreferredQuality: String {
-        let axes = playbackQualityAxes(onMeteredNetwork: PlaybackNetworkMonitor.shared.isMetered)
+        let axes = playbackQualityAxes(onMeteredNetwork: PlaybackConnection.shared.isMetered)
         return AppleQualityAxes.join(resolution: axes.resolution, bitrateKbps: axes.bitrateKbps)
     }
 
