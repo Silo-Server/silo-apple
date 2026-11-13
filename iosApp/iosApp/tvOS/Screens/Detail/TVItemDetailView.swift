@@ -708,6 +708,7 @@ struct TVItemDetailView: View {
             versions: detail.versions ?? [],
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
+            lastFileInProgress: detail.userData?.hasResumePoint ?? false,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: detail.contentId == nextUpPlaybackDetail?.contentId
                 ? preferredNextUpEditionId

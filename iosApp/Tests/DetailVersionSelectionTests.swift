@@ -157,7 +157,8 @@ final class DetailVersionSelectionTests: XCTestCase {
         let selected = DetailVersionSelection.displayVersion(
             versions: versions,
             selectedFileId: nil,
-            lastFileId: nil
+            lastFileId: nil,
+            lastFileInProgress: false
         )
 
         XCTAssertTrue(
@@ -182,12 +183,14 @@ final class DetailVersionSelectionTests: XCTestCase {
             versions: versions,
             selectedFileId: nil,
             lastFileId: 2,
+            lastFileInProgress: false,
             preferredQualityId: nil
         ), 3)
         XCTAssertEqual(DownloadRequestOptions.fileId(
             versions: versions,
             selectedFileId: nil,
             lastFileId: 2,
+            lastFileInProgress: false,
             preferredQualityId: nil,
             editionId: "extended"
         ), 1)
@@ -203,6 +206,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             versions: versions,
             selectedFileId: 2,
             lastFileId: 1,
+            lastFileInProgress: false,
             preferredQualityId: nil
         ), 2)
     }
@@ -212,6 +216,7 @@ final class DetailVersionSelectionTests: XCTestCase {
             versions: [],
             selectedFileId: nil,
             lastFileId: 1,
+            lastFileInProgress: false,
             preferredQualityId: nil
         ))
     }

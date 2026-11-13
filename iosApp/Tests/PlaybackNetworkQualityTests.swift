@@ -283,6 +283,7 @@ final class PlaybackNetworkQualityTests: XCTestCase {
             versions: Self.versions,
             requestedFileId: requestedFileId,
             lastFileId: lastFileId,
+            lastFileInProgress: false,
             prefersLastUsedVersion: resuming,
             pinsRequestedVersion: pinsVersion,
             startsAtFirstPart: false,

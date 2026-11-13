@@ -25,6 +25,7 @@ struct DownloadActionButton: View {
     private let selectedVersionFileId: Int?
     private let selectedEditionId: String?
     private let lastVersionFileId: Int?
+    private let lastFileInProgress: Bool
     private let lastEditionKey: String?
     /// Owned by the detail screen so its overflow menu can open the same
     /// options sheet.
@@ -69,6 +70,7 @@ struct DownloadActionButton: View {
         self.selectedVersionFileId = selectedVersionFileId
         self.selectedEditionId = selectedEditionId
         lastVersionFileId = detail.userData?.lastFileId
+        lastFileInProgress = detail.userData?.hasResumePoint ?? false
         lastEditionKey = detail.userData?.lastEditionKey
         _showOptions = showOptions
     }
@@ -88,6 +90,7 @@ struct DownloadActionButton: View {
                     selectedVersionFileId: selectedVersionFileId,
                     selectedEditionId: selectedEditionId,
                     lastVersionFileId: lastVersionFileId,
+                    lastFileInProgress: lastFileInProgress,
                     lastEditionKey: lastEditionKey,
                     onStart: startDownload
                 )
@@ -315,6 +318,7 @@ struct DownloadActionButton: View {
             versions: versions,
             selectedFileId: selectedVersionFileId,
             lastFileId: lastVersionFileId,
+            lastFileInProgress: lastFileInProgress,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: selectedEditionId,
             lastEditionKey: lastEditionKey

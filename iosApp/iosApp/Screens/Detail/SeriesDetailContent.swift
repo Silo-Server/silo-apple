@@ -575,6 +575,7 @@ struct SeriesDetailContent<BelowOverview: View>: View {
             versions: nextUpVersions,
             selectedFileId: selectedNextUpFileId,
             lastFileId: nextUpWatchDetail?.userData?.lastFileId,
+            lastFileInProgress: nextUpWatchDetail?.userData?.hasResumePoint ?? false,
             preferredQualityId: PlayerSettings.shared.connectionPreferredQuality,
             editionId: selectedNextUpEditionId,
             lastEditionKey: nextUpWatchDetail?.userData?.lastEditionKey

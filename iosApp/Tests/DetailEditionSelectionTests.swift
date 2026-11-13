@@ -32,6 +32,7 @@ final class DetailEditionSelectionTests: XCTestCase {
             versions: versions,
             selectedFileId: pinned,
             lastFileId: lastFileId,
+            lastFileInProgress: false,
             preferredQualityId: quality,
             editionId: edition,
             lastEditionKey: lastEditionKey
@@ -76,6 +77,7 @@ final class DetailEditionSelectionTests: XCTestCase {
                 versions: cuts.filter { ids.contains($0.fileId) },
                 selectedFileId: nil,
                 lastFileId: nil,
+                lastFileInProgress: false,
                 preferredQualityId: quality
             )?.fileId
         }
@@ -115,6 +117,7 @@ final class DetailEditionSelectionTests: XCTestCase {
                 versions: files.filter { ids.contains($0.fileId) },
                 selectedFileId: nil,
                 lastFileId: lastFileId,
+                lastFileInProgress: false,
                 preferredQualityId: "auto"
             )?.fileId
         }
@@ -133,16 +136,17 @@ final class DetailEditionSelectionTests: XCTestCase {
         ]
         """)
         XCTAssertEqual(DetailVersionSelection.displayVersion(
-            versions: files, selectedFileId: nil, lastFileId: nil, preferredQualityId: "1080p"
+            versions: files, selectedFileId: nil, lastFileId: nil, lastFileInProgress: false, preferredQualityId: "1080p"
         )?.fileId, 51)
         XCTAssertEqual(DetailVersionSelection.displayVersion(
-            versions: [files[0]], selectedFileId: nil, lastFileId: nil, preferredQualityId: "1080p"
+            versions: [files[0]], selectedFileId: nil, lastFileId: nil, lastFileInProgress: false, preferredQualityId: "1080p"
         )?.fileId, 50)
     }
 
     /// Auto ranks first parts only, merging a cut's single file with its
-    /// multi-part set. A later part last played stays on the page so Resume
-    /// continues it, and Start Over starts that presentation's first part.
+    /// multi-part set. While the title is in progress, a later part last
+    /// played stays on the page so Resume continues it, and Start Over
+    /// starts that presentation's first part.
     func testAutoSkipsLaterPartsButResumesOne() {
         let files = decode("""
         [
@@ -155,7 +159,7 @@ final class DetailEditionSelectionTests: XCTestCase {
         """)
         func shown(lastFileId: Int?, pinned: Int? = nil) -> FileVersion? {
             DetailVersionSelection.displayVersion(
-                versions: files, selectedFileId: pinned, lastFileId: lastFileId, preferredQualityId: "auto"
+                versions: files, selectedFileId: pinned, lastFileId: lastFileId, lastFileInProgress: true, preferredQualityId: "auto"
             )
         }
         XCTAssertEqual(shown(lastFileId: nil)?.fileId, 60)
@@ -169,6 +173,34 @@ final class DetailEditionSelectionTests: XCTestCase {
         )?.fileId, 62)
     }
 
+    /// Without a saved position, a later part last played no longer holds
+    /// Auto: a title finished on its last part rewatches from part 1. A
+    /// rewatch in progress keeps its part, though the title stays played.
+    func testAFinishedMultipartTitleStartsAtPartOne() throws {
+        let parts = decode("""
+        [
+          { "file_id": 61, "resolution": "1080p", "presentation_group_key": "g",
+            "presentation_part_index": 1, "presentation_part_total": 2 },
+          { "file_id": 62, "resolution": "1080p", "presentation_group_key": "g",
+            "presentation_part_index": 2, "presentation_part_total": 2 }
+        ]
+        """)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        func shown(_ userData: String) throws -> Int? {
+            let user = try decoder.decode(LeafItemUserData.self, from: Data(userData.utf8))
+            return DetailVersionSelection.displayVersion(
+                versions: parts,
+                selectedFileId: nil,
+                lastFileId: user.lastFileId,
+                lastFileInProgress: user.hasResumePoint,
+                preferredQualityId: "auto"
+            )?.fileId
+        }
+        XCTAssertEqual(try shown(#"{ "played": true, "position_seconds": 0, "last_file_id": 62 }"#), 61)
+        XCTAssertEqual(try shown(#"{ "played": true, "position_seconds": 600, "last_file_id": 62 }"#), 62)
+    }
+
     /// A start without a detail page (a home card's Play, a deep link)
     /// picks the way the page does, so it doesn't switch to the Theatrical
     /// file that also fits the 1080p cap. Continue Watching still resumes
@@ -179,6 +211,7 @@ final class DetailEditionSelectionTests: XCTestCase {
                 versions: versions,
                 requestedFileId: nil,
                 lastFileId: lastFileId,
+                lastFileInProgress: false,
                 lastEditionKey: lastEditionKey,
                 prefersLastUsedVersion: resuming,
                 startsAtFirstPart: false,
@@ -201,6 +234,7 @@ final class DetailEditionSelectionTests: XCTestCase {
             versions: versions,
             requestedFileId: nil,
             lastFileId: 32,
+            lastFileInProgress: false,
             lastEditionKey: "director_cut",
             prefersLastUsedVersion: false,
             startsAtFirstPart: false,

@@ -1178,6 +1178,7 @@ private struct ItemDetailPhoneContent: View {
             versions: detail.versions ?? [],
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
+            lastFileInProgress: detail.userData?.hasResumePoint ?? false,
             preferredQualityId: detailQuality(onMeteredNetwork: onMeteredNetwork),
             editionId: preferredEditionId,
             lastEditionKey: detail.userData?.lastEditionKey
@@ -1195,6 +1196,7 @@ private struct ItemDetailPhoneContent: View {
             versions: detail.versions,
             selectedFileId: versionFileId,
             lastFileId: detail.userData?.lastFileId,
+            lastFileInProgress: detail.userData?.hasResumePoint ?? false,
             preferredQualityId: detailQuality(onMeteredNetwork: onMeteredNetwork),
             editionId: preferredNextUpEditionId,
             lastEditionKey: detail.userData?.lastEditionKey

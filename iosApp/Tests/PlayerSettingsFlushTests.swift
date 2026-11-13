@@ -2392,10 +2392,10 @@ final class PlayerSettingsFlushTests: XCTestCase {
         for lastFileId in [nil, sevenTwenty.fileId] {
             XCTAssertEqual(
                 DetailVersionSelection.displayVersion(
-                    versions: versions, selectedFileId: nil, lastFileId: lastFileId, preferredQualityId: "original"
+                    versions: versions, selectedFileId: nil, lastFileId: lastFileId, lastFileInProgress: false, preferredQualityId: "original"
                 )?.fileId,
                 DetailVersionSelection.displayVersion(
-                    versions: versions, selectedFileId: nil, lastFileId: lastFileId, preferredQualityId: "auto"
+                    versions: versions, selectedFileId: nil, lastFileId: lastFileId, lastFileInProgress: false, preferredQualityId: "auto"
                 )?.fileId
             )
         }

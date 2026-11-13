@@ -1266,6 +1266,12 @@ struct LeafItemUserData: Codable, Hashable {
     /// The edition of the version last played.
     let lastEditionKey: String?
 
+    /// A saved position. Only then does Auto stay on a later multipart part
+    /// last played; otherwise it starts at part 1. `played` is ignored: the
+    /// server zeroes the position when a title is finished and keeps the
+    /// flag through a rewatch.
+    var hasResumePoint: Bool { (positionSeconds ?? 0) > 0 }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         played = try c.decodeIfPresent(Bool.self, forKey: .played) ?? false

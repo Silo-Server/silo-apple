@@ -10,12 +10,15 @@ enum DetailVersionSelection {
     /// else the one last played (`lastEditionKey`, else the edition of
     /// `lastFileId`), else the edition whose Auto file compares best.
     ///
-    /// When `lastFileId` is a later part of a multi-part presentation in the
-    /// current edition, Auto stays on that part so Resume continues it.
+    /// While the item has a resume point (`lastFileInProgress`, from
+    /// `LeafItemUserData.hasResumePoint`) and `lastFileId` is a later part of
+    /// a multi-part presentation in the current edition, Auto stays on that
+    /// part so Resume continues it. Otherwise a rewatch starts at part 1.
     static func displayVersion(
         versions: [FileVersion],
         selectedFileId: Int?,
         lastFileId: Int?,
+        lastFileInProgress: Bool,
         preferredQualityId: String? = nil,
         editionId: String? = nil,
         lastEditionKey: String? = nil
@@ -33,7 +36,8 @@ enum DetailVersionSelection {
         guard let current else {
             return openingFile(editions: editions, cap: cap)
         }
-        if let lastFileId,
+        if lastFileInProgress,
+           let lastFileId,
            let last = current.versions.first(where: { $0.fileId == lastFileId }),
            (last.presentationPartIndex ?? 0) > 1 {
             return last

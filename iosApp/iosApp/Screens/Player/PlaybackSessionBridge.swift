@@ -891,6 +891,7 @@ actor PlaybackSessionBridge {
             versions: watchDetail.versions,
             requestedFileId: preferredFileId,
             lastFileId: watchDetail.userData?.lastFileId,
+            lastFileInProgress: watchDetail.userData?.hasResumePoint ?? false,
             lastEditionKey: watchDetail.userData?.lastEditionKey,
             prefersLastUsedVersion: prefersLastUsedVersion,
             pinsRequestedVersion: pinsVersion,
@@ -2449,6 +2450,7 @@ actor PlaybackSessionBridge {
         versions: [FileVersion],
         requestedFileId: Int?,
         lastFileId: Int?,
+        lastFileInProgress: Bool,
         lastEditionKey: String? = nil,
         prefersLastUsedVersion: Bool,
         pinsRequestedVersion: Bool = false,
@@ -2478,6 +2480,7 @@ actor PlaybackSessionBridge {
                 versions: versions,
                 selectedFileId: nil,
                 lastFileId: lastFileId,
+                lastFileInProgress: lastFileInProgress,
                 preferredQualityId: quality.preferredQuality,
                 lastEditionKey: lastEditionKey
             ) ?? versions[0]
