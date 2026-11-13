@@ -116,7 +116,7 @@ struct TVPlaybackActionSelectors: View {
 
     private var versionMenu: some View {
         TVCircleMenuButton(
-            icon: "square.stack",
+            icon: "4k.tv",
             title: AppLanguage.string(.detailVersionsButton, locale: locale),
             accessibilityLabel: AppLanguage.string(.detailVersionSpoken(versionValue), locale: locale),
             stabilizesFocusMotion: true,
