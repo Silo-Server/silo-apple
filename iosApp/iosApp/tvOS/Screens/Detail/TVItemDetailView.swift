@@ -415,12 +415,7 @@ struct TVItemDetailView: View {
                     await viewModel.setEpisodeWatchlist(contentId: id, inWatchlist: inWatchlist)
                 },
                 onSelectNextUpVersion: { selectNextUpVersion($0) },
-                onSelectNextUpEdition: { id in
-                    // Committed before the version so tracks are checked
-                    // against the edition's Auto file.
-                    preferredNextUpEditionId = id
-                    selectNextUpVersion(nil)
-                },
+                onSelectNextUpEdition: { selectNextUpEdition($0) },
                 onSelectNextUpAudioTrack: { index in
                     preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: nextUpPlaybackDetail,
@@ -540,10 +535,7 @@ struct TVItemDetailView: View {
                     }
                 },
                 onSelectVersion: { selectVersion($0, in: detail) },
-                onSelectEdition: { id in
-                    preferredEditionId = id
-                    selectVersion(nil, in: detail)
-                },
+                onSelectEdition: { selectEdition($0, in: detail) },
                 onSelectAudioTrack: { index in
                     preferredAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: detail,
@@ -657,6 +649,43 @@ struct TVItemDetailView: View {
             versionFileId: fileId,
             candidate: preferredSubtitleTrackIndex
         )
+    }
+
+    /// An Edition pick: Version returns to Auto in that edition. When that
+    /// changes the file, the audio pick and a subtitle track pick named
+    /// streams of the old file, so they go: subtitle Auto and Off stay, and
+    /// the subtitle reseeds for the new file as on entry.
+    private func selectEdition(_ id: String, in detail: ItemDetail) {
+        let before = effectiveVersion(for: detail, versionFileId: preferredVersionFileId)?.fileId
+        preferredEditionId = id
+        preferredVersionFileId = nil
+        guard effectiveVersion(for: detail, versionFileId: nil)?.fileId != before else { return }
+        preferredAudioTrackIndex = nil
+        guard let subtitle = preferredSubtitleTrackIndex, subtitle >= 0 else { return }
+        viewModel.preferredSubtitleTrackWasManuallySelected = false
+        preferredSubtitleTrackIndex = nil
+        seedSubtitleOverrideIfNeeded()
+    }
+
+    /// `selectEdition` for the selected episode.
+    private func selectNextUpEdition(_ id: String) {
+        let before = effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId)?.fileId
+        preferredNextUpEditionId = id
+        preferredNextUpFileId = nil
+        guard let nextUpPlaybackDetail,
+              effectiveVersion(for: nextUpPlaybackDetail, versionFileId: nil)?.fileId != before else { return }
+        preferredNextUpAudioTrackIndex = nil
+        preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.subtitleIndexAfterFileChange(
+            preferredNextUpSubtitleTrackIndex
+        ) {
+            DetailPlaybackFormatting.launchPreferredSubtitleIndex(
+                version: effectiveVersion(for: nextUpPlaybackDetail, versionFileId: nil),
+                signature: nextUpPlaybackDetail.effectiveSubtitleTrackSignature,
+                mode: nextUpPlaybackDetail.effectiveSubtitleMode,
+                showForced: nextUpPlaybackDetail.showsForcedSubtitles,
+                usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
+            )
+        }
     }
 
     private func selectNextUpVersion(_ fileId: Int?) {
