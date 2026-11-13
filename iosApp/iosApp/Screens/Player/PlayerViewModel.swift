@@ -653,6 +653,9 @@ class PlayerViewModel {
     var isQualitySwitching = false
     var qualitySwitchError: String?
     var isScrubbing = false
+    /// A scrub the viewer is driving. A skip also sets `isScrubbing` while
+    /// its seek waits, but it moves the playhead without the scrub preview.
+    var showsScrubPreview: Bool { isScrubbing && skipDebounceTask == nil }
     #if os(iOS) || os(macOS)
     /// A two-finger trackpad swipe owns the current scrub.
     private(set) var isTrackpadScrubbing = false

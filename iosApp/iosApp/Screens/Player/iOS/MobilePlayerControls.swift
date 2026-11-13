@@ -61,7 +61,7 @@ struct MobilePlayerControls: View {
                     let paneTop = tabletopControlsTop(in: proxy)
                     let pane = CGSize(width: proxy.size.width, height: proxy.size.height - paneTop)
                     ZStack {
-                        Color.black.opacity(viewModel.isScrubbing ? 0.55 : 0.4)
+                        Color.black.opacity(viewModel.showsScrubPreview ? 0.55 : 0.4)
                             .ignoresSafeArea()
                             .onTapGesture { viewModel.toggleControls() }
 
@@ -91,7 +91,7 @@ struct MobilePlayerControls: View {
                         .frame(width: pane.width, height: pane.height)
                     }
                     .padding(.top, paneTop)
-                    .animation(.easeOut(duration: 0.18), value: viewModel.isScrubbing)
+                    .animation(.easeOut(duration: 0.18), value: viewModel.showsScrubPreview)
                 }
                 .transition(.opacity)
             }
@@ -155,9 +155,10 @@ struct MobilePlayerControls: View {
     }
 
     /// Top strip, center cluster and action row fade out of the way while
-    /// the user is scrubbing so the preview bubble owns the screen.
+    /// the user is scrubbing so the preview bubble owns the screen. A skip
+    /// tap isn't a scrub and leaves them be.
     private var recedingOpacity: Double {
-        viewModel.isScrubbing ? 0.12 : 1
+        viewModel.showsScrubPreview ? 0.12 : 1
     }
 
     // MARK: - Top strip
@@ -834,7 +835,10 @@ private struct MobilePlayerTimeline: View {
             let progress = viewModel.duration > 0
                 ? min(max(displayTime / viewModel.duration, 0), 1)
                 : 0
-            let barHeight: CGFloat = viewModel.isScrubbing ? 12 : 6
+            // The playhead follows `isScrubbing`, so a skip moves it at once;
+            // the taller bar and the bubble wait for a scrub the viewer drives.
+            let showsPreview = viewModel.showsScrubPreview
+            let barHeight: CGFloat = showsPreview ? 12 : 6
 
             ZStack(alignment: .leading) {
                 // Base track
@@ -869,22 +873,26 @@ private struct MobilePlayerTimeline: View {
                 Capsule()
                     .fill(Color.white)
                     .frame(width: max(width * progress, barHeight), height: barHeight)
-                    .shadow(color: .white.opacity(viewModel.isScrubbing ? 0.35 : 0), radius: 8)
+                    .shadow(color: .white.opacity(showsPreview ? 0.35 : 0), radius: 8)
             }
             .frame(height: 20, alignment: .center)
-            .animation(.snappy(duration: 0.22), value: viewModel.isScrubbing)
+            .animation(.snappy(duration: 0.22), value: showsPreview)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .updating($scrubDrag) { value, drag, _ in
                         guard width > 0 else { return }
+                        let startsDrag = drag == nil
                         var next = drag ?? MobileScrubDrag(startX: value.startLocation.x, width: width)
                         next.move(toX: value.location.x, heightAboveBar: -value.translation.height, width: width)
                         drag = next
-                        if viewModel.isScrubbing {
-                            viewModel.updateScrub(fraction: next.fraction)
-                        } else {
+                        // A new drag begins its own scrub even when a skip's
+                        // seek is still pending: `beginScrub` cancels that
+                        // seek so it can't land under the finger.
+                        if startsDrag || !viewModel.isScrubbing {
                             viewModel.beginScrub(fraction: next.fraction)
+                        } else {
+                            viewModel.updateScrub(fraction: next.fraction)
                         }
                     }
                     .onEnded { _ in
@@ -899,7 +907,7 @@ private struct MobilePlayerTimeline: View {
                 old != nil && new != nil ? .impact(weight: .light) : nil
             }
             .overlay(alignment: .topLeading) {
-                if viewModel.isScrubbing {
+                if showsPreview {
                     let previewInset: CGFloat = viewModel.scrubPreviewImage == nil ? 80 : 102
                     // Pin the bubble's bottom above the bar so a speed label
                     // grows it upward instead of over the bar.
