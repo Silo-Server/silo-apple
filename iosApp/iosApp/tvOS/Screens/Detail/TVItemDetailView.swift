@@ -30,6 +30,8 @@ struct TVItemDetailView: View {
     /// Counts Subtitles picks on the next-up episode, so a refresh that
     /// lands after one keeps it.
     @State private var nextUpSubtitlePickCount = 0
+    /// The file the next-up episode's subtitle index was picked on.
+    @State private var nextUpSubtitlePickFileId: Int?
     @State private var nextUpPlaybackDetail: ItemDetail?
     /// The next-up episode's catalog item. The hero reads its ratings when
     /// the playback details for that episode could not be loaded.
@@ -408,6 +410,7 @@ struct TVItemDetailView: View {
                 },
                 onSelectNextUpVersion: { fileId in
                     preferredNextUpFileId = fileId
+                    nextUpSubtitlePickFileId = effectiveVersion(for: nextUpPlaybackDetail, versionFileId: fileId)?.fileId
                     preferredNextUpAudioTrackIndex = sanitizedAudioTrackIndex(
                         for: nextUpPlaybackDetail,
                         versionFileId: fileId,
@@ -434,6 +437,7 @@ struct TVItemDetailView: View {
                 },
                 onSelectNextUpSubtitleTrack: { index in
                     nextUpSubtitlePickCount &+= 1
+                    nextUpSubtitlePickFileId = effectiveVersion(for: nextUpPlaybackDetail, versionFileId: preferredNextUpFileId)?.fileId
                     didClearNextUpSubtitleOverride = (index == nil)
                     preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
                         for: nextUpPlaybackDetail,
@@ -870,22 +874,29 @@ struct TVItemDetailView: View {
             }
             nextUpPlaybackDetail = resolved
             if let resolved {
-                if nextUpSubtitlePickCount == subtitlePickCountAtLoad {
-                    // No Subtitles pick while this ran: re-derive the
-                    // preference on the file the page shows.
+                // Keep a Subtitles pick made while this ran when the page
+                // still shows the file it was picked on and that file still
+                // offers it. Otherwise re-derive the preference on the file
+                // the page shows.
+                let keepsPick = nextUpSubtitlePickCount != subtitlePickCountAtLoad
+                    && DetailPlaybackFormatting.keepsManualSubtitlePick(
+                        preferredNextUpSubtitleTrackIndex,
+                        pickedFileId: nextUpSubtitlePickFileId,
+                        reloadedFileId: effectiveVersion(for: resolved, versionFileId: preferredNextUpFileId)?.fileId
+                    ) { index in
+                        sanitizedSubtitleTrackIndex(
+                            for: resolved,
+                            versionFileId: preferredNextUpFileId,
+                            candidate: index
+                        ) != nil
+                    }
+                if !keepsPick {
                     preferredNextUpSubtitleTrackIndex = DetailPlaybackFormatting.launchPreferredSubtitleIndex(
                         version: effectiveVersion(for: resolved, versionFileId: preferredNextUpFileId),
                         signature: resolved.effectiveSubtitleTrackSignature,
                         mode: resolved.effectiveSubtitleMode,
                         showForced: resolved.showsForcedSubtitles,
                         usesDeviceSettings: PlayerSettings.shared.subtitleMatchesSystemAppearance
-                    )
-                } else {
-                    // Keep the pick while the refreshed file still has it.
-                    preferredNextUpSubtitleTrackIndex = sanitizedSubtitleTrackIndex(
-                        for: resolved,
-                        versionFileId: preferredNextUpFileId,
-                        candidate: preferredNextUpSubtitleTrackIndex
                     )
                 }
             }
