@@ -330,7 +330,7 @@ private struct PhoneEpisodeCard: View {
             }
 
             if let progress = progressFraction {
-                progressBar(fraction: progress)
+                ProgressBar(value: progress)
             }
         }
         .frame(width: cardWidth, height: stillHeight)
@@ -360,17 +360,6 @@ private struct PhoneEpisodeCard: View {
                 .font(.system(size: 11, weight: .bold))
                 .foregroundColor(.black)
         }
-    }
-
-    private func progressBar(fraction: Double) -> some View {
-        ZStack(alignment: .leading) {
-            Rectangle()
-                .fill(Color.black.opacity(0.6))
-            Rectangle()
-                .fill(Color.white)
-                .frame(width: cardWidth * CGFloat(fraction))
-        }
-        .frame(width: cardWidth, height: 3)
     }
 
     private var progressFraction: Double? {

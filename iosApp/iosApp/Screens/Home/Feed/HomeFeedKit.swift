@@ -284,6 +284,11 @@ struct HomePosterCard: View {
     /// Draws the resume rail across the bottom of the artwork.
     var showsProgress: Bool = false
     var opensResumeContext = false
+
+    /// The progress the card draws a bar for, if any.
+    private var barProgress: Double? {
+        showsProgress ? HomeFeedMeta.progress(for: item) : nil
+    }
     /// Audiobook covers are square; stretching one into a 2:3 poster crops
     /// its edges off.
     var aspect: MediaCardAspect = .poster
@@ -369,7 +374,7 @@ struct HomePosterCard: View {
                     prefs: overlayStore.prefs,
                     variant: .poster,
                     images: overlayStore.images,
-                    hasProgressBar: showsProgress && HomeFeedMeta.progress(for: item) != nil
+                    hasProgressBar: barProgress != nil
                 )
                 .frame(width: width, height: height)
                 .clipShape(
@@ -389,14 +394,12 @@ struct HomePosterCard: View {
             )
         }
         .overlay(alignment: .bottom) {
-            if showsProgress, let progress = HomeFeedMeta.progress(for: item) {
+            if let progress = barProgress {
                 ProgressBar(value: progress)
-                    .padding(.horizontal, 6)
-                    .padding(.bottom, 6)
             }
         }
         .overlay {
-            DownloadedBadgeOverlay(contentId: item.contentId, padding: 6)
+            DownloadedBadgeOverlay(contentId: item.contentId, padding: 6, clearsProgressBar: barProgress != nil)
         }
     }
 
@@ -553,8 +556,6 @@ struct HomeStillCard: View {
 
             if let progress = HomeFeedMeta.progress(for: item) {
                 ProgressBar(value: progress)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 7)
             }
         }
         .frame(width: width, height: height)
@@ -579,8 +580,7 @@ struct HomeStillCard: View {
         // Above the progress rail rather than on it — the rail owns the
         // bottom edge of a resume still.
         .overlay {
-            DownloadedBadgeOverlay(contentId: item.contentId, padding: 6)
-                .padding(.bottom, 10)
+            DownloadedBadgeOverlay(contentId: item.contentId, padding: 6, clearsProgressBar: true)
         }
     }
 

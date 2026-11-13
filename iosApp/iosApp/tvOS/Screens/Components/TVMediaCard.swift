@@ -227,7 +227,7 @@ struct TVMediaCard: View {
                 ZStack(alignment: .bottom) {
                     BoxSetCardBadges(boxSet: boxSet)
                     if let progress = boxSet.watchedProgress {
-                        ProgressBar(value: progress)
+                        ProgressBar(value: progress, belowCornerLabel: true)
                     }
                 }
                 .frame(width: resolvedCardWidth, height: cardHeight)
