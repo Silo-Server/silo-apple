@@ -16,6 +16,10 @@ Validation tasks: #NNN C1
 e.g. "unblocks #1144 C3; changes #1200 C1". Write "none" when no validation task is
 affected. -->
 
+Other clients: Android Silo-Server/silo-android#NNN; Roku N/A (reason); Web Silo-Server/silo-server#NNN
+<!-- One entry each for Android, Roku, and Web: a parity issue or pull request link,
+or "N/A" with the reason. See "Cross-client parity" in AGENTS.md. -->
+
 A short plain-language summary: what goes wrong, who it affects, and what this
 change does about it. Details come after.
 
