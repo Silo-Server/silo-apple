@@ -116,17 +116,23 @@ struct CalendarEvent: Codable, Identifiable {
     }
 }
 
-/// Editorial badges the server attaches to calendar events.
+/// Editorial badges the server attaches to calendar events. A movie is
+/// listed once, on its first home release, and carries `digital` or
+/// `physical` to name that release (`/api/v2` only).
 enum CalendarBadge: String {
     case seriesPremiere = "series_premiere"
     case seasonPremiere = "season_premiere"
     case finale
+    case digital
+    case physical
 
     var label: LocalizedStringResource {
         switch self {
         case .seriesPremiere: return .calendarBadgeSeriesPremiere
         case .seasonPremiere: return .calendarBadgeSeasonPremiere
         case .finale: return .calendarBadgeFinale
+        case .digital: return .calendarBadgeDigital
+        case .physical: return .calendarBadgePhysical
         }
     }
 }
